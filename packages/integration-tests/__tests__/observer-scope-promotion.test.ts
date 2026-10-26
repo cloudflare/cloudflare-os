@@ -1,11 +1,14 @@
-// A "use" collaborator is verified only against the connections their scope reaches. Merging an
-// agent-proposed binding, binding on mainline, or enabling a hook on an unbound connection widens
-// that scope, so the workspace restarts and the viewer's next open re-verifies against it. The
-// user's own binding edits (bind, rename, unbind) also reload the running gadget's environment.
+// A collaborator granted a gadget is verified, when they get it, only against the connections
+// that gadget reaches. Merging an agent-proposed binding, binding on mainline, or enabling a hook
+// on an unbound connection widens that scope, so the workspace restarts and the viewer's next
+// getGadget() re-verifies against it. The user's own binding edits (bind, rename, unbind) also
+// reload the running gadget's environment.
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { AiChatMessage, AuthenticatedApi, Overseer } from "@gadgets/workshop-shared/api";
+import type {
+  AiChatMessage, AuthenticatedApi, Overseer, WorkpieceId,
+} from "@gadgets/workshop-shared/api";
 import { openAgentSession } from "../src/agent-session.js";
 import {
   settleRestart, startTestGatekeeperHarness, TEST_VENDOR_ID, testControl, type Harness,
@@ -74,26 +77,30 @@ function connectionCard(history: AiChatMessage[]) {
   return card;
 }
 
-// A viewer's session on its own connection. The default recorder has no queued responses, so an
-// open that needs verification throws.
+// A viewer's session on its own connection, holding `gadgetId`. The default recorder has no
+// queued responses, so getting a gadget that needs verification throws.
 async function holdSession(
-    workspaceId: string, who: string, recorder = new ObserverConfigRecorder()) {
+    workspaceId: string, who: string, gadgetId: WorkpieceId,
+    recorder = new ObserverConfigRecorder()) {
   using stack = new DisposableStack();
   const api = await logIn(stack.use(connect(harness.url)), who);
   using callback = stubFor(recorder);
   const overseer = stack.use(await api.openWorkspace(workspaceId, undefined, callback));
-  return Object.assign(stack.move(), { overseer });
+  const gadget = stack.use(await overseer.getGadget(gadgetId, callback));
+  return Object.assign(stack.move(), { overseer, gadget });
 }
 
-type Viewer = { name: string; account: ConnectedAccount };
+type Viewer = { name: string; account: ConnectedAccount; gadgetId: WorkpieceId };
 
-async function addViewer(ws: RpcStub<Overseer>): Promise<Viewer> {
+async function addViewer(ws: RpcStub<Overseer>, gadgetId: WorkpieceId): Promise<Viewer> {
   const [name] = nextUsernames("viewer");
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, name);
   const account = await provisionAccount(api);
-  if (!await ws.addCollaborator(name, "use")) throw new Error(`Failed to share with ${name}`);
-  return { name, account };
+  if (!await ws.addCollaborator(name, { gadgetId })) {
+    throw new Error(`Failed to share with ${name}`);
+  }
+  return { name, account, gadgetId };
 }
 
 // A fresh recorder per attempt, so a failed attempt can't consume a later attempt's responses.
@@ -102,13 +109,14 @@ const reopenVerified = (workspaceId: string, viewer: Viewer) =>
     const recorder = new ObserverConfigRecorder()
         .alwaysChoose(viewer.account.id, MAX_OBSERVER_PROMPTS);
     try {
-      return Object.assign(await holdSession(workspaceId, viewer.name, recorder), { recorder });
+      return Object.assign(
+          await holdSession(workspaceId, viewer.name, viewer.gadgetId, recorder), { recorder });
     } catch {
       return null;
     }
   });
 
-it("merging an agent-proposed binding re-verifies a live use viewer against it", async () => {
+it("merging an agent-proposed binding re-verifies a live gadget viewer against it", async () => {
   const SOURCE_URL = "https://gadgets-test.example/things/promotion-source";
   // The workspace isn't listed until its first chat, and a chat's seed env is frozen at its first
   // activation, so the agent creates APP itself. An unbound connection isn't in the chat's env,
@@ -150,11 +158,11 @@ it("merging an agent-proposed binding re-verifies a live use viewer against it",
     return {
       sourceId: await newConnection(ws, session.connectedAccount(TEST_VENDOR_ID).id, SOURCE_URL),
       workspaceId: (await ws.getMetadata()).id,
-      viewer: await addViewer(ws),
+      viewer: await addViewer(ws, appId),
     };
   });
 
-  using held = await holdSession(workspaceId, viewer.name);
+  using held = await holdSession(workspaceId, viewer.name, appId);
 
   const requested = await session.runTurn("Bind the source into APP.");
   expect(requested.outcome).toEqual({ status: "completed" });
@@ -174,6 +182,7 @@ it("merging an agent-proposed binding re-verifies a live use viewer against it",
     using _usable = await ws.getGatekeeperById(sourceId);
     await settleRestart();
     await expect(held.overseer.getMetadata()).resolves.toMatchObject({ id: workspaceId });
+    await expect(held.gadget.getTitle()).resolves.toBe("App");
     expect(await ws.mergeChanges(card.chatId)).toEqual({ outcome: "merged" });
     await expect(ws.getGatekeeperById(sourceId)).rejects.toThrow(/restarting/);
   });
@@ -190,7 +199,7 @@ interface StateGadget extends RpcTarget {
 }
 
 // Unlike workshop-hooks' HOOK_SERVER, this writes the gadget's own state: a bound source would
-// already put the connection in use scope, and enabling the hook would prove nothing.
+// already put the connection in the gadget's scope, and enabling the hook would prove nothing.
 const STATE_HOOK_SERVER = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
 export class Gadget extends DurableObject {
   async [restore](params) {
@@ -204,7 +213,7 @@ class StateHook extends RpcTarget {
   async onValueRequested(value) { await this.storage.put("value", value); }
 }`;
 
-it("enabling a hook on an unbound connection re-verifies a live use viewer and delivers to their gadget",
+it("enabling a hook on an unbound connection re-verifies a live gadget viewer and delivers to it",
     async () => {
   const [hookKey] = nextUsernames("hookscope");
   const SOURCE_URL = "https://gadgets-test.example/things/hook-source";
@@ -263,10 +272,10 @@ export default async function(self, env) {
     expect(listed).toMatchObject({ gatekeeperId: sourceId, enabled: false });
     using gadget = await ws.getGadget(listed.gadgetId);
     expect((await gadget.listBindings()).some(b => b.target === sourceId)).toBe(false);
-    return { hook: listed, viewer: await addViewer(ws) };
+    return { hook: listed, viewer: await addViewer(ws, listed.gadgetId) };
   });
 
-  using held = await holdSession(workspaceId, viewer.name);
+  using held = await holdSession(workspaceId, viewer.name, hook.gadgetId);
   await withOwnerWorkspace(harness.url, session.username, ws => ws.enableHook(hook.id));
 
   await waitFor("the viewer's session to be severed", () =>
@@ -277,8 +286,7 @@ export default async function(self, env) {
   expect(await testControl(harness, "observer-events", { resourceUrl: SOURCE_URL }))
       .toEqual({ events: [expect.objectContaining({ type: "add" })] });
 
-  using gadget = await reopened.overseer.getGadget(hook.gadgetId);
-  using facet = await gadget.connectToGadget() as RpcStub<StateGadget>;
+  using facet = await reopened.gadget.connectToGadget() as RpcStub<StateGadget>;
   expect(await testControl(harness, "fire-hook", { key: hookKey, value: 7 })).toEqual({ fired: true });
   expect(await facet.deliveredValue()).toBe(7);
 });
@@ -372,16 +380,16 @@ it("mainline binding names steer clear of another chat's pending binding", async
       .rejects.toThrow('There is already a binding named "TEST_THING".');
 });
 
-it("a mainline bind re-verifies a held use viewer against the bound connection", async () => {
+it("a mainline bind re-verifies a held gadget viewer against the bound connection", async () => {
   using owner = await newWorkspace("bindingviewer");
   const { account, ws } = owner;
   using app = await ws.createGadget("App", undefined, "APP");
   const sourceId =
       await newConnection(ws, account.id, "https://gadgets-test.example/things/live-binding");
   const workspaceId = (await ws.getMetadata()).id;
-  const viewer = await addViewer(ws);
-  // Unbound, the connection is outside the viewer's use scope, so this open needs no verification.
-  using held = await holdSession(workspaceId, viewer.name);
+  const viewer = await addViewer(ws, await app.getId());
+  // Unbound, the connection is outside the gadget's scope, so getting it needs no verification.
+  using held = await holdSession(workspaceId, viewer.name, viewer.gadgetId);
 
   await app.bind("DATA", sourceId);
   await expect(ws.getGatekeeperById(sourceId)).rejects.toThrow(/restarting/);

@@ -326,7 +326,9 @@ describe("sensitive observations", () => {
         expect(await overseer.listCollaborators()).toEqual([]);
 
         // No new links, and no new copies of the old one.
-        await expect(overseer.createShareLink("use", "after ownerInvitesOnly"))
+        using gadget = await overseer.createGadget("Shared Gadget", undefined, "SHARED_GADGET");
+        const gadgetId = await gadget.getId();
+        await expect(overseer.createShareLink({ gadgetId }, "after ownerInvitesOnly"))
             .rejects.toThrow(/Share links are disabled/);
         await expect(overseer.newShareLinkKey(linkId))
             .rejects.toThrow(/Share links are disabled/);
@@ -347,10 +349,10 @@ describe("sensitive observations", () => {
         // The owner adds Dave directly. He opens after verifying his own access -- still through
         // the old link, which lets a direct collaborator through -- but cannot add people himself.
         await expect(overseer.addCollaborator(dave, "build")).resolves.toMatchObject({
-          role: "build",
+          access: { role: "build" },
         });
         using daveOverseer = await opens(daveApi, daveAccount);
-        await expect(daveOverseer.addCollaborator(carol, "use"))
+        await expect(daveOverseer.addCollaborator(carol, { gadgetId }))
             .rejects.toThrow(/Only the workspace owner/);
 
         // The owner can still see and revoke the old link. It grants nothing now, so revoking it
@@ -374,7 +376,9 @@ describe("sensitive observations", () => {
       await expect(ws.overseer.addCollaborator(carol, "build")).resolves.toMatchObject({
         profile: expect.objectContaining({ id: expect.any(String) }),
       });
-      const { linkId } = await ws.overseer.createShareLink("use", "after containsRestrictedData");
+      using gadget = await ws.overseer.createGadget("Shared Gadget", undefined, "SHARED_GADGET");
+      const { linkId } = await ws.overseer.createShareLink(
+          { gadgetId: await gadget.getId() }, "after containsRestrictedData");
       await expect(ws.overseer.newShareLinkKey(linkId)).resolves.toMatchObject({
         key: expect.any(String),
       });

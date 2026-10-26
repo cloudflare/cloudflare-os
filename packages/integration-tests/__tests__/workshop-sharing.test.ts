@@ -79,9 +79,12 @@ const ui = (gadgetId: WorkpieceId, text?: string): CodeContent =>
 const MAINLINE_UI = "export default 'mainline';\n";
 const USE_ONLY = "Unauthorized: this collaborator only has permission to use the gadget's UI.";
 
-const affectedRoles = (affected: AffectedCollaborator[]) => affected
-    .map(({ profile, oldRole, newRole }) => ({ id: profile.id, oldRole, newRole }))
+const affectedAccess = (affected: AffectedCollaborator[]) => affected
+    .map(({ profile, oldAccess, newAccess }) => ({ id: profile.id, oldAccess, newAccess }))
     .toSorted((a, b) => a.id.localeCompare(b.id));
+
+const gadgetAccess = (...gadgetIds: WorkpieceId[]) =>
+  ({ role: "use", gadgetIds: gadgetIds.toSorted((a, b) => a - b) });
 
 async function expectOpenDeniedAfterRestart(
     username: string, workspaceId: string, shareKey?: string): Promise<void> {
@@ -117,12 +120,12 @@ async function listShareLinksAfterRestart(username: string, workspaceId: string)
   });
 }
 
-it.concurrent("grants and revokes a use-only collaborator", async () => {
+it.concurrent("grants and revokes a collaborator's access to one gadget", async () => {
   const [ownerName, collaboratorName, intruderName] = usernames(
       "owner", "collaborator", "intruder");
   if (!ownerName || !collaboratorName || !intruderName) throw new Error("Missing test username");
 
-  const { workspaceId, affected } = await (async () => {
+  const { workspaceId, sharedId, affected } = await (async () => {
     using ownerPublic = connect(requireHarness().url);
     using collaboratorPublic = connect(requireHarness().url);
     using intruderPublic = connect(requireHarness().url);
@@ -131,13 +134,15 @@ it.concurrent("grants and revokes a use-only collaborator", async () => {
     using intruder = await signUp(intruderPublic, intruderName);
     using workspace = await owner.newWorkspace();
     const id = await activate(workspace);
+    using gadget = await workspace.createGadget("App", undefined, "APP");
+    const gadgetId = await gadget.getId();
 
     await expectOpenDenied(intruder, id);
 
-    const added = await workspace.addCollaborator(collaboratorName, "use", "reviewer");
+    const added = await workspace.addCollaborator(collaboratorName, { gadgetId }, "reviewer");
     expect(added).toMatchObject({
       profile: { id: collaboratorName },
-      role: "use",
+      access: gadgetAccess(gadgetId),
     });
     if (added === null) throw new Error("Collaborator was not added");
 
@@ -147,17 +152,17 @@ it.concurrent("grants and revokes a use-only collaborator", async () => {
       role: "use",
     });
     await expect(collaboratorWorkspace.setTitle("Forbidden rename")).rejects.toThrow(USE_ONLY);
+    using _shared = await collaboratorWorkspace.getGadget(gadgetId);
     return {
       workspaceId: id,
+      sharedId: gadgetId,
       affected: await workspace.removeCollaborator(added.profile.id, []),
     };
   })();
 
-  expect(affected).toContainEqual(expect.objectContaining({
-    profile: expect.objectContaining({ id: collaboratorName }),
-    oldRole: "use",
-    newRole: null,
-  }));
+  expect(affectedAccess(affected)).toEqual([
+    { id: collaboratorName, oldAccess: gadgetAccess(sharedId), newAccess: null },
+  ]);
   await expectOpenDeniedAfterRestart(collaboratorName, workspaceId);
 });
 
@@ -204,7 +209,85 @@ it.concurrent("a collaborator's Outputs page follows their access", async () => 
   await expectOpenDeniedAfterRestart(collaboratorName, workspaceId);
 });
 
-it.concurrent("revokes every key and recipient of one share link", async () => {
+it.concurrent("revoking one gadget removes only it from the collaborator's Outputs and workspace",
+    async () => {
+  const [ownerName, collaboratorName] = usernames("gadgetoutputsowner", "gadgetoutputsviewer");
+  if (!ownerName || !collaboratorName) throw new Error("Missing test username");
+
+  // Released before the revocation restart lands; `using` covers early failures.
+  using setup = new DisposableStack();
+  const owner = setup.use(await signUp(setup.use(connect(requireHarness().url)), ownerName));
+  const collaborator = setup.use(
+      await signUp(setup.use(connect(requireHarness().url)), collaboratorName));
+  const formats = await waitFor("bundled output formats to install", async () => {
+    const offers = await owner.listOutputFormats();
+    return offers.length > 0 ? offers : null;
+  });
+  const document = formats.find(format => format.output.id === "document");
+  if (document === undefined) throw new Error("Document output format is not installed");
+  const workspace = setup.use(await owner.newWorkspaceFromBlueprint(document.blueprintId, {}));
+  const { id: workspaceId, defaultGadgetId } = await workspace.getMetadata();
+  if (defaultGadgetId === undefined) throw new Error("Output workspace has no default Gadget");
+  const otherId = await setup.use(await workspace.createGadget("Other", undefined, "OTHER")).getId();
+
+  const added = await workspace.addCollaborator(collaboratorName, { gadgetId: defaultGadgetId });
+  if (added === null) throw new Error("Collaborator was not added");
+  expect(await workspace.addCollaborator(collaboratorName, { gadgetId: otherId }))
+      .toMatchObject({ access: gadgetAccess(defaultGadgetId, otherId) });
+  setup.use(await collaborator.openWorkspace(workspaceId));
+
+  // The index lists every gadget the collaborator holds, whether or not it presents an output.
+  const listed = (outputs: { workspaceId: string, workpieceId: WorkpieceId }[]) => outputs
+      .filter(output => output.workspaceId === workspaceId)
+      .map(output => output.workpieceId)
+      .toSorted((a, b) => a - b);
+  const shared = await waitFor("the shared document in the collaborator's outputs", async () => {
+    const { outputs } = await collaborator.listOutputs();
+    return listed(outputs).length === 2 ? outputs : null;
+  });
+  expect(listed(shared)).toEqual([defaultGadgetId, otherId].toSorted((a, b) => a - b));
+  expect(shared.find(output => output.workpieceId === defaultGadgetId)?.output)
+      .toMatchObject({ id: "document" });
+
+  const affected = await workspace.removeCollaborator(added.profile.id, [], defaultGadgetId);
+  expect(affectedAccess(affected)).toEqual([{
+    id: collaboratorName,
+    oldAccess: gadgetAccess(defaultGadgetId, otherId),
+    newAccess: gadgetAccess(otherId),
+  }]);
+  setup.dispose();
+
+  const remaining = await waitFor("the revoked document to leave the collaborator's outputs",
+      async () => {
+    try {
+      const { outputs } = await withAuthenticated(collaboratorName, authenticated =>
+        authenticated.listOutputs());
+      return listed(outputs).includes(defaultGadgetId) ? null : listed(outputs);
+    } catch {
+      return null;
+    }
+  });
+  expect(remaining).toEqual([otherId]);
+  // The workspace restarted for the narrowing; the gadget they kept is still theirs.
+  const reopened = await waitFor("the narrowed collaborator to reopen the workspace", async () => {
+    try {
+      return await withAuthenticated(collaboratorName, async authenticated => {
+        using reopenedWorkspace = await authenticated.openWorkspace(workspaceId);
+        using _other = await reopenedWorkspace.getGadget(otherId);
+        return {
+          role: (await reopenedWorkspace.getMetadata()).role,
+          revoked: await reopenedWorkspace.getGadget(defaultGadgetId)
+              .then(() => null, (error: unknown) => (error as Error).message),
+        };
+      });
+    } catch {
+      return null;
+    }
+  });
+  expect(reopened).toEqual({ role: "use", revoked: `No such gadget: ${defaultGadgetId}` });
+});
+
+it.concurrent("revokes every key and recipient of one gadget's share link", async () => {
   const [ownerName, firstName, secondName] = usernames("linkowner", "first", "second");
   if (!ownerName || !firstName || !secondName) throw new Error("Missing test username");
 
@@ -217,21 +300,31 @@ it.concurrent("revokes every key and recipient of one share link", async () => {
     using second = await signUp(secondPublic, secondName);
     using workspace = await owner.newWorkspace();
     const id = await activate(workspace);
+    using shared = await workspace.createGadget("Shared", undefined, "SHARED");
+    using unshared = await workspace.createGadget("Unshared", undefined, "UNSHARED");
+    const gadgetId = await shared.getId();
+    const unsharedId = await unshared.getId();
 
-    const shareLink = await workspace.createShareLink("use", "review link");
+    const shareLink = await workspace.createShareLink({ gadgetId }, "review link");
     const copiedKey = await workspace.newShareLinkKey(shareLink.linkId);
     expect(await workspace.listShareLinks()).toContainEqual(expect.objectContaining({
       linkId: shareLink.linkId,
       note: "review link",
       role: "use",
+      gadgetId,
     }));
 
     using firstWorkspace = await first.openWorkspace(id, shareLink.key);
     using secondWorkspace = await second.openWorkspace(id, copiedKey.key);
     expect(await firstWorkspace.getMetadata()).toMatchObject({ role: "use" });
     expect(await secondWorkspace.getMetadata()).toMatchObject({ role: "use" });
-    const preview = await workspace.previewRevokeShareLink(shareLink.linkId);
-    expect(preview.map(user => user.profile.id).toSorted()).toEqual([firstName, secondName].toSorted());
+    // Redeeming the link grants its one gadget and nothing else in the workspace.
+    using _firstShared = await firstWorkspace.getGadget(gadgetId);
+    await expect(secondWorkspace.getGadget(unsharedId))
+        .rejects.toThrow(`No such gadget: ${unsharedId}`);
+    expect(affectedAccess(await workspace.previewRevokeShareLink(shareLink.linkId))).toEqual(
+        [firstName, secondName].toSorted().map(name =>
+          ({ id: name, oldAccess: gadgetAccess(gadgetId), newAccess: null })));
     return {
       workspaceId: id,
       link: shareLink,
@@ -284,8 +377,8 @@ it.concurrent("removing a sharer keeps or drops the people they shared with", as
   const keptAffected = await kept.workspace.removeCollaborator(kept.bobId, [kept.carolId]);
   expect(keptAffected).toContainEqual(expect.objectContaining({
     profile: expect.objectContaining({ id: kept.bobId }),
-    oldRole: "build",
-    newRole: null,
+    oldAccess: { role: "build" },
+    newAccess: null,
   }));
   expect(keptAffected.map(({ profile }) => profile.id)).not.toContain(kept.carolId);
   await settleRestart();
@@ -295,23 +388,23 @@ it.concurrent("removing a sharer keeps or drops the people they shared with", as
   using keptCarolWorkspace = await keptCarol.openWorkspace(kept.workspaceId);
   expect(await keptCarolWorkspace.getMetadata()).toMatchObject({ role: "build" });
 
-  const preview = affectedRoles(
+  const preview = affectedAccess(
       await dropped.workspace.previewRemoveCollaborator(dropped.bobId));
   const droppedAffected = await dropped.workspace.removeCollaborator(dropped.bobId, []);
   await settleRestart();
 
-  expect(affectedRoles(droppedAffected)).toEqual(preview);
-  expect(affectedRoles(droppedAffected)).toContainEqual({
+  expect(affectedAccess(droppedAffected)).toEqual(preview);
+  expect(affectedAccess(droppedAffected)).toContainEqual({
     id: dropped.carolId,
-    oldRole: "build",
-    newRole: null,
+    oldAccess: { role: "build" },
+    newAccess: null,
   });
   using droppedCarolPublic = connect(requireHarness().url);
   using droppedCarol = await logIn(droppedCarolPublic, carolName!);
   await expectOpenDenied(droppedCarol, dropped.workspaceId);
 });
 
-it.concurrent("losing a build path falls back to the owner's direct use grant", async () => {
+it.concurrent("losing a build path falls back to the owner's direct gadget grant", async () => {
   const [ownerName, bobName, carolName] = usernames("fallbackowner", "fallbackbob", "fallbackcarol");
   using ownerPublic = connect(requireHarness().url);
   using bobPublic = connect(requireHarness().url);
@@ -355,8 +448,8 @@ it.concurrent("losing a build path falls back to the owner's direct use grant", 
     const carolInfo = await bobWorkspace.addCollaborator(carolName!, "build");
     if (carolInfo === null) throw new Error(`Failed to share with ${carolName}`);
   }
-  if (!await workspace.addCollaborator(carolName!, "use")) {
-    throw new Error(`Failed to add ${carolName}'s direct use grant`);
+  if (!await workspace.addCollaborator(carolName!, { gadgetId })) {
+    throw new Error(`Failed to add ${carolName}'s direct gadget grant`);
   }
   {
     using carolWorkspace = await carol.openWorkspace(workspaceId);
@@ -364,10 +457,10 @@ it.concurrent("losing a build path falls back to the owner's direct use grant", 
   }
 
   const affected = await workspace.removeCollaborator(bobInfo.profile.id, []);
-  expect(affectedRoles(affected)).toContainEqual({
+  expect(affectedAccess(affected)).toContainEqual({
     id: carolName!,
-    oldRole: "build",
-    newRole: "use",
+    oldAccess: { role: "build" },
+    newAccess: gadgetAccess(gadgetId),
   });
   await settleRestart();
 

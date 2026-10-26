@@ -154,7 +154,7 @@ describe("external-message verification", () => {
     });
   });
 
-  it.concurrent("the external-message path denies a use collaborator by role, not verification",
+  it.concurrent("the external-message path denies a gadget collaborator before verification",
       async () => {
     await withSession(async publicApi => {
       const [alice, dave] = nextUsernames("alice", "dave");
@@ -164,7 +164,7 @@ describe("external-message verification", () => {
 
       // Alice creates the workspace through the external channel (the AI-model rejection means
       // her submission passed the gate), then binds its connection to a gadget so it falls in
-      // "use" verification scope.
+      // that gadget's verification scope.
       await expect(submitExternalMessage({ callerEmail: alice, gadgetKey, prompt: "hello" }))
           .resolves.toMatchObject({
             accepted: false, message: expect.stringMatching(/AI model/i) });
@@ -175,11 +175,11 @@ describe("external-message verification", () => {
       using gadget = await overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
       await gadget.bind("TEST_THING", await gatekeeper.getId());
 
-      // Dave is in verification scope and unverified, but this path can never grant a "use"
-      // collaborator agent access, so his role is checked before verification runs: he gets the
-      // plain denial, not a verification failure he has no reason to go fix.
+      // Dave holds that gadget and is unverified for it, but this path can never grant a
+      // collaborator without "build" agent access, so his access is checked before verification
+      // runs: he gets the plain denial, not a verification failure he has no reason to go fix.
       await signUp(publicApi, dave);
-      if (!await overseer.addCollaborator(dave, "use")) {
+      if (!await overseer.addCollaborator(dave, { gadgetId: await gadget.getId() })) {
         throw new Error(`Failed to share the gadget with ${dave}`);
       }
       await expect(submitExternalMessage({ callerEmail: dave, gadgetKey, prompt: "hi" }))
