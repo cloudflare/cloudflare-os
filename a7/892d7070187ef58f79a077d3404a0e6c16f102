@@ -1,0 +1,79 @@
+plans/capnweb-api-schema.md
+  s_c5f8d284ae2719::t_5dbb3eb96cdb7e 180-184
+  s_c5f8d284ae2719::t_ad9913e0163098 118,123-129
+  s_c5f8d284ae2719::t_0e5e36d8a68626 135,137-140
+  s_c5f8d284ae2719::t_47bdf315709176 225-229,234-236,241-243
+  s_c5f8d284ae2719::t_b6a437f22286d0 159-179,185-190
+  s_c5f8d284ae2719::t_7cab4b4e8ced43 265-266
+  s_c5f8d284ae2719::t_58061699c377d0 141
+  s_c5f8d284ae2719::t_5193e326a2ba35 237-239
+  s_c5f8d284ae2719::t_2872a836d3fd28 244-246
+  s_c5f8d284ae2719::t_db954b86079abb 267-269
+  s_c5f8d284ae2719::t_5a4d1ac9adf4d5 56-57,200-202,247-249,270,394-395
+packages/api-schema/__tests__/extract.test.ts
+  s_c5f8d284ae2719::t_626396ab72db81 112,128,151,211,221,228-229,236,243,258,280,287,298,309,356,359,362,372-385
+  s_c5f8d284ae2719::t_2f7a8f8ca0e943 357,360,363-371
+  s_c5f8d284ae2719::t_475060b47f9b91 109-111
+  s_c5f8d284ae2719::t_99f216fd9ad710 113-115,125-127
+  s_c5f8d284ae2719::t_32941100009f94 129-131,148-150
+  s_c5f8d284ae2719::t_6437e74b9aa531 152
+  s_c5f8d284ae2719::t_696b904f57e450 208-210
+  s_c5f8d284ae2719::t_e9bb825b2b855a 212-214,218-220
+  s_c5f8d284ae2719::t_15a73355d0a1a0 222-227
+  s_c5f8d284ae2719::t_a8d061ffeddc4f 230-235
+  s_c5f8d284ae2719::t_b3f09dab85c7c9 237-242
+  s_c5f8d284ae2719::t_686051dc51a66c 244-246,255-257
+  s_c5f8d284ae2719::t_05cdcdfdffc6da 259-261,277-279
+  s_c5f8d284ae2719::t_47fc01cf47a2b2 281-286
+  s_c5f8d284ae2719::t_c6b6326879696d 288-290,295-297
+  s_c5f8d284ae2719::t_1aea9b3efaf672 299-301,306-308
+  s_c5f8d284ae2719::t_9cb980de16aa6a 310-311
+  s_c5f8d284ae2719::t_b178b37618181d 353-355
+  s_c5f8d284ae2719::t_32f339ccce960c 358
+  s_c5f8d284ae2719::t_b9f508bd1b888c 361
+  s_c5f8d284ae2719::t_928ba24848c68f 13,58-60,65,108,116-124,132-147,198-207,215-217,247-254,262-276,291-294,302-305,460,488
+packages/api-schema/README.md
+  s_c5f8d284ae2719::t_c9ab0bac98c5e6 47
+  s_c5f8d284ae2719::t_33bd33763b8536 16-17,19-37
+  s_c5f8d284ae2719::t_67344d09190d7d 50,58-60
+packages/api-schema/__tests__/__fixtures__/api.ts
+  s_c5f8d284ae2719::t_1896d5a3350ecf 5-8,51-67,97-101,132-150
+packages/api-schema/__tests__/__fixtures__/schema.json
+  s_c5f8d284ae2719::t_9e3d2bc223e013 2,13-26,29,52,115-118,202,236-239,242-251,293-311,314-382,385,397,420-421,554,574-599,629
+packages/api-schema/__tests__/dts.test.ts
+  s_c5f8d284ae2719::t_8c0c519b37328a 12,14-17,21,25,43-46,58,72-78,131-132,569-762
+packages/api-schema/__tests__/tools.test.ts
+  s_c5f8d284ae2719::t_ec6814731da92b 9-10,21-23,25,148-162,184-201,216-217,264-299,377-382,388-394,417,443-445,458-460
+packages/api-schema/generated/workshop-api.agent.d.ts
+  s_c5f8d284ae2719::t_ad95f89bf040de 154,819
+packages/api-schema/generated/workshop-api.fragments.json
+  s_c5f8d284ae2719::t_6fa3e86dffe321 5,9
+packages/api-schema/generated/workshop-api.schema.json
+  s_c5f8d284ae2719::t_cf99b68e116184 2,27,53-54,60,810,979,1488-1491,2238,2332,2375,2559-2562,2798,2871,2893,2917,2948,4598,4660,4769-4772,4884,4933
+packages/api-schema/generated/workshop-api.tools.json
+  s_c5f8d284ae2719::t_a4a7324d576a05 3099-3104,5921-5926
+packages/api-schema/src/emit/dts.ts
+  s_c5f8d284ae2719::t_8084c43b32b02f 5-19,32-37,64-68,80-81,83,178-181,215-220,244,330,391,393-396,399-418,426-427,508-511,618-624,638-649
+packages/api-schema/src/emit/tools.ts
+  s_c5f8d284ae2719::t_204e56fea6b80e 6-13,17-20,63-66,114-115,124-126,130,135-137,140-149,164-165,282-289,319-322
+packages/api-schema/src/extract.ts
+  s_c5f8d284ae2719::t_d1b08a239aff77 8-10,16-25,82-92,94,97,161-166,210-217,220,228-229,239-241,244-251,253-257,272-278,286,292-307,460-464,513-518,522,524-527,549-629
+packages/api-schema/src/schema.ts
+  s_c5f8d284ae2719::t_919b3a580615a3 3-6,15-20,24-25,39-51,54-60,70-87,128-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a7892d7070187ef58f79a077d3404a0e6c16f102",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
