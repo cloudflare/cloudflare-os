@@ -13,6 +13,7 @@ import {
   DotsThree,
   GitBranch,
   Pulse,
+  UserPlus,
   type Icon,
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
@@ -69,7 +70,7 @@ import { useActionEntries, useActions } from './useActions'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
-import { useWorkspaceOpen } from './useWorkspaceOpen'
+import { observerOpenFailureMessage, useWorkspaceOpen } from './useWorkspaceOpen'
 import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
@@ -500,6 +501,7 @@ export default function GadgetEditor() {
     error,
     connectionLost,
     observerConfig,
+    createObserverConfigCallback,
     retry: retryOpen,
     cancelObserverConfig,
     updateTitle,
@@ -510,7 +512,13 @@ export default function GadgetEditor() {
       if (!isEditingTitleRef.current) setTitleInput(nextMetadata.title)
     },
     onShareKeyConsumed: () => {
-      if (id) navigate({ to: '/workspace/$id', params: { id }, search: {}, replace: true })
+      // Keep the gadget a link to one gadget opens on; drop the rest of the address.
+      if (id) navigate({
+        to: '/workspace/$id',
+        params: { id },
+        search: urlWorkpieceId === null ? {} : { w: urlWorkpieceId },
+        replace: true,
+      })
     },
     onInvalidShareKey: () => {
       toasts.add({ title: 'Invalid or expired share link.', variant: 'error' })
@@ -543,6 +551,12 @@ export default function GadgetEditor() {
   const [activityView, setActivityView] = useState<ActivityView>('history')
   const [activityClosing, setActivityClosing] = useState(false)
   const [shareModalOpen, setShareModalOpen] = useState(false)
+  // The gadget the share dialog shares, or null when it invites people to the whole workspace.
+  const [sharedGadgetId, setSharedGadgetId] = useState<WorkpieceId | null>(null)
+  const openShareModal = (gadgetId: WorkpieceId | null) => {
+    setSharedGadgetId(gadgetId)
+    setShareModalOpen(true)
+  }
   const [blueprintModalOpen, setBlueprintModalOpen] = useState(false)
   const [blueprintUpdateDialogOpen, setBlueprintUpdateDialogOpen] = useState(false)
   const [previewMode, _setPreviewMode] = useState(false)
@@ -1306,18 +1320,47 @@ export default function GadgetEditor() {
   }, [overseer])
 
   // ── selected gadget stub ────────────────────────────────────────────────────────
-  // Open a GadgetClient for the selected workpiece when it is a gadget. getGadget() pipelines on
-  // the overseer stub, so the stub is usable immediately with no extra round trip. (A worktree
-  // has no GadgetClient -- getGadget() would throw -- so `selectedGadgetId` is null for one.)
+  // Open a GadgetClient for the selected workpiece when it is a gadget. Calls on it pipeline, so
+  // the stub is usable immediately with no extra round trip. (A worktree has no GadgetClient --
+  // getGadget() would throw -- so `selectedGadgetId` is null for one.)
+  //
+  // A collaborator given individual gadgets is verified as each one opens, so its account prompts
+  // (and repairs of failed choices) are routed to the picker; the overseer ignores the callback
+  // for everyone else, whom opening the workspace verified. A refusal is kept per gadget, since
+  // failing one leaves the others open.
+  const [gadgetOpenFailure, setGadgetOpenFailure] =
+    useState<{ id: WorkpieceId; message: string } | null>(null)
+  const [gadgetOpenAttempt, setGadgetOpenAttempt] = useState(0)
   useEffect(() => {
     if (!overseer || selectedGadgetId === null) {
       setGadget(null)
       return
     }
-    const stub = overseer.stub.getGadget(selectedGadgetId)
+    const abort = new AbortController()
+    const configureObservers = createObserverConfigCallback(abort.signal)
+    const admission = overseer.stub.getGadget(selectedGadgetId, configureObservers)
+    // Calls go through a duplicate, so awaiting the admission to learn of a refusal, and then
+    // disposing what it resolved to, leaves the stub in use intact.
+    const stub = admission.dup()
     setGadget({ id: selectedGadgetId, stub })
-    return () => { stub[Symbol.dispose]() }
-  }, [overseer, selectedGadgetId])
+    setGadgetOpenFailure(null)
+    admission.then(
+      opened => { opened[Symbol.dispose]() },
+      caught => {
+        if (abort.signal.aborted) return
+        setGadgetOpenFailure({
+          id: selectedGadgetId,
+          message: observerOpenFailureMessage(caught, 'gadget') ?? 'This gadget couldn’t be opened.',
+        })
+      },
+    )
+    return () => {
+      abort.abort()
+      admission[Symbol.dispose]()
+      stub[Symbol.dispose]()
+      configureObservers[Symbol.dispose]()
+    }
+  }, [overseer, selectedGadgetId, createObserverConfigCallback, gadgetOpenAttempt])
 
   // ── follow the agent across gadgets ─────────────────────────────────────────────
   // When the agent starts editing a gadget other than the selected one, switch the picker to it,
@@ -1472,6 +1515,19 @@ export default function GadgetEditor() {
   const TOPBAR_H = 56   // h-14 (matches home page Header)
   const TABBAR_H = 48   // h-12
 
+  // Account prompts can arrive whenever something is opened: the workspace while it loads, or a
+  // gadget once it has, for a collaborator given individual gadgets.
+  const observerConfigModal = observerConfig && (
+    <ObserverConfigModal
+      needs={observerConfig.needs}
+      authenticatedApi={authenticatedApi}
+      onConfirm={observerConfig.resolve}
+      onCancel={cancelObserverConfig}
+    />
+  )
+  // Gone if it was deleted while shared, which closes its dialog.
+  const sharedGadget = sharedGadgetId === null ? undefined : allGadgets.find(g => g.id === sharedGadgetId)
+
   // ── error / loading states ────────────────────────────────────────────────────
   if (error?.kind === 'open') {
     return (
@@ -1509,14 +1565,7 @@ export default function GadgetEditor() {
           <div className="w-8 h-8 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
           <p className="text-sm text-kumo-subtle">Loading workspace…</p>
         </div>
-        {observerConfig && (
-          <ObserverConfigModal
-            needs={observerConfig.needs}
-            authenticatedApi={authenticatedApi}
-            onConfirm={observerConfig.resolve}
-            onCancel={cancelObserverConfig}
-          />
-        )}
+        {observerConfigModal}
       </div>
     )
   }
@@ -1524,16 +1573,24 @@ export default function GadgetEditor() {
   // ── "use"-role collaborators get the minimal UI: top bar + gadget iframe only ──
   if (isUseOnly) {
     return (
-      <GadgetUseView
-        overseer={overseer.stub}
-        gadget={selectedGadgetStub}
-        selectedGadgetId={selectedGadgetId}
-        gadgets={visibleGadgets}
-        onSelectGadget={handleSelectWorkpiece}
-        metadata={metadata}
-        authenticatedApi={authenticatedApi}
-        currentUserId={userInfo?.id ?? null}
-      />
+      <>
+        <GadgetUseView
+          overseer={overseer.stub}
+          gadget={selectedGadgetStub}
+          selectedGadgetId={selectedGadgetId}
+          gadgets={visibleGadgets}
+          onSelectGadget={handleSelectWorkpiece}
+          // A lost connection breaks the stub too; reconnecting reopens the gadget.
+          gadgetOpenFailure={!showReconnecting && gadgetOpenFailure?.id === selectedGadgetId
+            ? gadgetOpenFailure.message
+            : null}
+          onRetryGadget={() => setGadgetOpenAttempt(attempt => attempt + 1)}
+          metadata={metadata}
+          authenticatedApi={authenticatedApi}
+          currentUserId={userInfo?.id ?? null}
+        />
+        {observerConfigModal}
+      </>
     )
   }
 
@@ -1650,11 +1707,11 @@ export default function GadgetEditor() {
           {showReconnecting && <ReconnectingChip />}
 
           <WorkshopIconButton
-            onClick={() => setShareModalOpen(true)}
-            title="Share workspace"
-            aria-label="Share workspace"
+            onClick={() => openShareModal(null)}
+            title="Invite to workspace"
+            aria-label="Invite to workspace"
           >
-            <ShareNetwork size={15} />
+            <UserPlus size={15} />
           </WorkshopIconButton>
 
           <DropdownMenu>
@@ -1811,8 +1868,8 @@ export default function GadgetEditor() {
             <DropdownMenu.Item onClick={() => setIsEditingTitle(true)} className={MENU_ITEM}>
               Rename workspace
             </DropdownMenu.Item>
-            <DropdownMenu.Item onClick={() => setShareModalOpen(true)} className={MENU_ITEM}>
-              Share workspace
+            <DropdownMenu.Item onClick={() => openShareModal(null)} className={MENU_ITEM}>
+              Invite to workspace
             </DropdownMenu.Item>
             {workspaceMute && workspaceMute.workspaceId === id && (
               <WorkspaceNotificationsMenu
@@ -1826,6 +1883,13 @@ export default function GadgetEditor() {
                 desktop header leaves out its full-screen button. */}
             {selectedWorkpieceSummary?.type !== 'worktree' && (
               <>
+                <DropdownMenu.Item
+                  disabled={selectedGadgetSummary === undefined || selectedGadgetSummary.chatId !== undefined}
+                  onClick={() => { if (selectedGadgetSummary) openShareModal(selectedGadgetSummary.id) }}
+                  className={MENU_ITEM}
+                >
+                  Share gadget
+                </DropdownMenu.Item>
                 <DropdownMenu.Item
                   disabled={!selectedGadgetStub}
                   onClick={() => setBlueprintModalOpen(true)}
@@ -2019,6 +2083,18 @@ export default function GadgetEditor() {
                 />
               )}
 
+              {/* A draft belongs to its chat until accepted, and only accepted gadgets can be shared. */}
+              {!paneShowsActivity && selectedGadgetSummary && (
+                <WorkshopIconButton
+                  aria-label="Share gadget"
+                  title={selectedGadgetSummary.chatId === undefined ? 'Share gadget' : 'Accept this draft to share it'}
+                  onClick={() => openShareModal(selectedGadgetSummary.id)}
+                  disabled={selectedGadgetSummary.chatId !== undefined}
+                >
+                  <ShareNetwork size={16} />
+                </WorkshopIconButton>
+              )}
+
               {!paneShowsActivity && selectedWorkpieceSummary?.type !== 'worktree' && (
                 <WorkshopIconButton
                   aria-label="Enter full screen"
@@ -2196,17 +2272,24 @@ export default function GadgetEditor() {
         </div>
       )}
 
-      {/* Share modal */}
+      {/* Share modal. Kept mounted while closed, so an invite still in flight reports back when
+          it is reopened; keyed by what it shares, so nothing carries over between targets. */}
       {overseer && metadata && (
         <>
-          <ShareModal
-            open={shareModalOpen}
-            onClose={() => setShareModalOpen(false)}
-            overseer={overseer.stub}
-            metadata={metadata}
-            currentUser={userInfo}
-            authenticatedApi={authenticatedApi}
-          />
+          {(sharedGadgetId === null || sharedGadget) && (
+            <ShareModal
+              key={`${metadata.id}:${sharedGadgetId ?? 'workspace'}`}
+              open={shareModalOpen}
+              onClose={() => setShareModalOpen(false)}
+              overseer={overseer.stub}
+              metadata={metadata}
+              target={sharedGadget
+                ? { kind: 'gadget', gadgetId: sharedGadget.id, title: sharedGadget.title }
+                : { kind: 'workspace' }}
+              currentUser={userInfo}
+              authenticatedApi={authenticatedApi}
+            />
+          )}
           {selectedGadgetStub && (
             <BlueprintModal
               open={blueprintModalOpen}
@@ -2246,6 +2329,7 @@ export default function GadgetEditor() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDeleteConfirm}
       />
+      {observerConfigModal}
 
     </div>
   )
