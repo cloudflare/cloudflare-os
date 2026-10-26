@@ -132,7 +132,7 @@ jobs:
       # Sets `VITEST_MAX_WORKERS` only when the leg asks: an empty value would count as explicit
       # and leave every suite at vitest's own default.
       # `FAST_CHECK_SEED` pins the property suites' generated cases, so a PR's result depends only on
-      # its code; a local run without it explores a fresh seed each time.
+      # its code.
       - name: Test
         env:
           FILTERS: ${{ matrix.filters }}

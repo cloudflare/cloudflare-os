@@ -2,6 +2,7 @@
 // performs, and each run replays one against the real Workshop over RPC, checked against a small
 // model. Seeds and the shrink time limit come from `src/property-runs.ts`; a failure prints the
 // seed and the shrunk counterexample's path, which replay it when passed to that fc.assert().
+// Scenarios a fixed seed might not reach are pinned as `examples`, which run on every seed.
 //
 // Every run allocates a fresh account (and so a fresh workspace and fixture-gatekeeper label),
 // so runs, and shrink attempts, never see each other's state.
@@ -12,9 +13,11 @@ import * as fc from "fast-check";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber,
-  ActionLogEntry, Overseer, WorkpieceId,
+  ActionLogEntry, CodeChangeSubmission, Overseer, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import { applyCodeChange, diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
+import {
+  applyCodeChange, diffFiles, replaceSpanChange, type CodeChange, type CodeContent,
+} from "@gadgets/workshop-shared/code-change";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import { loadAllChatHistory } from "../src/agent-session.js";
 import {
@@ -44,6 +47,10 @@ afterAll(async () => {
   }
 });
 
+// How long to wait for an effect that takes milliseconds when it happens at all. Far above that,
+// yet short enough that a failing property's shrink attempts each give up quickly.
+const SETTLE_MS = 5_000;
+
 /** A fresh account's new workspace, released with the returned stack. */
 async function freshWorkspace(stack: DisposableStack, prefix: string) {
   const [username] = nextUsernames(prefix);
@@ -59,6 +66,9 @@ async function freshWorkspace(stack: DisposableStack, prefix: string) {
 // entry applies the wrong value, or throws in the fixture.
 
 type Decision = "approve" | "reject" | "leave";
+/** One staged write, and what the user does with it when they reach it (in `rank` order). */
+type Write = { value: number; autoApprovable: boolean; decision: Decision; rank: number };
+type ApprovalScenario = { writes: Write[]; ruleEnabled: boolean; concurrent: boolean };
 
 class ApprovalModel {
   readonly states: ("pending" | "approved" | "rejected")[];
@@ -87,17 +97,30 @@ class ApprovalModel {
   }
 }
 
-const approvalScenario = fc.uniqueArray(fc.integer({ min: -1_000_000, max: 1_000_000 }),
-    { minLength: 1, maxLength: 6 }).chain(values => fc.record({
-  values: fc.constant(values),
+const approvalScenario: fc.Arbitrary<ApprovalScenario> = fc.record({
+  writes: fc.uniqueArray(fc.record({
+    value: fc.integer({ min: -1_000_000, max: 1_000_000 }),
+    autoApprovable: fc.boolean(),
+    decision: fc.constantFrom<Decision>("approve", "reject", "leave"),
+    rank: fc.nat(),
+  }), { minLength: 1, maxLength: 6, selector: write => write.value }),
   ruleEnabled: fc.boolean(),
-  autoApprovable: fc.array(fc.boolean(), { minLength: values.length, maxLength: values.length }),
-  decisions: fc.array(fc.constantFrom<Decision>("approve", "reject", "leave"),
-      { minLength: values.length, maxLength: values.length }),
-  order: fc.shuffledSubarray(values.map((_, i) => i),
-      { minLength: values.length, maxLength: values.length }),
   concurrent: fc.boolean(),
-}));
+});
+
+/**
+ * Deciding a manual write must restart the drain for the auto-approvable writes queued behind it
+ * (the turn-resumption fix, 1200259, lives on this path). Random cases reach it only sometimes.
+ */
+const cascade = (decision: "approve" | "reject"): [ApprovalScenario] => [{
+  writes: [
+    { value: 1, autoApprovable: false, decision, rank: 0 },
+    { value: 2, autoApprovable: true, decision: "leave", rank: 0 },
+    { value: 3, autoApprovable: true, decision: "leave", rank: 0 },
+  ],
+  ruleEnabled: true,
+  concurrent: false,
+}];
 
 async function writesOf(ws: RpcStub<Overseer>, gatekeeperId: number) {
   const writes: (ActionLogEntry & { type: "action" })[] = [];
@@ -116,7 +139,7 @@ const valueOf = (entry: ActionLogEntry) => Number(/^Set the test value to (-?\d+
     .exec(entry.description.title)?.[1]);
 
 it.concurrent("decided writes apply exactly once, to the write the user decided", async () => {
-  await fc.assert(fc.asyncProperty(approvalScenario, async scenario => {
+  await fc.assert(fc.asyncProperty(approvalScenario, async ({ writes, ruleEnabled, concurrent }) => {
     using stack = new DisposableStack();
     const { api, ws } = await freshWorkspace(stack, "approvals");
     await api.provisionAmbientAccount(TEST_VENDOR_ID);
@@ -127,20 +150,19 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
     if (!gatekeeper) throw new Error("Failed to create the test connection");
     const gatekeeperId = await stack.use(gatekeeper).getId();
     const session = stack.use(await gatekeeper.openSession() as RpcStub<TestSession>);
-    if (scenario.ruleEnabled) {
+    if (ruleEnabled) {
       await ws.setAutoApprovedActionKind(gatekeeperId, { tag: "set-value", label: "Set value" });
     }
 
-    const { values } = scenario;
-    const eligible = values.map((_, i) => scenario.ruleEnabled && scenario.autoApprovable[i]!);
-    const write = (i: number) =>
-      session.writeValue(values[i]!, { autoApprovable: scenario.autoApprovable[i] });
+    const values = writes.map(write => write.value);
+    const eligible = writes.map(write => ruleEnabled && write.autoApprovable);
+    const submit = ({ value, autoApprovable }: Write) => session.writeValue(value, { autoApprovable });
     // A gadget may fire its writes concurrently, but the drain then races submission, so the
     // model's "nothing applies past a pending gate" order holds only for sequential submission.
-    if (scenario.concurrent && !scenario.ruleEnabled) {
-      await Promise.all(values.map((_, i) => write(i)));
+    if (concurrent && !ruleEnabled) {
+      await Promise.all(writes.map(submit));
     } else {
-      for (const i of values.keys()) await write(i);
+      for (const write of writes) await submit(write);
     }
 
     const model = new ApprovalModel(values, eligible);
@@ -148,9 +170,9 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
     expect([...idOf.keys()].toSorted()).toEqual(values.toSorted());
 
     const matchesModel = async () => {
-      const writes = await writesOf(ws, gatekeeperId);
-      const states = new Map(writes.map(entry => [valueOf(entry), entry.state]));
-      return values.every((value, i) => states.get(value) === model.states[i]) ? writes : null;
+      const entries = await writesOf(ws, gatekeeperId);
+      const states = new Map(entries.map(entry => [valueOf(entry), entry.state]));
+      return values.every((value, i) => states.get(value) === model.states[i]) ? entries : null;
     };
     const expectFixtureMatches = async () => {
       const pending = values.filter((_, i) => model.states[i] === "pending");
@@ -160,25 +182,27 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
       expect(state.value).toBe(model.applied.at(-1));
     };
 
-    await waitFor("the initial drain", matchesModel, 10_000);
-    for (const i of scenario.order) {
-      const decision = scenario.decisions[i]!;
+    await waitFor("the initial drain", matchesModel, SETTLE_MS);
+    for (const i of [...writes.keys()].toSorted((a, b) => writes[a]!.rank - writes[b]!.rank)) {
+      const { value, decision } = writes[i]!;
       if (eligible[i] || decision === "leave" || model.states[i] !== "pending") continue;
-      const id = idOf.get(values[i]!)!;
+      const id = idOf.get(value)!;
       await (decision === "approve" ? ws.approveAction(id) : ws.rejectAction(id));
       model.decide(i, decision);
-      await waitFor(`the ledger after ${decision} of ${values[i]}`, matchesModel, 10_000);
+      await waitFor(`the ledger after ${decision} of ${value}`, matchesModel, SETTLE_MS);
       await expectFixtureMatches();
     }
 
-    // Give a drain that wrongly skips past a pending gate time to show itself. It runs out of
-    // process (ctx.waitUntil), so only a real delay can show its absence.
-    await sleep(300);
-    const writes = await matchesModel();
-    expect(writes, "ledger states after settling").not.toBeNull();
-    for (const entry of writes!) {
+    // A drain that wrongly skips past a pending gate runs out of process (ctx.waitUntil), so only
+    // a real delay can show it, and only while an eligible write is still held behind a gate.
+    if (eligible.some((isEligible, i) => isEligible && model.states[i] === "pending")) await sleep(300);
+    const entries = await matchesModel();
+    expect(entries, "ledger states after settling").not.toBeNull();
+    for (const entry of entries!) {
       const i = values.indexOf(valueOf(entry));
-      if (model.states[i] === "approved") expect(!!entry.autoApproved).toBe(eligible[i]);
+      if (model.states[i] === "approved") {
+        expect(!!entry.autoApproved, `autoApproved of write ${values[i]}`).toBe(eligible[i]);
+      }
     }
     await expectFixtureMatches();
 
@@ -190,14 +214,13 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
       await expect(ws.rejectAction(id)).rejects.toThrow(`Action is not pending: ${id}`);
       await expectFixtureMatches();
     }
-  }), { ...PROPERTY_RUN_OPTIONS, numRuns: 15 });
+  }), { ...PROPERTY_RUN_OPTIONS, numRuns: 15, examples: [cascade("reject"), cascade("approve")] });
 });
 
 // ---------------------------------------------------------------------------------------------
 // Chats and their attachments: create, reply and delete chats, attaching uploaded files (some
 // shared across messages and chats, some sharing a filename). Every attachment id resolves, to its
-// file's exact bytes, in exactly the chat that holds it, including after its chat is deleted and
-// another chat takes its place.
+// file's exact bytes, in exactly the chat that holds it, and nowhere once its chat is deleted.
 
 type File = { bytes: Uint8Array; mimeType: string; name: string };
 
@@ -302,8 +325,8 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
       }
     }
     // A chat the user starts now holds none of them: every id, live or deleted, must miss there.
-    // Each live id is also tried in one other live chat, and each deleted chat's ids in its old id
-    // (which a later chat may now hold) and every live chat.
+    // Each live id is also tried in one other live chat, and each deleted chat's ids in that chat
+    // and every live one.
     const chatIds = [...live.keys()];
     const fresh = await ws.newChat("Starting over", null);
     for (const [id, chatId] of owner) {
@@ -314,9 +337,9 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
       }
     }
     for (const [chatId, ids] of deleted) {
-      if (!live.has(chatId)) expect((await ws.getChatHistory(chatId)).messages).toEqual([]);
+      expect((await ws.getChatHistory(chatId)).messages).toEqual([]);
       for (const id of ids) {
-        for (const c of new Set([chatId, fresh, ...chatIds])) {
+        for (const c of [chatId, fresh, ...chatIds]) {
           await expect(ws.getChatAttachmentContent(c, id)).rejects.toThrow("Chat attachment not found.");
         }
       }
@@ -325,11 +348,12 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
 });
 
 // ---------------------------------------------------------------------------------------------
-// Code-change submission: two editors type into one chat's draft, each from whatever revision of
-// the change stream it had seen (up to a few behind), and retry a submission as a dropped
-// connection would. However stale the base, every insertion lands exactly once, the original lines
-// keep their order, a retry is acknowledged without being applied again, and accepting the draft
-// commits exactly the text the change stream describes.
+// Code-change submission: two editors insert and delete lines in one chat's draft, each from
+// whatever revision of the change stream it had seen (up to a few behind), and resend their last
+// submission later, as a dropped connection does. However stale the base, the stream numbers its
+// changes 1..n, every surviving line appears exactly once and the original lines keep their order,
+// a resend is acknowledged where it first landed without being applied again, and accepting the
+// draft commits exactly the text the change stream describes.
 
 class ChangeRecorder extends RpcTarget implements AiChatSubscriber {
   readonly applied: { chatId: number; revision: number; change: CodeChange }[] = [];
@@ -356,19 +380,31 @@ const headOf = (workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, after?: st
     const summary = workpieces.summaries.get(gadgetId);
     return summary?.type === "gadget" && summary.commitId !== undefined &&
         summary.commitId !== after ? summary.commitId : null;
-  });
+  }, SETTLE_MS);
 
-const editorOp = fc.record({
-  client: fc.constantFrom("left", "right"),
-  lag: fc.nat({ max: 3 }),
-  at: fc.nat(),
-  retry: fc.boolean(),
-});
+type Client = "left" | "right";
+type EditorOp = { kind: "insert" | "delete" | "resend"; client: Client; lag: number; at: number };
 
-it.concurrent("stale and retried edits converge, and accepting commits the converged text", async () => {
+const editorOp = (kind: fc.Arbitrary<EditorOp["kind"]>): fc.Arbitrary<EditorOp> =>
+  fc.record({ kind, client: fc.constantFrom("left", "right"), lag: fc.nat({ max: 3 }), at: fc.nat() });
+
+// A session opens with an edit, so every run has a draft to accept.
+const editorSession = fc.tuple(
+  editorOp(fc.constant("insert")),
+  fc.array(editorOp(fc.constantFrom("insert", "delete", "resend")), { maxLength: 7 }),
+).map(([first, rest]) => [first, ...rest]);
+
+/** A resend arriving after the other editor's change landed: random cases reach it only sometimes. */
+const resendAfterOther: [number, EditorOp[]] = [2, [
+  { kind: "insert", client: "left", lag: 0, at: 0 },
+  { kind: "insert", client: "right", lag: 0, at: 0 },
+  { kind: "resend", client: "left", lag: 0, at: 0 },
+]];
+
+it.concurrent("stale and resent edits converge, and accepting commits the converged text", async () => {
   await fc.assert(fc.asyncProperty(
       fc.integer({ min: 1, max: SEED_LINES.length }),
-      fc.array(editorOp, { minLength: 1, maxLength: 8 }),
+      editorSession,
       async (seedCount, ops) => {
     using stack = new DisposableStack();
     const { ws } = await freshWorkspace(stack, "editors");
@@ -393,11 +429,15 @@ it.concurrent("stale and retried edits converge, and accepting commits the conve
 
     const chatId = await ws.newChat("Edit together", null);
     const pins = [{ gadgetId, baseCommit: head }];
-    const seqs = { left: 0, right: 0 };
-    const stream = (count: number) => waitFor(`${count} changes to chat ${chatId}`, async () => {
-      const changes = recorder.applied.filter(c => c.chatId === chatId);
-      return changes.length >= count ? changes.toSorted((a, b) => a.revision - b.revision) : null;
-    });
+    // The changes broadcast to this chat, in arrival order, which must number them 1..n.
+    const stream = async (count: number) => {
+      const changes = await waitFor(`${count} changes to chat ${chatId}`, async () => {
+        const all = recorder.applied.filter(c => c.chatId === chatId);
+        return all.length >= count ? all : null;
+      }, SETTLE_MS);
+      expect(changes.map(c => c.revision)).toEqual(changes.map((_, i) => i + 1));
+      return changes;
+    };
     const textAt = (changes: { change: CodeChange }[]) => {
       const text = changes.reduce((content, { change }) => applyCodeChange(content, change),
           files(gadgetId, seed)).get(gadgetId)?.get(PATH);
@@ -405,32 +445,53 @@ it.concurrent("stale and retried edits converge, and accepting commits the conve
       return text;
     };
 
-    const markers: string[] = [];
+    const last = new Map<Client, { submission: CodeChangeSubmission; ack: object }>();
+    const inserted: string[] = [];
+    const deleted = new Set<string>();
     let revision = 0;
-    for (const [i, op] of ops.entries()) {
-      const base = Math.max(0, revision - op.lag);
+    for (const [i, { kind, client, lag, at }] of ops.entries()) {
+      if (kind === "resend") {
+        const prior = last.get(client);
+        if (prior) expect(await ws.submitCodeChange(chatId, prior.submission)).toEqual(prior.ack);
+        continue;
+      }
+      const base = Math.max(0, revision - lag);
       const before = textAt((await stream(revision)).slice(0, base));
       const lines = linesOf(before);
-      const marker = `${op.client} ${i}`;
-      lines.splice(op.at % (lines.length + 1), 0, marker);
-      markers.push(marker);
-      const submission = {
-        generation: 0, revision: base, clientId: op.client, seq: ++seqs[op.client], pins,
-        change: diffFiles(files(gadgetId, before), files(gadgetId, textOf(lines))),
+      // The editor submits its transaction's exact range (CodeEditor.tsx), so edits here are
+      // spans too: a minimal diff could straddle lines and attribute a deletion to its neighbours.
+      let span: { line: number; replaced: string; insert: string };
+      if (kind === "insert") {
+        inserted.push(`${client} ${i}`);
+        span = { line: at % (lines.length + 1), replaced: "", insert: `${inserted.at(-1)}\n` };
+      } else if (lines.length > 0) {
+        const line = at % lines.length;
+        deleted.add(lines[line]!);
+        span = { line, replaced: `${lines[line]}\n`, insert: "" };
+      } else {
+        continue;
+      }
+      const edit = replaceSpanChange(
+          before.length, textOf(lines.slice(0, span.line)).length, span.replaced, span.insert);
+      const submission: CodeChangeSubmission = {
+        generation: 0, revision: base, clientId: client, seq: (last.get(client)?.submission.seq ?? 0) + 1,
+        pins, change: { [gadgetId]: [[PATH, { edit }]] },
       };
       const ack = await ws.submitCodeChange(chatId, submission);
       expect(ack).toEqual({ generation: 0, revision: ++revision });
-      if (op.retry) expect(await ws.submitCodeChange(chatId, submission)).toEqual(ack);
+      last.set(client, { submission, ack });
     }
 
     const converged = textAt(await stream(revision));
     const lines = linesOf(converged);
-    expect(lines.filter(line => !markers.includes(line))).toEqual(seedLines);
-    expect(lines.filter(line => markers.includes(line)).toSorted()).toEqual(markers.toSorted());
+    const survivors = (all: string[]) => all.filter(line => !deleted.has(line));
+    expect(lines.toSorted()).toEqual(survivors([...seedLines, ...inserted]).toSorted());
+    expect(lines.filter(line => seedLines.includes(line))).toEqual(survivors(seedLines));
 
     expect(await ws.mergeChanges(chatId)).toEqual({ outcome: "merged" });
-    const merged = await headOf(workpieces, gadgetId, head);
+    // A draft that nets to no change (a line inserted, then deleted) leaves the head where it was.
+    const merged = converged === seed ? head : await headOf(workpieces, gadgetId, head);
     expect(await ws.readFilesAtCommit(merged, [PATH])).toEqual([[PATH, { kind: "text", text: converged }]]);
     expect(recorder.applied.filter(c => c.chatId === chatId)).toHaveLength(revision);
-  }), { ...PROPERTY_RUN_OPTIONS, numRuns: 15 });
+  }), { ...PROPERTY_RUN_OPTIONS, numRuns: 15, examples: [resendAfterOther] });
 });
