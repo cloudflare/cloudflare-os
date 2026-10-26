@@ -43,6 +43,7 @@ packages/api-cli/src/paths.ts
 packages/workshop-backend/src/overseer.ts
   s_f1ff5bfe7029b1::t_92a96bf74b3a85 5077,5110-5118,11286
   s_f1ff5bfe7029b1::t_ba0de1a7e21f09 497-500,5069-5076,5078-5109,9645,10445,10453,10528,10733,11201-11211,11213,11221-11236,11285,11302,11311,12273,12396,12420-12442,12798,12809,12816,12970-12972
+  s_618859da4442af::t_4be40d1ead3556 3
 packages/api-cli/src/table.ts
   s_f1ff5bfe7029b1::t_afac04ce44072e 81,174-180,195
   s_f1ff5bfe7029b1::t_328d521a35a105 90,93,125,136-160,181,187
@@ -342,12 +343,14 @@ packages/workshop-backend/__tests__/sharing.test.ts
   s_f1ff5bfe7029b1::t_c576b4df6a7440 6,643,645,672,688,719
 packages/workshop-backend/src/server.ts
   s_f1ff5bfe7029b1::t_a0e3e42ff89525 307,342,351-352,359,368,375,379-382,446-447,526,534
+  s_618859da4442af::t_4be40d1ead3556 4
 packages/workshop-backend/src/sharing.ts
   s_f1ff5bfe7029b1::t_15dfb9740da282 26,121,125
 packages/workshop-backend/src/storage-schema/user-storage.ts
   s_f1ff5bfe7029b1::t_705831aa1b53cc 10,116,120
 packages/workshop-backend/src/user.ts
   s_f1ff5bfe7029b1::t_0100b27e0d73a4 133,916-917,926-930,949
+  s_618859da4442af::t_4be40d1ead3556 2
 packages/workshop-frontend/src/Activity.tsx
   s_f1ff5bfe7029b1::t_96c3785f8bd35f 32
 packages/workshop-frontend/src/ActivityNotifications.tsx
@@ -404,6 +407,8 @@ packages/workshop-shared/src/gatekeeper.ts
   s_f1ff5bfe7029b1::t_3a139270cdc423 559-568,1429
 plans/capnweb-api-schema.md
   s_f1ff5bfe7029b1::t_07f21a60c8829c 112,118,126,128-132,165,171-172,176-177,179-181
+packages/workshop-backend/AGENTS.md
+  s_618859da4442af::t_6285c3f517a723 86-88
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -411,6 +416,14 @@ plans/capnweb-api-schema.md
   "base_commit_sha": "6f8595e8d2383497af3063b0be1dede8aede1364",
   "prompts": {},
   "sessions": {
+    "s_618859da4442af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "377587eb-b55b-40b1-be77-d0324be1bbe8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_cbacb0d1b1dbfc": {
       "agent_id": {
         "tool": "claude",
