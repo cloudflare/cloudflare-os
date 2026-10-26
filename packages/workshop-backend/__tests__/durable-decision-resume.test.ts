@@ -82,7 +82,7 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
     instance["storage"].profile.put(USER);
     instance["storage"].aiModels.put(MODEL);
   });
-  await user.newGadget(stub.id.toString(), "Resume");
+  await user.newWorkspace(stub.id.toString(), "Resume");
   const visit = <T>(fn: (impl: Impl) => T | Promise<T>) =>
     runInDurableObject(env.TEST_OVERSEER.get(stub.id), ({impl}) => fn(impl));
   await visit(impl => {
