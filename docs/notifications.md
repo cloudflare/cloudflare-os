@@ -150,7 +150,8 @@ flowchart LR
     Candidates[(chatNotifications: stable event IDs)]
     SourceDirty[(dirtyChats)]
     User[User Durable Object]
-    Cursor[(chatReadCursors: counts, dirty bits, notifiedThroughSequence)]
+    Cursor[(chatReadCursors: visible horizons, count, delivery receipt)]
+    Outbox[(notificationOutbox: accepted alert payloads)]
     Browser[Visible browser subscriber]
     Key[Install signing private key]
   end
@@ -171,13 +172,13 @@ flowchart LR
   Agent -->|completed or needs permission| Workspace
   Workspace -->|record eligibility at timeline sequence| Candidates
   Workspace -->|commit with timeline change| SourceDirty
-  SourceDirty -->|messageArrived; retain until ACK| User
-  User -->|persist dirty intent before ACK| Cursor
-  User -->|fetch count and candidates after notification horizon| Workspace
-  User -->|commit absolute unread count| Cursor
+  SourceDirty -->|authorized visible head + eligible alerts; retain until ACK| User
+  User -->|commit absolute unread count before ACK| Cursor
+  User -->|same transaction before ACK| Outbox
+  Outbox -->|local drain and retry; no source fetch| User
   User -->|visible client first| Browser
   Browser -->|presentation acknowledged| User
-  User -->|advance notifiedThroughSequence after delivery or policy skip| Cursor
+  User -->|delete alert + advance receipt after delivery or skip| Cursor
   User -->|fallback if no acknowledgement| Delivery
   Key -->|sign request locally| User
   Delivery -->|validate install and subscription| Registry
@@ -187,6 +188,16 @@ flowchart LR
   Delivery -->|encrypted Web Push| WebPush
   WebPush --> Worker
 ```
+
+The workspace assigns persisted dense visible positions, so the User DO calculates counts by
+subtraction rather than querying message history. The workspace checks admission before fanout;
+denied fanout attempts skip that recipient, rather than parking work on the User DO. A settled
+partial failure stores only failed recipients on the source dirty row; ACKed and denied users
+are not retried. A crash before that checkpoint can replay the batch, with recipient deduplication
+protecting accepted updates. The all-success path writes no recipient checkpoint. Accepted alerts
+retry from the user's durable queue with the same UUID after eviction or a lost ACK. The retained completed-delivery
+receipt prevents re-enqueueing an already delivered alert on a source retry. See
+[user-owned unread state](user-unread-state.md) for the handoff and deletion boundaries.
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
 subscription id, opaque User DO subject, and same-origin deep-link path cross the central boundary

@@ -379,11 +379,10 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
 }
 
-/** Version 6 -> 7: identify old threads without scanning or initializing any user's history. */
+/** Version 6 -> 7: enable forward-only unread tracking without backfilling history. */
 export function migrateToUnreadTracking(host: OverseerMigrationHost): void {
   if (host.storage.version.get() !== 6) return;
   host.ctx.storage.transactionSync(() => {
-    host.storage.legacyUnreadChatIdLimit.put(host.storage.nextChatId.get());
     host.storage.version.put(7);
   });
 }

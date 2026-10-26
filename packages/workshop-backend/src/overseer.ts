@@ -18,7 +18,7 @@ import {
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
-  type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
+  type ChatChangeBoundaryRecord, type ChatChangeRecord, type ChatFanoutStart, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
   type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
@@ -110,6 +110,13 @@ const logger = createWorkshopLogger("workshop.overseer");
 function isCountableChatMessage(message: StoredChatMessage): boolean {
   return message.type === "message" && message.generatedBySlashCommandSequence === undefined &&
     (!!message.message.trim() || !!message.attachments?.length);
+}
+
+function mergeChatFanoutStarts(left: ChatFanoutStart | undefined, right: ChatFanoutStart): ChatFanoutStart {
+  let raw = Math.min(left?.firstMessageSequence ?? Infinity, right.firstMessageSequence ?? Infinity);
+  let visible = Math.min(left?.firstVisibleSequence ?? Infinity, right.firstVisibleSequence ?? Infinity);
+  return {firstMessageSequence: raw === Infinity ? undefined : raw,
+    firstVisibleSequence: visible === Infinity ? undefined : visible};
 }
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
@@ -1110,16 +1117,21 @@ class OverseerImpl implements AgentHooks {
   }
 
   #unreadRetryAt = 0;
-  #dirtyChatTokens = new Map<number, object>();
+  #dirtyChatTokens = new Map<number, ChatFanoutStart>();
   #chatDeliveries = new Map<number, Promise<void>>();
 
   // Called by pre-write storage hooks: journal only; read committed data in a microtask.
-  markChatDirty(chatId: number, firstMessageSequence?: number): void {
+  markChatDirty(chatId: number, firstMessageSequence?: number, firstVisibleSequence?: number): void {
     if (!this.ownerId) return;
-    this.#dirtyChatTokens.set(chatId, {});
+    let incoming = {firstMessageSequence, firstVisibleSequence};
+    this.#dirtyChatTokens.set(chatId, mergeChatFanoutStarts(this.#dirtyChatTokens.get(chatId), incoming));
     let pending = this.storage.dirtyChats.get(chatId);
-    if (!pending || (pending.firstMessageSequence === undefined && firstMessageSequence !== undefined)) {
-      this.storage.dirtyChats.put({chatId, firstMessageSequence: pending?.firstMessageSequence ?? firstMessageSequence});
+    let start = mergeChatFanoutStarts(pending?.retryOnly ? undefined : pending, incoming);
+    if (!pending || pending.retryOnly || start.firstMessageSequence !== pending.firstMessageSequence ||
+        start.firstVisibleSequence !== pending.firstVisibleSequence) {
+      let updated = {...pending, chatId, ...start};
+      delete updated.retryOnly;
+      this.storage.dirtyChats.put(updated);
     }
     // Arm alongside the dirty write, before any RPC/microtask. Do not enumerate collections
     // here: this hook may run inside a caller's live storage iterator.
@@ -1139,26 +1151,75 @@ class OverseerImpl implements AgentHooks {
   deliverDirtyChats(): Promise<void> {
     if (!this.#chatDeliveries.size) this.#unreadRetryAt = Date.now() + 30_000;
     this.#updateAlarm();
-    // Close the iterator before callbacks can mutate it. Coalesce per thread so a stalled alert
-    // cannot block other threads, including those dirtied after this pass starts.
-    let deliveries = Array.from(this.storage.dirtyChats.list()).map(({chatId, firstMessageSequence}) => {
+    // Close the iterator before callbacks can mutate it. Coalesce per thread so a stalled
+    // recipient cannot block other threads, including those dirtied after this pass starts.
+    let deliveries = Array.from(this.storage.dirtyChats.list()).map(({chatId}) => {
       let pending = this.#chatDeliveries.get(chatId);
       if (pending) return pending;
-      let token = this.#dirtyChatTokens.get(chatId);
       let delivery = (async () => {
         let ownerId = this.ownerId;
         if (!ownerId) return;
         let sharing = await this.getSharingManager();
-        let recipients = new Set([ownerId, ...sharing.listCollaborators()
+        let recipients = new Map([[ownerId, ""], ...sharing.listCollaborators()
           .filter(reader => reader.role === "build")
-          .map(reader => this.users.idFromName(reader.profile.id).toString())]);
-        let results = await Promise.allSettled([...recipients].map(userId =>
-          this.users.get(this.users.idFromString(userId))
-            .messageArrived(this.ctx.id.toString(), chatId,
-              chatId < this.storage.legacyUnreadChatIdLimit.get() ? firstMessageSequence ?? null : undefined)));
+          .map(reader => [this.users.idFromName(reader.profile.id).toString(), reader.profile.id] as const)]);
+        let dirty = this.storage.dirtyChats.get(chatId)!;
+        // Mutations after this snapshot accumulate their own start without another write on
+        // the successful path. Until checkpoint, the durable row still covers the whole batch.
+        let token: ChatFanoutStart = {};
+        this.#dirtyChatTokens.set(chatId, token);
+        let targets = new Map<string, ChatFanoutStart>();
+        if (!dirty.retryOnly) {
+          let start = mergeChatFanoutStarts(undefined, dirty);
+          for (let userId of recipients.keys()) targets.set(userId, start);
+        }
+        for (let failed of dirty.failedRecipients ?? []) {
+          if (recipients.has(failed.userId)) {
+            targets.set(failed.userId, mergeChatFanoutStarts(targets.get(failed.userId), failed));
+          }
+        }
+        let meta = this.storage.chatMeta.get(chatId);
+        let latestVisibleSequence = this.storage.nextChatSequences.get(chatId)?.visibleThroughSequence ?? 0;
+        // Read this pending batch once, not all historical candidates once per recipient.
+        let firstMessage = [...targets.values()].reduce((earliest, start) =>
+          Math.min(earliest, start.firstMessageSequence ?? Infinity), Infinity);
+        let notifications = !meta || firstMessage === Infinity ? [] :
+          [...this.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId),
+            start: chatKey(chatId, firstMessage)})];
+        let entries = [...targets];
+        let results = await Promise.allSettled(entries.map(async ([userId, start]) => {
+          // Admission belongs to the source. Accepted alerts are delivery intent owned by the
+          // recipient; retries need neither a source read nor a new authorization decision.
+          if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!)) return;
+          await this.users.get(this.users.idFromString(userId)).messageArrived(
+            this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence,
+              notifications: notifications.filter(event => event.userId === userId &&
+                start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
+                .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null);
+        }));
+        let failedRecipients = entries.flatMap(([userId, start], index) =>
+          results[index].status === "rejected" ? [{userId, ...start}] : []);
+        let newer = this.#dirtyChatTokens.get(chatId)!;
+        if (newer !== token || failedRecipients.length) {
+          // ACKed/denied users are not retried. New broadcasts still reach everyone, while
+          // failures alone retain older work. Eviction before this write can replay the batch.
+          if (newer !== token || !dirty.retryOnly || failedRecipients.length !== dirty.failedRecipients?.length ||
+              failedRecipients.some((failed, index) => {
+                let old = dirty.failedRecipients?.[index];
+                return !old || failed.userId !== old.userId || failed.firstMessageSequence !== old.firstMessageSequence ||
+                  failed.firstVisibleSequence !== old.firstVisibleSequence;
+              })) {
+            this.storage.dirtyChats.put({chatId, ...newer,
+              ...(newer === token ? {retryOnly: true as const} : {}),
+              ...(failedRecipients.length ? {failedRecipients} : {})});
+          }
+        } else {
+          this.storage.dirtyChats.delete(chatId);
+          this.#dirtyChatTokens.delete(chatId);
+        }
+        // A fresh broadcast must not wait behind the older failed recipients' retry backoff.
+        if (newer !== token) this.#unreadRetryAt = 0;
         for (let result of results) if (result.status === "rejected") throw result.reason;
-        // A newer mutation during the RPCs remains dirty. Reset recovery also retains the bit.
-        if (this.#dirtyChatTokens.get(chatId) === token) this.storage.dirtyChats.delete(chatId);
       })().finally(() => { this.#chatDeliveries.delete(chatId); });
       this.#chatDeliveries.set(chatId, delivery);
       return delivery;
@@ -1200,11 +1261,28 @@ class OverseerImpl implements AgentHooks {
   }
 
   #initializeUnreadTracking(): void {
+    // These hooks run inside the collection's synchronous write transaction, before it stores
+    // the incoming record. Stamp every new record (including non-visible records) so a read
+    // command can translate its raw timeline boundary with one indexed seek, not a tail scan.
+    const stamp = (message: StoredChatMessage, old?: StoredChatMessage) => {
+      if (old) { message.visibleThroughSequence = old.visibleThroughSequence; return; }
+      if (!this.ownerId) return;
+      let counter = this.storage.nextChatSequences.get(message.chatId) ?? {chatId: message.chatId, nextSequence: 0};
+      let visible = counter.visibleThroughSequence ?? 0;
+      if (isCountableChatMessage(message)) visible++;
+      if (counter.trackingStartSequence === undefined || visible !== counter.visibleThroughSequence) {
+        this.storage.nextChatSequences.put({...counter, visibleThroughSequence: visible,
+          trackingStartSequence: counter.trackingStartSequence ?? message.sequence});
+      }
+      message.visibleThroughSequence = visible;
+    };
     this.storage.chats.subscribe({
       add: message => {
-        if (isCountableChatMessage(message)) this.markChatDirty(message.chatId, message.sequence);
+        stamp(message);
+        if (isCountableChatMessage(message)) this.markChatDirty(message.chatId, message.sequence, message.visibleThroughSequence);
       },
       update: (old, message) => {
+        stamp(message, old);
         if (isCountableChatMessage(old) || isCountableChatMessage(message)) {
           this.markChatDirty(message.chatId, isCountableChatMessage(old) ? undefined : message.sequence);
         }
@@ -1218,7 +1296,7 @@ class OverseerImpl implements AgentHooks {
     });
     this.storage.chatNotifications.subscribe({
       add: event => this.markChatDirty(event.chatId, event.sequence),
-      update: (_old, event) => this.markChatDirty(event.chatId),
+      update: (_old, event) => this.markChatDirty(event.chatId, event.sequence),
       remove: () => {},
     });
     if ([...this.storage.dirtyChats.list({limit: 1})].length) {
@@ -6716,8 +6794,9 @@ class OverseerImpl implements AgentHooks {
 
   // Get the sequence number that should be assigned to the next message in the given chat thread.
   nextChatSequence(chatId: number): number {
-    let result = this.storage.nextChatSequences.get(chatId)?.nextSequence || 0;
-    this.storage.nextChatSequences.put({chatId, nextSequence: result + 1});
+    let counter = this.storage.nextChatSequences.get(chatId);
+    let result = counter?.nextSequence ?? 0;
+    this.storage.nextChatSequences.put({...counter, chatId, nextSequence: result + 1});
     return result;
   }
 
@@ -10766,38 +10845,21 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return [...this.impl.storage.chatMeta.list()].flatMap(meta => this.impl.chatHead(meta.id) ?? []);
   }
 
-  /** Read count/candidates; null skips work, undefined initializes a legacy horizon in this RPC. */
-  async getChatStateForUser(userId: string, profileId: string, chatId: number,
-      readThroughSequence: number | null | undefined, notifiedThroughSequence: number | null | undefined,
-      firstMessageSequence?: number) {
+  /** Translate an explicit UI read boundary with one indexed seek, never an unread-tail scan. */
+  async getChatReadPositionForUser(userId: string, profileId: string, chatId: number, readThroughSequence: number) {
     if (!this.impl.ownerId) return null;
     if (!await this.impl.mayReadChatState(userId, profileId)) return "denied" as const;
     let meta = this.impl.storage.chatMeta.get(chatId);
     if (!meta) return null;
-    let initialHorizon: number | undefined;
-    if (firstMessageSequence !== undefined) {
-      initialHorizon = -1;
-      for (let message of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId),
-        end: chatKey(chatId, firstMessageSequence), reverse: true})) {
-        if (isCountableChatMessage(message)) { initialHorizon = message.sequence; break; }
-      }
-    }
-    if (readThroughSequence === undefined) readThroughSequence = initialHorizon ?? -1;
-    if (notifiedThroughSequence === undefined) notifiedThroughSequence = initialHorizon ?? -1;
-    let notifications = notifiedThroughSequence === null ? [] : [...this.impl.storage.chatNotifications.list({
-      prefix: chatKeyPrefix(chatId),
-      startAfter: notifiedThroughSequence < 0 ? undefined : chatKey(chatId, notifiedThroughSequence),
-    })].filter(event => event.userId === userId);
-    let unreadCount: number | undefined;
-    if (readThroughSequence !== null) {
-      unreadCount = 0;
-      for (let message of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId),
-        startAfter: readThroughSequence < 0 ? undefined : chatKey(chatId, readThroughSequence)})) {
-        if (isCountableChatMessage(message)) unreadCount++;
-      }
-    }
-    return {chatTitle: meta.title, notifications, unreadCount, initialHorizon,
-      timelineTailSequence: this.impl.nextChatSequencePeek(chatId) - 1};
+    let tail = this.impl.nextChatSequencePeek(chatId) - 1;
+    if (readThroughSequence > tail) throw new Error("Invalid timeline sequence.");
+    // Old records intentionally have no ordinal; new non-visible records carry the prefix too.
+    let [message] = readThroughSequence < 0 ? [] : this.impl.storage.chats.list({
+      prefix: chatKeyPrefix(chatId), end: chatKey(chatId, readThroughSequence + 1), reverse: true, limit: 1});
+    let counter = this.impl.storage.nextChatSequences.get(chatId);
+    return {readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
+      latestVisibleSequence: counter?.visibleThroughSequence ?? 0, timelineTailSequence: tail,
+      notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1};
   }
 
   /**
@@ -10916,6 +10978,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // subsequent arrivals fan out normally once the User DO has recorded the listing.
       let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
+        readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
       void (async () => {
         try {
@@ -11882,8 +11945,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       .filter(reader => reader.role === "build")
       .map(reader => this.impl.users.idFromName(reader.profile.id).toString())]);
     await this.impl.ctx.blockConcurrencyWhile(async () => {
-      // These RPCs only journal dirty intent and return, never await a source recount. The input
-      // gate holds their background recounts until deletion commits; their own alarms survive us.
+      // Recipients remove their listing, counts and accepted alerts locally. No source callback
+      // is needed while this input gate fences deletion against new work.
       await Promise.all([...readers].map(id => this.impl.users.get(this.impl.users.idFromString(id))
         .workspaceRemoved(this.impl.ctx.id.toString())));
       await this.#owner.deleteWorkspace(this.impl.ctx.id.toString());

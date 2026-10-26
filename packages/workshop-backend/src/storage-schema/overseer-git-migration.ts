@@ -526,7 +526,7 @@ function convertLegacyChat(
   // empty boundary carries no change and no pins, and proposes nothing (see foldProposedChanges).
   let sequenceRecord = storage.nextChatSequences.get(meta.id);
   let sequence = sequenceRecord?.nextSequence ?? 0;
-  storage.nextChatSequences.put({ chatId: meta.id, nextSequence: sequence + 1 });
+  storage.nextChatSequences.put({ ...sequenceRecord, chatId: meta.id, nextSequence: sequence + 1 });
   let createdGadgets = carriedPending.map(id => {
     // Pre-v4 rows are all gadgets (see the heads loop above for why this is a cast).
     let gadget = storage.gadgets.get(id)! as GadgetRecord;

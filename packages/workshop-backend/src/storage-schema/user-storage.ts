@@ -7,8 +7,9 @@
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId,
+  WorkspaceMetadata, WorkpieceId, UserNotification,
 } from "@gadgets/workshop-shared/api";
+import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
 
@@ -120,17 +121,25 @@ export type GadgetRecord = WorkspaceMetadata & {
   // WorkspaceMetadata).
 };
 
-/** Private per-thread consumption state. Counts can be rebuilt from the horizon. */
+/** Private per-thread read state and the receipt for completed notification delivery. */
 export type ChatReadCursor = {
   workspaceId: string;
   chatId: number;
   readThroughSequence: number;
+  /** Dense visible position corresponding to the raw read horizon; absent on prototype cursors. */
+  readThroughVisibleSequence?: number;
+  /** Latest delivered dense visible position, monotonic even when source deliveries repeat. */
+  latestVisibleSequence?: number;
   unreadCount: number;
   notifiedThroughSequence: number;
-  unreadDirty?: true;
-  notificationsDirty?: true;
-  /** A legacy thread's pending first message; removed once both initial horizons are committed. */
-  firstMessageSequence?: number;
+  /** Reject delayed pre-deletion handoffs. Chat IDs are never reused. */
+  deleted?: true;
+};
+
+/** An accepted alert awaiting delivery or an intentional policy skip. */
+export type QueuedChatNotification = UserNotification & {
+  /** Original timeline position, independent of the visible-message count. */
+  sequence: number;
 };
 
 /**
@@ -170,6 +179,9 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
+      notificationOutbox: collection<QueuedChatNotification>()({
+        primaryKey: event => `${event.workspaceId}:${chatKey(event.chatId, event.sequence)}`,
+      }),
       chatReadCursors: collection<ChatReadCursor>()({
         primaryKey: record => `${record.workspaceId}:${record.chatId}`,
         nonUniqueIndexes: {
