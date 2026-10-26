@@ -94,7 +94,7 @@ async function instantiate(blueprintId: string, metadata: BlueprintMetadata)
     let impl = (instance as unknown as { impl: any }).impl;
     let owner = {
       whoami: async () => ({ type: "user", id: "olive@example.com", name: "Olive" }),
-      setGadgetLastActive: async () => {},
+      setWorkspaceLastActive: async () => {},
     };
     impl.ownerId = "owner-user-do";
     impl.users = { idFromString: (id: string) => id, get: () => owner };

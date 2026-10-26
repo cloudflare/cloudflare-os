@@ -563,17 +563,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Called by the overseer every time a collaborator opens a shared gadget.
+   * Called by the overseer every time a collaborator opens a shared workspace.
    * Creates the record on first open; updates lastActive on subsequent opens.
    *
    * `role` is cached so listings built from this DO can offer the actions it permits without
    * reopening the workspace to ask. Presentation only: every operation is still authorized by the
    * Overseer when attempted.
    */
-  async recordSharedGadgetOpen(
-      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
+  async recordSharedWorkspaceOpen(
+      workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
   ): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
@@ -586,9 +586,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       record.role = role;
       this.storage.gadgets.put(record);
     } else {
-      // First time opening this shared gadget.
+      // First time opening this shared workspace.
       this.storage.gadgets.put({
-        id: gadgetId,
+        id: workspaceId,
         title,
         owner: ownerProfile,
         role,
@@ -603,23 +603,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * comes from the Overseer's live sharing graph; this only keeps the listing's available actions
    * accurate after a collaborator is downgraded.
    */
-  async updateSharedGadgetRole(gadgetId: string, role: CollaboratorRole): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateSharedWorkspaceRole(workspaceId: string, role: CollaboratorRole): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
   }
 
   /**
-   * Forgets a gadget shared with this user: drops it from their workspace listing and its outputs
+   * Forgets a workspace shared with this user: drops it from their workspace listing and its outputs
    * from their Outputs index. Called both when the user dismisses it and when their access is
    * revoked (Overseer.refreshAffectedCollaboratorListings()); it grants and revokes nothing.
    */
-  async forgetSharedGadget(gadgetId: string): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async forgetSharedWorkspace(workspaceId: string): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && record.owner) {
-      this.storage.gadgets.delete(gadgetId);
-      this.storage.outputs.byWorkspace.delete(gadgetId);
+      this.storage.gadgets.delete(workspaceId);
+      this.storage.outputs.byWorkspace.delete(workspaceId);
     }
   }
 
@@ -913,18 +913,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
   }
 
-  async listGadgets(): Promise<WorkspaceMetadataWithTimestamps[]> {
+  async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {
     let result: WorkspaceMetadataWithTimestamps[] = [];
-    for (let gadget of this.storage.gadgets.list()) {
-      if (isFullyCreated(gadget)) {
-        result.push(gadget);
+    for (let workspace of this.storage.gadgets.list()) {
+      if (isFullyCreated(workspace)) {
+        result.push(workspace);
       }
     }
     return result;
   }
 
-  async updateTitle(gadgetId: string, title: string) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateTitle(workspaceId: string, title: string) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -932,8 +932,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async updatePinned(gadgetId: string, pinned: boolean) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updatePinned(workspaceId: string, pinned: boolean) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -941,32 +941,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async getGadget(id: string): Promise<WorkspaceMetadata | null> {
+  async getWorkspace(id: string): Promise<WorkspaceMetadata | null> {
     return this.storage.gadgets.get(id) || null;
   }
 
-  async newGadget(id: string, title: string): Promise<void> {
+  async newWorkspace(id: string, title: string): Promise<void> {
     let created = new Date();
     this.storage.gadgets.put({id, title, created});
   }
 
-  async ensureGadgetRegistered(id: string, title: string): Promise<void> {
+  async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {
     if (this.storage.gadgets.get(id)) return;
-    await this.newGadget(id, title);
+    await this.newWorkspace(id, title);
   }
 
-  async setGadgetLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
-    let gadget = this.storage.gadgets.get(id);
-    if (gadget) {
-      gadget.lastActive = time;
+  async setWorkspaceLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
+    let workspace = this.storage.gadgets.get(id);
+    if (workspace) {
+      workspace.lastActive = time;
       if (totalCost) {
-        gadget.totalCost = totalCost;
+        workspace.totalCost = totalCost;
       }
-      this.storage.gadgets.put(gadget);
+      this.storage.gadgets.put(workspace);
     }
   }
 
-  async deleteGadget(id: string): Promise<void> {
+  async deleteWorkspace(id: string): Promise<void> {
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
   }

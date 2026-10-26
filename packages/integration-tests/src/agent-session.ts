@@ -505,7 +505,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   }
 
   // The Workshop aborts a session on purpose when it loses its workspace DO (server.ts,
-  // #openGadgetInternal) and the browser reconnects (main.tsx); the DO itself resumes the
+  // #openWorkspaceInternal) and the browser reconnects (main.tsx); the DO itself resumes the
   // interrupted turn. This client does the same, so a turn is judged on what the product did
   // rather than on the socket. Without it the first eval run sat on a dead socket for the whole
   // 28-minute budget with zero model turns.

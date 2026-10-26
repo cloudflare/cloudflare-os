@@ -101,7 +101,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
       listGatekeeperVendors: async () => [],  // asked at the start of every agent turn
       updateBlueprint: async () => false,  // not featured
       deleteBlueprint: async () => {},
-      setGadgetLastActive: async () => {},
+      setWorkspaceLastActive: async () => {},
     };
     impl.users = { idFromString: (id: string) => id, get: () => owner };
     // Disposed with the session: the session holds a duplicate of the stub until then.

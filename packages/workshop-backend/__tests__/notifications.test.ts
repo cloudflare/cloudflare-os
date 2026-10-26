@@ -210,7 +210,7 @@ describe("UserDurableObject notifications", () => {
     let offered: string[] = [];
     let { workspaceId } = NOTIFICATION;
     await inUser(async user => {
-      await user.newGadget(workspaceId, NOTIFICATION.chatTitle);
+      await user.newWorkspace(workspaceId, NOTIFICATION.chatTitle);
       await user.registerNotificationDevice("a".repeat(64));
       // A hidden tab: offered everything, shows nothing, so each offer also falls back to push.
       await user.subscribeToNotifications(new RpcStub(new Subscriber(async notification => {

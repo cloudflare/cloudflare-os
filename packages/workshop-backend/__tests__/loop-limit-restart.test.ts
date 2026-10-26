@@ -67,7 +67,7 @@ function rejectUserCalls(impl: any, error: unknown): string[] {
   };
   let user = {
     id: { toString: () => OWNER_ID },
-    setGadgetLastActive: reject("setGadgetLastActive"),
+    setWorkspaceLastActive: reject("setWorkspaceLastActive"),
     syncWorkspaceOutputs: reject("syncWorkspaceOutputs"),
     listProvidedAccounts: reject("listProvidedAccounts"),
     listModels: reject("listModels"),
@@ -101,7 +101,7 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     impl.bumpLastActive();
     await settle();
 
-    expect(calls).toEqual(["setGadgetLastActive"]);
+    expect(calls).toEqual(["setWorkspaceLastActive"]);
     expect(restarts).toEqual([RESTART_REASON]);
     // The restart is an error-level event carrying the rejection; the bump's own failure log is
     // still written.
@@ -224,7 +224,7 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     impl.bumpLastActive();
     await settle();
 
-    expect(calls).toEqual(["syncWorkspaceOutputs", "listProvidedAccounts", "setGadgetLastActive"]);
+    expect(calls).toEqual(["syncWorkspaceOutputs", "listProvidedAccounts", "setWorkspaceLastActive"]);
     expect(restarts).toEqual([]);
     expect(logged(errors, "workspace.loop.limit.restart")).toEqual([]);
 

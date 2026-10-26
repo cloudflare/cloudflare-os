@@ -960,7 +960,7 @@ describe("gadget facet stubs count as sessions", () => {
                get: () => ({
                  id: { toString: () => "viewer-user-do" },
                  whoami: async () => ({ type: "user", id: "viewer", name: "Viewer" }),
-                 recordSharedGadgetOpen: async () => {},
+                 recordSharedWorkspaceOpen: async () => {},
                }) },
     } });
     let child = await client.getGadget(100);

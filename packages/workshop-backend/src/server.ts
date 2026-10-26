@@ -285,7 +285,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return resolveUiFeatureFlags(this.env, this.#userId.name!);
   }
 
-  async #openGadgetInternal(id: string, shareKey?: string,
+  async #openWorkspaceInternal(id: string, shareKey?: string,
                             configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<NativeRpcStub<Overseer>> {
     let userId = this.#userId.toString();
@@ -330,7 +330,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       // (refreshAffectedCollaboratorListings), but that push is best-effort. Only catches entries
       // they click; others stay frozen at revocation, as a disconnected collaborator gets no pushes.
       if (getOpenWorkspaceErrorCode(err) === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied) {
-        await this.#user.forgetSharedGadget(id);
+        await this.#user.forgetSharedWorkspace(id);
       }
       throw err;
     }
@@ -343,12 +343,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       : Promise<RpcStub<Overseer>> {
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openGadgetInternal(id, shareKey, configureObservers);
+    return this.#openWorkspaceInternal(id, shareKey, configureObservers);
   }
 
   async newWorkspace(): Promise<RpcStub<Overseer>> {
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newGadget(id, "Untitled Workspace");
+    await this.#user.newWorkspace(id, "Untitled Workspace");
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
       user_id: this.#userId.toString(),
@@ -363,7 +363,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {
-    return retryOnDoReset(() => this.#user.listGadgets());
+    return retryOnDoReset(() => this.#user.listWorkspaces());
   }
 
   async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
@@ -430,7 +430,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async dismissSharedWorkspace(workspaceId: string): Promise<void> {
-    return this.#user.forgetSharedGadget(workspaceId);
+    return this.#user.forgetSharedWorkspace(workspaceId);
   }
 
   async listOwnBlueprints(): Promise<BlueprintUserSummary[]> {
@@ -519,8 +519,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     // 2. Create new Overseer DO (same as newWorkspace()).
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newGadget(id, kvRecord.metadata.title);
-    let overseerResult = await this.#openGadgetInternal(id);
+    await this.#user.newWorkspace(id, kvRecord.metadata.title);
+    let overseerResult = await this.#openWorkspaceInternal(id);
 
     // 3. Initialize from the blueprint's code. The Overseer reads it for itself, as the version
     //    this metadata describes, so that it is the code the bindings assigned below belong to.

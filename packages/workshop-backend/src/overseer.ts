@@ -1250,7 +1250,7 @@ class OverseerImpl implements AgentHooks {
     // Mirror every gadget-registry change into the owner's outputs index. Subscribing here makes
     // the registry the single chokepoint, so creation, acceptance, renaming, reverting and
     // deletion all propagate without each call site remembering to. (Workspace deletion is handled
-    // by UserDurableObject.deleteGadget(), which drops the whole workspace's entries.)
+    // by UserDurableObject.deleteWorkspace(), which drops the whole workspace's entries.)
     this.storage.gadgets.subscribe({
       add: () => this.markOutputsDirty(),
       update: () => this.markOutputsDirty(),
@@ -6068,7 +6068,7 @@ class OverseerImpl implements AgentHooks {
       let owner = this.users.get(this.users.idFromString(this.ownerId));
 
       this.#lastActiveTimeKnownToUserDo = this.#lastActiveTimeKnownToUs!;
-      await owner.setGadgetLastActive(this.ctx.id.toString(), this.#lastActiveTimeKnownToUs!,
+      await owner.setWorkspaceLastActive(this.ctx.id.toString(), this.#lastActiveTimeKnownToUs!,
                                       this.storage.totalCost.get());
     } catch (err) {
       this.logger.warn("failed to bump gadget last-active on user DO", {
@@ -9865,8 +9865,8 @@ class OverseerImpl implements AgentHooks {
       let results = await Promise.allSettled(batch.map(entry => {
         let user = this.users.get(this.users.idFromName(entry.profile.id));
         return entry.newRole === null
-          ? user.forgetSharedGadget(gadgetId)
-          : user.updateSharedGadgetRole(gadgetId, entry.newRole);
+          ? user.forgetSharedWorkspace(gadgetId)
+          : user.updateSharedWorkspaceRole(gadgetId, entry.newRole);
       }));
       for (let j = 0; j < results.length; j++) {
         let result = results[j];
@@ -10373,7 +10373,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
-   * by AuthenticatedApiImpl.#openGadgetInternal() to detect Durable Object disconnects.
+   * by AuthenticatedApiImpl.#openWorkspaceInternal() to detect Durable Object disconnects.
    */
   async open(userId: string, profileId: string,
              notifyClosed: NativeRpcStub<() => void>,
@@ -10386,7 +10386,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         // Verify that the owner believes it exists. The owner account must be initialized with
         // any new gadgets first before the gadget is actually opened.
         let owner = this.impl.users.get(this.impl.users.idFromString(userId));
-        let meta = await owner.getGadget(this.ctx.id.toString());
+        let meta = await owner.getWorkspace(this.ctx.id.toString());
         if (!meta) {
           throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
         }
@@ -10482,7 +10482,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          await clientUser.recordSharedGadgetOpen(gadgetId, title, ownerProfile, role);
+          await clientUser.recordSharedWorkspaceOpen(gadgetId, title, ownerProfile, role);
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,
@@ -10609,7 +10609,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // Complete pending registration in the owner's UserDO.
     if (this.impl.storage.ownerRegistrationPending.get()) {
       let owner = this.impl.users.get(this.impl.users.idFromString(ownerId));
-      await owner.ensureGadgetRegistered(this.ctx.id.toString(), this.impl.storage.title.get());
+      await owner.ensureWorkspaceRegistered(this.ctx.id.toString(), this.impl.storage.title.get());
       this.impl.storage.ownerRegistrationPending.put(false);
     }
 
@@ -10752,7 +10752,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
     // (A write, so deliberately not retried -- a reset can't distinguish "never applied" from
     // "applied, response lost".)
-    await owner().setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
+    await owner().setWorkspaceLastActive(this.ctx.id.toString(), new Date(), undefined);
   }
 
   async startGatekeeperSession(
@@ -11405,7 +11405,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     await this.impl.ctx.blockConcurrencyWhile(async () => {
-      await this.#owner.deleteGadget(this.impl.ctx.id.toString());
+      await this.#owner.deleteWorkspace(this.impl.ctx.id.toString());
       await this.impl.ctx.storage.deleteAll();
       this.impl.recordGadgetAnalytics({
         event_name: "gadget_deleted",

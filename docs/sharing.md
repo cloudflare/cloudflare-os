@@ -47,9 +47,9 @@ Redemption is **one-step**: redeeming a key writes the recipient's `shareKey` ed
 
 ### Home page behavior
 
-A shared gadget does not appear on a collaborator's home page until they first open it. At that point, a record is created in the collaborator's user account (via `UserDurableObject.recordSharedGadgetOpen()`), storing a cached copy of the gadget's title and the owner's profile. The `lastActive` timestamp is updated each time they open the gadget.
+A shared workspace does not appear on a collaborator's home page until they first open it. At that point, a record is created in the collaborator's user account (via `UserDurableObject.recordSharedWorkspaceOpen()`), storing a cached copy of the workspace's title and the owner's profile. The `lastActive` timestamp is updated each time they open the workspace.
 
-Shared gadgets appear in the same list as owned gadgets on the home page, distinguished by showing the owner's name in the "Owner" column. Collaborators can dismiss a shared gadget from their home page (removing the record from their user account), but this does not revoke their access -- if they open the gadget again via its URL, it reappears.
+Shared workspaces appear in the same list as owned workspaces on the home page, distinguished by showing the owner's name in the "Owner" column. Collaborators can dismiss a shared workspace from their home page (removing the record from their user account), but this does not revoke their access -- if they open the workspace again via its URL, it reappears.
 
 When a collaborator's access is revoked, the stale record remains on their home page (we don't proactively reach into their account to remove it). The next time they try to open it, `open()` returns a workspace access-denied error and the client tells them they no longer have access without showing the workspace name or other metadata. They can dismiss the dead entry manually.
 
