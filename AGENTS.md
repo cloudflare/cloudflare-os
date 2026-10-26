@@ -96,6 +96,7 @@ Release pipeline (`scripts/release/`) — how customer instances get deployed:
 
 Development checks:
 
+- Pull requests carry a `risk-review` status (`scripts/risk-review.ts`): path floors (all of `workshop-backend` is high) plus Clef make a change low, medium or high risk, and medium and high each need one maintainer's approval of the head commit, so pushing again resets it. A low-risk head is approved by the risk-review app instead, which counts toward the ruleset's one required review. Other bots and agents never count as approvers.
 - Run `pnpm lint` before pushing; it includes script types, generated-config checks, and the workspace build.
 - `pnpm build` runs type-checks and codegen. For one package use `pnpm exec vp run -F <package> build`; most builds are tasks, not package.json scripts.
 - Use `pnpm --filter <package> test:run` while iterating and `pnpm test` for workspace verification. Cached tasks may replay results; cold-checkout tests must generate their own prerequisites on both entrypoints.

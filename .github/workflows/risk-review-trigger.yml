@@ -1,0 +1,21 @@
+name: Risk review trigger
+
+# Relays review events to risk-review.yml, which re-evaluates the pull request from the base branch
+# through `workflow_run`. This file runs as the pull request's copy, so it holds no permissions and
+# does nothing, and a pull request can change or delete it. Then an approval never refreshes the
+# status, which fails closed, but neither does a revoked one, which does not: the ruleset's one
+# required approving review is the backstop, since the app never approves a medium- or high-risk
+# change and GitHub itself blocks a merge on an outstanding change request. Keep that rule.
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions: {}
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Hand off to Risk review
+        run: echo "risk-review.yml re-evaluates this pull request."

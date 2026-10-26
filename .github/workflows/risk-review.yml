@@ -1,0 +1,160 @@
+name: Risk review
+
+# Classifies each pull request as low, medium or high risk and posts the `risk-review` commit status
+# on its head, which passes once that tier's human approvals of the head commit are in (0, 1, 1).
+# The ruleset keeps requiring one approving review; the risk-review app gives it to a low-risk head
+# and dismisses it once the change is no longer low. A pull request an agent opened needs its human
+# assignee's approval at every tier, low included. The rules and the reasons behind them are in
+# scripts/risk-review.ts.
+#
+# Both triggers run this file and the script from the base branch, never the pull request's copy,
+# so a change cannot rewrite its own classifier. Nothing checks out the pull request's code: the
+# diff is read through the API and only sent to Clef. Review events arrive through
+# risk-review-trigger.yml, because `pull_request_review` runs the pull request's own copy of the
+# workflow, with a read-only token when the head is in a fork.
+#
+# Statuses and approvals come from the risk-review GitHub App, and the ruleset accepts `risk-review`
+# only from it. Its key is a secret of the `risk-review` and `risk-review-external` environments, which allow
+# deployments from `main` alone: runs of this file are on `main`, while a workflow a pull request adds
+# runs on its own ref and can neither read the key nor post a status or approval as the app. The key must
+# never be a repository secret, which those workflows can read.
+#
+# A maintainer's pull request (write access or above, the same check as Bonk's break-glass) is
+# classified straight away. Anyone else's waits in the `risk-review-external` environment until a
+# maintainer approves the run, and until then its status is pending, so it cannot merge.
+on:
+  pull_request_target:
+    # Only `main` requires the status. A status belongs to a commit, so classifying a pull request from
+    # the same head into another branch would let its smaller diff publish `main`'s verdict.
+    branches: [main]
+    # `edited` only for a new base (see `authorize`): retargeting keeps the head commit, and with it
+    # a status earned against the old base's smaller diff.
+    types: [opened, synchronize, reopened, ready_for_review, edited, assigned, unassigned]
+  workflow_run:
+    workflows: [Risk review trigger]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  # Uses only the GitHub API and the app's token, never the pull request's code or Clef, so it is
+  # safe to run for anyone. It also sets the status pending, so a revoked approval takes effect even
+  # while the classifier waits.
+  authorize:
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+       (github.event.action != 'edited' || github.event.changes.base)) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request_review')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # One run per head commit at a time, from `authorize` through the classifier, so a pending status
+    # lands after any verdict already being worked out rather than under it. Each reads live reviews.
+    concurrency: &serialize
+      group: risk-review-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    environment: risk-review
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    outputs:
+      author: ${{ steps.authorize.outputs.author }}
+    steps:
+      - name: Check out trusted workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      # Until the app is set up, the job token posts the statuses, which the ruleset must not accept,
+      # and nothing is approved.
+      - &app-token
+        name: Mint the risk-review app's token
+        id: app
+        if: vars.RISK_REVIEW_APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RISK_REVIEW_APP_ID }}
+          private-key: ${{ secrets.RISK_REVIEW_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
+          permission-statuses: write
+
+      - name: Check the author's permission
+        id: authorize
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RISK_REVIEW_APPROVER: ${{ steps.app.outputs.app-slug && format('{0}[bot]', steps.app.outputs.app-slug) || '' }}
+        with:
+          github-token: ${{ steps.app.outputs.token || github.token }}
+          script: |
+            const { pathToFileURL } = await import("node:url");
+            const scriptUrl = pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/risk-review.ts`);
+            const { authorizeRiskReview } = await import(scriptUrl.href);
+            await authorizeRiskReview({
+              github,
+              context,
+              core,
+              approver: process.env.RISK_REVIEW_APPROVER || undefined,
+            });
+
+  # `maintainer` and `external` are the same job; only `external` waits for an approval.
+  maintainer:
+    needs: authorize
+    if: needs.authorize.outputs.author == 'maintainer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: *serialize
+    environment: risk-review
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps: &classify
+      - name: Check out trusted workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - *app-token
+
+      - name: Classify and post status
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          # Needs Workers AI Read on the account. Without it every pull request is at least medium
+          # risk, which fails safe but makes the low tier unreachable.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          RISK_REVIEW_APPROVER: ${{ steps.app.outputs.app-slug && format('{0}[bot]', steps.app.outputs.app-slug) || '' }}
+        with:
+          github-token: ${{ steps.app.outputs.token || github.token }}
+          script: |
+            const { pathToFileURL } = await import("node:url");
+            const scriptUrl = pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/risk-review.ts`);
+            const { runRiskReview } = await import(scriptUrl.href);
+            await runRiskReview({
+              github,
+              context,
+              core,
+              clef: {
+                accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+                apiToken: process.env.CLOUDFLARE_API_TOKEN,
+                gatewayId: process.env.CLOUDFLARE_GATEWAY_ID,
+              },
+              approver: process.env.RISK_REVIEW_APPROVER || undefined,
+            });
+
+  external:
+    needs: authorize
+    if: needs.authorize.outputs.author == 'other'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Required reviewers on this environment are what hold the run for a maintainer.
+    environment: risk-review-external
+    concurrency: *serialize
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps: *classify
