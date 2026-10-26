@@ -26,6 +26,8 @@ packages/workshop-backend/src/server.ts
   s_c5f8d284ae2719::t_71b3c7390bb0fc 91-115,159,737-738,743-752,755,811,827,872,901,909,1053-1058,1060
 scripts/run-dev-server.ts
   s_c5f8d284ae2719::t_05db876e44b336 568-569
+packages/workshop-backend/AGENTS.md
+  s_618859da4442af::t_2b214d0f32a35e 82-87
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -33,6 +35,14 @@ scripts/run-dev-server.ts
   "base_commit_sha": "1f3c49a88c0bce91474fea61f5aeaf8b064ba652",
   "prompts": {},
   "sessions": {
+    "s_618859da4442af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "377587eb-b55b-40b1-be77-d0324be1bbe8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_c5f8d284ae2719": {
       "agent_id": {
         "tool": "claude",
