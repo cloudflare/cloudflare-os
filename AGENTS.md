@@ -5,105 +5,47 @@ The following files are commonly important to reference:
 * packages/workshop-shared/node_modules/capnweb/README.md: Explains how to use Cap'n Web RPC, which is used extensively for client-server communications.
 * packages/workshop-shared/src/api.ts: Defines the RPC API used between the frontend and backend.
 
-The project structure is:
+## Package guides
 
-* packages/workshop-frontend: The Gadgets Workshop UI.
-    * This is a pure single-page app, running entirely client-side.
-    * It speaks to the backend using an RPC API over a persistent WebSocket connection.
-    * Uses React, Kumo UI (https://kumo-ui.com/api/component-registry), Phosphor icons, and Vite.
-* packages/workshop-backend: The Gadgets Workshop server.
-    * Runs on Cloudflare Workers.
-    * This is the **kernel**: it defines the architecture and is held to a higher bar than UI/gatekeeper code. Reviewers read *every line* of `workshop-backend` and of API changes in `workshop-shared`, so keep diffs here small and elegant. Concretely: doc-comment **every** exported member of the `workshop-shared` public API (types, consts, and functions — not just interfaces); never introduce a hand-written interface that mirrors an RPC interface plus an `as unknown as` cast (derive from the real type instead, or rethink the design); and prefer reusing existing mechanisms over adding parallel ones. Capability-based security note: a resource becomes "ambient" (auto-injected) only by user/admin configuration — a gatekeeper must never assert its own ambience. When a change to this package is large, split it by concern into separate PRs (and at minimum group commits so `workshop-backend`/`workshop-shared` can be reviewed apart from UI), since fewer kernel lines = easier review.
-    * Installs the **bundled blueprints** from `@gadgets/bundled-blueprints` on a deployment's first `/api` request, and offers them as the deployment's standard output formats. `scripts/build-bundled-blueprints.ts` generates the gitignored `src/generated/bundled-blueprints.ts` they are installed from, which holds each blueprint's manifest and built files (`BUNDLED_BLUEPRINTS_DIR` overrides the source directory), so `build` and `test` both run the generator first; `pnpm import:bundled-blueprint` updates or adds a blueprint from a Workshop export, of either `.gadget` version. Installing one (`src/bundled-blueprints.ts`) stores it as any published blueprint is stored: a git commit of its files, as a packfile at `<blueprintId>/<commitId>` in R2, named by `metadata.commitId` in KV (see `docs/blueprints.md`). The commit is a *snapshot release* (`buildSnapshotRelease` in `src/blueprint-release.ts`): parentless, with a fixed author, date and message, so it depends on the files alone. Every deployment therefore derives the same commit from the same files, and the installer never reads what was installed before. The cost is that a bundled blueprint's versions are not chained to one another as a published blueprint's releases are. A gadget made from one still takes its updates, merged against the release the gadget last took.
-    * Agent turns emit the Workers trace spans Cloudflare's Agents dashboard reads (`src/agent-tracing.ts`): `invoke_agent` per turn, `chat` per model request, `execute_tool` per tool call, and `tool_approval` when an agent's action waits for a manual decision and when it is approved or denied. They carry token counts, including cache reads and writes, but never prompts, responses or tool data. A span belongs to the invocation that opened it, and once a Durable Object invocation has returned, the next event the object receives ends its trace. So a turn keeps all its spans only while the request that started it (usually the browser session) stays open.
-* packages/bundled-blueprints: The blueprints the deployment ships with, `blueprints/<name>/` holds each blueprint's `blueprint.json` plus its gadget code under `files/`, which may be TypeScript.
-* packages/workshop-shared: Shared API definitions between client and server.
-    * This defines the application's RPC interface.
-    * The RPC protocol is Cap'n Web, which has similar semantics to Cloudflare's Worker-to-Worker RPC system, while being able to run in a browser over WebSocket. Read the readme for details.
-* packages/configurator-ui: The authoring API (`src/index.ts`, type-only stubs) for optional gatekeeper resource configurator UI modules, the sandbox runtime that renders them (`src/runtime/`: Kumo components on `preact/compat`), and the build that bundles both into each configurator's frame (`build/`).
-    * Gatekeeper configurator UI modules are compiled by `scripts/build-gatekeeper-configurator.ts` as part of package builds. Each frame is one self-contained HTML document: the minified runtime, its Tailwind/Kumo CSS, and the module, under a content security policy that admits only those scripts by hash and allows no network access. Kumo and Base UI support only React, so the browser suite (`vitest.browser.config.ts`, Chromium) is what catches an upgrade that stops working on Preact; `build/frame.test.ts` drives a generated frame over the real Cap'n Web host protocol.
-    * `pnpm dev-server` rebuilds a gatekeeper's frames when its `src/configurator/` or the runtime's `src/runtime/` changes; restart it after editing `build/`, which the watcher has already loaded.
+Each of these holds rules this file does not repeat. Read the matching guide before changing,
+reviewing or answering questions about code under its directory:
+
+| Guide | Read for |
+|---|---|
+| `packages/workshop-backend/AGENTS.md` | the kernel: bundled blueprints, agent tracing, auto-provisioned gatekeepers, admin settings |
+| `packages/workshop-frontend/AGENTS.md` | Workshop UI structure, components, styling, tests |
+| `packages/ui/AGENTS.md` | shared React UI ownership |
+| `packages/configurator-ui/AGENTS.md` | configurator frames, their runtime and build |
+| `packages/gatekeeper-kit/AGENTS.md` | the shared gatekeeper library |
+| `packages/gatekeeper-context/AGENTS.md` | Context Library collections and sharing |
+| `packages/gatekeeper-cloudflare/AGENTS.md` | Cloudflare OAuth, billing, Workers Observability |
+| `packages/gatekeeper-x/AGENTS.md` | X, whose reads are billed |
+| `packages/gatekeeper-websearch/AGENTS.md` | Web Search |
+| `packages/mcp-shared/AGENTS.md` | MCP / MCP Server Portal gatekeepers |
+| `packages/observability/AGENTS.md` | server logging, issue reporting, metrics |
+| `packages/error-reporting/AGENTS.md` | frontend error reporting |
+| `scripts/release/AGENTS.md` | the release pipeline and deploy-wizard inputs |
+
+Reviewing a pull request: follow `REVIEW.md` as well.
+
+## Packages
+
+* packages/workshop-frontend: The Gadgets Workshop UI, a pure client-side single-page app (React, Kumo UI (https://kumo-ui.com/api/component-registry), Phosphor icons, Vite) that speaks to the backend over a persistent WebSocket RPC connection.
+* packages/workshop-backend: The Gadgets Workshop server, on Cloudflare Workers. This is the **kernel** (see below).
+* packages/workshop-shared: The application's RPC interface, shared by client and server. The protocol is Cap'n Web, which has similar semantics to Cloudflare's Worker-to-Worker RPC while being able to run in a browser over WebSocket.
+* packages/bundled-blueprints: The blueprints the deployment ships with; `blueprints/<name>/` holds each blueprint's `blueprint.json` plus its gadget code under `files/`, which may be TypeScript.
+* packages/configurator-ui: The authoring API, sandbox runtime and build for gatekeeper resource configurator UI frames.
 * packages/ui: Shared runtime React UI used across the Workshop and gatekeeper management apps.
-    * Kumo remains the primitive and token foundation. Reusable Gadgets interaction patterns and composed controls belong here rather than being reimplemented in individual apps.
-* packages/gatekeeper-*: Gatekeeper workers for external service integrations.
-    * Each gatekeeper runs as a separate Cloudflare Worker — with one exception the prefix does not capture: a `gatekeeper-*` package with **no `wrangler.jsonc` is a library, not a worker** (`gatekeeper-kit` here; `gatekeeper-shared` in the internal repo). Deployable discovery is config-gated, not name-gated — `readDeployablePackages` in `scripts/release/manifest-lib.ts` keys solely on the presence of `wrangler.jsonc`, and `run-dev-server.ts` requires it too — so adding one to a library package is what would make it deployable, at which point `workerKind` would classify it a gatekeeper by prefix and the deploy wizard would demand `CLIENT_ID`/`CLIENT_SECRET` for it. `manifest-lib.test.ts` fails first if that ever happens.
-    * Gatekeepers handle OAuth flows and provide sandboxed access to external APIs. A connect URL is a bearer capability, so every connect/reconnect flow ends on the kit's `connectHandoffPageHtml`, which sends the popup to the Workshop's `/connect/handoff` page, and that page redeems the single-use ticket over the popup's own session together with a per-flow nonce (see `docs/connect-handoff.md`); a reconnect stages its new credentials via `gatekeeper-kit/credential-stage` until the Workshop calls `GatekeeperUser.commitReconnect(stageId)` with the id that completion reported; completion is confirmed through the ticket, never through the URL alone.
-    * A gatekeeper may declare `VendorDescription.autoProvisionsAccount`: it can mint a connected account with no OAuth flow (via `GatekeeperVendor.createAccount()`, which takes no user identity). For such gatekeepers the deployment admin picks a per-vendor mode in the admin Gatekeepers panel — **disabled** / **optional** / **enabled** (default **optional**) — resolved in `provisioning-policy.ts`: `enabled` auto-provisions the account for every user (forced, and hidden from the Connectors list), `optional` lets each user opt in from the Connectors page or during onboarding (where each starts switched on and is provisioned when the user finishes), and `disabled` offers it to no one (existing accounts go dormant). The Workshop persists the account in the user DO like any connected account (the account capability — not an asserted identity — is the authority thereafter). The **account** (a `GatekeeperUser`) declares in its `AccountDescription` whether it provides an agent **singleton** (`singleton: { tsType }`) and/or a **management UI** (`providesUi`). The Workshop auto-provides the singleton to the owner's workspaces as an **ambient gatekeeper record**, folded into each chat's env as a **named chat binding** (named by the gatekeeper's `suggestedBindingName`; see `prepareChatBindings` in overseer.ts) that the agent reads in `executeCode` (`getSession`/`getAgentCatalog`), each read recorded as an observation. It is not bound to any gadget by default — most gadgets never call it programmatically — but the agent may wire it into a gadget's binding list with `setGadgetBinding` when the gadget's persistent code needs it. The UI is hosted at `/gatekeepers/$appId` (the gatekeeper's vendor id, e.g. `/gatekeepers/context`) via `startAppUi({ isAdmin })`. The two are orthogonal — an account can declare either, both, or neither.
-* packages/mcp-shared: Shared implementation behind the two MCP gatekeepers — `gatekeeper-mcp` (endpoints a user pastes) and `gatekeeper-mcp-portal` (one admin-configured portal). Not a Worker; a library both import, holding the MCP client, the OAuth chain, the account DO base, the resource-URL scope grammar, and the queued-action store. See `packages/mcp-shared/README.md` and each connector's README.
-    * The trust boundary is `tools.ts`, and nothing outside it reads a tool's annotations: a tool the server declares `readOnlyHint: true` runs as an observation, everything else is queued for approval, and auto-*applying* a write additionally requires a `vetted` endpoint — which only the portal can produce, via `MCP_PORTAL_TRUST_ANNOTATIONS`.
-    * OAuth uses the official `@modelcontextprotocol/client`; always give SDK OAuth operations `sdkFetch(...)` so every request and redirect retains endpoint and SSRF checks.
-* packages/gatekeeper-context: The Context Library — a gatekeeper whose account provides a singleton read session + a management UI, for authoring collections of context documents that agents read as observations. Collections have one of two visibilities: **private** (created by one account and shareable with others) and **public** (created/edited only by deployment admins, readable by everyone and auto-enabled for all users; not shareable). It owns its state in three Durable Objects (`ContextCollectionDurableObject` for content and a private collection's grants, `UserLibraryDurableObject` for each account's index of collections it created or was given, `LibraryRegistryDurableObject` for the domain's public set) plus a KV namespace. All data is namespaced by a `sharingDomain` (from the binding's props, see `domain.ts`) so multiple workshops sharing one gatekeeper instance stay isolated.
-    * Sharing is whole-collection. A private collection's own grants (`viewer` / `editor` / `owner`, keyed by Context account) and its `everyoneCanView` flag are the sole authority, interpreted only by `collection-access.ts`; every listing, agent read, and observer verification re-checks them live, so a library index entry is discovery and never access. A collection always keeps an owner except when its last owner's account is disconnected while others still hold access; its editors then keep editor permissions only (nobody can delete it or grant ownership), and it is deleted once its last grant goes, even if everyone can view it. Everyone-viewable only grants read access (so sharing a workspace that used the collection is not blocked); it never adds the collection to anyone's library. Shares arrive through the Workshop user picker: the management API redeems the ticket and takes the recipient's account IDs from their Context verifiers (`getAccountId`), never from the browser, and grants all of that person's accounts together. Losing write access revokes the git mirror tokens that account minted, and tokens from before sharing count as the creator's; the collection serializes grant changes, token minting, and deletion so none can race another, and retries a failed revocation from an alarm. Disconnecting marks the account's library first, so a share racing it is refused rather than left behind. `plans/context-collection-sharing.md` is the design record.
-    * Its `GatekeeperVendor` entrypoint (bound as `GATEKEEPER_CONTEXT`) declares `autoProvisionsAccount` and mints a `ContextAccount` via `createAccount()` (no user identity is passed in; the account keys its private data by its own generated `accountId`). The account exposes the agent read session (`getSession()`), collection discovery metadata (`getAgentCatalog()`), and a management UI (`startAppUi({ isAdmin })`). The UI is a single-file React SPA in `app/` (Vite + Tailwind + Kumo) bundled by `build-app.ts` into `src/generated/app.txt`.
-* packages/gatekeeper-scheduler: Scheduled Tasks — an auto-provisioned gatekeeper whose account provides an ambient singleton for registering persistent workspace callbacks plus a read-only management UI. One account-scoped `ScheduleDriver` Durable Object stores enabled schedules and delivers them from a shared alarm; hook enablement remains in the Workshop Connections UI.
-* packages/gatekeeper-websearch: Web Search — an auto-provisioned gatekeeper whose account provides an ambient `WEB_SEARCH` singleton that searches the public web through its own Workers AI binding (`websearch()`, through the AI Gateway its `CF_AI_GATEWAY` var names, provider pinned to Ceramic). The deploy service sets that var to the instance's gateway, the backend's; anywhere else it defaults to the account's `default` gateway. Each query is recorded as an observation *before* it is sent. A workspace that has observed restricted data can still search: unlike a `webFetch` URL, the query can only go to the pinned provider. Preinstalled on every deploy like Scheduled Tasks; every search spends the account's AI Gateway credits, outside the model spend limits, unless that gateway holds a Ceramic key, which Ceramic then bills. The README is the design record.
-* packages/gatekeeper-gitlab: GitLab, for gitlab.com and self-hosted instances — a mirror of `gatekeeper-github` (project / issue / merge request resources, the same action queue and read-time simulation, the same worktree contract) in GitLab's own terms. `plans/gitlab-gatekeeper.md` is the design record, and its divergence table lists every place GitLab's API forced a different shape; the README covers instance configuration (`GITLAB_URL`, `GITLAB_API_URL`, and an optional Cloudflare Access service token).
-* packages/gatekeeper-x: X (formerly Twitter) — account / post / List / read-only profile resources over plain `fetch` (the `twitter-api-v2` package breaks on Workers). `plans/x-gatekeeper.md` is the design record. X's API is pay-per-use and bills every resource a read returns, so cost is part of the design and easy to undo by accident:
-    * Every read goes through the gatekeeper's `#read`, which reserves against the connection's daily read limit (`X_DAILY_READ_LIMIT`, counted per UTC day in the `UserAccount` DO across all of the connection's bindings) and settles with what X returned. Listings use `XCursor`, one X request per `next()`, never the kit's `TokenCursor`, which refills a short page with up to ten more billed requests.
-    * Only bookmark, mute and hide are `autoApprovable`: X's developer policy forbids automating likes, follows, reposts and posts. Do not widen that list.
-    * A connection is pinned to the X user it was made as (a reconnect as anyone else is refused and its new grant revoked), and actions are fenced on that X user's ID rather than the connection generation, so a same-user reconnect to widen scopes does not strand pending actions.
-    * Publishing is `claimBeforeApply`, and a send whose outcome X never reported is reconciled inline on the next apply (an attempt marker, then a look at the account's posts from around the attempt, binding only a unique match on text, links, media and reply parent), because the kit's `ActionOutcomeUnknownError` is terminal. Creating a List is reconciled the same way. Rejecting a publish or List creation withdraws it, and anything X already published stays.
-    * X is renaming "tweet" to "post" on the wire and both spellings occur; `x-normalize.ts` reads both. The configurators copy URL grammar from `x-urls.ts`, and `__tests__/configurator-url.test.ts` keeps the copies in step.
-* packages/gatekeeper-cloudflare: Cloudflare OAuth, serving three unrelated purposes from one connected account — sign-in (`AUTH_GATEKEEPERS`), AI Gateway billing, and **Workers Observability** read-only telemetry resources. Two resource granularities (whole account, or one Worker) both map to the single indivisible `workers-observability.read` scope, so the capability boundary is the *binding*, not the grant.
-    * Layering: `observability-api.ts` is the only place that talks HTTP; `observability-parse.ts` validates every response (no blind casts); `observability-session.ts` is the agent-facing session, where every read funnels through one `#observe` so no path returns data unaudited; `observability-discovery.ts` derives field names/values from a sampled events query.
-    * Scopes fail closed to `BILLING_SCOPES`, and an omitted `resourceUrlPatterns` ("all resource types") is distinct from `[]` ("none"): a billing-only connection must not silently acquire telemetry access, and recording a wider grant than was made would make `ensureResources` short-circuit into a binding that 403s with no way to re-prompt.
-    * Three provider behaviours return wrong-but-plausible data with no error, so none is trusted (all verified against a live account): `telemetry/keys`/`values` **ignore** the `filters` they accept, so a constrained discovery call is answered from a filtered `telemetry/query` sample or it would disclose the whole account; an unknown filter key matches nothing, which bites because a log's own fields are returned nested under `source` but indexed under their *bare* name (`{event: "x"}` → `source.event`, queried as `event`, hence `observabilityFieldKey` accepting the `source.` alias wherever a caller names a field); and `/accounts` pages at 20 by default, so it must be walked to the end.
-    * Worker-scoped bindings prepend an immutable `$metadata.service` filter *and* re-filter the response, since a filter the provider silently ignored would leak another Worker's telemetry. A dropped event proves the filter was not applied, so the provider's own `count` is then withheld rather than reported (it would count the whole account) and the drop is logged at `error`; `statistics` is kept, since it describes what the query cost rather than how much matched. Pagination cursors come from the provider's raw events rather than the surviving ones, so a fully-foreign page can't stall pagination and hide the caller's own older data. Trace *summaries* are account-only (their shape describes the whole cross-service trace); a Worker binding can still fetch its own events for a known trace id. `calculate()` is the one read with no second line of defence — an aggregate can't be un-mixed — so it rests solely on the injected filter; that is accepted and documented on the method, with the group-by fix left as a follow-up.
-    * A provider error message can quote a caller-supplied filter value back, so only its numeric `codes` are logged — filter *values* stay out of the audit trail (`summarizeFilter`), and the message travels to the caller who caused it.
-    * Tests are two vitest projects: `vitest.config.ts` (Node, pure logic) and `vitest.worker.config.ts` (workerd, for `RpcTarget`/`RpcStub`/Durable Objects). The workerd suite reaches the gatekeeper through a `TestHooks` Durable Object because a `DurableObjectClass` carrying `ctx.props` is only reachable via `ctx.facets` — the way the overseer instantiates it.
-    * `src/configurator/*.tsx` duplicate the resource-URL grammar from `resources.ts` and **must**: `build-gatekeeper-configurator.ts` transpiles each per-file, stripping only `@gadgets/configurator-ui` and type-only imports, so they cannot import runtime helpers. `__tests__/configurator-url.test.ts` keeps the copies in step, and `configurator-fields.test.ts` drives `render` against a mocked runtime — the runtime's `clearFields` only drops an autocomplete's typed query, so a dependent field must *also* be nulled through `setValues` or the stale value silently survives into the resource URL.
-* packages/router: The public origin of a deployed gadgets instance. Serves the workshop-frontend assets and routes by path prefix: `/api/*` and `/blueprint-screenshot/*` to the workshop backend, `/gatekeeper/<name>/*` to whichever gatekeepers are bound (discovered by scanning its own `GATEKEEPER_*` service bindings, so installing a gatekeeper is purely a binding change). The same worker doubles as the dev router (`pnpm dev-server`): with no `ASSETS` binding it proxies frontend requests to the Vite dev server instead.
+* packages/gatekeeper-*: Gatekeeper workers for external service integrations. Scheduled Tasks (`gatekeeper-scheduler`) and GitLab (`gatekeeper-gitlab`, design record `plans/gitlab-gatekeeper.md`) are described in their READMEs.
+* packages/mcp-shared: The library behind the two MCP gatekeepers, `gatekeeper-mcp` and `gatekeeper-mcp-portal`.
+* packages/observability, packages/error-reporting: Server logging/issue reporting/metrics, and the opt-in frontend error-reporting contract.
+* packages/router: The public origin of a deployed instance. Serves the workshop-frontend assets and routes `/api/*` and `/blueprint-screenshot/*` to the backend and `/gatekeeper/<name>/*` to whichever `GATEKEEPER_*` service bindings it has; with no `ASSETS` binding it doubles as the dev router (`pnpm dev-server`), proxying the frontend to Vite.
 
-Frontend conventions (Workshop, gatekeeper management apps, and shared UI):
+## The kernel
 
-* IMPORTANT: Load the `frontend-conventions` skill before creating, materially changing, moving, or reviewing React frontend code anywhere under `packages/`. The bullets below are the mandatory summary; the skill contains the complete conventions and examples.
+`workshop-backend` defines the architecture and is held to a higher bar than UI/gatekeeper code. Reviewers read *every line* of `workshop-backend` and of API changes in `workshop-shared`, so keep diffs here small and elegant. Concretely: doc-comment **every** exported member of the `workshop-shared` public API (types, consts, and functions — not just interfaces); never introduce a hand-written interface that mirrors an RPC interface plus an `as unknown as` cast (derive from the real type instead, or rethink the design); and prefer reusing existing mechanisms over adding parallel ones. Capability-based security note: a resource becomes "ambient" (auto-injected) only by user/admin configuration — a gatekeeper must never assert its own ambience. When a change to this package is large, split it by concern into separate PRs (and at minimum group commits so `workshop-backend`/`workshop-shared` can be reviewed apart from UI), since fewer kernel lines = easier review.
 
-* Organize code by product ownership before implementation type. Keep feature-owned components, hooks, tests, and utilities together; start directories flat and introduce responsibility-named subdirectories only when a subsystem grows.
-* Use PascalCase filenames for components and camelCase filenames for hooks and non-component modules. Colocate `*.test.ts(x)` files with their subject.
-* Keep small stateless render helpers private. Extract a component or hook when it owns meaningful state, effects, interactions, accessibility behavior, or a reusable responsibility.
-* Cross-application UI belongs in `@gadgets/ui`. An app's local `components/` directory is shared only within that app. Product-specific compositions stay with the product even when they use shared primitives.
-* Use Kumo components and semantic Kumo tokens by default. Check Kumo and `@gadgets/ui` before creating a control or interaction pattern. Do not add custom color literals, feature-local token systems, or wrappers that only restyle Kumo.
-* Consult the installed Kumo API before implementing or changing Kumo UI: run `npx @cloudflare/kumo docs <Component>` (for example, `npx @cloudflare/kumo docs Select`).
-* Tailwind is appropriate for structure, spacing, sizing, positioning, responsive behavior, and typography. Custom CSS is for technical behavior Kumo and utilities cannot express.
-* Represent props that are valid only together as an object or discriminated union. Controlled values require a change callback. Name callbacks `on<Action>` and pass domain values rather than React setters or browser events.
-* Add slots, variants, DOM passthrough, imperative refs, and other customization surface only for current callers. Do not generalize based on speculative reuse.
-* Treat Effects as synchronization with external systems, not as derived-state machinery. Keep state close to its owner, calculate render data during render, clean up subscriptions, and avoid chains of Effects.
-* Prefer named arrow-function components and hooks. Do not add `useMemo` or `useCallback` without a concrete identity or performance need.
-* Preserve keyboard behavior, focus management, accessible names, and announcements when building or extracting interactions.
-* Tests should protect observable behavior, product rules, accessibility, state transitions, races, and failure paths. Do not test framework behavior or implementation details merely for coverage.
-* Prefer code that communicates intent through names and types. Comments should explain non-obvious constraints and reasons, not narrate the next line.
-
-Deployment admin settings (the `/admin` panel) follow a few conventions worth knowing when extending them:
-
-* `packages/workshop-backend/src/storage-schema/admin-settings-storage.ts` defines `AdminConfig` (its helpers live in `src/admin-config.ts`) — the deployment's "soft" customizations: agent instructions, banners/theme, and which gatekeeper connectors/resources are offered (plus the three-state mode for auto-provisioning gatekeepers, see `provisioning-policy.ts`). Connectors/resources default to enabled and the admin UI opts them *out*; auto-provisioning gatekeepers default to *optional*. **Authentication/authorization config (sign-in providers via `AUTH_GATEKEEPERS`, password login via `DISABLE_PASSWORD_AUTH`) is deliberately NOT here** — it stays env-var driven (`auth/config.ts`) so it can't be changed by a compromised admin session.
-* The `AdminSettings` durable object owns the authoritative `AdminConfig` and mirrors it to a single reserved KV key (`.adminConfig`, see `isReservedBlueprintKey()`), so hot-path code (connect/agent) reads it with one cheap KV get via `readAdminConfig(env)`. The DO is the only writer (`updateAdminConfig(patch)`).
-* Admin operations are exposed as an `AdminApi` capability obtained via `AuthenticatedApi.getAdminApi()` (returns null for non-admins). The `#isAdmin()` check happens once when the capability is minted, so the individual methods don't re-check.
-* `user.ts:#assertResourceEnabled()` is the single core chokepoint where disabled gatekeepers/resources are enforced before a capability is minted. Both mints call it: `getGatekeeperClassFor()` (gadget/agent code can't reach it directly) and `createResourceGatekeeper()` (reached only through the agent's `createExternalResource` tool).
-* In AI Gateway mode the deployment's models are admin settings too (`AdminConfig.modelModes`, `addedModels`, `modelSettings`, `addedProviders`, `userModelsEnabled`). `GatewayModels` in `ai-gateway.ts` is the only place that merges them with `SUGGESTED_MODELS`, and *disabled* is enforced where a model is about to run: `user.ts:getChatContext()` and `LanguageModelGatekeeper.startSession()`.
-
-Worker configs: each Worker's `cloudflare.config.ts` (`@cloudflare/config` format, built from the shared factory in `scripts/worker-config.ts`) is the source of truth. The `wrangler.jsonc` beside it is committed but generated by `pnpm configs:generate` (`scripts/generate-worker-configs.ts`) and never edited by hand, because Wrangler's new-config support cannot drive the multi-worker dev server, `wrangler types`, the vitest pools or the integration harness. Settings `@cloudflare/config` has no field for (`build`, module `rules`, KV `preview_id`, `assets.directory`) go in the config's `wrangler` export, and Durable Object migrations stay tagged in its `migrations` export, because the release manifest ships them to the deploy service verbatim. `pnpm configs:check` (part of `pnpm lint` and CI) fails on a stale or hand-written file; `pnpm dev-server` regenerates before starting.
-
-Release pipeline (`scripts/release/`) — how customer instances get deployed:
-
-* `build-release.ts` bundles every deployable worker byte-identically (wrangler dry-run with the pinned wrangler), builds the Access-mode frontend asset build, and generates the release manifest — the contract between this repo's CI and the deploy service, produced by `manifest-lib.ts` from each package's wrangler.jsonc with account-specific values replaced by placeholders (`$ACCOUNT_ID`, `$WORKER_NAME(...)`, `$SECRET(...)`, `$PUBLIC_BASE_URL`, ...).
-* `upload-release.ts` mirrors the release to R2 content-addressed, manifest last; with `--candidate` the manifest lands under `candidates/<id>/` (invisible to the deploy service) so e2e can verify it, and `promote-release.ts` then copies it to `releases/<id>/` — publishing is that single all-or-nothing manifest copy. The copy is not isolated against concurrent promotions, so CI serializes promote runs (a GitLab resource group) and the script's newer-release guard skips candidates that a later release has already superseded.
-* The manifest is covered by a golden-file test; after an intentional manifest change, regenerate with `UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts` and review the golden diff.
-* Running the flow by hand (upload and promote need `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`):
-    * `node scripts/release/build-release.ts --out release-out` — build everything into `release-out/` (id defaults to `r<CI_PIPELINE_IID>-<sha7>` in CI, `dev-<timestamp>` locally; override with `--release-id <id>`).
-    * `node scripts/release/upload-release.ts --release release-out --candidate` — mirror to R2; omit `--candidate` to publish directly (bypasses the gate — CI never does this).
-    * `node scripts/release/promote-release.ts --release-id <id>` — copy the verified candidate's manifest into `releases/<id>/`.
-* Deploy-wizard configuration: an installable gatekeeper's user-supplied inputs default to OAuth `CLIENT_ID`/`CLIENT_SECRET` secrets; a per-package `deploy-inputs.json` overrides them, and `NO_DEFAULT_CRED_INPUTS` in `manifest-lib.ts` opts out gatekeepers that take no third-party OAuth app credentials (the wizard blocks Install on unfilled secret inputs, so a spurious default makes a gatekeeper uninstallable). Backend instance-state vars (`ADMINS`, `CLOUDFLARE_OS_DEPLOYMENT`, ...) are injected by the deploy service at PUT time, never manifest-templated.
-
-Development checks:
-
-- Run `pnpm lint` before pushing; it includes script types, generated-config checks, and the workspace build.
-- `pnpm build` runs type-checks and codegen. For one package use `pnpm exec vp run -F <package> build`; most builds are tasks, not package.json scripts.
-- Use `pnpm --filter <package> test:run` while iterating and `pnpm test` for workspace verification. Cached tasks may replay results; cold-checkout tests must generate their own prerequisites on both entrypoints.
-- Cached Vite+ tasks strip undeclared environment variables. Declare output-affecting variables in `cache.env`; a path value does not fingerprint the external files it names.
-- For slow CI/container runs, keep the local watchdog defaults and explicitly choose longer limits. See [testing guidance](docs/testing.md) for commands and timeout policy.
-- Read [build-system guidance](docs/build-system.md) when changing task graphs, codegen, caching, or dev-server startup; [integration testing](docs/integration-testing.md) covers the workerd harness.
-
-IMPORTANT: This repository uses pnpm, not npm. Always use pnpm.
+## Cap'n Web RPC
 
 IMPORTANT: Remember when using RPC to use promise pipelining whenever possible. Cap'n Web implements promise pipelining (similar to Cap'n Proto). This means that if an RPC returns a stub, it's not necessary to await the RPC -- the promise itself can be used in place of the stub. Also, Cap'n Web lets you use the promise for a future result (even if it isn't a stub) in the arguments for another call; the promise will be replaced with its resolution on the server side before delivering the arguments. See the Cap'n Web README.md for more details.
 
@@ -113,54 +55,32 @@ IMPORTANT: RPC stubs must be disposed to prevent resource leaks on the server si
 
 IMPORTANT: All RPC interface implementations should use the annotation `@validateRpc()` to apply capnweb-validate, which installs auto-generated runtime type validation matching the interface's TypeScript signatures. Do not write redundant validation code that duplicates the checks capnweb-validate already covers.
 
-IMPORTANT: Server-side logging uses `@gadgets/observability/logger` (frontend browser `console.*` is out of scope):
-- Define a package-owned field type and module-scoped logger with a stable dot-separated `component`
-  and, for gatekeepers, `vendorId`:
-  `const logger = createLogger<GitHubLogFields>({ component: "gatekeeper.github", vendorId: VENDOR_ID });`.
-- Emit concrete event names and relevant typed fields, for example:
-  `logger.warn("failed to notify credential expiry", { event: "credentials.expiry.notify.failed", error: err });`.
-  Each call emits one indexed object; module/child fields such as `vendorId` are inherited.
-- Use immutable `logger.with(fields)` for object-owned or nearby context. Prefer module/object loggers
-  over logger parameters, and do not replace a shallow child logger with ambient context just to
-  remove a local variable.
-- For bounded operation context needed by deep helpers, independent loggers, or other observability
-  consumers, use `createObservabilityContext` from `@gadgets/observability/observability-context`.
-  Re-establish it per operation;
-  it does not cross RPC, hibernation, or restart, and requires `nodejs_als` or `nodejs_compat`.
-- Pass caught values as `error`. The helper stringifies `Error` instances and primitives, uses an
-  own string `message` for plain objects, omits `undefined`, and adds stacks to all `Error` logs.
-  Keep this normalization deliberately small; do not traverse causes or copy arbitrary properties.
-- Extend field vocabularies locally. Levels: `error` needs attention, `warn` continues best-effort,
-  `info` is notable lifecycle, and `debug` is noisy breadcrumbs. Never log secrets, prompts, headers,
-  tokens, or request/response bodies.
-- To also dispatch a failure to the optional external issue Reporter (in addition to logging it),
-  call `reportIssue(failureSite, caught, options?)` from
-  `@gadgets/observability/error-reporting`. Attach ambient fields from the package's observability
-  context and augment them with capture-site fields:
-  `reportIssue("overseer.catalog-fallback", err, { handled: true, attributes: { ...obsContext.get(), gatekeeperId } });`.
-  It is a no-op when the `ERROR_REPORTER` binding is absent (local dev / deployments without an issue
-  destination). Only bounded scalars are retained as attributes; reported context obeys the same
-  no-secrets rules as log fields.
-- Usage metrics go to the optional `METRICS` Analytics Engine dataset through
-  `@gadgets/observability/metrics`, whose column layout (`metrics-schema.ts`) is also what
-  dashboards query; Workshop product events reach it through `recordAnalytics`.
+## Gatekeepers
 
-IMPORTANT: Frontend error reporting is a separate, opt-in path:
-- `@gadgets/error-reporting` owns the vendor-neutral browser/Worker event contract and tolerant,
-  bounded normalization. `VITE_FRONTEND_ERROR_REPORTING=true` enables trusted frontend producers
-  and their hidden source maps at build time; deployments without reporting should leave it unset.
-- The Workshop browser sends best-effort reports to the same-origin `POST /api/client-errors`
-  endpoint. The backend dispatches only when both `FRONTEND_ERROR_REPORTER` and
-  `FRONTEND_ERROR_RATE_LIMITER` are bound; otherwise the endpoint is an intentional no-op.
-- Gatekeeper management/configurator UIs run as Workshop-owned opaque-origin `srcDoc` frames. They
-  send bounded reports with `postMessage`; the host accepts them only from the known frame window
-  with origin `null`, adds host-owned surface/vendor context, and performs the same-origin POST.
-  Do not add direct cross-origin reporting from a gatekeeper Worker domain.
-- Frontend reports never convey authority. `reportedUserId` is supplied by the client and unverified
-  — the name records that it is a report, not a finding — so it is a diagnostic label only and must
-  never be read to make a decision. `pageLocation` is origin and pathname only, rebuilt by
-  `normalizePageLocation` rather than trusted from producers, because a share link's fragment is a
-  bearer capability and an `href` also retains credentials; non-`http(s)` URLs are dropped entirely.
-- Install automatic capture only in trusted first-party surfaces, never gadget/user-authored code.
-  Exception messages and stacks reach the external Reporter, so never intentionally put secrets,
-  prompts, tokens, headers, or request/response bodies in thrown errors or report metadata.
+* Each gatekeeper runs as a separate Cloudflare Worker, except that a `gatekeeper-*` package with **no `wrangler.jsonc` is a library, not a worker** (`gatekeeper-kit` here; `gatekeeper-shared` in the internal repo). Deployable discovery is config-gated, not name-gated — `readDeployablePackages` in `scripts/release/manifest-lib.ts` keys solely on the presence of `wrangler.jsonc`, and `run-dev-server.ts` requires it too — so adding one to a library package makes it deployable, at which point `workerKind` would classify it a gatekeeper by prefix and the deploy wizard would demand `CLIENT_ID`/`CLIENT_SECRET` for it. `manifest-lib.test.ts` fails first if that ever happens.
+* Gatekeepers handle OAuth flows and provide sandboxed access to external APIs. A connect URL is a bearer capability, so every connect/reconnect flow ends on the kit's `connectHandoffPageHtml`, which sends the popup to the Workshop's `/connect/handoff` page, and that page redeems the single-use ticket over the popup's own session together with a per-flow nonce (see `docs/connect-handoff.md`); a reconnect stages its new credentials via `gatekeeper-kit/credential-stage` until the Workshop calls `GatekeeperUser.commitReconnect(stageId)` with the id that completion reported; completion is confirmed through the ticket, never through the URL alone.
+* A gatekeeper that declares `VendorDescription.autoProvisionsAccount` mints accounts with no OAuth flow, under a per-vendor mode the deployment admin picks; its account may provide an ambient agent singleton and/or a management UI. See `packages/workshop-backend/AGENTS.md`.
+* Writing or reviewing a gatekeeper: load the `write-gatekeeper` skill (`.agents/skills/write-gatekeeper/SKILL.md`).
+
+## Frontend
+
+IMPORTANT: Load the `frontend-conventions` skill (`.agents/skills/frontend-conventions/SKILL.md`) before creating, materially changing, moving, or reviewing React frontend code anywhere under `packages/`, and consult the installed Kumo API (`npx @cloudflare/kumo docs <Component>`) before implementing or changing Kumo UI. `packages/workshop-frontend/AGENTS.md` has the long form.
+
+## Server logging
+
+IMPORTANT: Server code logs through `@gadgets/observability/logger` with a module-scoped logger, a stable dot-separated `component` (plus `vendorId` for gatekeepers), and concrete `event` names. Pass caught values as `error`. Never log secrets, prompts, headers, tokens, or request/response bodies. The full rules, issue reporting and metrics are in `packages/observability/AGENTS.md`; frontend error reporting is in `packages/error-reporting/AGENTS.md`.
+
+## Worker configs
+
+Each Worker's `cloudflare.config.ts` (`@cloudflare/config` format, built from the shared factory in `scripts/worker-config.ts`) is the source of truth. The `wrangler.jsonc` beside it is committed but generated by `pnpm configs:generate` (`scripts/generate-worker-configs.ts`) and never edited by hand, because Wrangler's new-config support cannot drive the multi-worker dev server, `wrangler types`, the vitest pools or the integration harness. Settings `@cloudflare/config` has no field for (`build`, module `rules`, KV `preview_id`, `assets.directory`) go in the config's `wrangler` export, and Durable Object migrations stay tagged in its `migrations` export, because the release manifest ships them to the deploy service verbatim. `pnpm configs:check` (part of `pnpm lint` and CI) fails on a stale or hand-written file; `pnpm dev-server` regenerates before starting.
+
+## Development checks
+
+IMPORTANT: This repository uses pnpm, not npm. Always use pnpm.
+
+- Run `pnpm lint` before pushing; it includes script types, generated-config checks, and the workspace build.
+- `pnpm build` runs type-checks and codegen. For one package use `pnpm exec vp run -F <package> build`; most builds are tasks, not package.json scripts.
+- Use `pnpm --filter <package> test:run` while iterating and `pnpm test` for workspace verification. Cached tasks may replay results; cold-checkout tests must generate their own prerequisites on both entrypoints.
+- Cached Vite+ tasks strip undeclared environment variables. Declare output-affecting variables in `cache.env`; a path value does not fingerprint the external files it names.
+- For slow CI/container runs, keep the local watchdog defaults and explicitly choose longer limits. See [testing guidance](docs/testing.md) for commands and timeout policy.
+- Read [build-system guidance](docs/build-system.md) when changing task graphs, codegen, caching, or dev-server startup; [integration testing](docs/integration-testing.md) covers the workerd harness.
