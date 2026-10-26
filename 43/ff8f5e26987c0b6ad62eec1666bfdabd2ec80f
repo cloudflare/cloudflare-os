@@ -1,0 +1,169 @@
+docs/blueprints.md
+  s_7dfe693742371f::t_ce2599049cc308 272
+docs/observers.md
+  s_7dfe693742371f::t_7ab57e4d4a1941 107,205,214,239,763
+docs/sharing.md
+  s_7dfe693742371f::t_9a8884a270d34e 44,166,169
+packages/gatekeeper-mcp/README.md
+  s_7dfe693742371f::t_b3a9140013c8d5 209
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_7dfe693742371f::t_18cd61d305652d 71,126,298
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_7dfe693742371f::t_fa2fc77c4ed33b 78
+packages/integration-tests/__tests__/connect-handoff.test.ts
+  s_7dfe693742371f::t_d4552fb3cea91f 134
+packages/integration-tests/__tests__/context-sharing.test.ts
+  s_7dfe693742371f::t_8d511999b67940 67,92,119
+packages/integration-tests/__tests__/external-message-round-trip.test.ts
+  s_7dfe693742371f::t_5fb2d5e773201a 159
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_7dfe693742371f::t_37261171b1f5cb 109,136,172
+packages/integration-tests/__tests__/github-hooks-off.test.ts
+  s_7dfe693742371f::t_65fe4d18606933 61
+packages/integration-tests/__tests__/github-hooks.test.ts
+  s_7dfe693742371f::t_1e0f1cc85b3813 67
+packages/integration-tests/__tests__/google-hooks-upgrade.test.ts
+  s_7dfe693742371f::t_f25e9c7d08ac66 75,165
+packages/integration-tests/__tests__/observer-exclusion.test.ts
+  s_7dfe693742371f::t_ce17ce63856614 65,87,121
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_7dfe693742371f::t_43ecb621257859 126,152,172,206,214,354,362
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_7dfe693742371f::t_a9b6b7a90a030f 82,104,132
+packages/integration-tests/__tests__/observer-scope-promotion.test.ts
+  s_7dfe693742371f::t_3b60e1fc9e4c18 53,84
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_7dfe693742371f::t_57cf2a6c9d842f 22,100,139,165,304,337,343,560,590
+packages/integration-tests/__tests__/workshop-action-history.test.ts
+  s_7dfe693742371f::t_e43a893d11ecd4 90,111,152,183,195
+packages/integration-tests/__tests__/workshop-admin-policy.test.ts
+  s_7dfe693742371f::t_c52cce15e64504 55
+packages/integration-tests/__tests__/workshop-agent-context.test.ts
+  s_7dfe693742371f::t_c982cd446a061a 51
+packages/integration-tests/__tests__/workshop-agent-create-resource.test.ts
+  s_7dfe693742371f::t_c4b941d64b21ab 103
+packages/integration-tests/__tests__/workshop-blueprints.test.ts
+  s_7dfe693742371f::t_9c76f15d239fbd 299,324,351,382,397,442,488,543,549,622,631,665,714,721,768,771,852,866,921,932,941,949,974,977,987,1000,1030,1049,1072
+packages/integration-tests/__tests__/workshop-changes.test.ts
+  s_7dfe693742371f::t_8c6f297ff74099 5,86,95,98,384-385,485,529,735
+packages/integration-tests/__tests__/workshop-chat-recovery.test.ts
+  s_7dfe693742371f::t_e7589671ef08db 50,83,107,169,218,225,253,263,295,344,381
+packages/integration-tests/__tests__/workshop-connections.test.ts
+  s_7dfe693742371f::t_11f9948193924e 312,333
+packages/integration-tests/__tests__/workshop-console-logs.test.ts
+  s_7dfe693742371f::t_a21bedd8c8c351 67,144
+packages/integration-tests/__tests__/workshop-gadget-removal.test.ts
+  s_7dfe693742371f::t_46aa64282e29db 93,179
+packages/integration-tests/__tests__/workshop-hooks.test.ts
+  s_7dfe693742371f::t_0baace397d61a8 91,149
+packages/integration-tests/__tests__/workshop-lifecycle.test.ts
+  s_7dfe693742371f::t_20d4933e4d1e9a 4,42,53,55,62,77,83,108,124,135,163,168,173,185
+packages/integration-tests/__tests__/workshop-presence.test.ts
+  s_7dfe693742371f::t_63fe543316a36a 50,55
+packages/integration-tests/__tests__/workshop-prompt-cache.test.ts
+  s_7dfe693742371f::t_24f73e172a5158 110,207
+packages/integration-tests/__tests__/workshop-sharing.test.ts
+  s_7dfe693742371f::t_cdbe7266da1a9e 4,47,52,92,94,111,132,144,179,185,218,229-230,262,268,295,322,354,362,376
+packages/integration-tests/__tests__/workshop-steering.test.ts
+  s_7dfe693742371f::t_d83417eca0358d 74,113,237
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_7dfe693742371f::t_f48358a7731dec 182,218
+packages/integration-tests/__tests__/workshop-user-models.test.ts
+  s_7dfe693742371f::t_9a2b008fceab63 72
+packages/integration-tests/__tests__/workshop-worktrees.test.ts
+  s_7dfe693742371f::t_80a1e3532e9de1 39
+packages/integration-tests/src/agent-session.ts
+  s_7dfe693742371f::t_02d6d3e3c6f4e6 535,686,1072
+packages/integration-tests/src/rpc-client.ts
+  s_7dfe693742371f::t_34f02008462ab8 151,154
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_7dfe693742371f::t_f9ec0d8d1a0665 9-11,13,25-28,49,53,82,87,89-90,112,122,132,144,147,211
+packages/workshop-backend/__tests__/blueprints.test.ts
+  s_7dfe693742371f::t_4616ff6c3bd84f 276
+packages/workshop-backend/__tests__/bundled-blueprints.test.ts
+  s_7dfe693742371f::t_3f0dc40cd3c270 86
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_7dfe693742371f::t_1424d8ffd34879 3-5,10-11,13,20,25,29,32,37-38
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_7dfe693742371f::t_72398fc3a6970f 6,643,645,672,688,719
+packages/workshop-backend/src/overseer.ts
+  s_7dfe693742371f::t_e6ee3c6347e065 3,9591,10391,10399,10474,10679,11203-11204,11220,11229,12691,12702,12709
+packages/workshop-backend/src/server.ts
+  s_7dfe693742371f::t_cd3cee98d8fa70 4,297,332,341-342,349,358,365,432-433,512,520
+packages/workshop-backend/src/sharing.ts
+  s_7dfe693742371f::t_48fa9b96be4a3a 26,121,125
+packages/workshop-backend/src/storage-schema/user-storage.ts
+  s_7dfe693742371f::t_fbc5005d384220 10,116,120
+packages/workshop-backend/src/user.ts
+  s_7dfe693742371f::t_2e085fd61d81fc 2,133,916-917,944
+packages/workshop-frontend/src/Activity.tsx
+  s_7dfe693742371f::t_07dffc89fba504 32
+packages/workshop-frontend/src/ActivityNotifications.tsx
+  s_7dfe693742371f::t_d60fe85d9fc296 23
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_7dfe693742371f::t_2af09150afff14 624,759,764
+packages/workshop-frontend/src/BlueprintModal.tsx
+  s_7dfe693742371f::t_9bbfa131f2b297 5,70
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7dfe693742371f::t_b956aea6c9278f 2489
+packages/workshop-frontend/src/GadgetEditor.blueprintUpdate.test.tsx
+  s_7dfe693742371f::t_1f5ad7f303e406 8,50,60
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_7dfe693742371f::t_f53e37955fb2f3 1421
+packages/workshop-frontend/src/GadgetUseView.tsx
+  s_7dfe693742371f::t_593102712bc145 9,24,40
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_7dfe693742371f::t_f1b0d2be9b1e37 29
+packages/workshop-frontend/src/SandboxedGatekeeperApp.test.tsx
+  s_7dfe693742371f::t_a813a30aa496f0 72,75,134,398,408,412
+packages/workshop-frontend/src/SandboxedGatekeeperApp.tsx
+  s_7dfe693742371f::t_c19bb8719ad2e8 335
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_7dfe693742371f::t_4ca230ffacd062 13,102,287,292,322,434,1217,1259,1290,1308,1318,1328
+packages/workshop-frontend/src/ShareModal.tsx
+  s_7dfe693742371f::t_3cf8b85720e869 13,52
+packages/workshop-frontend/src/components/AppShell/CommandPalette.tsx
+  s_7dfe693742371f::t_6aa3270e37b1f1 11,31,150,183
+packages/workshop-frontend/src/components/AppShell/SidebarGadgetRow.tsx
+  s_7dfe693742371f::t_633c3aa7e3e5dc 6,32,34-38
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_7dfe693742371f::t_7dc21c99563617 23,46,48-55,77,83,85,97,128-129,135,144,156,158,170,173,185,193,195
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_7dfe693742371f::t_798b0d23f3ca56 7,49-55,188,194,198,201,213,246,255,258,276,279,291,318,321-322,334
+packages/workshop-frontend/src/components/RecentApps.tsx
+  s_7dfe693742371f::t_3a6c4751f7f822 5,35,75,81
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_7dfe693742371f::t_de391545be31bd 7,101,104,107,110
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_7dfe693742371f::t_18084c2ef64a8b 4-5,40-41,43,45
+packages/workshop-frontend/src/components/format/useOutputFormats.ts
+  s_7dfe693742371f::t_d1759c1c70099c 68
+packages/workshop-frontend/src/homePromptFlow.test.tsx
+  s_7dfe693742371f::t_0a0863a627c581 10,13,17,84
+packages/workshop-frontend/src/routes/index.tsx
+  s_7dfe693742371f::t_de43462e861f8c 101
+packages/workshop-frontend/src/routes/outputs.tsx
+  s_7dfe693742371f::t_e7aef276f22db6 488,512
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_7dfe693742371f::t_f015ff1cccfb7c 9-10,12,37,44,118,127,150
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_7dfe693742371f::t_a595d04808f24e 5,34,47,119
+packages/workshop-shared/src/api.ts
+  s_7dfe693742371f::t_cc6daa46bddb9c 397-398,404-406,408-411,416-417,419-420,658,661-662,664,667-668,671-673,675-676,681-682,685-686,688,691,693,697,708-709,819-820,822,873,882,2197,2199,2213,2220,2226,2233,2241,2263-2264,2266,2313-2314,2355,2651,2662,2667,2671,2916,4243,5484
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "43ff8f5e26987c0b6ad62eec1666bfdabd2ec80f",
+  "prompts": {},
+  "sessions": {
+    "s_7dfe693742371f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284f7677-ca13-40a4-af48-4e4872d6f382",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
