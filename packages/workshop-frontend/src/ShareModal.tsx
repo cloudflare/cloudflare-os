@@ -1,8 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Checkbox, Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
-import type { PortalContainer } from '@cloudflare/kumo'
-import { CaretDown, Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, X } from '@phosphor-icons/react'
+import { Checkbox, Dialog, useKumoToastManager } from '@cloudflare/kumo'
+import { Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
   Overseer,
@@ -12,8 +11,10 @@ import {
   ShareLinkInfo,
   WorkspaceMetadata,
   AiChatAuthorInfo,
-  CollaboratorRole,
+  CollaboratorGrant,
   ObserverBindingNeed,
+  PermissionEdge,
+  WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
@@ -22,9 +23,38 @@ import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
 import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
 
-type CollaboratorRow =
-  | { kind: 'owner'; profile: AiChatAuthorInfo }
-  | { kind: 'collaborator'; info: CollaboratorInfo }
+/**
+ * What a share dialog hands out: the workspace, whose members edit every gadget and use chat
+ * ("build"), or one gadget's deployed UI.
+ */
+export type ShareTarget =
+  | { kind: 'workspace' }
+  | { kind: 'gadget'; gadgetId: WorkpieceId; title: string }
+
+function grantFor(gadgetId: WorkpieceId | undefined): CollaboratorGrant {
+  return gadgetId === undefined ? 'build' : { gadgetId }
+}
+
+// What one permission edge grants, in the terms the dialogs list people under: the workspace, one
+// gadget, or every gadget without editing -- a "use" grant from before gadgets were shared one at
+// a time, which can no longer be made but still holds.
+type EdgeScope = 'workspace' | 'legacy' | WorkpieceId
+
+function edgeScope(edge: PermissionEdge): EdgeScope {
+  if ((edge.role ?? 'build') === 'build') return 'workspace'
+  return edge.gadgetId ?? 'legacy'
+}
+
+const LEGACY_ACCESS_LABEL = 'All gadgets · Cannot edit'
+
+// Where a recipient lands: the workspace, opened on the shared gadget if there is one. A share
+// link carries its key in the fragment, which browsers never send to a server.
+function destinationUrl(workspaceId: string, gadgetId: WorkpieceId | undefined, key?: string): string {
+  const url = new URL(`/workspace/${workspaceId}`, window.location.origin)
+  if (gadgetId !== undefined) url.searchParams.set('w', String(gadgetId))
+  if (key !== undefined) url.hash = `share=${key}`
+  return url.href
+}
 
 // A person queued in the composer but not yet invited. `error` is set when their invite failed so
 // the chip stays for correction while everyone else's goes through.
@@ -50,6 +80,7 @@ type Props = {
   onClose: () => void
   overseer: RpcStub<Overseer>
   metadata: WorkspaceMetadata
+  target: ShareTarget
   currentUser: AiChatAuthorInfo | null
   authenticatedApi: RpcStub<AuthenticatedApi>
 }
@@ -67,93 +98,6 @@ function formatRelativeTime(date: Date): string {
   if (diffHours < 24) return `${diffHours}h ago`
   if (diffDays < 7) return `${diffDays}d ago`
   return date.toLocaleDateString()
-}
-
-const ROLE_LABELS: Record<CollaboratorRole, string> = {
-  build: 'Workspace',
-  use: 'Gadget only',
-}
-
-const ROLE_DESCRIPTIONS: Record<CollaboratorRole, string> = {
-  build: 'Edit gadgets, use chat, and manage access.',
-  use: 'Use gadgets without agent chat or editing.',
-}
-
-function roleLabel(role: CollaboratorRole | undefined): string {
-  return ROLE_LABELS[role ?? 'build']
-}
-
-const ROLE_OPTIONS: CollaboratorRole[] = ['build', 'use']
-
-function RoleMenu({
-  value,
-  onValueChange,
-  disabled,
-  ariaLabel,
-  container,
-}: {
-  value: CollaboratorRole
-  onValueChange: (role: CollaboratorRole) => void
-  disabled?: boolean
-  ariaLabel: string
-  container?: PortalContainer
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenu.Trigger
-        disabled={disabled}
-        render={
-          <button
-            type="button"
-            className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[12px] leading-4 font-medium text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label={ariaLabel}
-          >
-            {roleLabel(value)}
-            <CaretDown size={11} weight="bold" className="text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180" />
-          </button>
-        }
-      />
-      <DropdownMenu.Content
-        container={container}
-        align="end"
-        sideOffset={6}
-        className="themed-floating-shadow-lg !z-[1100] !w-[300px] !min-w-0 rounded-2xl border border-kumo-line/70 bg-kumo-base p-1 !ring-kumo-line"
-      >
-        {ROLE_OPTIONS.map(role => (
-          <DropdownMenu.Item
-            key={role}
-            onClick={() => onValueChange(role)}
-            className="!h-auto cursor-pointer rounded-xl !px-2.5 !py-2 text-kumo-default transition-colors data-highlighted:bg-kumo-tint/70"
-          >
-            <span className="min-w-0 flex-1">
-              <span className="block text-[12px] leading-4 font-medium">{roleLabel(role)}</span>
-              <span className="mt-0.5 block text-[11px] leading-4 font-normal text-kumo-subtle">
-                {ROLE_DESCRIPTIONS[role]}
-              </span>
-            </span>
-            <span className="ml-2 flex h-4 w-4 shrink-0 items-center justify-center">
-              {value === role && <Check size={13} weight="bold" className="text-kumo-brand" />}
-            </span>
-          </DropdownMenu.Item>
-        ))}
-      </DropdownMenu.Content>
-    </DropdownMenu>
-  )
-}
-
-function RoleBadge({ role }: { role: CollaboratorRole | undefined }) {
-  const isBuild = (role ?? 'build') === 'build'
-  return (
-    <span
-      className={`shrink-0 rounded-full border px-2.5 py-[3px] text-[11px] leading-4 font-medium tracking-[-0.1px] ${
-        isBuild
-          ? 'border-kumo-line bg-kumo-tint/70 text-kumo-default'
-          : 'border-kumo-line/70 bg-kumo-base text-kumo-subtle'
-      }`}
-    >
-      {roleLabel(role)}
-    </span>
-  )
 }
 
 function InlineConfirm({
@@ -239,21 +183,15 @@ function DependentKeepList({
   )
 }
 
-// What a recipient is asked to do before the workspace will open for them. Recipients don't
-// inherit the owner's connections: they must point their own account at each connection in scope
-// for the selected access level, so sharers should know that cost before they invite anyone.
+// What a recipient is asked to do before what they were given will open for them. Recipients
+// don't inherit the owner's connections: they must point their own account at each connection in
+// scope, so sharers should know that cost before they invite anyone.
 function RecipientVerification({
   requirements,
   failed,
-  role,
-  headingId,
-  heading,
 }: {
   requirements: ObserverBindingNeed[] | null
   failed: boolean
-  role?: CollaboratorRole
-  headingId: string
-  heading: string
 }) {
   let body: ReactNode
   if (failed) {
@@ -269,9 +207,7 @@ function RecipientVerification({
     body = (
       <div className="rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 py-2.5">
         <p className="text-[12px] leading-[16px] tracking-[-0.15px] text-kumo-subtle">
-          {role ? (
-            <>People with <span className="font-medium text-kumo-default">{roleLabel(role)}</span> access must</>
-          ) : 'Recipients must'} prove their own account can reach:
+          Recipients must prove their own account can reach:
         </p>
         <ul className="mt-1.5 max-h-32 space-y-1 overflow-y-auto">
           {requirements.map(requirement => (
@@ -292,11 +228,11 @@ function RecipientVerification({
   }
 
   return (
-    <section aria-labelledby={headingId} className="mt-4">
+    <section aria-labelledby="recipient-verification-heading" className="mt-4">
       <div className="mb-2 flex items-center gap-1.5 px-1">
         <ShieldCheck size={13} className="text-kumo-inactive" />
-        <h3 id={headingId} className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
-          {heading}
+        <h3 id="recipient-verification-heading" className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
+          Recipient verification
         </h3>
       </div>
       {body}
@@ -304,15 +240,7 @@ function RecipientVerification({
   )
 }
 
-function sameRequirements(
-  left: ObserverBindingNeed[],
-  right: ObserverBindingNeed[],
-): boolean {
-  return left.length === right.length &&
-    left.every((requirement, index) => requirement.gatekeeperId === right[index].gatekeeperId)
-}
-
-export default function ShareModal({ open, onClose, overseer, metadata, currentUser, authenticatedApi }: Props) {
+export default function ShareModal({ open, onClose, overseer, metadata, target, currentUser, authenticatedApi }: Props) {
   const toasts = useKumoToastManager()
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
   const [membershipStatus, setMembershipStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
@@ -333,20 +261,26 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const wasOpenRef = useRef(false)
   const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? false
   const isOwner = !metadata.owner
+  const gadgetId = target.kind === 'gadget' ? target.gadgetId : undefined
   const containsRestrictedData = metadata.containsRestrictedData === true
   // The server refuses share links and non-owner invites once this is set; hide those controls.
   const ownerInvitesOnly = metadata.ownerInvitesOnly === true
   const canInvite = !ownerInvitesOnly || isOwner
   const canUseShareLinks = !ownerInvitesOnly
   const directoryQuery = addUsername.trim()
-  // Everyone already on the workspace: the caller, the owner (absent from listCollaborators()
-  // when the caller is a collaborator), and every collaborator -- plus everyone already staged.
+  // Everyone who already holds what this dialog grants -- the caller, the owner (absent from
+  // listCollaborators() when the caller is a collaborator), and collaborators with the workspace or
+  // with this gadget -- plus everyone already staged. Anyone else can still be given it, such as a
+  // gadget's recipient being invited to the whole workspace.
   const directoryExcludeIds = useMemo(() => [
     ...(currentUser ? [currentUser.id] : []),
     ...(metadata.owner ? [metadata.owner.id] : []),
-    ...collaborators.map(({ profile }) => profile.id),
+    ...collaborators
+      .filter(({ access }) => access.role === 'build' || (gadgetId !== undefined &&
+        (access.gadgetIds === 'all' || access.gadgetIds.includes(gadgetId))))
+      .map(({ profile }) => profile.id),
     ...staged.map(recipient => recipient.id),
-  ], [collaborators, currentUser, metadata.owner, staged])
+  ], [collaborators, currentUser, gadgetId, metadata.owner, staged])
   const membershipSettled = open && wasOpenRef.current && membershipStatus !== 'loading'
   const membershipReady = membershipSettled && membershipStatus === 'ready'
   const directorySearching = userSearchEnabled && membershipReady && directoryQuery !== ''
@@ -385,17 +319,14 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Nothing is sent while the field holds text that cannot be staged yet (its search is still
   // pending), so the button waits too: Enter already does, and a click would silently drop the name.
   const canSubmitInvite = inviteCount > 0 && (directoryQuery === '' || typedRecipient !== null)
-  const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
-  const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
   const [newLinkNote, setNewLinkNote] = useState('')
   const [newShareLink, setNewShareLink] = useState<string | null>(null)
   const [newShareLinkId, setNewShareLinkId] = useState<string | null>(null)
   const [newShareLinkCopied, setNewShareLinkCopied] = useState(false)
   const [invitedNames, setInvitedNames] = useState<string[]>([])
   const [invitedLinkCopied, setInvitedLinkCopied] = useState(false)
-  const [requirements, setRequirements] =
-    useState<Record<CollaboratorRole, ObserverBindingNeed[]> | null>(null)
+  const [requirements, setRequirements] = useState<ObserverBindingNeed[] | null>(null)
   const [requirementsFailed, setRequirementsFailed] = useState(false)
   const [creatingLink, setCreatingLink] = useState(false)
   const [showLinkComposer, setShowLinkComposer] = useState(false)
@@ -404,7 +335,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const creatingLinkRef = useRef(false)
   const addingRef = useRef(false)
   const landedTimerRef = useRef<number | null>(null)
-  const [menuContainer, setMenuContainer] = useState<HTMLDivElement | null>(null)
   const [directoryPortalContainer, setDirectoryPortalContainer] =
     useState<HTMLDivElement | null>(null)
   const [scrolled, setScrolled] = useState(false)
@@ -504,18 +434,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }, [activeDirectoryIndex, directoryOpen, directory.results])
 
-  useEffect(() => {
-    const element = document.createElement('div')
-    element.style.position = 'relative'
-    element.style.zIndex = '1100'
-    document.body.appendChild(element)
-    setMenuContainer(element)
-    return () => {
-      setMenuContainer(null)
-      element.remove()
-    }
-  }, [])
-
   const loadData = useCallback(async () => {
     try {
       const [collabs, keys] = await Promise.all([
@@ -544,12 +462,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     const refresh = () => {
       const thisRequest = ++requestId
       setRequirementsFailed(false)
-      Promise.all([
-        overseer.listObserverRequirements('use'),
-        overseer.listObserverRequirements('build'),
-      ])
-        .then(([use, build]) => {
-          if (!cancelled && thisRequest === requestId) setRequirements({ use, build })
+      overseer.listObserverRequirements(grantFor(gadgetId))
+        .then(next => {
+          if (!cancelled && thisRequest === requestId) setRequirements(next)
         })
         .catch(err => {
           console.error('Failed to load observer requirements:', err)
@@ -562,7 +477,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       cancelled = true
       window.removeEventListener('focus', refresh)
     }
-  }, [open, overseer])
+  }, [open, overseer, gadgetId])
 
   useEffect(() => {
     if (open) {
@@ -600,78 +515,31 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [open, loadData])
 
   const ownerProfile: AiChatAuthorInfo | null = isOwner ? currentUser : (metadata.owner ?? null)
-  const collaboratorRows: CollaboratorRow[] = [
-    ...(ownerProfile ? [{ kind: 'owner' as const, profile: ownerProfile }] : []),
-    ...collaborators.map(info => ({ kind: 'collaborator' as const, info })),
-  ]
+  // The workspace dialog lists the workspace's members. A gadget's lists the people given that
+  // gadget, since every member holds it anyway. Legacy access covers every gadget, so both list it.
+  const members = collaborators.filter(({ access }) => gadgetId === undefined
+    ? access.role === 'build'
+    : access.role === 'use' && access.gadgetIds !== 'all' && access.gadgetIds.includes(gadgetId))
+  const legacyCollaborators = collaborators.filter(({ access }) =>
+    access.role === 'use' && access.gadgetIds === 'all')
   const sortedShareLinks = useMemo(
     () => [...shareLinks].toSorted((a, b) => b.created.getTime() - a.created.getTime()),
     [shareLinks],
   )
-  let recipientVerification: ReactNode = null
-  if (!canInvite) {
-    // Nothing this user can do here admits a recipient, so there is nothing to verify.
-  } else if (requirementsFailed) {
-    recipientVerification = (
-      <RecipientVerification
-        requirements={null}
-        failed
-        headingId="recipient-verification-heading"
-        heading="Recipient verification"
-      />
-    )
-  } else if (requirements !== null) {
-    const inviteRequirements = requirements[addRole]
-    if (!canUseShareLinks || (!showLinkComposer && !newShareLink)) {
-      recipientVerification = (
-        <RecipientVerification
-          requirements={inviteRequirements}
-          failed={false}
-          role={addRole}
-          headingId="recipient-verification-heading"
-          heading="Recipient verification"
-        />
-      )
-    } else {
-      const linkRequirements = requirements[newLinkRole]
-      if (sameRequirements(inviteRequirements, linkRequirements)) {
-        recipientVerification = (
-          <RecipientVerification
-            requirements={inviteRequirements}
-            failed={false}
-            role={addRole === newLinkRole ? addRole : undefined}
-            headingId="recipient-verification-heading"
-            heading="Recipient verification"
-          />
-        )
-      } else {
-        recipientVerification = (
-          <>
-            <RecipientVerification
-              requirements={inviteRequirements}
-              failed={false}
-              role={addRole}
-              headingId="invite-verification-heading"
-              heading="Direct invite verification"
-            />
-            <RecipientVerification
-              requirements={linkRequirements}
-              failed={false}
-              role={newLinkRole}
-              headingId="link-verification-heading"
-              heading="Share-link verification"
-            />
-          </>
-        )
-      }
-    }
-  }
+  // Links to one gadget name it; a link naming none grants the workspace (or, legacy, every gadget).
+  const visibleShareLinks = sortedShareLinks.filter(link => link.gadgetId === gadgetId)
+  // Someone who can't invite has no recipient to verify.
+  const recipientVerification = canInvite && (requirementsFailed || requirements !== null)
+    ? <RecipientVerification requirements={requirements} failed={requirementsFailed} />
+    : null
   const removeTarget = confirmationTarget?.kind === 'remove' ? confirmationTarget : null
   const revokeTarget = confirmationTarget?.kind === 'revoke' ? confirmationTarget : null
 
-  const describeAccess = (info: CollaboratorInfo): string => {
-    if (info.addedBy.length > 1) return `Access from ${info.addedBy.length} sources`
-    const edge = info.addedBy[0]
+  // How someone got the access a row lists, ignoring their grants of anything else.
+  const describeAccess = (info: CollaboratorInfo, scope: EdgeScope): string => {
+    const edges = info.addedBy.filter(edge => edgeScope(edge) === scope)
+    if (edges.length > 1) return `Access from ${edges.length} sources`
+    const edge = edges[0]
     if (!edge) return 'Collaborator'
     if (edge.type === 'user') return `Added directly by ${edge.sharer}`
     const key = shareLinks.find(item => item.linkId === edge.keyId)
@@ -688,12 +556,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }
 
-  // Where an invited collaborator opens the workspace. Adding them already granted access, so this
-  // carries no secret and is safe to show and re-show — unlike a share link, whose URL embeds a key.
-  const workspaceUrl = `${window.location.origin}/workspace/${metadata.id}`
+  // Where an invited collaborator opens what they were given. Adding them already granted access,
+  // so this carries no secret and is safe to show and re-show — unlike a share link's URL.
+  const invitedUrl = destinationUrl(metadata.id, gadgetId)
 
-  const copyWorkspaceUrl = async () => {
-    if (await copyToClipboard(workspaceUrl)) {
+  const copyInvitedUrl = async () => {
+    if (await copyToClipboard(invitedUrl)) {
       setInvitedLinkCopied(true)
     } else {
       toasts.add({ title: 'Could not copy the workspace link.', variant: 'error' })
@@ -778,7 +646,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     setAdding(true)
     try {
       const settled = await Promise.allSettled(
-        recipients.map(recipient => overseer.addCollaborator(recipient.id, addRole, undefined)))
+        recipients.map(recipient => overseer.addCollaborator(recipient.id, grantFor(gadgetId), undefined)))
       const added: AiChatAuthorInfo[] = []
       const failed: StagedRecipient[] = []
       settled.forEach((outcome, index) => {
@@ -827,8 +695,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     setCreatingLink(true)
     try {
       const { key, linkId } = await overseer.createShareLink(
-        newLinkRole, newLinkNote.trim() || undefined)
-      const url = `${window.location.origin}/workspace/${metadata.id}#share=${key}`
+        grantFor(gadgetId), newLinkNote.trim() || undefined)
+      const url = destinationUrl(metadata.id, gadgetId, key)
       setNewShareLink(url)
       setNewShareLinkCopied(false)
       setNewLinkNote('')
@@ -847,7 +715,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
 
   // Copy a share link again. Secrets are never stored, so the previously-shown URL can't be
   // re-displayed. We mint a new secret for the same logical link and copy that.
-  const handleCopyShareLink = async (linkId: string) => {
+  const handleCopyShareLink = async (link: ShareLinkInfo) => {
+    const { linkId } = link
     if (copyingLinkRef.current) return
     copyingLinkRef.current = true
     setCopyingLinkId(linkId)
@@ -856,7 +725,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       let url = copiedUrlsRef.current.get(linkId)
       if (!url) {
         const { key } = await overseer.newShareLinkKey(linkId)
-        url = `${window.location.origin}/workspace/${metadata.id}#share=${key}`
+        url = destinationUrl(metadata.id, link.gadgetId, key)
         copiedUrlsRef.current.set(linkId, url)
       }
       const copied = await copyToClipboard(url)
@@ -883,7 +752,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const handleStartRemoveCollaborator = async (profileId: string) => {
     setConfirmationTarget({ kind: 'remove', profileId, dependents: [], previewing: true, keepSet: new Set() })
     try {
-      const dependents = await overseer.previewRemoveCollaborator(profileId)
+      const dependents = await overseer.previewRemoveCollaborator(profileId, gadgetId)
       setConfirmationTarget(current => current?.kind === 'remove' && current.profileId === profileId
         ? { ...current, dependents, previewing: false }
         : current)
@@ -897,11 +766,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     if (!removeTarget || removeTarget.previewing || confirmationBusy) return
     setConfirmationBusy(true)
     try {
-      const removed = await overseer.removeCollaborator(removeTarget.profileId, [...removeTarget.keepSet])
+      const removed = await overseer.removeCollaborator(
+        removeTarget.profileId, [...removeTarget.keepSet], gadgetId)
       setConfirmationTarget(null)
       toasts.add({
         title: removed.length > 0
-          ? 'Collaborator removed.'
+          ? (gadgetId === undefined ? 'Collaborator removed.' : 'Removed their access to this gadget.')
           : 'Your direct grant was removed. This collaborator still has access through another source.',
         variant: 'success',
       })
@@ -984,6 +854,71 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }
 
+  // One collaborator's row: who they are, how they got the access this dialog lists, and, where
+  // they can be removed from here, the removal flow with its choice of dependents to keep.
+  const renderCollaborator = (info: CollaboratorInfo, scope: EdgeScope, label: string, removable: boolean) => {
+    const { profile } = info
+    const removing = removeTarget?.profileId === profile.id ? removeTarget : null
+    const downstreamDependents = removing
+      ? removing.dependents.filter(dep => dep.profile.id !== profile.id)
+      : []
+    return (
+      <div key={profile.id} className={`group ${landedPersonIds.has(profile.id) ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
+        <div className="flex items-center gap-3">
+          <PersonAvatar api={authenticatedApi} userId={profile.id} name={profile.name} size={32} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">
+              {profile.name}{profile.id === currentUser?.id ? ' (you)' : ''}
+            </p>
+            <p className="truncate text-[12px] leading-[15px] tracking-[-0.15px] text-kumo-subtle">
+              {describeAccess(info, scope)}
+            </p>
+          </div>
+          {removing ? (
+            <InlineConfirm
+              label="Remove"
+              busy={removing.previewing || confirmationBusy}
+              busyLabel={removing.previewing ? 'Checking…' : undefined}
+              onConfirm={handleConfirmRemoveCollaborator}
+              onCancel={() => setConfirmationTarget(null)}
+            />
+          ) : (
+            <>
+              <span className="px-2 text-[12px] text-kumo-subtle">{label}</span>
+              {removable && (
+                <WorkshopIconButton
+                  danger
+                  className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                  onClick={() => handleStartRemoveCollaborator(profile.id)}
+                  aria-label={`Remove ${profile.name}`}
+                  disabled={confirmationBusy}
+                >
+                  <Trash size={13} />
+                </WorkshopIconButton>
+              )}
+            </>
+          )}
+        </div>
+        {removing && downstreamDependents.length > 0 && (
+          <div className="mt-2.5 share-expand-in">
+            <p className="mb-1.5 text-[12px] leading-4 text-kumo-subtle">
+              {downstreamDependents.length} other {downstreamDependents.length === 1 ? 'person loses' : 'people lose'} access through {profile.name}. Keep anyone?
+            </p>
+            <DependentKeepList
+              dependents={downstreamDependents}
+              keepSet={removing.keepSet}
+              onKeepSetChange={(keepSet) => setConfirmationTarget(current =>
+                current?.kind === 'remove' && current.profileId === profile.id
+                  ? { ...current, keepSet }
+                  : current
+              )}
+            />
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <Dialog
@@ -993,7 +928,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         <div className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
           <div className="min-w-0">
             <Dialog.Title className="truncate text-[18px] leading-6 font-medium tracking-[-0.4px] text-kumo-default">
-              Share “{metadata.title}”
+              {target.kind === 'gadget' ? `Share “${target.title}”` : `Invite to “${metadata.title}”`}
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
               {canUseShareLinks
@@ -1023,13 +958,13 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
                   This workspace has read data from a connection that doesn’t allow share links, so
                   only the owner can add people. People the owner invites are asked to verify their
-                  own access to the connections it uses at their access level — some may be unable to
+                  own access to the connections it uses — some may be unable to
                   open it. Anything the workspace has already saved is visible to everyone who can.
                 </p>
               ) : (
                 <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
                   This workspace has read sensitive data. People you invite are asked to verify their
-                  own access to the connections it uses at their access level — some may be unable to
+                  own access to the connections it uses — some may be unable to
                   open it. Anything the workspace has already saved is visible to everyone who can.
                 </p>
               )}
@@ -1106,12 +1041,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 className="h-9 min-w-0 grow basis-32 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
               />
             </div>
-            <RoleMenu
-              ariaLabel="Access to grant"
-              value={addRole}
-              onValueChange={setAddRole}
-              container={menuContainer}
-            />
             <WorkshopButton
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
@@ -1228,9 +1157,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                     {invitedLinkCopied ? 'Link copied to your clipboard' : 'Send them this link to open it'}
                   </span>
                 </div>
-                <p className="truncate font-mono text-[11px] leading-4 text-kumo-subtle">{workspaceUrl}</p>
+                <p className="truncate font-mono text-[11px] leading-4 text-kumo-subtle">{invitedUrl}</p>
               </div>
-              <WorkshopButton tone="primary" onClick={copyWorkspaceUrl} className="gap-1.5 !rounded-xl">
+              <WorkshopButton tone="primary" onClick={copyInvitedUrl} className="gap-1.5 !rounded-xl">
                 {invitedLinkCopied ? <Check size={13} weight="bold" /> : <Copy size={13} />}
                 {invitedLinkCopied ? 'Copied' : 'Copy link'}
               </WorkshopButton>
@@ -1288,13 +1217,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
                       disabled={creatingLink}
                     />
-                    <RoleMenu
-                      ariaLabel="Access granted by link"
-                      value={newLinkRole}
-                      onValueChange={setNewLinkRole}
-                      disabled={creatingLink}
-                      container={menuContainer}
-                    />
                     <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink}>
                       {creatingLink ? 'Creating…' : 'Create link'}
                     </WorkshopButton>
@@ -1325,74 +1247,54 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 People with access
               </h3>
             </div>
-            <div className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
-              {collaboratorRows.map((row, index) => {
-                const profile = row.kind === 'owner' ? row.profile : row.info.profile
-                const key = row.kind === 'owner' ? '__owner__' : row.info.profile.id
-                const isRemoving = row.kind === 'collaborator' && removeTarget?.profileId === row.info.profile.id
-                const downstreamDependents = isRemoving && removeTarget
-                  ? removeTarget.dependents.filter(dep => dep.profile.id !== profile.id)
-                  : []
-                return (
-                  <div key={key} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedPersonIds.has(profile.id) ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
-                    <div className="flex items-center gap-3">
-                      <PersonAvatar api={authenticatedApi} userId={profile.id} name={profile.name} size={32} />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">
-                          {profile.name}{profile.id === currentUser?.id ? ' (you)' : ''}
-                        </p>
-                        <p className="truncate text-[12px] leading-[15px] tracking-[-0.15px] text-kumo-subtle">
-                          {row.kind === 'owner' ? profile.id : describeAccess(row.info)}
-                        </p>
-                      </div>
-                      {row.kind === 'owner' ? (
-                        <span className="px-2 text-[12px] text-kumo-subtle">Owner</span>
-                      ) : isRemoving ? (
-                        <InlineConfirm
-                          label="Remove"
-                          busy={removeTarget.previewing || confirmationBusy}
-                          busyLabel={removeTarget.previewing ? 'Checking…' : undefined}
-                          onConfirm={handleConfirmRemoveCollaborator}
-                          onCancel={() => setConfirmationTarget(null)}
-                        />
-                      ) : (
-                        <>
-                          <RoleBadge role={row.info.role} />
-                          <WorkshopIconButton
-                            danger
-                            className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                            onClick={() => handleStartRemoveCollaborator(row.info.profile.id)}
-                            aria-label={`Remove ${profile.name}`}
-                            disabled={confirmationBusy}
-                          >
-                            <Trash size={13} />
-                          </WorkshopIconButton>
-                        </>
-                      )}
+            <div className="divide-y divide-kumo-line/70 overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
+              {ownerProfile && (
+                <div className="px-3 py-2.5 transition-colors duration-150 hover:bg-kumo-elevated/50">
+                  <div className="flex items-center gap-3">
+                    <PersonAvatar api={authenticatedApi} userId={ownerProfile.id} name={ownerProfile.name} size={32} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">
+                        {ownerProfile.name}{ownerProfile.id === currentUser?.id ? ' (you)' : ''}
+                      </p>
+                      <p className="truncate text-[12px] leading-[15px] tracking-[-0.15px] text-kumo-subtle">
+                        {ownerProfile.id}
+                      </p>
                     </div>
-                    {isRemoving && downstreamDependents.length > 0 && (
-                      <div className="mt-2.5 share-expand-in">
-                        <p className="mb-1.5 text-[12px] leading-4 text-kumo-subtle">
-                          {downstreamDependents.length} other {downstreamDependents.length === 1 ? 'person loses' : 'people lose'} access through {profile.name}. Keep anyone?
-                        </p>
-                        <DependentKeepList
-                          dependents={downstreamDependents}
-                          keepSet={removeTarget.keepSet}
-                          onKeepSetChange={(keepSet) => setConfirmationTarget(current =>
-                            current?.kind === 'remove' && current.profileId === removeTarget.profileId
-                              ? { ...current, keepSet }
-                              : current
-                          )}
-                        />
-                      </div>
-                    )}
+                    <span className="px-2 text-[12px] text-kumo-subtle">Owner</span>
                   </div>
-                )
-              })}
+                </div>
+              )}
+              {gadgetId !== undefined && (
+                <div className="flex items-center gap-3 px-3 py-2.5">
+                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-kumo-tint to-kumo-elevated text-kumo-subtle ring-1 ring-inset ring-kumo-line/60">
+                    <UsersThree size={15} />
+                  </div>
+                  <p className="min-w-0 flex-1 truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">
+                    People in this workspace
+                  </p>
+                  <span className="px-2 text-[12px] text-kumo-subtle">Can edit</span>
+                </div>
+              )}
+              {members.map(info => renderCollaborator(info, gadgetId ?? 'workspace', 'Member', true))}
             </div>
           </section>
 
-          {shareLinks.length > 0 && (
+          {legacyCollaborators.length > 0 && (
+          <section aria-labelledby="legacy-heading" className="mt-4">
+            <div className="mb-2 px-1">
+              <h3 id="legacy-heading" className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
+                Legacy access
+              </h3>
+            </div>
+            <div className="divide-y divide-kumo-line/70 overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
+              {/* Removal takes all of someone's legacy access, so only the workspace dialog offers it. */}
+              {legacyCollaborators.map(info =>
+                renderCollaborator(info, 'legacy', LEGACY_ACCESS_LABEL, gadgetId === undefined))}
+            </div>
+          </section>
+          )}
+
+          {visibleShareLinks.length > 0 && (
           <section aria-labelledby="links-heading" className="mt-4">
             <div className="mb-2 px-1">
               <h3 id="links-heading" className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
@@ -1401,9 +1303,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             </div>
 
               <div className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
-                {sortedShareLinks.map((sk, index) => {
+                {visibleShareLinks.map((sk, index) => {
                   const isRevoking = revokeTarget?.linkId === sk.linkId
                   const isRenaming = editingShareLinkId === sk.linkId
+                  // A legacy link grants every gadget, which links no longer may, so it can't be copied.
+                  const isLegacyLink = sk.role === 'use' && sk.gadgetId === undefined
                   return (
                     <div key={sk.linkId} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedShareLinkId === sk.linkId ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
                       <div className="flex items-center gap-3">
@@ -1449,11 +1353,13 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                           />
                         ) : (
                           <>
-                            <RoleBadge role={sk.role} />
-                            {canUseShareLinks && (
+                            {isLegacyLink && (
+                              <span className="px-2 text-[12px] text-kumo-subtle">{LEGACY_ACCESS_LABEL}</span>
+                            )}
+                            {canUseShareLinks && !isLegacyLink && (
                               <WorkshopIconButton
                                 className="!h-7 !w-7"
-                                onClick={() => handleCopyShareLink(sk.linkId)}
+                                onClick={() => handleCopyShareLink(sk)}
                                 aria-label={`Copy ${sk.note || 'share link'}`}
                                 disabled={confirmationBusy || copyingLinkId === sk.linkId}
                               >

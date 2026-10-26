@@ -8,11 +8,13 @@ import { RpcPromise, type RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
+  CollaboratorAccess,
+  CollaboratorGrant,
   CollaboratorInfo,
-  CollaboratorRole,
   WorkspaceMetadata,
   ObserverBindingNeed,
   Overseer,
+  PermissionEdge,
   ServerConfig,
   ShareLinkInfo,
   UserDirectoryRecord,
@@ -53,20 +55,9 @@ vi.mock('@cloudflare/kumo', () => {
         render({ 'aria-label': 'Close' }),
     },
   )
-  const DropdownMenu = Object.assign(
-    ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    {
-      Trigger: ({ render }: { render: ReactElement }) => render,
-      Content: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-      Item: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => (
-        <button type="button" data-testid="role-option" onClick={onClick}>{children}</button>
-      ),
-    },
-  )
   return {
     Checkbox: ({ label }: { label: ReactNode }) => <label>{label}</label>,
     Dialog,
-    DropdownMenu,
     useKumoToastManager: () => ({ add: toastAdd }),
   }
 })
@@ -97,10 +88,13 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-import ShareModal from './ShareModal'
+import ShareModal, { type ShareTarget } from './ShareModal'
 
 const METADATA = { id: 'trip-planner', title: 'Trip planner' } as WorkspaceMetadata
 const WORKSPACE_URL = `${window.location.origin}/workspace/trip-planner`
+// Gadget id 0 catches code that tests the id for truthiness instead of presence.
+const GADGET_TARGET: ShareTarget = { kind: 'gadget', gadgetId: 0, title: 'Itinerary' }
+const GADGET_URL = `${WORKSPACE_URL}?w=0`
 
 const CURRENT_USER: AiChatAuthorInfo = { type: 'user', id: 'dan@cloudflare.com', name: 'Dan' }
 
@@ -122,38 +116,36 @@ const SHARE_LINK: ShareLinkInfo = {
   note: 'Team link',
   created: new Date('2026-08-01T00:00:00Z'),
   createdBy: CURRENT_USER,
-  role: 'use',
+  role: 'build',
 }
 
 type OverseerOverrides = {
-  requirements?: Partial<Record<CollaboratorRole, ObserverBindingNeed[]>>
-  listObserverRequirements?: (role: CollaboratorRole) => Promise<ObserverBindingNeed[]>
+  requirements?: ObserverBindingNeed[]
+  listObserverRequirements?: Overseer['listObserverRequirements']
   collaborators?: CollaboratorInfo[]
   listCollaborators?: () => Promise<CollaboratorInfo[]>
   shareLinks?: ShareLinkInfo[]
   updateShareLink?: (linkId: string, note?: string) => Promise<void>
-  addCollaborator?: (
-    userId: string,
-    role: CollaboratorRole,
-    note?: string,
-  ) => Promise<CollaboratorInfo | null>
+  addCollaborator?: Overseer['addCollaborator']
+  createShareLink?: Overseer['createShareLink']
+  newShareLinkKey?: Overseer['newShareLinkKey']
+  previewRemoveCollaborator?: Overseer['previewRemoveCollaborator']
+  removeCollaborator?: Overseer['removeCollaborator']
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
-  const requirements = overrides.requirements ?? { use: [], build: [] }
   return {
     listCollaborators: overrides.listCollaborators ?? (async () => overrides.collaborators ?? []),
     listShareLinks: async () => overrides.shareLinks ?? [],
     listObserverRequirements:
-      overrides.listObserverRequirements ??
-      (async (role: CollaboratorRole) => requirements[role] ?? []),
-    addCollaborator: overrides.addCollaborator ?? (async () => ({
-      profile: { type: 'user', id: 'ada@cloudflare.com', name: 'Ada' },
-      role: 'use',
-      addedBy: [],
-    })),
-    createShareLink: async () => ({ key: 'secret', linkId: 'link-1' }),
+      overrides.listObserverRequirements ?? (async () => overrides.requirements ?? []),
+    addCollaborator: overrides.addCollaborator ??
+      (async (userId: string, grant: CollaboratorGrant) => profileFor(userId, grant, 'Ada')),
+    createShareLink: overrides.createShareLink ?? (async () => ({ key: 'secret', linkId: 'link-1' })),
+    newShareLinkKey: overrides.newShareLinkKey ?? (async () => ({ key: 'fresh' })),
     updateShareLink: overrides.updateShareLink ?? (async () => {}),
+    previewRemoveCollaborator: overrides.previewRemoveCollaborator ?? (async () => []),
+    removeCollaborator: overrides.removeCollaborator ?? (async () => []),
   } as unknown as RpcStub<Overseer>
 }
 
@@ -186,17 +178,17 @@ function button(rendered: HTMLElement, label: string): HTMLButtonElement {
   return found
 }
 
-function roleOption(rendered: HTMLElement, label: string): HTMLButtonElement {
-  const found = [...rendered.querySelectorAll<HTMLButtonElement>('[data-testid="role-option"]')]
-    .find(candidate => candidate.textContent?.startsWith(label))
-  if (!found) throw new Error(`No role option for “${label}”`)
-  return found
+// The section a heading labels, such as the people list or the share links.
+function sectionFor(rendered: HTMLElement, headingId: string): HTMLElement {
+  const section = rendered.querySelector(`#${headingId}`)?.closest('section')
+  if (!section) throw new Error(`No section with heading “${headingId}”`)
+  return section as HTMLElement
 }
 
-function verificationSection(rendered: HTMLElement, headingId: string): HTMLElement {
-  const section = rendered.querySelector(`#${headingId}`)?.closest('section')
-  if (!section) throw new Error(`No verification section with heading “${headingId}”`)
-  return section
+// A collaborator's row within a section, found by the name it shows.
+function personRow(section: HTMLElement, name: string): HTMLElement | null {
+  const nameLine = [...section.querySelectorAll('p')].find(line => line.textContent === name)
+  return nameLine?.closest<HTMLElement>('.group') ?? null
 }
 
 // Types into the people field and waits out the search debounce (200ms), so a directory lookup
@@ -227,6 +219,11 @@ async function invite(rendered: HTMLElement, username: string) {
   await click(button(rendered, 'Invite'))
 }
 
+async function createLink(rendered: HTMLElement) {
+  await click(button(rendered, 'Create a share link'))
+  await click(button(rendered, 'Create link'))
+}
+
 function peopleInput(rendered: HTMLElement): HTMLInputElement {
   return rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
 }
@@ -245,9 +242,38 @@ function stagedNames(rendered: HTMLElement): string[] {
     .map(remove => remove.getAttribute('aria-label')!.slice('Remove '.length))
 }
 
-function profileFor(userId: string, role: CollaboratorRole, name: string): CollaboratorInfo {
-  return { profile: { type: 'user', id: userId, name }, role, addedBy: [] }
+function accessFor(grant: CollaboratorGrant): CollaboratorAccess {
+  return grant === 'build' ? { role: 'build' } : { role: 'use', gadgetIds: [grant.gadgetId] }
 }
+
+function profileFor(userId: string, grant: CollaboratorGrant, name: string): CollaboratorInfo {
+  return { profile: { type: 'user', id: userId, name }, access: accessFor(grant), addedBy: [] }
+}
+
+function collaborator(
+  userId: string,
+  name: string,
+  access: CollaboratorAccess,
+  addedBy: PermissionEdge[] = [],
+): CollaboratorInfo {
+  return { profile: { type: 'user', id: userId, name }, access, addedBy }
+}
+
+const CREATED = new Date('2026-08-01T00:00:00Z')
+const BUILD_MEMBER = collaborator('bea@example.com', 'Bea', { role: 'build' }, [
+  { type: 'user', sharer: CURRENT_USER.id, created: CREATED, role: 'build' },
+])
+const LEGACY_COLLABORATOR = collaborator('lee@example.com', 'Lee', { role: 'use', gadgetIds: 'all' }, [
+  { type: 'user', sharer: CURRENT_USER.id, created: CREATED, role: 'use' },
+])
+// Holds the dialog's gadget (0) directly and another gadget (1) through a link.
+const GADGET_RECIPIENT = collaborator('gus@example.com', 'Gus', { role: 'use', gadgetIds: [0, 1] }, [
+  { type: 'user', sharer: CURRENT_USER.id, created: CREATED, role: 'use', gadgetId: 0 },
+  { type: 'shareKey', keyId: 'link-budget', created: CREATED, role: 'use', gadgetId: 1 },
+])
+const OTHER_GADGET_RECIPIENT = collaborator('hal@example.com', 'Hal', { role: 'use', gadgetIds: [1] }, [
+  { type: 'user', sharer: CURRENT_USER.id, created: CREATED, role: 'use', gadgetId: 1 },
+])
 
 // jsdom has no ResizeObserver; the stub records each observer so a test can fire its callback
 // and check it was disconnected.
@@ -290,7 +316,7 @@ describe('ShareModal', () => {
     overseer: RpcStub<Overseer>,
     authenticatedApi = fakeAuthenticatedApi(),
     metadata: WorkspaceMetadata = METADATA,
-    { userSearchEnabled = true } = {},
+    { userSearchEnabled = true, target = { kind: 'workspace' } as ShareTarget } = {},
   ) {
     container = document.createElement('div')
     document.body.append(container)
@@ -303,6 +329,7 @@ describe('ShareModal', () => {
           onClose={() => {}}
           overseer={overseer}
           metadata={currentMetadata}
+          target={target}
           currentUser={CURRENT_USER}
           authenticatedApi={authenticatedApi}
         />
@@ -317,6 +344,10 @@ describe('ShareModal', () => {
   async function setOpen(open: boolean) {
     await act(async () => { root!.render(renderTree(open)) })
     await act(async () => { await Promise.resolve() })
+  }
+
+  function renderGadget(overseer: RpcStub<Overseer>, authenticatedApi = fakeAuthenticatedApi()) {
+    return render(overseer, authenticatedApi, METADATA, { target: GADGET_TARGET })
   }
 
   async function updateMetadata(metadata: WorkspaceMetadata) {
@@ -352,18 +383,10 @@ describe('ShareModal', () => {
   })
 
   it('excludes existing people and submits the selected directory result id', async () => {
-    const addCollaborator = vi.fn<(
-      userId: string,
-      role: CollaboratorRole,
-      note?: string,
-    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
-      profile: { type: 'user' as const, id: userId, name: 'Ada Lovelace' },
-      role,
-      addedBy: [],
-    }))
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, grant) => profileFor(userId, grant, 'Ada Lovelace'))
     const existingCollaborator: CollaboratorInfo = {
       profile: { type: 'user', id: 'maximo@cloudflare.com', name: 'maximo' },
-      role: 'use',
+      access: { role: 'build' },
       addedBy: [],
     }
     const searchUsers = vi.fn<(
@@ -398,16 +421,12 @@ describe('ShareModal', () => {
     expect(peopleInput(rendered).value).toBe('')
     await click(button(rendered, 'Invite'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'build', undefined)
     expect(stagedNames(rendered)).toEqual([])
   })
 
   it('submits the highlighted result from the primary Invite action', async () => {
-    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
-      profile: { type: 'user' as const, id: userId, name: 'Ada Lovelace' },
-      role,
-      addedBy: [],
-    }))
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, grant) => profileFor(userId, grant, 'Ada Lovelace'))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({
@@ -420,7 +439,7 @@ describe('ShareModal', () => {
       .toContain('Ada Lovelace')
     await click(button(rendered, 'Invite'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'build', undefined)
   })
 
   it('excludes the workspace owner when the caller is a collaborator', async () => {
@@ -442,7 +461,7 @@ describe('ShareModal', () => {
     const membership = deferred<CollaboratorInfo[]>()
     const existingCollaborator: CollaboratorInfo = {
       profile: { type: 'user', id: 'maximo@cloudflare.com', name: 'Maximo' },
-      role: 'use',
+      access: { role: 'build' },
       addedBy: [],
     }
     const searchUsers = vi.fn<NonNullable<AuthenticatedApiOverrides['searchUsers']>>(async () => [])
@@ -474,15 +493,7 @@ describe('ShareModal', () => {
   })
 
   it('submits a typed exact id when the directory has not indexed the account', async () => {
-    const addCollaborator = vi.fn<(
-      userId: string,
-      role: CollaboratorRole,
-      note?: string,
-    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
-      profile: { type: 'user' as const, id: userId, name: 'Dormant User' },
-      role,
-      addedBy: [],
-    }))
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, grant) => profileFor(userId, grant, 'Dormant User'))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({ searchUsers: async () => [] }),
@@ -496,7 +507,7 @@ describe('ShareModal', () => {
 
     // Enter on the now-empty field sends everyone staged.
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'build', undefined)
   })
 
   it('stages a typed id as a chip and clears the field', async () => {
@@ -514,15 +525,7 @@ describe('ShareModal', () => {
   })
 
   it('never queries the directory and invites by exact id when user search is off', async () => {
-    const addCollaborator = vi.fn<(
-      userId: string,
-      role: CollaboratorRole,
-      note?: string,
-    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
-      profile: { type: 'user' as const, id: userId, name: 'Grace Hopper' },
-      role,
-      addedBy: [],
-    }))
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, grant) => profileFor(userId, grant, 'Grace Hopper'))
     const searchUsers = vi.fn<(
       query: string,
       excludeIds: string[],
@@ -548,7 +551,7 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Invite').disabled).toBe(false)
     await click(button(rendered, 'Invite'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'build', undefined)
     expect(rendered.textContent).toContain('Added Grace Hopper')
   })
 
@@ -609,7 +612,7 @@ describe('ShareModal', () => {
   it('keeps Invite disabled while a typed name is still searching, even with chips staged', async () => {
     const pending = deferred<UserDirectoryRecord[]>()
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
-      async (userId, role) => profileFor(userId, role, userId))
+      async (userId, grant) => profileFor(userId, grant, userId))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({
@@ -639,11 +642,7 @@ describe('ShareModal', () => {
   })
 
   it('still invites the typed canonical id when unrelated users match it', async () => {
-    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
-      profile: { type: 'user' as const, id: userId, name: 'Alex' },
-      role,
-      addedBy: [],
-    }))
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, grant) => profileFor(userId, grant, 'Alex'))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({ searchUsers: async () => [{ id: 'alexander@example.com', name: 'Alexander' }] }),
@@ -658,15 +657,11 @@ describe('ShareModal', () => {
     await click(exactOption!)
     expect(stagedNames(rendered)).toEqual(['alex'])
     await click(button(rendered, 'Invite'))
-    expect(addCollaborator).toHaveBeenCalledWith('alex', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('alex', 'build', undefined)
   })
 
   it('falls back to a direct invite when the directory lookup fails', async () => {
-    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
-      profile: { type: 'user' as const, id: userId, name: 'Dormant User' },
-      role,
-      addedBy: [],
-    }))
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, grant) => profileFor(userId, grant, 'Dormant User'))
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
@@ -679,16 +674,12 @@ describe('ShareModal', () => {
     const input = peopleInput(rendered)
     await pressKey(input, 'Enter')
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'build', undefined)
     consoleError.mockRestore()
   })
 
   it('hides the result popover on blur or Escape and keeps the query', async () => {
-    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
-      profile: { type: 'user' as const, id: userId, name: 'Alex' },
-      role,
-      addedBy: [],
-    }))
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, grant) => profileFor(userId, grant, 'Alex'))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({ searchUsers: async () => [{ id: 'alexander@example.com', name: 'Alexander' }] }),
@@ -700,7 +691,7 @@ describe('ShareModal', () => {
     expect(listbox()).not.toBeNull()
     expect(input.getAttribute('aria-expanded')).toBe('true')
 
-    // Tabbing on to the role picker or Invite button must not leave the list covering them.
+    // Tabbing on to the Invite button must not leave the list covering it.
     await act(async () => input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
     expect(listbox()).toBeNull()
     expect(input.getAttribute('aria-expanded')).toBe('false')
@@ -726,7 +717,7 @@ describe('ShareModal', () => {
     await pressKey(input, 'Enter')
     expect(stagedNames(rendered)).toEqual(['alex'])
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenCalledWith('alex', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('alex', 'build', undefined)
 
     // Arrow keys reopen the list instead of moving a hidden highlight.
     await typeDirectorySearch(rendered, 'alex')
@@ -801,9 +792,9 @@ describe('ShareModal', () => {
     expect(input.value).toBe('')
   })
 
-  it('invites everyone staged with one role and one refetch', async () => {
+  it('invites everyone staged with one refetch', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
-      async (userId, role) => profileFor(userId, role,
+      async (userId, grant) => profileFor(userId, grant,
         userId === 'ada@example.com' ? 'Ada Lovelace' : 'Grace Hopper'))
     const listCollaborators = vi.fn<() => Promise<CollaboratorInfo[]>>(async () => [])
     const searchUsers = vi.fn<NonNullable<AuthenticatedApiOverrides['searchUsers']>>(
@@ -825,8 +816,8 @@ describe('ShareModal', () => {
     await click(button(rendered, 'Invite 2 people'))
 
     expect(addCollaborator).toHaveBeenCalledTimes(2)
-    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'use', undefined)
-    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'build', undefined)
     expect(listCollaborators).toHaveBeenCalledTimes(loadsBefore + 1)
     expect(stagedNames(rendered)).toEqual([])
     expect(rendered.textContent).toContain('Added Ada Lovelace and Grace Hopper')
@@ -838,7 +829,7 @@ describe('ShareModal', () => {
 
   it('counts the typed name in the Invite label and sends it with the chips', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
-      async (userId, role) => profileFor(userId, role, userId))
+      async (userId, grant) => profileFor(userId, grant, userId))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({ searchUsers: async () => [] }),
@@ -851,16 +842,16 @@ describe('ShareModal', () => {
 
     await click(button(rendered, 'Invite 2 people'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'use', undefined)
-    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'build', undefined)
   })
 
   it('keeps a chip staged during a pending batch and blocks removal until it settles', async () => {
     const pending = deferred<CollaboratorInfo | null>()
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
-      (userId, role) => userId === 'ada@example.com'
+      (userId, grant) => userId === 'ada@example.com'
         ? pending.promise
-        : Promise.resolve(profileFor(userId, role, 'Grace Hopper')))
+        : Promise.resolve(profileFor(userId, grant, 'Grace Hopper')))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({ searchUsers: async () => [] }),
@@ -883,7 +874,7 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Remove ada@example.com').disabled).toBe(true)
 
     await act(async () => {
-      pending.resolve(profileFor('ada@example.com', 'use', 'Ada Lovelace'))
+      pending.resolve(profileFor('ada@example.com', 'build', 'Ada Lovelace'))
       await Promise.resolve()
     })
     expect(stagedNames(rendered)).toEqual(['grace@example.com'])
@@ -895,7 +886,7 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Invite').disabled).toBe(false)
 
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenLastCalledWith('grace@example.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenLastCalledWith('grace@example.com', 'build', undefined)
     expect(stagedNames(rendered)).toEqual([])
   })
 
@@ -959,7 +950,7 @@ describe('ShareModal', () => {
 
   it('counts a re-typed staged id once', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
-      async (userId, role) => profileFor(userId, role, 'Ada Lovelace'))
+      async (userId, grant) => profileFor(userId, grant, 'Ada Lovelace'))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({ searchUsers: async () => [] }),
@@ -973,7 +964,7 @@ describe('ShareModal', () => {
     await click(button(rendered, 'Invite'))
 
     expect(addCollaborator).toHaveBeenCalledTimes(1)
-    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'use', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
   })
 
   it('removes a chip with its button or Backspace on an empty field', async () => {
@@ -1020,9 +1011,9 @@ describe('ShareModal', () => {
 
   it('keeps an unknown account on its chip while the others are added', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
-      async (userId, role) => userId === 'nobody@example.com'
+      async (userId, grant) => userId === 'nobody@example.com'
         ? null
-        : profileFor(userId, role, 'Ada Lovelace'))
+        : profileFor(userId, grant, 'Ada Lovelace'))
     const rendered = await render(
       fakeOverseer({ addCollaborator }),
       fakeAuthenticatedApi({ searchUsers: async () => [] }),
@@ -1140,43 +1131,17 @@ describe('ShareModal', () => {
     consoleError.mockRestore()
   })
 
-  it('names the connections a recipient must verify for the selected role', async () => {
-    const rendered = await render(fakeOverseer({
-      requirements: { use: [DOC_REQUIREMENT], build: [DOC_REQUIREMENT, CRM_REQUIREMENT] },
-    }))
+  it('lists the connections recipients must verify for the dialog’s grant', async () => {
+    const listObserverRequirements = vi.fn<Overseer['listObserverRequirements']>(
+      async grant => grant === 'build' ? [DOC_REQUIREMENT, CRM_REQUIREMENT] : [DOC_REQUIREMENT])
+    const rendered = await render(fakeOverseer({ listObserverRequirements }), fakeAuthenticatedApi(),
+      METADATA, { target: GADGET_TARGET })
 
-    // The invite composer defaults to "App only".
-    expect(rendered.textContent).toContain('Q3 planning')
-    expect(rendered.textContent).not.toContain('Pipeline dashboard')
-
-    await click(roleOption(rendered, 'Workspace'))
-
-    expect(rendered.textContent).toContain('Pipeline dashboard')
-  })
-
-  it('keeps invite and share-link requirements tied to their own role pickers', async () => {
-    const rendered = await render(fakeOverseer({
-      requirements: { use: [DOC_REQUIREMENT], build: [DOC_REQUIREMENT, CRM_REQUIREMENT] },
-    }))
-
-    await click(button(rendered, 'Create a share link'))
-    expect(rendered.querySelector('#recipient-verification-heading')).not.toBeNull()
-    expect(rendered.querySelector('#invite-verification-heading')).toBeNull()
-    expect(rendered.querySelector('#link-verification-heading')).toBeNull()
-
-    const buildOptions = [...rendered.querySelectorAll<HTMLButtonElement>('[data-testid="role-option"]')]
-      .filter(option => option.textContent?.startsWith('Workspace'))
-    expect(buildOptions).toHaveLength(2)
-    await click(buildOptions[1])
-
-    expect(verificationSection(rendered, 'invite-verification-heading').textContent)
-      .not.toContain('Pipeline dashboard')
-    expect(verificationSection(rendered, 'link-verification-heading').textContent)
-      .toContain('Pipeline dashboard')
-
-    await click(button(rendered, 'Create link'))
-    expect(verificationSection(rendered, 'link-verification-heading').textContent)
-      .toContain('Pipeline dashboard')
+    expect(listObserverRequirements.mock.calls).toEqual([[{ gadgetId: 0 }]])
+    const section = sectionFor(rendered, 'recipient-verification-heading')
+    expect(section.textContent).toContain('Q3 planning')
+    expect(section.textContent).toContain('https://docs.google.com/document/d/quarterly')
+    expect(section.textContent).not.toContain('Pipeline dashboard')
   })
 
   it('hides verification messaging when recipients have nothing to verify', async () => {
@@ -1197,18 +1162,16 @@ describe('ShareModal', () => {
   })
 
   it('refreshes requirements when the modal regains focus', async () => {
-    const listObserverRequirements = vi.fn<
-      (role: CollaboratorRole) => Promise<ObserverBindingNeed[]>
-    >(async () => [])
+    const listObserverRequirements = vi.fn<Overseer['listObserverRequirements']>(async () => [])
     await render(fakeOverseer({ listObserverRequirements }))
-    expect(listObserverRequirements).toHaveBeenCalledTimes(2)
+    expect(listObserverRequirements.mock.calls).toEqual([['build']])
 
     await act(async () => {
       window.dispatchEvent(new Event('focus'))
       await Promise.resolve()
     })
 
-    expect(listObserverRequirements).toHaveBeenCalledTimes(4)
+    expect(listObserverRequirements.mock.calls).toEqual([['build'], ['build']])
   })
 
   it('keeps sharing controls live when the workspace has read restricted data', async () => {
@@ -1218,7 +1181,7 @@ describe('ShareModal', () => {
     const rendered = await render(fakeOverseer({
       collaborators: [{
         profile: { type: 'user', id: 'ada@cloudflare.com', name: 'Ada' },
-        role: 'use',
+        access: { role: 'build' },
         addedBy: [],
       }],
       shareLinks: [SHARE_LINK],
@@ -1229,8 +1192,8 @@ describe('ShareModal', () => {
     // must warn rather than block.
     expect(rendered.textContent).toContain('This workspace has read sensitive data')
     expect(rendered.textContent).not.toContain('This workspace can’t be shared')
-    // The warning states the guarantee the server actually makes: verification is scoped to the
-    // recipient's role (the panel below lists the connections per level), and output the
+    // The warning states the guarantee the server actually makes: recipients verify their own
+    // access to the connections in scope (the panel below lists them), and output the
     // workspace has already persisted is readable by anyone who can open it. It must not claim
     // invitees are verified against "the same data" -- never-bound and since-removed producers
     // fall outside that check.
@@ -1258,7 +1221,7 @@ describe('ShareModal', () => {
       ...METADATA, containsRestrictedData: true, ownerInvitesOnly: true,
     } as WorkspaceMetadata
     const rendered = await render(fakeOverseer({
-      requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
+      requirements: [CRM_REQUIREMENT],
       shareLinks: [SHARE_LINK],
     }), fakeAuthenticatedApi(), ownerInvitesOnlyMetadata)
 
@@ -1289,7 +1252,7 @@ describe('ShareModal', () => {
       owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
     } as WorkspaceMetadata
     const rendered = await render(fakeOverseer({
-      requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
+      requirements: [CRM_REQUIREMENT],
     }), fakeAuthenticatedApi(), ownerInvitesOnlyMetadata)
 
     expect(rendered.textContent).toContain('only the owner can add people')
@@ -1356,5 +1319,166 @@ describe('ShareModal', () => {
 
     expect(updateShareLink).not.toHaveBeenCalled()
     expect(rendered.querySelector('input[aria-label="Share link name"]')).toBeNull()
+  })
+
+  describe('share targets', () => {
+    const ITINERARY_LINK: ShareLinkInfo = {
+      linkId: 'link-itinerary', note: 'Itinerary link', created: CREATED, createdBy: CURRENT_USER,
+      role: 'use', gadgetId: 0,
+    }
+    const BUDGET_LINK: ShareLinkInfo = {
+      linkId: 'link-budget', note: 'Budget link', created: CREATED, createdBy: CURRENT_USER,
+      role: 'use', gadgetId: 1,
+    }
+    const LEGACY_LINK: ShareLinkInfo = {
+      linkId: 'link-legacy', note: 'Old link', created: CREATED, createdBy: CURRENT_USER, role: 'use',
+    }
+    const ALL_LINKS = [SHARE_LINK, ITINERARY_LINK, BUDGET_LINK, LEGACY_LINK]
+    const EVERYONE = [BUILD_MEMBER, LEGACY_COLLABORATOR, GADGET_RECIPIENT, OTHER_GADGET_RECIPIENT]
+
+    it('grants the workspace from the workspace dialog', async () => {
+      const addCollaborator = vi.fn<Overseer['addCollaborator']>(
+        async (userId, grant) => profileFor(userId, grant, 'Ada'))
+      const createShareLink = vi.fn<Overseer['createShareLink']>(
+        async () => ({ key: 'secret', linkId: 'link-new' }))
+      const rendered = await render(fakeOverseer({ addCollaborator, createShareLink }))
+
+      await invite(rendered, 'ada')
+      expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
+      await click(button(rendered, 'Copy link'))
+      expect(copyToClipboard).toHaveBeenLastCalledWith(WORKSPACE_URL)
+
+      await createLink(rendered)
+      expect(createShareLink).toHaveBeenCalledWith('build', undefined)
+      expect(rendered.textContent).toContain(`${WORKSPACE_URL}#share=secret`)
+    })
+
+    it('grants only the gadget from its dialog and links straight to it', async () => {
+      const addCollaborator = vi.fn<Overseer['addCollaborator']>(
+        async (userId, grant) => profileFor(userId, grant, 'Ada'))
+      const createShareLink = vi.fn<Overseer['createShareLink']>(
+        async () => ({ key: 'secret', linkId: 'link-new' }))
+      const rendered = await renderGadget(fakeOverseer({ addCollaborator, createShareLink }))
+
+      await invite(rendered, 'ada')
+      expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', { gadgetId: 0 }, undefined)
+      expect(rendered.textContent).toContain(GADGET_URL)
+      await click(button(rendered, 'Copy link'))
+      expect(copyToClipboard).toHaveBeenLastCalledWith(GADGET_URL)
+
+      await createLink(rendered)
+      expect(createShareLink).toHaveBeenCalledWith({ gadgetId: 0 }, undefined)
+      expect(rendered.textContent).toContain(`${GADGET_URL}#share=secret`)
+    })
+
+    it('lists workspace members and legacy access, not gadget recipients, in the workspace dialog', async () => {
+      const rendered = await render(fakeOverseer({ collaborators: EVERYONE }))
+
+      const people = sectionFor(rendered, 'people-heading')
+      const bea = personRow(people, 'Bea')
+      expect(bea?.textContent).toContain('Member')
+      expect(bea?.textContent).toContain(`Added directly by ${CURRENT_USER.id}`)
+      expect(bea?.querySelector('button[aria-label="Remove Bea"]')).not.toBeNull()
+      expect(people.textContent).not.toContain('People in this workspace')
+      expect(personRow(people, 'Gus')).toBeNull()
+      expect(personRow(people, 'Hal')).toBeNull()
+      expect(personRow(people, 'Lee')).toBeNull()
+
+      const lee = personRow(sectionFor(rendered, 'legacy-heading'), 'Lee')
+      expect(lee?.textContent).toContain('All gadgets · Cannot edit')
+      expect(lee?.querySelector('button[aria-label="Remove Lee"]')).not.toBeNull()
+      expect(rendered.textContent).not.toContain('Gus')
+    })
+
+    it('lists the gadget’s own recipients in its dialog', async () => {
+      const rendered = await renderGadget(fakeOverseer({ collaborators: EVERYONE, shareLinks: ALL_LINKS }))
+
+      const people = sectionFor(rendered, 'people-heading')
+      expect(people.textContent).toContain('People in this workspace')
+      expect(people.textContent).toContain('Can edit')
+      const gus = personRow(people, 'Gus')
+      expect(gus?.textContent).toContain('Member')
+      // Only the edge granting this gadget counts; the link to gadget 1 is another dialog's business.
+      expect(gus?.textContent).toContain(`Added directly by ${CURRENT_USER.id}`)
+      expect(gus?.querySelector('button[aria-label="Remove Gus"]')).not.toBeNull()
+      expect(personRow(people, 'Bea')).toBeNull()
+      expect(personRow(people, 'Hal')).toBeNull()
+
+      const lee = personRow(sectionFor(rendered, 'legacy-heading'), 'Lee')
+      expect(lee?.textContent).toContain('All gadgets · Cannot edit')
+      expect(lee?.querySelector('button')).toBeNull()
+    })
+
+    it('removes only this gadget from a recipient in the gadget dialog', async () => {
+      const affected = {
+        profile: GADGET_RECIPIENT.profile,
+        addedBy: GADGET_RECIPIENT.addedBy,
+        oldAccess: GADGET_RECIPIENT.access,
+        newAccess: { role: 'use' as const, gadgetIds: [1] },
+      }
+      const previewRemoveCollaborator = vi.fn<Overseer['previewRemoveCollaborator']>(async () => [affected])
+      const removeCollaborator = vi.fn<Overseer['removeCollaborator']>(async () => [affected])
+      const rendered = await renderGadget(fakeOverseer({
+        collaborators: [GADGET_RECIPIENT], previewRemoveCollaborator, removeCollaborator,
+      }))
+
+      await click(button(rendered, 'Remove Gus'))
+      await act(async () => { await Promise.resolve() })
+      expect(previewRemoveCollaborator).toHaveBeenCalledWith('gus@example.com', 0)
+      await click(button(rendered, 'Remove'))
+
+      expect(removeCollaborator).toHaveBeenCalledWith('gus@example.com', [], 0)
+      expect(toastAdd).toHaveBeenCalledWith({
+        title: 'Removed their access to this gadget.',
+        variant: 'success',
+      })
+    })
+
+    it('lets a gadget recipient be found for the workspace but not a member', async () => {
+      const searchUsers = vi.fn<NonNullable<AuthenticatedApiOverrides['searchUsers']>>(async () => [])
+      const rendered = await render(fakeOverseer({ collaborators: EVERYONE }), fakeAuthenticatedApi({ searchUsers }))
+
+      await typeDirectorySearch(rendered, 'x')
+      expect(searchUsers).toHaveBeenCalledWith('x', [CURRENT_USER.id, 'bea@example.com'])
+    })
+
+    it('excludes everyone who already holds the gadget from its dialog’s search', async () => {
+      const searchUsers = vi.fn<NonNullable<AuthenticatedApiOverrides['searchUsers']>>(async () => [])
+      const rendered = await renderGadget(
+        fakeOverseer({ collaborators: EVERYONE }), fakeAuthenticatedApi({ searchUsers }))
+
+      await typeDirectorySearch(rendered, 'x')
+      expect(searchUsers).toHaveBeenCalledWith('x', [
+        CURRENT_USER.id, 'bea@example.com', 'lee@example.com', 'gus@example.com',
+      ])
+    })
+
+    it('shows only the gadget’s own links in its dialog and copies them to the gadget', async () => {
+      const newShareLinkKey = vi.fn<Overseer['newShareLinkKey']>(async () => ({ key: 'fresh' }))
+      const rendered = await renderGadget(fakeOverseer({ shareLinks: ALL_LINKS, newShareLinkKey }))
+
+      const links = sectionFor(rendered, 'links-heading')
+      expect(links.textContent).toContain('Itinerary link')
+      expect(links.textContent).not.toContain('Team link')
+      expect(links.textContent).not.toContain('Budget link')
+      expect(links.textContent).not.toContain('Old link')
+
+      await click(button(rendered, 'Copy Itinerary link'))
+      expect(newShareLinkKey).toHaveBeenCalledWith('link-itinerary')
+      expect(copyToClipboard).toHaveBeenCalledWith(`${GADGET_URL}#share=fresh`)
+    })
+
+    it('lists workspace and legacy links in the workspace dialog but cannot copy a legacy one', async () => {
+      const rendered = await render(fakeOverseer({ shareLinks: ALL_LINKS }))
+
+      const links = sectionFor(rendered, 'links-heading')
+      expect(links.textContent).toContain('Team link')
+      expect(links.textContent).toContain('Old link')
+      expect(links.textContent).not.toContain('Itinerary link')
+      expect(links.textContent).not.toContain('Budget link')
+      expect(links.querySelector('button[aria-label="Copy Team link"]')).not.toBeNull()
+      expect(links.querySelector('button[aria-label="Copy Old link"]')).toBeNull()
+      expect(links.querySelector('button[aria-label="Revoke Old link"]')).not.toBeNull()
+    })
   })
 })

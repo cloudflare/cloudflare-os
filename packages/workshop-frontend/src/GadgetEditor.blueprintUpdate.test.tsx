@@ -42,7 +42,7 @@ const mocks = vi.hoisted(() => {
             await subscriber.ready()
             return disposable
           },
-          getGadget: () => disposable,
+          getGadget: () => Object.assign(Promise.resolve(disposable), { dup: () => disposable }, disposable),
           listHooks: async () => [],
           subscribeToConsoleLogs: async () => disposable,
         },
@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => {
       error: null,
       connectionLost: false,
       observerConfig: null,
+      createObserverConfigCallback: () => disposable,
       retry: () => {},
       cancelObserverConfig: () => {},
       updateTitle: () => {},
