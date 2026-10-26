@@ -15,6 +15,7 @@ packages/api-cli/src/table.ts
   s_c5f8d284ae2719::t_2eb84d774221aa 1-25,29-39,41,45,47-50,52-63,65-67,69-83,87-122,141-153,155-156,158-165
 AGENTS.md
   s_c5f8d284ae2719::t_4556ba6e70312f 37
+  s_618859da4442af::t_ff59bcb5c2fbda 80
 REVIEW.md
   s_c5f8d284ae2719::t_cc17c33e3b022d 138-140
 docs/testing.md
@@ -94,6 +95,14 @@ vite.config.ts
   "base_commit_sha": "78536064ecce5af5de255676a5ecf1e78c823b66",
   "prompts": {},
   "sessions": {
+    "s_618859da4442af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "377587eb-b55b-40b1-be77-d0324be1bbe8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_c5f8d284ae2719": {
       "agent_id": {
         "tool": "claude",
