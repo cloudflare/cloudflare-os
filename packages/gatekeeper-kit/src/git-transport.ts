@@ -39,6 +39,25 @@ const GIT_AGENT = "cloudflare-gadgets";
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
+/** Validate the read-only smart-HTTP endpoints; never use this URL to select an upstream. */
+export function gitPullPath(request: Request): "info/refs?service=git-upload-pack" | "git-upload-pack" {
+  const url = new URL(request.url);
+  if (request.headers.get("git-protocol") !== "version=2")
+    throw new Error("Git protocol version 2 is required.");
+  if (request.method === "GET" && url.pathname === "/info/refs" &&
+      url.search === "?service=git-upload-pack") return "info/refs?service=git-upload-pack";
+  if (request.method === "POST" && url.pathname === "/git-upload-pack" && !url.search &&
+      request.headers.get("content-type") === "application/x-git-upload-pack-request") return "git-upload-pack";
+  throw new Error("Only Git ref discovery and fetch are allowed.");
+}
+
+/** Adapt the cache's exact-object pull to the same smart-HTTP transport native Git uses. */
+export function gitObjectRequest(body: Uint8Array): Request {
+  return new Request("https://git.invalid/git-upload-pack", {method: "POST", headers: {
+    "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2",
+  }, body});
+}
+
 // =======================================================================================
 // pkt-line framing
 
@@ -277,14 +296,17 @@ export function demuxGitFetchResponse(
   let reader = body.getReader();
   let iterator = demuxPackData(reader, maxBytes);
   return new ReadableStream({
+    type: "bytes",
     async pull(controller) {
       try {
         let next = await iterator.next();
         if (next.done) {
           onTerminal?.({state: "complete"});
           controller.close();
+          controller.byobRequest?.respond(0);
         } else {
-          controller.enqueue(next.value);
+          // Byte-stream enqueue detaches its buffer; the parser may still hold sibling slices.
+          controller.enqueue(next.value.slice());
         }
       } catch (error) {
         onTerminal?.({state: "failed", message: error instanceof Error ? error.message : String(error)});

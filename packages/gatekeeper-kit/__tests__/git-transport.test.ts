@@ -27,7 +27,32 @@ import {
   pushGitRefUpdate,
   simulateBranchHead,
   validateBranchName,
+  gitPullPath,
+  gitObjectRequest,
 } from "../src/git-transport";
+
+describe("read-only smart HTTP boundary", () => {
+  it("accepts discovery and binary fetch through the same endpoint contract", async () => {
+    expect(gitPullPath(new Request("https://git.invalid/info/refs?service=git-upload-pack", {
+      headers: {"git-protocol": "version=2"},
+    }))).toBe("info/refs?service=git-upload-pack");
+    const bytes = Uint8Array.of(0, 255, 128);
+    const request = gitObjectRequest(bytes);
+    expect(gitPullPath(request)).toBe("git-upload-pack");
+    expect(new Uint8Array(await request.arrayBuffer())).toEqual(bytes);
+  });
+  it.each([
+    ["GET", "/info/refs?service=git-receive-pack"], ["POST", "/git-receive-pack"],
+    ["GET", "/anything"], ["POST", "/git-upload-pack?redirect=elsewhere"],
+  ])("refuses %s %s", (method, path) => {
+    expect(() => gitPullPath(new Request(`https://git.invalid${path}`, {method,
+      headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
+    }))).toThrow();
+  });
+  it("requires protocol v2", () => {
+    expect(() => gitPullPath(new Request("https://git.invalid/info/refs?service=git-upload-pack"))).toThrow(/version 2/);
+  });
+});
 
 /** Deterministic fake full oid. */
 function oid(n: number): string {
@@ -257,6 +282,19 @@ function packfileResponse(options: { withSections?: boolean; progress?: boolean 
 }
 
 describe("demuxGitFetchResponse", () => {
+  it("supports local BYOB decoding without detaching the parser's remaining packets", async () => {
+    const reader = demuxGitFetchResponse(streamOf([
+      concatBytes(packfileResponse({withSections: true, progress: true})),
+    ])).getReader({mode: "byob"});
+    const pieces: Uint8Array[] = [];
+    while (true) {
+      const {value, done} = await reader.read(new Uint8Array(3));
+      if (value?.byteLength) pieces.push(value);
+      if (done) break;
+    }
+    expect(concatBytes(pieces)).toEqual(PACK_BYTES);
+  });
+
   it("yields exactly the band-1 payload bytes", async () => {
     const pack = await collect(demuxGitFetchResponse(streamOf(packfileResponse())));
     expect(pack).toEqual(PACK_BYTES);

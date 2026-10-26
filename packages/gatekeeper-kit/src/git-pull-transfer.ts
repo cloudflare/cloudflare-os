@@ -39,7 +39,7 @@ export async function startGitPull(
   fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
   oids: GitOid[],
   hints: GitPullHints,
-): Promise<GitPullTransfer> {
+): Promise<GitPullTransfer & Disposable> {
   let status: GitPullStatus = {state: "streaming"};
   const pack = await pullGitPack(fetchUploadPack, oids, hints, terminal => {
     if (status.state === "streaming") status = terminal;

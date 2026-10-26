@@ -15,6 +15,10 @@
       "types": "./src/gatekeeper.ts",
       "import": "./src/gatekeeper.ts"
     },
+    "./agent-integration": {
+      "types": "./src/agent-integration.ts",
+      "import": "./src/agent-integration.ts"
+    },
     "./cloudflare-gatekeeper": {
       "types": "./src/cloudflare-gatekeeper.ts",
       "import": "./src/cloudflare-gatekeeper.ts"

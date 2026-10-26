@@ -13,6 +13,7 @@ import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
 import { FakeChatResponseTarget } from "./response-target";
+import {encodePktLine, FLUSH_PKT, gitPullPath} from "@gadgets/gatekeeper-kit/git-transport";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -47,6 +48,16 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     if (params.type === "test-response-target") return new FakeChatResponseTarget(params.name);
     return super[restore](params);
   }
+  /** Transfer a real endpoint over RPC, rather than leaking a DO-owned stub out of a test callback. */
+  testReplicaEndpoint(leaseId: string) {
+    return this.ctx.exports.WorktreeWritebackEndpoint({ props: {
+      overseerId: this.ctx.id.toString(), leaseId,
+    } });
+  }
+  testMountWorktree(gatekeeperId: number,
+      origin: Parameters<RealOverseerDurableObject["impl"]["mountWorktree"]>[1], binding: string) {
+    return this.impl.mountWorktree(gatekeeperId, origin, binding);
+  }
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -57,6 +68,7 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
+export { WorktreeWritebackEndpoint, CommandGitEndpoint } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather
@@ -235,6 +247,7 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
     }
   }
 
+
   /**
    * Open `viewerId`'s app UI for `accountId` the way getGatekeeperApp does, with `ticket` stashed
    * for the fake account to redeem through the exchange it is handed; the outcome lands in the
@@ -255,5 +268,31 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
   async accountCalls(accountName: string): Promise<string[]> {
     return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
+  }
+}
+
+/** Git provider fixture recognizes only the immutable source commit, not DO-only heads. */
+export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
+  async getAgentCatalog() { return null; }
+  async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT",
+    tsType: "Git", gitRepositoryUrl: "https://github.com/fixture/repo.git"}; }
+  allowGitCommit(commit: string): void { this.ctx.storage.kv.put("gitCommit", commit); }
+  async gitPull(request: Request, observer?: RpcStub<import("@gadgets/workshop-shared/gatekeeper").ObservationAuthorizer>): Promise<Response> {
+    gitPullPath(request);
+    if (observer) {
+      await observer.authorizeObservation({title: "Fetch Git repository", description: "Fixture command Git"});
+      if (request.headers.has("x-test-open-stream")) return new Response(new ReadableStream({
+        start(controller) {controller.enqueue(Uint8Array.of(0, 255, 128, 13));},
+      }));
+      return new Response(Uint8Array.of(0, 255, 128, 13), {headers: {
+        "content-type": "application/x-git-upload-pack-advertisement",
+        "set-cookie": "provider=private", "authentication-info": "provider-only",
+      }});
+    }
+    const body = await request.text();
+    if (!body.includes(`want ${this.ctx.storage.kv.get("gitCommit")}\n`)) throw new Error("Unknown remote commit");
+    if (!body.includes("deepen 1\n") || body.includes("filter ")) throw new Error("Expected a complete depth-one checkout");
+    return new Response(new Blob([encodePktLine("packfile"),
+      new TextEncoder().encode("0007"), Uint8Array.of(1, 1, 255), FLUSH_PKT]));
   }
 }

@@ -182,6 +182,24 @@ describe("git-storage migration via the Overseer constructor", () => {
   });
 });
 
+describe("worktree replica storage initialization", () => {
+  it("opens empty replica collections on wake without eagerly loading workspace files", async () => {
+    const name = "replica-initialization-" + crypto.randomUUID();
+    await inOverseer(name, async impl => {
+      impl.storage.chatContext.put({chatId: 1, bindings: {REPO: 7}});
+      impl.storage.version.put(5);
+    });
+    await abortAllDurableObjects();
+    await inOverseer(name, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect(impl.storage.chatContext.get(1)).toEqual({chatId: 1, bindings: {REPO: 7}});
+      expect([...impl.storage.worktreeReplicaLeases.list()]).toEqual([]);
+      expect([...impl.storage.worktreeReplicaCommits.list()]).toEqual([]);
+      expect([...impl.storage.gitObjects.list()]).toEqual([]);
+    });
+  });
+});
+
 describe("action-index backfills via the Overseer constructor", () => {
   it("backfills a version-2 workspace's indexes and stamps version 3", async () => {
     await inOverseer("pending-index-v2", async impl => {
