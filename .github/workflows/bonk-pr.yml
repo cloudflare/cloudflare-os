@@ -148,6 +148,22 @@ jobs:
         if: steps.break_glass.outputs.active != 'true'
         uses: actions/checkout@v7.0.1
 
+      # Adapted from workerd's auto-reviewer:
+      # https://github.com/cloudflare/workerd/blob/4a92109c11b107f0fb6ceb097d5f60af9e07c910/.github/workflows/new-pr-review.yml#L29-L38
+      - name: Load review prompt
+        id: prompt
+        if: steps.break_glass.outputs.active != 'true'
+        run: |
+          delimiter="EOF_$(openssl rand -hex 16)"
+          {
+            echo "value<<$delimiter"
+            echo "Review this pull request. Follow the repository's review guidelines below, and read"
+            echo "the AGENTS.md package guides they name for every directory the diff touches."
+            echo
+            cat REVIEW.md
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run Bonk
         if: steps.break_glass.outputs.active != 'true'
         uses: Cloudflare-Studio/ask-bonk/github@14a1af226388b15b389a0c1b7df9168a940165b6 # v0.5.1
@@ -170,6 +186,7 @@ jobs:
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
+          prompt: ${{ steps.prompt.outputs.value }}
           # The model declaration in OPENCODE_CONFIG_CONTENT is needed only while this version's
           # catalog lacks BONK_MODEL under the gateway. Re-check it when bumping: delete it if
           # `opencode models cloudflare-ai-gateway --verbose` shows the model's variants without it.
