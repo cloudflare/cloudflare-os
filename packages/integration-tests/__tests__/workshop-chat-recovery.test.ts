@@ -47,7 +47,7 @@ async function recordFirstTurn(username: string, model: RoutedScriptedModel) {
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, username);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const { id: workspaceId } = await ws.getMetadata();
   const recorder = new ChatRecorder();
   using recorderStub = stubFor(recorder);
@@ -80,7 +80,7 @@ it.concurrent("a transient provider failure is retried, and the turn answers wit
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
   await waitFor("the retried model request", async () => model.requests.length === 2 || null);
@@ -104,7 +104,7 @@ it.concurrent(
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
   await waitFor("the failed model requests", async () => model.requests.length === 3 || null);
@@ -166,7 +166,7 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
@@ -215,14 +215,14 @@ it.concurrent("resubscribing during a running turn replays exactly what history 
 
   using publicApi = connect(harness.url);
   using api = await logIn(publicApi, owner!);
-  using ws = await api.openGadget(first.workspaceId);
+  using ws = await api.openWorkspace(first.workspaceId);
   try {
     await ws.sendChatMessage(first.chatId, "Second", SCRIPTED_MODEL_ID);
     await waitFor("the pending second turn", async () => model.requests.length === 3 || null);
 
     using replayPublicApi = connect(harness.url);
     using replayApi = await logIn(replayPublicApi, owner!);
-    using replayWs = await replayApi.openGadget(first.workspaceId);
+    using replayWs = await replayApi.openWorkspace(first.workspaceId);
     const replay = new ChatRecorder();
     using replayStub = stubFor(replay);
     using _replaySubscription = await replayWs.subscribeToChat(replayStub, first.lastSeen);
@@ -250,7 +250,7 @@ it.concurrent("resubscribing after a workspace restart replays exactly what hist
   {
     using publicApi = connect(harness.url);
     using api = await logIn(publicApi, owner!);
-    using ws = await api.openGadget(first.workspaceId);
+    using ws = await api.openWorkspace(first.workspaceId);
     await ws.sendChatMessage(first.chatId, "Second", SCRIPTED_MODEL_ID);
     await waitFor("the second model request", async () => model.requests.length === 2 || null);
     await waitForIdleChat(ws, first.chatId);
@@ -260,7 +260,7 @@ it.concurrent("resubscribing after a workspace restart replays exactly what hist
 
   using publicApi = connect(harness.url);
   using api = await logIn(publicApi, owner!);
-  using ws = await api.openGadget(first.workspaceId);
+  using ws = await api.openWorkspace(first.workspaceId);
   const replay = new ChatRecorder();
   using replayStub = stubFor(replay);
   using _replaySubscription = await ws.subscribeToChat(replayStub, first.lastSeen);
@@ -292,7 +292,7 @@ it.concurrent("a chat over its context budget compacts, and history pages across
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
@@ -341,7 +341,7 @@ it.concurrent("discarding a compacted chat's changes keeps its summary", async (
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
   await waitFor("the first turn's requests", async () => model.requests.length === 3 || null);
@@ -378,7 +378,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   await api.addModel(
       { ...modelB.userModel.profile, id: MODEL_B_ID, name: "Scripted model B" },
       { ...modelB.userModel.config, model: MODEL_B_ID });
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   await api.setQuickModel(SCRIPTED_MODEL_ID);
   expect(await api.getQuickModel()).toBe(SCRIPTED_MODEL_ID);
   await api.setPreferredModel(SCRIPTED_MODEL_ID);

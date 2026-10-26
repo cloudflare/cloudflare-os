@@ -48,7 +48,7 @@ async function newWorkspace(model: RoutedScriptedModel, usernamePrefix: string) 
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account to be provisioned", async () =>
     (await listConnectedAccounts(api)).find(entry => entry.vendorId === TEST_VENDOR_ID) ?? null);
-  const ws = stack.use(await api.newGadget());
+  const ws = stack.use(await api.newWorkspace());
   return Object.assign(stack.move(), { api, account, ws });
 }
 

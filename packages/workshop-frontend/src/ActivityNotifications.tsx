@@ -20,7 +20,7 @@ import { useResolveAction } from './useResolveAction'
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
   onViewActivity: (view: ActivityView) => void
-  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData):
+  // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData):
   // the approver is the leak check, so each request is shown in full with a notice saying so.
   restricted?: boolean
 }

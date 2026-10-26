@@ -104,7 +104,7 @@ The check works as follows:
 | Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts` |
 | Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
-| Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
+| Server `openWorkspace` path | `packages/workshop-backend/src/server.ts` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
 | `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `getWebFetchEnv`, `submitAction`) |
 | `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation` sets `ownerInvitesOnly` and restarts the workspace if anyone lost access); `sharing.ts` (`computeEffectiveRoles` counts only direct owner grants; the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
@@ -202,7 +202,7 @@ legitimate UI state).
 > awaiting it (see the Cap'n Web note in `AGENTS.md`). The observer-open path awaits it because a
 > null result means the account must be re-selected before calling `addObserver()`.
 
-### Step 2 — Client-server API: a configuration callback on `open` / `openGadget`
+### Step 2 — Client-server API: a configuration callback on `open` / `openWorkspace`
 
 We must avoid structured/typed errors for control flow (prohibited in this codebase) and must not
 break promise pipelining in the common case. So `open()` gains an **optional callback** that is
@@ -211,7 +211,7 @@ invoked **only** when the opening user needs to configure gatekeeper accounts. I
 without an extra round trip.
 
 Add to the RPC API (`packages/workshop-shared/src/api.ts`) and thread through
-`server.ts` `openGadget` → `overseer.open()`:
+`server.ts` `openWorkspace` → `overseer.open()`:
 
 ```ts
 // Provided by the client when opening a gadget. Invoked by the overseer only if the opening
@@ -236,7 +236,7 @@ type ObserverAccountChoice = {
 
 `open()` signature gains `configureObservers?: RpcStub<ObserverConfigCallback>`.
 
-(Same goes for `openGadget()`, which is the public-facing API method on `AuthenticatedApi`.)
+(Same goes for `openWorkspace()`, which is the public-facing API method on `AuthenticatedApi`.)
 
 ### Step 3 — Overseer: observer configuration & re-verification at `open()`
 
@@ -760,7 +760,7 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
 
 1. **Data model + User DO** — add the `observers` collection (Step in §4) and `User.getVerifier`
    (Step 1).
-2. **API plumbing** — `ObserverConfigCallback` + `open()`/`openGadget()` signature (Step 2).
+2. **API plumbing** — `ObserverConfigCallback` + `open()`/`openWorkspace()` signature (Step 2).
 3. **Overseer enforcement** — `ensureObserver` and the `open()` hook (Step 3). Land with a
    temporary "deny if `configureCb` absent / any uncovered binding" path so server logic can be
    tested before the UI exists.

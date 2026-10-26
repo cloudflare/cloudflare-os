@@ -68,7 +68,7 @@ afterAll(async () => {
 it("a chat is charged the AI Gateway log's cost in place of the estimate", async () => {
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, nextUsernames("gatewaycost")[0]!);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("What does this cost?", SCRIPTED_MODEL_ID);
   await waitForIdleChat(ws, chatId);
@@ -123,7 +123,7 @@ it("an admin's modes, added models and say over users' own decide which models r
 
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, nextUsernames("gatewaymodes")[0]!);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   // Every model starts in its default mode: the catalog's, on the one provider this gateway
   // enables.
@@ -295,7 +295,7 @@ it("an admin's reasoning levels reach a model's chat turns, its own ahead of the
 
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, nextUsernames("gatewaylevels")[0]!);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   // The effort that a new chat's turn on the scripted model asks the provider for.
   const turnEffort = async () => {
     const sent = model.requests.length;

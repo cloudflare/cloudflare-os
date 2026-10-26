@@ -206,7 +206,7 @@ connect their own server.
   compatibility flag in `cloudflare.config.ts`, which makes workerd reject reserved IP ranges after
   resolution on every request and redirect hop. It does not apply under `wrangler dev`, which is
   what keeps `MCP_ALLOW_INSECURE` usable locally.
-- **Sharing UI reports late.** `GadgetMetadata.containsRestrictedData` derives only from
+- **Sharing UI reports late.** `WorkspaceMetadata.containsRestrictedData` derives only from
   `ObservationDescription.containsRestrictedData`, so creating a share key appears to succeed and
   fails when the recipient opens it (their observer verification is refused). Fixing this needs a
   kernel change.

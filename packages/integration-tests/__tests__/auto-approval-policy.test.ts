@@ -75,7 +75,7 @@ async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): P
   const [alice] = nextUsernames("alice");
   const aliceApi = await signUp(publicApi, alice);
   const account = await provisionAccount(aliceApi);
-  const overseer = await aliceApi.newGadget();
+  const overseer = await aliceApi.newWorkspace();
   const gatekeeper = await overseer.newGatekeeper(
       account.id, `https://gadgets-test.example/things/${thingName}`);
   if (!gatekeeper) throw new Error("Failed to create the test connection");

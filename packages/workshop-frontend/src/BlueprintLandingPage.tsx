@@ -621,7 +621,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
     setCreating(true)
     setError(null)
-    const overseer = authenticatedApi.newGadgetFromBlueprint(id, usableDraftAssignments)
+    const overseer = authenticatedApi.newWorkspaceFromBlueprint(id, usableDraftAssignments)
     try {
       let metadata = await overseer.getMetadata()
       window.location.href = `/workspace/${metadata.id}`
@@ -756,12 +756,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!id || !authenticatedApi) return
 
     setRemovingFromLibrary(true)
-    let overseer: ReturnType<typeof authenticatedApi.openGadget> | null = null
+    let overseer: ReturnType<typeof authenticatedApi.openWorkspace> | null = null
     try {
       // The source workspace owns its blueprints, so it must do the deleting. Once it is gone (or
       // the blueprint was never published from one), the user record is all there is to clean up.
       if (ownBlueprintSummary?.source.type === 'workspace') {
-        overseer = authenticatedApi.openGadget(ownBlueprintSummary.source.workspaceId)
+        overseer = authenticatedApi.openWorkspace(ownBlueprintSummary.source.workspaceId)
         await overseer.deleteBlueprint(id)
       } else {
         await authenticatedApi.deleteOrphanedBlueprint(id)

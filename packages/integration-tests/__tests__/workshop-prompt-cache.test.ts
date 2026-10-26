@@ -107,7 +107,7 @@ it.concurrent("a compaction lists the workspace's gadgets afresh, and later turn
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
@@ -204,7 +204,7 @@ it.concurrent("compacting after a catalog change keeps the catalogs the chat saw
       (await listConnectedAccounts(api)).find(entry => entry.vendorId === TEST_VENDOR_ID) ?? null);
   const label = accountLabel(account);
   await setSkills(label, ["Tax rules"]);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
   await waitFor("the first model request", async () => model.requests.length === 1 || null);

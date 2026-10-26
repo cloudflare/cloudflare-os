@@ -5,7 +5,7 @@ import { act, useEffect, type ComponentProps, type ReactElement, type ReactNode 
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
-  GadgetMetadata,
+  WorkspaceMetadata,
   GadgetSummary,
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
@@ -47,7 +47,7 @@ const mocks = vi.hoisted(() => {
           subscribeToConsoleLogs: async () => disposable,
         },
       },
-      metadata: { id: 'workspace', title: 'Trips', role: 'build' } as unknown as GadgetMetadata,
+      metadata: { id: 'workspace', title: 'Trips', role: 'build' } as unknown as WorkspaceMetadata,
       error: null,
       connectionLost: false,
       observerConfig: null,
@@ -57,7 +57,7 @@ const mocks = vi.hoisted(() => {
     },
     authenticatedApi: {
       whoami: async () => ({ type: 'user', id: 'dev', name: 'Dev' }),
-      listGadgets: async () => [],
+      listWorkspaces: async () => [],
     },
   }
 })

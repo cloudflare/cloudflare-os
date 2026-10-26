@@ -79,7 +79,7 @@ async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): P
   const aliceApi = await signUp(publicApi, alice);
   const account = await provisionAccount(aliceApi);
 
-  const overseer = await aliceApi.newGadget();
+  const overseer = await aliceApi.newWorkspace();
   const gatekeeper = await overseer.newGatekeeper(account.id, thingUrl(thingName));
   if (!gatekeeper) throw new Error("Failed to create the test connection");
   const gatekeeperId = await gatekeeper.getId();
@@ -101,7 +101,7 @@ async function reopenAfterRestart(ws: Workspace): Promise<{
     const publicApi = connect(harness.url);
     try {
       const aliceApi = await logIn(publicApi, ws.alice);
-      const overseer = await aliceApi.openGadget(ws.gadgetId);
+      const overseer = await aliceApi.openWorkspace(ws.gadgetId);
       const gatekeeper = await overseer.getGatekeeperById(ws.gatekeeperId);
       const session = await gatekeeper.openSession() as RpcStub<TestSession>;
       // Probe with a benign read, so a session felled by the reset retries here rather than
@@ -129,7 +129,7 @@ async function holdSession(
     const api = await logIn(publicApi, who);
     const callback = stubFor(recorder);
     try {
-      const overseer = await api.openGadget(ws.gadgetId, undefined, callback);
+      const overseer = await api.openWorkspace(ws.gadgetId, undefined, callback);
       return {
         overseer,
         close: () => {

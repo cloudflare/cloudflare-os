@@ -394,30 +394,30 @@ function codedErrorFamily<Code extends string>(messages: Record<Code, string>) {
   };
 }
 
-/** Stable error codes attached to expected failures from `AuthenticatedApi.openGadget()`. */
-export const OPEN_GADGET_ERROR_CODES = {
+/** Stable error codes attached to expected failures from `AuthenticatedApi.openWorkspace()`. */
+export const OPEN_WORKSPACE_ERROR_CODES = {
   workspaceNotFound: "WORKSPACE_NOT_FOUND",
   workspaceAccessDenied: "WORKSPACE_ACCESS_DENIED",
   shareLinksDisabled: "SHARE_LINKS_DISABLED",
 } as const;
 
-/** An expected failure code from `AuthenticatedApi.openGadget()`. */
-export type OpenGadgetErrorCode =
-    typeof OPEN_GADGET_ERROR_CODES[keyof typeof OPEN_GADGET_ERROR_CODES];
+/** An expected failure code from `AuthenticatedApi.openWorkspace()`. */
+export type OpenWorkspaceErrorCode =
+    typeof OPEN_WORKSPACE_ERROR_CODES[keyof typeof OPEN_WORKSPACE_ERROR_CODES];
 
-const openGadgetErrors = codedErrorFamily<OpenGadgetErrorCode>({
-  [OPEN_GADGET_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
-  [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
-  [OPEN_GADGET_ERROR_CODES.shareLinksDisabled]:
+const openWorkspaceErrors = codedErrorFamily<OpenWorkspaceErrorCode>({
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
+  [OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled]:
       "Share links are disabled for this workspace because it contains sensitive data. " +
       "The owner must add each person directly.",
 });
 
-/** Creates an expected `openGadget()` error with a machine-readable code. */
-export const createOpenGadgetError = openGadgetErrors.create;
+/** Creates an expected `openWorkspace()` error with a machine-readable code. */
+export const createOpenWorkspaceError = openWorkspaceErrors.create;
 
-/** Reads the machine-readable code from an expected `openGadget()` error. */
-export const getOpenGadgetErrorCode = openGadgetErrors.getCode;
+/** Reads the machine-readable code from an expected `openWorkspace()` error. */
+export const getOpenWorkspaceErrorCode = openWorkspaceErrors.getCode;
 
 /** Stable error codes attached to authentication failures. */
 export const AUTH_ERROR_CODES = {
@@ -655,50 +655,46 @@ export interface AuthenticatedApi extends RpcTarget {
   getAvatar(userId: string): Promise<Uint8Array | null>;
 
   /**
-   * Open an existing gadget.
+   * Open an existing workspace.
    *
    * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
-   * collaborator. If the key is invalid or expired, the call throws an exception. If the gadget has
-   * `ownerInvitesOnly` set (see `GadgetMetadata`), a caller the owner has not added directly
+   * collaborator. If the key is invalid or expired, the call throws an exception. If the workspace
+   * has `ownerInvitesOnly` set (see `WorkspaceMetadata`), a caller the owner has not added directly
    * is refused with a `shareLinksDisabled` coded exception. This design
-   * allows share-key redemption and gadget opening in a single round trip, and further calls
+   * allows share-key redemption and workspace opening in a single round trip, and further calls
    * can be pipelined on the returned Overseer.
    *
-   * To allow for pipelining, this throws an exception if the gadget doesn't exist. Expected
-   * missing and authorization failures carry a code from `OPEN_GADGET_ERROR_CODES`.
+   * To allow for pipelining, this throws an exception if the workspace doesn't exist. Expected
+   * missing and authorization failures carry a code from `OPEN_WORKSPACE_ERROR_CODES`.
    *
    * `configureObservers` is invoked only when the opening user is a non-owner who must choose
-   * connected accounts for one or more gatekeeper bindings before they can observe the gadget (see
-   * ObserverConfigCallback). It is never called for the owner or an already-configured observer,
-   * so the common-case open is still a single pipelined round trip.
-   *
-   * TODO(multi-gadget): This should be renamed to openWorkspace().
+   * connected accounts for one or more gatekeeper bindings before they can observe the workspace
+   * (see ObserverConfigCallback). It is never called for the owner or an already-configured
+   * observer, so the common-case open is still a single pipelined round trip.
    */
-  openGadget(id: string, shareKey?: string,
-             configureObservers?: RpcStub<ObserverConfigCallback>): Promise<RpcStub<Overseer>>;
+  openWorkspace(id: string, shareKey?: string,
+      configureObservers?: RpcStub<ObserverConfigCallback>): Promise<RpcStub<Overseer>>;
 
   /**
    * Create a new workspace. It will start out titled "Untitled Workspace".
    *
-   * Note: A gadget is considered "provisional" until it has some sort of activity, such as a
-   *   chat message or code edit. Provisional gadgets do not appear on the home page and will be
+   * Note: A workspace is considered "provisional" until it has some sort of activity, such as a
+   *   chat message or code edit. Provisional workspaces do not appear on the home page and will be
    *   automatically deleted after some time. Note in particular that calling
    *   new*Gatekeeper() will not clear the provisional bit (as long as the gatekeeper isn't bound
-   *   into a gadget), so provisional gadgets are useful to allow the user to write an initial
-   *   chat message without explicitly creating a new gadget.
-   *
-   * TODO(multi-gadget): This should be renamed to newWorkspace().
+   *   into a gadget), so provisional workspaces are useful to allow the user to write an initial
+   *   chat message without explicitly creating a new workspace.
    */
-  newGadget(): Promise<RpcStub<Overseer>>;
+  newWorkspace(): Promise<RpcStub<Overseer>>;
 
   /**
-   * List metadata about all the user's Gadgets. Used to display the front-page listing.
+   * List metadata about all the user's workspaces. Used to display the front-page listing.
    *
-   * Provisional gadgets are hidden.
+   * Provisional workspaces are hidden.
    *
    * TODO: Pagination, sort options.
    */
-  listGadgets(): Promise<GadgetMetadataWithTimestamps[]>;
+  listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]>;
 
   /** Pin or unpin this workspace in the user's list. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
@@ -709,8 +705,8 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * Served from an index in the user's own account which each workspace pushes to; a workspace
    * shared with the user contributes its outputs from the first time the user opens it (matching
-   * when it appears in listGadgets()), and stops updating them if their access is revoked.
-   * Provisional gadgets (still awaiting acceptance of a chat's changes) are never included.
+   * when it appears in listWorkspaces()), and stops updating them if their access is revoked.
+   * Provisional workspaces (still awaiting acceptance of a chat's changes) are never included.
    *
    * TODO: Pagination, sort options.
    */
@@ -820,10 +816,10 @@ export interface AuthenticatedApi extends RpcTarget {
       : Promise<GatekeeperUiFrame>;
 
   /**
-   * Remove a shared gadget from the user's home page listing. Does NOT revoke the user's
-   * access -- if they open the gadget again (e.g., via link), it reappears on their home page.
+   * Remove a shared workspace from the user's home page listing. Does NOT revoke the user's
+   * access -- if they open the workspace again (e.g., via link), it reappears on their home page.
    */
-  dismissSharedGadget(gadgetId: string): Promise<void>;
+  dismissSharedWorkspace(workspaceId: string): Promise<void>;
 
   /**
    * List all blueprints created by the current user (from User DO). Useful for an audit
@@ -874,7 +870,7 @@ export interface AuthenticatedApi extends RpcTarget {
   isBlueprintInLibrary(blueprintId: string): Promise<{ uploaded: boolean } | null>;
 
   /**
-   * Create a new gadget from a blueprint. Reads the blueprint from KV, downloads code from
+   * Create a new workspace from a blueprint. Reads the blueprint from KV, downloads code from
    * R2, creates a new Overseer DO, initializes it with the blueprint's code, and creates
    * gatekeepers from the provided binding assignments.
    *
@@ -883,7 +879,7 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * The returned Overseer can be used immediately (pipelining-friendly).
    */
-  newGadgetFromBlueprint(
+  newWorkspaceFromBlueprint(
     blueprintId: string,
     bindings: Record<string, BlueprintBindingAssignment>
   ): Promise<RpcStub<Overseer>>;
@@ -2197,12 +2193,10 @@ export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider
 /**
  * Metadata about a workspace (one Overseer DO and everything in it). Includes everything needed
  * to render the workspace list on the front page.
- *
- * TODO(multi-gadget): Rename `WorkspaceMetadata`.
  */
-export type GadgetMetadata = {
+export type WorkspaceMetadata = {
   /**
-   * Unique ID for this workspace, used with `openGadget()`. This is a url-safe base64 value
+   * Unique ID for this workspace, used with `openWorkspace()`. This is a url-safe base64 value
    * chosen randomly when the workspace is created.
    */
   id: string;
@@ -2216,27 +2210,27 @@ export type GadgetMetadata = {
   /** Total cost of AI inference in dollars, if known. */
   totalCost?: number;
 
-  /** Whether the user has pinned this gadget to the top of their list. */
+  /** Whether the user has pinned this workspace to the top of their list. */
   pinned?: boolean;
 
   /** Set while the user has muted this workspace's notifications. */
   notificationMute?: NotificationMute;
 
   /**
-   * Set when the gadget is not owned by the current user. Presence of this field indicates the
+   * Set when the workspace is not owned by the current user. Presence of this field indicates the
    * user is a collaborator, not the owner.
    */
   owner?: AiChatAuthorInfo;
 
   /**
-   * The viewing user's effective role for this gadget. The owner is always "build". Used by the
+   * The viewing user's effective role for this workspace. The owner is always "build". Used by the
    * frontend to decide whether to render the full editor ("build") or the UI-only shell ("use").
    * Absent implies "build" for backwards compatibility.
    */
   role?: CollaboratorRole;
 
   /**
-   * True when the gadget has observed data marked `containsRestrictedData` (see
+   * True when the workspace has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
    * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but can no longer
    * fetch from the public web, and every action requires manual approval.
@@ -2244,7 +2238,7 @@ export type GadgetMetadata = {
   containsRestrictedData?: boolean;
 
   /**
-   * True when the gadget has observed data marked `ownerInvitesOnly` (see
+   * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
    */
@@ -2266,10 +2260,10 @@ export type GadgetMetadata = {
 }
 
 /**
- * GadgetMetadata extended with timestamps. These are available when listing gadgets from the
- * user's collection, but not from the Overseer (which doesn't track them).
+ * WorkspaceMetadata extended with timestamps. These are available when listing workspaces from the
+ * user's collection (listWorkspaces()), but not from the Overseer (which doesn't track them).
  */
-export type GadgetMetadataWithTimestamps = GadgetMetadata & {
+export type WorkspaceMetadataWithTimestamps = WorkspaceMetadata & {
   created: Date;
   lastActive: Date;
 }
@@ -2316,7 +2310,8 @@ export type BlueprintOutput = {
 
 /**
  * One entry of the "New ..." menu, as returned by `listOutputFormats()`. This names a blueprint the
- * deployment has promoted, instantiated with `newGadgetFromBlueprint(blueprintId, ...)` like any other.
+ * deployment has promoted, instantiated with `newWorkspaceFromBlueprint(blueprintId, ...)` like any
+ * other.
  */
 export type OutputFormatOffer = {
   blueprintId: string;
@@ -2357,7 +2352,7 @@ export type ListOutputsResult = {
  * directly.
  */
 export type OutputSummary = {
-  /** The workspace that contains this output (an `openGadget()` id). */
+  /** The workspace that contains this output (an `openWorkspace()` id). */
   workspaceId: string;
 
   /**
@@ -2653,7 +2648,7 @@ export const AGENT_SPAWNER_CONNECTION_ID = "agent-spawner";
  */
 export interface Overseer extends RpcTarget {
   /** Get metadata describing this workspace. */
-  getMetadata(): Promise<GadgetMetadata>;
+  getMetadata(): Promise<WorkspaceMetadata>;
 
   /**
    * Get metadata describing this workspace and subscribe to changes.
@@ -2664,16 +2659,16 @@ export interface Overseer extends RpcTarget {
    * Disposing the returned `RpcStub` will cancel the subscription.
    */
   subscribeToMetadata(
-      callback: RpcStub<(metadata: GadgetMetadata) => void>)
+      callback: RpcStub<(metadata: WorkspaceMetadata) => void>)
       : Promise<RpcStub<{}>>;
 
   /**
    * Receive the current viewer roster, then incremental updates as viewers come and go.
-   * A viewer is present for the lifetime of the openGadget() session.
+   * A viewer is present for the lifetime of the openWorkspace() session.
    */
   subscribeToPresence(subscriber: RpcStub<PresenceSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Change the workspace title. */
+  /** Rename the workspace: change its title. */
   setTitle(title: string): Promise<void>;
 
   /**
@@ -2918,7 +2913,7 @@ export interface Overseer extends RpcTarget {
    * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
    * no matter which gadget invokes it.
    *
-   * Once the workspace has read restricted data (`GadgetMetadata.containsRestrictedData`), rules
+   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), rules
    * are stored but never fire: every action pends for manual approval.
    */
   setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
@@ -4245,7 +4240,7 @@ export function isTextLikeAttachmentMimeType(mimeType: string): boolean {
  *
  * The agent addresses workpieces by their chat binding name (the `gadget`/`workpiece` parameters
  * on several variants), never by workpiece ID. Logs persisted before multi-gadget workspaces lack
- * these names; when a name is absent, the workspace's `defaultGadgetId` (from `GadgetMetadata`)
+ * these names; when a name is absent, the workspace's `defaultGadgetId` (from `WorkspaceMetadata`)
  * is assumed, and it is an error for it to be omitted when there is no default.
  */
 export type AiToolCall = {
@@ -5486,7 +5481,7 @@ export type BlueprintLibrarySummary = {
 };
 
 /**
- * Binding assignment (input to newGadgetFromBlueprint).
+ * Binding assignment (input to newWorkspaceFromBlueprint).
  * When instantiating a blueprint, the user provides a Record mapping binding name ->
  * assignment. Every required binding in the blueprint must have a corresponding entry.
  */

@@ -29,7 +29,7 @@ const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 
 interface ActivityProps {
   overseer: RpcStub<Overseer>
-  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData).
+  // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
   // Latched actions are never auto-approved, so the always-approve affordance is hidden and
   // existing rules are shown as suspended but stay revocable.
   restricted?: boolean

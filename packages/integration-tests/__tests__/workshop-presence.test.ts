@@ -47,12 +47,12 @@ it("reports collaborator presence and removes it when the capability closes", as
   using collaboratorPublic = connect(harness.url);
   using owner = await signUp(ownerPublic, ownerName);
   using collaborator = await signUp(collaboratorPublic, collaboratorName);
-  using workspace = await owner.newGadget();
+  using workspace = await owner.newWorkspace();
   const { id: workspaceId } = await workspace.getMetadata();
   await workspace.newChat("Make this workspace visible without an agent", null);
   await workspace.addCollaborator(collaboratorName, "build");
 
-  const collaboratorWorkspace = await collaborator.openGadget(workspaceId);
+  const collaboratorWorkspace = await collaborator.openWorkspace(workspaceId);
   const recorder = new PresenceRecorder();
   using recorderStub = stubFor(recorder);
   using _subscription = await workspace.subscribeToPresence(recorderStub);

@@ -65,7 +65,7 @@ export async function createFromFormat(
   // anywhere in the bundle is a parse error that fails the whole chunk.
   let overseer: RpcStub<Overseer> | undefined
   try {
-    overseer = await api.newGadgetFromBlueprint(format.blueprintId, {})
+    overseer = await api.newWorkspaceFromBlueprint(format.blueprintId, {})
     const { id } = await overseer.getMetadata()
     navigate({ to: '/workspace/$id', params: { id } })
   } catch (err) {

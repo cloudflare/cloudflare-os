@@ -179,7 +179,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   await ownerApi.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account", async () =>
     (await listConnectedAccounts(ownerApi)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await ownerApi.newGadget();
+  using ws = await ownerApi.newWorkspace();
   const workspaceId = (await ws.getMetadata()).id;
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
@@ -215,7 +215,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   using viewerPublic = connect(harness.url);
   using viewerApi = await signUp(viewerPublic, viewer!);
   if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
-  using useWs = await viewerApi.openGadget(workspaceId);
+  using useWs = await viewerApi.openWorkspace(workspaceId);
   using useGadget = await useWs.getGadget(gadgetId);
 
   expect(await outcomes(DENIED_OVERSEER, useWs)).toEqual(allDenied(DENIED_OVERSEER));

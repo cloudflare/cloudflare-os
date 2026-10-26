@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -9588,7 +9588,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Apply the deployment's overrides, so a gadget the agent builds is labelled the same as one
-    // the user makes from the New menu (see newGadgetFromBlueprint, which does the same).
+    // the user makes from the New menu (see newWorkspaceFromBlueprint, which does the same).
     let output = deploymentOutputForBlueprint(await readAdminConfig(this.env), blueprintId,
         sanitizeBlueprintOutput(kvRecord.metadata.output));
 
@@ -10388,7 +10388,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         let owner = this.impl.users.get(this.impl.users.idFromString(userId));
         let meta = await owner.getGadget(this.ctx.id.toString());
         if (!meta) {
-          throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+          throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
         }
         if (meta.owner) {
           // The user's DO contains a record indicating that this gadget was shared to them by
@@ -10396,7 +10396,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           // which does not proactively clean up share recipient's references. We need to treat
           // this as missing otherwise we'll inadvertently create a new gadget with this ID
           // belonging to a different user than the original.
-          throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+          throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
         }
 
         // Owner says we exist, so let's initialize ourselves.
@@ -10471,7 +10471,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       let effectiveRole = await this.impl.authorizeCollaborator(
           profileId, clientUser, {configureCb: configureObservers});
       if (!effectiveRole) {
-        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+        throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
       }
       role = effectiveRole;
 
@@ -10676,7 +10676,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Initialize this workspace's default gadget from the release of a blueprint that `metadata`
-   * describes. Called by AuthenticatedApi.newGadgetFromBlueprint() after creating (and opening)
+   * describes. Called by AuthenticatedApi.newWorkspaceFromBlueprint() after creating (and opening)
    * the DO, with the metadata it goes on to set up the gadget's bindings from: the blueprint may
    * be republished meanwhile, and the code has to be the version those bindings belong to.
    */
@@ -11200,8 +11200,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return profilePromise;
   }
 
-  async getMetadata(): Promise<GadgetMetadata> {
-    let result: GadgetMetadata = {
+  async getMetadata(): Promise<WorkspaceMetadata> {
+    let result: WorkspaceMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
@@ -11217,7 +11217,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async subscribeToMetadata(
-      callback: RpcStub<(metadata: GadgetMetadata) => void>)
+      callback: RpcStub<(metadata: WorkspaceMetadata) => void>)
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
@@ -11226,7 +11226,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let owner = this.isOwner
         ? undefined : await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
 
-    let metadata: GadgetMetadata = {
+    let metadata: WorkspaceMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
@@ -12688,7 +12688,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
   // --- Allowed methods ---
 
-  async getMetadata(): Promise<GadgetMetadata> {
+  async getMetadata(): Promise<WorkspaceMetadata> {
     return {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
@@ -12699,14 +12699,14 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
 
   async subscribeToMetadata(
-      callback: RpcStub<(metadata: GadgetMetadata) => void>)
+      callback: RpcStub<(metadata: WorkspaceMetadata) => void>)
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
     // Fetch owner info first so the title read and subscription below have no await in between.
     let owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
 
-    let metadata: GadgetMetadata = {
+    let metadata: WorkspaceMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       owner,

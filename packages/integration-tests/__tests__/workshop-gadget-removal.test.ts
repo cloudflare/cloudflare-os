@@ -90,7 +90,7 @@ it.concurrent("removing a gadget tears down its hook and draft proposals but spa
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the ambient account", async () =>
     (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const workpieces = new WorkpieceRecorder();
   const chatMetadata = new ChatMetadataRecorder();
@@ -176,7 +176,7 @@ it.concurrent("removing a gadget tears down its hook and draft proposals but spa
 
   // A published blueprint is a snapshot: it outlives its source but can't be refreshed from it.
   expect(await ws.listBlueprints()).toContainEqual(expect.objectContaining({ id: blueprint.id }));
-  using installed = await api.newGadgetFromBlueprint(blueprint.id, {});
+  using installed = await api.newWorkspaceFromBlueprint(blueprint.id, {});
   const { defaultGadgetId } = await installed.getMetadata();
   if (defaultGadgetId === undefined) throw new Error("The installed blueprint has no gadget");
   using installedGadget = await installed.getGadget(defaultGadgetId);

@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcPromise, RpcStub } from "capnweb";
 import {
-  OPEN_GADGET_ERROR_CODES, type AuthenticatedApi, type GatekeeperClient, type Overseer,
+  OPEN_WORKSPACE_ERROR_CODES, type AuthenticatedApi, type GatekeeperClient, type Overseer,
   type PublicApi,
 } from "@gadgets/workshop-shared/api";
 import {
@@ -97,7 +97,7 @@ async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): P
   const aliceApi = await signUp(publicApi, alice);
   const account = await provisionAccount(aliceApi);
 
-  const overseer = await aliceApi.newGadget();
+  const overseer = await aliceApi.newWorkspace();
   const gatekeeper = await overseer.newGatekeeper(account.id, thingUrl(thingName));
   if (!gatekeeper) throw new Error("Failed to create the test connection");
   const gatekeeperId = await gatekeeper.getId();
@@ -136,7 +136,7 @@ async function bobOpens(gadgetId: string, bobApi: RpcStub<AuthenticatedApi>,
   const callback = stubFor(
       recorder ?? new ObserverConfigRecorder().alwaysChoose(bobAccount.id, MAX_OBSERVER_PROMPTS));
   try {
-    return await bobApi.openGadget(gadgetId, undefined, callback);
+    return await bobApi.openWorkspace(gadgetId, undefined, callback);
   } finally {
     callback[Symbol.dispose]();
   }
@@ -162,7 +162,7 @@ async function reopenAfterRestart(ws: Workspace, gatekeeperId = ws.gatekeeperId)
     const publicApi = connect(harness.url);
     try {
       const aliceApi = await logIn(publicApi, ws.alice);
-      const overseer = await aliceApi.openGadget(ws.gadgetId);
+      const overseer = await aliceApi.openWorkspace(ws.gadgetId);
       const gatekeeper = await overseer.getGatekeeperById(gatekeeperId);
       const session = await gatekeeper.openSession() as RpcStub<TestSession>;
       // Probe with a benign read, so a session felled by the abort retries here rather than
@@ -301,7 +301,7 @@ describe("sensitive observations", () => {
         const callback = stubFor(
             new ObserverConfigRecorder().alwaysChoose(account.id, MAX_OBSERVER_PROMPTS));
         try {
-          return await api.openGadget(ws.gadgetId, key, callback);
+          return await api.openWorkspace(ws.gadgetId, key, callback);
         } finally {
           callback[Symbol.dispose]();
         }
@@ -334,13 +334,13 @@ describe("sensitive observations", () => {
         // The old link admits neither Dave, who joined through it, nor Carol, who is new.
         const daveApi = await logIn(reopened.publicApi, dave);
         await expect(opens(daveApi, daveAccount)).rejects.toMatchObject({
-          code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+          code: OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled,
           message: expect.stringMatching(/Share links are disabled/),
         });
         const carolApi = await signUp(reopened.publicApi, carol);
         const carolAccount = await provisionAccount(carolApi);
         await expect(opens(carolApi, carolAccount)).rejects.toMatchObject({
-          code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+          code: OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled,
         });
         expect(await overseer.listCollaborators()).toEqual([]);
 
@@ -557,7 +557,7 @@ describe("sensitive observations", () => {
           new ObserverConfigRecorder().alwaysChoose(daveAccount.id, MAX_OBSERVER_PROMPTS);
       const callback = stubFor(recorder);
       try {
-        await expect(daveApi.openGadget(ws.gadgetId, key, callback))
+        await expect(daveApi.openWorkspace(ws.gadgetId, key, callback))
             .rejects.toThrow(/could not confirm/i);
       } finally {
         callback[Symbol.dispose]();
@@ -587,7 +587,7 @@ describe("sensitive observations", () => {
         // Each open redeems the same key; the edges deduplicate, so neither open is turned away
         // and the grants collapse to one edge.
         const overseers = await Promise.all(
-            callbacks.map(cb => daveApi.openGadget(ws.gadgetId, key, cb)));
+            callbacks.map(cb => daveApi.openWorkspace(ws.gadgetId, key, cb)));
         for (const overseer of overseers) overseer[Symbol.dispose]();
       } finally {
         for (const cb of callbacks) cb[Symbol.dispose]();

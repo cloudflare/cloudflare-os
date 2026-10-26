@@ -4,7 +4,7 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { createOpenGadgetError, OPEN_GADGET_ERROR_CODES } from '@gadgets/workshop-shared/api'
+import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES } from '@gadgets/workshop-shared/api'
 import WorkspaceOpenErrorPage, {
   classifyWorkspaceOpenFailure,
   type WorkspaceOpenFailureKind,
@@ -98,16 +98,16 @@ describe('WorkspaceOpenErrorPage', () => {
 
   it('classifies stable open error codes without treating unexpected errors as expected', () => {
     expect(classifyWorkspaceOpenFailure(
-      createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied),
+      createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied),
     )).toBe('access-denied')
     expect(classifyWorkspaceOpenFailure(
-      createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound),
+      createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound),
     )).toBe('not-found')
     expect(classifyWorkspaceOpenFailure(
-      createOpenGadgetError(OPEN_GADGET_ERROR_CODES.shareLinksDisabled),
+      createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled),
     )).toBe('share-links-disabled')
     expect(classifyWorkspaceOpenFailure(
-      new Error(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied),
+      new Error(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied),
     )).toBe('unexpected')
     expect(classifyWorkspaceOpenFailure(new Error('storage unavailable'))).toBe('unexpected')
   })

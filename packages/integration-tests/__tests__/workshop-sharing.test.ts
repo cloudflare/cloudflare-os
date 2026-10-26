@@ -1,7 +1,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, type AffectedCollaborator,
+  getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, type AffectedCollaborator,
   type AuthenticatedApi, type Overseer, type UiBundle, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
@@ -44,12 +44,12 @@ async function expectOpenDenied(
     authenticated: RpcStub<AuthenticatedApi>, workspaceId: string, shareKey?: string): Promise<void> {
   let denied: unknown;
   try {
-    using _workspace = await authenticated.openGadget(workspaceId, shareKey);
+    using _workspace = await authenticated.openWorkspace(workspaceId, shareKey);
   } catch (error) {
     denied = error;
   }
   if (denied === undefined) throw new Error("Expected workspace open to fail");
-  expect(getOpenGadgetErrorCode(denied)).toBe(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+  expect(getOpenWorkspaceErrorCode(denied)).toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
 }
 
 async function withAuthenticated<T>(
@@ -89,9 +89,9 @@ async function expectOpenDeniedAfterRestart(
     try {
       return await withAuthenticated(username, async authenticated => {
         try {
-          using _workspace = await authenticated.openGadget(workspaceId, shareKey);
+          using _workspace = await authenticated.openWorkspace(workspaceId, shareKey);
         } catch (error) {
-          return getOpenGadgetErrorCode(error) === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied
+          return getOpenWorkspaceErrorCode(error) === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied
             ? { denied: true }
             : null;
         }
@@ -108,7 +108,7 @@ async function listShareLinksAfterRestart(username: string, workspaceId: string)
   return waitFor("owner workspace after revocation restart", async () => {
     try {
       return await withAuthenticated(username, async authenticated => {
-        using workspace = await authenticated.openGadget(workspaceId);
+        using workspace = await authenticated.openWorkspace(workspaceId);
         return workspace.listShareLinks();
       });
     } catch {
@@ -129,7 +129,7 @@ it.concurrent("grants and revokes a use-only collaborator", async () => {
     using owner = await signUp(ownerPublic, ownerName);
     using collaborator = await signUp(collaboratorPublic, collaboratorName);
     using intruder = await signUp(intruderPublic, intruderName);
-    using workspace = await owner.newGadget();
+    using workspace = await owner.newWorkspace();
     const id = await activate(workspace);
 
     await expectOpenDenied(intruder, id);
@@ -141,7 +141,7 @@ it.concurrent("grants and revokes a use-only collaborator", async () => {
     });
     if (added === null) throw new Error("Collaborator was not added");
 
-    using collaboratorWorkspace = await collaborator.openGadget(id);
+    using collaboratorWorkspace = await collaborator.openWorkspace(id);
     expect(await collaboratorWorkspace.getMetadata()).toMatchObject({
       id,
       role: "use",
@@ -176,13 +176,13 @@ it.concurrent("a collaborator's Outputs page follows their access", async () => 
   });
   const document = formats.find(format => format.output.id === "document");
   if (document === undefined) throw new Error("Document output format is not installed");
-  const workspace = setup.use(await owner.newGadgetFromBlueprint(document.blueprintId, {}));
+  const workspace = setup.use(await owner.newWorkspaceFromBlueprint(document.blueprintId, {}));
   const { id: workspaceId, defaultGadgetId } = await workspace.getMetadata();
   if (defaultGadgetId === undefined) throw new Error("Output workspace has no default Gadget");
 
   const added = await workspace.addCollaborator(collaboratorName, "build");
   if (added === null) throw new Error("Collaborator was not added");
-  setup.use(await collaborator.openGadget(workspaceId));
+  setup.use(await collaborator.openWorkspace(workspaceId));
 
   const shared = await waitFor("the shared document in the collaborator's outputs", async () =>
     (await collaborator.listOutputs()).outputs.find(output =>
@@ -215,7 +215,7 @@ it.concurrent("revokes every key and recipient of one share link", async () => {
     using owner = await signUp(ownerPublic, ownerName);
     using first = await signUp(firstPublic, firstName);
     using second = await signUp(secondPublic, secondName);
-    using workspace = await owner.newGadget();
+    using workspace = await owner.newWorkspace();
     const id = await activate(workspace);
 
     const shareLink = await workspace.createShareLink("use", "review link");
@@ -226,8 +226,8 @@ it.concurrent("revokes every key and recipient of one share link", async () => {
       role: "use",
     }));
 
-    using firstWorkspace = await first.openGadget(id, shareLink.key);
-    using secondWorkspace = await second.openGadget(id, copiedKey.key);
+    using firstWorkspace = await first.openWorkspace(id, shareLink.key);
+    using secondWorkspace = await second.openWorkspace(id, copiedKey.key);
     expect(await firstWorkspace.getMetadata()).toMatchObject({ role: "use" });
     expect(await secondWorkspace.getMetadata()).toMatchObject({ role: "use" });
     const preview = await workspace.previewRevokeShareLink(shareLink.linkId);
@@ -259,13 +259,13 @@ it.concurrent("removing a sharer keeps or drops the people they shared with", as
     using stack = new DisposableStack();
     const ownerPublic = stack.use(connect(requireHarness().url));
     const owner = stack.use(await logIn(ownerPublic, ownerName!));
-    const workspace = stack.use(await owner.newGadget());
+    const workspace = stack.use(await owner.newWorkspace());
     const workspaceId = await activate(workspace);
     const bobInfo = await workspace.addCollaborator(bobName!, "build");
     if (bobInfo === null) throw new Error(`Failed to share with ${bobName}`);
     using bobPublic = connect(requireHarness().url);
     using bob = await logIn(bobPublic, bobName!);
-    using bobWorkspace = await bob.openGadget(workspaceId);
+    using bobWorkspace = await bob.openWorkspace(workspaceId);
     const carolInfo = await bobWorkspace.addCollaborator(carolName!, "build");
     if (carolInfo === null) throw new Error(`Failed to share with ${carolName}`);
     const resources = stack.move();
@@ -292,7 +292,7 @@ it.concurrent("removing a sharer keeps or drops the people they shared with", as
 
   using keptCarolPublic = connect(requireHarness().url);
   using keptCarol = await logIn(keptCarolPublic, carolName!);
-  using keptCarolWorkspace = await keptCarol.openGadget(kept.workspaceId);
+  using keptCarolWorkspace = await keptCarol.openWorkspace(kept.workspaceId);
   expect(await keptCarolWorkspace.getMetadata()).toMatchObject({ role: "build" });
 
   const preview = affectedRoles(
@@ -319,7 +319,7 @@ it.concurrent("losing a build path falls back to the owner's direct use grant", 
   using owner = await signUp(ownerPublic, ownerName!);
   using bob = await signUp(bobPublic, bobName!);
   using carol = await signUp(carolPublic, carolName!);
-  using workspace = await owner.newGadget();
+  using workspace = await owner.newWorkspace();
   const workspaceId = (await workspace.getMetadata()).id;
 
   let gadgetId: WorkpieceId;
@@ -351,7 +351,7 @@ it.concurrent("losing a build path falls back to the owner's direct use grant", 
   const bobInfo = await workspace.addCollaborator(bobName!, "build");
   if (bobInfo === null) throw new Error(`Failed to share with ${bobName}`);
   {
-    using bobWorkspace = await bob.openGadget(workspaceId);
+    using bobWorkspace = await bob.openWorkspace(workspaceId);
     const carolInfo = await bobWorkspace.addCollaborator(carolName!, "build");
     if (carolInfo === null) throw new Error(`Failed to share with ${carolName}`);
   }
@@ -359,7 +359,7 @@ it.concurrent("losing a build path falls back to the owner's direct use grant", 
     throw new Error(`Failed to add ${carolName}'s direct use grant`);
   }
   {
-    using carolWorkspace = await carol.openGadget(workspaceId);
+    using carolWorkspace = await carol.openWorkspace(workspaceId);
     expect(await carolWorkspace.getMetadata()).toMatchObject({ role: "build" });
   }
 
@@ -373,7 +373,7 @@ it.concurrent("losing a build path falls back to the owner's direct use grant", 
 
   using freshCarolPublic = connect(requireHarness().url);
   using freshCarol = await logIn(freshCarolPublic, carolName!);
-  using freshWorkspace = await freshCarol.openGadget(workspaceId);
+  using freshWorkspace = await freshCarol.openWorkspace(workspaceId);
   expect(await freshWorkspace.getMetadata()).toMatchObject({ role: "use" });
   await expect(freshWorkspace.setTitle("x")).rejects.toThrow(USE_ONLY);
   await expect(freshWorkspace.newChat("hi", null)).rejects.toThrow(USE_ONLY);

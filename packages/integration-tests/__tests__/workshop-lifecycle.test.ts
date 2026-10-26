@@ -1,7 +1,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, type AuthenticatedApi,
+  getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, type AuthenticatedApi,
 } from "@gadgets/workshop-shared/api";
 import { settleRestart, type Harness, startHarness } from "../src/harness.js";
 import { mockChatCompletion } from "../src/mock-model.js";
@@ -39,7 +39,7 @@ function username(): string {
 async function rejectedOpen(
     authenticated: RpcStub<AuthenticatedApi>, workspaceId: string): Promise<unknown> {
   try {
-    using _workspace = await authenticated.openGadget(workspaceId);
+    using _workspace = await authenticated.openWorkspace(workspaceId);
   } catch (error) {
     return error;
   }
@@ -50,16 +50,16 @@ it.concurrent("lists workspace metadata after activity and removes it after dele
   const owner = username();
   using publicApi = connect(requireHarness().url);
   using authenticated = await signUp(publicApi, owner);
-  using workspace = await authenticated.newGadget();
+  using workspace = await authenticated.newWorkspace();
   const { id } = await workspace.getMetadata();
-  expect(await authenticated.listGadgets()).not.toContainEqual(expect.objectContaining({ id }));
+  expect(await authenticated.listWorkspaces()).not.toContainEqual(expect.objectContaining({ id }));
 
   await workspace.setTitle("Renamed Workspace");
   await authenticated.setWorkspacePinned(id, true);
   await workspace.newChat("Record this without running an agent", null);
 
   const listed = await waitFor("the active workspace to appear in the user's list", async () => {
-    const workspaces = await authenticated.listGadgets();
+    const workspaces = await authenticated.listWorkspaces();
     return workspaces.some(entry => entry.id === id) ? workspaces : null;
   });
   expect(listed).toContainEqual(expect.objectContaining({
@@ -74,13 +74,13 @@ it.concurrent("lists workspace metadata after activity and removes it after dele
   // to reopen. `workspace` stays held through the restart, so this session must survive it.
   await settleRestart();
   await waitFor("the deleted workspace to disappear from the user's list", async () =>
-    (await authenticated.listGadgets()).some(entry => entry.id === id) ? null : true);
+    (await authenticated.listWorkspaces()).some(entry => entry.id === id) ? null : true);
 });
 
 it.concurrent("persists an ordered human-only chat without starting an agent", async () => {
   using publicApi = connect(requireHarness().url);
   using authenticated = await signUp(publicApi, username());
-  using workspace = await authenticated.newGadget();
+  using workspace = await authenticated.newWorkspace();
 
   const chatId = await workspace.newChat("First message", null);
   await workspace.sendChatMessage(chatId, "Second message", null);
@@ -105,7 +105,7 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
     async () => {
   using publicApi = connect(requireHarness().url);
   using authenticated = await signUp(publicApi, username());
-  using ws = await authenticated.newGadget();
+  using ws = await authenticated.newWorkspace();
 
   const content = new TextEncoder().encode("only chat A");
   const oid = await ws.uploadBlob(content);
@@ -121,7 +121,7 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
   await expect(ws.getChatAttachmentContent(chatB, attachmentId)).rejects.toThrow("Chat attachment not found.");
 
   await ws.sendChatMessage(chatB, "Reuse uploaded bytes", null, undefined, [sent]);
-  using otherWorkspace = await authenticated.newGadget();
+  using otherWorkspace = await authenticated.newWorkspace();
   await expect(otherWorkspace.newChat("Unknown blob", null, undefined, [sent]))
     .rejects.toThrow("Unknown Git blob.");
   await otherWorkspace.deleteSelf();
@@ -132,7 +132,7 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
 it.concurrent("creates, renames, reopens, and removes a Gadget capability", async () => {
   using publicApi = connect(requireHarness().url);
   using authenticated = await signUp(publicApi, username());
-  using workspace = await authenticated.newGadget();
+  using workspace = await authenticated.newWorkspace();
 
   using gadget = await workspace.createGadget("Status", undefined, "STATUS");
   const gadgetId = await gadget.getId();
@@ -160,17 +160,17 @@ it.concurrent("only the owner deletes a workspace, and later opens say why", asy
   using ownerApi = await signUp(ownerPublic, owner);
   using collaboratorApi = await signUp(collaboratorPublic, collaborator);
   using strangerApi = await signUp(strangerPublic, stranger);
-  using ownerWorkspace = await ownerApi.newGadget();
+  using ownerWorkspace = await ownerApi.newWorkspace();
   const workspaceId = (await ownerWorkspace.getMetadata()).id;
   if (!await ownerWorkspace.addCollaborator(collaborator, "build")) {
     throw new Error(`Failed to share the workspace with ${collaborator}`);
   }
-  using collaboratorWorkspace = await collaboratorApi.openGadget(workspaceId);
+  using collaboratorWorkspace = await collaboratorApi.openWorkspace(workspaceId);
 
   await expect(collaboratorWorkspace.deleteSelf())
       .rejects.toThrow("Only the workspace owner can delete it.");
   const denied = await rejectedOpen(strangerApi, workspaceId);
-  expect(getOpenGadgetErrorCode(denied)).toBe(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+  expect(getOpenWorkspaceErrorCode(denied)).toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
   expect(Object.prototype.propertyIsEnumerable.call(denied, "code")).toBe(true);
   expect(denied).toMatchObject({ message: "You don't have access to this workspace." });
 
@@ -182,7 +182,7 @@ it.concurrent("only the owner deletes a workspace, and later opens say why", asy
   using reconnected = connect(requireHarness().url);
   using reopenedCollaborator = await logIn(reconnected, collaborator);
   const missing = await rejectedOpen(reopenedCollaborator, workspaceId);
-  expect(getOpenGadgetErrorCode(missing)).toBe(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+  expect(getOpenWorkspaceErrorCode(missing)).toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
   expect(Object.prototype.propertyIsEnumerable.call(missing, "code")).toBe(true);
   expect(missing).toMatchObject({ message: "Workspace not found." });
 });

@@ -123,7 +123,7 @@ async function shareGadgetWithBob(
 
   const aliceAccount = await provisionAccount(aliceApi);
 
-  const overseer = await aliceApi.newGadget();
+  const overseer = await aliceApi.newWorkspace();
   for (const thingName of thingNames) {
     await overseer.newGatekeeper(aliceAccount.id, thingUrl(thingName));
   }
@@ -149,7 +149,7 @@ async function bobOpens(
     shared: SharedGadget, recorder: ObserverConfigRecorder): Promise<RpcStub<Overseer>> {
   const callback = stubFor(recorder);
   try {
-    return await shared.bobApi.openGadget(shared.gadgetId, undefined, callback);
+    return await shared.bobApi.openWorkspace(shared.gadgetId, undefined, callback);
   } finally {
     callback[Symbol.dispose]();
   }
@@ -169,7 +169,7 @@ describe("observer re-verification", () => {
       const [alice] = nextUsernames("alice");
       using aliceApi = await signUp(publicApi, alice);
       const account = await provisionAccount(aliceApi);
-      using overseer = await aliceApi.newGadget();
+      using overseer = await aliceApi.newWorkspace();
 
       using bound = await overseer.newGatekeeper(account.id, thingUrl("bound"));
       using unbound = await overseer.newGatekeeper(account.id, thingUrl("unbound"));
@@ -203,7 +203,7 @@ describe("observer re-verification", () => {
       const aliceAccount = await provisionAccount(aliceApi);
       const bobAccount = await provisionAccount(bobApi);
 
-      const ownerWorkspace = await aliceApi.newGadget();
+      const ownerWorkspace = await aliceApi.newWorkspace();
       const { id: gadgetId } = await ownerWorkspace.getMetadata();
       const collaborator = await ownerWorkspace.addCollaborator(bob, "build");
       if (!collaborator) throw new Error(`Failed to share the gadget with ${bob}`);
@@ -211,7 +211,7 @@ describe("observer re-verification", () => {
 
       // No ObserverConfigCallback is supplied. Opening can only succeed if the Workshop discovers
       // Bob's ambient account itself; the fixture records which account's verifier it receives.
-      using sharedWorkspace = await bobApi.openGadget(gadgetId);
+      using sharedWorkspace = await bobApi.openWorkspace(gadgetId);
       await expect(sharedWorkspace.getMetadata()).resolves.toMatchObject({ id: gadgetId });
       expect(await ambientVerificationCount(accountLabel(bobAccount))).toBe(1);
       expect(await ambientVerificationCount(accountLabel(aliceAccount))).toBe(0);
@@ -351,7 +351,7 @@ describe("observer re-verification", () => {
   it.concurrent("denies terminally with no prompt when the client offers no config channel",
       async () => {
     // The path a collaborator hits by favouriting or sharing a workspace from the sidebar, where
-    // openGadget() is called without a callback. This message is the only thing they ever see.
+    // openWorkspace() is called without a callback. This message is the only thing they ever see.
     //
     // Uses a settled denial rather than an expiry, since there is nothing to repair here anyway.
     await withSession(async publicApi => {
@@ -359,7 +359,7 @@ describe("observer re-verification", () => {
       await bobOpensAndCloses(shared);
       await shared.failBob(DENIED_REASON);
 
-      const error = await shared.bobApi.openGadget(shared.gadgetId).then(
+      const error = await shared.bobApi.openWorkspace(shared.gadgetId).then(
         () => null, (err: unknown) => err as Error);
 
       expect(error).not.toBeNull();

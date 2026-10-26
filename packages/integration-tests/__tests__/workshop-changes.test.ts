@@ -2,7 +2,7 @@ import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AuthenticatedApi,
-  GadgetMetadata, Overseer, PublicApi, WorkpieceId,
+  WorkspaceMetadata, Overseer, PublicApi, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
   applyCodeChange, diffFiles, type CodeChange, type CodeContent,
@@ -83,7 +83,7 @@ function withOwner<T>(
   const username = nextUsernames("owner")[0]!;
   return withClient(api => signUp(api, username), async api => {
     if (model !== undefined) await api.addModel(model.userModel.profile, model.userModel.config);
-    return api.newGadget();
+    return api.newWorkspace();
   }, (client, api) => fn(client, api, username));
 }
 
@@ -92,10 +92,10 @@ function reopen<T>(
     username: string, fn: (client: Client, api: RpcStub<AuthenticatedApi>) => Promise<T>): Promise<T> {
   return withClient(api => logIn(api, username), async api => {
     const [workspace] = await waitFor("the session's workspace", async () => {
-      const workspaces = await api.listGadgets();
+      const workspaces = await api.listWorkspaces();
       return workspaces.length > 0 ? workspaces : null;
     });
-    return api.openGadget(workspace.id);
+    return api.openWorkspace(workspace.id);
   }, fn);
 }
 
@@ -381,8 +381,8 @@ it.concurrent("two simultaneous chat merges choose one complete version", async 
 it.concurrent("a second session follows renames, drafts, merges and reverts", async () => {
   await withOwner(async (writer, _api, username) => {
     const { id } = await writer.ws.getMetadata();
-    await withClient(api => logIn(api, username), api => api.openGadget(id), async reader => {
-      const metadataEvents: GadgetMetadata[] = [];
+    await withClient(api => logIn(api, username), api => api.openWorkspace(id), async reader => {
+      const metadataEvents: WorkspaceMetadata[] = [];
       using _metadata = await reader.ws.subscribeToMetadata(metadata => {
         metadataEvents.push(metadata);
       });
@@ -482,7 +482,7 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
   await withClient(api => signUp(api, nextUsernames("chatdelete")[0]!), async api => {
     await api.provisionAmbientAccount(TEST_VENDOR_ID);
     accountId = (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID)?.id;
-    return api.newGadget();
+    return api.newWorkspace();
   }, async ({ ws, workpieces }) => {
     if (accountId === undefined) throw new Error("The test account was not provisioned");
     using data = await ws.newGatekeeper(accountId, "https://gadgets-test.example/things/chat-delete");
@@ -526,7 +526,7 @@ it.concurrent("two editors of one chat draft converge, and retries are idempoten
     const [name] = nextUsernames("collaborator");
     await withClient(api => signUp(api, name), async api => {
       await owner.ws.addCollaborator(name, "build");
-      return api.openGadget(id);
+      return api.openWorkspace(id);
     }, async collaborator => {
       const chatId = await owner.ws.newChat("Let's edit together", null);
       const pins = [{ gadgetId, baseCommit: head }];
@@ -732,7 +732,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
 
     using source = await ws.getGadget(gadgetId);
     const blueprint = await source.createBlueprint("Stateful app", "V2 without its state");
-    using installed = await api.newGadgetFromBlueprint(blueprint.id, {});
+    using installed = await api.newWorkspaceFromBlueprint(blueprint.id, {});
     const { defaultGadgetId } = await installed.getMetadata();
     if (defaultGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
     expect(await gadgetState(installed, defaultGadgetId))

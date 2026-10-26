@@ -309,7 +309,7 @@ it.concurrent("a connection's stubs to itself outlive its session and a restart,
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account", async () =>
     (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const { id: workspaceId } = await ws.getMetadata();
   using thing = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/self");
   if (!thing) throw new Error("Failed to create the test connection");
@@ -330,7 +330,7 @@ it.concurrent("a connection's stubs to itself outlive its session and a restart,
   // The restart ends the whole RPC session, not just the workspace.
   using reconnected = connect(harness.url);
   using reopenedApi = await logIn(reconnected, username);
-  using reopened = await reopenedApi.openGadget(workspaceId);
+  using reopened = await reopenedApi.openWorkspace(workspaceId);
   expect(await streamGeneration(reopened)).not.toBe(generation);
   expect(await callSelfStub()).toEqual(reached);
   using connection = await reopened.getGatekeeperById(thingId);

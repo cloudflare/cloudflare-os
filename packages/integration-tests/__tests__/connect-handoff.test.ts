@@ -131,7 +131,7 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
   const account = await connectConfirmed(api);
   const label = accountLabel(account);
 
-  const ws = stack.use(await api.newGadget());
+  const ws = stack.use(await api.newWorkspace());
   const connection = stack.use(
       await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/reconnect"));
   if (!connection) throw new Error("Failed to create the test connection");

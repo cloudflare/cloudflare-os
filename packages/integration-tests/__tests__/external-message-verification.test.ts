@@ -106,7 +106,7 @@ describe("external-message verification", () => {
       // Wire the workspace up over the web API: connect a Thing (an account-requiring connection,
       // so collaborators must be observer-verified against it) and add Bob.
       const gadgetId = await externalGadgetId(gadgetKey);
-      using overseer = await aliceApi.openGadget(gadgetId);
+      using overseer = await aliceApi.openWorkspace(gadgetId);
       const gatekeeper = await overseer.newGatekeeper(aliceAccount.id, thingUrl("external"));
       if (!gatekeeper) throw new Error("Failed to create the test connection");
 
@@ -133,7 +133,7 @@ describe("external-message verification", () => {
       const callback = stubFor(
           new ObserverConfigRecorder().alwaysChoose(bobAccount.id, MAX_OBSERVER_PROMPTS));
       try {
-        (await bobApi.openGadget(gadgetId, undefined, callback))[Symbol.dispose]();
+        (await bobApi.openWorkspace(gadgetId, undefined, callback))[Symbol.dispose]();
       } finally {
         callback[Symbol.dispose]();
       }
@@ -169,7 +169,7 @@ describe("external-message verification", () => {
           .resolves.toMatchObject({
             accepted: false, message: expect.stringMatching(/AI model/i) });
       const gadgetId = await externalGadgetId(gadgetKey);
-      using overseer = await aliceApi.openGadget(gadgetId);
+      using overseer = await aliceApi.openWorkspace(gadgetId);
       const gatekeeper = await overseer.newGatekeeper(aliceAccount.id, thingUrl("external-use"));
       if (!gatekeeper) throw new Error("Failed to create the test connection");
       using gadget = await overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");

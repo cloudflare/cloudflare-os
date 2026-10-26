@@ -273,7 +273,7 @@ async function uploadArchive(blueprintId: string, archive: ReadableStream<Uint8A
 }
 
 /**
- * Instantiates a blueprint in the workspace as AuthenticatedApi.newGadgetFromBlueprint() has the
+ * Instantiates a blueprint in the workspace as AuthenticatedApi.newWorkspaceFromBlueprint() has the
  * Overseer do it: from the metadata that it read, which is what is published unless given.
  */
 async function instantiate(

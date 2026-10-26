@@ -10,7 +10,7 @@ import type {
   AuthenticatedApi,
   CollaboratorInfo,
   CollaboratorRole,
-  GadgetMetadata,
+  WorkspaceMetadata,
   ObserverBindingNeed,
   Overseer,
   ServerConfig,
@@ -99,7 +99,7 @@ function deferred<T>() {
 
 import ShareModal from './ShareModal'
 
-const METADATA = { id: 'trip-planner', title: 'Trip planner' } as GadgetMetadata
+const METADATA = { id: 'trip-planner', title: 'Trip planner' } as WorkspaceMetadata
 const WORKSPACE_URL = `${window.location.origin}/workspace/trip-planner`
 
 const CURRENT_USER: AiChatAuthorInfo = { type: 'user', id: 'dan@cloudflare.com', name: 'Dan' }
@@ -284,12 +284,12 @@ describe('ShareModal', () => {
   // The last rendered tree, parameterised on `open` so a test can close and reopen the dialog the
   // way its parent would (the component stays mounted either way), and on the metadata so a test
   // can deliver a live update.
-  let renderTree: (open: boolean, metadata?: GadgetMetadata) => ReactNode
+  let renderTree: (open: boolean, metadata?: WorkspaceMetadata) => ReactNode
 
   async function render(
     overseer: RpcStub<Overseer>,
     authenticatedApi = fakeAuthenticatedApi(),
-    metadata: GadgetMetadata = METADATA,
+    metadata: WorkspaceMetadata = METADATA,
     { userSearchEnabled = true } = {},
   ) {
     container = document.createElement('div')
@@ -319,7 +319,7 @@ describe('ShareModal', () => {
     await act(async () => { await Promise.resolve() })
   }
 
-  async function updateMetadata(metadata: GadgetMetadata) {
+  async function updateMetadata(metadata: WorkspaceMetadata) {
     await act(async () => { root!.render(renderTree(true, metadata)) })
   }
 
@@ -431,7 +431,7 @@ describe('ShareModal', () => {
     const rendered = await render(
       fakeOverseer(),
       fakeAuthenticatedApi({ searchUsers }),
-      { ...METADATA, owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' } } as GadgetMetadata,
+      { ...METADATA, owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' } } as WorkspaceMetadata,
     )
 
     await typeDirectorySearch(rendered, 'own')
@@ -1214,7 +1214,7 @@ describe('ShareModal', () => {
   it('keeps sharing controls live when the workspace has read restricted data', async () => {
     const restrictedMetadata = {
       ...METADATA, containsRestrictedData: true,
-    } as GadgetMetadata
+    } as WorkspaceMetadata
     const rendered = await render(fakeOverseer({
       collaborators: [{
         profile: { type: 'user', id: 'ada@cloudflare.com', name: 'Ada' },
@@ -1256,7 +1256,7 @@ describe('ShareModal', () => {
   it('drops share-link controls but keeps revocation once the workspace is owner-invites-only', async () => {
     const ownerInvitesOnlyMetadata = {
       ...METADATA, containsRestrictedData: true, ownerInvitesOnly: true,
-    } as GadgetMetadata
+    } as WorkspaceMetadata
     const rendered = await render(fakeOverseer({
       requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
       shareLinks: [SHARE_LINK],
@@ -1287,7 +1287,7 @@ describe('ShareModal', () => {
       ...METADATA,
       ownerInvitesOnly: true,
       owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
-    } as GadgetMetadata
+    } as WorkspaceMetadata
     const rendered = await render(fakeOverseer({
       requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
     }), fakeAuthenticatedApi(), ownerInvitesOnlyMetadata)
@@ -1305,7 +1305,7 @@ describe('ShareModal', () => {
     const collaboratorMetadata = {
       ...METADATA,
       owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
-    } as GadgetMetadata
+    } as WorkspaceMetadata
     const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), collaboratorMetadata)
     const body = () => rendered.querySelector<HTMLElement>('.chat-panel')!
 
@@ -1315,7 +1315,7 @@ describe('ShareModal', () => {
 
     // Another session sets ownerInvitesOnly while the results are open: the search field goes
     // away without ever blurring, and the body must scroll again.
-    await updateMetadata({ ...collaboratorMetadata, ownerInvitesOnly: true } as GadgetMetadata)
+    await updateMetadata({ ...collaboratorMetadata, ownerInvitesOnly: true } as WorkspaceMetadata)
     expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
     expect(rendered.querySelector('[role="listbox"]')).toBeNull()
     expect(body().classList).toContain('overflow-y-auto')
@@ -1325,7 +1325,7 @@ describe('ShareModal', () => {
   it('surfaces the server’s refusal when sharing is no longer allowed', async () => {
     const restrictedMetadata = {
       ...METADATA, containsRestrictedData: true,
-    } as GadgetMetadata
+    } as WorkspaceMetadata
     const refusal =
       'This workspace can no longer be shared: it read sensitive data through a connection ' +
       'that has since been removed, so new collaborators can no longer be verified for ' +

@@ -64,7 +64,7 @@ async function privateWorkspace(owner: ContextUser) {
   const collection = await owner.context.createContextCollection(
     `${owner.username} private collection`, "Private discovery metadata", "private");
   await owner.context.putContextDocument(collection.id, DOCUMENT_PATH, DOCUMENT);
-  const workspace = stack.use(await owner.api.newGadget());
+  const workspace = stack.use(await owner.api.newWorkspace());
   const { id: workspaceId } = await workspace.getMetadata();
   const requirement = await waitFor("the workspace's ambient Context binding", async () =>
     (await workspace.listObserverRequirements("build"))
@@ -89,7 +89,7 @@ it.concurrent("top-level private collection metadata does not prevent a collabor
   }] });
 
   await workspace.addCollaborator(observer.username, "build");
-  using opened = await observer.api.openGadget(workspaceId);
+  using opened = await observer.api.openWorkspace(workspaceId);
   expect(await opened.getMetadata()).toMatchObject({ id: workspaceId, role: "build" });
 });
 
@@ -116,7 +116,7 @@ it.concurrent.each(["list", "read"] as const)(
     const recorder = new ObserverConfigRecorder()
       .alwaysChoose(observer.account.id, MAX_OBSERVER_PROMPTS);
     using callback = stubFor(recorder);
-    await expect(observer.api.openGadget(workspaceId, undefined, callback))
+    await expect(observer.api.openWorkspace(workspaceId, undefined, callback))
       .rejects.toThrow();
     const failure = recorder.needAt(0).failure;
     expect(failure).toMatchObject({ accountId: observer.account.id, reason: expect.any(String) });

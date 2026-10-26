@@ -269,7 +269,7 @@ When someone opens a blueprint link (`/blueprint/<id>`), they see the **Blueprin
    - For gatekeeper bindings: pick a connected account and configure the matching resource.
    - For AI model bindings: pick from their configured models.
    - For agent spawner bindings: pick a model (or none).
-5. Clicking "Create Gadget" calls `AuthenticatedApi.newGadgetFromBlueprint()`, which:
+5. Clicking "Create Gadget" calls `AuthenticatedApi.newWorkspaceFromBlueprint()`, which:
    - Reads the blueprint's metadata from KV.
    - Creates a new Overseer DO and has it initialize itself via `initializeFromBlueprint`. The Overseer reads the release from R2 for itself, as the version that metadata describes, so the code is the code the bindings set up below belong to even if the blueprint is republished meanwhile. The pack never crosses an RPC.
    - Creates gatekeepers from the user's binding assignments (pipelined for performance).

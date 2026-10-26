@@ -296,7 +296,7 @@ it.concurrent("publishes, instantiates, and deletes an owned blueprint", async (
   });
   const document = formats.find(format => format.output.id === "document");
   if (document === undefined) throw new Error("Document output format is not installed");
-  using sourceWorkspace = await authenticated.newGadgetFromBlueprint(document.blueprintId, {});
+  using sourceWorkspace = await authenticated.newWorkspaceFromBlueprint(document.blueprintId, {});
   const sourceMetadata = await sourceWorkspace.getMetadata();
   const sourceGadgetId = sourceMetadata.defaultGadgetId;
   if (sourceGadgetId === undefined) throw new Error("Source workspace has no default Gadget");
@@ -321,7 +321,7 @@ it.concurrent("publishes, instantiates, and deletes an owned blueprint", async (
       workspaceTitle: sourceMetadata.title,
     },
   }));
-  using installedWorkspace = await authenticated.newGadgetFromBlueprint(blueprint.id, {});
+  using installedWorkspace = await authenticated.newWorkspaceFromBlueprint(blueprint.id, {});
   const installedMetadata = await installedWorkspace.getMetadata();
   const installedGadgetId = installedMetadata.defaultGadgetId;
   if (installedGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
@@ -348,7 +348,7 @@ it.concurrent("creates and removes an indexed standard output", async () => {
   if (document === undefined) throw new Error("Document output format is not installed");
   expect(document.requiresSetup).toBe(false);
 
-  using workspace = await authenticated.newGadgetFromBlueprint(document.blueprintId, {});
+  using workspace = await authenticated.newWorkspaceFromBlueprint(document.blueprintId, {});
   const metadata = await workspace.getMetadata();
   const gadgetId = metadata.defaultGadgetId;
   if (gadgetId === undefined) throw new Error("Output workspace has no default Gadget");
@@ -379,7 +379,7 @@ it.concurrent("creates and removes an indexed standard output", async () => {
 it.concurrent("republishing a blueprint changes future installs, not existing ones", async () => {
   using publicApi = connect(requireHarness().url);
   using authenticated = await signUp(publicApi, username("republish"));
-  using source = await authenticated.newGadget();
+  using source = await authenticated.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _subscription = await source.subscribeToWorkpieces(workpiecesStub);
@@ -394,7 +394,7 @@ it.concurrent("republishing a blueprint changes future installs, not existing on
     publicApi.getBlueprint(blueprint.id))).metadata;
 
   async function install() {
-    const workspace = await authenticated.newGadgetFromBlueprint(blueprint.id, {});
+    const workspace = await authenticated.newWorkspaceFromBlueprint(blueprint.id, {});
     const { defaultGadgetId } = await workspace.getMetadata();
     if (defaultGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
     return { workspace, gadgetId: defaultGadgetId };
@@ -439,7 +439,7 @@ it.concurrent("a blueprint archive keeps DATA's annotation, and installs bind th
   });
   const document = formats.find(format => format.output.id === "document");
   if (!document) throw new Error("Document output format is not installed");
-  using sourceWorkspace = await publisherApi.newGadgetFromBlueprint(document.blueprintId, {});
+  using sourceWorkspace = await publisherApi.newWorkspaceFromBlueprint(document.blueprintId, {});
   const sourceWorkpieces = new WorkpieceRecorder();
   using sourceWorkpiecesStub = stubFor(sourceWorkpieces);
   using _sourceWorkpieces = await sourceWorkspace.subscribeToWorkpieces(sourceWorkpiecesStub);
@@ -485,7 +485,7 @@ it.concurrent("a blueprint archive keeps DATA's annotation, and installs bind th
   const installerAccount = (await listConnectedAccounts(installerApi))
       .find(account => account.vendorId === TEST_VENDOR_ID);
   if (!installerAccount) throw new Error("Installer's test account was not provisioned");
-  using installedWorkspace = await installerApi.newGadgetFromBlueprint(importedId, {
+  using installedWorkspace = await installerApi.newWorkspaceFromBlueprint(importedId, {
     DATA: {
       type: "gatekeeper",
       accountId: installerAccount.id,
@@ -540,13 +540,13 @@ it.concurrent("an update from a gadget's blueprint merges with its own changes, 
     async () => {
   using publicApi = connect(requireHarness().url);
   using api = await signUp(publicApi, username("update"));
-  using source = await api.newGadget();
+  using source = await api.newWorkspace();
   const blueprint = await publish(publicApi, source, await createApp(source, V1), "Updated");
   const { blueprintId, release: r1 } = blueprint;
 
   // The gadget's history is its own from the start: an empty root, into which its head merges
   // the release it was made from.
-  using ws = await api.newGadgetFromBlueprint(blueprintId, {});
+  using ws = await api.newWorkspaceFromBlueprint(blueprintId, {});
   const gadgetId = await defaultGadget(ws);
   using gadget = await ws.getGadget(gadgetId);
   const made = await gadgetNow(ws, gadgetId);
@@ -619,7 +619,7 @@ it.concurrent("a gadget switches to a blueprint built on an earlier release of t
 
   using alicePublic = connect(requireHarness().url);
   using aliceApi = await signUp(alicePublic, alice);
-  using aliceWs = await aliceApi.newGadget();
+  using aliceWs = await aliceApi.newWorkspace();
   const alices = await publish(alicePublic, aliceWs, await createApp(aliceWs, A1), "Alice's");
   const a2 = await republish(alicePublic, aliceWs, alices, A2);
 
@@ -628,7 +628,7 @@ it.concurrent("a gadget switches to a blueprint built on an earlier release of t
   // of a release: of mainline and a snapshot of the chat's files.
   using bobPublic = connect(requireHarness().url);
   using bobApi = await signUp(bobPublic, bob);
-  using bobWs = await bobApi.newGadgetFromBlueprint(alices.blueprintId, {});
+  using bobWs = await bobApi.newWorkspaceFromBlueprint(alices.blueprintId, {});
   const bobGadget = await defaultGadget(bobWs);
   const { commitId: bobsStart } = await gadgetNow(bobWs, bobGadget);
   const bobsChat = await bobWs.newChat("Add my file", null);
@@ -662,7 +662,7 @@ it.concurrent("a gadget switches to a blueprint built on an earlier release of t
   const a3 = await republish(alicePublic, aliceWs, alices, A3);
   using carolPublic = connect(requireHarness().url);
   using carolApi = await signUp(carolPublic, carol);
-  using ws = await carolApi.newGadgetFromBlueprint(alices.blueprintId, {});
+  using ws = await carolApi.newWorkspaceFromBlueprint(alices.blueprintId, {});
   const gadgetId = await defaultGadget(ws);
   using gadget = await ws.getGadget(gadgetId);
   const made = await gadgetNow(ws, gadgetId);
@@ -711,14 +711,14 @@ it.concurrent("a gadget with no lineage takes a blueprint only over a base the c
     async () => {
   using publicApi = connect(requireHarness().url);
   using api = await signUp(publicApi, username("unrelated"));
-  using source = await api.newGadget();
+  using source = await api.newWorkspace();
   const blueprint = await publish(publicApi, source, await createApp(source, V1), "Unrelated");
   const { blueprintId, release: r1 } = blueprint;
 
   // A gadget built by hand follows no blueprint, as its upstream says by naming none, and its
   // history holds none. The UI offers such a gadget no update, but applying a blueprint to it
   // is not refused.
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const gadgetId = await createApp(ws, { "client.js": "mine\n" });
   using gadget = await ws.getGadget(gadgetId);
   const first = await gadgetNow(ws, gadgetId);
@@ -765,10 +765,10 @@ it.concurrent("the agent reviews a merge in one turn, and is never called for a 
   using publicApi = connect(requireHarness().url);
   using api = await signUp(publicApi, username("review"));
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using source = await api.newGadget();
+  using source = await api.newWorkspace();
   const blueprint = await publish(publicApi, source, await createApp(source, V1), "Reviewed");
   const { blueprintId } = blueprint;
-  using ws = await api.newGadgetFromBlueprint(blueprintId, {});
+  using ws = await api.newWorkspaceFromBlueprint(blueprintId, {});
   const gadgetId = await defaultGadget(ws);
   using gadget = await ws.getGadget(gadgetId);
   const chats = new ChatRecorder();
@@ -849,7 +849,7 @@ it.concurrent("a bundled blueprint reinstalled with new files updates a gadget m
       using publicApi = connect(deployment.url);
       using api = await signUp(publicApi, user);
       const release = await releaseOf(publicApi, blueprintId);
-      using ws = await api.newGadgetFromBlueprint(blueprintId, {});
+      using ws = await api.newWorkspaceFromBlueprint(blueprintId, {});
       const id = await defaultGadget(ws);
       expect((await gadgetNow(ws, id)).upstream).toEqual({ blueprintId, commitId: release });
       return {
@@ -863,7 +863,7 @@ it.concurrent("a bundled blueprint reinstalled with new files updates a gadget m
     using publicApi = connect(deployment.url);
     using api = await logIn(publicApi, user);
     const r2 = await releaseOf(publicApi, blueprintId, r1);
-    using ws = await api.openGadget(workspaceId);
+    using ws = await api.openWorkspace(workspaceId);
     using gadget = await ws.getGadget(gadgetId);
     expect(await gadgetNow(ws, gadgetId))
         .toMatchObject({ commitId: own, upstream: { blueprintId, commitId: r1 } });
@@ -918,7 +918,7 @@ it.concurrent("an archive of either version imports and instantiates", async () 
 
   // A gadget made from it still gets a release to follow: a commit of the snapshot's files, in
   // which form the gadget's history holds it like any other.
-  using fromLegacy = await api.newGadgetFromBlueprint(legacyId, {});
+  using fromLegacy = await api.newWorkspaceFromBlueprint(legacyId, {});
   const legacyGadget = await gadgetNow(fromLegacy, await defaultGadget(fromLegacy));
   expect(await codeAt(fromLegacy, legacyGadget.commitId)).toEqual(V1);
   expect(legacyGadget.upstream?.blueprintId).toBe(legacyId);
@@ -929,7 +929,7 @@ it.concurrent("an archive of either version imports and instantiates", async () 
 
   // Version 2 holds a release as it is, so an upload of a download is the same release under
   // another id.
-  using source = await api.newGadget();
+  using source = await api.newWorkspace();
   const original = await publish(publicApi, source, await createApp(source, V1), "Exported");
   const archive = await bytesOf(await publicApi.downloadBlueprint(original.blueprintId));
   expect(archiveVersion(archive)).toBe(2);
@@ -938,7 +938,7 @@ it.concurrent("an archive of either version imports and instantiates", async () 
   expect((await publicApi.getBlueprint(copyId))?.metadata)
       .toMatchObject({ title: "Exported", version: 1, commitId: original.release });
 
-  using fromCopy = await api.newGadgetFromBlueprint(copyId, {});
+  using fromCopy = await api.newWorkspaceFromBlueprint(copyId, {});
   const copied = await gadgetNow(fromCopy, await defaultGadget(fromCopy));
   expect(copied.upstream).toEqual({ blueprintId: copyId, commitId: original.release });
   expect(await codeAt(fromCopy, copied.commitId)).toEqual(V1);
@@ -946,7 +946,7 @@ it.concurrent("an archive of either version imports and instantiates", async () 
   // So a gadget made from the original already has what the copy offers. Applying the copy
   // proposes only to follow it, which changes no code and pins nothing: the record of the
   // proposal is all there is to accept.
-  using ws = await api.newGadgetFromBlueprint(original.blueprintId, {});
+  using ws = await api.newWorkspaceFromBlueprint(original.blueprintId, {});
   const gadgetId = await defaultGadget(ws);
   using gadget = await ws.getGadget(gadgetId);
   const before = await gadgetNow(ws, gadgetId);
@@ -971,10 +971,10 @@ it.concurrent("only a gadget's builders are told which blueprint it follows", as
   if (!owner || !viewer) throw new Error("Failed to allocate test usernames");
   using ownerPublic = connect(requireHarness().url);
   using ownerApi = await signUp(ownerPublic, owner);
-  using source = await ownerApi.newGadget();
+  using source = await ownerApi.newWorkspace();
   const { blueprintId, release } =
       await publish(ownerPublic, source, await createApp(source, V1), "Followed");
-  using ws = await ownerApi.newGadgetFromBlueprint(blueprintId, {});
+  using ws = await ownerApi.newWorkspaceFromBlueprint(blueprintId, {});
   const gadgetId = await defaultGadget(ws);
   const built = await gadgetNow(ws, gadgetId);
   expect(built.upstream).toEqual({ blueprintId, commitId: release });
@@ -984,7 +984,7 @@ it.concurrent("only a gadget's builders are told which blueprint it follows", as
   using viewerPublic = connect(requireHarness().url);
   using viewerApi = await signUp(viewerPublic, viewer);
   if (!await ws.addCollaborator(viewer, "use")) throw new Error(`Failed to share with ${viewer}`);
-  using useWs = await viewerApi.openGadget((await ws.getMetadata()).id);
+  using useWs = await viewerApi.openWorkspace((await ws.getMetadata()).id);
   const { upstream: _upstream, ...used } = built;
   expect(await gadgetNow(useWs, gadgetId)).toEqual(used);
 
@@ -997,7 +997,7 @@ it.concurrent("only a gadget's builders are told which blueprint it follows", as
 it.concurrent("a gadget's ExportHandler lists and streams its format", async () => {
   using publicApi = connect(requireHarness().url);
   using api = await signUp(publicApi, username("gadgetexport"));
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _subscription = await ws.subscribeToWorkpieces(workpiecesStub);
@@ -1027,7 +1027,7 @@ it.concurrent("a gadget's LLM binding runs on its bound model, and an install us
   using publisherPublic = connect(requireHarness().url);
   using publisherApi = await signUp(publisherPublic, publisher);
   await publisherApi.addModel(publisherModel.userModel.profile, publisherModel.userModel.config);
-  using source = await publisherApi.newGadget();
+  using source = await publisherApi.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _subscription = await source.subscribeToWorkpieces(workpiecesStub);
@@ -1046,7 +1046,7 @@ it.concurrent("a gadget's LLM binding runs on its bound model, and an install us
   using installerPublic = connect(requireHarness().url);
   using installerApi = await signUp(installerPublic, installer);
   await installerApi.addModel(installerModel.userModel.profile, installerModel.userModel.config);
-  using installed = await installerApi.newGadgetFromBlueprint(blueprint.id, {
+  using installed = await installerApi.newWorkspaceFromBlueprint(blueprint.id, {
     LLM: { type: "aiModel", modelId: installerModel.userModel.profile.id },
   });
   const { defaultGadgetId } = await installed.getMetadata();
@@ -1069,7 +1069,7 @@ it.concurrent("a gadget's decision model binding answers its questions", async (
     provider: "cloudflare", model: "@cf/cloudflare/clef",
     accountId: DECISION_ACCOUNT, apiToken: "test-token",
   });
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _subscription = await ws.subscribeToWorkpieces(workpiecesStub);

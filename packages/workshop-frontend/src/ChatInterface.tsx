@@ -2486,7 +2486,7 @@ function fallbackToStoredModelSelection(
 interface ChatInterfaceProps {
   workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
-  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData).
+  // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
   // Latched actions are never auto-approved, so the always-approve affordance is hidden.
   restricted?: boolean;
   selectedChatId: number | null;

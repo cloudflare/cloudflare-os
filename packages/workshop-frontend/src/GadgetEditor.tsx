@@ -1418,7 +1418,7 @@ export default function GadgetEditor() {
   useEffect(() => {
     if (!id) return
     let cancelled = false
-    authenticatedApi.listGadgets().then(gadgets => {
+    authenticatedApi.listWorkspaces().then(gadgets => {
       if (cancelled) return
       setWorkspaceMute({
         workspaceId: id,

@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -130,7 +130,7 @@ export type UserChatContext = {
   quickModel?: AiModelConfig;
 }
 
-function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
+function isFullyCreated(g: GadgetRecord): g is WorkspaceMetadataWithTimestamps {
   return g.lastActive !== undefined;
 }
 
@@ -913,8 +913,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
   }
 
-  async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    let result: GadgetMetadataWithTimestamps[] = [];
+  async listGadgets(): Promise<WorkspaceMetadataWithTimestamps[]> {
+    let result: WorkspaceMetadataWithTimestamps[] = [];
     for (let gadget of this.storage.gadgets.list()) {
       if (isFullyCreated(gadget)) {
         result.push(gadget);
@@ -941,7 +941,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async getGadget(id: string): Promise<GadgetMetadata | null> {
+  async getGadget(id: string): Promise<WorkspaceMetadata | null> {
     return this.storage.gadgets.get(id) || null;
   }
 
