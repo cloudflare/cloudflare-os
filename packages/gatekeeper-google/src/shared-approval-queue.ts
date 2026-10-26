@@ -16,6 +16,7 @@ import type { Pager } from "./cursor";
 export class SharedApprovalQueue {
   #stub: RpcStub<ApprovalQueue>;
   #subresources: readonly string[] | undefined;
+  #restricted: boolean;
   // Nothing owns the stub until the first capability is constructed; the session itself is just
   // the first of those. Starting at one would leave the count permanently above zero.
   #references = 0;
@@ -24,10 +25,14 @@ export class SharedApprovalQueue {
    * `subresources`, when given, replace each observation's own dependencies: the binding is
    * private to the connected account, so checking individual resources adds no sharing authority.
    * Without them, an observation reports only its own.
+   *
+   * `restricted` marks every observation `containsRestrictedData`, for a binding whose every read
+   * is, so that no capability made over this queue can leave the mark off.
    */
-  constructor(stub: RpcStub<ApprovalQueue>, subresources?: readonly string[]) {
+  constructor(stub: RpcStub<ApprovalQueue>, subresources?: readonly string[], restricted = false) {
     this.#stub = stub;
     this.#subresources = subresources;
+    this.#restricted = restricted;
   }
 
   retain(): () => void {
@@ -41,10 +46,10 @@ export class SharedApprovalQueue {
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
-    if (this.#subresources === undefined) return this.#stub.authorizeObservation(description);
     return this.#stub.authorizeObservation({
       ...description,
-      subresources: [...this.#subresources],
+      ...(this.#subresources !== undefined ? {subresources: [...this.#subresources]} : {}),
+      ...(this.#restricted ? {containsRestrictedData: true} : {}),
     });
   }
 
