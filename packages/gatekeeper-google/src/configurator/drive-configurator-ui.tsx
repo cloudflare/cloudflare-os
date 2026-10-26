@@ -34,7 +34,7 @@ const fileIdOf = (id: string) => id.slice(id.indexOf(":") + 1);
 
 const icon = (d: string, fill = "currentColor") => <svg viewBox="0 0 24 24" fill={fill}><path d={d} /></svg>;
 
-/** One of Drive's file marks: a rounded square in the file type's colour, with white strokes. */
+/** One of Drive's file marks: a rounded square in the file type's colour, its marks stroked white. */
 const tile = (fill: string, marks: unknown) => <svg viewBox="0 0 24 24">
   <rect x="3" y="3" width="18" height="18" rx="2.5" fill={fill} />
   <g fill="none" stroke="#fff" stroke-width="1.5">{marks}</g>
@@ -73,6 +73,18 @@ const ICONS = {
   doc: tile("#008EFA", <path stroke-width="2" stroke-linecap="round" d="M8 12h8M8 15.8h4" />),
   sheet: tile("#00AC5E", <path d="M5.25 9.2h12.4M9.2 5.25v12.4" />),
   slides: tile("#FFC335", <rect x="5.75" y="8" width="12.5" height="8" />),
+  markdown: tile("#4285F4", <path fill="#fff" stroke="none" d="M6.1 9.2H12v6.2h-1.4v-4.5H9.75v2.8h-1.4v-2.8H7.5v4.5H6.1zm9 0h1.4v2.5h2.25l-2.95 3.4-2.95-3.4h2.25z" />),
+  code: tile("#B3251E", <path stroke-width="1.3" d="M9 7.85 5 11.85l4 4m6-8 4 4-4 4" />),
+  csv: tile("#00AF57", <text fill="#fff" stroke="none" x="12" y="15.1" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="8.7" textLength="14.6" lengthAdjust="spacingAndGlyphs">CSV</text>),
+  text: <svg viewBox="0 0 24 24">
+    <path fill="#3186FF" d="M6.7 3h6.4l6.2 6.2V19a2 2 0 0 1-2 2H6.7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+    <path fill="#fff" d="M13 5v3.9h3.9z" />
+    <path fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round" d="M8.2 12.7h7.6M8.2 16.65h3.9" />
+  </svg>,
+  video: <svg viewBox="0 0 24 24">
+    <rect x="3" y="4.7" width="18" height="14.6" rx="2.5" fill="#FC413D" />
+    <path fill="#FFE3E2" d="M4.5 5h2.15l1.83 3.35H5.96zm4.97 0h2.53l1.83 3.35h-2.53zm5.48 0h2.53l1.83 3.35h-2.53z" />
+  </svg>,
   pdf: icon("M10 10.5h1q.425 0 .713-.288T12 9.5v-1q0-.425-.288-.712T11 7.5H9.5q-.2 0-.35.15T9 8v4q0 .2.15.35t.35.15t.35-.15T10 12zm0-1v-1h1v1zm5 3q.425 0 .713-.288T16 11.5v-3q0-.425-.288-.712T15 7.5h-1.5q-.2 0-.35.15T13 8v4q0 .2.15.35t.35.15zm-1-1v-3h1v3zm4-1h.5q.2 0 .35-.15T19 10t-.15-.35t-.35-.15H18v-1h.5q.2 0 .35-.15T19 8t-.15-.35t-.35-.15h-1q-.2 0-.35.15T17 8v4q0 .2.15.35t.35.15t.35-.15T18 12zM8 18q-.825 0-1.412-.587T6 16V4q0-.825.588-1.412T8 2h12q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-4 4q-.825 0-1.412-.587T2 20V7q0-.425.288-.712T3 6t.713.288T4 7v13h13q.425 0 .713.288T18 21t-.288.713T17 22z", "#EA4335"),
   image: icon("M5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h14q.825 0 1.413.588T21 5v14q0 .825-.587 1.413T19 21zm2-4h10q.3 0 .45-.275t-.05-.525l-2.75-3.675q-.15-.2-.4-.2t-.4.2L11.25 16L9.4 13.525q-.15-.2-.4-.2t-.4.2l-2 2.675q-.2.25-.05.525T7 17", "#EA4335"),
 };
@@ -82,7 +94,18 @@ const FILE_ICONS: Record<string, keyof typeof ICONS> = {
   "application/vnd.google-apps.spreadsheet": "sheet",
   "application/vnd.google-apps.presentation": "slides",
   "application/pdf": "pdf",
+  "application/json": "code",
+  "application/javascript": "code",
+  "application/xml": "text",
+  "text/plain": "text",
+  "text/rtf": "text",
+  "text/markdown": "markdown",
+  "text/x-markdown": "markdown",
+  "text/csv": "csv",
 };
+
+/** By the part of a MIME type before the slash, as Drive draws any other text file as code. */
+const MEDIA_ICONS: Record<string, keyof typeof ICONS> = { image: "image", video: "video", text: "code" };
 
 const iconOf = (node: DriveNode): keyof typeof ICONS | undefined => {
   switch (node.kind) {
@@ -91,7 +114,7 @@ const iconOf = (node: DriveNode): keyof typeof ICONS | undefined => {
     case "folder": return "folder";
     default: {
       const mimeType = node.mimeType ?? "";
-      return FILE_ICONS[mimeType] ?? (mimeType.startsWith("image/") ? "image" : undefined);
+      return FILE_ICONS[mimeType] ?? MEDIA_ICONS[mimeType.split("/")[0]];
     }
   }
 };
