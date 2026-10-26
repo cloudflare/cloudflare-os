@@ -1,0 +1,27 @@
+.github/workflows/ci.yml
+  s_9c38884292589b::t_bcc567707f03c8 43,116
+.github/workflows/github-contract.yml
+  s_9c38884292589b::t_ba4704b807f724 60
+.github/workflows/preview.yml
+  s_9c38884292589b::t_ce70a3dd698585 99,231,276
+.github/workflows/workshop-evals-pr.yml
+  s_9c38884292589b::t_ca191d85b78f62 126,169,299,427
+.github/workflows/workshop-evals.yml
+  s_9c38884292589b::t_3867781c477806 36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c8a1ca1457af72809be197bacc3d07d7442c0cbe",
+  "prompts": {},
+  "sessions": {
+    "s_9c38884292589b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "850b1650-2f84-40a4-8672-951f32ff4cad",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
