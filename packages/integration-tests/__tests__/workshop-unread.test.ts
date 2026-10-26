@@ -85,7 +85,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     first.state && second.state ? true : null,
   );
 
-  using workspace = await owner.newGadget();
+  using workspace = await owner.newWorkspace();
   const { id: workspaceId } = await workspace.getMetadata();
   const chatId = await workspace.newChat("First persisted item", null);
   const initial = await waitFor("the newly persisted thread", async () => {
@@ -130,8 +130,8 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
 
   await workspace.addCollaborator(builderName, "build");
   await workspace.addCollaborator(viewerName, "use");
-  using _builderWorkspace = await builder.openGadget(workspaceId);
-  using _viewerWorkspace = await viewer.openGadget(workspaceId);
+  using _builderWorkspace = await builder.openWorkspace(workspaceId);
+  using _viewerWorkspace = await viewer.openWorkspace(workspaceId);
   await waitFor("a build collaborator's independent cursor", async () =>
     (await builder.getUnreadState()).chats.length === 1 ? true : null,
   );

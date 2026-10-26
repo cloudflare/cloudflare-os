@@ -21,7 +21,7 @@ const withImpl = <T>(stub: DurableObjectStub<OverseerDurableObject>, fn: (impl: 
 const setup = async (user = env.TEST_USER.getByName(crypto.randomUUID())) => {
   const workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());
   const workspaceId = workspace.id.toString();
-  await user.newGadget(workspaceId, "Workspace");
+  await user.newWorkspace(workspaceId, "Workspace");
   await withImpl(workspace, async impl => {
     impl.storage.version.put(OVERSEER_STORAGE_VERSION);
     impl.storage.chatMeta.put({id: 1, title: "Demo", started: new Date(), lastActive: new Date()});
@@ -64,7 +64,7 @@ const addReader = async (fixture: Fixture) => {
     impl.storage.collaborators.put({profile,
       addedBy: [{type: "user", sharer: owner.id, role: "build", created: new Date()}]});
   });
-  await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
+  await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
   return {reader, owner, profile};
 };
 
@@ -651,7 +651,7 @@ describe("source authorization and removal", () => {
     await withImpl(fixture.workspace, async impl => {
       impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(), accountChoices: {7: 1}});
     });
-    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
     expect((await reader.getUnreadState()).unreadMessageCount).toBe(1);
     await withImpl(fixture.workspace, async impl => {
       write(impl, 2);
@@ -672,7 +672,7 @@ describe("source authorization and removal", () => {
     await vi.waitFor(() => expect(publish).toHaveBeenCalled());
     if (removal === "thread") await fixture.user.messageArrived(fixture.workspaceId, 1, null);
     else if (removal === "workspace") await fixture.user.workspaceRemoved(fixture.workspaceId);
-    else await fixture.user.updateSharedGadgetRole(fixture.workspaceId, "use");
+    else await fixture.user.updateSharedWorkspaceRole(fixture.workspaceId, "use");
     await evictDurableObject(fixture.user);
     await fixture.user.messageArrived(fixture.workspaceId, 1, packet);
     expect(await outbox(fixture)).toEqual([]);
@@ -694,8 +694,8 @@ describe("source authorization and removal", () => {
       const read = instance.markChatRead(receipt(readerFixture, 0));
       try {
         await entered.promise;
-        await instance.forgetSharedGadget(fixture.workspaceId);
-        await instance.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build", []);
+        await instance.forgetSharedWorkspace(fixture.workspaceId);
+        await instance.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", []);
       } finally { release.resolve(); }
       await read;
     });

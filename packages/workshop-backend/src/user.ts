@@ -888,7 +888,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Remove the listing and its accepted work before the source is destroyed; no callback read. */
   async workspaceRemoved(workspaceId: string): Promise<void> {
-    await this.deleteGadget(workspaceId);
+    await this.deleteWorkspace(workspaceId);
     await this.#armExpirySweep();
   }
 
@@ -1000,16 +1000,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         lastActive: now,
       });
     }
-    if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
+    if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
     else {
       let changed = false;
       this.ctx.storage.transactionSync(() => {
         for (let baseline of notificationBaselines) {
-          let cursor = this.#readCursors.get(`${gadgetId}:${baseline.chatId}`);
+          let cursor = this.#readCursors.get(`${workspaceId}:${baseline.chatId}`);
           if (cursor?.deleted || (!cursor && !firstAdmission)) continue;
           let visible = baseline.readThroughVisibleSequence ?? 0;
           if (!cursor || cursor.readThroughVisibleSequence === undefined) {
-            this.#storeCursor({workspaceId: gadgetId, chatId: baseline.chatId,
+            this.#storeCursor({workspaceId, chatId: baseline.chatId,
               readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
               latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
             changed = true;
@@ -1035,7 +1035,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
-    if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
+    if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
   }
 
   /**
