@@ -42,8 +42,8 @@ agent as though already made while it waits, so the agent keeps working.
 | `CLIENT_SECRET` | secret | The client secret's **Value**, not its ID. |
 | `MICROSOFT_TENANT_ID` | secret | The Directory (tenant) ID, or a verified domain. Only accounts in this tenant can connect. It isn't a credential, but the deploy wizard only collects secrets. |
 | `MICROSOFT_ALLOWED_TENANT_IDS` | var, optional | For a multitenant app. Set `MICROSOFT_TENANT_ID=organizations` and list the tenant IDs (GUIDs) that may connect, comma-separated. `organizations` without this list is refused. `common` and `consumers` are always refused, because personal Microsoft accounts have no SharePoint. |
-| `MICROSOFT_SHAREPOINT_ACCESS` | var, optional | `write` (the default) or `read`. This caps what agents may do whatever the app was granted: the effective access is the lowest of this, the connection's own grant and, for a file, folder or library, the user's own role on it, so something shared with them to view binds read-only. |
-| `MICROSOFT_SHAREPOINT_SITES` | var, optional | `all` (the default) or `selected`. Which SharePoint permissions a connection asks for: every site the user can open, or only the sites a SharePoint admin grants the app. See [Every site or only selected sites](#every-site-or-only-selected-sites). |
+| `MICROSOFT_SHAREPOINT_ACCESS` | var, optional | `write` (the default) or `read`; unrecognized values mean `read`. This caps what agents may do whatever the app was granted: the effective access is the lowest of this, the connection's own grant and, for a file, folder or library, the user's own role on it, so something shared with them to view binds read-only. |
+| `MICROSOFT_SHAREPOINT_SITES` | var, optional | `all` (the default) or `selected`; unrecognized values mean `selected`. Which SharePoint permissions a connection asks for: every site the user can open, or only the sites a SharePoint admin grants the app. See [Every site or only selected sites](#every-site-or-only-selected-sites). |
 | `MICROSOFT_OUTLOOK_ACCESS` | var, optional | `send` (the default), `draft` or `read`, capping Outlook bindings the same way. Unrecognized values mean `read`. |
 | `MICROSOFT_CALENDAR_ACCESS` | var, optional | `schedule` (the default), `edit` or `read`, capping Calendar bindings the same way. Unrecognized values mean `read`. |
 
@@ -52,7 +52,7 @@ agent as though already made while it waits, so the agent keeps working.
 Put `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` and `MICROSOFT_TENANT_ID` in the root
 `.dev.vars`. `pnpm dev-server` maps the first two into the worker's `CLIENT_ID` and `CLIENT_SECRET`.
 It passes the tenant ID, `MICROSOFT_ALLOWED_TENANT_IDS`, `MICROSOFT_SHAREPOINT_ACCESS`,
-`MICROSOFT_OUTLOOK_ACCESS` and `MICROSOFT_CALENDAR_ACCESS` through unchanged. Register
+`MICROSOFT_SHAREPOINT_SITES`, `MICROSOFT_OUTLOOK_ACCESS` and `MICROSOFT_CALENDAR_ACCESS` through unchanged. Register
 `http://localhost:8787/gatekeeper/microsoft/oauth` as a Web redirect URI; Entra allows
 `http://localhost` for Web clients.
 
@@ -465,7 +465,7 @@ can share one tenant by sharing `.dev.vars` and the tokens file through a passwo
 
 ```sh
 pnpm --filter @gadgets/microsoft-gatekeeper test:contract                       # 67 tests, a few minutes
-MICROSOFT_LIVE=1 npx vitest run __tests__/outlook-configurator.live.test.ts __tests__/calendar-configurator.live.test.ts
+MICROSOFT_LIVE=1 pnpm --filter @gadgets/microsoft-gatekeeper exec vitest run __tests__/outlook-configurator.live.test.ts __tests__/calendar-configurator.live.test.ts
 ```
 
 What it does to the tenant: file writes happen in a scratch folder it creates and deletes;

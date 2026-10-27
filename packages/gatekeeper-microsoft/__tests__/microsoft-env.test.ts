@@ -77,10 +77,12 @@ describe("endpoints", () => {
 });
 
 describe("sharePointAccess", () => {
-  it("is write unless the deployment says read", () => {
+  it("is write when unset, read for anything the deployment didn't spell as write", () => {
     expect(sharePointAccess(env())).toBe("write");
+    expect(sharePointAccess(env({ MICROSOFT_SHAREPOINT_ACCESS: "" }))).toBe("write");
+    expect(sharePointAccess(env({ MICROSOFT_SHAREPOINT_ACCESS: " Write " }))).toBe("write");
     expect(sharePointAccess(env({ MICROSOFT_SHAREPOINT_ACCESS: " READ " }))).toBe("read");
-    expect(sharePointAccess(env({ MICROSOFT_SHAREPOINT_ACCESS: "readonly" }))).toBe("write");
+    expect(sharePointAccess(env({ MICROSOFT_SHAREPOINT_ACCESS: "readonly" }))).toBe("read");
   });
 });
 
@@ -109,14 +111,15 @@ describe("scopesFor", () => {
     expect(outlookAccess(env())).toBe("send");
   });
 
-  it("asks for Sites.Selected and the user's own files when the deployment wants selected sites", () => {
+  it("asks for Sites.Selected and the user's own files when the deployment wants selected sites, or misspells all", () => {
     const selected = scopesFor(env({ MICROSOFT_SHAREPOINT_SITES: "Selected" }), sharePoint);
+    expect(scopesFor(env({ MICROSOFT_SHAREPOINT_SITES: "al" }), sharePoint)).toEqual(selected);
     expect(selected).toEqual(expect.arrayContaining(["https://graph.microsoft.com/Sites.Selected", "https://graph.microsoft.com/Files.ReadWrite"]));
     expect(selected.some(scope => scope.endsWith(".All"))).toBe(false);
     expect(scopesFor(env({ MICROSOFT_SHAREPOINT_SITES: "selected", MICROSOFT_SHAREPOINT_ACCESS: "read" }), sharePoint))
       .toContain("https://graph.microsoft.com/Files.Read");
-    // Anything else is every site, the default.
-    expect(scopesFor(env({ MICROSOFT_SHAREPOINT_SITES: "some" }), sharePoint)).toContain("https://graph.microsoft.com/Sites.ReadWrite.All");
+    // Unset or `all` is every site, the default.
+    expect(scopesFor(env({ MICROSOFT_SHAREPOINT_SITES: " All " }), sharePoint)).toContain("https://graph.microsoft.com/Sites.ReadWrite.All");
   });
 
   it("asks for nothing beyond sign-in for no resource types, and refuses unknown ones", () => {

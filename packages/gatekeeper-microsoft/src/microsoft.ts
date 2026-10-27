@@ -260,6 +260,15 @@ function previewOAuthFor(env: Env): PreviewOAuth | Response {
 }
 
 /** Whether a binding URL is a calendar's: Outlook on the web's `/calendar/` app. */
+/** A URL path segment decoded, or kept as written when its percent-escapes are malformed. */
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 function isCalendarUrl(url: string): boolean {
   try {
     parseCalendarUrl(url);
@@ -388,7 +397,9 @@ export default {
     }
 
     if (path.length === 3 && path[0] === "outlook" && path[1] === "notifications") {
-      return await handleOutlookNotification(req, decodeURIComponent(path[2]), ctx.exports, ctx);
+      // The segment is a driver name, which the handler checks against a strict pattern; a
+      // malformed escape in this unauthenticated URL is just one more name it won't match.
+      return await handleOutlookNotification(req, safeDecode(path[2]), ctx.exports, ctx);
     }
 
     if (relPath === "/oauth") {

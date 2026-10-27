@@ -148,14 +148,18 @@ export type SharePointAccess = "read" | "write";
  */
 export type SharePointSites = "all" | "selected";
 
-/** Which sites this deployment asks for. Anything but `selected` is `all`, the default. */
+/** Which sites this deployment asks for. Unrecognized values are `selected`, the safe side; unset is `all`. */
 export function sharePointSites(env: Env): SharePointSites {
-  return env.MICROSOFT_SHAREPOINT_SITES?.trim().toLowerCase() === "selected" ? "selected" : "all";
+  const value = env.MICROSOFT_SHAREPOINT_SITES?.trim().toLowerCase();
+  if (value === undefined || value === "") return "all";
+  return value === "all" ? "all" : "selected";
 }
 
-/** The SharePoint access ceiling. Anything but `read` is `write`, the default. */
+/** The SharePoint access ceiling. Unrecognized values are `read`, the safe side; unset is `write`. */
 export function sharePointAccess(env: Env): SharePointAccess {
-  return env.MICROSOFT_SHAREPOINT_ACCESS?.trim().toLowerCase() === "read" ? "read" : "write";
+  const value = env.MICROSOFT_SHAREPOINT_ACCESS?.trim().toLowerCase();
+  if (value === undefined || value === "") return "write";
+  return value === "write" ? "write" : "read";
 }
 
 /**

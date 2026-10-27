@@ -398,7 +398,6 @@ async function noteVersion(host: OutlookActionHost, mailbox: OutlookMailboxRef, 
   return current.changeKey;
 }
 
-/** Creates the draft for a send or draft action: a new message, or Outlook's own reply or forward of the source. */
 /**
  * Proves the message a reply or forward is built from is still the binding's: Outlook copies its
  * text and attachments into the new draft, so one that has left the binding since the proposal
@@ -408,6 +407,7 @@ async function requireSourceCovered(host: OutlookActionHost, origin: Origin): Pr
   if (origin.kind !== "new") await host.inScope({ messages: [origin.source.id] });
 }
 
+/** Creates the draft for a send or draft action: a new message, or Outlook's own reply or forward of the source. */
 async function createComposed(api: MailApi, host: OutlookActionHost, origin: Origin, message: Composed, internetMessageId?: string): Promise<string> {
   const identity = internetMessageId ? { internetMessageId } : {};
   let draftId: string;
@@ -859,7 +859,6 @@ export const actions = defineActions<OutlookActionHost, OutlookActions>(definiti
 /** What a revert reports when it couldn't fully undo an action; nothing when it did. */
 export type RevertOutcome = void | { message?: string; canRetry?: boolean; restart?: boolean };
 
-/** Undoes an applied action where Exchange allows. A sent message can't be unsent. */
 /** Re-proves what an undo is about to write is still the binding's; what has left it is left as it is. */
 async function leftBinding(host: OutlookActionHost, check: Parameters<OutlookActionHost["inScope"]>[0]): Promise<{ message: string; canRetry: false } | undefined> {
   try {
