@@ -307,7 +307,7 @@ describe("metadata lookup", () => {
     let file = {
       id: "file/1", name: "Plan", mimeType: "application/pdf",
       modifiedTime: "2026-01-02T03:04:05Z", trashed: false,
-      capabilities: { canListChildren: true },
+      capabilities: { canListChildren: true, canDownload: false },
     };
     let calls = stubFetch([jsonResponse(file)]);
     expect(await api().getFile("file/1")).toEqual(file);
@@ -315,8 +315,14 @@ describe("metadata lookup", () => {
     expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
     expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_ITEM_FIELDS);
     expect(DRIVE_FILE_ITEM_FIELDS.split(",")).toContain("trashed");
-    expect(DRIVE_FILE_ITEM_FIELDS).toContain("capabilities(canListChildren)");
+    expect(DRIVE_FILE_ITEM_FIELDS).toContain("capabilities(canListChildren,canDownload)");
     expect(DRIVE_FILE_ITEM_FIELDS).not.toMatch(/createdTime|photoLink|iconLink|thumbnailLink/);
+  });
+
+  it("rejects a non-boolean canDownload capability", async () => {
+    stubFetch([jsonResponse({ id: "file-1", name: "Plan", capabilities: { canDownload: "no" } })]);
+    await expect(api().getFile("file-1")).rejects
+      .toThrow("Invalid Google Drive file capabilities.canDownload");
   });
 
   it("round-trips the shared-drive and shortcut fields DriveSession scopes on", async () => {
@@ -601,6 +607,19 @@ describe("bulk access verification", () => {
       {kind: "file", fileId: "file"},
       {kind: "folder", fileId: "closed"},
     ])).resolves.toEqual([true, true, false]);
+  });
+
+  // A viewer of a file whose downloading is restricted still reads its metadata, so only
+  // canDownload tells content apart; Drive leaves it out unless asked, which must not pass.
+  it("passes a content unit only when the observer may download the file", async () => {
+    const calls = stubFetch([batchResponse([true, false, undefined].map(canDownload => ({
+      status: 200,
+      body: JSON.stringify({ id: "file", mimeType: "application/zip", capabilities: { canDownload } }),
+    })))]);
+
+    await expect(api().checkObservations(Array.from({ length: 3 }, () => ({ kind: "content", fileId: "file" }))))
+      .resolves.toEqual([true, false, false]);
+    expect(decodeURIComponent(calls[0].body ?? "")).toContain("capabilities(canListChildren,canDownload)");
   });
 
 });
@@ -1321,6 +1340,107 @@ describe("openDownload", () => {
     expect(error).toBeInstanceOf(DriveApiRequestError);
     expect(error).toMatchObject({ status: 404, reason: "notFound" });
     expect(lacksFileContentAccess(error)).toBe(false);
+  });
+});
+
+describe("downloadRange", () => {
+  const BYTES = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+  /** A 206 for `bytes=start-end` of {@link BYTES}, as Drive answers a range it honours. */
+  function partial(start: number, end: number, total = BYTES.byteLength): Response {
+    return new Response(BYTES.slice(start, end + 1), {
+      status: 206,
+      headers: { "Content-Range": `bytes ${start}-${end}/${total}` },
+    });
+  }
+
+  it("asks alt=media across all drives for exactly the requested bytes", async () => {
+    let calls = stubFetch([partial(3, 6)]);
+
+    let { content, fileSize } = await api().downloadRange("file-1_A", 3, 4);
+
+    expect(new Uint8Array(content)).toEqual(new Uint8Array([3, 4, 5, 6]));
+    expect(fileSize).toBe(10);
+    expect(calls[0].url.origin + calls[0].url.pathname)
+      .toBe("https://www.googleapis.com/drive/v3/files/file-1_A");
+    expect(Object.fromEntries(calls[0].url.searchParams))
+      .toEqual({ alt: "media", supportsAllDrives: "true" });
+    expect(calls[0].headers.get("Range")).toBe("bytes=3-6");
+    expect(calls[0].headers.get("Authorization")).toBe("Bearer tok");
+  });
+
+  it("returns what there is when the file ends inside the range", async () => {
+    stubFetch([partial(8, 9)]);
+    expect(new Uint8Array((await api().downloadRange("file-1", 8, 5)).content))
+      .toEqual(new Uint8Array([8, 9]));
+  });
+
+  it("reports no file size when Drive does not give one", async () => {
+    stubFetch([new Response(BYTES.slice(0, 2), {
+      status: 206, headers: { "Content-Range": "bytes 0-1/*" },
+    })]);
+    expect(await api().downloadRange("file-1", 0, 2)).toEqual({ content: expect.any(ArrayBuffer) });
+  });
+
+  it("keeps only the requested bytes of a whole-file answer to a range from the start", async () => {
+    let { body, state } = countedBody(4);
+    stubFetch([new Response(body)]);
+
+    let { content, fileSize } = await api().downloadRange("file-1", 0, 6);
+
+    expect(content.byteLength).toBe(6);
+    expect(fileSize).toBeUndefined();
+    expect(state.pulls).toBeLessThanOrEqual(3);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("takes a whole-file answer's file size from its length, unless it was encoded", async () => {
+    stubFetch([
+      new Response(BYTES, { headers: { "Content-Length": "10" } }),
+      new Response(BYTES, { headers: { "Content-Length": "4", "Content-Encoding": "gzip" } }),
+    ]);
+
+    expect((await api().downloadRange("file-1", 0, 4)).fileSize).toBe(10);
+    expect((await api().downloadRange("file-1", 0, 4)).fileSize).toBeUndefined();
+  });
+
+  it("never returns more than was asked for, whatever Drive sends", async () => {
+    stubFetch([partial(2, 9)]);
+    expect(new Uint8Array((await api().downloadRange("file-1", 2, 3)).content))
+      .toEqual(new Uint8Array([2, 3, 4]));
+  });
+
+  it.each([
+    ["a whole-file answer to a range starting later", () => new Response(BYTES)],
+    ["a partial answer starting elsewhere", () => partial(0, 3)],
+    ["a partial answer that does not say where it starts", () => new Response(BYTES, { status: 206 })],
+  ])("refuses %s, which would misplace every byte", async (_name, answer) => {
+    stubFetch([answer()]);
+    await expect(api().downloadRange("file-1", 5, 3))
+      .rejects.toThrow("Google Drive did not return the requested byte range.");
+  });
+
+  it("refuses an ID that is not a Drive file ID without a request", async () => {
+    let calls = stubFetch([]);
+    await expect(api().downloadRange("../about", 0, 1)).rejects.toThrow("Not a Google Drive file ID.");
+    expect(calls).toEqual([]);
+  });
+
+  it("explains Drive's download refusals, which leave the caller nothing to act on", async () => {
+    stubFetch([
+      jsonResponse({ error: { code: 403, errors: [{ reason: "cannotDownloadFile" }] } }, 403),
+      jsonResponse({ error: { code: 403, errors: [{ reason: "cannotDownloadAbusiveFile" }] } }, 403),
+    ]);
+
+    let restricted = await api().downloadRange("file-1", 0, 1).catch((caught: unknown) => caught);
+    let abusive = await api().downloadRange("file-1", 0, 1).catch((caught: unknown) => caught);
+
+    expect(restricted).toMatchObject({ status: 403, reason: "cannotDownloadFile" });
+    expect((restricted as Error).message).toBe("Google Drive API request failed: 403 (the " +
+      "connected account is not allowed to download this file; its owner or administrator has " +
+      "restricted downloading it)");
+    expect((abusive as Error).message).toBe("Google Drive API request failed: 403 (Google " +
+      "identified this file as malware or spam, so only its owner can download it)");
   });
 });
 

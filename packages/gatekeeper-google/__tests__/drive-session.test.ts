@@ -531,6 +531,21 @@ describe("Drive native sessions", () => {
       .rejects.toThrow("denied");
     expect(state).toBe("pending");
   });
+
+  // An account binding's scope cannot move, so only a content read has anything left to record.
+  it.each([
+    ["its content", { content: true }, [[{ kind: "content", fileId: "file-1" }]], ["excluded"]],
+    ["what a viewer sees", {}, [], undefined],
+  ] as const)("records a read of %s for observers to be checked against", async (
+    _name, options, expectedUnits, excludeObservers,
+  ) => {
+    let { session, units, authorizations } = core();
+
+    await expect(session.nativeRead("file-1", "application/pdf", options)(
+      async () => "value", () => ({ title: "Read", description: "Read it." }))).resolves.toBe("value");
+    expect(units).toEqual(expectedUnits);
+    expect(authorizations).toEqual([{ title: "Read", description: "Read it.", excludeObservers }]);
+  });
 });
 
 describe("Drive search validation", () => {
@@ -774,6 +789,18 @@ describe("positioned Drive folder session", () => {
       { kind: "folder", fileId: "R" }, { kind: "file", fileId: "M" },
     ]]);
     expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  it.each([
+    ["its content", { content: true }, "content"],
+    ["what a viewer sees", {}, "file"],
+  ] as const)("records a direct child's read of %s with its folder", async (_name, options, kind) => {
+    const pdf = child("P", "R", { mimeType: "application/pdf" });
+    const { session, observations } = positioned([root, pdf]);
+
+    await session.nativeRead("P", "application/pdf", options)(
+      async () => "value", () => ({ title: "Read", description: "Read it." }));
+    expect(observations).toEqual([[{ kind: "folder", fileId: "R" }, { kind, fileId: "P" }]]);
   });
 
   it("fences an invisible probe but not a visible non-child", async () => {

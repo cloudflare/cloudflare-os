@@ -139,7 +139,38 @@ export type DrivePdfText = {
   hasText: boolean;
 };
 
-/** Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, and PDF text. */
+/** Which bytes of a Drive file `readFile()` reads. */
+export type DriveFileReadOptions = {
+  /** Where to start, in bytes from the start of the file. Defaults to 0. */
+  offset?: number;
+  /** How many bytes to read, from 1 to 4,000,000. Defaults to 4,000,000. */
+  length?: number;
+};
+
+/** One range of a Drive file's content. */
+export type DriveFileBytes = {
+  /** The file's MIME type, as `DriveEntry.mimeType` gives it. */
+  mimeType: string;
+  /** The whole file's size in bytes: it has been read to its end once `offset + content.byteLength` reaches this. */
+  size: number;
+  /** When the file was last modified. Ranges reporting different times were read from different versions of it. */
+  modifiedTime: Date;
+  /** Where `content` starts, in bytes from the start of the file. */
+  offset: number;
+  /**
+   * The bytes read: `length` of them, fewer where the file ends, and none from its end. A range
+   * can end partway through a multi-byte character, so decode text read in several ranges with
+   * one `TextDecoder`, calling `decoder.decode(content, { stream: true })` for each range and
+   * `decoder.decode()` at the end, or join the ranges' bytes before decoding; decoding each range
+   * on its own corrupts the characters split between them.
+   */
+  content: ArrayBuffer;
+};
+
+/**
+ * Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, PDF text, and the
+ * bytes of any other file.
+ */
 export interface GoogleDriveReadSession {
   /** Return this capability's immutable scope with current display metadata. */
   getScope(): Promise<DriveScope>;
@@ -182,6 +213,18 @@ export interface GoogleDriveReadSession {
    * when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
+
+  /**
+   * Read bytes of an in-scope file's own content: a CSV, image, PDF, Office or any other uploaded
+   * file, whatever its type. One call returns at most 4,000,000 bytes from `offset`; read a larger
+   * file in several, advancing `offset` by each `content.byteLength` until it reaches `size`.
+   * Google Docs, Sheets and Slides are refused naming the method that opens them, as are folders,
+   * shortcuts and other Google-native files (MIME types starting `application/vnd.google-apps.`),
+   * which have no content to download. Fails when Google does not let the account download the
+   * file, and asks to reconnect when the account was connected before Drive bindings could read
+   * file content. A binding runs at most three reads at once; further calls wait their turn.
+   */
+  readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 }
 
 /** Read-only navigation within the originally selected folder. */
@@ -217,6 +260,12 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
    * reconnect when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
+
+  /**
+   * Read bytes of a live direct child's own content, at most 4,000,000 per call, as
+   * `GoogleDriveReadSession.readFile()` does.
+   */
+  readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 
   /** Open a live direct child folder as an independently disposable capability. */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;

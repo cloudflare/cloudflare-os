@@ -64,7 +64,8 @@ type FolderPageScope = {driveId: string | undefined; parents: DriveScopeNode[]};
 export type NativeObservation = Omit<ObservationDescription, "excludeObservers">;
 
 /**
- * Performs one Docs, Sheets, Slides or PDF read and authorizes it before the value is disclosed.
+ * Performs one Docs, Sheets, Slides, PDF or file content read and authorizes it before the value
+ * is disclosed.
  *
  * The fetch is a thunk rather than a value so a scope check can refuse before the provider is
  * contacted at all.
@@ -73,6 +74,20 @@ export type NativeRead = <T>(
   fetch: () => Promise<T>,
   observe: (value: T) => NativeObservation,
 ) => Promise<T>;
+
+/** How a session core's `nativeRead` treats one read. */
+export type NativeReadOptions = {
+  /**
+   * Discloses the file's content -- its bytes or a PDF's text -- rather than what a viewer sees, so
+   * the read is recorded as a content unit, which an observer passes only with leave to download.
+   */
+  content?: boolean;
+  /**
+   * Folder bindings only: sees the file's metadata from each re-proof, before and after the fetch,
+   * and throws to refuse a read of a file that has changed since it was opened.
+   */
+  unchanged?: (file: DriveFile) => void;
+};
 
 /** Reads and authorizes with no live scope check, for a binding whose scope cannot move. */
 export function unguardedNativeRead(
@@ -332,11 +347,18 @@ abstract class DriveCoreBase {
   }
 
   /** Stage, authorize, and commit one disclosure of `observations`. */
-  protected async authorizeUnits(
+  protected authorizeUnits(
     observations: DriveObservation[], title: string, description: string,
   ): Promise<void> {
+    return this.authorizeDisclosure(observations, {title, description});
+  }
+
+  /** {@link authorizeUnits} for a description built elsewhere, as a native read's is. */
+  protected async authorizeDisclosure(
+    observations: DriveObservation[], description: NativeObservation,
+  ): Promise<void> {
     let check = await this.prepareObservation(observations);
-    await this.authorize({title, description, excludeObservers: check.excludeObservers});
+    await this.authorize({...description, excludeObservers: check.excludeObservers});
     check.commit();
   }
 
@@ -361,6 +383,22 @@ abstract class DriveCoreBase {
       throw error;
     }
     check.commit();
+  }
+
+  /** Validate one file against this scope and authorize opening it as a `description`. */
+  abstract openFile(fileId: string, description: string): Promise<DriveFile>;
+
+  /** {@link openFile} for a native file of one type, before a nested content session is created. */
+  async openNativeFile(
+    fileId: string,
+    expectedMimeType: string,
+    description: string,
+  ): Promise<string> {
+    let file = await this.openFile(fileId, description);
+    if (file.mimeType !== expectedMimeType) {
+      throw new Error(`The requested Drive file is not a ${description}.`);
+    }
+    return file.id;
   }
 
   /** Current metadata for one file, or `undefined` when it is invisible to this account. */
@@ -463,26 +501,28 @@ export class DriveSessionCore extends DriveCoreBase {
     return driveFileToEntry(file);
   }
 
-  /** Validate and authorize one native file before a nested content session is created. */
-  async openNativeFile(
-    fileId: string,
-    expectedMimeType: string,
-    description: string,
-  ): Promise<string> {
+  async openFile(fileId: string, description: string): Promise<DriveFile> {
     if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) outsideScope();
     let file = await this.#fetchFile(fileId);
     if (file.id !== fileId) outsideScope();
     await this.authorizeFiles([file.id], `Open ${description} from Google Drive`,
       `Check current metadata for Drive file ${file.id} and open it as a ${description}.`);
-    if (file.mimeType !== expectedMimeType) {
-      throw new Error(`The requested Drive file is not a ${description}.`);
-    }
-    return file.id;
+    return file;
   }
 
-  /** Native reads need no moving-scope check for immutable account/file capabilities. */
-  nativeRead(_fileId: string, _expectedMimeType: string): NativeRead {
-    return unguardedNativeRead(this.authorize);
+  /**
+   * An account or exact-file capability's scope cannot move, so its reads need no live scope check.
+   * A content read is still recorded, since observers need more to see it than the file opened.
+   */
+  nativeRead(
+    fileId: string, _expectedMimeType: string, {content}: NativeReadOptions = {},
+  ): NativeRead {
+    if (!content) return unguardedNativeRead(this.authorize);
+    return async <T>(fetch: () => Promise<T>, observe: (value: T) => NativeObservation) => {
+      let value = await fetch();
+      await this.authorizeDisclosure([{kind: "content", fileId}], observe(value));
+      return value;
+    };
   }
 
   async #cursor(query: DriveListFilesOptions, denyEmptySearch = false): Promise<Pager<DriveEntry>> {
@@ -613,22 +653,15 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return driveFileToEntry(file);
   }
 
-  /** Validate and authorize one direct native child before its content session is created. */
-  async openNativeFile(
-    fileId: string,
-    expectedMimeType: string,
-    description: string,
-  ): Promise<string> {
+  /** Only a live direct child of the positioned folder can be opened. */
+  async openFile(fileId: string, description: string): Promise<DriveFile> {
     let file = await this.#requireDirectFile(fileId);
     await this.authorizeUnits(
       [this.#folderObservation(), {kind: "file", fileId: file.id}],
       `Open ${description} from Google Drive`,
       `Check current metadata for Drive file ${file.id} and open it as a ${description}.`,
     );
-    if (file.mimeType !== expectedMimeType) {
-      throw new Error(`The requested Drive file is not a ${description}.`);
-    }
-    return file.id;
+    return file;
   }
 
   /**
@@ -658,18 +691,21 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return {folderIds: [...this.#location.folderIds, folder.id]};
   }
 
-  /** Revalidate the saved path and direct child on every Docs, Sheets, Slides or PDF read. */
-  nativeRead(fileId: string, expectedMimeType: string): NativeRead {
+  /** Revalidate the saved path and direct child on every Docs, Sheets, Slides, PDF or file read. */
+  nativeRead(
+    fileId: string, expectedMimeType: string, {content, unchanged}: NativeReadOptions = {},
+  ): NativeRead {
+    let requireCurrent = async () => {
+      let file = await this.#requireDirectFile(fileId);
+      if (file.mimeType !== expectedMimeType) outsideScope();
+      unchanged?.(file);
+    };
     return async <T>(fetch: () => Promise<T>, observe: (value: T) => NativeObservation) => {
-      let before = await this.#requireDirectFile(fileId);
-      if (before.mimeType !== expectedMimeType) outsideScope();
+      await requireCurrent();
       let value = await fetch();
-      let after = await this.#requireDirectFile(fileId);
-      if (after.mimeType !== expectedMimeType) outsideScope();
-      let check = await this.prepareObservation(
-        [this.#folderObservation(), {kind: "file", fileId}]);
-      await this.authorize({...observe(value), excludeObservers: check.excludeObservers});
-      check.commit();
+      await requireCurrent();
+      await this.authorizeDisclosure(
+        [this.#folderObservation(), {kind: content ? "content" : "file", fileId}], observe(value));
       return value;
     };
   }

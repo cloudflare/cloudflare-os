@@ -7,7 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
 import type { DriveBindingScope } from "../../src/drive-session";
+import { MAX_CONCURRENT_FILE_READS } from "../../src/drive-file-read";
+import { Semaphore } from "../../src/mutex";
 import type { PdfConverter } from "../../src/drive-pdf";
+import type { DriveObservation } from "../../src/drive-observers";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type { DrivePdfText, DriveSessionSearchQuery } from "../../src/drive-types";
 import { GoogleSheetsApi } from "../../src/sheets-api";
@@ -102,8 +105,11 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
   /** Titles this queue refuses to authorize. */
   readonly refuse = new Set<string>();
+  /** Titles whose authorization waits for the promise mapped to them. */
+  readonly holds = new Map<string, Promise<void>>();
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
+    await this.holds.get(description.title);
     if (this.refuse.has(description.title)) throw new Error("Observation refused");
     this.observations.push(description);
   }
@@ -235,17 +241,24 @@ function newSession(
 ) {
   const queue = new TestApprovalQueue();
   const queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
+  /** The disclosure units of each observation, in order. */
+  const prepared: DriveObservation[][] = [];
   return {
     queue,
+    prepared,
     session: new RpcStub(new GoogleDriveSessionImpl(
       new DriveApi(getAccessToken),
       new GoogleDocsApi(getAccessToken),
       new GoogleSheetsApi(getAccessToken),
       new GoogleSlidesApi(getAccessToken),
       convertPdf,
+      new Semaphore(MAX_CONCURRENT_FILE_READS),
       scope,
       queueStub,
-      async fileIds => ({ pendingSets: fileIds, commit() {} }),
+      async units => {
+        prepared.push(units);
+        return { pendingSets: units, commit() {} };
+      },
       () => ({ pendingSets: [], commit() {} }),
     )),
   };
@@ -370,7 +383,7 @@ describe("Drive PDF reads", () => {
     const converter = fakeConverter(() => {
       authorizedAtConversion = queue.observations.map(o => o.title);
     });
-    const { queue, session } = newSession(converter.convert);
+    const { queue, prepared, session } = newSession(converter.convert);
     using owned = session;
 
     const result = await owned.readPdf("pdf-1");
@@ -390,6 +403,8 @@ describe("Drive PDF reads", () => {
       },
       { title: "Read PDF from Google Drive", description: "Read the text of Drive file pdf-1." },
     ]);
+    // The text is the file's content, so a collaborator needs leave to download the PDF to see it.
+    expect(prepared).toEqual([[{ kind: "file", fileId: "pdf-1" }], [{ kind: "content", fileId: "pdf-1" }]]);
   });
 
   it("withholds the text when its read is not authorized, releasing its stream", async () => {
@@ -443,7 +458,8 @@ describe("Drive PDF reads", () => {
     using session = newSession(fakeConverter().convert).session;
 
     await expect(Promise.resolve(session.readPdf("pdf-1")))
-      .rejects.toThrow("Google Drive API request failed: 403 (cannotDownloadFile)");
+      .rejects.toThrow("Google Drive API request failed: 403 (the connected account is not " +
+        "allowed to download this file; its owner or administrator has restricted downloading it)");
   });
 
   it("says PDF reading is unavailable without a converter, without downloading", async () => {
@@ -474,6 +490,288 @@ describe("Drive PDF reads", () => {
     expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
     expect(converted.cancelled).toBe(true);
     expect(download.cancelled).toBe(true);
+  });
+});
+
+describe("Drive file reads", () => {
+  const CSV_BYTES = new TextEncoder().encode("region,amount\nEMEA,120\nAPAC,95\n");
+  const FILE_ACCESS_MISSING =
+    "This Google account was connected before Drive bindings could read file content. Reconnect " +
+    "it in Workshop to read Drive files.";
+
+  type ProviderFile = { mimeType: string; content?: Uint8Array; canDownload?: boolean };
+  const FILES: Record<string, ProviderFile> = {
+    "csv-1": { mimeType: "text/csv", content: CSV_BYTES },
+    "empty-1": { mimeType: "text/plain", content: new Uint8Array() },
+    "big-1": { mimeType: "application/octet-stream", content: new Uint8Array(4_000_010) },
+    "locked-1": { mimeType: "text/csv", content: CSV_BYTES, canDownload: false },
+    "doc-1": { mimeType: DOC_MIME },
+    "sheet-1": { mimeType: SHEET_MIME },
+    "deck-1": { mimeType: SLIDES_MIME },
+    "folder-1": { mimeType: FOLDER_MIME },
+    "shortcut-1": { mimeType: "application/vnd.google-apps.shortcut" },
+    "form-1": { mimeType: "application/vnd.google-apps.form" },
+  };
+
+  /** The `Range` of each download, in order. */
+  let downloads: (string | null)[];
+  /** Replaces the honoured range a download answers with, when a test sets it. */
+  let answerDownload: (() => Response) | undefined;
+
+  /** Serves {@link FILES}: metadata, and each download's requested range as a 206. */
+  function installFileProvider(): string[] {
+    const urls: string[] = [];
+    downloads = [];
+    answerDownload = undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      urls.push(url.toString());
+      if (url.hostname !== "www.googleapis.com" || !url.pathname.startsWith("/drive/v3/files/")) {
+        throw new Error(`Unexpected provider request: ${url.origin}${url.pathname}`);
+      }
+      const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
+      const file = FILES[id];
+      if (!file) return Response.json({ error: { code: 404, errors: [{ reason: "notFound" }] } }, { status: 404 });
+      if (isDownload(url.toString())) {
+        const range = new Headers(init?.headers).get("Range");
+        downloads.push(range);
+        if (answerDownload) return answerDownload();
+        const [, start, end] = range!.match(/^bytes=(\d+)-(\d+)$/)!.map(Number);
+        const content = file.content!;
+        const last = Math.min(end, content.byteLength - 1);
+        return new Response(content.slice(start, last + 1), {
+          status: 206,
+          headers: { "Content-Range": `bytes ${start}-${last}/${content.byteLength}` },
+        });
+      }
+      return Response.json({
+        id,
+        name: id,
+        mimeType: file.mimeType,
+        modifiedTime: "2026-08-20T12:00:00Z",
+        ...file.content ? { size: String(file.content.byteLength) } : {},
+        ...file.canDownload === undefined ? {} : { capabilities: { canDownload: file.canDownload } },
+      });
+    }));
+    return urls;
+  }
+
+  beforeEach(() => {
+    providerUrls = installFileProvider();
+  });
+
+  it("reads a whole small file, authorizing the read before returning it", async () => {
+    const { queue, prepared, session } = newSession();
+    using owned = session;
+
+    const read = await owned.readFile("csv-1");
+
+    expect(new TextDecoder().decode(read.content)).toBe("region,amount\nEMEA,120\nAPAC,95\n");
+    expect(read).toEqual({
+      mimeType: "text/csv",
+      size: CSV_BYTES.byteLength,
+      modifiedTime: new Date("2026-08-20T12:00:00Z"),
+      offset: 0,
+      content: expect.any(ArrayBuffer),
+    });
+    expect(downloads).toEqual([`bytes=0-${CSV_BYTES.byteLength - 1}`]);
+    expect(queue.observations.map(({ title, description }) => ({ title, description }))).toEqual([
+      {
+        title: "Open file from Google Drive",
+        description: "Check current metadata for Drive file csv-1 and open it as a file.",
+      },
+      {
+        title: "Read file from Google Drive",
+        description: `Read ${CSV_BYTES.byteLength} bytes of Drive file csv-1, from byte 0.`,
+      },
+    ]);
+    // The bytes are the file's content, so a collaborator needs leave to download it to see them.
+    expect(prepared).toEqual([[{ kind: "file", fileId: "csv-1" }], [{ kind: "content", fileId: "csv-1" }]]);
+  });
+
+  it("reads a large file in ranges, clamping the last one to the end of the file", async () => {
+    using session = newSession().session;
+    const size = CSV_BYTES.byteLength;
+
+    const middle = await session.readFile("csv-1", { offset: 7, length: 6 });
+    const last = await session.readFile("csv-1", { offset: size - 4, length: 100 });
+
+    expect(new Uint8Array(middle.content)).toEqual(CSV_BYTES.slice(7, 13));
+    expect(middle.offset).toBe(7);
+    expect(new Uint8Array(last.content)).toEqual(CSV_BYTES.slice(size - 4));
+    expect(downloads).toEqual(["bytes=7-12", `bytes=${size - 4}-${size - 1}`]);
+  });
+
+  it("returns no bytes at the end of a file, or of an empty one, without downloading", async () => {
+    using session = newSession().session;
+
+    const atEnd = await session.readFile("csv-1", { offset: CSV_BYTES.byteLength });
+    const empty = await session.readFile("empty-1");
+
+    expect(atEnd.content.byteLength).toBe(0);
+    expect(empty).toEqual(expect.objectContaining({ size: 0, offset: 0 }));
+    expect(empty.content.byteLength).toBe(0);
+    expect(downloads).toEqual([]);
+  });
+
+  it("refuses an offset past the end of the file without downloading", async () => {
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.readFile("csv-1", { offset: CSV_BYTES.byteLength + 1 })))
+      .rejects.toThrow(`offset ${CSV_BYTES.byteLength + 1} is past the end of the Drive file, ` +
+        `which is ${CSV_BYTES.byteLength} bytes long.`);
+    expect(downloads).toEqual([]);
+  });
+
+  it.each([
+    [{ offset: -1 }, "offset must be a whole number of bytes, at least 0."],
+    [{ offset: 1.5 }, "offset must be a whole number of bytes, at least 0."],
+    [{ length: 0 }, "length must be a whole number of bytes from 1 to 4,000,000."],
+    [{ length: 4_000_001 }, "length must be a whole number of bytes from 1 to 4,000,000."],
+  ])("refuses the range %o before contacting Google", async (options, message) => {
+    const { queue, session } = newSession();
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("csv-1", options))).rejects.toThrow(message);
+    expect(providerUrls).toEqual([]);
+    expect(queue.observations).toEqual([]);
+  });
+
+  it("reads at most 4,000,000 bytes when no length is given", async () => {
+    using session = newSession().session;
+
+    const first = await session.readFile("big-1");
+
+    expect(first.content.byteLength).toBe(4_000_000);
+    expect(first.size).toBe(4_000_010);
+    expect(downloads).toEqual(["bytes=0-3999999"]);
+  });
+
+  it.each([
+    ["doc-1", "The requested Drive file is a Google Doc; open it with openGoogleDoc()."],
+    ["sheet-1", "The requested Drive file is a Google Sheet; open it with openGoogleSheet()."],
+    ["deck-1", "The requested Drive file is a Google Slides presentation; open it with openGoogleSlides()."],
+    ["folder-1", "The requested Drive item is a folder, which has no content to read."],
+    ["shortcut-1", "The requested Drive item is a shortcut, which is not followed; read its target instead."],
+    ["form-1", "The requested Drive file is a Google-native file (application/vnd.google-apps.form) " +
+      "with no content to download."],
+  ])("refuses %s after observing it, without downloading", async (fileId, message) => {
+    const { queue, session } = newSession();
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile(fileId))).rejects.toThrow(message);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+    expect(downloads).toEqual([]);
+  });
+
+  it("refuses a file Drive does not let the account download, without downloading", async () => {
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.readFile("locked-1"))).rejects.toThrow(
+      "Google Drive does not let the connected account download this file; its owner or " +
+      "administrator has restricted downloading it.");
+    expect(downloads).toEqual([]);
+  });
+
+  it("explains a download Drive refuses as malware", async () => {
+    answerDownload = () => Response.json(
+      { error: { code: 403, errors: [{ reason: "cannotDownloadAbusiveFile" }] } }, { status: 403 });
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.readFile("csv-1"))).rejects.toThrow(
+      "Google identified this file as malware or spam, so only its owner can download it");
+  });
+
+  it("asks an account connected before content access to reconnect", async () => {
+    answerDownload = () => Response.json(NOT_AUTHORIZED_TO_FILE, { status: 403 });
+    const { queue, session } = newSession();
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("csv-1"))).rejects.toThrow(FILE_ACCESS_MISSING);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+  });
+
+  it("says the file changed when it shrank past the requested range", async () => {
+    answerDownload = () => Response.json(
+      { error: { code: 416, errors: [{ reason: "requestedRangeNotSatisfiable" }] } }, { status: 416 });
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.readFile("csv-1", { offset: 4 }))).rejects.toThrow(
+      "The Drive file changed while it was being read; read it again.");
+  });
+
+  // Its old size and time would make the new bytes look like the whole of the old file, so a
+  // file that grew would be taken as read to its end.
+  const grown = new TextEncoder().encode("NEWREVISION".repeat(10));
+  const shrunk = CSV_BYTES.slice(0, -1);
+  const n = CSV_BYTES.byteLength;
+  it.each([
+    ["the file grew, by a range's total", () => new Response(grown.slice(0, n), {
+      status: 206, headers: { "Content-Range": `bytes 0-${n - 1}/${grown.byteLength}` },
+    })],
+    ["the file grew, by a whole-file answer's length", () => new Response(grown, {
+      headers: { "Content-Length": String(grown.byteLength) },
+    })],
+    ["the file shrank, by a whole-file answer's length", () => new Response(shrunk, {
+      headers: { "Content-Length": String(shrunk.byteLength) },
+    })],
+    ["the file shrank, by a range of unknown total ending early", () => new Response(shrunk, {
+      status: 206, headers: { "Content-Range": `bytes 0-${n - 2}/*` },
+    })],
+    ["Drive ends a range early", () => new Response(shrunk, {
+      status: 206, headers: { "Content-Range": `bytes 0-${n - 2}/${n}` },
+    })],
+  ])("withholds bytes when %s", async (_name, answer) => {
+    answerDownload = answer;
+    const { queue, session } = newSession();
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("csv-1"))).rejects.toThrow(
+      "The Drive file changed while it was being read; read it again.");
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+  });
+
+  // Each read keeps its bytes until it is authorized, so authorization holding the first three up
+  // must keep a fourth from downloading at all.
+  it("holds at most three reads at once, each until its read is authorized", async () => {
+    const { queue, session } = newSession();
+    using owned = session;
+    const authorized = Promise.withResolvers<void>();
+    queue.holds.set("Read file from Google Drive", authorized.promise);
+
+    const reads = Array.from({ length: 4 }, () => Promise.resolve(owned.readFile("csv-1")));
+    // All four have opened the file, so the fourth is waiting its turn, not merely late.
+    await vi.waitFor(() => expect(queue.observations).toHaveLength(4));
+    expect(downloads).toHaveLength(3);
+
+    authorized.resolve();
+    await Promise.all(reads);
+    expect(downloads).toHaveLength(4);
+  });
+
+  it("withholds the bytes when their read is not authorized", async () => {
+    const { queue, session } = newSession();
+    using owned = session;
+    queue.refuse.add("Read file from Google Drive");
+
+    await expect(Promise.resolve(owned.readFile("csv-1"))).rejects.toThrow("Observation refused");
+    expect(downloads).toHaveLength(1);
+  });
+
+  it("reads the bound file of an exact-file binding", async () => {
+    using session = newSession(undefined, { kind: "file", fileId: "csv-1" }).session;
+
+    expect(new Uint8Array((await session.readFile("csv-1")).content)).toEqual(CSV_BYTES);
+  });
+
+  it("refuses any other ID in an exact-file binding before contacting Google", async () => {
+    const { queue, session } = newSession(undefined, { kind: "file", fileId: "csv-1" });
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("locked-1")))
+      .rejects.toThrow("The requested file is outside this Drive binding.");
+    expect(providerUrls).toEqual([]);
+    expect(queue.observations).toEqual([]);
   });
 });
 
@@ -618,6 +916,9 @@ describe("folder-scoped native sessions", () => {
     mimeType: string;
     parents?: string[];
     trashed: boolean;
+    /** Bytes of content, for a file that has its own. */
+    size?: string;
+    modifiedTime?: string;
     capabilities?: { canListChildren: boolean };
   };
 
@@ -654,14 +955,30 @@ describe("folder-scoped native sessions", () => {
     });
   }
 
-  function installFolderProvider(nodes: Map<string, Node>, onNativeRead?: () => void) {
+  /**
+   * Answers downloads with PDF_BYTES whole, in two chunks pulled one at a time. `onLastChunk`
+   * runs just before the second is sent, so a change it makes lands while the body is still
+   * being read.
+   */
+  function installFolderProvider(
+    nodes: Map<string, Node>, onNativeRead?: () => void, onLastChunk?: () => void,
+  ) {
     const nativeCalls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
       if (isDownload(url.toString())) {
         nativeCalls.push("download");
         onNativeRead?.();
-        return new Response(PDF_BYTES, { headers: { "Content-Type": PDF_MIME } });
+        const half = PDF_BYTES.byteLength >> 1;
+        let sent = 0;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent++ === 0) return controller.enqueue(PDF_BYTES.slice(0, half));
+            onLastChunk?.();
+            controller.enqueue(PDF_BYTES.slice(half));
+            controller.close();
+          },
+        }, { highWaterMark: 0 }), { headers: { "Content-Type": PDF_MIME } });
       }
       if (url.pathname === "/batch/drive/v3") {
         return batchResponse(String(init?.body ?? ""), nodes);
@@ -679,7 +996,7 @@ describe("folder-scoped native sessions", () => {
         const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
         const node = nodes.get(id);
         if (!node) return Response.json({}, { status: 404 });
-        return Response.json({ ...node, name: id, modifiedTime: "2026-08-20T12:00:00Z" });
+        return Response.json({ name: id, modifiedTime: "2026-08-20T12:00:00Z", ...node });
       }
       nativeCalls.push(url.hostname);
       onNativeRead?.();
@@ -724,6 +1041,7 @@ describe("folder-scoped native sessions", () => {
         new GoogleSheetsApi(getAccessToken),
         new GoogleSlidesApi(getAccessToken),
         convertPdf,
+        new Semaphore(MAX_CONCURRENT_FILE_READS),
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
         async fileIds => ({ pendingSets: fileIds, commit() {} }),
@@ -1004,5 +1322,78 @@ describe("folder-scoped native sessions", () => {
 
     await expect(Promise.resolve(session.openGoogleDoc("doc-1")))
       .rejects.toThrow(OUTSIDE);
+  });
+
+  // The folder provider answers every download with PDF_BYTES whole, as Drive may for a range that
+  // starts at the beginning, so these read whole files.
+  function dataNode(parent: string) {
+    return {
+      id: "data-1", mimeType: "application/octet-stream", parents: [parent], trashed: false,
+      size: String(PDF_BYTES.byteLength),
+    };
+  }
+
+  it("reads a direct child's bytes, checking its place around the download", async () => {
+    const nodes = subtree();
+    nodes.set("data-1", dataNode(ROOT));
+    const nativeCalls = installFolderProvider(nodes);
+    const { queue, session } = folderSession(nodes);
+    using owned = session;
+
+    expect(new Uint8Array((await owned.readFile("data-1")).content)).toEqual(PDF_BYTES);
+    expect(nativeCalls).toEqual(["download"]);
+    expect(queue.observations.map(o => o.title))
+      .toEqual(["Open file from Google Drive", "Read file from Google Drive"]);
+  });
+
+  // The move lands while the last bytes are still on their way, so only a re-proof taken after the
+  // whole range has arrived can see it: one taken when the download merely starts would pass.
+  it("refuses bytes from a file moved out of the folder before its last byte arrived", async () => {
+    const nodes = subtree();
+    nodes.set("data-1", dataNode(ROOT));
+    installFolderProvider(nodes, undefined, () => nodes.set("data-1", dataNode("elsewhere")));
+    const { queue, session } = folderSession(nodes);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("data-1"))).rejects.toThrow(OUTSIDE);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+  });
+
+  // Its size is unchanged, so only the modification time the re-proof reads can show the rewrite.
+  it("refuses bytes from a file rewritten at the same size during the download", async () => {
+    const nodes = subtree();
+    nodes.set("data-1", dataNode(ROOT));
+    installFolderProvider(nodes, undefined, () =>
+      nodes.set("data-1", { ...dataNode(ROOT), modifiedTime: "2026-08-21T09:00:00Z" }));
+    const { queue, session } = folderSession(nodes);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("data-1"))).rejects.toThrow(
+      "The Drive file changed while it was being read; read it again.");
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+  });
+
+  it("refuses a file outside the folder without downloading it", async () => {
+    const nodes = subtree();
+    nodes.set("data-1", dataNode("elsewhere"));
+    const nativeCalls = installFolderProvider(nodes);
+    using session = folderSession(nodes).session;
+
+    await expect(Promise.resolve(session.readFile("data-1"))).rejects.toThrow(OUTSIDE);
+    expect(nativeCalls).toEqual([]);
+  });
+
+  it("reads files from an opened child folder", async () => {
+    const nodes = subtree();
+    nodes.set("nested", {
+      id: "nested", mimeType: FOLDER_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canListChildren: true },
+    });
+    nodes.set("data-1", dataNode("nested"));
+    installFolderProvider(nodes);
+    using session = folderSession(nodes).session;
+    using child = await session.openFolder("nested");
+
+    expect(new Uint8Array((await child.readFile("data-1")).content)).toEqual(PDF_BYTES);
   });
 });

@@ -90,6 +90,23 @@ describe("driveObserverTracker", () => {
     expect(asked).toEqual([[{kind: "file", fileId: "old/file"}]]);
   });
 
+  it("tracks a file's content apart from its metadata, checking a joiner for each", async () => {
+    let { kv, asked, track } = tracker({ kind: "account" },
+      units => ({ baselineAllowed: true, allowed: units.map(unit => unit.kind !== "content") }));
+    for (let unit of [{kind: "file", fileId: "a/b"}, {kind: "content", fileId: "a/b"}] as const) {
+      (await track.prepareObservation([unit])).commit();
+    }
+
+    expect([...kv.entries.keys()].toSorted()).toEqual([
+      `${DRIVE_OBSERVATION_PREFIX}a%2Fb`, `${DRIVE_OBSERVATION_PREFIX}content:a%2Fb`,
+    ]);
+    await expect(track.addObserver("obs", "verifier"))
+      .rejects.toThrow("This collaborator cannot access Drive data this workspace has read.");
+    expect(asked.at(-1)).toEqual(expect.arrayContaining([
+      {kind: "file", fileId: "a/b"}, {kind: "content", fileId: "a/b"},
+    ]));
+  });
+
   it("percent-encodes IDs without colliding with the typed key grammar", async () => {
     let { kv, asked, track } = tracker({ kind: "folder", folderId: "folder:a/b" }, allow);
     expect([...kv.entries.keys()]).toEqual([
