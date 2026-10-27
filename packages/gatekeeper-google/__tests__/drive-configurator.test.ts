@@ -46,7 +46,7 @@ async function open() {
       find("HierarchyPicker")[0].props.loadItems({ parentId, query, cursor: null }),
     load: (id: string) => find("HierarchyPicker")[0].props.loadItem(id),
     notices: () => find("Notice").map(node => ({ tone: node.props.tone, text: text(node) })),
-    allow: () => find("Button").find(node => text(node) === "Allow access")?.props.onClick(),
+    allow: () => find("Notice").find(node => node.props.action?.label === "Allow access")?.props.action.onClick(),
   };
 }
 
@@ -60,8 +60,8 @@ it("asks for the grant a location names, then stops once a listing loads", async
   expect(frame.notices()).toEqual([GRANT_NOTICE]);
   frame.allow();
   expect(frame.ensureResources).toHaveBeenCalledExactlyOnceWith([GRANT]);
-  await vi.waitFor(() => expect(frame.notices()).toContainEqual(
-    { tone: undefined, text: "Allow access in Google's window, then select Retry." }));
+  await vi.waitFor(() => expect(frame.notices()).toEqual(
+    [{ tone: undefined, text: "Allow access in Google's window, then select Retry." }]));
 
   await frame.list("shared-drives");
   expect(frame.notices()).toEqual([]);
@@ -92,8 +92,8 @@ it("says why the grant was not given", async () => {
   await frame.list("shared-drives");
   frame.allow();
 
-  await vi.waitFor(() => expect(frame.notices()).toContainEqual(
-    { tone: "error", text: "The pop-up was closed." }));
+  await vi.waitFor(() => expect(frame.notices()).toEqual(
+    [{ tone: "error", text: "The pop-up was closed." }]));
 });
 
 it("offers only the folders on a pre-filled file's path that this account can list", async () => {

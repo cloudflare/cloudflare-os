@@ -211,39 +211,36 @@ let access: { grant: string; note?: Note } | null = null;
  */
 let listings = 0;
 
-/**
- * What asking Google for `grants` came to: `held` once the account holds them, `waiting` while its
- * consent pop-up is open. Asked from the click, so the browser lets Workshop open the pop-up.
- */
-const ask = ({ ensureResources }: Context, grants: string[], held: string, waiting: string): Promise<Note> =>
-  ensureResources(grants).then(
-    (granted): Note => ({ text: granted ? held : waiting }),
+/** Asks from the click, so the browser lets Workshop open Google's consent pop-up. */
+const allow = async ({ ensureResources, setValues }: Context, grant: string) => {
+  const note = await ensureResources([grant]).then(
+    (held): Note => ({ text: held ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Retry." }),
     (error: unknown): Note => ({
       text: error instanceof Error && error.message ? error.message : "Access wasn't allowed.",
       tone: "error",
     }));
-
-const allow = async (context: Context, grant: string) => {
-  const note = await ask(context, [grant], "Access is allowed. Select Retry.", "Allow access in Google's window, then select Retry.");
   if (access?.grant !== grant) return;
   access = { grant, note };
-  context.setValues({});
+  setValues({});
 };
 
 /**
- * What asking for the editable types came to. Their grant changes the types the Workshop accepts,
- * so it restarts the picker, which clears this, and the file is chosen again.
+ * Asking for the editable types from a read-only file's notice: `busy` while Google's pop-up is
+ * open, `error` when asking failed, and `unavailable` when the account held them already, so the
+ * card leaves them out on purpose (an admin disabled them). A grant restarts the picker, clearing it.
  */
-let editNote: Note | null = null;
+let editAccess: { busy?: boolean; error?: string; unavailable?: boolean } = {};
 
-const allowEditing = async (context: Context, grants: string[]) => {
-  editNote = await ask(context, grants,
-    "Editing is allowed. This list reopens to choose the file again.",
-    "Allow access in Google's window. This list then reopens to choose the file again.");
-  context.setValues({});
+/** Asks from the click, so the browser lets Workshop open Google's consent pop-up. */
+const allowEditing = async ({ ensureResources, setValues }: Context, grants: string[]) => {
+  const asked = ensureResources(grants);
+  editAccess = { busy: true };
+  setValues({});
+  editAccess = await asked.then(
+    held => held ? { unavailable: true } : {},
+    (error: unknown) => ({ error: error instanceof Error && error.message ? error.message : "Access wasn't allowed." }));
+  setValues({});
 };
-
-const listFormat = new Intl.ListFormat("en");
 
 type OfficeFile = Extract<OfficeFileInspection, { type: "office" }>;
 type Converted = Extract<OfficeConversionResult, { type: "converted" }>;
@@ -409,22 +406,16 @@ function readOnlyNotice(context: Context) {
   // The editable types the Google Drive card offers that the account has not granted. None for a
   // blueprint's binding, which takes its own type alone, rather than all of Drive and folders too.
   const ungranted = accepted?.includes(ACCOUNT_PATTERN) && accepted.includes(FOLDER_PATTERN)
-    ? Object.values(EDITORS).filter(({ pattern }) => !accepted.includes(pattern))
+    ? Object.values(EDITORS).filter(({ pattern }) => !accepted.includes(pattern)).map(({ pattern }) => pattern)
     : [];
-  return <Fragment>
-    <Notice>
-      {`This connects as a read-only Drive file: it can be read, but not edited as a Google ${EDITORS[editor].title} file.`}
-    </Notice>
-    {ungranted.length > 0 && <Fragment>
-      <Notice>
-        {"Google will ask to let this app \"See, edit, create, and delete all your Google " +
-          `${listFormat.format(ungranted.map(({ title }) => title))} files". A connection still reaches ` +
-          "only the file you choose, and this list reopens to choose it again."}
-      </Notice>
-      <Button onClick={() => void allowEditing(context, ungranted.map(({ pattern }) => pattern))}>Allow editing</Button>
-      {editNote && <Notice tone={editNote.tone}>{editNote.text}</Notice>}
-    </Fragment>}
-  </Fragment>;
+  if (editAccess.unavailable) return <Notice>Editing isn't available here, so this connects read-only as a Drive file.</Notice>;
+  if (!ungranted.length) return <Notice>Connects read-only as a Drive file.</Notice>;
+  const action = { label: "Allow editing", disabled: editAccess.busy, onClick: () => void allowEditing(context, ungranted) };
+  return editAccess.error
+    ? <Notice tone="error" action={action}>{editAccess.error}</Notice>
+    : <Notice action={action}>
+      {`Connects read-only as a Drive file. To edit it as a Google ${EDITORS[editor].title} file, allow editing and choose it again.`}
+    </Notice>;
 }
 
 function officeNotices(context: Context) {
@@ -552,14 +543,10 @@ export default {
         />
       </Field>
       {officeNotices(context)}
-      {pending && <Fragment>
-        <Notice>
-          Google will ask to let this app "View and download all your Drive files". It is used only to
-          list your shared drives: a connection still reaches only what you choose.
-        </Notice>
-        <Button onClick={() => void allow(context, pending.grant)}>Allow access</Button>
-        {pending.note && <Notice tone={pending.note.tone}>{pending.note.text}</Notice>}
-      </Fragment>}
+      {pending && <Notice tone={pending.note?.tone} action={{ label: "Allow access", onClick: () => void allow(context, pending.grant) }}>
+        {pending.note?.text ?? "Google will ask to let this app \"View and download all your Drive files\". It is used " +
+          "only to list your shared drives: a connection still reaches only what you choose."}
+      </Notice>}
     </Section>;
   },
 } satisfies ConfiguratorUISpec<DriveConfiguratorRpc, DriveConfiguratorValues>;

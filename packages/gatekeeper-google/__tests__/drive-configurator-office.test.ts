@@ -71,6 +71,7 @@ async function open(accepted?: string[]) {
     choose: (target: string | null) => find("HierarchyPicker")[0].props.onChange(target),
     loadItem: (id: string) => find("HierarchyPicker")[0].props.loadItem(id),
     notices: () => find("Notice").map(node => ({ tone: node.props.tone, text: text(node) })),
+    action: () => find("Notice").map(node => node.props.action).find(Boolean),
     button: (label: string | RegExp) => find("Button").find(node =>
       typeof label === "string" ? text(node) === label : label.test(text(node)))?.props,
   };
@@ -127,12 +128,8 @@ describe.each([
     expect(readOnly.ui.inspectFile).not.toHaveBeenCalled();
     expect(readOnly.ready()).toBe(true);
     expect(parseResourceUrl(readOnly.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
-    expect(readOnly.notices()).toEqual([{
-      tone: undefined,
-      text: "This connects as a read-only Drive file: it can be read, but not edited as a Google " +
-        `${{ doc: "Docs", sheets: "Sheets", slides: "Slides" }[kind]} file.`,
-    }]);
-    expect(readOnly.button("Allow editing")).toBeUndefined();
+    expect(readOnly.notices()).toEqual([{ tone: undefined, text: "Connects read-only as a Drive file." }]);
+    expect(readOnly.action()).toBeUndefined();
   });
 
   it("is read back from its editor's URL", async () => {
@@ -557,24 +554,42 @@ describe("the Drive picker on a Drive card account without an editable type's gr
 
   it("connects a file read-only, and offers to ask for every editable type the account lacks", async () => {
     const frame = await open([...DRIVE_TYPES, GOOGLE_DOC_RESOURCE.urlPattern]);
-    frame.ensureResources.mockResolvedValue(false);
+    const asked = Promise.withResolvers<boolean>();
+    frame.ensureResources.mockReturnValue(asked.promise);
     frame.choose("sheets:native-1");
 
     expect(frame.ready()).toBe(true);
     expect(parseResourceUrl(frame.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
-    expect(frame.notices().map(notice => notice.text)).toEqual([
-      "This connects as a read-only Drive file: it can be read, but not edited as a Google Sheets file.",
-      'Google will ask to let this app "See, edit, create, and delete all your Google Sheets and Slides ' +
-        'files". A connection still reaches only the file you choose, and this list reopens to choose it again.',
-    ]);
+    expect(frame.notices()).toEqual([{
+      tone: undefined,
+      text: "Connects read-only as a Drive file. To edit it as a Google Sheets file, allow editing and choose it again.",
+    }]);
 
-    frame.button("Allow editing")!.onClick();
+    frame.action()!.onClick();
     // Synchronously, so the click's activation still lets Workshop open the pop-up.
     expect(frame.ensureResources).toHaveBeenCalledWith([GOOGLE_SHEETS_RESOURCE.urlPattern, GOOGLE_SLIDES_RESOURCE.urlPattern]);
+    // Held while Google's window is open, so a second click opens no second window.
+    expect(frame.action()!.disabled).toBe(true);
+    asked.resolve(false);
     await settle();
+    expect(frame.action()!.disabled).toBeFalsy();
+  });
 
-    expect(frame.notices().at(-1)).toEqual({
-      tone: undefined, text: "Allow access in Google's window. This list then reopens to choose the file again.",
-    });
+  it("shows why asking failed, and once the account holds the types the card leaves out, says so", async () => {
+    const frame = await open([...DRIVE_TYPES, GOOGLE_DOC_RESOURCE.urlPattern]);
+    frame.ensureResources.mockRejectedValueOnce(new Error("The pop-up was blocked.")).mockResolvedValueOnce(true);
+    frame.choose("sheets:native-1");
+
+    frame.action()!.onClick();
+    await settle();
+    expect(frame.notices()).toEqual([{ tone: "error", text: "The pop-up was blocked." }]);
+
+    frame.action()!.onClick();
+    await settle();
+    expect(frame.notices()).toEqual([{
+      tone: undefined, text: "Editing isn't available here, so this connects read-only as a Drive file.",
+    }]);
+    expect(frame.action()).toBeUndefined();
+    expect(frame.ready()).toBe(true);
   });
 });
