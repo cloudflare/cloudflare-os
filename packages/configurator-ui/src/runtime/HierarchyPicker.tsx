@@ -11,7 +11,7 @@ import {
   appendUnique, asAncestor, asContainer, locationOf, reportLoadFailure, requestPage, rowSubtitle, sanitizeItem,
   type Location, type Page,
 } from "./hierarchyNodes.ts";
-import { ChoiceBody, Row } from "./HierarchyRow.tsx";
+import { ChoiceBody, PlaceholderRows, Row } from "./HierarchyRow.tsx";
 import { failureMessage, SEARCH_DEBOUNCE_MS } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 import { useCollectionHold } from "./storeContext.ts";
@@ -351,7 +351,8 @@ const Navigator = (props: HierarchyPickerProps) => {
   const count = `${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`;
 
   let announcement: ReactNode;
-  if (status === "loading") announcement = "Loading…";
+  // Loading is only said; the placeholder rows show it.
+  if (status === "loading") announcement = <span className="sr-only">Loading…</span>;
   else if (status === "failed") announcement = fresh?.message;
   else {
     // The notes are drawn above the list, so they are only said here.
@@ -461,7 +462,7 @@ const Navigator = (props: HierarchyPickerProps) => {
         </div>
       )}
       {/* One fixed height, so neither a navigation nor the listing it loads moves the form. */}
-      <div className={cn("h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
+      <div className="h-80 overflow-y-auto p-1">
         {notes.map(note => (
           <p key={note} aria-hidden="true" className="flex gap-2 px-2 py-1.5 text-xs text-kumo-subtle">
             <InfoIcon size={14} className="mt-px shrink-0" />
@@ -514,9 +515,8 @@ const Navigator = (props: HierarchyPickerProps) => {
             />
           ))}
         </div>
-        <div ref={footerRef} className={cn("flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden",
-          status === "loading" && "m-auto")}>
-          {status === "loading" && <span aria-hidden="true"><Loader size="sm" /></span>}
+        {status === "loading" && <PlaceholderRows />}
+        <div ref={footerRef} className="flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden">
           <div role="status" aria-live="polite" className={cn(status === "failed" && "text-kumo-danger")}>
             {announcement}
           </div>

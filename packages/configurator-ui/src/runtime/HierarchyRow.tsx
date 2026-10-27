@@ -92,3 +92,23 @@ export const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate,
   );
 };
 
+// Varied, as names are; fixed, so they do not flicker from one render to the next.
+const PLACEHOLDER_WIDTHS = [
+  ["w-7/12", "w-1/3"], ["w-5/12", "w-1/4"], ["w-2/3", "w-1/3"], ["w-1/3", "w-1/5"], ["w-1/2", "w-1/4"], ["w-5/12", "w-1/5"],
+];
+
+/** The shape of a listing still loading, which its rows replace without a jump. */
+export const PlaceholderRows = () => (
+  <div aria-hidden="true" className="flex flex-col">
+    {PLACEHOLDER_WIDTHS.map(([title, subtitle]) => (
+      <div key={title + subtitle} className="flex min-h-10 items-center gap-3 px-2 py-1.5">
+        <span className="size-4 shrink-0" />
+        <span className="size-5 shrink-0 animate-pulse rounded bg-kumo-fill" />
+        <span className="flex flex-1 flex-col gap-1.5">
+          <span className={cn("h-3 animate-pulse rounded bg-kumo-fill", title)} />
+          <span className={cn("h-2.5 animate-pulse rounded bg-kumo-fill", subtitle)} />
+        </span>
+      </div>
+    ))}
+  </div>
+);
