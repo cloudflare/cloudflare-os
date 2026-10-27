@@ -556,6 +556,57 @@ describe("UserDurableObject notifications", () => {
     expect(pushed(fetcher)).toEqual([]);
   });
 
+  it("retains a read-derived badge across reset while a queued alert awaits browser acknowledgement", async () => {
+    const fetcher = stubService();
+    let stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
+    const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
+    const reading = Promise.withResolvers<void>(), releaseRead = Promise.withResolvers<void>();
+    const notifying = Promise.withResolvers<void>(), releaseAlert = Promise.withResolvers<void>();
+    using source = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser")
+      .mockImplementationOnce(async () => {
+        reading.resolve(); await releaseRead.promise;
+        return {readThroughVisibleSequence: 2, latestVisibleSequence: 2,
+          timelineTailSequence: 1, head: undefined, notificationBaseline: -1};
+      });
+    try {
+      await expect(runInDurableObject(stub, async (user, ctx) => {
+        Object.defineProperty(user, "env", {value: installEnv});
+        await user.newWorkspace(workspaceId, "Workspace");
+        await user.messageArrived(workspaceId, 7, {firstMessageSequence: 0,
+          firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
+        const storage = makeUserStorage(ctx.storage);
+        storage.notificationSubscriptions.put({phone: ONE});
+        storage.notificationBadge.put({version: 1, count: 1, retryAt: 0});
+        await user.subscribeToNotifications(new RpcStub(new Subscriber(async () => {
+          notifying.resolve(); await releaseAlert.promise;
+        })));
+        void user.markChatRead({workspaceId, chatId: 7, throughSequence: 1}).catch(() => {});
+        await reading.promise;
+        await user.messageArrived(workspaceId, 7, {firstMessageSequence: 1,
+          firstVisibleSequence: 2, latestVisibleSequence: 2,
+          notifications: [{...NOTIFICATION, sequence: 1}]});
+        releaseRead.resolve();
+        await notifying.promise;
+        expect(storage.chatReadCursors.get(`${workspaceId}:7`)).toMatchObject({unreadCount: 0});
+        await ctx.storage.sync();
+        ctx.abort("Reset during read notification");
+      })).rejects.toThrow("Reset during read notification");
+    } finally { releaseRead.resolve(); releaseAlert.resolve(); }
+    stub = env.TEST_USER.get(stub.id);
+    await runInDurableObject(stub, async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      await user.subscribeToNotifications(new RpcStub(new Subscriber(async () => {})));
+      const storage = makeUserStorage(ctx.storage);
+      storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
+      await user.alarm();
+      expect([...storage.notificationOutbox.list()]).toEqual([]);
+      expect(storage.notificationBadge.get()).toEqual({version: 3, count: 0});
+    });
+    expect(bodies(fetcher, "/v1/badges").at(-1)?.count).toBe(0);
+    expect(pushed(fetcher)).toEqual([]);
+    expect(source).toHaveBeenCalledOnce();
+  });
+
   it("does not clear a newer local badge when an older delivery finishes", async () => {
     const fetcher = stubService();
     await inUser(async user => {

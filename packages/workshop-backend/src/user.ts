@@ -778,6 +778,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
   }
 
+  #unreadCounts() {
+    let unreadChatCount = 0, unreadMessageCount = 0;
+    for (let cursor of this.#readCursors.values()) {
+      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted) continue;
+      unreadMessageCount += cursor.unreadCount;
+      if (cursor.unreadCount > 0) unreadChatCount++;
+    }
+    return {unreadChatCount, unreadMessageCount};
+  }
+
   #unreadSnapshot(scope: UnreadStateScope, summary = this.#unreadSummary()): UserUnreadState {
     let chats: ChatReadState[] = [];
     if (scope !== "summary") {
