@@ -2,21 +2,20 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessTokenRequest } from "../../src/auth-retry";
-import type { GoogleDocConfiguratorRpc } from "../../src/configurator/google-doc-configurator-types";
+import type { OfficeConversionResult, OfficeFileInspection } from "../../src/office-conversion";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../../src/drive-session";
 import { GatekeeperUserImpl, type UserAccount } from "../../src/google";
 import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI, GoogleDocConfiguratorUI,
-  GoogleSheetsConfiguratorUI, GoogleSlidesConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
-import { OfficeConversion } from "../../src/office-conversion";
 import {
-  GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, OFFICE_IMPORT_GRANT,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
+  OFFICE_IMPORT_GRANT,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
 
@@ -44,8 +43,8 @@ describe("Google resource configurators", () => {
   });
 
   describe("Drive picker", () => {
-    const picker = (holdsSharedDrivesGrant = true) =>
-      new DriveConfiguratorUI(async () => token("access-token"), async () => holdsSharedDrivesGrant);
+    const picker = (holdsSharedDrivesGrant = true) => new DriveConfiguratorUI(
+      async () => token("access-token"), async grant => grant !== SHARED_DRIVES_GRANT || holdsSharedDrivesGrant);
 
     /**
      * Answers each Drive request from `routes` by path, recording every URL asked for. A batch is
@@ -87,6 +86,7 @@ describe("Google resource configurators", () => {
           { id: "folder:0AMyRoot", title: "My Drive", kind: "folder", listable: true },
           { id: "shared-drives", title: "Shared drives", kind: "group" },
           { id: "shared-with-me", title: "Shared with me", kind: "group" },
+          { id: "recent", title: "Recent", kind: "group" },
         ],
       });
     });
@@ -129,7 +129,7 @@ describe("Google resource configurators", () => {
           { id: "folder:sub", title: "Plans", kind: "folder", listable: true },
           { id: "folder:locked", title: "Archive", kind: "folder", listable: false },
           {
-            id: "file:doc", title: "Notes", kind: "file", mimeType: "application/vnd.google-apps.document",
+            id: "doc:doc", title: "Notes", kind: "file", mimeType: "application/vnd.google-apps.document",
             modifiedTime: "2026-10-01T10:00:00Z",
           },
           { id: "folder:team", title: "Team folder", kind: "folder", listable: true },
@@ -184,6 +184,45 @@ describe("Google resource configurators", () => {
         nodes: [{ id: "file:s1", title: "Budget", kind: "file", mimeType: "application/pdf" }],
       });
       expect(calls[1].searchParams.get("q")).toBe("trashed = false and sharedWithMe = true");
+    });
+
+    // A native file connects as its editable type, and an Office file as the one it converts into.
+    it("names Docs, Sheets and Slides files, native or Office, by the kind they connect as", async () => {
+      stubDrive({
+        "/files": {
+          files: [
+            { id: "d1", name: "Notes", mimeType: "application/vnd.google-apps.document" },
+            { id: "d2", name: "Notes.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+            { id: "s1", name: "Budget", mimeType: "application/vnd.google-apps.spreadsheet" },
+            { id: "s2", name: "Budget.XLSM", mimeType: "application/vnd.ms-excel.sheet.macroEnabled.12" },
+            { id: "p1", name: "Deck.pptx", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+            { id: "f1", name: "Data.csv", mimeType: "text/csv" },
+          ],
+        },
+      });
+
+      const { nodes } = await picker().listDriveNodes("folder:F1", "", null);
+
+      expect(nodes.map(node => node.id)).toEqual(
+        ["doc:d1", "doc:d2", "sheets:s1", "sheets:s2", "slides:p1", "file:f1"]);
+    });
+
+    it("lists the account's recent files, newest first, leaving folders to be browsed", async () => {
+      const calls = stubDrive({
+        "/files": {
+          files: [
+            { id: "d1", name: "Notes", mimeType: "application/vnd.google-apps.document" },
+            { id: "sub", name: "Plans", mimeType: FOLDER, capabilities: { canListChildren: true } },
+          ],
+        },
+      });
+
+      await expect(picker().listDriveNodes("recent", "", null)).resolves.toEqual({
+        nodes: [{ id: "doc:d1", title: "Notes", kind: "file", mimeType: "application/vnd.google-apps.document" }],
+      });
+      expect(calls[0].searchParams.get("q")).toBe("trashed = false");
+      expect(calls[0].searchParams.get("corpora")).toBe("user");
+      expect(calls[0].searchParams.get("orderBy")).toBe("modifiedTime desc");
     });
 
     // `drives.list` needs `drive.readonly`, which browsing does not, so the picker asks for it.
@@ -242,16 +281,19 @@ describe("Google resource configurators", () => {
     });
 
     // The links Drive's and Docs' Copy link give out, and a browser's address bar, which adds the
-    // signed-in account's index when there are several.
+    // signed-in account's index when there are several. A link finds the node the picker would list.
     it.each([
       ["a folder's sharing link", "https://drive.google.com/drive/folders/D2?usp=sharing", "folder:D2"],
       ["a folder from the address bar", "https://drive.google.com/drive/u/1/folders/D2", "folder:D2"],
-      ["a file's sharing link", " https://drive.google.com/file/d/F9/view?usp=drive_link ", "file:F9"],
-      ["a Google Doc's link", "https://docs.google.com/document/d/F9/edit?usp=sharing", "file:F9"],
-      ["a Google Sheet from the address bar", "https://docs.google.com/spreadsheets/u/0/d/F9/edit#gid=0", "file:F9"],
+      ["a file's sharing link", " https://drive.google.com/file/d/F7/view?usp=drive_link ", "file:F7"],
+      ["a Google Doc's file sharing link", "https://drive.google.com/file/d/F9/view", "doc:F9"],
+      ["a Google Doc's link", "https://docs.google.com/document/d/F9/edit?usp=sharing", "doc:F9"],
+      ["a Google Sheet from the address bar", "https://docs.google.com/spreadsheets/u/0/d/F8/edit#gid=0", "sheets:F8"],
     ])("finds the node %s names, instead of searching for it by name", async (_, link, id) => {
       const calls = stubDrive({
         "/files/D2": { id: "D2", name: "Specs", mimeType: FOLDER, capabilities: { canListChildren: true } },
+        "/files/F7": { id: "F7", name: "Q3.pdf", mimeType: "application/pdf" },
+        "/files/F8": { id: "F8", name: "Q3", mimeType: "application/vnd.google-apps.spreadsheet" },
         "/files/F9": { id: "F9", name: "Q3", mimeType: "application/vnd.google-apps.document" },
         "/files/root": { id: "0AMyRoot", name: "My Drive", mimeType: FOLDER },
       });
@@ -260,6 +302,25 @@ describe("Google resource configurators", () => {
 
       expect(nodes.map(node => node.id)).toEqual([id]);
       expect(calls.map(url => url.pathname)).not.toContain("/drive/v3/files");
+    });
+
+    it("finds nothing for a Docs link to a file of another kind", async () => {
+      stubDrive({ "/files/F7": { id: "F7", name: "Q3.pdf", mimeType: "application/pdf" } });
+
+      await expect(picker().listDriveNodes("drive", "https://docs.google.com/document/d/F7/edit", null))
+        .resolves.toEqual({ nodes: [] });
+    });
+
+    // An agent asking for a Drive file connection of a native file asked for read-only access.
+    it("keeps a pre-filled Drive file id for a Google Doc, so it binds as a Drive file", async () => {
+      stubDrive({
+        "/files/F9": { id: "F9", name: "Q3", mimeType: "application/vnd.google-apps.document" },
+        "/files/root": { id: "0AMyRoot", name: "My Drive", mimeType: FOLDER },
+      });
+
+      await expect(picker().getDriveNode("file:F9")).resolves.toMatchObject({ id: "file:F9", kind: "file" });
+      await expect(picker().getDriveNode("doc:F9")).resolves.toMatchObject({ id: "doc:F9", kind: "file" });
+      await expect(picker().getDriveNode("sheets:F9")).resolves.toBeNull();
     });
 
     it("finds nothing for a link to a node this account cannot see", async () => {
@@ -479,42 +540,39 @@ describe("Google resource configurators", () => {
   });
 });
 
-/** Every Doc, Sheets and Slides configurator has the same RPC surface beyond its listing. */
-type OfficeConfigurator = Omit<GoogleDocConfiguratorRpc, "listDocs"> & {
-  list(query: string): Promise<{ value: string; title: string; subtitle?: string; meta?: string }[]>;
+/** The Drive picker's conversion calls, bound to one kind. */
+type OfficeConfigurator = {
+  inspectFile(fileId: string): Promise<OfficeFileInspection>;
+  hasConversionAccess(): Promise<boolean>;
+  convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult>;
 };
 
 type OfficeKindCase = {
   kind: "doc" | "sheets" | "slides";
   pattern: string;
-  list: "listDocs" | "listSpreadsheets" | "listPresentations";
   title: "Docs" | "Sheets" | "Slides";
   native: string;
   office: string;
   label: string;
   /** A second Office type of the kind, spelled as Drive spells it. */
   other: string;
-  otherLabel: string;
 };
 
 const OFFICE_KIND_CASES: OfficeKindCase[] = [
   {
-    kind: "sheets", pattern: GOOGLE_SHEETS_RESOURCE.urlPattern, list: "listSpreadsheets",
-    title: "Sheets", native: GOOGLE_SHEET_MIME_TYPE,
+    kind: "sheets", pattern: GOOGLE_SHEETS_RESOURCE.urlPattern, title: "Sheets", native: GOOGLE_SHEET_MIME_TYPE,
     office: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", label: "xlsx",
-    other: "application/vnd.ms-excel.sheet.macroEnabled.12", otherLabel: "xlsm",
+    other: "application/vnd.ms-excel.sheet.macroEnabled.12",
   },
   {
-    kind: "doc", pattern: GOOGLE_DOC_RESOURCE.urlPattern, list: "listDocs",
-    title: "Docs", native: GOOGLE_DOC_MIME_TYPE,
+    kind: "doc", pattern: GOOGLE_DOC_RESOURCE.urlPattern, title: "Docs", native: GOOGLE_DOC_MIME_TYPE,
     office: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    label: "docx", other: "application/msword", otherLabel: "doc",
+    label: "docx", other: "application/msword",
   },
   {
-    kind: "slides", pattern: GOOGLE_SLIDES_RESOURCE.urlPattern, list: "listPresentations",
-    title: "Slides", native: GOOGLE_SLIDES_MIME_TYPE,
+    kind: "slides", pattern: GOOGLE_SLIDES_RESOURCE.urlPattern, title: "Slides", native: GOOGLE_SLIDES_MIME_TYPE,
     office: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    label: "pptx", other: "application/vnd.ms-powerpoint", otherLabel: "ppt",
+    label: "pptx", other: "application/vnd.ms-powerpoint",
   },
 ];
 
@@ -602,7 +660,7 @@ class FakeDrive {
 
 /**
  * A connected account whose recorded grant is `granted`, and the configurator its gatekeeper starts
- * for `pattern`, reached through the RPC stub the iframe holds.
+ * for the kind's type, reached through the RPC stub the iframe holds.
  */
 async function startOfficeConfigurator(testCase: OfficeKindCase, granted: string[] = []) {
   let account = {
@@ -619,33 +677,24 @@ async function startOfficeConfigurator(testCase: OfficeKindCase, granted: string
   // Each result is awaited into a plain promise: an RpcPromise is callable, and `expect().rejects`
   // would call it.
   let ui: OfficeConfigurator = {
-    list: async query => await stub[testCase.list](query),
-    inspectFile: async fileId => await stub.inspectFile(fileId),
+    inspectFile: async fileId => await stub.inspectFile(testCase.kind, fileId),
     hasConversionAccess: async () => await stub.hasConversionAccess(),
     convertFile: async (fileId, opts) => opts === undefined
-      ? await stub.convertFile(fileId) : await stub.convertFile(fileId, opts),
+      ? await stub.convertFile(testCase.kind, fileId) : await stub.convertFile(testCase.kind, fileId, opts),
   };
-  return { ui, account, user };
+  return { ui, account, user, frame };
 }
-
-const OFFICE_CONFIGURATOR_UIS = {
-  doc: GoogleDocConfiguratorUI, sheets: GoogleSheetsConfiguratorUI, slides: GoogleSlidesConfiguratorUI,
-};
 
 /**
  * The same configurator built directly rather than through the gatekeeper, for calls that reject:
  * workerd reports a rejection through a local RPC stub as uncaught even once it is handled.
  */
 function directOfficeConfigurator(testCase: OfficeKindCase): OfficeConfigurator {
-  let conversion = new OfficeConversion(testCase.kind, async () => "access-token", async () => true);
-  let target = new OFFICE_CONFIGURATOR_UIS[testCase.kind](
-    async () => token("access-token"), conversion,
-  ) as unknown as Record<string, (...args: unknown[]) => Promise<any>>;
+  let target = new DriveConfiguratorUI(async () => token("access-token"), async () => true);
   return {
-    list: query => target[testCase.list](query),
-    inspectFile: fileId => target.inspectFile(fileId),
+    inspectFile: fileId => target.inspectFile(testCase.kind, fileId),
     hasConversionAccess: () => target.hasConversionAccess(),
-    convertFile: (fileId, opts) => target.convertFile(fileId, opts),
+    convertFile: (fileId, opts) => target.convertFile(testCase.kind, fileId, opts),
   };
 }
 
@@ -654,33 +703,12 @@ const officeSource = (testCase: OfficeKindCase, overrides: Partial<FakeFile> = {
   parents: ["folder-1"], modifiedTime: "2026-10-01T00:00:00.000Z", ...overrides,
 });
 
-describe.each(OFFICE_KIND_CASES)("the $title configurator's Office files", testCase => {
-  it("lists native files and the Office files a connect converts, labelled", async () => {
-    let drive = new FakeDrive(
-      { id: "native-1", name: "Report", mimeType: testCase.native },
-      { id: "office-1", name: `Report.${testCase.label.toUpperCase()}`, mimeType: testCase.office },
-      { id: "office-2", name: "Report draft", mimeType: testCase.other },
-    ).install();
-    let { ui } = await startOfficeConfigurator(testCase);
+describe.each(OFFICE_KIND_CASES)("the $title type's Office files", testCase => {
+  it("are chosen in the Drive picker, which the type shares a card with", async () => {
+    let { frame, user } = await startOfficeConfigurator(testCase);
+    let drive = await user.startResourceConfigurator(GOOGLE_DRIVE_RESOURCE.urlPattern);
 
-    let options = await ui.list("Report");
-
-    expect(options).toEqual([
-      { value: "native-1", title: "Report", subtitle: "" },
-      {
-        value: "office-1", title: `Report.${testCase.label.toUpperCase()}`, subtitle: "",
-        meta: `Makes a Google ${testCase.title} copy`,
-      },
-      {
-        value: "office-2", title: `Report draft (${testCase.otherLabel})`, subtitle: "",
-        meta: `Makes a Google ${testCase.title} copy`,
-      },
-    ]);
-    let q = drive.requests[0].url.searchParams.get("q")!;
-    expect(q).toContain(`mimeType = '${testCase.native}' or `);
-    expect(q).toContain(`mimeType = '${testCase.office}'`);
-    expect(q).toContain(`mimeType = '${testCase.other}'`);
-    expect(q).not.toContain("text/csv");
+    expect(frame.iframeHtml).toBe(drive.iframeHtml);
   });
 
   it("tells native, Office and unsupported files apart, with whether the owner allows copying", async () => {

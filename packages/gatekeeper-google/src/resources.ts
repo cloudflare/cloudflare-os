@@ -33,13 +33,20 @@ export const GMAIL_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** A single Google Doc. */
+/** The whole-Drive type's pattern, which names the card Docs, Sheets and Slides appear on too. */
+const DRIVE_CARD = "https://drive.google.com/drive/my-drive";
+
+/**
+ * A single Google Doc. On the Drive card, whose picker binds a native file as its editable type;
+ * Workshop asks for the card's types together, though their scopes differ.
+ */
 export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/document/d/:docId/*",
   title: "Google Doc",
   description: "Read and edit documents you choose.",
   grantable: true,
   creatable: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /**
@@ -54,6 +61,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
     "rows, columns, and formatting, with your approval.",
   grantable: true,
   creatable: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /** A single Google Slides presentation. */
@@ -66,6 +74,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
     "backgrounds and theme colours.",
   grantable: true,
   creatable: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /** A single Google Calendar. */
@@ -140,7 +149,7 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
  * account belongs to is inside this grant.
  */
 export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
-  urlPattern: "https://drive.google.com/drive/my-drive",
+  urlPattern: DRIVE_CARD,
   title: "Google Drive",
   description:
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
@@ -245,7 +254,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     resource: GOOGLE_DOC_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/documents",
-      // Read-only Drive file metadata, used to power the doc picker when connecting a Google Doc.
+      // Read-only Drive file metadata, so the Drive picker can browse to the document.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },
@@ -253,7 +262,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     resource: GOOGLE_SHEETS_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/spreadsheets",
-      // Read-only Drive file metadata, used to power the spreadsheet picker.
+      // Read-only Drive file metadata, so the Drive picker can browse to the spreadsheet.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },
@@ -261,7 +270,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     resource: GOOGLE_SLIDES_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/presentations",
-      // Read-only Drive file metadata, used to power the presentation picker.
+      // Read-only Drive file metadata, so the Drive picker can browse to the presentation.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },

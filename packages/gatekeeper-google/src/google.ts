@@ -81,9 +81,6 @@ import {
   ChatSpaceConfiguratorUI,
   ChatThreadConfiguratorUI,
   GmailConfiguratorUI,
-  GoogleDocConfiguratorUI,
-  GoogleSheetsConfiguratorUI,
-  GoogleSlidesConfiguratorUI,
   DriveConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
@@ -92,9 +89,6 @@ import CHAT_ACCOUNT_CONFIGURATOR_HTML from "./generated/chat-account-configurato
 import CHAT_SPACE_CONFIGURATOR_HTML from "./generated/chat-space-configurator-ui.txt";
 import CHAT_THREAD_CONFIGURATOR_HTML from "./generated/chat-thread-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
-import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
-import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
-import GOOGLE_SLIDES_CONFIGURATOR_HTML from "./generated/google-slides-configurator-ui.txt";
 import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
@@ -103,16 +97,13 @@ import { Mutex } from "./mutex";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE,
   RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant, OFFICE_IMPORT_GRANT,
-  SHARED_DRIVES_GRANT,
+  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
   parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
-import {
-  explainUnopenedFile, OfficeConversion, officeFileError, officeLabel, type OfficeKind,
-} from "./office-conversion";
+import { explainUnopenedFile, officeFileError, officeLabel } from "./office-conversion";
 import {
   beginStoredOAuthFlow, claimStoredOAuthFlow, mergeGrantedResources, prepareOAuthFlow,
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
@@ -899,12 +890,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let account = this.ctx.exports.UserAccount.get(id);
     let getToken = async (opts?: AccessTokenRequest) => await account.getAccessToken(opts);
-    // A private grant is read on every call, since it arrives through a pop-up while the dialog is
+    // A grant is read on every call, since a private one arrives through a pop-up while the dialog is
     // open.
-    let holds = (grant: string) => async () =>
-      (await account.getGrantedResourceUrlPatterns()).includes(grant);
-    let officeConversion = (kind: OfficeKind) => new OfficeConversion(
-      kind, async opts => (await getToken(opts)).token, holds(OFFICE_IMPORT_GRANT));
+    let holds = async (grant: string) => (await account.getGrantedResourceUrlPatterns()).includes(grant);
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {
@@ -924,27 +912,6 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: CALENDAR_CONFIGURATOR_HTML,
         ui: new RpcStub(new CalendarConfiguratorUI(getToken)),
-      };
-    }
-
-    if (resourceUrlPattern === GOOGLE_DOC_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: GOOGLE_DOC_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GoogleDocConfiguratorUI(getToken, officeConversion("doc"))),
-      };
-    }
-
-    if (resourceUrlPattern === GOOGLE_SHEETS_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: GOOGLE_SHEETS_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GoogleSheetsConfiguratorUI(getToken, officeConversion("sheets"))),
-      };
-    }
-
-    if (resourceUrlPattern === GOOGLE_SLIDES_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: GOOGLE_SLIDES_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GoogleSlidesConfiguratorUI(getToken, officeConversion("slides"))),
       };
     }
 
@@ -969,14 +936,15 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       };
     }
 
-    // One picker for the whole account and every type grouped with it: a folder or a file.
+    // One picker for the whole account and every type grouped with it: a folder, a file, or a Docs,
+    // Sheets or Slides file.
     let groupedWith = SUPPORTED_RESOURCES
       .find(resource => resource.urlPattern === resourceUrlPattern)?.groupedWith;
     if (resourceUrlPattern === GOOGLE_DRIVE_RESOURCE.urlPattern ||
         groupedWith === GOOGLE_DRIVE_RESOURCE.urlPattern) {
       return {
         iframeHtml: DRIVE_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveConfiguratorUI(getToken, holds(SHARED_DRIVES_GRANT))),
+        ui: new RpcStub(new DriveConfiguratorUI(getToken, holds)),
       };
     }
 
