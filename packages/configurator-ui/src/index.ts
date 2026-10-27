@@ -288,9 +288,10 @@ export type HierarchyPickerProps = {
    * Splits what lies below the root into tabs, the first open at the start. The root is then never
    * listed, only offered above the tabs when selectable, and the breadcrumb starts at the open tab.
    * A node's `path` names its tab first; one whose path does not opens in the open tab, with a gap
-   * in the breadcrumb, since where it lies in that tab is unknown. Switching tabs moves to another
-   * location. A new set of tab ids starts the picker afresh, as a new root does. Omit it, or leave
-   * it empty, for a picker without tabs.
+   * in the breadcrumb above the containers it opens, since where they lie in that tab is unknown (a
+   * leaf with no path at all opens none, and is shown atop the tab's own listing). Switching tabs
+   * moves to another location. A new set of tab ids starts the picker afresh, as a new root does.
+   * Omit it, or leave it empty, for a picker without tabs.
    */
   tabs?: ConfiguratorUIHierarchyTab[];
   loadItems(request: ConfiguratorUIHierarchyRequest): Promise<ConfiguratorUIHierarchyPage>;

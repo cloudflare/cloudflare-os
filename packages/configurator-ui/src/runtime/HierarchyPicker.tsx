@@ -132,7 +132,9 @@ const searchSubtitle = ({ path, subtitle }: Item): string | undefined =>
 
 /**
  * Where a node found without browsing to it (a search result, a pre-filled value) lives. Under tabs,
- * its path names its tab first; one that does not is shown in the open tab, apart from its top.
+ * its path names its tab first; one that does not is shown in the open tab, behind a gap above
+ * whatever its trail opens. A trail that opens nothing (a leaf with no path, pinned atop the tab's
+ * own listing) leaves no gap to show.
  */
 const locationOf = (item: Item, tabs: readonly Tab[], openTab: string | null): Location => {
   if (tabs.some(({ id }) => id === item.id)) return { tab: item.id, trail: [], detached: false };
@@ -140,7 +142,7 @@ const locationOf = (item: Item, tabs: readonly Tab[], openTab: string | null): L
   const path = (tab ? item.path?.slice(1) : item.path) ?? [];
   const trail = item.kind === "container" ? [...path, asAncestor(item)] : path;
   return tabs.length > 0
-    ? { tab: tab?.id ?? openTab, trail, detached: !tab }
+    ? { tab: tab?.id ?? openTab, trail, detached: !tab && trail.length > 0 }
     : { tab: null, trail, detached: item.kind === "container" && !item.path };
 };
 

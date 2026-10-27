@@ -988,6 +988,19 @@ describe("tabs", () => {
     await expect.element(crumbs()).toMatchTextContent(/^Sites…Marketing$/);
   });
 
+  it("pins a pre-filled leaf without a path atop the open tab, whose folders open with no gap", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => notes);
+    await render({ loadItems: tabbed(), loadItem, tabs: TABS, initial: "notes" });
+
+    await expect.element(option("Notes.txt")).toHaveAttribute("aria-selected", "true");
+    await expect.element(list()).toHaveAccessibleName("Sites");
+    await expect.element(crumbs()).toMatchTextContent(/^Sites$/);
+    // What the tab lists is its own, so a folder opened from it is known to sit right under it.
+    await userEvent.click(option("Marketing"));
+    await expect.element(list()).toHaveAccessibleName("Marketing");
+    await expect.element(crumbs()).toMatchTextContent(/^SitesMarketing$/);
+  });
+
   it("shows a pre-filled tab on its own row without looking it up", async () => {
     const loadItem = vi.fn(async (): Promise<Item | null> => null);
     const onChange = await render({
