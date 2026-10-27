@@ -235,17 +235,36 @@ async function within<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED
 // rest of the Workshop's CSP, which would stop the view's requests before they are recorded.
 const TRUSTED_TYPES_CSP = `<meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'; trusted-types gadget-ui default">`;
 
+// The frame style the Workshop gives a view (uiBlockFrame.ts's frameHead), in its light theme, with
+// the token values the Workshop computed on 2026-10-28.
+const VIEW_STYLE = `<style>
+  :root { color-scheme: light; --color-kumo-base: #fcfcfb; --color-kumo-elevated: #f8f8f7;
+    --color-kumo-line: #1411100f; --text-color-kumo-default: #1c1a18;
+    --text-color-kumo-subtle: oklch(52% 0.006 60); --color-kumo-brand: #ff4801;
+    --color-kumo-success: oklch(72.3% 0.219 149.579); --color-kumo-warning: oklch(79.5% 0.184 86.047);
+    --color-kumo-danger: oklch(63.7% 0.237 25.331);
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --font-mono: "SF Mono", Menlo, Monaco, Consolas, monospace; }
+  html, body { margin: 0; height: auto; background: transparent; }
+  body { display: flow-root; padding: 4px; color: var(--text-color-kumo-default);
+    font: 14px/1.6 var(--font-sans); letter-spacing: -0.25px; }
+  button, input, select, textarea { font: inherit; letter-spacing: inherit; }
+  code, kbd, pre, samp { font-family: var(--font-mono); }
+</style>`;
+
 function viewDocument(html: string): string {
   return `<!DOCTYPE html>
 <html>
-<head><meta name="viewport" content="width=device-width, initial-scale=1">${TRUSTED_TYPES_CSP}</head>
+<head><meta name="viewport" content="width=device-width, initial-scale=1">${TRUSTED_TYPES_CSP}
+${VIEW_STYLE}</head>
 <body>
 ${html}
 </body>
 </html>`;
 }
 
-const SHELL = `<!DOCTYPE html><body style="margin:0"><iframe sandbox="allow-scripts"
+// The chat's background shows through the view's transparent page.
+const SHELL = `<!DOCTYPE html><body style="margin:0;background:#fcfcfb"><iframe sandbox="allow-scripts"
   style="border:0;width:${FRAME_WIDTH}px;height:${FRAME_HEIGHT}px"></iframe></body>`;
 
 let browser: Promise<Browser> | undefined;
