@@ -357,6 +357,28 @@ describe("changes", () => {
     // Still pending, not failed: it is applied once write access returns.
     expect(await walk<DriveEntry>(name, binding, [["list"]])).toContainEqual(expect.objectContaining({ name: "Drafts", pending: "create" }));
   });
+
+  it("leaves an undo waiting too once the connection can no longer write, since an undo writes as well", async () => {
+    const graph = new FakeGraph().install();
+    const created = "01DRAFTS000000000000000000000000";
+    graph.on("POST", /\/children(\?|$)/, () => json({
+      id: created, name: "Drafts", folder: { childCount: 0 }, parentReference: { driveId: DRIVE, id: SPECS },
+      eTag: `"{${created}},1"`, cTag: `"c:{${created}},1"`, webUrl: "https://contoso.sharepoint.com/sites/Engineering/Specs/Drafts",
+    }, { status: 201 }));
+    const id = await seedAccount(graph);
+    const binding = folderProps(id);
+    const name = facet("undo-withdrawn");
+    unwrap(await hooks().run(name, binding, [["createFolder", ref(SPECS), "Drafts"]]));
+    const [{ actionId }] = (await hooks().queueLog(name)).submitted as Submitted[];
+    unwrap(await hooks().applyAction(name, binding, actionId));
+    expect(graph.count("POST", /\/children/)).toBe(1);
+    await runInDurableObject(accountStub(id), async (_instance, state) => {
+      const credentials = state.storage.kv.get<Record<string, unknown>>("credentials")!;
+      state.storage.kv.put("credentials", { ...credentials, scopes: READ_SCOPES });
+    });
+    expect(unwrap(await hooks().revertAction(name, binding, actionId))).toMatchObject({ message: expect.stringMatching(/no longer allows changes to SharePoint/), canRetry: true });
+    expect(graph.count("DELETE", /items\//)).toBe(0);
+  });
 });
 
 describe("rejecting", () => {

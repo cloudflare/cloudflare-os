@@ -207,6 +207,11 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
       if (record?.state !== "applied") {
         return { message: "This action is too old to undo automatically.", canRetry: false };
       }
+      // An undo writes too: one asked for after the deployment, the grant or the user's role
+      // withdrew write access waits, as applying would.
+      if ((await this.#grant()).access !== "write") {
+        return { message: "This connection no longer allows changes to SharePoint, so nothing was undone.", canRetry: true };
+      }
       let outcome: RevertOutcome;
       try {
         outcome = await revert(record.action, this.#actionHost);

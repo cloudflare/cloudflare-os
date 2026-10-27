@@ -166,6 +166,10 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
     return await this.#actions.runExclusive(async (): Promise<RevertOutcome> => {
       const record = this.#journal.get(actionId);
       if (record?.state !== "applied") return { message: "This action is too old to undo automatically.", canRetry: false };
+      // An undo writes at the level its action did: one asked for after the ceiling dropped waits, as applying would.
+      if (!allows(await this.#access(), requiredAccess(record.action))) {
+        return { message: "This connection no longer allows that change to the calendar, so it wasn't undone.", canRetry: true };
+      }
       let outcome: RevertOutcome;
       try {
         outcome = await revert(record.action, this.#actionHost);
