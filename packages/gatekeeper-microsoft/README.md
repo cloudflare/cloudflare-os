@@ -74,8 +74,9 @@ A binding covers one of these:
 | A page | `…/sites/<site>/SitePages/<page>.aspx` | Just that page. |
 
 Every ID an agent passes is checked against the binding before Graph is called, including a
-folder's whole ancestry. Paths are measured from the top of the binding, so a folder binding never
-reveals the library around it.
+folder's whole ancestry; a proven folder is remembered for a minute, never longer however often it
+is reused, and a listing re-proves its folder for every page. Paths are measured from the top of
+the binding, so a folder binding never reveals the library around it.
 
 The configurator starts at **All of SharePoint & OneDrive**. The user can open a site or their
 OneDrive to choose one part of it, search, or paste any SharePoint or OneDrive link. The OneDrive tab
@@ -160,7 +161,7 @@ rejecting it rather than retried). The approver sees a replacement as a unified 
 text and no larger than 64 KB. Applied actions can be reverted for 30 days:
 
 - A replace, in-place edit or cell change restores the previous version.
-- A create deletes what it made.
+- A create deletes what it made, unless a created folder has gained contents since; those were never part of the action.
 - A rename or move is undone.
 - An item update restores the values it overwrote.
 - A deletion can't be reverted from here. Restore it from the site's recycle bin.

@@ -267,7 +267,11 @@ export class ScopeGuard {
     const scope = this.scope;
     if (scope.kind === "file") return false;
     if (scope.kind === "site") return inSite(item, scope.siteId);
-    if (scope.kind === "folder" && item.kind === "folder") this.#insideFolder.set(item.id, Date.now());
+    if (scope.kind === "folder" && item.kind === "folder") {
+      // Proven as of its parent's proof, which it rests on: the bound folder's holds by definition.
+      const provenAt = parent.itemId === scope.itemId ? Date.now() : this.#insideFolder.get(parent.itemId);
+      if (provenAt !== undefined) this.#insideFolder.set(item.id, provenAt);
+    }
     return true;
   }
 
@@ -320,18 +324,26 @@ export class ScopeGuard {
    * Walks `item`'s parents until the bound folder, the drive's root, or the depth limit. A sharee
    * who can open only the bound folder cannot read above it, so the walk stops there and never
    * needs to. Either verdict is remembered for every folder on the way, so a search page full of
-   * hits from one outside subtree costs that subtree's depth in reads, not the page's.
+   * hits from one outside subtree costs that subtree's depth in reads, not the page's. A walk that
+   * ends at a remembered folder rests on that folder's proof and is dated by it, so reuse never
+   * renews a proof: every one lapses within the TTL of the read it came from.
    */
   async #proveInFolder(item: GraphDriveItem, folderId: string): Promise<void> {
     const now = Date.now();
-    const fresh = (provenAt: number | undefined) => provenAt !== undefined && now - provenAt < PROOF_TTL_MS;
-    const verdictOf = (id: string): Map<string, number> | undefined =>
-      id === folderId || fresh(this.#insideFolder.get(id)) ? this.#insideFolder
-        : fresh(this.#outsideFolder.get(id)) ? this.#outsideFolder : undefined;
+    const fresh = (provenAt: number | undefined): provenAt is number => provenAt !== undefined && now - provenAt < PROOF_TTL_MS;
+    type Verdict = { verdict: Map<string, number>; at: number };
+    const verdictOf = (id: string): Verdict | undefined => {
+      if (id === folderId) return { verdict: this.#insideFolder, at: now };
+      const inside = this.#insideFolder.get(id);
+      if (fresh(inside)) return { verdict: this.#insideFolder, at: inside };
+      const outside = this.#outsideFolder.get(id);
+      if (fresh(outside)) return { verdict: this.#outsideFolder, at: outside };
+      return undefined;
+    };
     // Ends the walk: every folder on it takes the verdict, and an outside one is refused.
     const trail: string[] = [];
-    const settle = (verdict: Map<string, number>): void => {
-      for (const id of trail) verdict.set(id, now);
+    const settle = ({ verdict, at }: Verdict): void => {
+      for (const id of trail) verdict.set(id, at);
       if (verdict === this.#outsideFolder) throw new OutsideScopeError();
     };
     let current: GraphDriveItem = item;
@@ -340,7 +352,7 @@ export class ScopeGuard {
       if (current.kind === "folder") trail.push(current.id);
       const verdict = verdictOf(current.id);
       if (verdict !== undefined) return settle(verdict);
-      if (current.isRoot || current.parentId === undefined) return settle(this.#outsideFolder);
+      if (current.isRoot || current.parentId === undefined) return settle({ verdict: this.#outsideFolder, at: now });
       // A remembered parent spares its read: its own ancestry was settled with it.
       const known = verdictOf(current.parentId);
       if (known !== undefined) return settle(known);

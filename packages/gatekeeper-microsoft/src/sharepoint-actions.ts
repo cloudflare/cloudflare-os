@@ -817,6 +817,15 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       const parent = folderRef(host, payload.parent);
       const left = await leftBinding(host, { driveId: parent.driveId, itemId: payload.createdId }, "What was created");
       if (left) return left;
+      if (action.kind === "createFolder") {
+        // What others have put in it since was never part of this action.
+        const current = await host.graph(api => api.find<{ folder?: { childCount?: unknown } }>(`/drives/${parent.driveId}/items/${payload.createdId}`,
+          { query: { $select: "folder" } }), { replayable: true });
+        if (current === null) return;
+        if (typeof current.folder?.childCount === "number" && current.folder.childCount > 0) {
+          return { message: `The folder "${payload.name}" isn't empty anymore, so it wasn't deleted. Move what's in it out first.`, canRetry: true };
+        }
+      }
       await host.graph(api => api.request("DELETE", `/drives/${parent.driveId}/items/${payload.createdId}`, { allow: [404] }),
         { replayable: true });
       return;

@@ -8,12 +8,12 @@
 // creation through sending (verified live), so a replay after a crash finishes or finds the send and
 // never repeats it.
 
-import { ActionApplyError, defineActions, type ActionDefinition, type ActionPresentation, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
+import { ActionApplyError, ActionOutcomeUnknownError, defineActions, type ActionDefinition, type ActionPresentation, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan, plainInline, sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import { exchangeRefusal, isProvisional, realId } from "./binding";
-import { GraphApiError, type GraphApi } from "./graph-api";
+import { GraphApiError, isOutcomeUnknown, type GraphApi } from "./graph-api";
 import { VENDOR_ID } from "./microsoft-env";
 import { MailApi, idPath, type GraphAddress } from "./outlook-graph";
 import { odataString } from "./outlook-query";
@@ -629,6 +629,8 @@ export const definitions = {
       try {
         id = await host.graph(api => createComposed(mail(api, payload.mailbox), host, payload.origin, payload.message));
       } catch (error) {
+        // Nothing identifies the draft for a retry to find, so one that may have been made isn't made again.
+        if (isOutcomeUnknown(error)) throw new ActionOutcomeUnknownError("Outlook may have created the draft before the connection dropped. Check Drafts before trying again.");
         exchangeRefusal(error, payload.origin.kind === "new" ? "The draft" : "The message this replies to");
       }
       host.refs.bind(payload.ref, id);

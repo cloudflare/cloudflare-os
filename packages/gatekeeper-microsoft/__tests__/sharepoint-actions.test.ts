@@ -93,10 +93,20 @@ describe("creating", () => {
   });
 
   it("reverts a creation by deleting what it made, and nothing when nothing was made", async () => {
-    const { host, sent } = harness();
+    const { host, sent } = harness([{ status: 200, body: { folder: { childCount: 0 } } }]);
     await revert({ kind: "createFolder", payload: { ...payload, createdId: "NEW" } }, host);
-    expect(sent).toEqual([{ method: "DELETE", path: `/drives/${DRIVE}/items/NEW`, ifMatch: null, body: undefined }]);
+    expect(sent.map(request => `${request.method} ${request.path}`)).toEqual([`GET /drives/${DRIVE}/items/NEW?%24select=folder`, `DELETE /drives/${DRIVE}/items/NEW`]);
     expect(await revert({ kind: "createFolder", payload }, host)).toMatchObject({ canRetry: false });
+  });
+
+  it("leaves a created folder that has gained contents since, which were never part of the action", async () => {
+    const { host, sent } = harness([{ status: 200, body: { folder: { childCount: 2 } } }]);
+    expect(await revert({ kind: "createFolder", payload: { ...payload, createdId: "NEW" } }, host))
+      .toEqual({ message: expect.stringContaining("isn't empty anymore"), canRetry: true });
+    expect(sent.map(request => request.method)).toEqual(["GET"]);
+    const gone = harness([{ status: 404, body: { error: { code: "itemNotFound", message: "x" } } }]);
+    expect(await revert({ kind: "createFolder", payload: { ...payload, createdId: "NEW" } }, gone.host)).toBeUndefined();
+    expect(gone.sent.map(request => request.method)).toEqual(["GET"]);
   });
 
   it("won't undo a creation once what it made has been moved out of the binding", async () => {

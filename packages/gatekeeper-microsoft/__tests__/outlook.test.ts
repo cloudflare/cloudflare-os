@@ -3,7 +3,7 @@
 // delivery.
 
 import { describe, expect, it, vi } from "vitest";
-import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
+import { ActionApplyError, ActionOutcomeUnknownError } from "@gadgets/gatekeeper-kit/actions";
 import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
   definitions, replaceOwnPart, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
@@ -517,6 +517,14 @@ describe("editing a draft", () => {
     await definitions.updateDraft.apply({ ...edit("~1"), keepsQuote: true }, h);
     expect(sentBody(fetch, "PATCH /messages/AAMkReal").body).toEqual({ contentType: "HTML", content: replaceOwnPart(quoted, composed().html) });
     expect(sentBody(fetch, "PATCH /messages/AAMkReal").body).toMatchObject({ content: expect.stringContaining("divRplyFwdMsg") });
+  });
+
+  it("won't make a draft again when Outlook's answer to making it was lost, since nothing would find the first", async () => {
+    const { host: h } = host([]);
+    const creation: OutlookActions["createDraft"] = { mailbox: ME, ref: "~1", origin: { kind: "new" }, message: composed(), submittedAt: 0 };
+    await expect(definitions.createDraft.apply(creation, h)).rejects.toBeInstanceOf(ActionOutcomeUnknownError);
+    const refused = host([json({ error: { code: "ErrorMessageSizeExceeded", message: "too big" } }, 413)]);
+    await expect(definitions.createDraft.apply(creation, refused.host)).rejects.toBeInstanceOf(ActionApplyError);
   });
 
   it("deletes a draft only while it is still one", async () => {

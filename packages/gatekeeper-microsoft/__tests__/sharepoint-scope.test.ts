@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GraphApiError } from "../src/graph-api";
 import type { GraphDrive, GraphDriveItem } from "../src/graph-parse";
 import {
@@ -129,6 +129,42 @@ describe("what each scope kind reaches", () => {
 
 describe("a folder binding", () => {
   const scope: SharePointScope = { kind: "folder", siteId: SITE, driveId: DRIVE, itemId: "SPECS" };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("dates a proof by the remembered proof it rests on, so reuse never renews one and a moved folder is reread within the TTL", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const items = tree();
+    const { guard: instance, reads } = guard(scope, items);
+    await instance.item(ref("NOTES"));
+    vi.advanceTimersByTime(40_000);
+    reads.length = 0;
+    await instance.item(ref("NOTES"));
+    expect(reads).toEqual(["NOTES"]);
+    // Deep is moved out of Specs. Thirty seconds later the proof from the first read has lapsed, and the second read didn't renew it.
+    items.set("DEEP", item("DEEP", "PRIVATE"));
+    vi.advanceTimersByTime(30_000);
+    reads.length = 0;
+    await expect(instance.item(ref("NOTES"))).rejects.toThrow(OUTSIDE);
+    expect(reads).toEqual(["NOTES", "DEEP", "PRIVATE", "root"]);
+  });
+
+  it("dates a listed subfolder by its parent's proof", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const items = tree();
+    items.set("DEEPER", item("DEEPER", "DEEP"));
+    const { guard: instance, reads } = guard(scope, items);
+    await instance.item(ref("DEEP"));
+    vi.advanceTimersByTime(50_000);
+    expect(instance.childOf(items.get("DEEPER")!, ref("DEEP"))).toBe(true);
+    vi.advanceTimersByTime(20_000);
+    reads.length = 0;
+    // Deeper's proof rested on Deep's, which has lapsed: its ancestry is walked again.
+    await instance.item(ref("DEEPER"));
+    expect(reads).toEqual(["DEEPER", "DEEP"]);
+  });
 
   it("admits the folder and anything beneath it", async () => {
     const { guard: instance } = guard(scope);

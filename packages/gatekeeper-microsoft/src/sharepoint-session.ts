@@ -614,6 +614,8 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       dispose: () => walk[Symbol.dispose](),
       inject: { items: added, compare: () => -1, identity: entry => entry.id },
       fetchPage: async (token, perPage) => {
+        // The folder is proved still the binding's for every page: a cursor may outlive a move of it.
+        await guard.item(folderRef);
         const page = await this.ctx.host.read(api => reads.listChildren(api, folderRef, token, perPage, orderBy));
         const entries = page.items
           .filter(child => guard.childOf(child, folderRef))
