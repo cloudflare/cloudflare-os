@@ -479,13 +479,14 @@ describe("editing a draft", () => {
       return next;
     });
     const api = new GraphApi("t", { fetch: fetch as typeof globalThis.fetch });
+    const inScope = vi.fn(async (_check: { messages?: readonly string[]; folder?: string }) => {});
     const actionHost = {
-      refs: { requireResolved: (id: string) => (id === "~1" ? "AAMkReal" : id), resolve: (id: string) => (id === "~1" ? "AAMkReal" : id) },
+      refs: { requireResolved: (id: string) => (id === "~1" ? "AAMkReal" : id), resolve: (id: string) => (id === "~1" ? "AAMkReal" : id), bind: () => {} },
       graph: async <T>(op: (graph: GraphApi) => Promise<T>) => await op(api),
       readFile: async () => new Uint8Array(), releaseFile: () => {}, invalidate: async () => {},
-      rememberDraft: () => {}, noteDraftVersion: () => {}, draftVersion: (id: string) => versions[id],
+      rememberDraft: () => {}, noteDraftVersion: () => {}, draftVersion: (id: string) => versions[id], inScope,
     };
-    return { host: actionHost as unknown as Parameters<typeof definitions.updateDraft.apply>[1], calls, fetch };
+    return { host: actionHost as unknown as Parameters<typeof definitions.updateDraft.apply>[1], calls, fetch, inScope };
   }
   const sentBody = (fetch: ReturnType<typeof vi.fn>, call: string) => {
     const match = fetch.mock.calls.find(([input, init]) => `${(init as RequestInit).method} ${new URL(String(input)).pathname.replace("/v1.0/me", "")}` === call);
@@ -517,6 +518,23 @@ describe("editing a draft", () => {
     await definitions.updateDraft.apply({ ...edit("~1"), keepsQuote: true }, h);
     expect(sentBody(fetch, "PATCH /messages/AAMkReal").body).toEqual({ contentType: "HTML", content: replaceOwnPart(quoted, composed().html) });
     expect(sentBody(fetch, "PATCH /messages/AAMkReal").body).toMatchObject({ content: expect.stringContaining("divRplyFwdMsg") });
+  });
+
+  it("proves the message a reply or forward is built from still covered before Outlook clones it", async () => {
+    const forward: OutlookActions["createDraft"] = {
+      mailbox: ME, ref: "~1", origin: { kind: "forward", source: target("m1"), forwarded: { markdown: "", truncated: false, attachments: [] } }, message: composed(), submittedAt: 0,
+    };
+    const { host: h, calls, inScope } = host([json({ id: "AAMkFwd" }), json({}), json({ changeKey: "k" })]);
+    await definitions.createDraft.apply(forward, h);
+    expect(inScope).toHaveBeenCalledWith({ messages: ["m1"] });
+    expect(calls[0]!.call).toBe("POST /messages/m1/createForward");
+    const left = host([]);
+    left.inScope.mockRejectedValueOnce(new ActionApplyError("gone"));
+    await expect(definitions.createDraft.apply(forward, left.host)).rejects.toThrow("gone");
+    expect(left.calls).toEqual([]);
+    const fresh = host([json({ id: "AAMkNew" }), json({ changeKey: "k" })]);
+    await definitions.createDraft.apply({ ...forward, origin: { kind: "new" } }, fresh.host);
+    expect(fresh.inScope).not.toHaveBeenCalled();
   });
 
   it("won't make a draft again when Outlook's answer to making it was lost, since nothing would find the first", async () => {

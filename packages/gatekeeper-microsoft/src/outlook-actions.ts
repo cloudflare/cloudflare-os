@@ -399,6 +399,15 @@ async function noteVersion(host: OutlookActionHost, mailbox: OutlookMailboxRef, 
 }
 
 /** Creates the draft for a send or draft action: a new message, or Outlook's own reply or forward of the source. */
+/**
+ * Proves the message a reply or forward is built from is still the binding's: Outlook copies its
+ * text and attachments into the new draft, so one that has left the binding since the proposal
+ * can't be cloned.
+ */
+async function requireSourceCovered(host: OutlookActionHost, origin: Origin): Promise<void> {
+  if (origin.kind !== "new") await host.inScope({ messages: [origin.source.id] });
+}
+
 async function createComposed(api: MailApi, host: OutlookActionHost, origin: Origin, message: Composed, internetMessageId?: string): Promise<string> {
   const identity = internetMessageId ? { internetMessageId } : {};
   let draftId: string;
@@ -625,6 +634,7 @@ export const definitions = {
     },
     provides: payload => [payload.ref],
     apply: async (payload, host) => {
+      await requireSourceCovered(host, payload.origin);
       let id: string;
       try {
         id = await host.graph(api => createComposed(mail(api, payload.mailbox), host, payload.origin, payload.message));
@@ -750,6 +760,8 @@ export const definitions = {
     },
     dependsOn: payload => payload.draft && isProvisional(payload.draft.id) ? [payload.draft.id] : [],
     apply: async (payload, host) => {
+      // A message composed here from a source is cloned from it on send; an existing draft was.
+      if (payload.draft === undefined) await requireSourceCovered(host, payload.origin);
       let sentId: string;
       try {
         sentId = await host.graph(async api => {
