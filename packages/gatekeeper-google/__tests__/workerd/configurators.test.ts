@@ -726,9 +726,7 @@ describe.each(OFFICE_KIND_CASES)("the $title type's Office files", testCase => {
     let { ui } = await startOfficeConfigurator(testCase);
 
     await expect(ui.inspectFile("native-1")).resolves.toEqual({ type: "native" });
-    await expect(ui.inspectFile("source-1")).resolves.toEqual({
-      type: "office", title: `Report.${testCase.label}`, label: testCase.label, canCopy: true,
-    });
+    await expect(ui.inspectFile("source-1")).resolves.toEqual({ type: "office", canCopy: true });
     await expect(ui.inspectFile("locked-1")).resolves
       .toEqual(expect.objectContaining({ type: "office", canCopy: false }));
     await expect(ui.inspectFile("csv-1")).resolves.toEqual({ type: "unsupported" });

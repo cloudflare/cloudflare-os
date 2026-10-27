@@ -168,7 +168,7 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
       "Browse a selected folder or shared drive, search its direct children, and read native " +
       "Google Docs, Sheets and Slides, and PDFs as text.",
   grantable: true,
-  groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
+  groupedWith: DRIVE_CARD,
 };
 
 /** Metadata and, when native or a PDF, read-only content for one immutable Drive file ID. */
@@ -179,7 +179,7 @@ export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
       "Read metadata and, for a native Google Doc, Sheet or Slides presentation, content from one " +
       "Drive file, or its text when it is a PDF.",
   grantable: true,
-  groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
+  groupedWith: DRIVE_CARD,
 };
 
 /**

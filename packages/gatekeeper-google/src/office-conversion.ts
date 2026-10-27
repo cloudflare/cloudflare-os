@@ -131,9 +131,6 @@ export type OfficeFileInspection =
   | { type: "native" }
   | {
       type: "office";
-      title: string;
-      /** The extension the file is shown as, such as "xlsx". */
-      label: string;
       canCopy: boolean;
       /** A copy this deployment already made of the file, when one is found. */
       existingCopy?: { fileId: string; title: string; convertedAt: Date };
@@ -174,22 +171,14 @@ export class OfficeConversion {
     if (!isDriveFileId(fileId)) return { type: "refused", message: NOT_A_FILE_ID };
     let source = await this.#drive.getConversionSource(fileId);
     if (source.mimeType === OFFICE_KINDS[this.#kind].nativeMimeType) return { type: "native" };
-    let label = officeLabel(this.#kind, source.mimeType);
-    if (label === undefined) return { type: "unsupported" };
+    if (officeLabel(this.#kind, source.mimeType) === undefined) return { type: "unsupported" };
     if (source.trashed === true) return { type: "refused", message: TRASHED };
     let existingCopy = await this.#findCopy(fileId);
     return {
       type: "office",
-      title: source.name,
-      label,
       canCopy: source.canCopy === true,
       ...(existingCopy ? { existingCopy } : {}),
     };
-  }
-
-  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
-  hasConversionAccess(): Promise<boolean> {
-    return this.#hasAccess();
   }
 
   /**

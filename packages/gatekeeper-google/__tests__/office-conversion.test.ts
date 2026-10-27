@@ -267,10 +267,10 @@ describe("OfficeConversion.inspectFile", () => {
       .resolves.toEqual({ type: "native" });
   });
 
-  it("describes an Office file with its label and whether it may be copied", async () => {
+  it("describes an Office file with whether it may be copied", async () => {
     new FakeDrive(source({ canCopy: false })).install();
     await expect(new OfficeConversion("sheets", token, granted).inspectFile("src-1"))
-      .resolves.toEqual({ type: "office", title: "Budget.xlsx", label: "xlsx", canCopy: false });
+      .resolves.toEqual({ type: "office", canCopy: false });
   });
 
   it("calls a file of another kind, or no Office kind, unsupported", async () => {
@@ -297,7 +297,7 @@ describe("OfficeConversion.inspectFile", () => {
     drive.install();
     let inspection = await new OfficeConversion("sheets", token, granted).inspectFile("src-1");
     expect(inspection).toEqual({
-      type: "office", title: "Budget.xlsx", label: "xlsx", canCopy: true,
+      type: "office", canCopy: true,
       existingCopy: { fileId: "copy-a", title: "Budget", convertedAt: new Date("2026-10-04T00:00:00.000Z") },
     });
     let lookup = drive.requests.find(request => request.url.pathname.endsWith("/files"))!;
@@ -378,9 +378,8 @@ describe("OfficeConversion.convertFile", () => {
     let conversion = new OfficeConversion("sheets", token, hasAccess);
 
     await expect(conversion.convertFile("src-1")).resolves.toEqual({ type: "needsAccess" });
-    await expect(conversion.hasConversionAccess()).resolves.toBe(false);
     expect(drive.requests).toEqual([]);
-    expect(hasAccess).toHaveBeenCalledTimes(2);
+    expect(hasAccess).toHaveBeenCalledOnce();
   });
 
   it("copies into My Drive's root, and says so, when the original's folder cannot take it", async () => {

@@ -211,14 +211,14 @@ let access: { grant: string; note?: Note } | null = null;
  */
 let listings = 0;
 
+const errorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error && error.message ? error.message : fallback;
+
 /** Asks from the click, so the browser lets Workshop open Google's consent pop-up. */
 const allow = async ({ ensureResources, setValues }: Context, grant: string) => {
   const note = await ensureResources([grant]).then(
     (held): Note => ({ text: held ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Retry." }),
-    (error: unknown): Note => ({
-      text: error instanceof Error && error.message ? error.message : "Access wasn't allowed.",
-      tone: "error",
-    }));
+    (error: unknown): Note => ({ text: errorMessage(error, "Access wasn't allowed."), tone: "error" }));
   if (access?.grant !== grant) return;
   access = { grant, note };
   setValues({});
@@ -238,7 +238,7 @@ const allowEditing = async ({ ensureResources, setValues }: Context, grants: str
   setValues({});
   editAccess = await asked.then(
     held => held ? { unavailable: true } : {},
-    (error: unknown) => ({ error: error instanceof Error && error.message ? error.message : "Access wasn't allowed." }));
+    (error: unknown) => ({ error: errorMessage(error, "Access wasn't allowed.") }));
   setValues({});
 };
 
@@ -294,6 +294,18 @@ async function inspect(ui: DriveConfiguratorRpc, target: string): Promise<Flow> 
   }
 }
 
+/**
+ * Inspects `target` into `flow`, resolving to its `checked` value: `target` when it connects as it
+ * is, else null. Undefined when a later choice superseded it.
+ */
+async function check(ui: DriveConfiguratorRpc, target: string): Promise<string | null | undefined> {
+  const run = begin({ step: "inspecting", target });
+  const next = await inspect(ui, target);
+  if (run !== generation) return undefined;
+  flow = next;
+  return next.step === "idle" ? target : null;
+}
+
 /** The user's choice. A Docs, Sheets or Slides file is held back until it is known to connect as it is. */
 async function choose(context: Context, target: string | null) {
   const { setValues, ui, acceptedResourceUrlPatterns } = context;
@@ -304,12 +316,10 @@ async function choose(context: Context, target: string | null) {
     setValues({ target, checked: null });
     return;
   }
-  const run = begin({ step: "inspecting", target });
+  const checking = check(ui, target);
   setValues({ target, checked: null });
-  const next = await inspect(ui, target);
-  if (run !== generation) return;
-  flow = next;
-  setValues({ checked: next.step === "idle" ? target : null });
+  const checked = await checking;
+  if (checked !== undefined) setValues({ checked });
 }
 
 /**
@@ -372,7 +382,7 @@ async function convert({ setValues, ensureResources, ui }: Context, reuse?: stri
     }
   } catch (error) {
     if (run !== generation) return;
-    const message = error instanceof Error && error.message ? error.message : "The copy could not be made.";
+    const message = errorMessage(error, "The copy could not be made.");
     show(undefined, message);
     // A copy whose reply was lost may still have been made, and a copy offered for reuse may be
     // gone, so look again before offering either.
@@ -408,7 +418,7 @@ function readOnlyNotice(context: Context) {
   // The editable types the Google Drive card offers that the account has not granted. None for a
   // blueprint's binding, which takes its own type alone, rather than all of Drive and folders too.
   const ungranted = accepted?.includes(ACCOUNT_PATTERN) && accepted.includes(FOLDER_PATTERN)
-    ? Object.values(EDITORS).filter(({ pattern }) => !accepted.includes(pattern)).map(({ pattern }) => pattern)
+    ? Object.values(EDITORS).map(({ pattern }) => pattern).filter(pattern => !accepted.includes(pattern))
     : [];
   if (editAccess.unavailable) return <Notice>Editing isn't available here, so this connects read-only as a Drive file.</Notice>;
   if (!ungranted.length) return <Notice>Connects read-only as a Drive file.</Notice>;
@@ -491,12 +501,9 @@ export default {
     if (!kind || d !== "d" || id === undefined || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) return {};
     const target = `${kind}:${id}`;
     if (!editing(target, acceptedResourceUrlPatterns)) return { target };
-    const run = begin({ step: "inspecting", target });
-    const next = await inspect(ui, target);
-    if (run !== generation) return {};
-    flow = next;
+    const checked = await check(ui, target);
     // Anything else stays chosen but unchecked, so its notice says why it cannot be connected.
-    return next.step === "idle" ? { target, checked: target } : { target };
+    return checked === undefined ? {} : checked ? { target, checked } : { target };
   },
   isReady: ({ values: { target, checked }, acceptedResourceUrlPatterns: accepted }) =>
     typeof target === "string" && patternOf(target, accepted) !== undefined &&

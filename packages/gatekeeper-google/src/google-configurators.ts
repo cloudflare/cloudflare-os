@@ -16,7 +16,7 @@ import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurat
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
 import {
-  editorKind, OfficeConversion, type OfficeConversionResult, type OfficeFileInspection,
+  editorKind, OFFICE_KINDS, OfficeConversion, type OfficeConversionResult, type OfficeFileInspection,
   type OfficeKind,
 } from "./office-conversion";
 import type {
@@ -321,10 +321,11 @@ const DRIVE_BROWSE_DISABLED =
   "Browsing Drive requires the Google Drive API to be enabled for this OAuth project.";
 
 type DriveNodeKind = "folder" | "file" | OfficeKind;
+const DRIVE_NODE_ID = new RegExp(`^(folder|file|${Object.keys(OFFICE_KINDS).join("|")}):(.+)$`, "s");
 
 /** The Drive file a folder or file node names. Groupings and the root name none. */
 function parseDriveNodeId(id: string): { kind: DriveNodeKind; fileId: string } | undefined {
-  let match = /^(folder|file|doc|sheets|slides):(.+)$/s.exec(id);
+  let match = DRIVE_NODE_ID.exec(id);
   return match ? { kind: match[1] as DriveNodeKind, fileId: match[2] } : undefined;
 }
 
@@ -449,7 +450,7 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
   async listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
     let linked = linkedDriveNodeId(query);
     if (linked) {
-      let node = await driveNode(this, linked, false);
+      let node = await driveNode(this, linked);
       return { nodes: node ? [node] : [] };
     }
     let drive = new DriveApi(googleTokenProvider(this));
@@ -503,8 +504,10 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
     });
   }
 
+  /** A Drive file link (`file:`) keeps its id for a pre-fill, and so binds as a Drive file. */
   async getDriveNode(id: string): Promise<DriveNode | null> {
-    return driveNode(this, id, true);
+    let node = await driveNode(this, id);
+    return node && parseDriveNodeId(id)?.kind === "file" ? { ...node, id } : node;
   }
 
   async inspectFile(kind: OfficeKind, fileId: string): Promise<OfficeFileInspection> {
@@ -525,11 +528,10 @@ function officeConversion(picker: DriveConfiguratorUI, kind: OfficeKind): Office
 }
 
 /**
- * The node `id` names, or null when this account cannot see it or it is another kind of node. A Drive
- * file link (`file:`) names any file: looked up for a pre-fill (`asNamed`) it keeps that id, and so
- * binds as a Drive file, while a pasted link finds the node the picker would list.
+ * The node the picker would list for what `id` names, or null when this account cannot see it or it
+ * is another kind of node. A Drive file link (`file:`) names any file.
  */
-async function driveNode(picker: DriveConfiguratorUI, id: string, asNamed: boolean): Promise<DriveNode | null> {
+async function driveNode(picker: DriveConfiguratorUI, id: string): Promise<DriveNode | null> {
   let named = parseDriveNodeId(id);
   if (!named) return null;
   let drive = new DriveApi(googleTokenProvider(picker));
@@ -544,10 +546,7 @@ async function driveNode(picker: DriveConfiguratorUI, id: string, asNamed: boole
     // A folder named as a file, or a shortcut, is not the node the id claims.
     let node = file.trashed ? undefined : driveFileNode(file);
     if (!node) return null;
-    if (node.id !== id) {
-      if (named.kind !== "file" || node.kind !== "file") return null;
-      if (asNamed) node = { ...node, id };
-    }
+    if (node.id !== id && (named.kind !== "file" || node.kind !== "file")) return null;
     let path = await drivePath(drive, file);
     return path ? { ...node, path } : node;
   });

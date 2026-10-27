@@ -80,7 +80,7 @@ async function open(accepted?: string[]) {
 const settle = () => vi.advanceTimersByTimeAsync(0);
 
 const officeFile = (overrides: Values = {}) => ({
-  type: "office", title: "Report.xlsx", label: "xlsx", canCopy: true, ...overrides,
+  type: "office", canCopy: true, ...overrides,
 });
 
 const converted = (overrides: Values = {}) => ({
