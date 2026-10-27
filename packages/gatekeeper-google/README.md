@@ -285,7 +285,8 @@ stores baseline and Preview secrets separately, so provision the same signing va
 
 ## Creating files
 
-Google Docs, Sheets and Slides are creatable resource types: an agent can ask for a new one with
+Google Docs, Sheets and Slides are advertised in `VendorDescription.creatableResources` as well as
+the existing-resource connection list: an agent can ask for a new one with
 `createExternalResource`, giving a one-line title (trimmed, at most 256 characters), and its binding
 works at once, before anything exists at Google. Until the creation is approved the gatekeeper
 simulates an empty file: a Doc reads as one empty tab and queues edits as usual, a spreadsheet as

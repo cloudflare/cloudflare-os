@@ -42,7 +42,6 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   urlPattern: `https://${VENDOR_HOST}/things/*`,
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
-  creatable: true,
 }];
 
 const TYPES_CODE = `
@@ -428,6 +427,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
       // Accounts are minted on request with no auth flow, which is what keeps these tests about the
       // overseer rather than about somebody's OAuth dance.
       autoProvisionsAccount: true,
+      creatableResources: SUPPORTED_RESOURCES,
     };
   }
 

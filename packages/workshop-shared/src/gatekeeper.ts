@@ -35,7 +35,7 @@ export type AvatarImage = {
   url: string;
 }
 
-/** Describes a connected GatekeeperVendor, for display purposes. */
+/** Describes a GatekeeperVendor's presentation and optional capabilities. */
 export type VendorDescription = {
   /** Human-readable name of the service, e.g. "Google", "GitHub", etc. */
   displayName: string;
@@ -77,6 +77,14 @@ export type VendorDescription = {
    * management UI (see AccountDescription.singleton / .providesUi).
    */
   autoProvisionsAccount?: boolean;
+
+  /**
+   * Resource types this vendor can create with createResource(). Independent of the existing
+   * resource types advertised by getSupportedResources(): a type may appear in either or both
+   * lists. Omitted/empty means creation is not offered. Advertising creation does not offer an
+   * existing-resource picker or change any already-connected resource.
+   */
+  creatableResources?: SupportedResource[];
 }
 
 /**
@@ -355,15 +363,9 @@ export type SupportedResource = {
   grantable?: boolean;
 
   /**
-   * If true, an agent may create a new resource of this type with the createExternalResource tool
-   * (see GatekeeperVendor.createResource()).
-   */
-  creatable?: boolean;
-
-  /**
-   * With `creatable`: the approver of a creation of this type configures it, in the account they
-   * create it in, through that account's GatekeeperUser.startCreationConfigurator(). Callers gate
-   * on this flag rather than probing, since RPC stubs cannot report optional-method presence.
+   * In VendorDescription.creatableResources: the approver configures creation of this type in
+   * their chosen account through GatekeeperUser.startCreationConfigurator(). Callers gate on
+   * this flag rather than probing, since RPC stubs cannot report optional-method presence.
    */
   creationConfigurator?: boolean;
 
@@ -650,12 +652,13 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
                  options?: GatekeeperConnectOptions): Promise<{url: string}>;
 
   /**
-   * Get the list of resource types this vendor supports. Each entry describes a category of
-   * resource the vendor can provide access to, along with a URL pattern for matching.
+   * Get the types of EXISTING resources this vendor offers for connection. Each entry describes
+   * a category with a URL pattern and an account-provided resource picker, not an individual
+   * resource. Advertise creation separately in VendorDescription.creatableResources.
    *
    * `options.userId` specifies the user ID (usually, email address) of the user who is driving the
    * query, which the gatekeeper can consider in deciding what resources are available. If it
-   * returns an empty list, then the gatekeeper will be totally hidden from the user.
+   * returns an empty list and advertises no creatable resources, the vendor is hidden.
    *
    * TODO: Providing the user ID here is a temporary hack to enable a hidden internal gatekeeper.
    *   Later on we should come up with a better way to manage which users see which gatekeepers.
@@ -692,13 +695,14 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
   createAccount?(): Promise<Fetcher<GatekeeperUser>>;
 
   /**
-   * Get a gatekeeper class simulating a NEW resource of the creatable type `resourceUrlPattern`,
-   * titled `title`, and the `action` that creates it. Like createAccount(), this takes no user
+   * Get a gatekeeper class simulating a NEW resource of the type `resourceUrlPattern` advertised
+   * in VendorDescription.creatableResources, titled `title`, and the `action` that creates it.
+   * Like createAccount(), this takes no user
    * identity, so the class belongs to no account: it simulates the resource locally, with no
    * account to reach the provider through, though it may still be asked to describe() itself.
    * Creates nothing. The Overseer queues `action` as the creation, which applies before anything
    * else queued on the gatekeeper, through Gatekeeper.applyCreation() once a user approves it.
-   * Present only on vendors with a `creatable` resource type.
+   * Present only on vendors advertising creatableResources.
    */
   createResource?(resourceUrlPattern: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
@@ -804,7 +808,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   describe(): Promise<AccountDescription>;
 
   /**
-   * Typically returns the same as GatekeeperVendor.getSupportedResources(), though an
+   * The existing resource types this account offers for connection. Typically returns the same
+   * as GatekeeperVendor.getSupportedResources(), though an
    * implementation could choose to return a narrower set if the specific account does not support
    * every resource that the vendor supports generally.
    */

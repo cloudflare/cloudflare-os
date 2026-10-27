@@ -1296,7 +1296,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           ]);
           let enabledResources =
               filterEnabledResources(config, id, supportedResources);
-          if (enabledResources.length == 0) {
+          if (description.creatableResources) {
+            description = { ...description, creatableResources:
+                filterEnabledResources(config, id, description.creatableResources) };
+          }
+          if (enabledResources.length === 0 && !description.creatableResources?.length) {
             // Every resource for this vendor is disabled (or it advertised none) — hide the vendor.
             return null;
           }
@@ -2185,13 +2189,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
                   action: ActionDescription}> {
     let vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
+    let advertised = (await vendor.describe()).creatableResources
+        ?.find(r => r.urlPattern === resourceUrlPattern);
+    if (!advertised) {
+      throw new Error(`This vendor does not advertise creation of "${resourceUrlPattern}". ` +
+          "Call listConnectableResources to see the available creations.");
+    }
+    await this.#assertResourceEnabled(vendorId, advertised);
     let {class: cls, resource, action} = await (vendor as unknown as ResourceCreatorStub)
         .createResource(resourceUrlPattern, title);
-    if (!resource.creatable) {
-      throw new Error(`"${resource.title}" resources can't be created. ` +
-          "listConnectableResources marks the types that can.");
+    if (resource.urlPattern !== resourceUrlPattern) {
+      throw new Error("Created resource type does not match the requested type.");
     }
-    await this.#assertResourceEnabled(vendorId, resource);
     return {class: cls, typeUrlPattern: resource.urlPattern, action};
   }
 

@@ -39,7 +39,6 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   title: "Google Doc",
   description: "Read and edit documents you choose.",
   grantable: true,
-  creatable: true,
 };
 
 /**
@@ -53,7 +52,6 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
     "Read the values and formatting of a spreadsheet you choose, and change its values, tabs, " +
     "rows, columns, and formatting, with your approval.",
   grantable: true,
-  creatable: true,
 };
 
 /** A single Google Slides presentation. */
@@ -65,7 +63,6 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
     "your approval, edit its text and design, copy, move, or delete slides, and change its " +
     "backgrounds and theme colours.",
   grantable: true,
-  creatable: true,
 };
 
 /** A single Google Calendar. */
@@ -591,11 +588,15 @@ const NATIVE_FILE_PATHS: Record<CreatableKind, string> =
     { doc: "document", sheets: "spreadsheets", slides: "presentation" };
 const CREATABLE_KINDS = Object.keys(NATIVE_FILE_PATHS) as CreatableKind[];
 
+/** Native editor file types Google can create, independently of existing-resource selection. */
+export const CREATABLE_RESOURCES: SupportedResource[] =
+    CREATABLE_KINDS.map(kind => RESOURCE_BY_KIND[kind]);
+
 /** The kind of the creatable resource type `resourceUrlPattern`, or an agent-readable refusal. */
 export function creatableKind(resourceUrlPattern: string): CreatableKind {
   let kind = CREATABLE_KINDS.find(candidate => {
     let resource = RESOURCE_BY_KIND[candidate];
-    return resource.urlPattern === resourceUrlPattern && resource.creatable;
+    return resource.urlPattern === resourceUrlPattern;
   });
   if (kind) return kind;
   let types = CREATABLE_KINDS.map(candidate =>

@@ -1048,13 +1048,16 @@ export type AdminResourceVendor = {
 );
 
 /**
- * A connectable third-party service: its vendor id, display metadata, and the resource types it
- * offers (empty for an auto-provisioning gatekeeper like the Context Library). Returned by both
- * listGatekeeperVendors and listAddableGatekeepers so the connect UI treats both uniformly.
+ * A third-party service: its vendor id, metadata (including creatable types), and existing
+ * resource types it offers for connection (empty for create-only or ambient vendors). Returned
+ * by both listGatekeeperVendors and listAddableGatekeepers so the connect UI treats both uniformly.
  */
 export type GatekeeperVendorInfo = {
+  /** Stable vendor identifier. */
   id: string;
+  /** Vendor metadata, including separately advertised creatable resource types. */
   description: VendorDescription;
+  /** Existing resource types offered for connection; empty when none are offered. */
   supportedResources: SupportedResource[];
   /**
    * Present when a bound gatekeeper could not be queried. UIs should surface this to the user but
@@ -4509,7 +4512,8 @@ export type AiToolCall = {
 } | {
   /**
    * List the resource types a gatekeeper vendor offers, so the agent can construct a resourceUrl
-   * for requestConnection. Resource patterns are only surfaced on demand (not in the system prompt).
+   * for requestConnection, separately from types creatable with createExternalResource. Resource
+   * patterns are only surfaced on demand (not in the system prompt).
    */
   toolName: "listConnectableResources";
   input: {
@@ -4538,8 +4542,8 @@ export type AiToolCall = {
   output?: string;
 } | {
   /**
-   * Create a new external resource of a creatable type (see `SupportedResource.creatable`). Its
-   * binding is usable at once: the gatekeeper simulates the resource until a user approves the
+   * Create a new external resource of a type advertised in `VendorDescription.creatableResources`.
+   * Its binding is usable at once: the gatekeeper simulates the resource until a user approves the
    * creation action, choosing the account to create it in.
    */
   toolName: "createExternalResource";

@@ -5,7 +5,7 @@ import {
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
   LEGACY_GRANTED_RESOURCE_URL_PATTERNS, OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND, RESOURCE_SCOPES,
-  SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SHARED_DRIVES_GRANT, SUPPORTED_RESOURCES, creatableKind,
+  SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SHARED_DRIVES_GRANT, CREATABLE_RESOURCES, SUPPORTED_RESOURCES, creatableKind,
   grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
   nativeFileUrl, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
@@ -390,7 +390,7 @@ describe("creatable resources", () => {
     expect(creatableKind(GOOGLE_DOC_RESOURCE.urlPattern)).toBe("doc");
     expect(creatableKind(GOOGLE_SHEETS_RESOURCE.urlPattern)).toBe("sheets");
     expect(creatableKind(GOOGLE_SLIDES_RESOURCE.urlPattern)).toBe("slides");
-    expect(SUPPORTED_RESOURCES.filter(resource => resource.creatable))
+    expect(CREATABLE_RESOURCES)
       .toEqual([GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE]);
     for (let pattern of [GMAIL_RESOURCE.urlPattern, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, "nonsense"]) {
       expect(() => creatableKind(pattern)).toThrow(

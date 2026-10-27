@@ -985,6 +985,10 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
             vendor.describe(),
             vendor.getSupportedResources({ userId: adminUserId }),
           ]);
+          // A type offered for both connection and creation has one admin policy, keyed by URL.
+          let resources = [...new Map([
+            ...supportedResources, ...(description.creatableResources ?? []),
+          ].map(resource => [resource.urlPattern, resource])).values()];
           if (description.autoProvisionsAccount) {
             // Auto-provisioning ("ambient") gatekeeper: a three-state mode, no resources to toggle.
             let mode = ambientGatekeeperMode(config, id);
@@ -996,7 +1000,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
               ambientMode: mode,
             };
           }
-          if (supportedResources.length === 0) {
+          if (resources.length === 0) {
             // Nothing to toggle for this gatekeeper.
             return null;
           }
@@ -1007,7 +1011,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
             logo: description.logo,
             autoProvisions: false,
             enabled: !disabledGatekeeperSet.has(id),
-            resources: supportedResources.map(r => ({
+            resources: resources.map(r => ({
               urlPattern: r.urlPattern,
               title: r.title,
               description: r.description,

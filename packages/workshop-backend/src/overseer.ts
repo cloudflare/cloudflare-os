@@ -9320,18 +9320,21 @@ class OverseerImpl implements AgentHooks {
       return `Unknown vendor "${vendorId}". Available vendors: ` +
           `${[...vendors.map(v => v.id), AGENT_SPAWNER_CONNECTION_ID].join(", ")}.`;
     }
-    if (vendor.supportedResources.length === 0) {
-      return `Vendor "${vendorId}" (${vendor.description.displayName}) offers no connectable ` +
-          `resources.`;
-    }
     let lines = [`Resource types offered by "${vendorId}" (${vendor.description.displayName}):`];
-    for (let r of vendor.supportedResources) {
-      lines.push(`* ${r.title} — urlPattern: ${r.urlPattern}` +
-          `${r.creatable ? " (creatable with createExternalResource)" : ""}\n  ${r.description}`);
+    let existing = vendor.supportedResources;
+    let creations = vendor.description.creatableResources ?? [];
+    if (existing.length > 0) {
+      lines.push("\nExisting resources (requestConnection):");
+      for (let r of existing) lines.push(`* ${r.title} — urlPattern: ${r.urlPattern}\n  ${r.description}`);
+      lines.push(`To connect one, call requestConnection with vendorId="${vendorId}" and a ` +
+          `matching resourceUrl (or omit resourceUrl to let the user pick).`);
+    } else {
+      lines.push("No existing resources are offered for connection.");
     }
-    lines.push(
-        `\nTo request one, call requestConnection with vendorId="${vendorId}" and a resourceUrl ` +
-        `matching one of the patterns above (or omit resourceUrl to let the user pick).`);
+    if (creations.length > 0) {
+      lines.push("\nNew resources (createExternalResource):");
+      for (let r of creations) lines.push(`* ${r.title} — resourceUrlPattern: ${r.urlPattern}\n  ${r.description}`);
+    }
     return lines.join("\n");
   }
 
@@ -9382,6 +9385,11 @@ class OverseerImpl implements AgentHooks {
     // Resolve the exact resource this request maps to, using the same precedence the accept modal
     // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
     // card that opens a blank "create new connection" picker. The agent is told what to fix.
+    if (vendor.supportedResources.length === 0) {
+      return { requested: false, message:
+          `"${vendor.description.displayName}" offers no existing resources to connect. ` +
+          `Call listConnectableResources to see what can be created with createExternalResource.` };
+    }
     let resolved = resolveRequestedResource(vendor.supportedResources, input.resourceUrl);
     if (!resolved.ok) {
       return { requested: false, message:
