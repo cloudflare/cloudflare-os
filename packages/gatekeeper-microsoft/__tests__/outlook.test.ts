@@ -800,7 +800,7 @@ describe("required access", () => {
   it("is send for what leaves the mailbox, and draft for the rest", () => {
     const kinds = Object.keys(definitions) as (keyof OutlookActions)[];
     const send = kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as OutlookAction) === "send");
-    expect(send.sort()).toEqual(["send", "setAutomaticReplies"]);
+    expect(send.toSorted()).toEqual(["send", "setAutomaticReplies"]);
     expect(kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as OutlookAction) === "draft")).toHaveLength(kinds.length - 2);
   });
 });

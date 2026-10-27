@@ -286,7 +286,7 @@ describe("required access", () => {
   it("is schedule for what mails other people, and edit for the rest", () => {
     const kinds = Object.keys(definitions) as (keyof CalendarActions)[];
     const schedule = kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as CalendarAction) === "schedule");
-    expect(schedule.sort()).toEqual(["cancelMeeting", "createMeeting", "respond", "updateMeeting"]);
+    expect(schedule.toSorted()).toEqual(["cancelMeeting", "createMeeting", "respond", "updateMeeting"]);
     expect(kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as CalendarAction) === "edit")).toHaveLength(kinds.length - 4);
   });
 });
