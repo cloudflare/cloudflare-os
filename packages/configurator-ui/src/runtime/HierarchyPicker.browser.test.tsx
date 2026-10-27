@@ -248,6 +248,21 @@ describe("selection", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("folds the middle of a deep breadcrumb behind a button that shows it, until the user moves", async () => {
+    const path = ["Alpha", "Beta", "Gamma", "Delta"].map(title => ({ id: title.toLowerCase(), title }));
+    const loadItem = async (): Promise<Item | null> => ({ id: "epsilon", title: "Epsilon", kind: "container", path });
+    await render({ loadItems: source(), loadItem, initial: "epsilon" });
+
+    await expect.element(crumbs()).toMatchTextContent(/^My Drive\s*Delta\s*Epsilon$/);
+    await userEvent.click(page.getByRole("button", { name: "Show 3 more levels" }));
+    await expect.element(crumb("Alpha")).toHaveFocus();
+    await expect.element(crumbs()).toMatchTextContent(/^My Drive\s*Alpha\s*Beta\s*Gamma\s*Delta\s*Epsilon$/);
+
+    await userEvent.click(crumb("Delta"));
+    await expect.element(crumbs()).toMatchTextContent(/^My Drive\s*Gamma\s*Delta$/);
+    await expect.element(page.getByRole("button", { name: "Show 2 more levels" })).toBeVisible();
+  });
+
   it("goes up one level from its back button, which keeps focus up to the top and leads nowhere there", async () => {
     const onChange = await render({ loadItems: source() });
     const up = page.getByRole("button", { name: "Up one level" });
