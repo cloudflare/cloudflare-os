@@ -425,6 +425,38 @@ describe("UserDurableObject notifications", () => {
     });
   });
 
+  it("bounds a stalled badge request, reaches the next device, and retains the retry", async () => {
+    const fetcher = stubService(), started = Promise.withResolvers<void>();
+    const controller = new AbortController(), stalled = Promise.withResolvers<Response>();
+    using timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(controller.signal);
+    await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      const storage = makeUserStorage(ctx.storage);
+      storage.notificationSubscriptions.put({first: ONE, second: TWO});
+      storage.notificationBadge.put({version: 1, count: 0, retryAt: 0});
+      fetcher.mockImplementationOnce((_input, init) => {
+        init?.signal?.addEventListener("abort", () => stalled.reject(init.signal!.reason), {once: true});
+        started.resolve();
+        return stalled.promise;
+      });
+      const alarm = user.alarm();
+      try {
+        await started.promise;
+        expect(timeout).toHaveBeenCalledWith(15_000);
+        expect(fetcher.mock.calls[0][1]?.signal).toBe(controller.signal);
+        controller.abort(new Error("Badge request deadline"));
+        await alarm;
+        expect(bodies(fetcher, "/v1/badges").map(({subscriptionId}) => subscriptionId)).toEqual([ONE, TWO]);
+        expect(storage.notificationBadge.get().retryAt).toBeGreaterThan(Date.now());
+      } finally { stalled.reject(new Error("Release stalled request")); await alarm; }
+      timeout.mockRestore();
+      storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
+      await user.alarm();
+      expect(storage.notificationBadge.get()).toEqual({version: 1, count: 0});
+      expect(bodies(fetcher, "/v1/badges").map(({subscriptionId}) => subscriptionId)).toEqual([ONE, TWO, ONE, TWO]);
+    });
+  });
+
   it("rehydrates all durable counts locally before replacing a badge after a cold message wake", async () => {
     const fetcher = stubService();
     const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);

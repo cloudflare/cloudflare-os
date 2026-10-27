@@ -161,7 +161,7 @@ export async function deliver(
 /** Replace the subscription's instance unread total. Retrying the same version is idempotent. */
 export async function deliverBadge(
     env: Cloudflare.Env, subscriptionId: string, version: number, count: number): Promise<boolean> {
-  let response = await signedPost(env, "/v1/badges", {subscriptionId, version, count});
+  let response = await signedPost(env, "/v1/badges", {subscriptionId, version, count}, AbortSignal.timeout(15_000));
   if (response.ok) return true;
   if (response.status === 401 || response.status === 410) {
     let {status} = await response.json<{status?: unknown}>();
