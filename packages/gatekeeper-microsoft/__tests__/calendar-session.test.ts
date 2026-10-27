@@ -390,6 +390,17 @@ describe("an all-calendars binding", () => {
     expect((await writer.getEvent("~1")).body).toBe("Second");
   });
 
+  it("keeps classing a new meeting's follow-ups as a meeting's while a removal of its attendees is pending", async () => {
+    const { writer, submitted } = session(scope(), "schedule");
+    await writer.createEvent({ subject: "Sync", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: TEAM.id, attendees: ["sarah@contoso.com"] });
+    await writer.updateEvent("~1", { attendees: [] });
+    // The removal may be rejected, so neither of these can be auto-approved as nobody else's.
+    await writer.updateEvent("~1", { subject: "Sync (renamed)" });
+    await writer.deleteEvent("~1");
+    expect(submitted.map(action => action.kind)).toEqual(["createMeeting", "updateMeeting", "updateMeeting", "cancelMeeting"]);
+    expect((submitted[3]!.payload as CalendarActions["cancelMeeting"]).notified.map(invite => invite.address)).toEqual(["sarah@contoso.com"]);
+  });
+
   it("proposes an event in a calendar someone else owns as a change that is never auto-approved", async () => {
     const { writer, submitted } = session(scope("edit"), "edit");
     await writer.createEvent({ subject: "Cover for Sarah", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: SARAHS.id });

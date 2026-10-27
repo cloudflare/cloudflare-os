@@ -25,8 +25,8 @@ import { editDocx } from "./content/docx-edit";
 import { editPptx } from "./content/pptx-edit";
 import { MAX_CELL_CHARS, checkFormula } from "./content/xlsx-write";
 import {
-  SLIDE_IMAGE_TYPES, checkTemplate, encodeContent, featuresLost, presentationStructure, slideImageRefs, writtenAs, type Encoded,
-  type PptxImages, type Template,
+  SLIDE_IMAGE_TYPES, checkTemplate, encodeContent, featuresLost, isOfficeName, presentationStructure, slideImageRefs, writtenAs,
+  type Encoded, type PptxImages, type Template,
 } from "./office-write";
 import {
   cellAt, pathSegment, showableText, shownChanges, shownTexts, type EditChange, type FolderTarget, type ItemTarget, type ListTarget,
@@ -1435,6 +1435,7 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
     const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
     if (item.kind !== "file") throw new Error("Only files can be copied.");
     const copyName = checkName(name ?? entry.name);
+    requireNotMadeOffice(entry.name, copyName);
     const parent = await this.#folderTarget(folderId);
     await this.#requireFreeName(parent, copyName);
     const ref = this.ctx.host.allocate("item");
@@ -1520,6 +1521,7 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
     checkName(name);
     const { item, target, entry } = await this.#itemTarget(id);
     if (name === entry.name) return entry;
+    if (item.kind === "file") requireNotMadeOffice(entry.name, name);
     const parent = parentPath(entry.path);
     if (item.parentId !== undefined) {
       const parentEntryId = entry.parentId ?? encodeItemRef({ driveId: item.driveId, itemId: item.parentId });
@@ -1560,5 +1562,16 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
     this.#requireNoPendingChange(encodeItemRef(target.ref), item.kind === "file" ? "file" : "folder");
     const ifMatch = ifUnchanged(options) ?? (item.kind === "file" ? item.cTag : undefined);
     await this.ctx.host.submit(this.ctx.queue, "deleteItem", { target, ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now() });
+  }
+}
+
+/**
+ * A file's bytes are checked on upload as what its name says they are (`encodeContent`), so a
+ * rename or copy can't turn them into an Office file unchecked: a workbook refused for a formula
+ * that reaches out would otherwise go up as a .zip and be renamed.
+ */
+function requireNotMadeOffice(from: string, to: string): void {
+  if (isOfficeName(to) && extensionOf(to) !== extensionOf(from)) {
+    throw new Error(`A file can't be renamed or copied into an Office format here. To make it ${extensionOf(to) ? `a .${extensionOf(to)}` : "one"}, upload it under that name, so its content is checked as one.`);
   }
 }

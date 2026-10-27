@@ -39,6 +39,16 @@ const BINARY: Record<string, string> = {
 /** Extensions whose files are zip packages, so bytes that aren't one are refused. */
 const PACKAGES = new Set(["docx", "xlsx", "pptx", "ppsx", "dotx", "potx", "xltx", "zip"]);
 
+/**
+ * Whether a name says a file is Office's: one whose content {@link encodeContent} checks, or
+ * refuses for the code it can run. A rename or copy into such a name is refused, since the bytes
+ * were checked as whatever the file was called before.
+ */
+export function isOfficeName(name: string): boolean {
+  const ext = extension(name);
+  return RUNS_CODE[ext] !== undefined || (PACKAGES.has(ext) && ext !== "zip");
+}
+
 /** A file a write will put in SharePoint. */
 export type Encoded = {
   bytes: Uint8Array;

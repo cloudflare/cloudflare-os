@@ -818,7 +818,9 @@ export async function xlsxFeatures(bytes: Uint8Array): Promise<string[]> {
   if (sheetCount > 1) features.push(`${sheetCount - 1} other sheet${sheetCount === 2 ? "" : "s"}`);
 
   const worksheets = names.filter(name => /^xl\/worksheets\/[^/]+\.xml$/.test(name));
-  const sheetTexts = await Promise.all(worksheets.map(name => zip.readText(name)));
+  // One at a time: the archive's inflation budget is shared, and only reads in sequence count against it.
+  const sheetTexts: string[] = [];
+  for (const name of worksheets) sheetTexts.push(await zip.readText(name));
   const anySheet = (pattern: RegExp) => sheetTexts.some(text => pattern.test(text));
 
   if (anySheet(/<(?:\w+:)?f[\s>/]/)) features.push("formulas");

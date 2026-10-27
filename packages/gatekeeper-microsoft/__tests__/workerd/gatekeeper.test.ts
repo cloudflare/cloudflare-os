@@ -331,6 +331,10 @@ describe("changes", () => {
       expect(failure(await hooks().run(name, binding, [["rename", ref(NOTES), "renamed.txt", { ifUnchanged: bad }]]))).toMatch(/ifUnchanged takes the eTag or cTag/);
     }
     expect((await hooks().queueLog(name)).submitted).toEqual([]);
+    // A file's bytes are checked on upload as what its name says; a rename can't make them an Office file unchecked.
+    expect(failure(await hooks().run(name, binding, [["rename", ref(NOTES), "notes.xlsx"]]))).toMatch(/upload it under that name/);
+    expect(failure(await hooks().run(name, binding, [["rename", ref(NOTES), "notes.docm"]]))).toMatch(/upload it under that name/);
+    expect((await hooks().queueLog(name)).submitted).toEqual([]);
     unwrap(await hooks().run(name, binding, [["rename", ref(NOTES), "renamed.txt", { ifUnchanged: `W/"{${NOTES}},1"` }]]));
     expect((await hooks().queueLog(name)).submitted).toHaveLength(1);
     // What the rename returns describes the file, so observers must be able to open it.
