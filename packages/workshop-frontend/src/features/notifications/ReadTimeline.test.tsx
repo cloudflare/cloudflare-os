@@ -178,14 +178,16 @@ describe("timeline read/unread experience", () => {
 
   it.each([
     {sequences: [2, 1], coalesced: false, firstFails: false},
+    {sequences: [2, 1], coalesced: false, firstFails: false, initialHorizon: 0},
+    {sequences: [2, 1], coalesced: true, firstFails: false, initialHorizon: 0},
     {sequences: [2, 1], coalesced: true, firstFails: false},
     {sequences: [2, 1], coalesced: true, firstFails: true},
     {sequences: [1, 2], coalesced: false, firstFails: false},
     {sequences: [1, 2], coalesced: true, firstFails: false},
   ])("keeps overlapping local unread selections $sequences in place (coalesced: $coalesced, first fails: $firstFails)",
-      async ({sequences, coalesced, firstFails}) => {
+      async ({sequences, coalesced, firstFails, initialHorizon = 2}) => {
     await render();
-    await update(snapshot(1, 2));
+    await update(snapshot(1, initialHorizon));
     await settle();
     navigate.mockClear();
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
@@ -247,7 +249,29 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
-  it.each(["first", "second"])("restores the original visit when both unread commands fail (%s rejects first)", async order => {
+  it.each([false, true])("rolls back a failed unread selection at the already-unread boundary (fresh snapshot: %s)", async freshSnapshot => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    await render();
+    await update(snapshot(1, 0));
+    await settle();
+    const failed = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(failed.promise);
+    await markUnreadFrom(1);
+    if (freshSnapshot) await update(snapshot(2, 0));
+    await act(async () => failed.reject(new Error("Unread command failed")));
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+  });
+
+  it.each([
+    {secondAction: "unread", order: "first"}, {secondAction: "unread", order: "second"},
+    {secondAction: "read", order: "first"}, {secondAction: "read", order: "second"},
+  ])("restores the original visit when unread then $secondAction both fail ($order rejects first)", async ({secondAction, order}) => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     await render(<View latestSequence={4} sequences={[0, 1, 2, 3, 4]} />);
     const state = snapshot(1, 2);
@@ -255,15 +279,22 @@ describe("timeline read/unread experience", () => {
       chats: [{...state.chats[0], unreadMessageCount: 2}]});
     await settle();
     const first = Promise.withResolvers<void>(), second = Promise.withResolvers<void>();
-    markChatUnread.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    markChatUnread.mockReturnValueOnce(first.promise);
     await markUnreadFrom(2);
-    await markUnreadFrom(1);
+    if (secondAction === "unread") {
+      markChatUnread.mockReturnValueOnce(second.promise);
+      await markUnreadFrom(1);
+    } else {
+      markChatRead.mockReturnValueOnce(second.promise);
+      await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+    }
     for (const request of order === "first" ? [first, second] : [second, first]) {
       await act(async () => request.reject(new Error("Unread command failed")));
     }
     await settle();
     expect(container.textContent).not.toContain("automatic reading paused");
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("3");
+    markChatRead.mockClear();
     visibleBottom = 550;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();

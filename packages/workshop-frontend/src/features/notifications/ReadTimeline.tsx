@@ -48,23 +48,46 @@ export const ReadTimeline = ({
   const pending = useRef(-1);
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
-  const localUnreadRequests = useRef<{
-    horizon: number;
-    acknowledgedSnapshot?: object;
-    previousAction?: object;
+  type LocalAction = {
+    previousAction?: LocalAction;
+    failed?: boolean;
     rollback: {visit: typeof visit; jump: number; target?: number; requestedPage?: number};
-  }[]>([]);
-  const latestAction = useRef<object | undefined>(undefined);
+  };
+  const localUnreadRequests = useRef<(LocalAction & {
+    horizon: number;
+    startedSnapshot: typeof chat;
+    acknowledgedSnapshot?: object;
+  })[]>([]);
+  const latestAction = useRef<LocalAction | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence });
   latest.current = { chat, unread, visit, latestSequence };
+
+  const createAction = (): LocalAction => ({
+    previousAction: latestAction.current,
+    rollback: {visit, jump, target: jumpSequence.current, requestedPage: requestedPage.current},
+  });
+  const rollbackAction = (action: LocalAction) => {
+    action.failed = true;
+    if (latestAction.current !== action) return;
+    // A superseding action may fail before or after the action it replaced.
+    while (action.previousAction?.failed) action = action.previousAction;
+    latestAction.current = action.previousAction;
+    const previous = action.rollback;
+    setVisit(current => previous.visit && {...previous.visit, horizon: current?.horizon ?? previous.visit.horizon});
+    jumpSequence.current = previous.target;
+    requestedPage.current = previous.requestedPage;
+    onUnreadNavigation(!!previous.jump);
+    setJump(previous.jump);
+  };
 
   useLayoutEffect(() => {
     if (!chat) {
       pending.current = -1;
       return;
     }
-    const localIndex = localUnreadRequests.current.findLastIndex(request => request.horizon === chat.readThroughSequence);
+    const localIndex = localUnreadRequests.current.findLastIndex(request =>
+      request.startedSnapshot !== chat && request.horizon === chat.readThroughSequence);
     const localUnread = localIndex !== -1;
     // Subscriber snapshots can coalesce earlier local commands; consume those markers together.
     if (localUnread) {
@@ -240,8 +263,7 @@ export const ReadTimeline = ({
           // Untouched pre-rollout threads have no cursor until an arrival or explicit command.
           const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
           const request: (typeof localUnreadRequests.current)[number] = {
-            horizon: sequence - 1, previousAction: latestAction.current,
-            rollback: {visit, jump, target: jumpSequence.current, requestedPage: requestedPage.current},
+            ...createAction(), horizon: sequence - 1, startedSnapshot: chat,
           };
           localUnreadRequests.current.push(request);
           latestAction.current = request;
@@ -256,23 +278,8 @@ export const ReadTimeline = ({
             request.previousAction = undefined; // Only pending commands need the rollback link.
           }).catch(() => {
             const index = localUnreadRequests.current.indexOf(request);
-            if (index === -1) return;
-            // A later optimistic selection must not roll back to this failed selection.
-            const next = localUnreadRequests.current[index + 1];
-            if (next?.previousAction === request) {
-              next.previousAction = request.previousAction;
-              next.rollback = request.rollback;
-            }
-            localUnreadRequests.current.splice(index, 1);
-            if (latestAction.current === request) {
-              latestAction.current = request.previousAction;
-              const previous = request.rollback;
-              setVisit(current => previous.visit && {...previous.visit, horizon: current?.horizon ?? previous.visit.horizon});
-              jumpSequence.current = previous.target;
-              requestedPage.current = previous.requestedPage;
-              onUnreadNavigation(!!previous.jump);
-              setJump(previous.jump);
-            }
+            if (index !== -1) localUnreadRequests.current.splice(index, 1);
+            rollbackAction(request);
           });
         },
       }}
@@ -298,14 +305,15 @@ export const ReadTimeline = ({
               size="xs"
               variant="ghost"
               onClick={() => {
-                const action = {};
+                const action = createAction();
                 latestAction.current = action;
                 void unread?.markRead(chat, latestSequence).then(() => {
+                  action.previousAction = undefined;
                   if (latestAction.current !== action) return;
                   setVisit(current => current && {...current, paused: false});
                   onUnreadNavigation(false);
                   setJump(0);
-                }).catch(() => {});
+                }).catch(() => rollbackAction(action));
               }}
             >
               Mark thread read
