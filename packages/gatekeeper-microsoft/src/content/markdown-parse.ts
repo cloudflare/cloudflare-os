@@ -450,3 +450,12 @@ function sameStyle(a: TextStyle, b: TextStyle): boolean {
 export function plainText(inlines: readonly MdInline[]): string {
   return inlines.map(inline => inline.kind === "text" ? inline.text : inline.kind === "break" ? "\n" : plainText(inline.children)).join("");
 }
+
+/**
+ * The text with each link's destination after its text, as "text (href)": what an approver sees of
+ * content that will carry links, so no destination is written unseen.
+ */
+export function textWithLinks(inlines: readonly MdInline[]): string {
+  return inlines.map(inline => inline.kind === "text" ? inline.text : inline.kind === "break" ? "\n"
+    : `${textWithLinks(inline.children)} (${inline.href})`).join("");
+}

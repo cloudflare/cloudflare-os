@@ -173,6 +173,16 @@ describe("editPptx: placeholders and notes", () => {
       { images: new Map([["chart.png", { bytes: chartPng(), mimeType: "image/png" }]]) })).rejects.toThrow(/either text or one picture/);
   });
 
+  it("shows a link's destination in what the approver sees of a placeholder or notes edit", async () => {
+    const deck = await markdownToPptx("# One\n\n- a");
+    const { changes } = await edit(deck, [
+      { setText: { slide: 1, placeholder: "body", markdown: "- See [the plan](https://example.com/plan)" } },
+      { setNotes: { slide: 1, markdown: "Open [the plan](https://example.com/plan)." } },
+    ]);
+    expect(changes[0]!.after).toContain("See the plan (https://example.com/plan)");
+    expect(changes[1]).toMatchObject({ after: "Open the plan (https://example.com/plan).", notes: true });
+  });
+
   it("sets speaker notes, adding a notes page (and a notes master) where there was none", async () => {
     const deck = await markdownToPptx("# One\n\n- a\n\n# Two\n\n- b");
     const { bytes, pkg, changes } = await edit(deck, [{ setNotes: { slide: 2, markdown: "Say **this**." } }, { setNotes: { slide: 2, markdown: "Say that." } }]);

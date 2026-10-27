@@ -270,6 +270,7 @@ describe("rowsToXlsx", () => {
       ["=xlookup(A1,B:B,C:C)", "=filter(A2:A9,B2:B9>0)"],
       ["=LET(total,SUM(A2:A9),total*2)", "=sum(A1:A2)"],
       ["=LAMBDA(x,y,x+y)(1,2)", "=_xlfn.XLOOKUP(1,A:A,B:B)"],
+      ["=LET(Sheet2,Sheet2!A1,Sheet2+1)", "1"],
     ]));
     const { cells } = book.sheet();
     expect(cells.get("A2")!.formula).toBe("_xlfn.XLOOKUP(A1,B:B,C:C)");
@@ -281,6 +282,8 @@ describe("rowsToXlsx", () => {
     expect(cells.get("B3")!.formula).toBe("SUM(A1:A2)");
     expect(cells.get("A4")!.formula).toBe("_xlfn.LAMBDA(_xlpm.x,_xlpm.y,_xlpm.x+_xlpm.y)(1,2)");
     expect(cells.get("B4")!.formula).toBe("_xlfn.XLOOKUP(1,A:A,B:B)");
+    // A worksheet qualifier stays the sheet's name, whatever a LET calls its own.
+    expect(cells.get("A5")!.formula).toBe("_xlfn.LET(_xlpm.Sheet2,Sheet2!A1,_xlpm.Sheet2+1)");
     expect(book.parts.has("xl/metadata.xml")).toBe(true);
     const types = childElements(book.part("[Content_Types].xml"), "ct:Override").map(element => attribute(element, "PartName"));
     expect(types).toContain("/xl/metadata.xml");

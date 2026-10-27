@@ -403,7 +403,9 @@ function storeFormula(body: string): StoredFormula {
       return /^_xl/i.test(token.text) ? token.text : name;
     }
     const previous = index > 0 ? tokens[index - 1] : undefined;
-    if (parameters.has(token.text.toUpperCase()) && previous?.text !== "!" && !/^_xlpm\./i.test(token.text)) return `_xlpm.${token.text}`;
+    // Not a worksheet qualifier (`Sales!A2`) or the name after one: those are the sheet's, whatever a LET calls its own.
+    const qualifier = nextToken(tokens, index)?.token.text === "!";
+    if (parameters.has(token.text.toUpperCase()) && previous?.text !== "!" && !qualifier && !/^_xlpm\./i.test(token.text)) return `_xlpm.${token.text}`;
     return token.text;
   }).join("");
   return { text, dynamic };

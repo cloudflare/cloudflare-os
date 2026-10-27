@@ -3,7 +3,7 @@
 // Everything else in the file stays as it was, byte for byte, so an edit never costs the deck its
 // animations, images or design.
 
-import { parseMarkdown, plainText } from "./markdown-parse";
+import { parseMarkdown, textWithLinks } from "./markdown-parse";
 import { escapeText, parsePart } from "./ooxml";
 import { imageOf, items, paragraphs, fitScale, type ImageItem } from "./pptx-content";
 import { Deck, type Box } from "./pptx-deck";
@@ -437,7 +437,7 @@ function setText(deck: Deck, edit: { slide: number; placeholder: string; markdow
     if (!paragraphXml) paragraphXml = `<a:p>${writer.endParagraph({}, run)}</a:p>`;
     replacement = withParagraphs(xml, target, paragraphXml, existing => /<a:normAutofit\b/.test(existing)
       ? existing.replace(/<a:normAutofit\b[^>]*?(?:\/>|>[\s\S]*?<\/a:normAutofit>)/, autofit(scale)) : existing);
-    after = paragraphList.map(paragraph => plainText(paragraph.inlines)).filter(Boolean).join("\n");
+    after = paragraphList.map(paragraph => textWithLinks(paragraph.inlines)).filter(Boolean).join("\n");
   }
   deck.pkg.set(part, xml.slice(0, target.start) + replacement + xml.slice(target.end));
   return { slide: edit.slide, before, after, summary: `Slide ${edit.slide}: replaced the ${handles[at]} text.` };
@@ -450,7 +450,7 @@ function setNotes(deck: Deck, edit: { slide: number; markdown: string }): Presen
   const prepared = prepareMarkdown(edit.markdown);
   if (prepared.images.length) throw new PresentationEditError("Speaker notes can't hold pictures; describe the picture in words instead.");
   const blocks = parseMarkdown(prepared.markdown);
-  const after = blocks.flatMap(block => paragraphs(block, 0, false)).map(paragraph => plainText(paragraph.inlines)).filter(Boolean).join("\n");
+  const after = blocks.flatMap(block => paragraphs(block, 0, false)).map(paragraph => textWithLinks(paragraph.inlines)).filter(Boolean).join("\n");
   const notes = deck.notesPart(part);
   if (!notes) {
     if (blocks.length) deck.addNotes(part, notesPart => notesXml(deck, notesPart, blocks));

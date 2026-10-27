@@ -307,7 +307,7 @@ A binding is one of three shapes, each made for a use:
 
 | Shape | Link | What it reaches | Made for |
 |---|---|---|---|
-| Every calendar | `https://outlook.office.com/calendar/` (or any `…/calendar/view/…` link) | All the user's calendars, private events included, and availability of anyone in the organization. | Chat, as the user's own assistant. |
+| Every calendar | `https://outlook.office.com/calendar/` (or any `…/calendar/view/…` link) | All the user's calendars (private events in full on the user's own calendars, as busy time on calendars shared with them), and availability of anyone in the organization. | Chat, as the user's own assistant. |
 | One calendar | `…/calendar/default`, `…/calendar/id/<id>`, and `…/calendar/<owner>/…` for one shared with the user | That calendar alone, at a level of detail: `?details=freeBusy\|limited\|full`, and `&private=show` to show private events. | A gadget showing a team calendar, shared with whoever that calendar is shared with. |
 | Availability | `…/calendar/availability` | Busy times and working hours of people in the organization, never what the events are. | Scheduling, without reading anyone's calendar. |
 
