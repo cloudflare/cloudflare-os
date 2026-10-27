@@ -528,15 +528,19 @@ describe("UserDurableObject notifications", () => {
     };
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
-      await user.registerNotificationDevice("a".repeat(64));
       const storage = makeUserStorage(ctx.storage);
-      storage.notificationBadge.put({version: 7, count: 8, retryAt: 0});
+      storage.notificationSubscriptions.put({phone: ONE});
+      // Keep the real alarm from delivering before the lost-ACK fault is installed after reset.
+      const retryAt = Date.now() + 60_000;
+      storage.notificationBadge.put({version: 7, count: 8, retryAt});
+      await ctx.storage.setAlarm(retryAt);
     });
     await reset();
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
       fetcher.mockImplementationOnce(async () => { throw new Error("Lost ACK"); });
+      storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
       await user.alarm();
       expect(storage.notificationBadge.get()).toMatchObject({version: 7, count: 8});
       expect(storage.notificationBadge.get().retryAt).toBeGreaterThan(Date.now());
