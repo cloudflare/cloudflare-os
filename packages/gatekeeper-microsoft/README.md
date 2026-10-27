@@ -256,8 +256,9 @@ The levels:
 A `read` binding's session is an `OutlookReader`, with no write methods at all. Everything else is
 an action, shown to the agent as though already applied while it waits, and reverted for 30 days
 where Exchange allows: moves go back, flags, categories and read state are restored, folders and
-drafts are deleted, a draft edit is undone, automatic replies return to what they were. A send
-can't be unsent.
+drafts are deleted, a draft edit is undone, automatic replies return to what they were. An undo is
+proved against the binding as applying was: a message or folder that has since left it is left as
+it is. A send can't be unsent.
 
 The approver of a send sees every recipient, marked when they're outside the organization, when the
 user has never written to them, or when they aren't in the conversation being replied to; the body
@@ -330,8 +331,10 @@ change or deletion proposed against an event not yet created is fenced on the ve
 left, so an event that gained attendees in Outlook meanwhile isn't quietly changed as one nobody
 else is on; a creation carries a `transactionId`, so a retry can't make two. Events only the user
 sees revert for 30 days: a creation is deleted, a change restored, a deletion recreated as a new
-event. Anything that sent mail can't be called back, and says so. The approver of a meeting sees
-every attendee, marked when outside the organization.
+event; one that has since left the calendar the action was approved for is left as it is. Anything
+that sent mail can't be called back, and says so. The approver of a meeting sees every attendee,
+marked when outside the organization, and while a change to who they are is pending, nothing more
+is proposed to the meeting, since nobody could say whom it would reach.
 
 Agents can never change who a calendar is shared with, delete someone else's meeting (they decline
 it), or change a meeting they don't organize.

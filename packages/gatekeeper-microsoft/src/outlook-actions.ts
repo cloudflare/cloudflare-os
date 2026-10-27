@@ -133,6 +133,11 @@ export type OutlookActions = {
     removeAttachments: { id: string; name: string }[];
     /** The draft's change key when proposed; the update is refused if the user edited it since. */
     changeKey?: string;
+    /**
+     * The draft is a reply or forward not yet created when this was proposed, so `message.html` is
+     * its own part alone: it replaces that part above the quoted original Outlook writes at creation.
+     */
+    keepsQuote?: true;
     submittedAt: number;
     addedAttachmentIds?: string[];
     /** The change key the update left, which its revert is fenced on. */
@@ -187,9 +192,10 @@ export type OutlookActionHost = {
   noteDraftVersion(id: string, version: DraftVersion): void;
   draftVersion(id: string): DraftVersion | undefined;
   /**
-   * Proves what an action is about to write is still the binding's, as Exchange holds it now, as
-   * its proposal proved it then: `messages` by ID (one since deleted is left to the handler), and
-   * `folder` a destination or parent written into. Throws `ActionApplyError` for anything that isn't.
+   * Proves what an action, or its undo, is about to write is still the binding's, as Exchange holds
+   * it now, as its proposal proved it then: `messages` by ID (one since deleted is left to the
+   * handler), and `folder` a destination or parent written into. Throws `ActionApplyError` for
+   * anything that isn't.
    */
   inScope(check: { messages?: readonly string[]; folder?: string }): Promise<void>;
 };
@@ -288,6 +294,21 @@ function flagWords(flag: FlagChange): string {
 }
 
 // -- applying -----------------------------------------------------------------------------------
+
+/** A reply's or forward's `body` HTML with its own part replaced by `ownHtml`, keeping the quoted original. */
+export function replaceOwnPart(currentHtml: string, ownHtml: string): string {
+  // Outlook puts the quoted original after a rule, then `divRplyFwdMsg` (or `appendonsend` while
+  // the original is still attached on send). Everything from that rule on is kept.
+  const marker = currentHtml.search(/<div[^>]*id="?(?:divRplyFwdMsg|appendonsend)"?/i);
+  if (marker === -1) return ownHtml;
+  const before = currentHtml.slice(0, marker);
+  const rule = before.lastIndexOf("<hr");
+  const quoteStart = rule !== -1 && marker - rule < 400 ? rule : marker;
+  // The document's own head and <body> stay too: Outlook keeps its styles there.
+  const body = /<body[^>]*>/i.exec(before);
+  const head = body ? before.slice(0, body.index + body[0].length) : "";
+  return `${head}${ownHtml}${currentHtml.slice(quoteStart)}`;
+}
 
 function mail(api: GraphApi, mailbox: OutlookMailboxRef): MailApi {
   return new MailApi(api, mailbox);
@@ -409,6 +430,25 @@ async function createComposed(api: MailApi, host: OutlookActionHost, origin: Ori
   return draftId;
 }
 
+/** A message's categories with some added and some removed, matched regardless of case, as Outlook does. */
+function categoriesAfter(current: readonly string[], add: readonly string[], remove: readonly string[]): string[] {
+  const categories = new Map(current.map(name => [name.toLowerCase(), name]));
+  for (const name of add) categories.set(name.toLowerCase(), name);
+  for (const name of remove) categories.delete(name.toLowerCase());
+  return [...categories.values()];
+}
+
+/**
+ * The messages' categories as Exchange holds them now, when a change touches categories: it is
+ * merged into them, so a category given or taken in Outlook meanwhile stays as it is. A message
+ * since deleted is absent.
+ */
+async function currentCategories(api: MailApi, messages: readonly { id: string }[], change: { addCategories?: readonly string[]; removeCategories?: readonly string[] }): Promise<Map<string, readonly string[]>> {
+  if (!change.addCategories?.length && !change.removeCategories?.length) return new Map();
+  const current = await api.messages(messages.map(message => message.id));
+  return new Map([...current].map(([id, message]) => [id, message.categories]));
+}
+
 async function setState(api: MailApi, id: string, state: Partial<MessageState>): Promise<void> {
   await api.request("PATCH", `/messages/${idPath(id)}`, {
     ...(state.isRead !== undefined ? { isRead: state.isRead } : {}),
@@ -517,15 +557,16 @@ export const definitions = {
       await host.inScope({ messages: payload.messages.map(message => message.id) });
       await host.graph(async api => {
         const box = mail(api, payload.mailbox);
+        const { addCategories = [], removeCategories = [] } = payload.change;
+        const current = await currentCategories(box, payload.messages, payload.change);
         for (const message of payload.messages) {
-          const categories = new Map(message.before.categories.map(name => [name.toLowerCase(), name]));
-          for (const name of payload.change.addCategories ?? []) categories.set(name.toLowerCase(), name);
-          for (const name of payload.change.removeCategories ?? []) categories.delete(name.toLowerCase());
+          const now = current.get(message.id);
+          if ((addCategories.length || removeCategories.length) && now === undefined) continue;
           try {
             await setState(box, message.id, {
               ...(payload.change.isRead !== undefined ? { isRead: payload.change.isRead } : {}),
               ...(payload.change.flag ? { flag: payload.change.flag } : {}),
-              ...(payload.change.addCategories || payload.change.removeCategories ? { categories: [...categories.values()] } : {}),
+              ...(now !== undefined ? { categories: categoriesAfter(now, addCategories, removeCategories) } : {}),
             });
           } catch (error) {
             if (error instanceof GraphApiError && error.status === 404) continue;
@@ -624,15 +665,21 @@ export const definitions = {
           const box = mail(api, payload.mailbox);
           // Fenced on the key the approver's view was read at, or for a draft created by an earlier
           // action, the key this binding's last write left; a send of it would be fenced the same way.
-          const current = await box.get<{ changeKey?: unknown; isDraft?: unknown }>(`/messages/${idPath(id)}`, { $select: "changeKey,isDraft" });
+          const current = await box.get<{ changeKey?: unknown; isDraft?: unknown; body?: { contentType?: unknown; content?: unknown } }>(`/messages/${idPath(id)}`,
+            { $select: payload.keepsQuote ? "changeKey,isDraft,body" : "changeKey,isDraft" });
           if (current.isDraft === false) throw new ActionApplyError("The draft has been sent, so it wasn't changed.");
           const expected = payload.changeKey ?? host.draftVersion(id)?.changeKey;
           if (expected === undefined || current.changeKey !== expected) {
             throw new ActionApplyError("The draft changed after this was proposed, so it wasn't changed. Ask the agent to read it again.");
           }
+          let html = payload.message.html;
+          if (payload.keepsQuote) {
+            if (typeof current.body?.content !== "string" || !/html/i.test(String(current.body.contentType))) throw new GraphApiError(502, "Outlook didn't return the draft's text.");
+            html = replaceOwnPart(current.body.content, html);
+          }
           await box.request("PATCH", `/messages/${idPath(id)}`, {
             subject: payload.message.subject, importance: payload.message.importance,
-            body: { contentType: "HTML", content: payload.message.html },
+            body: { contentType: "HTML", content: html },
             toRecipients: recipientsJson(payload.message.to), ccRecipients: recipientsJson(payload.message.cc), bccRecipients: recipientsJson(payload.message.bcc),
           }, { ifMatch: expected });
           for (const attachment of payload.removeAttachments) {
@@ -666,8 +713,16 @@ export const definitions = {
     apply: async (payload, host) => {
       const id = realId(host.refs, payload.draftId, "The draft");
       try {
-        await host.graph(api => mail(api, payload.mailbox).request("POST", `/messages/${idPath(id)}/move`, { destinationId: "deleteditems" }), { replayable: true });
+        await host.graph(async api => {
+          const box = mail(api, payload.mailbox);
+          // Sent from Outlook since, the message keeps its ID but is no longer the draft approved for deletion.
+          const current = await box.find<{ isDraft?: unknown }>(`/messages/${idPath(id)}`, { $select: "isDraft" });
+          if (current === null) return;
+          if (current.isDraft === false) throw new ActionApplyError("The draft has been sent, so it wasn't deleted.");
+          await box.request("POST", `/messages/${idPath(id)}/move`, { destinationId: "deleteditems" });
+        }, { replayable: true });
       } catch (error) {
+        if (error instanceof ActionApplyError) throw error;
         if (!(error instanceof GraphApiError && error.status === 404)) exchangeRefusal(error, "The draft");
       }
       await host.invalidate();
@@ -791,10 +846,31 @@ export const actions = defineActions<OutlookActionHost, OutlookActions>(definiti
 export type RevertOutcome = void | { message?: string; canRetry?: boolean; restart?: boolean };
 
 /** Undoes an applied action where Exchange allows. A sent message can't be unsent. */
+/** Re-proves what an undo is about to write is still the binding's; what has left it is left as it is. */
+async function leftBinding(host: OutlookActionHost, check: Parameters<OutlookActionHost["inScope"]>[0]): Promise<{ message: string; canRetry: false } | undefined> {
+  try {
+    await host.inScope(check);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof ActionApplyError)) throw error;
+    return { message: error.message, canRetry: false };
+  }
+}
+
+/**
+ * Undoes an applied action. A message keeps its ID wherever it goes, so one an undo would write is
+ * proved still covered, as applying did; drafts are the binding's own by construction.
+ */
 export async function revert(action: OutlookAction, host: OutlookActionHost): Promise<RevertOutcome> {
   switch (action.kind) {
     case "moveMessages": {
       const { payload } = action;
+      // Back where each came from: proved covered now, as a chosen destination is when applying.
+      const origins = [...new Set(payload.messages.map(message => message.folderId))].map(folder => ({ folder }));
+      for (const check of [{ messages: payload.messages.map(message => message.id) }, ...origins]) {
+        const left = await leftBinding(host, check);
+        if (left !== undefined) return left;
+      }
       await host.graph(async api => {
         const box = mail(api, payload.mailbox);
         for (const message of payload.messages) {
@@ -807,13 +883,21 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
     }
     case "updateMessages": {
       const { payload } = action;
+      const left = await leftBinding(host, { messages: payload.messages.map(message => message.id) });
+      if (left !== undefined) return left;
       await host.graph(async api => {
         const box = mail(api, payload.mailbox);
+        const current = await currentCategories(box, payload.messages, payload.change);
         for (const message of payload.messages) {
+          // Given back: what the change took that the message had. Taken back: what it gave that the message lacked.
+          const same = (name: string, other: string) => name.toLowerCase() === other.toLowerCase();
+          const givenBack = message.before.categories.filter(before => (payload.change.removeCategories ?? []).some(name => same(name, before)));
+          const takenBack = (payload.change.addCategories ?? []).filter(name => !message.before.categories.some(before => same(name, before)));
+          const now = current.get(message.id);
           await setState(box, message.id, {
             ...(payload.change.isRead !== undefined ? { isRead: message.before.isRead } : {}),
             ...(payload.change.flag ? { flag: message.before.flag } : {}),
-            ...(payload.change.addCategories || payload.change.removeCategories ? { categories: message.before.categories } : {}),
+            ...(now !== undefined ? { categories: categoriesAfter(now, givenBack, takenBack) } : {}),
           }).catch(error => {
             if (!(error instanceof GraphApiError && error.status === 404)) throw error;
           });
@@ -826,6 +910,8 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
       if (payload.createdId === undefined) return { message: "The folder was never created, so there is nothing to undo.", canRetry: false };
       const folder = await host.graph(api => mail(api, payload.mailbox).folder(payload.createdId!), { replayable: true });
       if (folder === null) return;
+      const left = await leftBinding(host, { folder: payload.createdId });
+      if (left !== undefined) return left;
       if (folder.totalCount > 0 || folder.childCount > 0) {
         return { message: `The folder "${payload.name}" isn't empty anymore, so it wasn't deleted. Move what's in it out first.`, canRetry: true };
       }

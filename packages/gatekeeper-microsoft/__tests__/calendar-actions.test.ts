@@ -46,6 +46,10 @@ function harness(replies: { status: number; body?: unknown }[] = []) {
   return { host, sent, invalidated: () => invalidated, versions };
 }
 
+/** What an undo reads first: where the event is and whether it is the user's meeting, then the calendar the action was approved for. */
+const placed = (body: Record<string, unknown> = {}, parent = "entry-cal") => ({ status: 200, body: { isOrganizer: true, attendees: [], singleValueExtendedProperties: [{ id: "Binary 0x0E09", value: parent }], ...body } });
+const boundCalendar = { status: 200, body: { id: "AAMkCal", name: "Calendar", singleValueExtendedProperties: [{ id: "Binary 0x0FFF", value: "entry-cal" }] } };
+
 const conflict = { status: 412, body: { error: { code: "ErrorIrresolvableConflict", message: "The send or update operation could not be performed because the change key passed in the request does not match the current change key for the item." } } };
 
 const createPayload: CalendarActions["createEvent"] = {
@@ -146,26 +150,36 @@ describe("changing and deleting", () => {
   });
 
   it("reverts a change by patching back just the fields it changed", async () => {
-    const { host, sent } = harness([{ status: 200, body: { isOrganizer: true, attendees: [] } }, { status: 200, body: {} }]);
+    const { host, sent } = harness([placed(), boundCalendar, { status: 200, body: {} }]);
     await revert({ kind: "updateEvent", payload: { ...updatePayload, before: { ...updatePayload.before, location: "never touched" } } }, host);
-    expect(sent[1]).toMatchObject({ method: "PATCH", path: "/me/events/AAMkEv", body: { subject: "Standup", start: { dateTime: "2026-10-19T09:00:00" } } });
-    expect(sent[1]!.body).not.toHaveProperty("location");
+    expect(sent.slice(0, 2).map(request => request.path.replace(/\?.*/, ""))).toEqual(["/me/events/AAMkEv", "/me/calendars/AAMkCal"]);
+    expect(sent[2]).toMatchObject({ method: "PATCH", path: "/me/events/AAMkEv", body: { subject: "Standup", start: { dateTime: "2026-10-19T09:00:00" } } });
+    expect(sent[2]!.body).not.toHaveProperty("location");
   });
 
   it("won't revert a change once the event has become a meeting the user organizes, as that would mail everyone on it", async () => {
-    const meeting = { status: 200, body: { isOrganizer: true, attendees: [{ emailAddress: { address: "sarah@contoso.com" } }] } };
-    const changed = harness([meeting]);
+    const meeting = placed({ attendees: [{ emailAddress: { address: "sarah@contoso.com" } }] });
+    const changed = harness([meeting, boundCalendar]);
     expect(await revert({ kind: "updateEvent", payload: updatePayload }, changed.host)).toMatchObject({ message: expect.stringContaining("become a meeting"), canRetry: false });
-    expect(changed.sent.map(request => request.method)).toEqual(["GET"]);
-    const created = harness([meeting]);
+    expect(changed.sent.map(request => request.method)).toEqual(["GET", "GET"]);
+    const created = harness([meeting, boundCalendar]);
     expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew" } }, created.host)).toMatchObject({ canRetry: false });
-    expect(created.sent.map(request => request.method)).toEqual(["GET"]);
+    expect(created.sent.map(request => request.method)).toEqual(["GET", "GET"]);
+  });
+
+  it("leaves alone an event that has left the calendar the action was approved for, or whose calendar is gone", async () => {
+    const elsewhere = harness([placed({}, "entry-other"), boundCalendar]);
+    expect(await revert({ kind: "updateEvent", payload: updatePayload }, elsewhere.host)).toEqual({ message: expect.stringContaining("no longer in the calendar"), canRetry: false });
+    expect(elsewhere.sent.map(request => request.method)).toEqual(["GET", "GET"]);
+    const noCalendar = harness([placed(), { status: 404, body: { error: { code: "ErrorItemNotFound", message: "x" } } }]);
+    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew" } }, noCalendar.host)).toEqual({ message: expect.stringContaining("no longer in the calendar"), canRetry: false });
+    expect(noCalendar.sent.map(request => request.method)).toEqual(["GET", "GET"]);
   });
 
   it("still reverts the user's own fields on someone else's invitation, which tells nobody", async () => {
-    const { host, sent } = harness([{ status: 200, body: { isOrganizer: false, attendees: [{ emailAddress: { address: "me@contoso.com" } }] } }, { status: 200, body: {} }]);
+    const { host, sent } = harness([placed({ isOrganizer: false, attendees: [{ emailAddress: { address: "me@contoso.com" } }] }), boundCalendar, { status: 200, body: {} }]);
     await revert({ kind: "updateEvent", payload: { ...updatePayload, changes: { categories: ["Vendors"] }, before: { categories: [] } } }, host);
-    expect(sent[1]).toMatchObject({ method: "PATCH", body: { categories: [] } });
+    expect(sent[2]).toMatchObject({ method: "PATCH", body: { categories: [] } });
   });
 
   it("deletes fenced on the change key, and takes an event already gone as deleted", async () => {

@@ -69,6 +69,7 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
   /** The mailbox as Exchange holds it now, for sessions and for the checks an approved action makes before writing. */
   readonly #mailbox = new MailboxGuard({
     scope: this.ctx.props.scope,
+    owner: () => this.#user.get(),
     read: op => this.#graph(op, true),
     cached: (key, ttlMs, load) => this.#cache.cached(key, ttlMs, load),
     ownDrafts: () => new Set([...this.ctx.storage.kv.list<number>({ prefix: OWN_DRAFT_PREFIX })].map(([key]) => key.slice(OWN_DRAFT_PREFIX.length))),

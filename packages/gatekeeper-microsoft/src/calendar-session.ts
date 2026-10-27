@@ -310,19 +310,22 @@ export class CalendarContext implements Disposable {
 
   /** Notes on each person a meeting invites, for the approver. */
   /**
-   * Who else was invited to an event not yet created, before any pending change that removed them.
-   * The overlay shows such a removal as done, but it may yet be rejected, so a change proposed
-   * meanwhile is classed as a meeting's until it has applied. Empty for a created event, whose
-   * attendees Exchange says.
+   * Whom a new meeting invites, while a pending change takes everyone off it: that change may be
+   * rejected, so what follows it is still a change to a meeting (and is refused until it is decided).
    */
-  othersBeforeRemoval(event: Pick<GraphEvent, "id">): InviteNote[] {
+  invitedAtCreation(event: Pick<GraphEvent, "id">): InviteNote[] {
     if (!isProvisional(event.id)) return [];
-    const overlay = this.overlay();
-    const lists = [
-      overlay.created.find(pending => pending.id === event.id)?.event.attendees ?? [],
-      ...(overlay.changes.get(event.id) ?? []).map(change => change.changes.attendees ?? []),
-    ];
-    return lists.filter(list => list.length > 0).at(-1) ?? [];
+    return this.overlay().created.find(pending => pending.id === event.id)?.event.attendees ?? [];
+  }
+
+  /**
+   * Refuses to tell a meeting's attendees anything more while a pending action is still changing
+   * who they are: until it is decided, nobody can say who an update or cancellation would reach.
+   */
+  requireInvitesSettled(event: Pick<GraphEvent, "id">): void {
+    if ((this.overlay().changes.get(event.id) ?? []).some(change => change.changes.attendees !== undefined)) {
+      throw new Error("A pending action is still changing who's invited to this meeting. Wait until it's approved or rejected before changing the meeting again.");
+    }
   }
 
   async invites(attendees: readonly { address: string; name?: string; optional?: boolean }[]): Promise<InviteNote[]> {
@@ -924,7 +927,7 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       throw new Error("This is a Teams meeting, whose description holds its join details. Change the description in Outlook, which keeps them.");
     }
     const target = await ctx.target(event, series ? "series" : undefined);
-    const othersBefore = hasOthers(event) ? event.attendees : ctx.othersBeforeRemoval(event);
+    const othersBefore = hasOthers(event) ? event.attendees : ctx.invitedAtCreation(event);
     const meetingBefore = othersBefore.length > 0;
     const meetingAfter = fields.attendees !== undefined ? fields.attendees.length > 0 : meetingBefore;
     if (!event.isOrganizer && meetingBefore) {
@@ -946,6 +949,7 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
     // Someone else's meeting was limited above to fields that stay on this calendar.
     if ((event.isOrganizer || !meetingBefore) && (meetingBefore || meetingAfter)) {
       this.#require("schedule", "change meetings");
+      ctx.requireInvitesSettled(event);
       if (fields.attendees) fields.attendees = await ctx.invites(fields.attendees);
       const kept = fields.attendees ?? othersBefore.filter(attendee => attendee.address.toLowerCase() !== me.address);
       const notified = await ctx.invites(kept);
@@ -980,10 +984,11 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
     }
     const [zone, me] = await Promise.all([ctx.zone(), ctx.me()]);
     const target = await ctx.target(event, series ? "series" : undefined);
-    const others = hasOthers(event) ? event.attendees : ctx.othersBeforeRemoval(event);
+    const others = hasOthers(event) ? event.attendees : ctx.invitedAtCreation(event);
     if (others.length > 0) {
       if (!event.isOrganizer) throw new Error("That's someone else's meeting. Use respond to decline it instead.");
       this.#require("schedule", "cancel meetings");
+      ctx.requireInvitesSettled(event);
       const notified = await ctx.invites(others.filter(attendee => attendee.address.toLowerCase() !== me.address));
       await ctx.host.submit(ctx.queue, "cancelMeeting", {
         calendar: ctx.calendarRef(calendar), target, ...(message ? { message } : {}), notified, zone, submittedAt: Date.now(),

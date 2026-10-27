@@ -205,6 +205,13 @@ describe("CalendarConfiguratorUI", () => {
     const { ui } = configurator();
     await expect(ui.openColleague("bob@contoso.com")).rejects.toThrow("Bob Smith hasn't shared a calendar with you");
     await expect(ui.openColleague("nobody@contoso.com")).rejects.toThrow("There's nobody with the address nobody@contoso.com");
+    // Named by primary address, which `/users/{address}` doesn't match when it differs from the sign-in name.
+    const byMail = new FakeGraph();
+    byMail.users["ada@contoso.com"] = {
+      id: "ada-object-id", displayName: "Ada Lovelace", listable: true, upn: "alovelace@contoso.com",
+      calendars: [{ id: "AAMkCalendarAda00001", name: "Calendar", owner: "ada@contoso.com", isDefault: true }],
+    };
+    expect(await configurator({ graph: byMail }).ui.openColleague("ada@contoso.com")).toMatchObject({ address: "ada@contoso.com", name: "Ada Lovelace", calendars: [{ id: "AAMkCalendarAda00001" }] });
     await expect(ui.openColleague("PHILLIP@contoso.com")).rejects.toThrow("That's you");
     await expect(ui.openColleague("not-an-address")).rejects.toThrow("isn't an email address");
     await expect(configurator({ scopes: OWN_ONLY }).ui.openColleague("sarah@contoso.com")).rejects.toThrow(/can't open calendars shared with you/);

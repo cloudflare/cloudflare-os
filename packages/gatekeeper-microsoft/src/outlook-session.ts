@@ -20,7 +20,7 @@ import { isProvisional, OutsideBindingError } from "./binding";
 import { DownloadTooLargeError, GraphApiError, type GraphApi } from "./graph-api";
 import { organizationDomains } from "./directory";
 import type { StoredIdentity } from "./microsoft-credentials";
-import { MAX_BATCH, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
+import { MAX_BATCH, replaceOwnPart, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
 import {
   MAX_SUBJECT_CHARS, attachmentBytes, checkBody, checkSubject, mailToMarkdown, markdownToMailHtml, parseRecipients, senderKind,
 } from "./outlook-content";
@@ -116,7 +116,7 @@ function listed(items: readonly MessageInfo[]): string {
  * binding's cached view of the mailbox (folders, the organization's domains).
  */
 /** What {@link MailboxGuard} reads the mailbox with. */
-export type MailboxGuardHost = Pick<OutlookSessionHost, "scope" | "read" | "cached" | "ownDrafts">;
+export type MailboxGuardHost = Pick<OutlookSessionHost, "scope" | "owner" | "read" | "cached" | "ownDrafts">;
 
 /**
  * The binding's mailbox as Exchange holds it now, and the scope's proofs over it. A session's
@@ -157,9 +157,17 @@ export class MailboxGuard {
     return this.host.cached("wellKnown", WELL_KNOWN_TTL_MS, async () => Object.fromEntries(await this.mail(mail => mail.wellKnownFolders())));
   }
 
-  /** Whether the binding covers a message, as Exchange holds it now. */
+  /** The mailbox's own address, lower-cased. */
+  async address(): Promise<string> {
+    if (this.scope.mailbox.kind === "shared") return this.scope.mailbox.address.toLowerCase();
+    const me = await this.host.owner();
+    return (me.email ?? me.username ?? "").toLowerCase();
+  }
+
+  /** Whether the binding covers a message, as Exchange holds it now; its own mail, sent under a legacy address, is its own. */
   async covers(message: GraphMessage): Promise<boolean> {
-    return await admits(this.scope, message, this.folders, { ownDrafts: this.host.ownDrafts() });
+    const guarded = message.from === undefined || message.from.includes("@") ? message : { ...message, from: await this.address() };
+    return await admits(this.scope, guarded, this.folders, { ownDrafts: this.host.ownDrafts() });
   }
 
   /** Whether the binding covers a folder: one mail may be moved into, or a folder made in. */
@@ -513,21 +521,6 @@ function pageSizeOf(value: number | undefined): number {
 function isoDate(value: unknown, field: string): string {
   if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) throw new Error(`${field} must be an ISO 8601 date or time.`);
   return new Date(value).toISOString();
-}
-
-/** A reply's or forward's `body` HTML with its own part replaced by `ownHtml`, keeping the quoted original. */
-export function replaceOwnPart(currentHtml: string, ownHtml: string): string {
-  // Outlook puts the quoted original after a rule, then `divRplyFwdMsg` (or `appendonsend` while
-  // the original is still attached on send). Everything from that rule on is kept.
-  const marker = currentHtml.search(/<div[^>]*id="?(?:divRplyFwdMsg|appendonsend)"?/i);
-  if (marker === -1) return ownHtml;
-  const before = currentHtml.slice(0, marker);
-  const rule = before.lastIndexOf("<hr");
-  const quoteStart = rule !== -1 && marker - rule < 400 ? rule : marker;
-  // The document's own head and <body> stay too: Outlook keeps its styles there.
-  const body = /<body[^>]*>/i.exec(before);
-  const head = body ? before.slice(0, body.index + body[0].length) : "";
-  return `${head}${ownHtml}${currentHtml.slice(quoteStart)}`;
 }
 
 /** The session a read-only binding hands out. */
@@ -1067,7 +1060,7 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
       // A draft not yet created is edited by replacing what its creation will write.
       await ctx.host.submit(ctx.queue, "updateDraft", {
         mailbox: ctx.scope.mailbox, draftId: draft.id, subject: draft.message.subject, message: { ...message, attachments: next.attachments },
-        before: { ...draft.message }, removeAttachments: [], submittedAt: Date.now(),
+        before: { ...draft.message }, removeAttachments: [], ...(draft.isReplyOrForward ? { keepsQuote: true as const } : {}), submittedAt: Date.now(),
       });
     } else {
       await ctx.host.submit(ctx.queue, "updateDraft", {

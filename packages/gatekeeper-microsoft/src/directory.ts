@@ -9,15 +9,34 @@ export async function organizationDomains(api: GraphApi): Promise<string[]> {
   return (body.value ?? []).flatMap(org => org.verifiedDomains ?? []).flatMap(domain => typeof domain.name === "string" ? [domain.name.toLowerCase()] : []);
 }
 
+/** Someone in the directory, by object ID and primary SMTP address. */
+export type DirectoryUser = { id: string; mail: string; displayName?: string };
+
+type UserRow = { id?: unknown; mail?: unknown; displayName?: unknown };
+const USER_SELECT = "id,mail,displayName";
+
+function user(row: UserRow, address: string): DirectoryUser {
+  return {
+    id: row.id as string, mail: typeof row.mail === "string" && row.mail !== "" ? row.mail : address,
+    ...(typeof row.displayName === "string" && row.displayName !== "" ? { displayName: row.displayName } : {}),
+  };
+}
+
 /**
  * The directory user whose primary SMTP address this is, or null. Sharing lists and calendar links
  * name people by `mail`, which needn't be their sign-in name, the only thing `/users/{address}`
  * matches. Null too when the grant can't search the directory (no `User.ReadBasic.All`).
  */
-export async function findUserByMail(api: GraphApi, address: string): Promise<{ id: string; mail: string } | null> {
-  const found = await api.find<{ value?: { id?: unknown; mail?: unknown }[] }>("/users", {
-    query: { $filter: `mail eq '${address.replace(/'/g, "''")}'`, $select: "id,mail", $top: "1" },
+export async function findUserByMail(api: GraphApi, address: string): Promise<DirectoryUser | null> {
+  const found = await api.find<{ value?: UserRow[] }>("/users", {
+    query: { $filter: `mail eq '${address.replace(/'/g, "''")}'`, $select: USER_SELECT, $top: "1" },
   });
-  const user = found?.value?.[0];
-  return typeof user?.id === "string" ? { id: user.id, mail: typeof user.mail === "string" ? user.mail : address } : null;
+  const row = found?.value?.[0];
+  return typeof row?.id === "string" ? user(row, address) : null;
+}
+
+/** The directory user an address names: by sign-in name, which `/users/{address}` matches, else by primary SMTP address. */
+export async function findUser(api: GraphApi, address: string): Promise<DirectoryUser | null> {
+  const direct = await api.find<UserRow>(`/users/${encodeURIComponent(address)}`, { query: { $select: USER_SELECT } });
+  return typeof direct?.id === "string" ? user(direct, address) : await findUserByMail(api, address);
 }

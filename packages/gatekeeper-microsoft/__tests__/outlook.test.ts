@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
 import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
-  definitions, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
+  definitions, replaceOwnPart, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
 } from "../src/outlook-actions";
 import { MailApi, parseMessage } from "../src/outlook-graph";
 import { OutlookHookDeliveryImpl, handleOutlookNotification } from "../src/outlook-hooks";
@@ -17,7 +17,7 @@ import {
   OutlookUrlError, admits, admitsFolder, describeScope, isNarrowed, lowerAccess, outlookUrl, parseOutlookUrl,
   type FolderTree, type GuardedMessage, type OutlookScope,
 } from "../src/outlook-scope";
-import { OutlookContext, OutlookReaderImpl, OutlookSessionImpl, replaceOwnPart } from "../src/outlook-session";
+import { OutlookContext, OutlookReaderImpl, OutlookSessionImpl } from "../src/outlook-session";
 import type { MessageInfo } from "../src/outlook-types";
 
 const NOW = Date.parse("2026-10-17T12:00:00Z");
@@ -485,8 +485,12 @@ describe("editing a draft", () => {
       readFile: async () => new Uint8Array(), releaseFile: () => {}, invalidate: async () => {},
       rememberDraft: () => {}, noteDraftVersion: () => {}, draftVersion: (id: string) => versions[id],
     };
-    return { host: actionHost as unknown as Parameters<typeof definitions.updateDraft.apply>[1], calls };
+    return { host: actionHost as unknown as Parameters<typeof definitions.updateDraft.apply>[1], calls, fetch };
   }
+  const sentBody = (fetch: ReturnType<typeof vi.fn>, call: string) => {
+    const match = fetch.mock.calls.find(([input, init]) => `${(init as RequestInit).method} ${new URL(String(input)).pathname.replace("/v1.0/me", "")}` === call);
+    return JSON.parse((match![1] as RequestInit).body as string) as Record<string, unknown>;
+  };
   const edit = (draftId: string, changeKey?: string): OutlookActions["updateDraft"] => ({
     mailbox: ME, draftId, subject: "Plans", message: composed(), before: composed(), removeAttachments: [], ...(changeKey ? { changeKey } : {}), submittedAt: 0,
   });
@@ -505,6 +509,23 @@ describe("editing a draft", () => {
     const { host: h, calls } = host([json({ changeKey: "k1", isDraft: false })]);
     await expect(definitions.updateDraft.apply(edit("AAMk1", "k1"), h)).rejects.toThrow(/has been sent/);
     expect(calls.some(entry => entry.call.startsWith("PATCH"))).toBe(false);
+  });
+
+  it("edits a reply or forward created by an earlier action above the quoted original Outlook wrote, which stays", async () => {
+    const quoted = '<html><body><p>Old intro</p><hr style="display:inline-block"><div id="divRplyFwdMsg"><b>From:</b> Ada</div><div>Original</div></body></html>';
+    const { host: h, fetch } = host([json({ changeKey: "made", isDraft: true, body: { contentType: "html", content: quoted } }), json({}), json({ changeKey: "after" })], { AAMkReal: { changeKey: "made", at: 0 } });
+    await definitions.updateDraft.apply({ ...edit("~1"), keepsQuote: true }, h);
+    expect(sentBody(fetch, "PATCH /messages/AAMkReal").body).toEqual({ contentType: "HTML", content: replaceOwnPart(quoted, composed().html) });
+    expect(sentBody(fetch, "PATCH /messages/AAMkReal").body).toMatchObject({ content: expect.stringContaining("divRplyFwdMsg") });
+  });
+
+  it("deletes a draft only while it is still one", async () => {
+    const { host: h, calls } = host([json({ isDraft: true }), json({})]);
+    await definitions.deleteDraft.apply({ mailbox: ME, draftId: "AAMk1", subject: "Plans", submittedAt: 0 }, h);
+    expect(calls.map(entry => entry.call)).toEqual(["GET /messages/AAMk1", "POST /messages/AAMk1/move"]);
+    const sent = host([json({ isDraft: false })]);
+    await expect(definitions.deleteDraft.apply({ mailbox: ME, draftId: "AAMk1", subject: "Plans", submittedAt: 0 }, sent.host)).rejects.toThrow(/has been sent/);
+    expect(sent.calls.some(entry => entry.call.startsWith("POST"))).toBe(false);
   });
 
   it("reverts only a draft still as the edit left it", async () => {
@@ -749,8 +770,10 @@ describe("organizing at apply", () => {
   /** An action host whose Graph answers in order, and whose scope proof the test scripts. */
   function host(answers: Response[]) {
     const calls: string[] = [];
+    const bodies: Record<string, unknown>[] = [];
     const fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
       calls.push(`${init.method ?? "GET"} ${new URL(String(input)).pathname}`);
+      if (typeof init.body === "string") bodies.push(JSON.parse(init.body) as Record<string, unknown>);
       const next = answers.shift();
       if (next === undefined) throw new Error(`unexpected request to ${String(input)}`);
       return next;
@@ -763,8 +786,12 @@ describe("organizing at apply", () => {
       invalidate: async () => {},
       inScope,
     };
-    return { host: actionHost as unknown as Parameters<typeof definitions.moveMessages.apply>[1], calls, inScope };
+    return { host: actionHost as unknown as Parameters<typeof definitions.moveMessages.apply>[1], calls, bodies, inScope };
   }
+  const batch = (rows: { id: string; categories: string[] }[]) => json({
+    responses: rows.map((row, index) => ({ id: String(index), status: 200, body: { id: row.id, parentFolderId: "inbox", conversationId: "c1", isDraft: false, from: { emailAddress: { address: "ada@contoso.com" } }, categories: row.categories } })),
+  });
+  const state = (categories: string[] = []) => ({ isRead: false, flag: { status: "notFlagged" as const }, categories });
 
   it("proves the messages, and a chosen destination, still covered before moving them", async () => {
     const { host: h, calls, inScope } = host([json({}), json({})]);
@@ -785,6 +812,38 @@ describe("organizing at apply", () => {
     const message = { ...target("m1"), before: { isRead: false, flag: { status: "notFlagged" as const }, categories: [] } };
     await expect(definitions.updateMessages.apply({ mailbox: ME, messages: [message], change: { isRead: true }, submittedAt: 0 }, h)).rejects.toThrow("gone");
     expect(calls).toEqual([]);
+  });
+
+  it("proves an undo's messages, and the folders they came from, still covered before moving them back", async () => {
+    const applied: OutlookAction = { kind: "moveMessages", payload: { mailbox: ME, messages: [target("m1"), { ...target("m2"), folderId: "team" }, target("m3")], as: "archive", to: { id: "archive", name: "Archive", path: "Archive" }, submittedAt: 0, appliedAt: 1 } };
+    const { host: h, calls, inScope } = host([json({}), json({}), json({})]);
+    expect(await revert(applied, h)).toBeUndefined();
+    expect(inScope.mock.calls.map(([check]) => check)).toEqual([{ messages: ["m1", "m2", "m3"] }, { folder: "F1" }, { folder: "team" }]);
+    expect(calls).toHaveLength(3);
+    const left = host([]);
+    left.inScope.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new ActionApplyError("That folder is no longer one this connection covers, so nothing was changed."));
+    expect(await revert(applied, left.host)).toEqual({ message: expect.stringMatching(/no longer one this connection covers/), canRetry: false });
+    expect(left.calls).toEqual([]);
+    const update: OutlookAction = { kind: "updateMessages", payload: { mailbox: ME, messages: [{ ...target("m1"), before: state() }], change: { isRead: false }, submittedAt: 0, appliedAt: 1 } };
+    const gone = host([]);
+    gone.inScope.mockRejectedValueOnce(new ActionApplyError("gone"));
+    expect(await revert(update, gone.host)).toEqual({ message: "gone", canRetry: false });
+    expect(gone.calls).toEqual([]);
+  });
+
+  it("merges a category change into the categories the message has by then, and takes back only what it changed", async () => {
+    const messages = [{ ...target("m1"), before: state(["Blue"]) }];
+    const { host: h, calls, bodies } = host([batch([{ id: "m1", categories: ["Blue", "Colleague"] }]), json({})]);
+    await definitions.updateMessages.apply({ mailbox: ME, messages, change: { addCategories: ["Added"], removeCategories: ["blue"] }, submittedAt: 0 }, h);
+    expect(calls).toEqual(["POST /v1.0/$batch", "PATCH /v1.0/me/messages/m1"]);
+    expect(bodies[1]).toEqual({ categories: ["Colleague", "Added"] });
+    const undo = host([batch([{ id: "m1", categories: ["Colleague", "Added", "Later"] }]), json({})]);
+    await revert({ kind: "updateMessages", payload: { mailbox: ME, messages, change: { addCategories: ["Added"], removeCategories: ["blue"] }, submittedAt: 0, appliedAt: 1 } }, undo.host);
+    expect(undo.bodies[1]).toEqual({ categories: ["Colleague", "Later", "Blue"] });
+    // Read state alone needs no read first.
+    const read = host([json({})]);
+    await definitions.updateMessages.apply({ mailbox: ME, messages, change: { isRead: true }, submittedAt: 0 }, read.host);
+    expect(read.calls).toEqual(["PATCH /v1.0/me/messages/m1"]);
   });
 
   it("proves a new folder's parent, unless it is the top of the mailbox", async () => {

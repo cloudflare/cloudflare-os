@@ -44,6 +44,7 @@ const ADA = "AAMkAda00001";
 const EVE = "AAMkEve00001";
 const EVE_INVOICE = "AAMkEve00002";
 const USER_DRAFT = "AAMkUserDrft";
+const SENT_COPY = "AAMkSentCopy";
 const MANY = "AAMkMany0001";
 const ATTACHMENT_PAGES = 101;
 const MESSAGES: Message[] = [
@@ -62,6 +63,8 @@ const MESSAGES: Message[] = [
   { id: "AAMkAdaVend1", folder: VENDORS, conversationId: "c3", from: "ada@contoso.com", subject: "Vendor list", body: "<p>List.</p>" },
   { id: "AAMkAdaJunk1", folder: JUNK, conversationId: "c4", from: "ada@contoso.com", subject: "Lottery", body: "<p>You won.</p>" },
   { id: USER_DRAFT, folder: DRAFTS, conversationId: "c5", from: "phillip@contoso.com", subject: "My draft", body: "<p>Dear all,</p>", isDraft: true, changeKey: "ck-user" },
+  // A sent copy, whose sender Exchange gives as the mailbox's legacy X.500 address.
+  { id: SENT_COPY, folder: "AAMkSent0000", conversationId: "c1", from: "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=PHILLIP", subject: "RE: Quarterly numbers", body: "<p>Thanks.</p>" },
   {
     id: MANY, folder: INBOX, conversationId: "c6", from: "ada@contoso.com", subject: "Photos", body: "<p>All of them.</p>",
     attachments: Array.from({ length: ATTACHMENT_PAGES }, (_, index) => ({ id: `AAMkAttMany${String(index).padStart(3, "0")}`, name: `photo-${index}.txt`, contentType: "text/plain", content: `photo ${index}` })),
@@ -309,6 +312,16 @@ describe("a whole-mailbox binding", () => {
     expect(observations.map(observation => observation.title)).toContain("Read an Outlook message");
   });
 
+  it("edits a forward not yet created as its own part alone, so the original Outlook quotes at creation stays", async () => {
+    const { writer, submitted } = session(whole("send"), "send");
+    const draft = await writer.createForwardDraft(ADA, ["grace@contoso.com"], "FYI");
+    await writer.updateDraft(draft.id, { body: "FYI, see Ada's numbers below." });
+    expect(submitted[1]).toMatchObject({ kind: "updateDraft", payload: { draftId: draft.id, keepsQuote: true } });
+    const own = await writer.createDraft({ to: ["grace@contoso.com"], subject: "Mine", body: "Hello" });
+    await writer.updateDraft(own.id, { body: "Hello again" });
+    expect(submitted[3]!.payload).not.toHaveProperty("keepsQuote");
+  });
+
   it("counts the message a reply is to as read, since the reply it returns describes it", async () => {
     const { writer, observations } = session(whole("send"), "send");
     const reply = await writer.createReplyDraft(ADA, "Thanks, will do.");
@@ -319,6 +332,15 @@ describe("a whole-mailbox binding", () => {
   it("fails rather than guessing when Graph leaves a folder out of the well-known batch", async () => {
     const { reader } = session(fromAda(), "read", { omitFromBatch: "junkemail" });
     await expect(reader.listFolders()).rejects.toThrow(/left a folder out of a batch/);
+  });
+});
+
+describe("a binding narrowed to the user's own address", () => {
+  it("covers their sent mail, whose sender Exchange gives as a legacy address", async () => {
+    const { reader } = session({ mailbox: { kind: "me" }, senders: ["phillip@contoso.com"], access: "read" });
+    const sent = await reader.getMessage(SENT_COPY);
+    expect(sent.from).toEqual({ address: "phillip@contoso.com" });
+    await expect(reader.getMessage(ADA)).rejects.toThrow(OUTSIDE);
   });
 });
 

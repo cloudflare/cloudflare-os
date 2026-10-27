@@ -6,7 +6,7 @@
 
 import type { GraphApi } from "./graph-api";
 import { CalendarApi } from "./calendar-graph";
-import { findUserByMail } from "./directory";
+import { findUser } from "./directory";
 import {
   CalendarUrlError, accessCeiling, lowerAccess, parseCalendarUrl, type CalendarAccessLevel, type CalendarOwnerRef, type CalendarScope,
 } from "./calendar-scope";
@@ -54,9 +54,7 @@ export async function resolveCalendarUrl(api: GraphApi, url: string, ceiling: Ca
 /** The owner a URL names: the user, or someone in their organization, by object ID. */
 async function resolveOwner(api: GraphApi, address: string | undefined, me: string): Promise<CalendarOwnerRef> {
   if (address === undefined || address === me.toLowerCase()) return { kind: "me" };
-  // `/users/{address}` matches a sign-in name; a calendar's owner is usually named by primary SMTP address.
-  const direct = await api.find<{ id?: unknown; mail?: unknown }>(`/users/${encodeURIComponent(address)}`, { query: { $select: "id,mail" } });
-  const user = typeof direct?.id === "string" ? { id: direct.id, mail: typeof direct.mail === "string" ? direct.mail : address } : await findUserByMail(api, address);
+  const user = await findUser(api, address);
   if (user === null) throw new CalendarUrlError(`There's nobody with the address ${address} in your organization.`);
   // Another of the user's own addresses names the user, whose calendars are checked as their own.
   const self = await api.get<{ id?: unknown }>("/me", { query: { $select: "id" } });

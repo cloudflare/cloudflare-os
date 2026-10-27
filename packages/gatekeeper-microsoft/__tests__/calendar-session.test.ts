@@ -390,15 +390,21 @@ describe("an all-calendars binding", () => {
     expect((await writer.getEvent("~1")).body).toBe("Second");
   });
 
-  it("keeps classing a new meeting's follow-ups as a meeting's while a removal of its attendees is pending", async () => {
+  it("tells a meeting's attendees nothing more while a change to who they are is pending, since nobody can say whom it would reach", async () => {
     const { writer, submitted } = session(scope(), "schedule");
     await writer.createEvent({ subject: "Sync", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: TEAM.id, attendees: ["sarah@contoso.com"] });
-    await writer.updateEvent("~1", { attendees: [] });
-    // The removal may be rejected, so neither of these can be auto-approved as nobody else's.
-    await writer.updateEvent("~1", { subject: "Sync (renamed)" });
-    await writer.deleteEvent("~1");
-    expect(submitted.map(action => action.kind)).toEqual(["createMeeting", "updateMeeting", "updateMeeting", "cancelMeeting"]);
-    expect((submitted[3]!.payload as CalendarActions["cancelMeeting"]).notified.map(invite => invite.address)).toEqual(["sarah@contoso.com"]);
+    await writer.updateEvent("~1", { attendees: ["ada@fabrikam.com"] });
+    const pending = /still changing who's invited/;
+    await expect(writer.updateEvent("~1", { subject: "Sync (renamed)" })).rejects.toThrow(pending);
+    await expect(writer.deleteEvent("~1")).rejects.toThrow(pending);
+    expect(submitted.map(action => action.kind)).toEqual(["createMeeting", "updateMeeting"]);
+    // A removal of everyone, which may be rejected, still makes what follows a change to a meeting: refused the same way, never auto-approved as nobody else's.
+    const removal = session(scope(), "schedule");
+    await removal.writer.createEvent({ subject: "Sync", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: TEAM.id, attendees: ["sarah@contoso.com"] });
+    await removal.writer.updateEvent("~1", { attendees: [] });
+    await expect(removal.writer.updateEvent("~1", { subject: "Sync (renamed)" })).rejects.toThrow(pending);
+    await expect(removal.writer.deleteEvent("~1")).rejects.toThrow(pending);
+    expect(removal.submitted.map(action => action.kind)).toEqual(["createMeeting", "updateMeeting"]);
   });
 
   it("proposes an event in a calendar someone else owns as a change that is never auto-approved", async () => {

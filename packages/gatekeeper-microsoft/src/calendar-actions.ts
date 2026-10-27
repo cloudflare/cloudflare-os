@@ -520,10 +520,23 @@ const BECAME_MEETING = {
   canRetry: false,
 } as const;
 
-/** Whether changing an event now would mail others: the user organizes it and has invited someone. */
-async function isOwnMeeting(api: CalendarApi, id: string): Promise<boolean> {
-  const current = await api.find<{ isOrganizer?: unknown; attendees?: unknown }>(`/events/${idPath(id)}`, { $select: "isOrganizer,attendees" });
-  return current !== null && current.isOrganizer === true && Array.isArray(current.attendees) && current.attendees.length > 0;
+const LEFT_CALENDAR = {
+  message: "The event is no longer in the calendar this connection covers, so it was left as it is.",
+  canRetry: false,
+} as const;
+
+/**
+ * What stands in the way of undoing a change to an event: it has left the calendar the action was
+ * approved for, which is what proved it the binding's, or it has become a meeting the user
+ * organizes, whose undo would mail everyone invited. One that is gone is left to the handler, whose
+ * write finds nothing.
+ */
+async function blocksUndo(api: CalendarApi, calendar: CalendarRef, id: string): Promise<typeof LEFT_CALENDAR | typeof BECAME_MEETING | undefined> {
+  const placed = await api.placement(id);
+  if (placed === null) return undefined;
+  const bound = await api.calendar(calendar.id);
+  if (bound === null || placed.parentEntryId !== bound.entryId) return LEFT_CALENDAR;
+  return placed.ownMeeting ? BECAME_MEETING : undefined;
 }
 
 /** Undoes an applied action where nobody else was told. Invitations, updates and responses can't be unsent. */
@@ -537,7 +550,8 @@ export async function revert(action: CalendarAction, host: CalendarActionHost): 
       return await host.graph(async api => {
         const calendar = calendarApi(api, payload.calendar);
         // Deleting a meeting the user organizes cancels it for everyone.
-        if (await isOwnMeeting(calendar, createdId)) return BECAME_MEETING;
+        const blocked = await blocksUndo(calendar, payload.calendar, createdId);
+        if (blocked !== undefined) return blocked;
         await calendar.request("DELETE", `/events/${idPath(createdId)}`)
           .catch(error => { if (!(error instanceof GraphApiError && error.status === 404)) throw error; });
         return undefined;
@@ -554,7 +568,8 @@ export async function revert(action: CalendarAction, host: CalendarActionHost): 
       if (before.start !== undefined) before.allDay = payload.before.allDay;
       return await host.graph(async api => {
         const calendar = calendarApi(api, payload.calendar);
-        if (await isOwnMeeting(calendar, id)) return BECAME_MEETING;
+        const blocked = await blocksUndo(calendar, payload.calendar, id);
+        if (blocked !== undefined) return blocked;
         await calendar.request("PATCH", `/events/${idPath(id)}`, eventJson(before, payload.zone));
         return undefined;
       }, { replayable: true });

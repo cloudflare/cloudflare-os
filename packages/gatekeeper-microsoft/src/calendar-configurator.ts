@@ -16,6 +16,7 @@ import {
   type CalendarAccessLevel, type CalendarOwnerRef, type CalendarScope,
 } from "./calendar-scope";
 import { ConnectionCache, normalizeAddress, type Cached, type ConfiguratorConnection } from "./configurator-connection";
+import { findUser } from "./directory";
 import { GraphApiError } from "./graph-api";
 import { CALENDAR_RESOURCE, grantedCalendarAccess, grantedResourcePatterns, grantsSharedCalendars } from "./microsoft-env";
 
@@ -161,12 +162,12 @@ export class CalendarConfiguratorUI extends RpcTarget implements CalendarConfigu
     return this.#cache.cached(this.#colleagues, address, async () => {
       const { me } = await this.#cache.connected();
       return await this.#connection.read(async api => {
-        const user = await api.find<{ id?: unknown; mail?: unknown; displayName?: unknown }>(`/users/${encodeURIComponent(address)}`, { query: { $select: "id,mail,displayName" } });
-        if (user === null || typeof user.id !== "string") throw new Error(`There's nobody with the address ${address} in your organization. Check the address.`);
+        const user = await findUser(api, address);
+        if (user === null) throw new Error(`There's nobody with the address ${address} in your organization. Check the address.`);
         // As `resolveCalendarUrl` names the owner, so the binding is the one previewed.
-        const ref = { kind: "shared" as const, id: user.id.toLowerCase(), address: typeof user.mail === "string" && user.mail !== "" ? user.mail.toLowerCase() : address };
+        const ref = { kind: "shared" as const, id: user.id.toLowerCase(), address: user.mail.toLowerCase() };
         if (ref.address === me) throw new Error("That's you. Choose Your calendars instead.");
-        const name = typeof user.displayName === "string" && user.displayName !== "" ? user.displayName : ref.address;
+        const name = user.displayName ?? ref.address;
         const calendars = new CalendarApi(api, ref);
         try {
           return { ref, name, calendars: (await calendars.calendars()).map(row).toSorted(calendarOrder) };

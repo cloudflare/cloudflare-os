@@ -348,6 +348,21 @@ export class CalendarApi {
   }
 
   /**
+   * What undoing a change to an event turns on: its parent's entry ID, and whether the user
+   * organizes it with attendees, so a change would mail them. Null when it is gone.
+   */
+  async placement(id: string): Promise<{ parentEntryId?: string; ownMeeting: boolean } | null> {
+    if (!isMailId(id)) return null;
+    const body = await this.find<unknown>(`/events/${idPath(id)}`, {
+      $select: "isOrganizer,attendees", $expand: `singleValueExtendedProperties($filter=id eq '${PARENT_ENTRY_ID}')`,
+    });
+    if (body === null) return null;
+    const json = record(body, "event");
+    const parent = extended(json, PARENT_ENTRY_ID);
+    return { ...(parent ? { parentEntryId: parent } : {}), ownMeeting: json.isOrganizer === true && Array.isArray(json.attendees) && json.attendees.length > 0 };
+  }
+
+  /**
    * Each event's parent folder entry ID, read in batches: how a listing's rows are checked against
    * the calendar it was listed from. An event Graph can't find, or gives no parent for, is absent.
    */
