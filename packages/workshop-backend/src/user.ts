@@ -750,13 +750,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           if (state === "denied") throw new Error("Workspace access denied.");
           if (!state) { this.#forgetChat(workspaceId, chatId); return; }
           if (through > state.timelineTailSequence) throw new Error("Invalid timeline sequence.");
-          // A new arrival may have advanced the head during the source read. Preserve that head
-          // and its queued alerts, rather than committing the older snapshot over it.
+          // Arrivals can advance the head and consume the user's own next message during this
+          // await. Preserve both advances unless the command explicitly rewinds the read horizon.
           let current = this.#cursor(workspaceId, chatId);
+          let readThroughVisibleSequence = state.readThroughVisibleSequence;
+          if (!options.horizon.rewind && current.readThroughSequence > through) {
+            through = current.readThroughSequence;
+            readThroughVisibleSequence = current.readThroughVisibleSequence!;
+          }
           let latest = Math.max(current.latestVisibleSequence ?? 0, state.latestVisibleSequence);
           let updated = {...current, ...this.#mergeHead(current, state), readThroughSequence: through,
-            readThroughVisibleSequence: state.readThroughVisibleSequence, latestVisibleSequence: latest,
-            unreadCount: latest - state.readThroughVisibleSequence,
+            readThroughVisibleSequence, latestVisibleSequence: latest,
+            unreadCount: latest - readThroughVisibleSequence,
             notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : state.notificationBaseline};
           this.#storeCursor(updated);
           // Publish the committed read position before alert delivery can suspend or reset us.

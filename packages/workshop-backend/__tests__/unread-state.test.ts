@@ -269,6 +269,31 @@ describe("local counts and explicit read boundaries", () => {
     expect(await cursor(fixture)).toMatchObject({readThroughVisibleSequence: 1, latestVisibleSequence: 2, unreadCount: 1});
   });
 
+  it.each([false, true])("preserves an own-message read advance across a source await unless explicitly rewinding: %s", async rewind => {
+    const fixture = await setup(); await append(fixture, 0);
+    await fixture.user.markChatRead(receipt(fixture, 0));
+    await withImpl(fixture.workspace, async impl => { write(impl, 1, ""); });
+    const author = await fixture.user.whoami();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const original = OverseerDurableObject.prototype.getChatReadPositionForUser;
+    using source = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser")
+      .mockImplementationOnce(async function(...args) {
+        const state = await original.apply(this, args);
+        entered.resolve(); await release.promise; return state;
+      });
+    await runInDurableObject(fixture.user, async instance => {
+      const read = rewind ? instance.markChatUnread(fixture.workspaceId, 1, 2) : instance.markChatRead(receipt(fixture, 1));
+      try {
+        await entered.promise;
+        await withImpl(fixture.workspace, async impl => { write(impl, 2, "Own message", 1, author); await impl.deliverDirtyChats(); });
+      } finally { release.resolve(); }
+      await read;
+    });
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: rewind ? 1 : 2,
+      readThroughVisibleSequence: rewind ? 1 : 2, latestVisibleSequence: 2, unreadCount: rewind ? 1 : 0});
+    expect(source).toHaveBeenCalledOnce();
+  });
+
   it("rehydrates all local counts without workspace RPCs or writes, independently of metadata", async () => {
     const fixture = await setup(); const other = await setup(fixture.user);
     await append(fixture, 0); await append(other, 0); await append(other, 2);
