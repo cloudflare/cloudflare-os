@@ -1,14 +1,22 @@
+import { Badge } from "@cloudflare/kumo/components/badge";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import type { KeyboardEvent, ReactNode } from "react";
 
-type ChoiceBodyProps = { mark: "checked" | "unchecked" | "none"; icon: ReactNode; title: string; subtitle?: string };
+type ChoiceBodyProps = {
+  mark: "checked" | "unchecked" | "none";
+  icon: ReactNode;
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  meta?: string;
+};
 
 /**
  * What the root's card and every row show: a radio's look (or room for one, so icons line up), an
  * icon and two lines. The look is only a cue; `aria-selected` or `aria-pressed` says it.
  */
-export const ChoiceBody = ({ mark, icon, title, subtitle }: ChoiceBodyProps) => (
+export const ChoiceBody = ({ mark, icon, title, subtitle, badge, meta }: ChoiceBodyProps) => (
   <>
     <span
       className={cn("flex size-4 shrink-0 items-center justify-center rounded-full",
@@ -20,9 +28,20 @@ export const ChoiceBody = ({ mark, icon, title, subtitle }: ChoiceBodyProps) => 
     <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center overflow-hidden text-kumo-subtle [&>svg]:size-5">
       {icon}
     </span>
+    {/* The title has the first line to itself; the badge, the subtitle and the meta share the second. */}
     <span className="flex min-w-0 flex-1 flex-col">
       <span className="truncate">{title}</span>
-      {subtitle && <span className="truncate text-xs text-kumo-subtle">{subtitle}</span>}
+      {(badge || subtitle || meta) && (
+        <span className="flex min-w-0 items-center gap-2 text-xs text-kumo-subtle">
+          {badge && (
+            <Badge variant="secondary" className="min-w-0 max-w-1/2 py-0">
+              <span className="truncate">{badge}</span>
+            </Badge>
+          )}
+          <span className="min-w-0 flex-1 truncate">{subtitle}</span>
+          {meta && <span className="max-w-1/3 shrink-0 truncate tabular-nums">{meta}</span>}
+        </span>
+      )}
     </span>
   </>
 );
@@ -65,7 +84,10 @@ export const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate,
       )}
     >
       <ChoiceBody {...body} mark={selected ? "checked" : action === "choose" ? "unchecked" : "none"} />
-      {action === "open" && <CaretRightIcon aria-hidden="true" size={16} className="shrink-0 text-kumo-subtle" />}
+      {/* Room for the caret on every row, so their meta lines up. */}
+      <span className="size-4 shrink-0 text-kumo-subtle">
+        {action === "open" && <CaretRightIcon aria-hidden="true" size={16} />}
+      </span>
     </div>
   );
 };

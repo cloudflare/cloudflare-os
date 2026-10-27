@@ -193,6 +193,10 @@ export type ConfiguratorUIHierarchyItem = {
    */
   icon?: string;
   subtitle?: string;
+  /** A short label under the title, before the subtitle, such as a classification or a state. */
+  badge?: string;
+  /** A short detail at the end of the line under the title, such as when the node changed or its size. */
+  meta?: string;
   /**
    * Whether the node can be connected. Defaults to true. A leaf is chosen from its own row; a
    * container from the row its listing starts with once it is open (see `choice`). An unselectable

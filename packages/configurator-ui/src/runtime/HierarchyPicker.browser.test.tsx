@@ -704,6 +704,15 @@ describe("loading", () => {
     expect(page.getByRole("option").elements()).toHaveLength(1);
     expect(list().element().textContent).not.toContain("\u202E");
   });
+
+  it("shows a node's badge and meta on the line under its title, stripped of formatting characters", async () => {
+    const loadItems = vi.fn<LoadItems>(async () => ({
+      items: [{ ...budget, badge: "Confidential", meta: "2 days ago\u202E" }],
+    }));
+    await render({ loadItems });
+
+    await expect.element(option("Budget.xlsx")).toMatchTextContent(/^Budget\.xlsx\s*Confidential\s*2 days ago$/);
+  });
 });
 
 describe("search", () => {

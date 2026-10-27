@@ -502,6 +502,8 @@ const Navigator = (props: HierarchyPickerProps) => {
               key={item.id}
               title={item.title}
               subtitle={rowSubtitle(item, query !== "")}
+              badge={item.badge}
+              meta={item.meta}
               icon={iconFor(item.icon, item.kind)}
               action={item.kind === "container" ? "open" : item.selectable ? "choose" : "none"}
               selected={showsChoice(item)}

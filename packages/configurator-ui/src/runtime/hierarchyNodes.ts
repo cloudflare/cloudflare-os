@@ -56,13 +56,15 @@ const sanitizePath = (value: unknown): Ancestor[] | undefined => {
 export const sanitizeItem = (value: unknown): Item | undefined => {
   const ancestor = sanitizeAncestor(value);
   if (!ancestor) return undefined;
-  const { kind, subtitle, path } = value as Record<string, unknown>;
+  const { kind, subtitle, badge, meta, path } = value as Record<string, unknown>;
   if (kind !== "container" && kind !== "leaf") return undefined;
   return {
     ...ancestor,
     kind,
     selectable: ancestor.selectable !== false,
     subtitle: displayText(subtitle),
+    badge: displayText(badge),
+    meta: displayText(meta),
     path: sanitizePath(path),
   };
 };
