@@ -281,9 +281,15 @@ export class CalendarContext implements Disposable {
     return events.filter(event => isProvisional(event.id) || parents.get(event.id) === calendar.entryId);
   }
 
-  /** An event as the agent sees it in this binding, pending changes applied. */
+  /**
+   * An event as the agent sees it in this binding, pending changes applied. A pending change can't
+   * lower what the binding hides: an event Exchange holds as private stays a busy block until a
+   * change making it otherwise has applied, since that change may yet be refused.
+   */
   info(event: GraphEvent, calendar: GraphCalendar, view: EventView, overlay: CalendarOverlay): EventInfo {
-    const { event: shown, pending } = isProvisional(event.id) ? { event, pending: "create" as const } : overlay.apply(event);
+    const applied = isProvisional(event.id) ? { event, pending: "create" as const } : overlay.apply(event);
+    const shown = hidesDetails(event, view) ? { ...applied.event, sensitivity: event.sensitivity } : applied.event;
+    const { pending } = applied;
     const info = eventInfo(shown, view, this.scope.kind === "all" ? calendar.id : undefined);
     return pending && view.details !== "freeBusy" ? { ...info, pending } : info;
   }

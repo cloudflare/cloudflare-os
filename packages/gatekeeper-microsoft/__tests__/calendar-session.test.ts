@@ -62,6 +62,9 @@ function seed(): Seeded[] {
     // A private series with an exception that isn't, and a Teams meeting; both outside the listing window.
     seedEvent("AAMkEvPrivateSeries", TEAM, "2026-10-21T16:00:00", "2026-10-21T16:30:00", { type: "seriesMaster", sensitivity: "private" }),
     seedEvent("AAMkEvPrivateSeriesOcc", TEAM, "2026-10-21T16:00:00", "2026-10-21T16:30:00", { type: "exception", seriesMasterId: "AAMkEvPrivateSeries" }),
+    // A series that isn't private with an exception that is; outside the listing window.
+    seedEvent("AAMkEvTeamSeries", TEAM, "2026-10-22T16:00:00", "2026-10-22T16:30:00", { type: "seriesMaster", subject: "Weekly" }),
+    seedEvent("AAMkEvTeamSeriesOcc", TEAM, "2026-10-22T16:00:00", "2026-10-22T16:30:00", { type: "exception", seriesMasterId: "AAMkEvTeamSeries", sensitivity: "private", subject: "Doctor" }),
     seedEvent("AAMkEvTeams", DEFAULT, "2026-10-21T18:00:00", "2026-10-21T18:30:00", {
       subject: "Design review", isOnlineMeeting: true, onlineMeeting: { joinUrl: "https://teams.microsoft.com/l/meetup-join/x" },
       attendees: [{ emailAddress: { address: "sarah@contoso.com", name: "Sarah" }, type: "required", status: { response: "accepted" } }],
@@ -405,6 +408,19 @@ describe("an all-calendars binding", () => {
     await expect(removal.writer.updateEvent("~1", { subject: "Sync (renamed)" })).rejects.toThrow(pending);
     await expect(removal.writer.deleteEvent("~1")).rejects.toThrow(pending);
     expect(removal.submitted.map(action => action.kind)).toEqual(["createMeeting", "updateMeeting"]);
+  });
+
+  it("keeps a private exception a busy block while a series change that would unhide it is pending", async () => {
+    const { reader, writer } = session(teamBinding("full", "busy", "edit"), "edit");
+    const before = await reader.getEvent("AAMkEvTeamSeriesOcc");
+    expect(before).toMatchObject({ private: true });
+    expect(before).not.toHaveProperty("subject");
+    await writer.updateEvent("AAMkEvTeamSeries", { sensitivity: "normal" }, { series: true });
+    const after = await reader.getEvent("AAMkEvTeamSeriesOcc");
+    expect(after).toMatchObject({ private: true });
+    expect(after).not.toHaveProperty("subject");
+    // The master itself was never private, so its own change reads back.
+    expect(await reader.getEvent("AAMkEvTeamSeries")).toMatchObject({ subject: "Weekly", sensitivity: "normal", pending: "update" });
   });
 
   it("proposes an event in a calendar someone else owns as a change that is never auto-approved", async () => {

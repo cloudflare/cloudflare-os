@@ -172,8 +172,8 @@ export type ScopeRoot = {
   ids: Pick<SharePointScopeInfo, "siteId" | "libraryId" | "folderId" | "fileId" | "listId" | "pageId">;
   /** For a library, folder or file binding: where entry paths start. */
   base?: PathBase;
-  /** The access unit of the top object, for observations that reveal nothing narrower. */
-  unit?: string;
+  /** The access units of the top object, for observations that reveal nothing narrower. */
+  units?: string[];
   siteUrl?: string;
 };
 
@@ -213,7 +213,7 @@ async function readScopeRoot(ctx: ScopeReader): Promise<ScopeRoot> {
       return {
         name: site.name, webUrl: site.webUrl, siteUrl: site.webUrl,
         description: `The ${site.name} site: its libraries, lists and pages. Not its subsites.`,
-        location: site.name, ids: { siteId: site.id }, unit: units.site(site.id),
+        location: site.name, ids: { siteId: site.id }, units: [units.site(site.id)],
       };
     }
     case "library": {
@@ -226,7 +226,7 @@ async function readScopeRoot(ctx: ScopeReader): Promise<ScopeRoot> {
         name: drive.name, webUrl: drive.webUrl, siteUrl: site?.webUrl,
         description: `The ${location} library, and everything in it.`,
         location, ids: { siteId: scope.siteId, libraryId: drive.id, folderId: encodeItemRef({ driveId: drive.id, itemId: root.id }) },
-        base: { driveId: drive.id, path: "", itemId: root.id }, unit: units.drive(drive.id),
+        base: { driveId: drive.id, path: "", itemId: root.id }, units: [units.drive(drive.id)],
       };
     }
     case "folder":
@@ -251,7 +251,7 @@ async function readScopeRoot(ctx: ScopeReader): Promise<ScopeRoot> {
         base: scope.kind === "folder"
           ? { driveId: item.driveId, path: full, itemId: item.id }
           : { driveId: item.driveId, path: item.parentPath ?? "", itemId: item.id },
-        unit: units.item({ driveId: item.driveId, itemId: item.id }),
+        units: [units.item({ driveId: item.driveId, itemId: item.id })],
       };
     }
     case "list": {
@@ -261,7 +261,7 @@ async function readScopeRoot(ctx: ScopeReader): Promise<ScopeRoot> {
         name: list.name, webUrl: list.webUrl, siteUrl: site?.webUrl,
         description: `The ${list.name} list${site ? ` in ${site.name}` : ""}: its items and columns.`,
         location: site ? `${site.name} › ${list.name}` : list.name,
-        ids: { siteId: scope.siteId, listId: encodeListRef(scope) }, unit: units.list(scope),
+        ids: { siteId: scope.siteId, listId: encodeListRef(scope) }, units: [units.list(scope)],
       };
     }
     case "page": {
@@ -272,7 +272,8 @@ async function readScopeRoot(ctx: ScopeReader): Promise<ScopeRoot> {
         name: info.title, webUrl: info.webUrl, siteUrl: site?.webUrl,
         description: `The page "${info.title}"${site ? ` in ${site.name}` : ""}.`,
         location: site ? `${site.name} › ${info.title}` : info.title,
-        ids: { siteId: scope.siteId, pageId: encodePageRef(scope) }, unit: units.page(scope),
+        // A page's title is its current version's, which a draft changes: the unit pins that version, as reading the page does.
+        ids: { siteId: scope.siteId, pageId: encodePageRef(scope) }, units: units.pageRead(scope, page.page.state, page.page.version),
       };
     }
   }
@@ -393,7 +394,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     const root = await this.ctx.root();
     const guard = this.ctx.guard;
     await this.ctx.observe("Read SharePoint connection scope", `Read what this connection covers: ${md(root.description)}`,
-      root.unit ? [root.unit] : []);
+      root.units ?? []);
     return {
       kind: this.ctx.host.scope.kind,
       name: root.name,
@@ -498,7 +499,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     const target = resolved.scope;
     const guard = this.ctx.guard;
     let link: ResolvedLink;
-    let unit: string | undefined;
+    let revealed: string[] = [];
     switch (target.kind) {
       case "all":
         if (scope.kind !== "all") throw new OutsideScopeError();
@@ -507,33 +508,36 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       case "site":
         guard.site(target.siteId);
         link = { kind: "site", id: target.siteId, name: resolved.name, webUrl: resolved.webUrl };
-        unit = units.site(target.siteId);
+        revealed = [units.site(target.siteId)];
         break;
       case "library":
         await guard.drive(target.driveId);
         link = { kind: "library", id: target.driveId, name: resolved.name, webUrl: resolved.webUrl };
-        unit = units.drive(target.driveId);
+        revealed = [units.drive(target.driveId)];
         break;
       case "folder":
       case "file": {
         const ref = { driveId: target.driveId, itemId: target.itemId };
         await guard.item(ref);
         link = { kind: target.kind, id: encodeItemRef(ref), name: resolved.name, webUrl: resolved.webUrl };
-        unit = units.item(ref);
+        revealed = [units.item(ref)];
         break;
       }
       case "list":
         guard.list(target);
         link = { kind: "list", id: encodeListRef(target), name: resolved.name, webUrl: resolved.webUrl };
-        unit = units.list(target);
+        revealed = [units.list(target)];
         break;
-      case "page":
+      case "page": {
         guard.page(target);
         link = { kind: "page", id: encodePageRef(target), name: resolved.name, webUrl: resolved.webUrl };
-        unit = units.page(target);
+        // The title is the current version's, which a draft changes: pinned to it, as reading the page is.
+        const page = await this.ctx.host.read(api => reads.getPage(api, target));
+        revealed = page === null ? [units.page(target)] : units.pageRead(target, page.page.state, page.page.version);
         break;
+      }
     }
-    await this.ctx.observe("Resolved a SharePoint link", `Looked up a link: the ${link.kind} ${md(link.name)}.`, unit ? [unit] : []);
+    await this.ctx.observe("Resolved a SharePoint link", `Looked up a link: the ${link.kind} ${md(link.name)}.`, revealed);
     return link;
   }
 
@@ -716,7 +720,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
         ? walk.authorize({
           title: "Searched SharePoint",
           description: `Searched for ${md(query)}${terminal ? "; there were no more results" : ""}.`,
-        }, root.unit ? { kind: "collections", ids: [root.unit] } : { kind: "baseline" })
+        }, root.units ? { kind: "collections", ids: root.units } : { kind: "baseline" })
         : walk.authorize({
           title: "Searched SharePoint",
           description: `Searched for ${md(query)}: ${items.slice(0, 20).map(entry => md(entry.name)).join(", ")}${items.length > 20 ? ", …" : ""}.`,
