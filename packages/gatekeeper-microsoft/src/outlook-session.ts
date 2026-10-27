@@ -1197,7 +1197,9 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
   async #move(ids: string[], to: FolderTarget, as: "move" | "archive" | "delete"): Promise<MessageInfo[]> {
     const ctx = this.ctx;
     const guarded = await ctx.guardedAll(ids);
-    const messages = guarded.filter(message => message.parentFolderId !== to.id);
+    // Already there once pending moves apply: a message with a move pending reads from where it is going.
+    const moved = ctx.overlay().moved;
+    const messages = guarded.filter(message => (moved.get(message.id) ?? message.parentFolderId) !== to.id);
     if (messages.length === 0) return await this.#shown(guarded, await ctx.infos(guarded));
     // Drafts stay in Drafts, and only one this binding wrote is its to remove: deleteDraft checks that.
     if (messages.some(message => message.isDraft)) throw new Error("Drafts stay in Drafts; use deleteDraft to remove one this connection wrote.");

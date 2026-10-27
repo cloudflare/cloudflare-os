@@ -75,7 +75,7 @@ export async function admits(
     return await descendsFrom(message.parentFolderId, scope.folder.id, folders);
   }
   // A narrowed binding sees neither Drafts, Junk nor Deleted Items, unless narrowed to one of them.
-  return !isNarrowed(scope) || !(await folders.privateFolders()).has(message.parentFolderId);
+  return !isNarrowed(scope) || !(await underPrivateFolder(message.parentFolderId, folders));
 }
 
 /**
@@ -85,7 +85,7 @@ export async function admits(
 export async function admitsFolder(scope: OutlookScope, folderId: string, folders: FolderTree): Promise<boolean> {
   if (!scope.folder) {
     if (!isNarrowed(scope)) return true;
-    return !(await folders.privateFolders()).has(folderId);
+    return !(await underPrivateFolder(folderId, folders));
   }
   if (folderId === scope.folder.id) return true;
   return scope.folder.subfolders && await descendsFrom(folderId, scope.folder.id, folders);
@@ -109,6 +109,22 @@ async function descendsFrom(folderId: string, ancestorId: string, folders: Folde
   for (let depth = 0; current !== null && depth < MAX_FOLDER_DEPTH; depth++) {
     current = await folders.parentOf(current);
     if (current === ancestorId) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `folderId` is one of Outlook's private folders or inside one: deleting a folder in Outlook
+ * moves it under Deleted Items, so a narrowed binding must look up the whole ancestry, not just the
+ * message's own folder. A tree deeper than is walked counts as private, as `descendsFrom` refuses it.
+ */
+async function underPrivateFolder(folderId: string, folders: FolderTree): Promise<boolean> {
+  const privateFolders = await folders.privateFolders();
+  let current: string | null = folderId;
+  for (let depth = 0; current !== null; depth++) {
+    if (privateFolders.has(current)) return true;
+    if (depth >= MAX_FOLDER_DEPTH) return true;
+    current = await folders.parentOf(current);
   }
   return false;
 }

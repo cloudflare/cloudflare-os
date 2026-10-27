@@ -150,8 +150,12 @@ export class OutlookHookController extends WorkerEntrypoint<Env, OutlookHookProp
 
 type Registration = { userObjectId: string; mailboxUser: string; folderId: string; /** Only mail received from here on. */ since: string };
 type Capabilities = { delivery: RpcStub<OutlookHookDelivery>; initiator: Fetcher<HookInitiator<OutlookHookTarget>> };
-/** A folder being watched: its subscription, if Graph would take one, and how far it has been read. */
-type Watch = { subscriptionId?: string; expiresAt?: number; renewAt: number; cursor: string };
+/**
+ * A folder being watched: its subscription, if Graph would take one, and how far it has been read.
+ * `continueAt` is the Graph page a scan cut short by `MAX_PAGES_PER_SYNC` stopped before, which the
+ * next sync resumes from instead of starting over at the cursor.
+ */
+type Watch = { subscriptionId?: string; expiresAt?: number; renewAt: number; cursor: string; continueAt?: string };
 
 const registrationKey = (key: string) => `reg:${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
@@ -240,8 +244,11 @@ export class OutlookHookDriver extends DurableObject<Env> {
         const scanStartedAt = Date.now();
         let completed = true;
         let newest = watch.cursor;
-        let next: string | undefined = `${this.#mailboxPath()}/mailFolders/${idPath(folderId)}/messages`;
-        let query: Record<string, string | number> | undefined = {
+        // A scan cut short last time goes on from the page it stopped before: starting over at the
+        // cursor would re-read the same pages whenever more mail than one sync reads shares the
+        // overlap window, and never reach what came after.
+        let next: string | undefined = watch.continueAt ?? `${this.#mailboxPath()}/mailFolders/${idPath(folderId)}/messages`;
+        let query: Record<string, string | number> | undefined = watch.continueAt !== undefined ? undefined : {
           $filter: `receivedDateTime ge ${from}`, $orderby: "receivedDateTime asc", $select: "id,receivedDateTime,isDraft", $top: PAGE_SIZE,
         };
         for (let pages = 0; next !== undefined; pages++) {
@@ -250,8 +257,16 @@ export class OutlookHookDriver extends DurableObject<Env> {
             completed = false;
             break;
           }
-          const page: { value?: { id?: unknown; receivedDateTime?: unknown; isDraft?: unknown }[]; "@odata.nextLink"?: unknown } =
-            await this.#graph(api => api.get(next!, { ...(query ? { query } : {}), prefer: ['IdType="ImmutableId"'] }));
+          let page: { value?: { id?: unknown; receivedDateTime?: unknown; isDraft?: unknown }[]; "@odata.nextLink"?: unknown };
+          try {
+            page = await this.#graph(api => api.get(next!, { ...(query ? { query } : {}), prefer: ['IdType="ImmutableId"'] }));
+          } catch (error) {
+            // A stored page Graph no longer serves is dropped, so the retry starts over at the
+            // cursor, which the cut-short scan left on the newest message it had read.
+            const current = kv.get<Watch>(key);
+            if (current?.continueAt !== undefined) kv.put<Watch>(key, { ...current, continueAt: undefined });
+            throw error;
+          }
           const registrations = this.#registrations().filter(([, registration]) => registration.folderId === folderId);
           for (const row of page.value ?? []) {
             if (typeof row.id !== "string" || typeof row.receivedDateTime !== "string" || row.isDraft === true) continue;
@@ -267,11 +282,12 @@ export class OutlookHookDriver extends DurableObject<Env> {
         // A finished scan moves the cursor up to when it started (less the overlap), so an idle
         // folder doesn't keep re-reading its last message: the delivery queue forgets what it
         // delivered after a day, and would hand the message to the gadget again as new. A scan cut
-        // short keeps the cursor on the newest message it reached, to continue from there.
+        // short keeps the cursor on the newest message it reached and the page it stopped before,
+        // to continue from there; the cursor alone is enough should that page be lost.
         const settled = new Date(scanStartedAt - CURSOR_OVERLAP_MS).toISOString();
         const cursor = completed && Date.parse(settled) > Date.parse(newest) ? settled : newest;
         const current = kv.get<Watch>(key);
-        if (current) kv.put<Watch>(key, { ...current, cursor });
+        if (current) kv.put<Watch>(key, { ...current, cursor, continueAt: completed ? undefined : next });
       }
     } catch (error) {
       logger.warn("failed to read new Outlook mail", { event: "outlook.hooks.sync.failed", error });

@@ -2,14 +2,14 @@
 // pending changes read back, what the approver is shown, sending, and new-message notifications and
 // delivery.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionApplyError, ActionOutcomeUnknownError } from "@gadgets/gatekeeper-kit/actions";
 import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
   definitions, replaceOwnPart, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
 } from "../src/outlook-actions";
 import { MailApi, parseMessage } from "../src/outlook-graph";
-import { OutlookHookDeliveryImpl, handleOutlookNotification } from "../src/outlook-hooks";
+import { OutlookHookDeliveryImpl, OutlookHookDriver, handleOutlookNotification } from "../src/outlook-hooks";
 import { decodeMailUnit, encodeMailUnit, isMailUnit, mailUnits, probeMailUnits } from "../src/outlook-observers";
 import { OutlookOverlay } from "../src/outlook-overlay";
 import { kqlPhrase, listingRequest, passesFilters } from "../src/outlook-query";
@@ -25,9 +25,10 @@ const ME = { kind: "me" } as const;
 
 // Inbox ─┬─ Vendors ── Acme
 //        └─ Team
-// Drafts, Junk Email and Deleted Items beside it.
+// Drafts, Junk Email and Deleted Items beside it; Deleted Items holds a deleted folder, Old, and
+// Junk Email a Spam subfolder.
 const PARENTS: Record<string, string | null> = {
-  inbox: null, vendors: "inbox", acme: "vendors", team: "inbox", drafts: null, junk: null, deleted: null,
+  inbox: null, vendors: "inbox", acme: "vendors", team: "inbox", drafts: null, junk: null, deleted: null, old: "deleted", spam: "junk",
 };
 const tree: FolderTree = {
   parentOf: async id => PARENTS[id] ?? null,
@@ -68,6 +69,17 @@ describe("admits", () => {
     }
   });
 
+  it("nor into a folder the user deleted, which Outlook moved under Deleted Items", async () => {
+    const fromAda = scope({ senders: ["ada@contoso.com"] });
+    const thread = scope({ conversation: { id: "c1", subject: "x" } });
+    expect(await admits(fromAda, message({ parentFolderId: "old" }), tree)).toBe(false);
+    expect(await admits(thread, message({ parentFolderId: "old" }), tree)).toBe(false);
+    expect(await admits(thread, message({ parentFolderId: "spam" }), tree)).toBe(false);
+    // Unnarrowed, or narrowed to Deleted Items itself, the binding reaches it as before.
+    expect(await admits(scope(), message({ parentFolderId: "old" }), tree)).toBe(true);
+    expect(await admits(scope({ folder: { id: "deleted", name: "Deleted Items", subfolders: true } }), message({ parentFolderId: "old" }), tree)).toBe(true);
+  });
+
   it("matches senders by address or domain, never by a domain's suffix", async () => {
     const domain = scope({ senders: ["@contoso.com"] });
     expect(await admits(domain, message({ from: "grace@contoso.com" }), tree)).toBe(true);
@@ -102,7 +114,10 @@ describe("admits", () => {
     expect(await admitsFolder(vendors, "acme", tree)).toBe(true);
     expect(await admitsFolder(vendors, "team", tree)).toBe(false);
     expect(await admitsFolder(scope({ senders: ["@contoso.com"] }), "junk", tree)).toBe(false);
+    expect(await admitsFolder(scope({ senders: ["@contoso.com"] }), "spam", tree)).toBe(false);
+    expect(await admitsFolder(scope({ senders: ["@contoso.com"] }), "old", tree)).toBe(false);
     expect(await admitsFolder(scope(), "junk", tree)).toBe(true);
+    expect(await admitsFolder(scope(), "spam", tree)).toBe(true);
   });
 });
 
@@ -537,6 +552,14 @@ describe("editing a draft", () => {
     expect(fresh.inScope).not.toHaveBeenCalled();
   });
 
+  it("keeps a draft it made when the read of the version it left fails, rather than making another on retry", async () => {
+    const { host: h, calls } = host([json({ id: "AAMkNew" }), json({ error: { code: "ErrorInternalServerError", message: "x" } }, 500)]);
+    const creation: OutlookActions["createDraft"] = { mailbox: ME, ref: "~1", origin: { kind: "new" }, message: composed(), submittedAt: 0 };
+    const { action } = await definitions.createDraft.apply(creation, h);
+    expect(action.createdId).toBe("AAMkNew");
+    expect(calls.map(entry => entry.call)).toEqual(["POST /messages", "GET /messages/AAMkNew"]);
+  });
+
   it("won't make a draft again when Outlook's answer to making it was lost, since nothing would find the first", async () => {
     const { host: h } = host([]);
     const creation: OutlookActions["createDraft"] = { mailbox: ME, ref: "~1", origin: { kind: "new" }, message: composed(), submittedAt: 0 };
@@ -668,6 +691,81 @@ describe("Graph's change notifications", () => {
     const elsewhere = await handleOutlookNotification(new Request(route(), { method: "POST", body: "{}" }), "../evil", {} as never, {} as never);
     expect(elsewhere.status).toBe(404);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("reading new mail by cursor", () => {
+  const USER = "a".repeat(64);
+  const MAILBOX = "809e4ddd-e400-4e3c-a7f1-24f876aa7bfc";
+  const INBOX = "AAMkInbox000";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  /** The driver outside workerd: its storage, alarm and account faked, Graph at `fetch`, paging by `$skip` as Graph does. */
+  function driver(messages: { id: string; receivedDateTime: string }[]) {
+    const store = new Map<string, unknown>();
+    const kv = {
+      get: (key: string) => store.get(key),
+      put: (key: string, value: unknown) => { store.set(key, value); },
+      delete: (key: string) => { store.delete(key); },
+      list: ({ prefix }: { prefix: string }) => [...store.entries()].filter(([key]) => key.startsWith(prefix)).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    };
+    let alarm: number | null = null;
+    const reads: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      reads.push(url.search);
+      const from = url.searchParams.get("$filter")?.replace(/^receivedDateTime ge /, "");
+      const skip = Number(url.searchParams.get("$skip") ?? 0);
+      const top = Number(url.searchParams.get("$top") ?? 50);
+      const rows = messages.filter(message => from === undefined || Date.parse(message.receivedDateTime) >= Date.parse(from))
+        .toSorted((a, b) => Date.parse(a.receivedDateTime) - Date.parse(b.receivedDateTime));
+      const next = new URL(url);
+      next.searchParams.set("$skip", String(skip + top));
+      return Response.json({ value: rows.slice(skip, skip + top), ...(rows.length > skip + top ? { "@odata.nextLink": next.toString() } : {}) });
+    });
+    const account = {
+      getCredentials: async () => ({ creds: { accessToken: "t" }, identity: "me", generation: "1" }),
+      trackHookDriver: async () => true,
+      [Symbol.dispose]() {},
+    };
+    const ctx = {
+      id: { name: `${USER}.${MAILBOX}` },
+      storage: { kv, getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; }, deleteAlarm: async () => { alarm = null; } },
+      exports: { UserAccount: { idFromString: (id: string) => id, get: () => account } },
+    };
+    const delivered: string[] = [];
+    const capabilities = {
+      delivery: { deliver: async (_callback: unknown, _queue: unknown, id: string) => { delivered.push(id); } },
+      initiator: { startHook: async () => ({ callback: {}, approvalQueue: {}, [Symbol.dispose]() {} }) },
+    };
+    const instance = new OutlookHookDriver(ctx as never, { BASE_URL: "http://localhost:8787/gatekeeper/microsoft" } as never);
+    /** Runs the alarm as workerd would, at the time the driver set it for. */
+    const run = async () => {
+      if (alarm !== null && alarm > Date.now()) vi.setSystemTime(alarm);
+      await instance.alarm();
+    };
+    return { instance, capabilities, run, delivered, reads, watch: () => store.get(`watch:${INBOX}`) as { cursor: string; continueAt?: string } };
+  }
+
+  it("goes on from where a read cut short stopped, so a burst of mail bigger than one read all arrives", async () => {
+    vi.useFakeTimers({ now: NOW });
+    // 300 messages within half a minute: more than one read's 250, all inside the cursor's overlap.
+    const messages = Array.from({ length: 300 }, (_, index) => ({ id: `AAMkNew${String(index).padStart(4, "0")}`, receivedDateTime: new Date(NOW + index * 100).toISOString() }));
+    const { instance, capabilities, run, delivered, reads, watch } = driver(messages);
+    await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+    await run();
+    expect(delivered.length).toBeGreaterThan(0);
+    expect(watch().continueAt).toContain("%24skip=250");
+    for (let alarms = 0; alarms < 40 && delivered.length < messages.length; alarms++) await run();
+    expect(delivered.toSorted()).toEqual(messages.map(message => message.id));
+    expect(watch().continueAt).toBeUndefined();
+    // The continuation read one page past the cut, not the first five again.
+    expect(reads.filter(search => search.includes("%24skip=250"))).toHaveLength(1);
+    expect(reads.filter(search => !search.includes("%24skip="))).toHaveLength(1);
   });
 });
 

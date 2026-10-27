@@ -297,6 +297,18 @@ describe("a whole-mailbox binding", () => {
     expect((submitted[0]!.payload as OutlookActions["send"]).draft).toEqual({ id: USER_DRAFT, changeKey: "ck-user" });
   });
 
+  it("proposes moving a message back to where it is once a pending move has left it elsewhere", async () => {
+    const { writer, submitted } = session(whole("draft"), "draft");
+    await writer.archive([ADA]);
+    await writer.move([ADA], INBOX);
+    const moves = submitted.map(action => action.payload as OutlookActions["moveMessages"]);
+    expect(moves.map(move => move.to.id)).toEqual(["AAMkArchive0", INBOX]);
+    // While one already where it is going, pending moves included, needs no move.
+    await writer.move([EVE], INBOX);
+    await writer.move([ADA], INBOX);
+    expect(submitted).toHaveLength(2);
+  });
+
   it("reads an automatic-reply schedule set in Outlook as the instants its zone means", async () => {
     const { writer } = session(whole("draft"), "draft");
     const replies = await writer.getAutomaticReplies();

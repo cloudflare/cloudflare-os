@@ -20,7 +20,7 @@ import { findUserByMail, organizationDomains } from "./directory";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveCalendarAccess, grantsSharedCalendars, type CalendarGatekeeperProps, type Env } from "./microsoft-env";
 import {
-  actions, dependedRefs, providedRefs, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type RevertOutcome,
+  actions, dependedRefs, providedRefs, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type EventVersion, type RevertOutcome,
 } from "./calendar-actions";
 import { ownerAcl } from "./calendar-acl";
 import { CalendarApi } from "./calendar-graph";
@@ -44,7 +44,6 @@ const ORGANIZATION_TTL_MS = 24 * 60 * 60 * 1000;
 const DESCRIPTION_KEY = "description";
 /** The change key an event this binding created had after it last wrote it: what a later action proposed against its `~N` is fenced on. */
 const EVENT_VERSION_PREFIX = "eventVersion:";
-type EventVersion = { changeKey: string; at: number };
 
 /** Which action tags each access level can submit, for the auto-approval catalog. */
 const LEVEL_TAGS: Record<CalendarAccessLevel, readonly string[]> = {
@@ -79,7 +78,7 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
     graph: (op, options) => this.#graph(op, options?.replayable === true),
     invalidate: async () => this.#cache.invalidateAll(),
     noteEventVersion: (id, changeKey) => this.ctx.storage.kv.put<EventVersion>(EVENT_VERSION_PREFIX + id, { changeKey, at: Date.now() }),
-    eventVersion: id => this.ctx.storage.kv.get<EventVersion>(EVENT_VERSION_PREFIX + id)?.changeKey,
+    eventVersion: id => this.ctx.storage.kv.get<EventVersion>(EVENT_VERSION_PREFIX + id),
   };
 
   readonly #actions = actions.bind(this.#journal, this.#actionHost);

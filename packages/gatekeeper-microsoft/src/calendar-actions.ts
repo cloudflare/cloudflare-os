@@ -121,14 +121,17 @@ export type CalendarActions = {
 /** Any one Calendar action, tagged with its kind. */
 export type CalendarAction = TaggedAction<CalendarActions>;
 
+/** The change key an event had after this binding last wrote it, and when that was recorded. */
+export type EventVersion = { changeKey: string; at: number };
+
 /** What apply handlers may do. */
 export type CalendarActionHost = {
   refs: ProvisionalIds<string>;
   graph<T>(op: (api: GraphApi) => Promise<T>, options?: { replayable?: boolean }): Promise<T>;
   invalidate(): Promise<void>;
-  /** Records the change key an event this binding created has after it wrote it, or reads it back. */
+  /** Records the change key an event has after this binding wrote it, stamped with now, or reads it back. */
   noteEventVersion(id: string, changeKey: string): void;
-  eventVersion(id: string): string | undefined;
+  eventVersion(id: string): EventVersion | undefined;
 };
 
 /** The access an action needs to apply, as its proposal needed: checked again at apply, since access may have been lowered since. */
@@ -268,15 +271,32 @@ function etag(changeKey: string): string | undefined {
 }
 
 /**
- * The change key an action's target must still have: the one the approver saw or, for an event
- * proposed against its temporary ID, the one this binding's creation or last approved change left.
- * Empty when the proposal had none to fence on.
+ * The change key an action's target must still have: the one the approver saw, unless a change of
+ * this binding's own applied after the proposal left another (two changes pending on one event
+ * apply in turn, the second to the version the first left), or the event was proposed against its
+ * temporary ID, when the version its creation or last approved change left is the only one known.
+ * An edit made in Outlook meanwhile matches neither. Empty when the proposal had none to fence on.
  */
-function expectedVersion(host: CalendarActionHost, target: EventTarget, id: string): string {
-  if (!isProvisional(target.id)) return target.changeKey;
+function expectedVersion(host: CalendarActionHost, target: EventTarget, id: string, submittedAt: number): string {
   const version = host.eventVersion(id);
+  if (version !== undefined && version.at > submittedAt) return version.changeKey;
+  if (!isProvisional(target.id)) return target.changeKey;
   if (version === undefined) throw new ActionApplyError("The event's version since it was created isn't known, so nothing was changed. Ask the agent to read it again.");
-  return version;
+  return version.changeKey;
+}
+
+/**
+ * Records the version a response left the event at, for a change pending on the same event. The
+ * response has been sent, so a failed read can't fail it: the version goes unrecorded, and that
+ * change is fenced on the key its approver saw, which refuses it until the agent reads again.
+ */
+async function noteVersionLeft(host: CalendarActionHost, calendar: CalendarRef, id: string): Promise<void> {
+  try {
+    const current = await host.graph(api => calendarApi(api, calendar).find<{ changeKey?: unknown }>(`/events/${idPath(id)}`, { $select: "changeKey" }), { replayable: true });
+    if (typeof current?.changeKey === "string") host.noteEventVersion(id, current.changeKey);
+  } catch {
+    // Left unrecorded, as above.
+  }
 }
 
 async function create<P extends CalendarActions["createEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
@@ -310,15 +330,15 @@ async function requireStillPersonal(host: CalendarActionHost, calendar: Calendar
 
 async function update<P extends CalendarActions["updateEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
   const id = realId(host.refs, payload.target.id, "The event");
-  const ifMatch = etag(expectedVersion(host, payload.target, id));
+  const ifMatch = etag(expectedVersion(host, payload.target, id, payload.submittedAt));
   if (!("notified" in payload)) await requireStillPersonal(host, payload.calendar, payload.target, id);
   let appliedChangeKey: string | undefined;
   try {
     const updated = await host.graph(api => calendarApi(api, payload.calendar).request<{ changeKey?: unknown }>("PATCH", `/events/${idPath(id)}`,
       eventJson(payload.changes, payload.zone), ifMatch));
     if (typeof updated?.changeKey === "string") appliedChangeKey = updated.changeKey;
-    // A later action on the same temporary ID is fenced on what this change left.
-    if (isProvisional(payload.target.id) && appliedChangeKey !== undefined) host.noteEventVersion(id, appliedChangeKey);
+    // An action pending on the same event is fenced on what this change left.
+    if (appliedChangeKey !== undefined) host.noteEventVersion(id, appliedChangeKey);
   } catch (error) {
     exchangeRefusal(error, "The event");
   }
@@ -327,8 +347,8 @@ async function update<P extends CalendarActions["updateEvent"]>(payload: P, host
 }
 
 /** Fails unless the event still has the change key it was proposed with: for operations Graph won't fence itself. */
-async function requireUnchanged(api: CalendarApi, host: CalendarActionHost, target: EventTarget, id: string): Promise<void> {
-  const expected = expectedVersion(host, target, id);
+async function requireUnchanged(api: CalendarApi, host: CalendarActionHost, target: EventTarget, id: string, submittedAt: number): Promise<void> {
+  const expected = expectedVersion(host, target, id, submittedAt);
   if (expected === "") return;
   const current = await api.find<{ changeKey?: unknown }>(`/events/${idPath(id)}`, { $select: "changeKey" });
   if (current === null) throw new ActionApplyError("The event no longer exists, or you no longer have access to it.");
@@ -425,7 +445,7 @@ const ownDefinitions = {
     dependsOn: payload => isProvisional(payload.target.id) ? [payload.target.id] : [],
     apply: async (payload, host) => {
       const id = realId(host.refs, payload.target.id, "The event");
-      const ifMatch = etag(expectedVersion(host, payload.target, id));
+      const ifMatch = etag(expectedVersion(host, payload.target, id, payload.submittedAt));
       await requireStillPersonal(host, payload.calendar, payload.target, id);
       try {
         await host.graph(api => calendarApi(api, payload.calendar).request("DELETE", `/events/${idPath(id)}`, undefined, ifMatch), { replayable: true });
@@ -458,7 +478,7 @@ const ownDefinitions = {
       try {
         await host.graph(async api => {
           const calendar = calendarApi(api, payload.calendar);
-          await requireUnchanged(calendar, host, payload.target, id);
+          await requireUnchanged(calendar, host, payload.target, id, payload.submittedAt);
           await calendar.request("POST", `/events/${idPath(id)}/cancel`, { comment: payload.message ?? "" });
         });
       } catch (error) {
@@ -494,7 +514,7 @@ const ownDefinitions = {
       try {
         await host.graph(async api => {
           const calendar = calendarApi(api, payload.calendar);
-          await requireUnchanged(calendar, host, payload.target, payload.target.id);
+          await requireUnchanged(calendar, host, payload.target, payload.target.id, payload.submittedAt);
           await calendar.request("POST", `/events/${idPath(payload.target.id)}/${action}`, {
             comment: payload.message ?? "", sendResponse: payload.notify,
             ...(payload.propose ? {
@@ -509,6 +529,8 @@ const ownDefinitions = {
         if (error instanceof ActionApplyError) throw error;
         exchangeRefusal(error, "The event");
       }
+      // Responding changes the event's key; a change of the user's own copy pending on it must know.
+      await noteVersionLeft(host, payload.calendar, payload.target.id);
       await host.invalidate();
       return { action: { ...payload, appliedAt: Date.now() } };
     },

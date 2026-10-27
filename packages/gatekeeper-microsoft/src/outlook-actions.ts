@@ -15,9 +15,12 @@ import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import { exchangeRefusal, isProvisional, realId } from "./binding";
 import { GraphApiError, isOutcomeUnknown, type GraphApi } from "./graph-api";
 import { VENDOR_ID } from "./microsoft-env";
+import { obsContext } from "./observability";
 import { MailApi, idPath, type GraphAddress } from "./outlook-graph";
 import { odataString } from "./outlook-query";
 import type { OutlookAccessLevel, OutlookMailboxRef } from "./outlook-scope";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.microsoft.outlook.actions", vendorId: VENDOR_ID });
 
 /** A message an action changes, as it was read when the action was proposed: for the approver and for revert. */
 export type MessageTarget = {
@@ -392,9 +395,20 @@ export async function submit(api: MailApi, draftId: string, sleep: Sleep = pause
   }
 }
 
-/** Records a draft's change key after this binding wrote it, for a send of it to be fenced on. */
+/**
+ * Records a draft's change key after this binding wrote it, for a send of it to be fenced on. The
+ * write it follows has landed, so a failed read can't fail the action: a retry would write again
+ * (a second draft, or an edit the first left a key that no longer matches). The version goes
+ * unrecorded instead, and a send of the draft is refused until the agent reads it again.
+ */
 async function noteVersion(host: OutlookActionHost, mailbox: OutlookMailboxRef, id: string, byEdit?: true): Promise<string | undefined> {
-  const current = await host.graph(api => mail(api, mailbox).get<{ changeKey?: unknown }>(`/messages/${idPath(id)}`, { $select: "changeKey" }), { replayable: true });
+  let current: { changeKey?: unknown };
+  try {
+    current = await host.graph(api => mail(api, mailbox).get<{ changeKey?: unknown }>(`/messages/${idPath(id)}`, { $select: "changeKey" }), { replayable: true });
+  } catch (error) {
+    logger.warn("couldn't read the version a draft write left", { event: "outlook.draft.version.unread", error });
+    return undefined;
+  }
   if (typeof current.changeKey !== "string") return undefined;
   host.noteDraftVersion(id, { changeKey: current.changeKey, at: Date.now(), ...(byEdit ? { byEdit } : {}) });
   return current.changeKey;

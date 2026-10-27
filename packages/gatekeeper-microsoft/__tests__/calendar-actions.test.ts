@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
 import { ProvisionalIds, type SimulationKv } from "@gadgets/gatekeeper-kit/simulation";
 import {
-  definitions, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type CalendarActions, type CalendarRef, type EventTarget,
+  definitions, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type CalendarActions, type CalendarRef, type EventTarget, type EventVersion,
 } from "../src/calendar-actions";
 import { GraphApi } from "../src/graph-api";
 
@@ -35,12 +35,12 @@ function harness(replies: { status: number; body?: unknown }[] = []) {
     delete: (key: string) => store.delete(key), list: () => store.entries(),
   } as unknown as SimulationKv;
   let invalidated = 0;
-  const versions = new Map<string, string>();
+  const versions = new Map<string, EventVersion>();
   const host: CalendarActionHost = {
     refs: new ProvisionalIds<string>(kv, { namespace: "refs:", isProvisional: id => id.startsWith("~") }),
     graph: op => op(api),
     invalidate: async () => { invalidated += 1; },
-    noteEventVersion: (id, changeKey) => { versions.set(id, changeKey); },
+    noteEventVersion: (id, changeKey) => { versions.set(id, { changeKey, at: Date.now() }); },
     eventVersion: id => versions.get(id),
   };
   return { host, sent, invalidated: () => invalidated, versions };
@@ -280,6 +280,51 @@ describe("what tells other people", () => {
     const { host, sent } = harness([{ status: 200, body: {} }]);
     await definitions.updateMeeting.apply(payload, host);
     expect(sent[0]).toMatchObject({ method: "PATCH", ifMatch: 'W/"ck1"', body: { location: { displayName: "Room 2" } } });
+  });
+
+  const moved: CalendarActions["updateMeeting"] = {
+    calendar: CALENDAR, target: TARGET, zone: ZONE, submittedAt: 1, notified,
+    changes: { start: "2026-10-19T17:00:00.000Z", end: "2026-10-19T17:30:00.000Z" }, before: { start: TARGET.start, end: TARGET.end },
+  };
+  const room: CalendarActions["updateMeeting"] = { ...moved, submittedAt: 2, changes: { location: "Room 4" }, before: { location: "Room 1" } };
+
+  it("applies two changes pending on one meeting in turn, the second to the version the first left, then a cancellation to that", async () => {
+    const { host, sent } = harness([{ status: 200, body: { changeKey: "ck2" } }, { status: 200, body: { changeKey: "ck3" } }, { status: 200, body: { changeKey: "ck3" } }, { status: 202 }]);
+    await definitions.updateMeeting.apply(moved, host);
+    await definitions.updateMeeting.apply(room, host);
+    expect(sent.map(request => request.ifMatch)).toEqual(['W/"ck1"', 'W/"ck2"']);
+    await definitions.cancelMeeting.apply({ calendar: CALENDAR, target: TARGET, notified, zone: ZONE, submittedAt: 3 }, host);
+    expect(sent[3]).toMatchObject({ method: "POST", path: "/me/events/AAMkEv/cancel" });
+    // Proposed after both applied, from a fresh read: fenced on the key the agent saw.
+    const fresh = harness([{ status: 200, body: { changeKey: "ck2" } }, { status: 200, body: {} }]);
+    await definitions.updateMeeting.apply(moved, fresh.host);
+    await definitions.updateMeeting.apply({ ...room, target: { ...TARGET, changeKey: "ck5" }, submittedAt: Date.now() + 1000 }, fresh.host);
+    expect(fresh.sent[1]!.ifMatch).toBe('W/"ck5"');
+  });
+
+  it("still refuses the second of two pending changes when Outlook edited the meeting between them", async () => {
+    const { host, sent } = harness([{ status: 200, body: { changeKey: "ck2" } }, conflict]);
+    await definitions.updateMeeting.apply(moved, host);
+    await expect(definitions.updateMeeting.apply(room, host)).rejects.toThrow(/changed after this was proposed/);
+    // The fence is the version the first change left, which the edit replaced; neither it nor the proposal's key is live.
+    expect(sent[1]!.ifMatch).toBe('W/"ck2"');
+    const cancelled = harness([{ status: 200, body: { changeKey: "ck2" } }, { status: 200, body: { changeKey: "edited" } }]);
+    await definitions.updateMeeting.apply(moved, cancelled.host);
+    await expect(definitions.cancelMeeting.apply({ calendar: CALENDAR, target: TARGET, notified, zone: ZONE, submittedAt: 3 }, cancelled.host)).rejects.toThrow("so nothing was sent");
+  });
+
+  it("records the version a response leaves, and keeps the response when that read fails", async () => {
+    const payload: CalendarActions["respond"] = { calendar: CALENDAR, target: TARGET, response: "accept", notify: true, zone: ZONE, submittedAt: 1 };
+    const { host, sent, versions } = harness([{ status: 200, body: { changeKey: "ck1" } }, { status: 202 }, { status: 200, body: { changeKey: "ck9" } }]);
+    await definitions.respond.apply(payload, host);
+    expect(sent.map(request => `${request.method} ${request.path}`)).toEqual([
+      "GET /me/events/AAMkEv?%24select=changeKey", "POST /me/events/AAMkEv/accept", "GET /me/events/AAMkEv?%24select=changeKey",
+    ]);
+    expect(versions.get("AAMkEv")).toMatchObject({ changeKey: "ck9" });
+    const unread = harness([{ status: 200, body: { changeKey: "ck1" } }, { status: 202 }, { status: 500, body: { error: { code: "ErrorInternalServerError", message: "x" } } }]);
+    const { action } = await definitions.respond.apply(payload, unread.host);
+    expect(action.appliedAt).toBeDefined();
+    expect(unread.versions.has("AAMkEv")).toBe(false);
   });
 
   it("never auto-approves a change to someone else's calendar, whatever the user allowed for their own", () => {

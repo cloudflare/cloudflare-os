@@ -274,7 +274,7 @@ export type AutomaticReplies = {
 export type NewMessage = {
   message: MessageInfo;
   /** A session for the same binding, to read or act on the message. Dispose of it when done. */
-  mail: OutlookSession | OutlookReader;
+  mail: OutlookSession | OutlookDrafter | OutlookReader;
 };
 
 /**
