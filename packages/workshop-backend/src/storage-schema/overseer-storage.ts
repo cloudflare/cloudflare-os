@@ -582,9 +582,12 @@ export type StoredChatMetadata = AiChatMetadata & {hasProposedChanges?: boolean}
  */
 type StoredChangesMessage = Extract<AiChatMessage, {type: "changes"}> & {update?: Uint8Array};
 
-/** A stored chat message: the wire type, except that "changes" messages may be legacy ones. */
+/** A stored chat message, including private unread positions and legacy change payloads. */
 export type StoredChatMessage =
-    Exclude<AiChatMessage, {type: "changes"}> | StoredChangesMessage;
+    (Exclude<AiChatMessage, {type: "changes"}> | StoredChangesMessage) & {
+      /** Visible count through this record; absent on history predating unread tracking. */
+      visibleThroughSequence?: number;
+    };
 
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
@@ -1270,6 +1273,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     singletons: {
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
+      // Inaccessible immediately; physical deletion waits for durable user cleanup to finish.
+      deleting: false,
 
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
@@ -1368,6 +1373,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
+      // Revocation/deletion callbacks share the source's alarm and bounded parallel fanout.
+      pendingUserUpdates: collection<{
+        userId: string;
+        profileId?: string;
+        role: CollaboratorRole | null;
+      }>()({primaryKey: "userId"}),
       // Coalesced source-to-user handoff, committed with the message mutation.
       dirtyChats: collection<ChatFanoutStart & {
         chatId: number;
@@ -1381,7 +1392,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         id: string;
         chatId: number; sequence: number; userId: string;
         kind: "taskCompleted" | "permissionRequested";
-      }>()({primaryKey: record => chatKey(record.chatId, record.sequence)}),
+      }>()({primaryKey: record => `${chatKey(record.chatId, record.sequence)}:${record.userId}:${record.kind}`}),
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage

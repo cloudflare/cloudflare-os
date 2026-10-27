@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 7;
+export const OVERSEER_STORAGE_VERSION = 6;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -376,13 +376,5 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
   host.logger.info("moved agent spawners' bindings", {
     event: "storage.migration.spawner-bindings.completed",
-  });
-}
-
-/** Version 6 -> 7: enable forward-only unread tracking without backfilling history. */
-export function migrateToUnreadTracking(host: OverseerMigrationHost): void {
-  if (host.storage.version.get() !== 6) return;
-  host.ctx.storage.transactionSync(() => {
-    host.storage.version.put(7);
   });
 }

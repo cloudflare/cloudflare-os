@@ -48,12 +48,14 @@ Each `chatReadCursors` row contains:
 - `latestVisibleSequence`: latest accepted visible head, monotonic
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
+- `notifiedEventIds`: completed alert UUIDs at that position; absent when admission skips the whole position
 - `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time
 - `headUpdatedAt`: the workspace metadata's existing monotonic `lastActive`, ordering titles at the same message position
 - `deleted`, only on a deleted thread's tombstone
 
 `notificationOutbox` contains the accepted alerts themselves: stable UUID, kind, bounded chat
-title, workspace/thread IDs and raw sequence. It is ordered by workspace, chat and raw sequence.
+title, workspace/thread IDs and raw sequence. It is keyed by workspace, chat, raw sequence and UUID,
+so two independent alerts at the same timeline position remain separate work items.
 The queue is the work record: there is no User DO notification dirty bit, history-fetch cursor,
 denial flag, new timer or notification backfill process.
 
@@ -94,9 +96,10 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
 2. The workspace reads inbox metadata and pending eligibility records once per batch and checks current build
    membership plus previously established observer admission locally. It sends authorized packets
    to the owner and established collaborators in parallel; independent threads also fan out in
-   parallel. It does not enroll observers or call external gatekeeper verifiers per message.
+   parallel. Each User DO handoff has a two-second limit. It does not enroll observers or call
+   external gatekeeper verifiers per message.
 3. A listed User DO synchronously commits the absolute head/count and any new queued alerts in
-   one transaction. Queue insertion is deduplicated by chat/raw position and the completed-delivery
+   one transaction. Queue insertion is deduplicated by event UUID and the completed-delivery
    receipt. It arms the existing alarm before ACK. Slow browser/provider delivery does not hold
    up that ACK or later count updates.
 4. If everyone ACKs or is intentionally skipped, the workspace clears the marker without writing
@@ -108,7 +111,19 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
    without being erased by the older pass's checkpoint or delayed by its retry backoff.
 5. The User DO drains each chat's local queue under its existing per-thread mutex. It awaits
    delivery or an intentional policy skip, then atomically deletes that item and advances
-   `notifiedThroughSequence`. Three coalesced alerts remain three ordered delivery attempts.
+   `notifiedThroughSequence` plus the UUIDs completed at that position. Three coalesced alerts
+   remain three delivery attempts, including distinct alerts at the same raw position.
+
+If a caught-up user receives exactly their own next visible message, the User DO advances both
+read horizons with the head and keeps the count zero. When already behind, or when a batch spans
+multiple new messages, ordinary subtraction applies: there is no provenance scan across a gap.
+
+Each queued alert has a fixed ten-minute expiry recorded at first acceptance. Replays and DO
+resets preserve that deadline. Failed delivery uses the existing 30-second alarm retry; each
+attempt is bounded to 15 seconds or the remaining lifetime, including browser acknowledgement
+and push. Expiry intentionally drops the alert, logs `notification.delivery.expired` without
+notification contents, and advances the same delivery receipt so the source cannot replay it.
+Later queued alerts can then proceed. Counts and read horizons are unaffected by delivery expiry.
 
 Count arithmetic needs no source RPC. Notification delivery/recovery also performs **no workspace
 read**. The sole queued payload is sufficient to retry after eviction. A new DO lifetime reloads
@@ -166,13 +181,19 @@ before that checkpoint described above. No separate skip receipt or per-user den
 
 Once accepted, a queued alert is authorized durable delivery intent and retries locally. Existing
 revocation, downgrade, dismissal and workspace-removal callbacks clear the listing's cursors and
-queued alerts. Listing lifetime identity fences in-flight read/delivery responses after removal
-and readmission. Already dispatched provider effects cannot be recalled.
+queued alerts. Revocation updates are journaled on the source before restarting live sessions;
+the existing alarm retries failed callbacks in parallel with the same two-second handoff limit.
+Each retry checks current membership, so restored build access supersedes an obsolete removal.
+Listing lifetime identity fences in-flight read/delivery responses after removal and readmission.
+Removal aborts in-flight push requests and prevents browser-to-push fallback. Already dispatched
+browser/provider effects cannot be recalled.
 
 Thread deletion clears its count and queued alerts but retains a small `deleted` marker in its
 cursor row. Thread IDs are never reused, so even after eviction a delayed pre-deletion packet
-cannot recreate work. Workspace deletion removes each recipient's local listing/counts/queue
-before destroying the source, without a callback fetch.
+cannot recreate work. Workspace deletion immediately marks the source inaccessible, journals all
+removal callbacks and sends them in parallel. Failed recipients remain on that same retry list;
+storage is retained until every callback ACKs, then physically wiped. A reset after the last ACK
+still resumes that wipe. No recipient fetches the source during removal.
 
 Successful first admission seeds the captured existing tails as read. Ordinary reopen does not
 initialize missing cursors or consume pending new-thread arrivals. Initial join remains the
@@ -184,13 +205,14 @@ catch-up RPC or background admission lifecycle.
 
 Notification policy remains task completion and permission requests, not an alert for every
 visible message. Browser acknowledgement, mute and native fallback are unchanged; see
-[notifications](notifications.md) and [native/push badge consumers](unread-push-badges.md).
+[notifications](notifications.md). Native/push badge consumers are added by the
+[stacked consumer PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 
 `packages/workshop-backend/__tests__/unread-state.test.ts` covers dense positions, no historical
 backfill, local hydration/no-op reads, read/arrival races, deltas, real source and User DO resets,
 lost ACKs on both handoffs, stalled delivery, ordered outbox checkpointing, denied admission,
 failure-only retries across eviction, common-path write counts, concurrent broadcasts,
 revocation and durable deletion tombstones. `notifications.test.ts` covers service signing,
-notification policy and native badge replacement. The real WebSocket API, devices, collaborators,
+notification policy and device subscription replacement. The real WebSocket API, devices, collaborators,
 partial reads and deletion are covered by
 `packages/integration-tests/__tests__/workshop-unread.test.ts`.

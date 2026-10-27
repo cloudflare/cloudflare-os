@@ -38,6 +38,8 @@ const logger = createWorkshopLogger("workshop.user");
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
+const NOTIFICATION_RETRY_LIFETIME_MS = 10 * 60_000;
+const NOTIFICATION_ATTEMPT_TIMEOUT_MS = 15_000;
 
 // How many notification-service calls (device authorizations and registrations) one user may make
 // per minute; see #countNotificationServiceCall().
@@ -52,12 +54,14 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
 
 /** Coalesced visible-message progress carried by the workspace's durable handoff. */
 export type ChatMessageProgress = {
-  /** Current inbox metadata. Optional for handoffs from an older source during deployment. */
-  head?: Omit<ChatTimelineHead, "chatId">;
+  /** Current inbox metadata. */
+  head: Omit<ChatTimelineHead, "chatId">;
   /** Source metadata's existing monotonic timestamp, independent of the latest visible message. */
-  headUpdatedAt?: Date;
+  headUpdatedAt: Date;
   /** Latest dense visible position; repeated/older deliveries never increment a count. */
   latestVisibleSequence: number;
+  /** Author of the latest visible message, when it is a user rather than an agent. */
+  latestMessageAuthorId?: string;
   /** First new timeline record in this pending batch, for the initial notification boundary. */
   firstMessageSequence?: number;
   /** First new visible position in this pending batch, for a missing read cursor. */
@@ -247,13 +251,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     this.storage = makeUserStorage(ctx.storage);
     for (let cursor of this.storage.chatReadCursors.list()) {
-      // Prototype history has no visible ordinals. Start tracking at the next incoming batch;
-      // do not translate old horizons by scanning the source on wake.
-      if (cursor.unreadCount === undefined ||
-          (cursor.readThroughVisibleSequence === undefined && cursor.unreadCount !== 0)) {
-        cursor = {...cursor, unreadCount: 0};
-        this.storage.chatReadCursors.put(cursor);
-      }
       this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor);
     }
     this.storage.chatReadCursors.subscribe({
@@ -275,15 +272,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       remove: event => queued(event.workspaceId, event.chatId, -1),
     });
     for (let listing of this.storage.gadgets.list()) {
-      if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, {});
+      if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, new AbortController());
     }
     this.storage.gadgets.subscribe({
-      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, {}); },
+      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, new AbortController()); },
       update: (_old, listing) => {
-        if (listing.role === "use") this.#unreadWorkspaces.delete(listing.id);
-        else if (!this.#unreadWorkspaces.has(listing.id)) this.#unreadWorkspaces.set(listing.id, {});
+        if (listing.role === "use") {
+          this.#unreadWorkspaces.get(listing.id)?.abort();
+          this.#unreadWorkspaces.delete(listing.id);
+        } else if (!this.#unreadWorkspaces.has(listing.id)) this.#unreadWorkspaces.set(listing.id, new AbortController());
       },
-      remove: listing => { this.#unreadWorkspaces.delete(listing.id); },
+      remove: listing => {
+        this.#unreadWorkspaces.get(listing.id)?.abort();
+        this.#unreadWorkspaces.delete(listing.id);
+      },
     });
     this.adminSettings = this.ctx.exports.AdminSettings;
 
@@ -646,7 +648,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   #readCursors = new Map<string, ChatReadCursor>();
   // Each listing lifetime has an identity so pre-removal work cannot commit after readmission.
-  #unreadWorkspaces = new Map<string, object>();
+  #unreadWorkspaces = new Map<string, AbortController>();
   #chatWork = new Map<string, Promise<void>>();
   #notificationChats = new Map<string, {workspaceId: string; chatId: number; count: number}>();
 
@@ -661,7 +663,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         old.readThroughVisibleSequence === cursor.readThroughVisibleSequence &&
         old.latestVisibleSequence === cursor.latestVisibleSequence &&
         old.unreadCount === cursor.unreadCount &&
-        old.notifiedThroughSequence === cursor.notifiedThroughSequence && old.deleted === cursor.deleted &&
+        old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
+        old.notifiedEventIds?.join() === cursor.notifiedEventIds?.join() && old.deleted === cursor.deleted &&
         old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
         old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
         old.headUpdatedAt?.getTime() === cursor.headUpdatedAt?.getTime() &&
@@ -670,12 +673,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return true;
   }
 
-  #mergeHead(current: ChatReadCursor, incoming: Pick<ChatReadCursor, "head" | "headUpdatedAt">, acceptUnstamped = false) {
+  #mergeHead(current: ChatReadCursor, incoming: Pick<ChatReadCursor, "head" | "headUpdatedAt">) {
     let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
     let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
       (incoming.head.latestSequence === current.head.latestSequence &&
-        (at !== undefined ? previous === undefined || at > previous : acceptUnstamped && previous === undefined)));
-    // Legacy live fanout can update an unstamped title, but cannot replace a stamped projection.
+        at !== undefined && (previous === undefined || at > previous)));
     return newer ? {head: incoming.head, headUpdatedAt: incoming.headUpdatedAt} :
       {head: current.head, headUpdatedAt: current.headUpdatedAt};
   }
@@ -687,6 +689,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   #hasWorkspace(workspaceId: string): boolean {
     return this.#unreadWorkspaces.has(workspaceId);
+  }
+
+  #wasNotified(cursor: ChatReadCursor, event: {sequence: number; id: string}): boolean {
+    return event.sequence < cursor.notifiedThroughSequence ||
+      (event.sequence === cursor.notifiedThroughSequence &&
+        (!cursor.notifiedEventIds || cursor.notifiedEventIds.includes(event.id)));
   }
 
   // Read commands and alert delivery share one mutex. Arrivals commit without awaits, so their
@@ -723,9 +731,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     horizon?: {through: number; rewind: boolean};
   } = {}): Promise<void> {
     let admission = this.#unreadWorkspaces.get(workspaceId);
+    let key = `${workspaceId}:${chatId}`;
+    let hadNotifications = this.#notificationChats.has(key);
     try {
-      await this.#serialize(`${workspaceId}:${chatId}`, async () => {
-        let key = `${workspaceId}:${chatId}`;
+      await this.#serialize(key, async () => {
         if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
         let existing = this.#readCursors.get(key);
         if (existing?.deleted) return;
@@ -760,23 +769,41 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           if (!event) break;
           let cursor = this.#readCursors.get(key);
           if (!cursor || cursor.deleted) return;
-          if (event.sequence > cursor.notifiedThroughSequence) await this.publishNotification(event);
+          let expired = false;
+          if (!this.#wasNotified(cursor, event)) {
+            expired = event.expiresAt.getTime() <= Date.now();
+            if (!expired) {
+              let {sequence: _, expiresAt, ...notification} = event;
+              try {
+                await this.publishNotification(notification, expiresAt.getTime());
+              } catch (error) {
+                if (Date.now() < event.expiresAt.getTime()) throw error;
+                expired = true;
+              }
+            }
+          }
           if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
           let checkpoint = this.#readCursors.get(key);
           if (!checkpoint || checkpoint.deleted) return;
+          if (expired) logger.warn("notification delivery expired", {
+            event: "notification.delivery.expired", gadgetId: workspaceId, chatId, sequence: event.sequence,
+          });
           this.ctx.storage.transactionSync(() => {
             this.storage.notificationOutbox.deleteRecord(event);
-            this.#storeCursor({...checkpoint,
-              notifiedThroughSequence: Math.max(checkpoint.notifiedThroughSequence, event.sequence)});
+            if (!this.#wasNotified(checkpoint, event)) {
+              this.#storeCursor({...checkpoint, notifiedThroughSequence: event.sequence,
+                notifiedEventIds: [...(event.sequence === checkpoint.notifiedThroughSequence
+                  ? checkpoint.notifiedEventIds ?? [] : []), event.id]});
+            }
           });
         }
       });
     } finally {
-      await this.#armExpirySweep();
+      if (hadNotifications || this.#notificationChats.has(key)) await this.#armExpirySweep();
     }
   }
 
-  /** Local inbox projection; older rows acquire metadata on their next source update. */
+  /** Read inbox rows directly from the user's local projection. */
   async getUnreadThreads(): Promise<UnreadThread[]> {
     return [...this.#readCursors.values()]
       .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && cursor.unreadCount > 0)
@@ -869,7 +896,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async messageArrived(workspaceId: string, chatId: number, progress: ChatMessageProgress | null): Promise<void> {
     if (!this.#hasWorkspace(workspaceId)) return;
     let key = `${workspaceId}:${chatId}`;
-    if (!progress) { this.#forgetChat(workspaceId, chatId); await this.#armExpirySweep(); return; }
+    if (!progress) {
+      let hadNotifications = this.#notificationChats.has(key);
+      this.#forgetChat(workspaceId, chatId);
+      if (hadNotifications) await this.#armExpirySweep();
+      return;
+    }
     let cursor = this.#cursor(workspaceId, chatId);
     if (cursor.deleted) return;
     // Metadata changes don't enroll history. Wait for a new message or an explicit command.
@@ -884,21 +916,30 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           (progress.firstMessageSequence ?? 0) - 1};
     }
     let latest = Math.max(cursor.latestVisibleSequence ?? 0, progress.latestVisibleSequence);
-    cursor = {...cursor, ...this.#mergeHead(cursor, progress, true), latestVisibleSequence: latest,
+    // Consume only a single own message when already caught up. Gaps/coalesced arrivals keep
+    // the ordinary count: their other messages have not been read merely because the user sent.
+    if ((cursor.latestVisibleSequence ?? readThroughVisibleSequence) === readThroughVisibleSequence &&
+        latest === readThroughVisibleSequence + 1 &&
+        progress.latestMessageAuthorId === this.storage.profile.get().id) {
+      readThroughVisibleSequence = latest;
+      cursor = {...cursor, readThroughSequence: progress.head.latestSequence, readThroughVisibleSequence};
+    }
+    cursor = {...cursor, ...this.#mergeHead(cursor, progress), latestVisibleSequence: latest,
       unreadCount: latest - readThroughVisibleSequence};
     let changed = this.ctx.storage.transactionSync(() => {
       let stored = this.#storeCursor(cursor);
       for (let event of progress.notifications) {
-        let eventKey = `${workspaceId}:${chatKey(chatId, event.sequence)}`;
-        if (event.sequence > cursor.notifiedThroughSequence && !this.storage.notificationOutbox.get(eventKey)) {
-          this.storage.notificationOutbox.put({...event, workspaceId, chatId});
+        let eventKey = `${workspaceId}:${chatKey(chatId, event.sequence)}:${event.id}`;
+        if (!this.#wasNotified(cursor, event) && !this.storage.notificationOutbox.get(eventKey)) {
+          this.storage.notificationOutbox.put({...event, workspaceId, chatId,
+            expiresAt: new Date(Date.now() + NOTIFICATION_RETRY_LIFETIME_MS)});
         }
       }
       return stored;
     });
     if (changed) this.#unreadChanged(workspaceId, chatId);
-    await this.#armExpirySweep();
     if (this.#notificationChats.has(key)) {
+      await this.#armExpirySweep();
       this.ctx.waitUntil(this.#processChat(workspaceId, chatId).catch(error => {
         logger.warn("notification delivery deferred", {event: "notification.delivery.deferred", error});
       }));
@@ -967,26 +1008,35 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Offer a notification to visible clients, otherwise use push. The caller advances its
    * notifiedThroughSequence only once this delivery succeeds or policy intentionally skips it.
    */
-  async publishNotification(notification: UserNotification): Promise<void> {
+  async publishNotification(notification: UserNotification,
+      retryUntil = Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS): Promise<void> {
     let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
     if (notification.kind === "taskCompleted" && mute &&
         ("indefinite" in mute || mute.until.getTime() > Date.now())) {
       return;
     }
+    let attemptUntil = Math.min(retryUntil, Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS);
+    let admission = this.#unreadWorkspaces.get(notification.workspaceId);
+    let signal = AbortSignal.any([AbortSignal.timeout(Math.max(1, attemptUntil - Date.now())),
+      ...(admission ? [admission.signal] : [])]);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let acknowledged = await Promise.race([
       Promise.any([...this.#notificationSubscribers.values()]
           .map(subscriber => subscriber.notify(notification))).then(() => true, () => false),
-      new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 3_000); }),
+      new Promise<boolean>(resolve => {
+        timeout = setTimeout(() => resolve(false), Math.max(1, Math.min(3_000, attemptUntil - Date.now())));
+      }),
     ]).finally(() => clearTimeout(timeout));
     if (acknowledged) return;
+    signal.throwIfAborted();
+    if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
     let subject = this.#notificationSubject;
     let stores = [
       this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions,
     ];
     let results = await Promise.allSettled(stores.flatMap(store =>
       Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
-        if (await deliver(this.env, subject, subscriptionId, notification)) return;
+        if (await deliver(this.env, subject, subscriptionId, notification, signal)) return;
         // This subscription is dead; the device gets a new one when its app next opens. Keep one it
         // registered while this delivery was in flight.
         let { [deviceKey]: current, ...others } = store.get();

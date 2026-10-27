@@ -2,7 +2,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatReadReceipt, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, ChatReadReceipt, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
 import { UserDurableObject, type ChatMessageProgress } from "../src/user.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { makeUserStorage } from "../src/storage-schema/user-storage.js";
@@ -31,9 +31,10 @@ const setup = async (user = env.TEST_USER.getByName(crypto.randomUUID())) => {
   return {user, workspace, workspaceId};
 };
 type Fixture = Awaited<ReturnType<typeof setup>>;
-const write = (impl: Impl, sequence: number, message = "Hello", chatId = 1) => {
+const write = (impl: Impl, sequence: number, message = "Hello", chatId = 1,
+  author: AiChatAuthorInfo = {type: "agent", id: "test", name: "Test"}) => {
   impl.storage.chats.put({chatId, sequence, timestamp: new Date(1_000 + sequence),
-    author: {type: "agent", id: "test", name: "Test"}, type: "message", message});
+    author, type: "message", message});
   impl.storage.nextChatSequences.put({...impl.storage.nextChatSequences.get(chatId), chatId, nextSequence: sequence + 1});
 };
 const append = (fixture: Fixture, sequence: number, message = "Hello") =>
@@ -46,6 +47,8 @@ const drained = (fixture: Fixture) => vi.waitFor(async () => expect(await outbox
 const receipt = (fixture: Fixture, throughSequence: number): ChatReadReceipt =>
   ({workspaceId: fixture.workspaceId, chatId: 1, throughSequence});
 const progress = (first = 1, latest = first): ChatMessageProgress => ({
+  head: {chatTitle: "Demo", latestSequence: first, latestMessagePreview: "Hello"},
+  headUpdatedAt: new Date(0),
   firstMessageSequence: first, firstVisibleSequence: first, latestVisibleSequence: latest, notifications: [],
 });
 const event = (sequence: number) => ({id: crypto.randomUUID(), sequence,
@@ -71,17 +74,15 @@ const addReader = async (fixture: Fixture) => {
 };
 
 // Fault at the source's real dispatch/ACK boundary, not the test-pool RPC wrapper.
-const interceptDelivery = (impl: Impl,
-  dispatch: (user: DurableObjectStub<UserDurableObject>,
-    ...args: Parameters<UserDurableObject["messageArrived"]>) => Promise<void>,
+const interceptUsers = (impl: Impl,
+  intercept: (user: DurableObjectStub<UserDurableObject>, method: PropertyKey) => unknown,
 ) => {
   const original = impl.users;
   impl.users = new Proxy(original, {
     get(target, key) {
       if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
         get(user, member) {
-          if (member === "messageArrived") return (...args: Parameters<UserDurableObject["messageArrived"]>) => dispatch(user, ...args);
-          return Reflect.get(user, member);
+          return intercept(user, member) ?? Reflect.get(user, member);
         },
       });
       if (key === "idFromString") return (id: string) => target.idFromString(id);
@@ -91,8 +92,24 @@ const interceptDelivery = (impl: Impl,
   });
   return () => { impl.users = original; };
 };
+const interceptDelivery = (impl: Impl,
+  dispatch: (user: DurableObjectStub<UserDurableObject>,
+    ...args: Parameters<UserDurableObject["messageArrived"]>) => Promise<void>,
+) => interceptUsers(impl, (user, method) => method === "messageArrived"
+  ? (...args: Parameters<UserDurableObject["messageArrived"]>) => dispatch(user, ...args) : undefined);
 
 describe("persisted visible positions", () => {
+  it("coalesces a synchronous batch into one background fanout pass", async () => {
+    const fixture = await setup();
+    await withImpl(fixture.workspace, async impl => {
+      using delivery = vi.spyOn(impl, "deliverDirtyChats");
+      for (let sequence = 0; sequence < 20; sequence++) write(impl, sequence);
+      await vi.waitFor(() => expect(delivery).toHaveBeenCalledOnce());
+      await delivery.mock.results[0].value;
+    });
+    expect(await cursor(fixture)).toMatchObject({unreadCount: 20});
+  });
+
   it("numbers visible messages densely and stamps non-visible boundaries without allocating again on updates", async () => {
     const fixture = await setup();
     await withImpl(fixture.workspace, async impl => {
@@ -108,6 +125,9 @@ describe("persisted visible positions", () => {
         author: {type: "agent", id: "test", name: "Test"}, message: "",
         attachments: [{id: crypto.randomUUID(), mimeType: "image/png", size: 1}]});
       expect([...impl.storage.chats.list()].map(row => row.visibleThroughSequence)).toEqual([1, 1, 1, 1, 2, 3]);
+      for (const message of impl.storage.chats.list()) {
+        expect(impl.hydrateChatMessageForClient(message)).not.toHaveProperty("visibleThroughSequence");
+      }
       // Raw allocator must preserve the dense prefix too.
       impl.nextChatSequence(1);
       expect(impl.storage.nextChatSequences.get(1)).toMatchObject({visibleThroughSequence: 3, trackingStartSequence: 0});
@@ -151,6 +171,51 @@ describe("persisted visible positions", () => {
 });
 
 describe("local counts and explicit read boundaries", () => {
+  it("consumes a single own message only when caught up, preserving counts for gaps and other readers", async () => {
+    const fixture = await setup(); const {reader, owner} = await addReader(fixture);
+    for (const sequence of [0, 4]) {
+      await withImpl(fixture.workspace, async impl => {
+        write(impl, sequence, "Mine", 1, owner); await impl.deliverDirtyChats();
+      });
+      expect(await cursor(fixture)).toMatchObject({readThroughSequence: sequence, unreadCount: 0});
+    }
+    expect((await reader.getUnreadSummary()).unreadMessageCount).toBe(2);
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 0);
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 8, "Mine while behind", 1, owner); await impl.deliverDirtyChats();
+    });
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: -1, unreadCount: 3});
+    await fixture.user.markChatRead(receipt(fixture, 8));
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 12, "Incoming"); write(impl, 16, "Mine after incoming", 1, owner);
+      await impl.deliverDirtyChats();
+    });
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 8, unreadCount: 2});
+    await fixture.user.markChatRead(receipt(fixture, 16)); await evictDurableObject(fixture.user);
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 20, "Mine after reset", 1, owner); await impl.deliverDirtyChats();
+    });
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 20, unreadCount: 0});
+    expect((await reader.getUnreadSummary()).unreadMessageCount).toBe(6);
+  });
+
+  it("does not scan expirations or touch alarms for count-only arrivals and read commands", async () => {
+    const fixture = await setup(); await append(fixture, 0);
+    await runInDurableObject(fixture.user, async (instance, ctx) => {
+      using get = vi.spyOn(ctx.storage, "getAlarm");
+      using set = vi.spyOn(ctx.storage, "setAlarm");
+      using remove = vi.spyOn(ctx.storage, "deleteAlarm");
+      using expirations = vi.spyOn(Reflect.get(instance, "storage").sessions, "list");
+      await instance.messageArrived(fixture.workspaceId, 1, progress(2));
+      await instance.markChatRead(receipt(fixture, 0));
+      await instance.markChatUnread(fixture.workspaceId, 1, 0);
+      expect(get).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(expirations).not.toHaveBeenCalled();
+    });
+  });
+
   it("uses one indexed seek for read commands, never counts raw gaps, and makes unchanged reads no-ops", async () => {
     const fixture = await setup();
     await append(fixture, 0); await append(fixture, 6, ""); await append(fixture, 12);
@@ -287,7 +352,7 @@ describe("local counts and explicit read boundaries", () => {
     await runInDurableObject(reader, async instance => {
       using put = vi.spyOn(Reflect.get(instance, "storage").chatReadCursors, "put");
       await instance.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", captured);
-      await instance.messageArrived(fixture.workspaceId, 1, {head: captured[0].head, headUpdatedAt: captured[0].headUpdatedAt,
+      await instance.messageArrived(fixture.workspaceId, 1, {head: captured[0].head!, headUpdatedAt: captured[0].headUpdatedAt!,
         latestVisibleSequence: captured[0].readThroughVisibleSequence, notifications: []});
       expect(put).not.toHaveBeenCalled();
     });
@@ -416,6 +481,73 @@ describe("local counts and explicit read boundaries", () => {
 });
 
 describe("durable forward handoff", () => {
+  it("bounds deletion fanout, retains only a stalled recipient, and finishes physical cleanup after eviction", async () => {
+    const fixture = await setup(); const {reader} = await addReader(fixture); await append(fixture, 0);
+    const stalled = Promise.withResolvers<void>();
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptUsers(impl, (user, method) =>
+        method === "workspaceRemoved" && user.id.toString() === reader.id.toString()
+          ? () => stalled.promise : undefined);
+      try {
+        impl.beginDeletion(new Set([fixture.user.id.toString(), reader.id.toString()]));
+        await impl.deliverUserUpdates();
+        expect(impl.ownerId).toBeUndefined();
+        expect(impl.storage.deleting.get()).toBe(true);
+        expect([...impl.storage.pendingUserUpdates.list()].map(row => row.userId)).toEqual([reader.id.toString()]);
+        expect(impl.storage.chats.get(chatKey(1, 0))).toBeDefined();
+        expect(await impl.ctx.storage.getAlarm()).not.toBeNull();
+      } finally { restore(); stalled.resolve(); }
+    });
+    expect(await fixture.user.getWorkspace(fixture.workspaceId)).toBeNull();
+    await runInDurableObject(fixture.workspace, async instance => {
+      using closed = new NativeRpcStub<() => void>(() => {});
+      await expect(instance.open(reader.id.toString(), "reader", closed)).rejects.toThrow();
+    });
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => {
+      await impl.deliverUserUpdates();
+      expect(impl.storage.deleting.get()).toBe(false);
+      expect([...impl.storage.chats.list()]).toEqual([]);
+      expect([...impl.storage.pendingUserUpdates.list()]).toEqual([]);
+      expect(await impl.ctx.storage.getAlarm()).toBeNull();
+    });
+    expect(await reader.getWorkspace(fixture.workspaceId)).toBeNull();
+  });
+
+  it("switches a pending revocation drain to workspace deletion before dispatch", async () => {
+    const fixture = await setup(); const {reader, profile} = await addReader(fixture);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.pendingUserUpdates.put({userId: reader.id.toString(), profileId: profile.id, role: null});
+      const drain = impl.deliverUserUpdates();
+      impl.beginDeletion(new Set([fixture.user.id.toString(), reader.id.toString()]));
+      await drain;
+      expect([...impl.storage.pendingUserUpdates.list()]).toEqual([]);
+      expect([...impl.storage.chatMeta.list()]).toEqual([]);
+    });
+    expect(await fixture.user.getWorkspace(fixture.workspaceId)).toBeNull();
+    expect(await reader.getWorkspace(fixture.workspaceId)).toBeNull();
+  });
+
+  it("recovers a reset after removal ACKs but before physical deletion without resending callbacks", async () => {
+    const fixture = await setup(); await append(fixture, 0);
+    using removed = vi.spyOn(UserDurableObject.prototype, "workspaceRemoved");
+    await withImpl(fixture.workspace, async impl => {
+      using _wipe = vi.spyOn(impl.ctx.storage, "deleteAll").mockRejectedValue(new Error("Interrupted wipe"));
+      impl.beginDeletion(new Set([fixture.user.id.toString()]));
+      await expect(impl.deliverUserUpdates()).rejects.toThrow("Interrupted wipe");
+      expect([...impl.storage.pendingUserUpdates.list()]).toEqual([]);
+      expect(impl.storage.deleting.get()).toBe(true);
+    });
+    await expect(runInDurableObject(fixture.workspace, (_instance, ctx) => ctx.abort("Reset before wipe")))
+      .rejects.toThrow("Reset before wipe");
+    await withImpl(fixture.workspace, async impl => {
+      await impl.deliverUserUpdates();
+      expect([...impl.storage.chats.list()]).toEqual([]);
+      expect(await impl.ctx.storage.getAlarm()).toBeNull();
+    });
+    expect(removed).toHaveBeenCalledOnce();
+  });
+
   it("does not recreate fanout work when a handoff fails after workspace deletion", async () => {
     const fixture = await setup();
     await runInDurableObject(fixture.workspace, async instance => {
@@ -436,7 +568,9 @@ describe("durable forward handoff", () => {
         write(impl, 0);
         const delivery = impl.deliverDirtyChats().catch(() => {});
         await entered.promise;
+        using removeListing = vi.spyOn(UserDurableObject.prototype, "deleteWorkspace");
         await client.deleteSelf();
+        expect(removeListing).toHaveBeenCalledOnce();
         expect([...impl.storage.dirtyChats.list()]).toEqual([]);
         release.resolve();
         await delivery;
@@ -695,13 +829,100 @@ describe("durable forward handoff", () => {
         const healthy = impl.users.get(impl.users.idFromString(reader.id.toString()));
         await vi.waitFor(async () => expect((await healthy.getUnreadSummary()).unreadMessageCount).toBe(1));
         expect(impl.storage.dirtyChats.get(1)).toBeDefined();
-        release.resolve(); await pending;
+        await expect(pending).rejects.toThrow("User DO handoff timed out");
+        expect(impl.storage.dirtyChats.get(1)?.failedRecipients?.map(row => row.userId))
+          .toEqual([fixture.user.id.toString()]);
       } finally { release.resolve(); restore(); }
+      await impl.deliverDirtyChats();
+      expect(impl.storage.dirtyChats.get(1)).toBeUndefined();
     });
   });
 });
 
 describe("recipient-owned notification outbox", () => {
+  it("keeps independent alerts at one message position through delivery, reset and replay", async () => {
+    const fixture = await setup();
+    const alerts = [{...event(0), kind: "permissionRequested" as const}, event(0)];
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification")
+      .mockRejectedValue(new Error("Unavailable"));
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0);
+      for (let alert of alerts) impl.storage.chatNotifications.put({
+        ...alert, chatId: 1, userId: fixture.user.id.toString(),
+      });
+      await impl.deliverDirtyChats();
+      expect([...impl.storage.chatNotifications.list()]).toHaveLength(2);
+    });
+    await vi.waitFor(() => expect(publish).toHaveBeenCalled());
+    expect(await outbox(fixture)).toHaveLength(2);
+    const ordered = alerts.toSorted((a, b) => a.id.localeCompare(b.id));
+    publish.mockClear();
+    publish.mockImplementation(async alert => {
+      if (alert.id === ordered[1].id) throw new Error("Lost second ACK");
+    });
+    await expect(runDurableObjectAlarm(fixture.user)).rejects.toThrow("Lost second ACK");
+    expect((await outbox(fixture)).map(alert => alert.id)).toEqual([ordered[1].id]);
+    expect((await cursor(fixture))!.notifiedEventIds).toEqual([ordered[0].id]);
+    publish.mockResolvedValue(undefined);
+    await evictDurableObject(fixture.user);
+    await fixture.user.getUnreadSummary(); await drained(fixture);
+    expect(new Set(publish.mock.calls.map(([alert]) => alert.id))).toEqual(new Set(alerts.map(alert => alert.id)));
+    await evictDurableObject(fixture.user);
+    const packet = {...progress(1), firstMessageSequence: 0, notifications: alerts};
+    await fixture.user.messageArrived(fixture.workspaceId, 1, packet);
+    expect(await outbox(fixture)).toEqual([]);
+    expect(publish).toHaveBeenCalledTimes(3);
+    const late = event(0);
+    await fixture.user.messageArrived(fixture.workspaceId, 1, {...packet, notifications: [late]});
+    await drained(fixture);
+    expect(publish).toHaveBeenCalledTimes(4);
+    expect(new Set((await cursor(fixture))!.notifiedEventIds)).toEqual(new Set([...alerts, late].map(alert => alert.id)));
+  });
+
+  it("preserves retry deadlines across replay and eviction, expiring a blocked alert before delivering a newer one", async () => {
+    const fixture = await setup(); const first = event(1), second = event(2);
+    let now = Date.now();
+    using _clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    using source = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser");
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockImplementation(async alert => {
+      if (alert.id === first.id) throw new Error("Unavailable");
+    });
+    const packet = {...progress(1), notifications: [first]};
+    await fixture.user.messageArrived(fixture.workspaceId, 1, packet);
+    await vi.waitFor(() => expect(publish).toHaveBeenCalled());
+    const deadline = (await outbox(fixture))[0].expiresAt.getTime();
+    expect(deadline).toBe(now + 10 * 60_000);
+    now += 60_000;
+    await fixture.user.messageArrived(fixture.workspaceId, 1, packet);
+    expect((await outbox(fixture))[0].expiresAt.getTime()).toBe(deadline);
+    await fixture.user.messageArrived(fixture.workspaceId, 1, {...progress(2), notifications: [second]});
+    now = deadline;
+    publish.mockClear();
+    await evictDurableObject(fixture.user);
+    await fixture.user.getUnreadSummary();
+    await drained(fixture);
+    expect(publish.mock.calls.map(([alert]) => alert.id)).toEqual([second.id]);
+    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: 2, unreadCount: 2});
+    await fixture.user.messageArrived(fixture.workspaceId, 1, packet);
+    expect(await outbox(fixture)).toEqual([]);
+    expect(source).not.toHaveBeenCalled();
+    expect(await runInDurableObject(fixture.user, (_instance, ctx) => ctx.storage.getAlarm())).toBeNull();
+  });
+
+  it("consumes an alert whose final failed attempt reaches its persisted deadline", async () => {
+    const fixture = await setup(); const alert = event(1);
+    let now = Date.now();
+    using _clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockImplementation(async (_alert, deadline) => {
+      now = deadline!;
+      throw new Error("Attempt timed out");
+    });
+    await fixture.user.messageArrived(fixture.workspaceId, 1, {...progress(1), notifications: [alert]});
+    await drained(fixture);
+    expect(publish).toHaveBeenCalledOnce();
+    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: 1, unreadCount: 1});
+  });
+
   it("keeps each alert in raw order even at the same visible prefix, deduplicating queued and completed replays", async () => {
     const fixture = await setup(); const alerts = [event(1), event(4), event(9)];
     const packet = {...progress(1), notifications: alerts};
@@ -792,6 +1013,37 @@ describe("recipient-owned notification outbox", () => {
 });
 
 describe("source authorization and removal", () => {
+  it("persists failed revocation cleanup and purges accepted alerts after source eviction", async () => {
+    const fixture = await setup(); const {reader, profile} = await addReader(fixture); await append(fixture, 0);
+    const readerFixture = {...fixture, user: reader};
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockRejectedValue(new Error("Unavailable"));
+    await reader.messageArrived(fixture.workspaceId, 1, {...progress(2), notifications: [event(1)]});
+    await vi.waitFor(() => expect(publish).toHaveBeenCalled());
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptUsers(impl, (_user, method) => method === "forgetSharedWorkspace"
+        ? async () => { throw new Error("Cleanup unavailable"); } : undefined);
+      try {
+        impl.storage.collaborators.delete(profile.id);
+        await impl.refreshAffectedCollaboratorListings([{profile, oldRole: "build", newRole: null}]);
+        expect([...impl.storage.pendingUserUpdates.list()]).toHaveLength(1);
+      } finally { restore(); }
+      const recipients: string[] = [];
+      const delivery = interceptDelivery(impl, async (user, ...args) => {
+        recipients.push(user.id.toString()); await user.messageArrived(...args);
+      });
+      try { write(impl, 1); await impl.deliverDirtyChats(); } finally { delivery(); }
+      expect(recipients).not.toContain(reader.id.toString());
+    });
+    expect(await outbox(readerFixture)).toHaveLength(1);
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => {
+      await impl.deliverUserUpdates();
+      expect([...impl.storage.pendingUserUpdates.list()]).toEqual([]);
+    });
+    expect(await outbox(readerFixture)).toEqual([]);
+    expect(await reader.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+  });
+
   it("does not revisit a denied user after another recipient failed and admission is restored", async () => {
     const fixture = await setup(); const {reader, profile} = await addReader(fixture);
     const skipped = event(0), accepted = event(1);

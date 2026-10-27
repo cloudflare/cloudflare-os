@@ -126,12 +126,14 @@ export type ChatReadCursor = {
   workspaceId: string;
   chatId: number;
   readThroughSequence: number;
-  /** Dense visible position corresponding to the raw read horizon; absent on prototype cursors. */
+  /** Dense visible position at the read horizon; absent until tracking is initialized. */
   readThroughVisibleSequence?: number;
   /** Latest delivered dense visible position, monotonic even when source deliveries repeat. */
   latestVisibleSequence?: number;
   unreadCount: number;
   notifiedThroughSequence: number;
+  /** Delivered IDs at that position. Absent means the entire position was skipped on admission. */
+  notifiedEventIds?: string[];
   /** Source-owned inbox metadata, copied through the same durable message/title fanout. */
   head?: Omit<ChatTimelineHead, "chatId">;
   /** Source metadata's existing lastActive timestamp, ordering renames at the same message position. */
@@ -144,6 +146,8 @@ export type ChatReadCursor = {
 export type QueuedChatNotification = UserNotification & {
   /** Original timeline position, independent of the visible-message count. */
   sequence: number;
+  /** Fixed retry deadline from first acceptance; replays and eviction never extend it. */
+  expiresAt: Date;
 };
 
 /**
@@ -184,7 +188,7 @@ export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
       notificationOutbox: collection<QueuedChatNotification>()({
-        primaryKey: event => `${event.workspaceId}:${chatKey(event.chatId, event.sequence)}`,
+        primaryKey: event => `${event.workspaceId}:${chatKey(event.chatId, event.sequence)}:${event.id}`,
       }),
       chatReadCursors: collection<ChatReadCursor>()({
         primaryKey: record => `${record.workspaceId}:${record.chatId}`,

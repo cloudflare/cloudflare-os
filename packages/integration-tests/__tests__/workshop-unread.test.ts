@@ -93,6 +93,12 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   );
 
   const chatId = await workspace.newChat("First persisted item", null);
+  const ownFirst = await waitFor("a caught-up sender consuming their own message", async () =>
+    (await owner.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId) ?? null);
+  expect(ownFirst.unreadMessageCount).toBe(0);
+  expect(ownFirst.readThroughSequence).toBeGreaterThanOrEqual(0);
+  expect(await owner.getUnreadThreads()).toEqual([]);
+  await secondDevice.markChatUnread(workspaceId, chatId, ownFirst.readThroughSequence);
   const initial = await waitFor("the newly persisted thread", async () => {
     const chat = await observedChat(owner, workspaceId, chatId);
     return chat && chat.latestSequence >= 0 ? chat : null;
@@ -121,6 +127,12 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   );
 
   await workspace.sendChatMessage(chatId, "Second persisted item", null);
+  const ownNext = await waitFor("the next own message advancing the read horizon", async () => {
+    const chat = (await owner.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId);
+    return chat && chat.readThroughSequence > initial.latestSequence ? chat : null;
+  });
+  expect(ownNext.unreadMessageCount).toBe(0);
+  await secondDevice.markChatUnread(workspaceId, chatId, ownNext.readThroughSequence);
   const next = await waitFor("new activity beyond the read pointer", async () => {
     const chat = await observedChat(owner, workspaceId, chatId);
     return chat && chat.latestSequence > initial.latestSequence ? chat : null;

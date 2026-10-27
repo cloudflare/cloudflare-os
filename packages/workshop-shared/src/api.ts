@@ -4106,8 +4106,6 @@ export type AiChatAuthorInfo = {
 export type AiChatMessage = {
   chatId: number;
   sequence: number;
-  /** Visible-message count through this record. Absent on history written before tracking began. */
-  visibleThroughSequence?: number;
   timestamp: Date;
   author: AiChatAuthorInfo;
 } & AiChatMessageBody;
