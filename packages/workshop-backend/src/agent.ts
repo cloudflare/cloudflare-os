@@ -45,7 +45,7 @@ import {
   requestAnthropicCompaction, supportsAnthropicCompaction, withAnthropicCompactionBlock,
 } from "./anthropic-compaction";
 import { formatGrep, type GrepScan } from "./grep";
-import type { WorktreeReplicaCommit } from "./worktree-replica";
+import { ReplicaChangedError, type WorktreeReplicaCommit } from "./worktree-replica";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -89,9 +89,6 @@ export const MAX_TOOL_RESULT_CHARS = 32 * 1024;
 export interface AgentStepChange {
   /** The tool call's edit, exactly as it will be recorded (and broadcast) as a row. */
   change: CodeChange;
-
-  /** This edit came from the replica acceptance, rather than an ordinary buffered tool call. */
-  replica?: true;
 
   /** File tool whose effect may be persisted before its transcript. */
   toolCallId?: string;
@@ -390,8 +387,8 @@ export interface AgentHooks {
         blueprintMerges: BlueprintMerge[],
         /** Idempotent receipt for changes accepted from a gatekeeper's replica. */
         replicaCommit?: WorktreeReplicaCommit,
-        /** Live pass whose buffered effects were drained; must remain current at commit. */
-        replicaAccess?: WorktreeTurnAccess,
+        /** Publish prepared replica edits only after their transaction commits in this live pass. */
+        replicaAccess?: {current: WorktreeTurnAccess, revision: number, accept(): void},
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
@@ -3033,7 +3030,7 @@ async function runAgentPass(
     noteWorktreeRemovals(change);
   };
 
-  let appendReplicaChanges = async (change: CodeChange, revision?: number) => {
+  let prepareReplicaChanges = async (change: CodeChange, revision: number) => {
     let prepared: {workpieceId: number, entries: CodeChange[number],
       pin?: {baseCommit: string, baseFiles: Map<string, string>}, knowledge?: Map<string, string | undefined>}[] = [];
     for (let [key, entries] of Object.entries(change)) {
@@ -3058,7 +3055,7 @@ async function runAgentPass(
     }
     // Source reads may yield to another edit. Validate once, before the synchronous batch,
     // rather than after each append (which itself advances workspaceRevision).
-    if (revision !== undefined && revision !== workspaceRevision) return false;
+    if (revision !== workspaceRevision) return undefined;
     // Appending one checkout at a time must not leave a rejected batch partially buffered.
     // Preflight the same per-checkout framing and applicability against an immutable view.
     validateCodeChangeSchema(change);
@@ -3076,15 +3073,27 @@ async function runAgentPass(
       }
       content = applyCodeChange(content, {[workpieceId]: entries});
     }
-    for (let {workpieceId, entries, pin, knowledge} of prepared) {
-      appendAgentEdit(workpieceId, {[workpieceId]: entries}, pin);
-      if (knowledge !== undefined) filesRead.set(workpieceId, knowledge);
-      stepBuffer.changes.at(-1)!.replica = true;
-      for (let [path, fileChange] of entries) {
-        if (!("remove" in fileChange)) markFileRead(workpieceId, path);
-      }
-    }
-    return true;
+    return {
+      changes: prepared.map(({workpieceId, entries, pin}): AgentStepChange => ({
+        change: {[workpieceId]: entries},
+        ...(pin ? {pin: {gadgetId: workpieceId, baseCommit: pin.baseCommit}} : {}),
+      })),
+      accept: () => {
+        // The transaction rechecks the live revision before accepting. Rejected replica edits
+        // never enter the tool view or its pending buffer; ordinary effects remain untouched.
+        sessionContent = content;
+        for (const {workpieceId, entries, pin, knowledge} of prepared) {
+          if (pin) pinnedGadgets.add(workpieceId);
+          pinWorktreeInSession(workpieceId);
+          if (knowledge !== undefined) filesRead.set(workpieceId, knowledge);
+          for (const [path, fileChange] of entries) {
+            if (!("remove" in fileChange)) markFileRead(workpieceId, path);
+          }
+        }
+        noteWorktreeRemovals(change);
+        workspaceRevision += prepared.length;
+      },
+    };
   };
 
   // commit() head advancements buffered this step (see WorktreeTurnAccess.appendCommit),
@@ -3124,25 +3133,40 @@ async function runAgentPass(
         // Serialize receipt/version checks with append and persistence. A duplicate no-op does
         // not advance the in-memory revision, but must never reach the durable barrier twice.
         // Validation failures before committing remain request errors, not fatal storage errors.
-        if ((validate && !validate()) || revision !== workspaceRevision || !await appendReplicaChanges(change, revision)) {
-          return false;
-        }
+        if ((validate && !validate()) || revision !== workspaceRevision) return false;
+        const replica = await prepareReplicaChanges(change, revision);
+        if (!replica) return false;
         // Live shell effects deliberately become durable before their eventual tool-result
         // transcript. A crashed command must not lose the whole command's workspace edits.
-        let changes = stepBuffer.changes;
-        stepBuffer.changes = [];
-        stepBuffer.bytes = 0;
-        let createdGadgets = pendingCreatedGadgets;
-        pendingCreatedGadgets = [];
-        let createdWorktrees = pendingCreatedWorktrees;
-        pendingCreatedWorktrees = [];
-        let addedBindings = pendingAddedBindings;
-        pendingAddedBindings = [];
-        let worktreeCommits = pendingWorktreeCommits;
-        pendingWorktreeCommits = [];
-        let blueprintMerges = pendingBlueprintMerges;
-        pendingBlueprintMerges = [];
-        const drainedRevision = workspaceRevision;
+        const changes = [...stepBuffer.changes];
+        const bytes = stepBuffer.bytes;
+        const createdGadgets = [...pendingCreatedGadgets];
+        const createdWorktrees = [...pendingCreatedWorktrees];
+        const addedBindings = [...pendingAddedBindings];
+        const worktreeCommits = [...pendingWorktreeCommits];
+        const blueprintMerges = [...pendingBlueprintMerges];
+        committing = true;
+        let materialized: boolean;
+        try {
+          materialized = await hooks.commitAgentStep(chatId, author, [], {
+            changes: [...changes, ...replica.changes], createdGadgets, createdWorktrees,
+            addedBindings, worktreeCommits, blueprintMerges, replicaCommit,
+            replicaAccess: {current: worktreeTurnAccess, revision, accept: replica.accept},
+          });
+        } catch (error) {
+          if (!(error instanceof ReplicaChangedError)) throw error;
+          committing = false;
+          return false;
+        }
+        // Keep the pending buffers intact until acceptance. New ordinary effects can append
+        // during prefetch, so consume only the accepted prefixes, never replace the arrays.
+        stepBuffer.changes.splice(0, changes.length);
+        stepBuffer.bytes -= bytes;
+        pendingCreatedGadgets.splice(0, createdGadgets.length);
+        pendingCreatedWorktrees.splice(0, createdWorktrees.length);
+        pendingAddedBindings.splice(0, addedBindings.length);
+        pendingWorktreeCommits.splice(0, worktreeCommits.length);
+        pendingBlueprintMerges.splice(0, blueprintMerges.length);
         earlyFileFlush = true;
         for (const item of changes) if (item.toolCallId) {
           toolCallNotes.set(item.toolCallId, {...toolCallNotes.get(item.toolCallId), effectsPersisted: true});
@@ -3152,12 +3176,8 @@ async function runAgentPass(
         for (const [id, output] of stepFileReads) {
           toolCallNotes.set(id, {...toolCallNotes.get(id), output} as Partial<Extract<AiToolCall, {toolName: "readFile"}>>);
         }
-        committing = true;
-        if (await hooks.commitAgentStep(chatId, author, [], {
-          changes, createdGadgets, createdWorktrees, addedBindings, worktreeCommits,
-          blueprintMerges, replicaCommit, replicaAccess: worktreeTurnAccess,
-        })) ++nextChangeId;
-        return workspaceRevision === drainedRevision;
+        if (materialized) ++nextChangeId;
+        return workspaceRevision === revision + replica.changes.length;
       }, () => committing);
     },
   };

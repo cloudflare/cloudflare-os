@@ -18,7 +18,9 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
+import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { WorktreeReplicaLease } from "../src/storage-schema/overseer-storage";
 import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migration";
 import {
   OVERSEER_STORAGE_VERSION, UPSTREAM_BACKFILL_MESSAGE_LIMIT, migrateToBlueprintUpstreams,
@@ -183,6 +185,34 @@ describe("git-storage migration via the Overseer constructor", () => {
 });
 
 describe("worktree replica storage initialization", () => {
+  it("backfills active commands on wake without discarding closed commands or their receipts", async () => {
+    const name = "replica-index-" + crypto.randomUUID();
+    const lease: WorktreeReplicaLease = {id: "open", gatekeeperId: 31, chatId: 1,
+      turnId: "turn", segmentId: "segment", version: "0",
+      worktree: {checkoutId: 7, binding: "REPO", baseCommit: null, baseTree: null, source: "attachments"}};
+    const receipt = {id: "closed:final", leaseId: "closed", digest: "retained", final: true};
+    await inOverseer(name, async impl => {
+      const legacy = createTypedStorage(impl.ctx.storage, {collections: {
+        worktreeReplicaLeases: collection<WorktreeReplicaLease>()({primaryKey: "id"}),
+      }});
+      legacy.worktreeReplicaLeases.put(lease);
+      legacy.worktreeReplicaLeases.put({...lease, id: "closed", released: true});
+      impl.storage.worktreeReplicaCommits.put(receipt);
+      impl.storage.version.put(6);
+    });
+    await abortAllDurableObjects();
+    await inOverseer(name, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect([...impl.storage.worktreeReplicaLeases.activeByWorktree.get("1:7")]).toEqual([lease]);
+      expect([...impl.storage.worktreeReplicaLeases.list()]).toHaveLength(2);
+      expect(impl.storage.worktreeReplicaCommits.get(receipt.id)).toEqual(receipt);
+      // Updating a backfilled row must remove only its index entry, not its diagnostic record.
+      impl.storage.worktreeReplicaLeases.put({...lease, released: true});
+      expect([...impl.storage.worktreeReplicaLeases.activeByWorktree.get("1:7")]).toEqual([]);
+      expect([...impl.storage.worktreeReplicaLeases.list()]).toHaveLength(2);
+    });
+  });
+
   it("opens empty replica collections on wake without eagerly loading workspace files", async () => {
     const name = "replica-initialization-" + crypto.randomUUID();
     await inOverseer(name, async impl => {

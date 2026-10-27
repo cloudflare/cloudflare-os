@@ -116,6 +116,11 @@ Only then may command success be exposed. Retry a lost ACK with the identical ID
 overlapping retries deduplicate too. The final receipt remains retryable after revocation
 without creating effects or reviving authority.
 
+Command records and all batch receipts remain in SQLite storage without a time-based expiry,
+for diagnosis and delayed lost-ACK recovery. Mounting indexes only unreleased commands for the
+selected chat/worktree; retaining completed history does not add a full-history scan to each
+mount. Retention does not extend write authority or permit replaying a shell command.
+
 ## Warm reuse and failures
 
 The container remains warm but sealed between commands. Every new authorized command obtains a

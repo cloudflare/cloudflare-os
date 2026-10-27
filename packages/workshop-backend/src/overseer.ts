@@ -29,7 +29,7 @@ import {
 } from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
-  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
+  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToActiveWorktreeCommands, migrateToBlueprintUpstreams,
   migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -45,7 +45,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, assertAgentMayModifyWorkpiece, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, assertAgentMayModifyWorkpiece, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -72,8 +72,8 @@ import { AgentContextImpl, agentIntegrationReplicaGrant } from "./agent-integrat
 import type { AgentContext, AgentTurnInfo, CommandGitRepository, WorktreeMount, WorktreeWriteback, FileChangeByPath }
   from "@gadgets/workshop-shared/agent-integration";
 import type { WorktreeBase } from "./storage-schema/overseer-storage";
-import { WorktreeWritebackSession, requireReplicaPath, type WorktreeWritebackHost,
-  type WorktreeReplicaLease, type WorktreeReplicaCommit } from "./worktree-replica";
+import { ReplicaChangedError, WorktreeWritebackSession, requireReplicaPath, type WorktreeWritebackHost,
+  type WorktreeReplicaLease } from "./worktree-replica";
 import { replicaCommitPack } from "./replica-git";
 import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import { gitObjectRequest } from "@gadgets/gatekeeper-kit/git-transport";
@@ -420,9 +420,6 @@ function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload
 const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
 
-// A maximum-size canonical CodeChange must fit in one page. Its size estimate already charges
-// every path and change node; the event projection adds only these small per-file wrappers.
-// The 24 MiB page cap leaves framing headroom below Workers RPC's 32 MiB value ceiling.
 const CHAT_ATTACHMENT_EXTENSION_BY_MIME = new Map([
   ["text/csv", ".csv"],
   ["application/json", ".json"],
@@ -1291,6 +1288,7 @@ class OverseerImpl implements AgentHooks {
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
+      migrateToActiveWorktreeCommands(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -2494,8 +2492,7 @@ class OverseerImpl implements AgentHooks {
   #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
                        change: CodeChange,
                        newPins: ChatGadgetPinState[], contentAfter: CodeContent | undefined,
-                       submission?: {clientId: string, seq: number},
-                       ): ChatChangeRecord {
+                       submission?: {clientId: string, seq: number}): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
     codeBase.pins.push(...newPins);
     let revision = codeBase.revision + 1;
@@ -2889,16 +2886,7 @@ class OverseerImpl implements AgentHooks {
   // storage), or they would serve content the rows no longer back.
   async commitAgentStep(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
-      step: {
-        changes: AgentStepChange[],
-        createdGadgets: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
-        createdWorktrees: {worktreeId: WorkpieceId, title: string, bindingName: string}[],
-        addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
-        worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
-        blueprintMerges: BlueprintMerge[],
-        replicaCommit?: WorktreeReplicaCommit,
-        replicaAccess?: WorktreeTurnAccess,
-      },
+      step: Parameters<AgentHooks["commitAgentStep"]>[3],
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
     let meta = this.storage.chatMeta.get(chatId);
@@ -2970,12 +2958,16 @@ class OverseerImpl implements AgentHooks {
     }
 
     try {
-      return this.storage.transaction(() => {
-        if (step.replicaAccess && this.#worktreeReplicaTurns.get(chatId)?.access !== step.replicaAccess) {
-          throw new ReplicaChangedError();
+      const materialized = this.storage.transaction(() => {
+        if (step.replicaAccess) {
+          const {current, revision} = step.replicaAccess;
+          if (this.#worktreeReplicaTurns.get(chatId)?.access !== current || current.getRevision?.() !== revision)
+            throw new ReplicaChangedError();
         }
         if (step.replicaCommit !== undefined) {
-          const lease = this.requireReplicaLease(step.replicaCommit.leaseId);
+          let lease: WorktreeReplicaLease;
+          try { lease = this.requireReplicaLease(step.replicaCommit.leaseId); }
+          catch { throw new ReplicaChangedError(); }
           if (this.replicaVersion(lease) !== lease.version) {
             throw new ReplicaChangedError();
           }
@@ -2984,7 +2976,10 @@ class OverseerImpl implements AgentHooks {
           }
         }
         let fresh = this.storage.chatMeta.get(chatId);
-        if (!fresh) return false;  // chat deleted during the prefetches
+        if (!fresh) {
+          if (step.replicaAccess) throw new ReplicaChangedError();
+          return false;  // chat deleted during the prefetches
+        }
 
         // Establish the step's worktree pins before the rows and the message: the pin is what
         // buildChatContent roots the worktree's changes at, and materializeChatChanges'
@@ -3067,6 +3062,10 @@ class OverseerImpl implements AgentHooks {
         }
         return materialized;
       });
+      // Closure follows the durable receipt, not a later live-revision check in the agent.
+      if (step.replicaCommit?.final) this.#closeCommandGit(step.replicaCommit.leaseId);
+      step.replicaAccess?.accept();
+      return materialized;
     } catch (err) {
       // The transaction rolled the rows back, but the append path already advanced the
       // in-memory caches to reflect them; drop both so later reads rebuild from storage.
@@ -5327,12 +5326,12 @@ class OverseerImpl implements AgentHooks {
   }
 
   #worktreeReplicaTurns = new Map<number, { access: WorktreeTurnAccess, author: AiChatAuthorInfo,
-    bindings: () => ReadonlyMap<string, ChatBindingEntry>, id: string }>();
+    bindings: () => ReadonlyMap<string, ChatBindingEntry> }>();
 
   registerWorktreeReplicaTurn(chatId: number, access: WorktreeTurnAccess, author: AiChatAuthorInfo,
       bindings: () => ReadonlyMap<string, ChatBindingEntry>, revision?: string): boolean {
     if (revision !== undefined && revision !== this.replicaHistoryRevision(chatId)) return false;
-    this.#worktreeReplicaTurns.set(chatId, {access, author, bindings, id: crypto.randomUUID()});
+    this.#worktreeReplicaTurns.set(chatId, {access, author, bindings});
     return true;
   }
 
@@ -6508,10 +6507,10 @@ class OverseerImpl implements AgentHooks {
         1024 * 1024) throw new Error("Worktree capture exceeds its transform budget.");
     let lease: WorktreeReplicaLease = {id: crypto.randomUUID(), gatekeeperId, chatId: origin.chatId,
       turnId: origin.turnId, segmentId: origin.segmentId, worktree, version: this.replicaHistoryRevision(origin.chatId),
-      pendingChanges, gitSources: origin.gitSources};
-    for (const previous of this.storage.worktreeReplicaLeases.list()) {
-      if (previous.chatId !== lease.chatId || previous.worktree.checkoutId !== worktree.checkoutId || previous.released) continue;
-      if (previous.turnId !== lease.turnId || previous.version !== lease.version) {
+      gitSources: origin.gitSources};
+    const previousLeases = [...this.storage.worktreeReplicaLeases.activeByWorktree.get(`${lease.chatId}:${worktree.checkoutId}`)];
+    for (const previous of previousLeases) {
+      if (previous.turnId !== lease.turnId || previous.segmentId !== lease.segmentId || previous.version !== lease.version) {
         // An old command cannot write against this revision; never let its failed lease
         // prevent a fresh command from capturing the now-canonical view.
         this.storage.worktreeReplicaLeases.put({...previous, released: true});
@@ -6569,14 +6568,18 @@ class OverseerImpl implements AgentHooks {
     if (lease.released || !this.replicaGrant(lease.gatekeeperId))
       throw new Error("Worktree command access ended.");
     this.assertGatekeeperUsable(lease.gatekeeperId);
-    if (this.storage.activeAgents.get(lease.chatId)?.integration?.turnId !== lease.turnId)
+    const execution = this.storage.activeAgents.get(lease.chatId)?.integration;
+    if (execution?.turnId !== lease.turnId || execution.segmentId !== lease.segmentId)
       throw new Error("Worktree command access ended.");
     const current = this.replicaSelection(lease.chatId).find(tree => tree.checkoutId === lease.worktree.checkoutId);
     if (!current || current.baseCommit !== lease.worktree.baseCommit)
       throw new Error("Worktree binding changed.");
     const piece = this.storage.gadgets.get(current.checkoutId);
-    if (piece?.type === "worktree" && piece.sourceGatekeeperId !== undefined)
+    if (piece?.type === "worktree" && piece.sourceGatekeeperId !== undefined) {
+      if (!this.storage.gatekeepers.get(piece.sourceGatekeeperId))
+        throw new Error("Worktree source connection was removed.");
       this.assertGatekeeperUsable(piece.sourceGatekeeperId);
+    }
     return lease;
   }
 
@@ -6655,13 +6658,12 @@ class OverseerImpl implements AgentHooks {
         const active = this.#worktreeReplicaTurns.get(lease.chatId);
         try {
           if (active?.access.flushReplica) {
-            const accepted = await active.access.flushReplica(change,
+            await active.access.flushReplica(change,
             active.access.getRevision?.() ?? 0, receipt, () => {
               this.requireReplicaLease(lease.id);
               return this.replicaVersion(lease) === version && !this.storage.worktreeReplicaCommits.get(receipt.id);
             });
-            if (accepted && receipt.final) this.#closeCommandGit(lease.id);
-            return accepted;
+            return this.storage.worktreeReplicaCommits.get(receipt.id)?.digest === receipt.digest;
           }
           await this.commitAgentStep(lease.chatId,
             {type: "agent", id: lease.gatekeeperId.toString(), name: "Worktree command"}, [], {
@@ -6670,7 +6672,6 @@ class OverseerImpl implements AgentHooks {
             });
           // An empty final batch has no transcript changes, but still commits its closure receipt.
           const accepted = this.storage.worktreeReplicaCommits.get(receipt.id)?.digest === receipt.digest;
-          if (accepted && receipt.final) this.#closeCommandGit(lease.id);
           return accepted;
         } catch (error) { if (error instanceof ReplicaChangedError) return false; throw error; }
       },
@@ -13911,9 +13912,6 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
     },
   }));
 }
-
-@validateRpc()
-class ReplicaChangedError extends Error {}
 
 /** Persistent, command-scoped write-only capability. Each call re-enters its owning DO. */
 @validateRpc()

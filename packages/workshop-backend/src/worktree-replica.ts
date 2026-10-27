@@ -6,6 +6,9 @@ import { codeChangeSerializedSize, validateCodeChangeSchema, type CodeChange }
 import type { WorktreeReplicaLease, WorktreeReplicaCommit } from "./storage-schema/overseer-storage";
 export type { WorktreeReplicaLease, WorktreeReplicaCommit } from "./storage-schema/overseer-storage";
 
+/** An expected pre-commit conflict, not a failure to persist an accepted agent step. */
+export class ReplicaChangedError extends Error {}
+
 /** Kernel durability plumbing for a single command, not a second replication protocol. */
 export interface WorktreeWritebackHost {
   lease(id: string, receiptOnly?: boolean): WorktreeReplicaLease;

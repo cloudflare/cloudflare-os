@@ -3,6 +3,12 @@
 The Gadgets Workshop server on Cloudflare Workers: the **kernel**, held to the bar in the root
 `AGENTS.md` (The kernel).
 
+## Command-scoped worktree mounts
+
+See [`../../docs/agent-worktree-replicas.md`](../../docs/agent-worktree-replicas.md) before changing
+container capture/writeback. Authority belongs to one command; its final durable batch seals both
+writeback and Git access. There is no ongoing two-way synchronization or turn-lifecycle lease.
+
 ## Bundled blueprints
 
 The backend installs the **bundled blueprints** from `@gadgets/bundled-blueprints` on a deployment's

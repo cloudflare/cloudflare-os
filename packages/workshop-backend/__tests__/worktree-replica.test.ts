@@ -1,4 +1,5 @@
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
+import {createFauxCore, fauxAssistantMessage, fauxText} from "@earendil-works/pi-ai";
 import {env} from "cloudflare:workers";
 import {runInDurableObject, abortAllDurableObjects} from "cloudflare:test";
 import {beginReplicaTurn, pauseReplicaTurn} from "./replica-fixtures";
@@ -6,6 +7,7 @@ import {decodePackStream} from "../src/git-codec";
 import {diffFiles, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {OverseerDurableObject} from "./test-worker";
 import type {TestReplicaTransfer} from "./replica-transfer-worker";
+import {runAgent, type WorktreeTurnAccess} from "../src/agent";
 
 const testEnv = env as Cloudflare.Env & {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -53,6 +55,122 @@ const gitRequest = (binding = "GIT", stream = false) => new Request("https://git
 });
 
 describe("single-worktree command mount and writeback", () => {
+  it("revokes writeback when the worktree source is removed, but still recognizes its final receipt", () => within(async (impl, f) => {
+    bindGit(impl);
+    const piece = impl.storage.gadgets.get(f.tree.id)!;
+    if (piece.type !== "worktree") throw new Error("Expected a worktree");
+    impl.storage.gadgets.put({...piece, sourceGatekeeperId: 40});
+    const mount = await f.context().mountWorktree("REPO");
+    for (const pack of mount.packs) await pack.cancel();
+    impl.removeGatekeeper(40);
+    await expect((async () => { await mount.writeback.submitChanges("removed", [{path: "bad.txt", change: {set: "bad"}}], true); })())
+      .rejects.toThrow(/connection|access ended/i);
+    expect([...impl.storage.worktreeReplicaCommits.list()]).toHaveLength(0);
+    bindGit(impl);
+    await mount.writeback.submitChanges("final", [], true);
+    impl.removeGatekeeper(40);
+    await mount.writeback.submitChanges("final", [], true);
+    expect([...impl.storage.worktreeReplicaCommits.list()]).toHaveLength(1);
+  }));
+
+  it.each(["none", "canonical", "buffered"] as const)("preserves ordinary edits across a %s commit-window conflict", conflict => within(async (impl, f) => {
+    impl.addChatMessages(1, author, [{type: "changes", change: {}, createdWorktrees: [
+      {worktreeId: f.tree.id, title: "Repo", bindingName: "REPO"},
+    ]}]);
+    impl.addChatMessages(1, {type: "user", id: "test-user", name: "Test"}, [{type: "message", message: "Run the command."}]);
+    let access!: WorktreeTurnAccess;
+    const register = impl.registerWorktreeReplicaTurn.bind(impl);
+    const registration = vi.spyOn(impl, "registerWorktreeReplicaTurn").mockImplementation((...args) => {
+      access = args[1];
+      return register(...args);
+    });
+    const commit = impl.commitAgentStep.bind(impl);
+    let armed = false;
+    const commits = vi.spyOn(impl, "commitAgentStep").mockImplementation((...args) => {
+      if (args[3].replicaCommit) armed = true;
+      return commit(...args);
+    });
+    const content = impl.getCurrentChatContent.bind(impl);
+    const reads = vi.spyOn(impl, "getCurrentChatContent").mockImplementation(async (...args) => {
+      const result = await content(...args);
+      if (armed) {
+        armed = false;
+        if (conflict === "canonical") await f.step({[f.tree.id]: [["external.txt", {set: "canonical"}]]});
+        if (conflict === "buffered") access.appendChange(f.tree.id, "later.txt", {set: "later"});
+      }
+      return result;
+    });
+    const writable = impl.gitCache.assertWorktreePathWritable.bind(impl.gitCache);
+    const paths = vi.spyOn(impl.gitCache, "assertWorktreePathWritable").mockImplementation(async (...args) => {
+      // The initial ordinary-buffer flush has finished. This edit joins the replica's commit.
+      access.appendChange(f.tree.id, "ordinary.txt", {set: "ordinary"});
+      await writable(...args);
+    });
+    const faux = createFauxCore({models: [{id: "test"}]});
+    faux.setResponses([async () => {
+      const mount = await f.context().mountWorktree("REPO");
+      for (const pack of mount.packs) await pack.cancel();
+      const result = (async () => { await mount.writeback.submitChanges("batch", [{path: "container.txt", change: {set: "container"}}], false); })();
+      if (conflict === "none") await result;
+      else await expect(result).rejects.toThrow(/concurrent writers/);
+      expect(access.getOverlayFiles(f.tree.id).get("container.txt"))
+        .toBe(conflict === "none" ? "container" : undefined);
+      expect(await access.flushReplica!({}, access.getRevision!())).toBe(true);
+      return fauxAssistantMessage(fauxText("Done."));
+    }]);
+    try {
+      await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, author,
+        new AbortController().signal, {type: "user", id: "test-user", name: "Test"},
+        {provider: "cloudflare", model: "test", apiToken: ""});
+      const files = (await content(1, impl.storage.chatMeta.get(1)!)).get(f.tree.id)!;
+      expect(files.get("ordinary.txt")).toBe("ordinary");
+      expect(files.get("container.txt")).toBe(conflict === "none" ? "container" : undefined);
+      if (conflict === "canonical") expect(files.get("external.txt")).toBe("canonical");
+      if (conflict === "buffered") expect(files.get("later.txt")).toBe("later");
+    } finally { registration.mockRestore(); commits.mockRestore(); reads.mockRestore(); paths.mockRestore(); }
+  }));
+
+  it("cancels Git on durable final acceptance even when a later edit changes the live revision", () => within(async (impl, f) => {
+    impl.addChatMessages(1, author, [{type: "changes", change: {}, createdWorktrees: [
+      {worktreeId: f.tree.id, title: "Repo", bindingName: "REPO"},
+    ]}]);
+    impl.addChatMessages(1, {type: "user", id: "test-user", name: "Test"}, [{type: "message", message: "Run the command."}]);
+    bindGit(impl);
+    let access!: WorktreeTurnAccess;
+    const register = impl.registerWorktreeReplicaTurn.bind(impl);
+    const registration = vi.spyOn(impl, "registerWorktreeReplicaTurn").mockImplementation((...args) => {
+      access = args[1]; return register(...args);
+    });
+    const commit = impl.commitAgentStep.bind(impl);
+    const commits = vi.spyOn(impl, "commitAgentStep").mockImplementation(async (...args) => {
+      const result = await commit(...args);
+      if (args[3].replicaCommit?.final) access.appendChange(f.tree.id, "later.txt", {set: "later"});
+      return result;
+    });
+    const faux = createFauxCore({models: [{id: "test"}]});
+    faux.setResponses([async () => {
+      const mount = await f.context().mountWorktree("REPO");
+      for (const pack of mount.packs) await pack.cancel();
+      const reader = (await mount.git!.fetch(gitRequest("GIT", true))).body!.getReader();
+      await reader.read();
+      const next = reader.read().then(result => result.done, () => true);
+      const cancel = vi.fn();
+      void next.then(cancel);
+      try {
+        await mount.writeback.submitChanges("final", [], true);
+        expect([...impl.storage.worktreeReplicaLeases.list()][0].released).toBe(true);
+        await vi.waitFor(() => expect(cancel).toHaveBeenCalled(), {timeout: 1000});
+        expect(await next).toBe(true);
+      } finally { await reader.cancel(); }
+      return fauxAssistantMessage(fauxText("Done."));
+    }]);
+    try {
+      await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, author,
+        new AbortController().signal, {type: "user", id: "test-user", name: "Test"},
+        {provider: "cloudflare", model: "test", apiToken: ""});
+    } finally { registration.mockRestore(); commits.mockRestore(); }
+  }));
+
   it("captures Git bindings, observes runtime reads, and expires Git with final writeback", () => within(async (impl, f) => {
     const context = bindGit(impl);
     const mount = await f.context().mountWorktree("REPO");
@@ -117,6 +235,43 @@ describe("single-worktree command mount and writeback", () => {
     await second.writeback.submitChanges("one", [{path: "once.txt", change: {set: "once"}}], false);
     await expect(f.context().mountWorktree("REPO")).rejects.toThrow(/already active/);
     await second.writeback.submitChanges("final", [], true);
+  }));
+  it("releases an old segment's untouched mount without reviving its write authority", () => within(async (impl, f) => {
+    const first = await f.context().mountWorktree("REPO");
+    for (const pack of first.packs) await pack.cancel();
+    const row = impl.storage.activeAgents.get(1)!;
+    impl.storage.activeAgents.put({...row, integration: {...row.integration!, segmentId: crypto.randomUUID()}});
+    await expect((async () => { await first.writeback.submitChanges("stale", [], false); })())
+      .rejects.toThrow(/access ended/);
+    const second = await f.context().mountWorktree("REPO");
+    for (const pack of second.packs) await pack.cancel();
+    expect([...impl.storage.worktreeReplicaLeases.list()].filter(lease => !lease.released)).toHaveLength(1);
+    await second.writeback.submitChanges("final", [], true);
+  }));
+  it("keeps all receipts for delayed reconciliation without scanning completed commands on mount", () => within(async (impl, f) => {
+    const first = await f.context().mountWorktree("REPO");
+    for (const pack of first.packs) await pack.cancel();
+    await first.writeback.submitChanges("part", [{path: "once.txt", change: {set: "once"}}], false);
+    await first.writeback.submitChanges("final", [], true);
+    const receipts = [...impl.storage.worktreeReplicaCommits.list()];
+    expect(receipts).toHaveLength(2);
+    const fullScan = vi.spyOn(impl.storage.worktreeReplicaLeases, "list").mockImplementation(() => {
+      throw new Error("Mount must not scan completed command history.");
+    });
+    try {
+      const next = await f.context().mountWorktree("REPO");
+      for (const pack of next.packs) await pack.cancel();
+      await next.writeback.submitChanges("final", [], true);
+    } finally { fullScan.mockRestore(); }
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    try {
+      impl.env.AGENT_INTEGRATION_GRANTS = "{}";
+      await first.writeback.submitChanges("final", [], true);
+      await expect((async () => { await first.writeback.submitChanges("late", [], false); })())
+        .rejects.toThrow(/access ended/);
+      for (const receipt of receipts) expect(impl.storage.worktreeReplicaCommits.get(receipt.id)).toEqual(receipt);
+      expect([...impl.storage.worktreeReplicaLeases.list()]).toHaveLength(2);
+    } finally { clock.mockRestore(); }
   }));
   it("captures pending OTs once, exports raw binary packs, and leaves unrelated files lazy", () => within(async (impl, f) => {
     const change = diffFiles(new Map([[f.tree.id, new Map([["a.txt", "one\ntwo\n"]])]]),

@@ -34,7 +34,6 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
-import type { FileChangeByPath } from "@gadgets/workshop-shared/agent-integration";
 
 /** Private bootstrap identities, not a workspace-wide public replica interface. */
 export type WorktreeBase = {
@@ -46,7 +45,7 @@ export type WorktreeBase = {
 /** One command's frozen worktree and expected canonical version. */
 export type WorktreeReplicaLease = {
   id: string; gatekeeperId: number; chatId: number; turnId: string; segmentId: string;
-  worktree: WorktreeBase; version: string; pendingChanges: FileChangeByPath[];
+  worktree: WorktreeBase; version: string;
   /** Frozen binding IDs; later connections cannot widen a running command. */
   gitSources?: Record<string, number>;
   released?: boolean;
@@ -974,8 +973,6 @@ export type ChatChangeRecord = {
   /** The submission echo for user rows (see AiChatSubscriber.changeApplied); absent otherwise. */
   submission?: {clientId: string, seq: number};
 
-  /** Provenance of this row, not of other edits flushed in the same agent step. */
-
   /**
    * Set when the row is no longer live: a "changes" message has materialized it (its change is part
    * of the message), or its generation was closed by a merge's epoch reset. Retired rows are
@@ -1325,6 +1322,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       an `upstream` once it is permanent.
       //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
       //       config no longer carries `env`.
+      //   7 = the worktree command leases' activeByWorktree index exists and is backfilled.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1392,7 +1390,15 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
-      worktreeReplicaLeases: collection<WorktreeReplicaLease>()({primaryKey: "id"}),
+      worktreeReplicaLeases: collection<WorktreeReplicaLease>()({
+        primaryKey: "id",
+        nonUniqueIndexes: {
+          // Retain command history without scanning completed commands on each mount.
+          activeByWorktree(record: WorktreeReplicaLease) {
+            return record.released ? null : `${record.chatId}:${record.worktree.checkoutId}`;
+          },
+        },
+      }),
       worktreeReplicaCommits: collection<WorktreeReplicaCommit>()({
         primaryKey: "id",
         nonUniqueIndexes: {byLease: (record: WorktreeReplicaCommit) => record.leaseId},
