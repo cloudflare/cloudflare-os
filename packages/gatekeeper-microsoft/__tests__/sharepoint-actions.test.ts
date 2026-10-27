@@ -219,18 +219,18 @@ describe("copying", () => {
   const started = { status: 202, headers: { location: MONITOR } };
 
   it("starts the copy with conflicts refused, waits for it, and binds the temporary ID", async () => {
-    const { host, sent } = harness([started, { status: 202, body: { status: "inProgress" } }, { status: 200, body: { status: "completed", resourceId: "COPY" } }]);
+    const { host, sent } = harness([named("notes.txt"), started, { status: 202, body: { status: "inProgress" } }, { status: 200, body: { status: "completed", resourceId: "COPY" } }]);
     vi.useFakeTimers();
     const applied = definitions.copyFile.apply(payload, host);
     await vi.advanceTimersByTimeAsync(2_000);
     expect((await applied).action).toMatchObject({ createdId: "COPY" });
-    expect(sent[0]).toMatchObject({ method: "POST", path: `/drives/${DRIVE}/items/NOTES/copy?%40microsoft.graph.conflictBehavior=fail` });
+    expect(sent[1]).toMatchObject({ method: "POST", path: `/drives/${DRIVE}/items/NOTES/copy?%40microsoft.graph.conflictBehavior=fail` });
     expect(host.refs.resolve("~2")).toBe(`${DRIVE}/COPY`);
   });
 
   it("gives up waiting as an unknown outcome, not a failure: the copy still lands", async () => {
     const progress = { status: 202, body: { status: "inProgress" } };
-    const { host } = harness([started, ...Array.from({ length: 40 }, () => progress)]);
+    const { host } = harness([named("notes.txt"), started, ...Array.from({ length: 40 }, () => progress)]);
     vi.useFakeTimers();
     const applied = definitions.copyFile.apply(payload, host);
     applied.catch(() => {});
@@ -240,8 +240,14 @@ describe("copying", () => {
   });
 
   it("fails finally when SharePoint reports the copy failed", async () => {
-    const { host } = harness([started, { status: 200, body: { status: "failed", error: { message: "Quota exceeded" } } }]);
+    const { host } = harness([named("notes.txt"), started, { status: 200, body: { status: "failed", error: { message: "Quota exceeded" } } }]);
     await expect(definitions.copyFile.apply(payload, host)).rejects.toThrow(ActionApplyError);
+  });
+
+  it("refuses a source since renamed into another format, whose bytes the copy's name was never checked as", async () => {
+    const { host, sent } = harness([named("report.zip")]);
+    await expect(definitions.copyFile.apply({ ...payload, source: { ...NOTES, name: "report.xlsx" }, name: "copy.xlsx" }, host)).rejects.toThrow(/renamed into another format/);
+    expect(sent.map(request => request.method)).toEqual(["GET"]);
   });
 });
 

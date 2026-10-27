@@ -697,6 +697,13 @@ export const definitions = {
       await requireInScope(host, parent, "The folder it goes to");
       let createdId: string;
       try {
+        // The copy's name was checked against the source's format at proposal, and the copy takes
+        // the source's current bytes: a source since renamed into another format isn't copied under
+        // a name that would pass them off as an unchecked Office file.
+        const current = await host.graph(api => api.get<{ name?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }), { replayable: true });
+        if (typeof current.name !== "string" || extensionOf(current.name) !== extensionOf(payload.source.name)) {
+          throw new ActionApplyError("The file has been renamed into another format since this was proposed, so it wasn't copied. Ask the agent to read it again.");
+        }
         const monitor = await host.graph(api => api.startCopy(`/drives/${driveId}/items/${itemId}/copy`,
           { parentReference: { driveId: parent.driveId, id: parent.itemId }, name: payload.name },
           { "@microsoft.graph.conflictBehavior": "fail" }));
