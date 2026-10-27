@@ -350,7 +350,7 @@ export interface OutlookSession extends OutlookReader {
   move(ids: string[], folderId: string): Promise<MessageInfo[]>;
   /** Moves messages to Archive. */
   archive(ids: string[]): Promise<MessageInfo[]>;
-  /** Moves messages to Deleted Items, from which the user can restore them. */
+  /** Moves messages to Deleted Items, from which the user can restore them. Drafts go through `deleteDraft`. */
   delete(ids: string[]): Promise<void>;
   markRead(ids: string[], read?: boolean): Promise<MessageInfo[]>;
   /** Flags messages for follow-up, optionally by a date (ISO 8601), or marks them complete or unflagged. */

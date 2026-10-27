@@ -10,6 +10,9 @@
 // Creation is idempotent through Graph's `transactionId`, fixed at proposal: a replay after a crash
 // gets the event already made, not a second one (verified live). A change or deletion is fenced on
 // the event's change key as it was proposed (If-Match), so what is changed is what the approver saw;
+// one proposed against a temporary `~N` ID is fenced on the change key the creation, or the last
+// approved change, left (`eventVersion:` in the binding's storage), so an event that gained
+// attendees in Outlook meanwhile isn't quietly changed or cancelled as one nobody else is on;
 // cancel and respond take no If-Match, so they compare the change key first. Meeting updates,
 // cancellations and responses mail people and can't be made idempotent, so each is claimed before
 // it is applied and a crash can't send it twice.
@@ -21,7 +24,7 @@ import { exchangeRefusal, isProvisional, realId } from "./binding";
 import { GraphApiError, type GraphApi } from "./graph-api";
 import { CalendarApi, idPath } from "./calendar-graph";
 import { describeRecurrence, recurrenceJson } from "./calendar-events";
-import type { CalendarOwnerRef } from "./calendar-scope";
+import type { CalendarAccessLevel, CalendarOwnerRef } from "./calendar-scope";
 import { DAY_MS, durationWords, humanTime, localWallTime } from "./calendar-time";
 import type { Recurrence, ShowAs } from "./calendar-types";
 import { VENDOR_ID } from "./microsoft-env";
@@ -117,7 +120,23 @@ export type CalendarActionHost = {
   refs: ProvisionalIds<string>;
   graph<T>(op: (api: GraphApi) => Promise<T>, options?: { replayable?: boolean }): Promise<T>;
   invalidate(): Promise<void>;
+  /** Records the change key an event this binding created has after it wrote it, or reads it back. */
+  noteEventVersion(id: string, changeKey: string): void;
+  eventVersion(id: string): string | undefined;
 };
+
+/** The access an action needs to apply, as its proposal needed: checked again at apply, since access may have been lowered since. */
+export function requiredAccess(action: CalendarAction): CalendarAccessLevel {
+  switch (action.kind) {
+    case "createMeeting":
+    case "updateMeeting":
+    case "cancelMeeting":
+    case "respond":
+      return "schedule";
+    default:
+      return "edit";
+  }
+}
 
 // -- describing ---------------------------------------------------------------------------------
 
@@ -242,26 +261,42 @@ function etag(changeKey: string): string | undefined {
   return changeKey ? `W/"${changeKey}"` : undefined;
 }
 
+/**
+ * The change key an action's target must still have: the one the approver saw or, for an event
+ * proposed against its temporary ID, the one this binding's creation or last approved change left.
+ * Empty when the proposal had none to fence on.
+ */
+function expectedVersion(host: CalendarActionHost, target: EventTarget, id: string): string {
+  if (!isProvisional(target.id)) return target.changeKey;
+  const version = host.eventVersion(id);
+  if (version === undefined) throw new ActionApplyError("The event's version since it was created isn't known, so nothing was changed. Ask the agent to read it again.");
+  return version;
+}
+
 async function create<P extends CalendarActions["createEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
-  let id: string;
+  let created: { id: string; changeKey?: string };
   try {
-    const created = await host.graph(api => calendarApi(api, payload.calendar).request<{ id?: unknown }>("POST",
+    const body = await host.graph(api => calendarApi(api, payload.calendar).request<{ id?: unknown; changeKey?: unknown }>("POST",
       `/calendars/${idPath(payload.calendar.id)}/events`, { ...eventJson(payload.event, payload.zone), transactionId: payload.transactionId }), { replayable: true });
-    if (typeof created?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which event it created.");
-    id = created.id;
+    if (typeof body?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which event it created.");
+    created = { id: body.id, ...(typeof body.changeKey === "string" ? { changeKey: body.changeKey } : {}) };
   } catch (error) {
     exchangeRefusal(error, "The event");
   }
-  host.refs.bind(payload.ref, id);
+  host.refs.bind(payload.ref, created.id);
+  if (created.changeKey !== undefined) host.noteEventVersion(created.id, created.changeKey);
   await host.invalidate();
-  return { action: { ...payload, createdId: id, appliedAt: Date.now() } };
+  return { action: { ...payload, createdId: created.id, appliedAt: Date.now() } };
 }
 
 async function update<P extends CalendarActions["updateEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
   const id = realId(host.refs, payload.target.id, "The event");
+  const ifMatch = etag(expectedVersion(host, payload.target, id));
   try {
-    await host.graph(api => calendarApi(api, payload.calendar).request("PATCH", `/events/${idPath(id)}`,
-      eventJson(payload.changes, payload.zone), isProvisional(payload.target.id) ? undefined : etag(payload.target.changeKey)));
+    const updated = await host.graph(api => calendarApi(api, payload.calendar).request<{ changeKey?: unknown }>("PATCH", `/events/${idPath(id)}`,
+      eventJson(payload.changes, payload.zone), ifMatch));
+    // A later action on the same temporary ID is fenced on what this change left.
+    if (isProvisional(payload.target.id) && typeof updated?.changeKey === "string") host.noteEventVersion(id, updated.changeKey);
   } catch (error) {
     exchangeRefusal(error, "The event");
   }
@@ -270,11 +305,12 @@ async function update<P extends CalendarActions["updateEvent"]>(payload: P, host
 }
 
 /** Fails unless the event still has the change key it was proposed with: for operations Graph won't fence itself. */
-async function requireUnchanged(api: CalendarApi, target: EventTarget, id: string): Promise<void> {
-  if (isProvisional(target.id) || target.changeKey === "") return;
+async function requireUnchanged(api: CalendarApi, host: CalendarActionHost, target: EventTarget, id: string): Promise<void> {
+  const expected = expectedVersion(host, target, id);
+  if (expected === "") return;
   const current = await api.find<{ changeKey?: unknown }>(`/events/${idPath(id)}`, { $select: "changeKey" });
   if (current === null) throw new ActionApplyError("The event no longer exists, or you no longer have access to it.");
-  if (current.changeKey !== target.changeKey) {
+  if (current.changeKey !== expected) {
     throw new ActionApplyError("The event changed after this was proposed, so nothing was sent. Ask the agent to read it again.");
   }
 }
@@ -367,9 +403,9 @@ const ownDefinitions = {
     dependsOn: payload => isProvisional(payload.target.id) ? [payload.target.id] : [],
     apply: async (payload, host) => {
       const id = realId(host.refs, payload.target.id, "The event");
+      const ifMatch = etag(expectedVersion(host, payload.target, id));
       try {
-        await host.graph(api => calendarApi(api, payload.calendar).request("DELETE", `/events/${idPath(id)}`, undefined,
-          isProvisional(payload.target.id) ? undefined : etag(payload.target.changeKey)), { replayable: true });
+        await host.graph(api => calendarApi(api, payload.calendar).request("DELETE", `/events/${idPath(id)}`, undefined, ifMatch), { replayable: true });
       } catch (error) {
         // Already gone: a replay of this deletion, or removed in Outlook meanwhile.
         if (!(error instanceof GraphApiError && error.status === 404)) exchangeRefusal(error, "The event");
@@ -399,7 +435,7 @@ const ownDefinitions = {
       try {
         await host.graph(async api => {
           const calendar = calendarApi(api, payload.calendar);
-          await requireUnchanged(calendar, payload.target, id);
+          await requireUnchanged(calendar, host, payload.target, id);
           await calendar.request("POST", `/events/${idPath(id)}/cancel`, { comment: payload.message ?? "" });
         });
       } catch (error) {
@@ -435,7 +471,7 @@ const ownDefinitions = {
       try {
         await host.graph(async api => {
           const calendar = calendarApi(api, payload.calendar);
-          await requireUnchanged(calendar, payload.target, payload.target.id);
+          await requireUnchanged(calendar, host, payload.target, payload.target.id);
           await calendar.request("POST", `/events/${idPath(payload.target.id)}/${action}`, {
             comment: payload.message ?? "", sendResponse: payload.notify,
             ...(payload.propose ? {

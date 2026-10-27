@@ -665,11 +665,16 @@ export class CalendarReaderImpl extends RpcTarget implements CalendarReader {
         ctx.calendarApi(api => api.body(event.id)),
         seriesId ? ctx.calendarApi(api => api.recurrence(seriesId)) : Promise.resolve(null),
       ]);
-      // The organizer wrote this: hidden text, scripts and tracking go, as for mail.
+      // The organizer wrote this: hidden text, scripts and tracking go, as for mail. A pending
+      // change of ours reads back as applied, as the rest of the event does.
       const converted = mailToMarkdown(body, { maxChars: MAX_BODY_READ_CHARS });
+      const pendingBody = overlay.pendingBody(event);
       const recurrence = recurrenceWords(pattern);
       content = {
-        ...content, body: converted.markdown, links: converted.links, removed: converted.removed, truncated: converted.truncated,
+        ...content,
+        ...(pendingBody === undefined
+          ? { body: converted.markdown, links: converted.links, removed: converted.removed, truncated: converted.truncated }
+          : { body: pendingBody }),
         ...(recurrence ? { recurrence } : {}),
         ...(event.seriesMasterId ? { seriesId: event.seriesMasterId } : {}),
       };
@@ -798,8 +803,9 @@ export class CalendarReaderImpl extends RpcTarget implements CalendarReader {
     const calendar = await ctx.scopedCalendar(pending.calendarId);
     const view = await ctx.view(calendar);
     const info = ctx.info(pending.event, calendar, view, overlay);
-    // This session's own proposal: nothing Exchange holds is revealed.
-    return { ...info, body: view.details === "full" ? overlay.created.find(created => created.id === id)?.event.markdown ?? "" : "", links: [], removed: [], truncated: false };
+    // This session's own proposals: nothing Exchange holds is revealed.
+    const body = overlay.pendingBody({ id }) ?? overlay.created.find(created => created.id === id)?.event.markdown ?? "";
+    return { ...info, body: view.details === "full" ? body : "", links: [], removed: [], truncated: false };
   }
 }
 

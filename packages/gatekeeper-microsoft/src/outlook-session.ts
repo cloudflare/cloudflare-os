@@ -115,18 +115,20 @@ function listed(items: readonly MessageInfo[]): string {
  * One capability's hold on the binding: its approval-queue stub, an observation gate, and the
  * binding's cached view of the mailbox (folders, the organization's domains).
  */
-export class OutlookContext implements Disposable {
-  readonly host: OutlookSessionHost;
-  readonly queue: RpcStub<ApprovalQueue>;
-  readonly gate: ObservationGate;
-  readonly #observers: ObserverStrategy;
+/** What {@link MailboxGuard} reads the mailbox with. */
+export type MailboxGuardHost = Pick<OutlookSessionHost, "scope" | "read" | "cached" | "ownDrafts">;
+
+/**
+ * The binding's mailbox as Exchange holds it now, and the scope's proofs over it. A session's
+ * context reads folders through it, and so do the apply-time checks of the binding's actions, which
+ * have no approval queue: a message or folder is proved covered the same way at proposal and at apply.
+ */
+export class MailboxGuard {
+  readonly host: MailboxGuardHost;
   readonly folders: FolderTree;
 
-  constructor(host: OutlookSessionHost, queue: RpcStub<ApprovalQueue>, observers: ObserverStrategy) {
+  constructor(host: MailboxGuardHost) {
     this.host = host;
-    this.queue = queue;
-    this.#observers = observers;
-    this.gate = new ObservationGate(queue.dup(), observers);
     this.folders = {
       parentOf: async id => (await this.folder(id))?.parentId ?? null,
       privateFolders: async () => {
@@ -134,6 +136,55 @@ export class OutlookContext implements Disposable {
         return new Set(PRIVATE_WELL_KNOWN.map(name => known[name]).filter((id): id is string => id !== undefined));
       },
     };
+  }
+
+  get scope(): OutlookScope {
+    return this.host.scope;
+  }
+
+  /** Runs a read against the binding's mailbox. */
+  mail<T>(op: (mail: MailApi) => Promise<T>): Promise<T> {
+    return this.host.read(api => op(new MailApi(api, this.scope.mailbox)));
+  }
+
+  /** A folder's metadata, cached; null when it isn't in the mailbox. */
+  folder(id: string): Promise<GraphFolder | null> {
+    return this.host.cached(`folder:${id}`, FOLDER_TTL_MS, () => this.mail(mail => mail.folder(id)));
+  }
+
+  /** The IDs of Outlook's own folders, by well-known name, cached. */
+  wellKnown(): Promise<Record<string, string>> {
+    return this.host.cached("wellKnown", WELL_KNOWN_TTL_MS, async () => Object.fromEntries(await this.mail(mail => mail.wellKnownFolders())));
+  }
+
+  /** Whether the binding covers a message, as Exchange holds it now. */
+  async covers(message: GraphMessage): Promise<boolean> {
+    return await admits(this.scope, message, this.folders, { ownDrafts: this.host.ownDrafts() });
+  }
+
+  /** Whether the binding covers a folder: one mail may be moved into, or a folder made in. */
+  async coversFolder(folderId: string): Promise<boolean> {
+    return await admitsFolder(this.scope, folderId, this.folders);
+  }
+}
+
+export class OutlookContext implements Disposable {
+  readonly host: OutlookSessionHost;
+  readonly queue: RpcStub<ApprovalQueue>;
+  readonly gate: ObservationGate;
+  readonly #observers: ObserverStrategy;
+  readonly #mailbox: MailboxGuard;
+
+  constructor(host: OutlookSessionHost, queue: RpcStub<ApprovalQueue>, observers: ObserverStrategy) {
+    this.host = host;
+    this.queue = queue;
+    this.#observers = observers;
+    this.gate = new ObservationGate(queue.dup(), observers);
+    this.#mailbox = new MailboxGuard(host);
+  }
+
+  get folders(): FolderTree {
+    return this.#mailbox.folders;
   }
 
   /** A context for another capability on the same binding, with its own queue stub and gate. */
@@ -152,7 +203,7 @@ export class OutlookContext implements Disposable {
 
   /** Runs a read against the binding's mailbox. */
   mail<T>(op: (mail: MailApi) => Promise<T>): Promise<T> {
-    return this.host.read(api => op(new MailApi(api, this.scope.mailbox)));
+    return this.#mailbox.mail(op);
   }
 
   /** The object ID whose mailbox this is, for access units. */
@@ -198,12 +249,12 @@ export class OutlookContext implements Disposable {
 
   /** A folder's metadata, cached; null when it isn't in the mailbox. */
   folder(id: string): Promise<GraphFolder | null> {
-    return this.host.cached(`folder:${id}`, FOLDER_TTL_MS, () => this.mail(mail => mail.folder(id)));
+    return this.#mailbox.folder(id);
   }
 
   /** The IDs of Outlook's own folders, by well-known name, cached. */
   wellKnown(): Promise<Record<string, string>> {
-    return this.host.cached("wellKnown", WELL_KNOWN_TTL_MS, async () => Object.fromEntries(await this.mail(mail => mail.wellKnownFolders())));
+    return this.#mailbox.wellKnown();
   }
 
   /** "Inbox/Vendors": a folder's path from the top of the mailbox, for a pending `~N` folder too. */
@@ -230,7 +281,7 @@ export class OutlookContext implements Disposable {
     const id = known[resolved] ?? resolved;
     if (!isMailId(id)) throw new OutsideMailboxError("That folder");
     const folder = await this.folder(id);
-    if (folder === null || !(await admitsFolder(this.scope, folder.id, this.folders))) throw new OutsideMailboxError("That folder");
+    if (folder === null || !(await this.#mailbox.coversFolder(folder.id))) throw new OutsideMailboxError("That folder");
     return { id: folder.id, name: folder.name, path: await this.folderPath(folder.id) };
   }
 
@@ -260,8 +311,8 @@ export class OutlookContext implements Disposable {
   // -- messages ------------------------------------------------------------------------------
 
   /** Whether the binding covers a message, as Exchange holds it now. */
-  async covers(message: GraphMessage): Promise<boolean> {
-    return await admits(this.scope, message, this.folders, { ownDrafts: this.host.ownDrafts() });
+  covers(message: GraphMessage): Promise<boolean> {
+    return this.#mailbox.covers(message);
   }
 
   /** A message the agent named, proven in scope, as Exchange holds it now. */
@@ -1143,7 +1194,8 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
     const guarded = await ctx.guardedAll(ids);
     const messages = guarded.filter(message => message.parentFolderId !== to.id);
     if (messages.length === 0) return await this.#shown(guarded, await ctx.infos(guarded));
-    if (messages.some(message => message.isDraft && as !== "delete")) throw new Error("Drafts stay in Drafts; use deleteDraft to remove one.");
+    // Drafts stay in Drafts, and only one this binding wrote is its to remove: deleteDraft checks that.
+    if (messages.some(message => message.isDraft)) throw new Error("Drafts stay in Drafts; use deleteDraft to remove one this connection wrote.");
     const targets = await Promise.all(messages.map(message => ctx.target(message)));
     await this.#shown(messages, await ctx.infos(messages));
     await ctx.host.submit(ctx.queue, "moveMessages", { mailbox: ctx.scope.mailbox, messages: targets, to, as, submittedAt: Date.now() });
@@ -1249,6 +1301,9 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
     const mailbox = await ctx.mailbox();
     const source = ctx.own(await ctx.guarded(messageId), mailbox);
     if (source.isDraft) throw new Error("That message is a draft; reply to a message that was sent or received.");
+    // The reply the gadget gets back carries the source's subject and correspondents: a read of it.
+    const [info] = await ctx.infos([source]);
+    await ctx.observe("Read an Outlook message", `Read ${line(info!)}, to reply to it.`, [(await ctx.units()).message(source.id)]);
     const self = mailbox.address.toLowerCase();
     const replyAll = options?.replyAll === true;
     const fromAddress = source.replyTo.length ? source.replyTo : source.fromAddress ? [source.fromAddress] : [];

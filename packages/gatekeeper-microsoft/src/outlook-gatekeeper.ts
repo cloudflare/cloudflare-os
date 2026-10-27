@@ -9,7 +9,7 @@ import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ActionFileStore } from "@gadgets/gatekeeper-kit/action-files";
-import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
+import { ActionApplyError, ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import TYPES_CODE from "./outlook-types.txt";
@@ -18,15 +18,16 @@ import { GraphApi } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveOutlookAccess, grantsSharedMailboxes, type Env, type OutlookGatekeeperProps } from "./microsoft-env";
 import {
-  actions, dependedRefs, fileHandles, providedRefs, revert, type DraftVersion, type OutlookAction, type OutlookActionHost, type RevertOutcome,
+  actions, dependedRefs, fileHandles, providedRefs, requiredAccess, revert,
+  type DraftVersion, type OutlookAction, type OutlookActionHost, type RevertOutcome,
 } from "./outlook-actions";
 import { MAX_ATTACHMENT_BYTES } from "./outlook-content";
 import {
   OutlookHookDeliveryImpl, subscribeNewMessages, type OutlookHookDelivery, type OutlookHookParams, type OutlookHookTarget,
 } from "./outlook-hooks";
 import { outlookObservers } from "./outlook-observers";
-import { describeScope, outlookUrl, type OutlookAccessLevel } from "./outlook-scope";
-import { OutlookContext, OutlookReaderImpl, OutlookSessionImpl, type OutlookSessionHost } from "./outlook-session";
+import { allows, describeScope, outlookUrl, type OutlookAccessLevel } from "./outlook-scope";
+import { MailboxGuard, OutlookContext, OutlookReaderImpl, OutlookSessionImpl, type OutlookSessionHost } from "./outlook-session";
 import type { OutlookReader, OutlookSession } from "./outlook-types";
 
 
@@ -65,6 +66,14 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
 
   readonly #user = new PinnedUser(this.ctx.storage.kv, () => this.#account().getIdentity(), "Outlook");
 
+  /** The mailbox as Exchange holds it now, for sessions and for the checks an approved action makes before writing. */
+  readonly #mailbox = new MailboxGuard({
+    scope: this.ctx.props.scope,
+    read: op => this.#graph(op, true),
+    cached: (key, ttlMs, load) => this.#cache.cached(key, ttlMs, load),
+    ownDrafts: () => new Set([...this.ctx.storage.kv.list<number>({ prefix: OWN_DRAFT_PREFIX })].map(([key]) => key.slice(OWN_DRAFT_PREFIX.length))),
+  });
+
   readonly #actionHost: OutlookActionHost = {
     refs: this.#refs,
     graph: (op, options) => this.#graph(op, options?.replayable === true),
@@ -74,17 +83,16 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
     rememberDraft: id => this.ctx.storage.kv.put(OWN_DRAFT_PREFIX + id, Date.now()),
     noteDraftVersion: (id, version) => this.ctx.storage.kv.put<DraftVersion>(DRAFT_VERSION_PREFIX + id, version),
     draftVersion: id => this.ctx.storage.kv.get<DraftVersion>(DRAFT_VERSION_PREFIX + id),
+    inScope: check => this.#inScope(check),
   };
 
   readonly #actions = actions.bind(this.#journal, this.#actionHost);
 
   #sessionHost(access: OutlookAccessLevel): OutlookSessionHost {
     return {
-      scope: this.ctx.props.scope,
+      ...this.#mailbox.host,
       access,
       owner: () => this.#user.get(),
-      read: op => this.#graph(op, true),
-      cached: (key, ttlMs, load) => this.#cache.cached(key, ttlMs, load),
       pending: () => this.#journal.listPending(),
       resolve: id => this.#refs.resolve(id),
       allocate: kind => this.#refs.allocate(provisionalId, { kind }),
@@ -96,7 +104,6 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
         this.#files.pruneUnreferenced(referenced, Date.now() - FILE_GRACE_MS);
         return await this.#files.capture(bytes);
       },
-      ownDrafts: () => new Set([...this.ctx.storage.kv.list<number>({ prefix: OWN_DRAFT_PREFIX })].map(([key]) => key.slice(OWN_DRAFT_PREFIX.length))),
       subscribe: (ctx, hook) => this.#subscribe(ctx, hook),
       ...(this.env.AI ? { ai: this.env.AI } : {}),
     };
@@ -158,6 +165,12 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
         if (version.at < now - RETAINED_ACTION_TTL_MS) kv.delete(key);
       }
     });
+    // Access is checked when a session is minted; a change approved after the binding's owner, the
+    // deployment or the grant lowered it waits, retryable, rather than landing.
+    const record = this.#journal.get(actionId);
+    if (record !== undefined && !allows(await this.#access(), requiredAccess(record.action))) {
+      throw new Error("This connection no longer allows that change to Outlook.");
+    }
     await this.#actions.apply(actionId, await this.#user.fence());
   }
 
@@ -218,6 +231,20 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
   async #graph<T>(op: (api: GraphApi) => Promise<T>, replayable: boolean): Promise<T> {
     await this.#user.get();
     return await this.#creds.run(creds => op(new GraphApi(creds.accessToken)), { replayable });
+  }
+
+  /** Proves what an approved action is about to write is still the binding's: see `OutlookActionHost.inScope`. */
+  async #inScope({ messages = [], folder }: { messages?: readonly string[]; folder?: string }): Promise<void> {
+    if (folder !== undefined && !(await this.#mailbox.coversFolder(folder))) {
+      throw new ActionApplyError("That folder is no longer one this connection covers, so nothing was changed.");
+    }
+    if (messages.length === 0) return;
+    const found = await this.#mailbox.mail(mail => mail.messages(messages));
+    for (const message of found.values()) {
+      if (!(await this.#mailbox.covers(message))) {
+        throw new ActionApplyError(`"${message.subject}" is no longer in the mail this connection covers, so nothing was changed.`);
+      }
+    }
   }
 
   async #subscribe(ctx: OutlookContext, hook: RpcStub<OutlookHookTarget>): Promise<void> {

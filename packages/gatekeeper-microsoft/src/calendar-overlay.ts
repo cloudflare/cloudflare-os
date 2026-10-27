@@ -113,6 +113,12 @@ export class CalendarOverlay {
     return this.deleted.has(event.id) || (event.seriesMasterId !== undefined && this.deleted.has(event.seriesMasterId));
   }
 
+  /** The description the latest pending change gives an event, its series' changes included; undefined when none changes it. */
+  pendingBody(event: Pick<GraphEvent, "id" | "seriesMasterId">): string | undefined {
+    const fromSeries = event.seriesMasterId === undefined ? [] : (this.changes.get(event.seriesMasterId) ?? []);
+    return [...fromSeries, ...(this.changes.get(event.id) ?? [])].map(change => change.changes.markdown).filter(body => body !== undefined).at(-1);
+  }
+
   /** An event as it will be once the pending changes apply, and which kind of change is pending. */
   apply(event: GraphEvent): { event: GraphEvent; pending?: EventInfo["pending"] } {
     let result = event;

@@ -357,6 +357,16 @@ describe("an all-calendars binding", () => {
     expect(listed.map(event => event.id)).toContain("~1");
   });
 
+  it("reads back a pending change to an event's description, as it does the rest of the event", async () => {
+    const { writer } = session(scope("edit"), "edit");
+    await writer.updateEvent("AAMkEvStandup", { body: "New description" });
+    expect(await writer.getEvent("AAMkEvStandup")).toMatchObject({ body: "New description", pending: "update" });
+    // And of one not yet created, over what its creation said.
+    await writer.createEvent({ subject: "Focus", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: TEAM.id, body: "First" });
+    await writer.updateEvent("~1", { body: "Second" });
+    expect((await writer.getEvent("~1")).body).toBe("Second");
+  });
+
   it("proposes an event in a calendar someone else owns as a change that is never auto-approved", async () => {
     const { writer, submitted } = session(scope("edit"), "edit");
     await writer.createEvent({ subject: "Cover for Sarah", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: SARAHS.id });

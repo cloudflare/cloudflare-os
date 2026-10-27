@@ -236,8 +236,10 @@ combine, and `&access=read|draft|send` sets the level. Links copied from Outlook
 web, including "Open in Outlook" links (`/owa/?ItemID=…`), are read as they are.
 
 Every message ID an agent passes is read first and checked against the binding, so a narrowed
-binding can't reach a message outside it by guessing or pasting an ID. Drafts a binding wrote stay
-in it whatever its narrowing, so a sender-narrowed binding can reply. Junk Email, Deleted Items,
+binding can't reach a message outside it by guessing or pasting an ID, and an approved move or
+update checks its messages and destination again before writing, since a message keeps its ID
+wherever the user moves it meanwhile. Drafts a binding wrote stay in it whatever its narrowing, so
+a sender-narrowed binding can reply, and only those can be deleted through it. Junk Email, Deleted Items,
 Outbox and the hidden folders are left out of narrowed bindings unless named. Mailbox settings
 (automatic replies) need a whole-mailbox binding.
 
@@ -323,11 +325,13 @@ The levels:
 
 Only a `full` binding can change events, since nothing a binding can't fully see can be changed
 through it. A read binding's session is a `CalendarReader`, with no write methods at all. A change
-is fenced on the event's `changeKey`, so an edit made in Outlook after the proposal stops it; a
-creation carries a `transactionId`, so a retry can't make two. Events only the user sees revert for
-30 days: a creation is deleted, a change restored, a deletion recreated as a new event. Anything
-that sent mail can't be called back, and says so. The approver of a meeting sees every attendee,
-marked when outside the organization.
+is fenced on the event's `changeKey`, so an edit made in Outlook after the proposal stops it, and a
+change or deletion proposed against an event not yet created is fenced on the version its creation
+left, so an event that gained attendees in Outlook meanwhile isn't quietly changed as one nobody
+else is on; a creation carries a `transactionId`, so a retry can't make two. Events only the user
+sees revert for 30 days: a creation is deleted, a change restored, a deletion recreated as a new
+event. Anything that sent mail can't be called back, and says so. The approver of a meeting sees
+every attendee, marked when outside the organization.
 
 Agents can never change who a calendar is shared with, delete someone else's meeting (they decline
 it), or change a meeting they don't organize.

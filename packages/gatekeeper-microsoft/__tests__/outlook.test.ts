@@ -3,8 +3,11 @@
 // delivery.
 
 import { describe, expect, it, vi } from "vitest";
+import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
 import { GraphApi, GraphApiError } from "../src/graph-api";
-import { definitions, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions } from "../src/outlook-actions";
+import {
+  definitions, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
+} from "../src/outlook-actions";
 import { MailApi, parseMessage } from "../src/outlook-graph";
 import { OutlookHookDeliveryImpl, handleOutlookNotification } from "../src/outlook-hooks";
 import { decodeMailUnit, encodeMailUnit, isMailUnit, mailUnits, probeMailUnits } from "../src/outlook-observers";
@@ -736,5 +739,68 @@ describe("sending an existing draft", () => {
     const { outcome, submitted } = await send(html);
     expect(outcome).toMatch(/text that doesn't show when it's read/);
     expect(submitted).toEqual([]);
+  });
+});
+
+describe("organizing at apply", () => {
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  const target = (id: string): MessageTarget => ({ id, subject: `Subject ${id}`, folderId: "F1", folder: "Inbox", receivedAt: "2026-10-01T00:00:00Z" });
+
+  /** An action host whose Graph answers in order, and whose scope proof the test scripts. */
+  function host(answers: Response[]) {
+    const calls: string[] = [];
+    const fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${new URL(String(input)).pathname}`);
+      const next = answers.shift();
+      if (next === undefined) throw new Error(`unexpected request to ${String(input)}`);
+      return next;
+    };
+    const api = new GraphApi("t", { fetch: fetch as typeof globalThis.fetch });
+    const inScope = vi.fn(async (_check: { messages?: readonly string[]; folder?: string }) => {});
+    const actionHost = {
+      refs: { requireResolved: (id: string) => id, bind: () => {} },
+      graph: async <T>(op: (graph: GraphApi) => Promise<T>) => await op(api),
+      invalidate: async () => {},
+      inScope,
+    };
+    return { host: actionHost as unknown as Parameters<typeof definitions.moveMessages.apply>[1], calls, inScope };
+  }
+
+  it("proves the messages, and a chosen destination, still covered before moving them", async () => {
+    const { host: h, calls, inScope } = host([json({}), json({})]);
+    await definitions.moveMessages.apply({ mailbox: ME, messages: [target("m1"), target("m2")], to: { id: "F2", name: "Acme", path: "Inbox/Acme" }, as: "move", submittedAt: 0 }, h);
+    expect(inScope).toHaveBeenCalledWith({ messages: ["m1", "m2"], folder: "F2" });
+    expect(calls).toEqual(["POST /v1.0/me/messages/m1/move", "POST /v1.0/me/messages/m2/move"]);
+  });
+
+  it("leaves Deleted Items and Archive, Outlook's own, out of the proof", async () => {
+    const { host: h, inScope } = host([json({})]);
+    await definitions.moveMessages.apply({ mailbox: ME, messages: [target("m1")], to: { id: "DEL", name: "Deleted Items", path: "Deleted Items" }, as: "delete", submittedAt: 0 }, h);
+    expect(inScope).toHaveBeenCalledWith({ messages: ["m1"] });
+  });
+
+  it("writes nothing once a message has left the binding", async () => {
+    const { host: h, calls, inScope } = host([]);
+    inScope.mockRejectedValueOnce(new ActionApplyError("gone"));
+    const message = { ...target("m1"), before: { isRead: false, flag: { status: "notFlagged" as const }, categories: [] } };
+    await expect(definitions.updateMessages.apply({ mailbox: ME, messages: [message], change: { isRead: true }, submittedAt: 0 }, h)).rejects.toThrow("gone");
+    expect(calls).toEqual([]);
+  });
+
+  it("proves a new folder's parent, unless it is the top of the mailbox", async () => {
+    const { host: h, inScope } = host([json({ id: "F9" }), json({ id: "F10" })]);
+    await definitions.createFolder.apply({ mailbox: ME, ref: "~1", parent: { id: "F1", name: "Inbox", path: "Inbox" }, name: "Acme", submittedAt: 0 }, h);
+    expect(inScope).toHaveBeenCalledWith({ folder: "F1" });
+    await definitions.createFolder.apply({ mailbox: ME, ref: "~2", parent: { id: "msgfolderroot", name: "the top of the mailbox", path: "" }, name: "Vendors", submittedAt: 0 }, h);
+    expect(inScope).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("required access", () => {
+  it("is send for what leaves the mailbox, and draft for the rest", () => {
+    const kinds = Object.keys(definitions) as (keyof OutlookActions)[];
+    const send = kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as OutlookAction) === "send");
+    expect(send.sort()).toEqual(["send", "setAutomaticReplies"]);
+    expect(kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as OutlookAction) === "draft")).toHaveLength(kinds.length - 2);
   });
 });

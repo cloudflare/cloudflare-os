@@ -1211,6 +1211,9 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
       throw new Error("That is the top of what this connection covers, which can't be renamed, moved or deleted from here.");
     }
     if (item.isRoot) throw new Error("A library's top folder can't be renamed, moved or deleted.");
+    // What the change returns describes the item as it is, as `getEntry` would: a read of its details.
+    await this.ctx.observe("Read SharePoint file details", `Read the details of ${md(entry.path || entry.name)}, to change it.`,
+      [units.item({ driveId: item.driveId, itemId: item.id })]);
     return {
       item, entry,
       target: {

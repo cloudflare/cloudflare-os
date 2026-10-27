@@ -17,7 +17,7 @@ import { GraphApiError, type GraphApi } from "./graph-api";
 import { VENDOR_ID } from "./microsoft-env";
 import { MailApi, idPath, type GraphAddress } from "./outlook-graph";
 import { odataString } from "./outlook-query";
-import type { OutlookMailboxRef } from "./outlook-scope";
+import type { OutlookAccessLevel, OutlookMailboxRef } from "./outlook-scope";
 
 /** A message an action changes, as it was read when the action was proposed: for the approver and for revert. */
 export type MessageTarget = {
@@ -186,7 +186,18 @@ export type OutlookActionHost = {
   /** Records the change key a draft has after this binding wrote it, or reads it back. */
   noteDraftVersion(id: string, version: DraftVersion): void;
   draftVersion(id: string): DraftVersion | undefined;
+  /**
+   * Proves what an action is about to write is still the binding's, as Exchange holds it now, as
+   * its proposal proved it then: `messages` by ID (one since deleted is left to the handler), and
+   * `folder` a destination or parent written into. Throws `ActionApplyError` for anything that isn't.
+   */
+  inScope(check: { messages?: readonly string[]; folder?: string }): Promise<void>;
 };
+
+/** The access an action needs to apply, as its proposal needed: checked again at apply, since access may have been lowered since. */
+export function requiredAccess(action: OutlookAction): OutlookAccessLevel {
+  return action.kind === "send" || action.kind === "setAutomaticReplies" ? "send" : "draft";
+}
 
 /** The most messages one organize action changes. */
 export const MAX_BATCH = 50;
@@ -461,6 +472,9 @@ export const definitions = {
     dependsOn: payload => isProvisional(payload.to.id) ? [payload.to.id] : [],
     apply: async (payload, host) => {
       const to = realId(host.refs, payload.to.id, "The folder");
+      // A message keeps its ID wherever it is moved, so it is proved still covered now, as is a
+      // chosen destination; Deleted Items and Archive are Outlook's own.
+      await host.inScope({ messages: payload.messages.map(message => message.id), ...(payload.as === "move" ? { folder: to } : {}) });
       await host.graph(async api => {
         const box = mail(api, payload.mailbox);
         for (const message of payload.messages) {
@@ -500,6 +514,7 @@ export const definitions = {
       } satisfies ActionPresentation;
     },
     apply: async (payload, host) => {
+      await host.inScope({ messages: payload.messages.map(message => message.id) });
       await host.graph(async api => {
         const box = mail(api, payload.mailbox);
         for (const message of payload.messages) {
@@ -539,6 +554,7 @@ export const definitions = {
     dependsOn: payload => isProvisional(payload.parent.id) ? [payload.parent.id] : [],
     apply: async (payload, host) => {
       const parent = realId(host.refs, payload.parent.id, "The parent folder");
+      if (parent !== "msgfolderroot") await host.inScope({ folder: parent });
       let id: string;
       try {
         const created = await host.graph(api => mail(api, payload.mailbox).request<{ id?: unknown }>("POST",

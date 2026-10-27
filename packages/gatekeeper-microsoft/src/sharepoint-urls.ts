@@ -98,23 +98,20 @@ export function shareIdFor(url: string): string {
 }
 
 /**
- * The site path a URL lives under, for `GET /sites/{host}:/{path}`: the managed path and site
- * name, or the host root. A subsite (`/sites/X/Sub`) is resolved by trying longer prefixes.
+ * The web a URL names when it names nothing inside one, for `GET /sites/{host}:/{path}`: the path
+ * itself (`/sites/Eng`, `/sites/Eng/Sub`, `/`), or the web of a plain `_layouts` page such as site
+ * contents. Null for a link into a web's contents: its libraries, lists, pages and files resolve by
+ * their own facets, and one they can't resolve is refused rather than widened to its web.
  */
-export function sitePathCandidates(url: URL): string[] {
+export function sitePathNamed(url: URL): string | null {
   const segments = url.pathname.split("/").filter(segment => segment !== "");
-  const candidates: string[] = [];
-  const managed = segments.length >= 2 && /^(sites|teams|personal|portals)$/i.test(segments[0]);
-  const start = managed ? 2 : 0;
-  // Stop at the first segment SharePoint reserves for something other than a web.
-  const stop = segments.findIndex((segment, index) => index >= start
-    && /^(_layouts|_api|_vti_bin|Forms|Lists|SitePages|Shared%20Documents|Shared Documents)$/i.test(segment));
-  const end = stop === -1 ? segments.length : stop;
-  for (let length = end; length >= start; length--) {
-    const path = segments.slice(0, length).join("/");
-    if (length === 0 || path !== "") candidates.push(`/${path}`);
-  }
-  return [...new Set(candidates)];
+  // The first segment SharePoint reserves for something other than a web; a OneDrive
+  // (`/personal/<user>`) has no webs below it.
+  const stop = segments.findIndex((segment, index) =>
+    /^(_layouts|_api|_vti_bin|Forms|Lists|SitePages|Shared%20Documents|Shared Documents)$/i.test(segment)
+    || (index === 2 && /^personal$/i.test(segments[0]!)));
+  if (stop !== -1 && !(/^_layouts$/i.test(segments[stop]!) && url.search === "")) return null;
+  return `/${segments.slice(0, stop === -1 ? segments.length : stop).join("/")}`;
 }
 
 /** Whether a URL points into a site's pages library. */

@@ -278,6 +278,8 @@ describe("a whole-mailbox binding", () => {
     expect((await reader.readMessage(USER_DRAFT)).markdown).toBe("Dear all,");
     await expect(writer.updateDraft(USER_DRAFT, { body: "Dear all, send money." })).rejects.toThrow(`That draft ${OUTSIDE}`);
     await expect(writer.deleteDraft(USER_DRAFT)).rejects.toThrow(`That draft ${OUTSIDE}`);
+    // Nor through the organizing API, which would propose the deletion for automatic approval.
+    await expect(writer.delete([USER_DRAFT])).rejects.toThrow(/use deleteDraft/);
     expect(submitted).toEqual([]);
     await writer.send(USER_DRAFT);
     expect(submitted.map(action => action.kind)).toEqual(["send"]);
@@ -304,6 +306,13 @@ describe("a whole-mailbox binding", () => {
     const { origin } = submitted[0]!.payload as OutlookActions["send"];
     expect(origin).toMatchObject({ kind: "forward", forwarded: { markdown: "Numbers attached.", truncated: false } });
     expect(origin.kind === "forward" ? origin.forwarded.attachments.map(attachment => attachment.name) : []).toEqual(["numbers.csv", "offer.html"]);
+    expect(observations.map(observation => observation.title)).toContain("Read an Outlook message");
+  });
+
+  it("counts the message a reply is to as read, since the reply it returns describes it", async () => {
+    const { writer, observations } = session(whole("send"), "send");
+    const reply = await writer.createReplyDraft(ADA, "Thanks, will do.");
+    expect(reply.subject).toMatch(/^RE: /);
     expect(observations.map(observation => observation.title)).toContain("Read an Outlook message");
   });
 

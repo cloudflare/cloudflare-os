@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allUrl, isAllUrl, isSitePagesUrl, isSiteRootPath, normalizeForShares, parseSharePointHost, parseSharePointUrl, shareIdFor,
-  sitePathCandidates,
+  sitePathNamed,
 } from "../src/sharepoint-urls";
 
 const url = (raw: string) => new URL(raw);
@@ -138,27 +138,30 @@ describe("shareIdFor", () => {
   });
 });
 
-describe("sitePathCandidates", () => {
-  it("tries the longest site path first, down to the site collection", () => {
-    expect(sitePathCandidates(url("https://contoso.sharepoint.com/sites/Eng/Sub/Deeper/Shared%20Documents/x.docx")))
-      .toEqual(["/sites/Eng/Sub/Deeper", "/sites/Eng/Sub", "/sites/Eng"]);
+describe("sitePathNamed", () => {
+  it("names a site, a subsite, or the host root by its whole path", () => {
+    expect(sitePathNamed(url("https://contoso.sharepoint.com/sites/Eng"))).toBe("/sites/Eng");
+    expect(sitePathNamed(url("https://contoso.sharepoint.com/sites/Eng/Sub/Deeper/"))).toBe("/sites/Eng/Sub/Deeper");
+    expect(sitePathNamed(url("https://contoso.sharepoint.com/Team"))).toBe("/Team");
+    expect(sitePathNamed(url("https://contoso.sharepoint.com/"))).toBe("/");
+    expect(sitePathNamed(url("https://contoso-my.sharepoint.com/personal/sarah_contoso_com"))).toBe("/personal/sarah_contoso_com");
+    expect(sitePathNamed(url("https://contoso-my.sharepoint.com/personal/sarah_contoso_com/_layouts/15/onedrive.aspx"))).toBe("/personal/sarah_contoso_com");
   });
 
-  it("stops at the segments SharePoint reserves for things that aren't webs", () => {
-    expect(sitePathCandidates(url("https://contoso.sharepoint.com/sites/Eng/Lists/Issues/AllItems.aspx"))).toEqual(["/sites/Eng"]);
-    expect(sitePathCandidates(url("https://contoso.sharepoint.com/sites/Eng/SitePages/Home.aspx"))).toEqual(["/sites/Eng"]);
-    expect(sitePathCandidates(url("https://contoso.sharepoint.com/sites/Eng/_layouts/15/viewlsts.aspx"))).toEqual(["/sites/Eng"]);
+  it("takes a plain _layouts page, such as site contents, as its site, but not one that opens a document", () => {
+    expect(sitePathNamed(url("https://contoso.sharepoint.com/sites/Eng/_layouts/15/viewlsts.aspx"))).toBe("/sites/Eng");
+    expect(sitePathNamed(url("https://contoso.sharepoint.com/sites/Eng/_layouts/15/Doc.aspx?sourcedoc=%7B1%7D&file=x.docx"))).toBeNull();
   });
 
-  it("falls back to the host root for a path outside a managed path", () => {
-    expect(sitePathCandidates(url("https://contoso.sharepoint.com/Shared%20Documents/a.docx"))).toEqual(["/"]);
-    expect(sitePathCandidates(url("https://contoso.sharepoint.com/Team/Shared%20Documents"))).toEqual(["/Team", "/"]);
-    expect(sitePathCandidates(url("https://contoso.sharepoint.com/"))).toEqual(["/"]);
-  });
-
-  it("treats a OneDrive's personal path as its site", () => {
-    expect(sitePathCandidates(url("https://contoso-my.sharepoint.com/personal/sarah_contoso_com/Documents/a.txt")))
-      .toEqual(["/personal/sarah_contoso_com/Documents/a.txt", "/personal/sarah_contoso_com/Documents", "/personal/sarah_contoso_com"]);
+  it("names no site for a link into a site's contents, which must resolve as what it is", () => {
+    for (const link of [
+      "https://contoso.sharepoint.com/sites/Eng/Shared%20Documents/x.docx",
+      "https://contoso.sharepoint.com/sites/Eng/Sub/Shared%20Documents/Forms/AllItems.aspx",
+      "https://contoso.sharepoint.com/sites/Eng/Lists/Issues/AllItems.aspx",
+      "https://contoso.sharepoint.com/sites/Eng/SitePages/Home.aspx",
+      "https://contoso.sharepoint.com/Shared%20Documents/a.docx",
+      "https://contoso-my.sharepoint.com/personal/sarah_contoso_com/Documents/a.txt",
+    ]) expect(sitePathNamed(url(link)), link).toBeNull();
   });
 });
 

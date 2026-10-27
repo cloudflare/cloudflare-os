@@ -291,6 +291,23 @@ describe("links", () => {
     expect(failure(await hooks().run(name, binding, [["resolveUrl", "https://example.com/a.txt"]]))).toMatch(/isn't a SharePoint or OneDrive link/);
     expect((await hooks().queueLog(name)).observations).toEqual([]);
   });
+
+  it("refuses a file link Graph can't resolve rather than widening it to the site it is in", async () => {
+    // `shares` misses everything but seeded files; the site itself answers by path, as for a link to it.
+    const graph = shares(new FakeGraph().install());
+    graph.on("GET", /^\/v1\.0\/sites\/contoso\.sharepoint\.com:\/sites\/Engineering(\?|$)/, () =>
+      json({ id: SITE_ID, name: "Engineering", displayName: "Engineering", webUrl: "https://contoso.sharepoint.com/sites/Engineering" }));
+    const id = await seedAccount(graph);
+    const binding = props(id, { kind: "all" });
+    const name = facet("link-widening");
+    expect(unwrap<ResolvedLink>(await hooks().run(name, binding, [["resolveUrl", "https://contoso.sharepoint.com/sites/Engineering"]])))
+      .toMatchObject({ kind: "site", name: "Engineering" });
+    const asked = graph.count("GET", /\/sites\/contoso\.sharepoint\.com:/);
+    // An "all" binding says why, since it covers whatever the owner can open; the site isn't even asked for.
+    expect(failure(await hooks().run(name, binding,
+      [["resolveUrl", "https://contoso.sharepoint.com/sites/Engineering/Shared%20Documents/Specs/deleted.docx"]]))).toMatch(/doesn't lead to anything/);
+    expect(graph.count("GET", /\/sites\/contoso\.sharepoint\.com:/)).toBe(asked);
+  });
 });
 
 describe("changes", () => {
@@ -316,6 +333,8 @@ describe("changes", () => {
     expect((await hooks().queueLog(name)).submitted).toEqual([]);
     unwrap(await hooks().run(name, binding, [["rename", ref(NOTES), "renamed.txt", { ifUnchanged: `W/"{${NOTES}},1"` }]]));
     expect((await hooks().queueLog(name)).submitted).toHaveLength(1);
+    // What the rename returns describes the file, so observers must be able to open it.
+    expect((await hooks().queueLog(name)).observations.map(observation => observation.title)).toContain("Read SharePoint file details");
   });
 
   it("leaves an approved change waiting once the connection can no longer write", async () => {

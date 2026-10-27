@@ -14,16 +14,18 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import TYPES_CODE from "./calendar-types.txt";
-import { DESCRIPTION_TTL_MS, housekeep, isProvisional, PinnedUser, provisionalId, revertRefused } from "./binding";
+import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, PinnedUser, provisionalId, revertRefused } from "./binding";
 import { GraphApi } from "./graph-api";
 import { findUserByMail, organizationDomains } from "./directory";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveCalendarAccess, grantsSharedCalendars, type CalendarGatekeeperProps, type Env } from "./microsoft-env";
-import { actions, dependedRefs, providedRefs, revert, type CalendarAction, type CalendarActionHost, type RevertOutcome } from "./calendar-actions";
+import {
+  actions, dependedRefs, providedRefs, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type RevertOutcome,
+} from "./calendar-actions";
 import { ownerAcl } from "./calendar-acl";
 import { CalendarApi } from "./calendar-graph";
 import { calendarObservers } from "./calendar-observers";
-import { accessCeiling, calendarUrl, describeScope, lowerAccess, type CalendarAccessLevel } from "./calendar-scope";
+import { accessCeiling, allows, calendarUrl, describeScope, lowerAccess, type CalendarAccessLevel } from "./calendar-scope";
 import { CalendarContext, CalendarReaderImpl, CalendarSessionImpl, type CalendarSessionHost } from "./calendar-session";
 import type { CalendarReader, CalendarSession } from "./calendar-types";
 
@@ -40,6 +42,9 @@ const ORGANIZATION_TTL_MS = 24 * 60 * 60 * 1000;
 // own theirs: `calendar:` and the journal's tiers, `refs:`, `cache:@calendar:`,
 // `observer:`/`observedUnit:`.
 const DESCRIPTION_KEY = "description";
+/** The change key an event this binding created had after it last wrote it: what a later action proposed against its `~N` is fenced on. */
+const EVENT_VERSION_PREFIX = "eventVersion:";
+type EventVersion = { changeKey: string; at: number };
 
 /** Which action tags each access level can submit, for the auto-approval catalog. */
 const LEVEL_TAGS: Record<CalendarAccessLevel, readonly string[]> = {
@@ -73,6 +78,8 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
     refs: this.#refs,
     graph: (op, options) => this.#graph(op, options?.replayable === true),
     invalidate: async () => this.#cache.invalidateAll(),
+    noteEventVersion: (id, changeKey) => this.ctx.storage.kv.put<EventVersion>(EVENT_VERSION_PREFIX + id, { changeKey, at: Date.now() }),
+    eventVersion: id => this.ctx.storage.kv.get<EventVersion>(EVENT_VERSION_PREFIX + id)?.changeKey,
   };
 
   readonly #actions = actions.bind(this.#journal, this.#actionHost);
@@ -128,7 +135,19 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
-    await housekeep(this.ctx.storage.kv, this.#journal, this.#actions, "calendar");
+    await housekeep(this.ctx.storage.kv, this.#journal, this.#actions, "calendar", now => {
+      // An event's version matters for as long as an action proposed against its `~N` could apply.
+      const kv = this.ctx.storage.kv;
+      for (const [key, version] of kv.list<EventVersion>({ prefix: EVENT_VERSION_PREFIX })) {
+        if (version.at < now - RETAINED_ACTION_TTL_MS) kv.delete(key);
+      }
+    });
+    // Access is checked when a session is minted; a change approved after the binding's owner, the
+    // deployment or the grant lowered it waits, retryable, rather than landing.
+    const record = this.#journal.get(actionId);
+    if (record !== undefined && !allows(await this.#access(), requiredAccess(record.action))) {
+      throw new Error("This connection no longer allows that change to the calendar.");
+    }
     await this.#actions.apply(actionId, await this.#user.fence());
   }
 

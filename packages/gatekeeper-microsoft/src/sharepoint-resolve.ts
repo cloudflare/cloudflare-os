@@ -13,7 +13,7 @@ import {
 import type { SharePointScope } from "./sharepoint-scope";
 import {
   allUrl, isAllUrl, isSitePagesUrl, isSiteRootPath, normalizeForShares, parseSharePointHost, parseSharePointUrl,
-  shareIdFor, sitePathCandidates,
+  shareIdFor, sitePathNamed,
 } from "./sharepoint-urls";
 
 /** A resolved URL: the scope it names and what to call it. */
@@ -108,15 +108,16 @@ async function fromPageItem(api: GraphApi, shareId: string): Promise<ResolvedUrl
   };
 }
 
-/** The site a URL's path names, trying the longest web path first. */
+/**
+ * The web a URL names, when it names nothing inside one. A link to a file, folder, list or page
+ * the facets couldn't resolve (removed, renamed, or never visible) is refused rather than widened
+ * to its web: this also runs when a configurator's selection is bound, and a binding only narrows.
+ */
 async function fromSitePath(api: GraphApi, url: URL): Promise<ResolvedUrl | null> {
-  for (const path of sitePathCandidates(url)) {
-    const body = await api.request<unknown>("GET", `/sites/${url.hostname}:${path}`, {
-      query: { $select: SITE_SELECT }, allow: MISS,
-    });
-    if (body !== null) return fromSite(parseSite(body));
-  }
-  return null;
+  const path = sitePathNamed(url);
+  if (path === null) return null;
+  const body = await api.request<unknown>("GET", `/sites/${url.hostname}:${path}`, { query: { $select: SITE_SELECT }, allow: MISS });
+  return body === null ? null : fromSite(parseSite(body));
 }
 
 /**

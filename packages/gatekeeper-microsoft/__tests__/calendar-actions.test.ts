@@ -4,7 +4,9 @@
 import { describe, expect, it } from "vitest";
 import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
 import { ProvisionalIds, type SimulationKv } from "@gadgets/gatekeeper-kit/simulation";
-import { definitions, revert, type CalendarActionHost, type CalendarActions, type CalendarRef, type EventTarget } from "../src/calendar-actions";
+import {
+  definitions, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type CalendarActions, type CalendarRef, type EventTarget,
+} from "../src/calendar-actions";
 import { GraphApi } from "../src/graph-api";
 
 const ZONE = "America/Los_Angeles";
@@ -33,12 +35,15 @@ function harness(replies: { status: number; body?: unknown }[] = []) {
     delete: (key: string) => store.delete(key), list: () => store.entries(),
   } as unknown as SimulationKv;
   let invalidated = 0;
+  const versions = new Map<string, string>();
   const host: CalendarActionHost = {
     refs: new ProvisionalIds<string>(kv, { namespace: "refs:", isProvisional: id => id.startsWith("~") }),
     graph: op => op(api),
     invalidate: async () => { invalidated += 1; },
+    noteEventVersion: (id, changeKey) => { versions.set(id, changeKey); },
+    eventVersion: id => versions.get(id),
   };
-  return { host, sent, invalidated: () => invalidated };
+  return { host, sent, invalidated: () => invalidated, versions };
 }
 
 const conflict = { status: 412, body: { error: { code: "ErrorIrresolvableConflict", message: "The send or update operation could not be performed because the change key passed in the request does not match the current change key for the item." } } };
@@ -115,12 +120,29 @@ describe("changing and deleting", () => {
     await expect(definitions.updateEvent.apply(updatePayload, host)).rejects.toThrow(new ActionApplyError("The event changed after this was proposed, so it was not applied. Ask the agent to read it again."));
   });
 
-  it("changes an event created earlier in the same batch by its real ID, without a change key", async () => {
-    const { host, sent } = harness([{ status: 200, body: {} }]);
-    host.refs.bind("~1", "AAMkNew");
-    await definitions.updateEvent.apply({ ...updatePayload, target: { ...TARGET, id: "~1", changeKey: "" } }, host);
-    expect(sent[0]).toMatchObject({ path: "/me/events/AAMkNew", ifMatch: null });
+  const provisional: CalendarActions["deleteEvent"] = { calendar: CALENDAR, target: { ...TARGET, id: "~1", changeKey: "" }, zone: ZONE, submittedAt: 2 };
+
+  it("changes an event created earlier in the same batch by its real ID, fenced on the version its creation left", async () => {
+    const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, { status: 200, body: { changeKey: "ckB" } }]);
+    await definitions.createEvent.apply(createPayload, host);
+    await definitions.updateEvent.apply({ ...updatePayload, target: provisional.target }, host);
+    expect(sent[1]).toMatchObject({ method: "PATCH", path: "/me/events/AAMkNew", ifMatch: 'W/"ckA"' });
+    // The next action on it is fenced on what that change left.
+    await definitions.deleteEvent.apply(provisional, host);
+    expect(sent[2]).toMatchObject({ method: "DELETE", path: "/me/events/AAMkNew", ifMatch: 'W/"ckB"' });
     await expect(definitions.updateEvent.apply({ ...updatePayload, target: { ...TARGET, id: "~2" } }, harness().host)).rejects.toThrow();
+  });
+
+  it("won't delete an event it created once Outlook changed it, as it may have become a meeting", async () => {
+    const { host } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, conflict]);
+    await definitions.createEvent.apply(createPayload, host);
+    await expect(definitions.deleteEvent.apply(provisional, host))
+      .rejects.toThrow(new ActionApplyError("The event changed after this was proposed, so it was not applied. Ask the agent to read it again."));
+    // Nor without knowing what version its creation left.
+    const unknown = harness();
+    unknown.host.refs.bind("~1", "AAMkNew");
+    await expect(definitions.deleteEvent.apply(provisional, unknown.host)).rejects.toThrow(/version since it was created isn't known/);
+    expect(unknown.sent).toEqual([]);
   });
 
   it("reverts a change by patching back just the fields it changed", async () => {
@@ -257,5 +279,14 @@ describe("what the approver reads", () => {
     const prose = presentation.description.split("\n")[0]!;
     expect(prose).not.toMatch(/<img|^## /m);
     expect(presentation.description).not.toMatch(/^## Approved/m);
+  });
+});
+
+describe("required access", () => {
+  it("is schedule for what mails other people, and edit for the rest", () => {
+    const kinds = Object.keys(definitions) as (keyof CalendarActions)[];
+    const schedule = kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as CalendarAction) === "schedule");
+    expect(schedule.sort()).toEqual(["cancelMeeting", "createMeeting", "respond", "updateMeeting"]);
+    expect(kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as CalendarAction) === "edit")).toHaveLength(kinds.length - 4);
   });
 });
