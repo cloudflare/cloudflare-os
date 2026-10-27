@@ -211,18 +211,39 @@ let access: { grant: string; note?: Note } | null = null;
  */
 let listings = 0;
 
-/** Asks from the click, so the browser lets Workshop open Google's consent pop-up. */
-const allow = async ({ ensureResources, setValues }: Context, grant: string) => {
-  const note = await ensureResources([grant]).then(
-    (held): Note => ({ text: held ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Retry." }),
+/**
+ * What asking Google for `grants` came to: `held` once the account holds them, `waiting` while its
+ * consent pop-up is open. Asked from the click, so the browser lets Workshop open the pop-up.
+ */
+const ask = ({ ensureResources }: Context, grants: string[], held: string, waiting: string): Promise<Note> =>
+  ensureResources(grants).then(
+    (granted): Note => ({ text: granted ? held : waiting }),
     (error: unknown): Note => ({
       text: error instanceof Error && error.message ? error.message : "Access wasn't allowed.",
       tone: "error",
     }));
+
+const allow = async (context: Context, grant: string) => {
+  const note = await ask(context, [grant], "Access is allowed. Select Retry.", "Allow access in Google's window, then select Retry.");
   if (access?.grant !== grant) return;
   access = { grant, note };
-  setValues({});
+  context.setValues({});
 };
+
+/**
+ * What asking for the editable types came to. Their grant changes the types the Workshop accepts,
+ * so it restarts the picker, which clears this, and the file is chosen again.
+ */
+let editNote: Note | null = null;
+
+const allowEditing = async (context: Context, grants: string[]) => {
+  editNote = await ask(context, grants,
+    "Editing is allowed. This list reopens to choose the file again.",
+    "Allow access in Google's window. This list then reopens to choose the file again.");
+  context.setValues({});
+};
+
+const listFormat = new Intl.ListFormat("en");
 
 type OfficeFile = Extract<OfficeFileInspection, { type: "office" }>;
 type Converted = Extract<OfficeConversionResult, { type: "converted" }>;
@@ -377,14 +398,33 @@ function convertedText({ kind, copy }: Extract<Flow, { step: "converted" }>): st
     "The original is unchanged, and later edits to it won't sync.";
 }
 
-/** Says a Docs, Sheets or Slides file the Workshop takes only as a Drive file connects read-only. */
-function readOnlyNotice({ values: { target }, acceptedResourceUrlPatterns: accepted }: Context) {
+/**
+ * Says a Docs, Sheets or Slides file the Workshop takes only as a Drive file connects read-only, and
+ * on the Google Drive card offers to ask for the editable types the account lacks.
+ */
+function readOnlyNotice(context: Context) {
+  const { values: { target }, acceptedResourceUrlPatterns: accepted } = context;
   const editor = editorOf(target ?? "");
-  return editor && patternOf(target!, accepted) === FILE_PATTERN
-    ? <Notice>
+  if (!editor || patternOf(target!, accepted) !== FILE_PATTERN) return null;
+  // The editable types the Google Drive card offers that the account has not granted. None for a
+  // blueprint's binding, which takes its own type alone, rather than all of Drive and folders too.
+  const ungranted = accepted?.includes(ACCOUNT_PATTERN) && accepted.includes(FOLDER_PATTERN)
+    ? Object.values(EDITORS).filter(({ pattern }) => !accepted.includes(pattern))
+    : [];
+  return <Fragment>
+    <Notice>
       {`This connects as a read-only Drive file: it can be read, but not edited as a Google ${EDITORS[editor].title} file.`}
     </Notice>
-    : null;
+    {ungranted.length > 0 && <Fragment>
+      <Notice>
+        {"Google will ask to let this app \"See, edit, create, and delete all your Google " +
+          `${listFormat.format(ungranted.map(({ title }) => title))} files". A connection still reaches ` +
+          "only the file you choose, and this list reopens to choose it again."}
+      </Notice>
+      <Button onClick={() => void allowEditing(context, ungranted.map(({ pattern }) => pattern))}>Allow editing</Button>
+      {editNote && <Notice tone={editNote.tone}>{editNote.text}</Notice>}
+    </Fragment>}
+  </Fragment>;
 }
 
 function officeNotices(context: Context) {

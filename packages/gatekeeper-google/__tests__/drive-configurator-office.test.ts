@@ -3,8 +3,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
-  OFFICE_IMPORT_GRANT, parseResourceUrl,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, OFFICE_IMPORT_GRANT, parseResourceUrl,
 } from "../src/resources";
 import { nodes, text } from "./configurator-tree";
 
@@ -132,6 +132,7 @@ describe.each([
       text: "This connects as a read-only Drive file: it can be read, but not edited as a Google " +
         `${{ doc: "Docs", sheets: "Sheets", slides: "Slides" }[kind]} file.`,
     }]);
+    expect(readOnly.button("Allow editing")).toBeUndefined();
   });
 
   it("is read back from its editor's URL", async () => {
@@ -547,5 +548,33 @@ describe("the Drive picker's Office flow", () => {
 
     await expect(frame.prefill(url)).resolves.toEqual({});
     expect(frame.ui.inspectFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("the Drive picker on a Drive card account without an editable type's grant", () => {
+  const DRIVE_TYPES = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
+    .map(resource => resource.urlPattern);
+
+  it("connects a file read-only, and offers to ask for every editable type the account lacks", async () => {
+    const frame = await open([...DRIVE_TYPES, GOOGLE_DOC_RESOURCE.urlPattern]);
+    frame.ensureResources.mockResolvedValue(false);
+    frame.choose("sheets:native-1");
+
+    expect(frame.ready()).toBe(true);
+    expect(parseResourceUrl(frame.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
+    expect(frame.notices().map(notice => notice.text)).toEqual([
+      "This connects as a read-only Drive file: it can be read, but not edited as a Google Sheets file.",
+      'Google will ask to let this app "See, edit, create, and delete all your Google Sheets and Slides ' +
+        'files". A connection still reaches only the file you choose, and this list reopens to choose it again.',
+    ]);
+
+    frame.button("Allow editing")!.onClick();
+    // Synchronously, so the click's activation still lets Workshop open the pop-up.
+    expect(frame.ensureResources).toHaveBeenCalledWith([GOOGLE_SHEETS_RESOURCE.urlPattern, GOOGLE_SLIDES_RESOURCE.urlPattern]);
+    await settle();
+
+    expect(frame.notices().at(-1)).toEqual({
+      tone: undefined, text: "Allow access in Google's window. This list then reopens to choose the file again.",
+    });
   });
 });
