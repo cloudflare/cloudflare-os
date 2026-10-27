@@ -271,6 +271,29 @@ describe("local counts and explicit read boundaries", () => {
       latestActivityAt: new Date(1_004), latestMessagePreview: "x".repeat(240), unreadMessageCount: 2});
   });
 
+  it("does not overwrite a delivered rename with metadata captured by an earlier reopen", async () => {
+    const fixture = await setup();
+    const {reader, owner} = await addReader(fixture);
+    await append(fixture, 0);
+    await reader.markChatRead(receipt(fixture, 0));
+    await append(fixture, 1);
+    const captured = await notificationBaselines(fixture);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed"});
+      await impl.deliverDirtyChats();
+    });
+    expect((await reader.getUnreadThreads())[0]?.chatTitle).toBe("Renamed");
+    await runInDurableObject(reader, async instance => {
+      using put = vi.spyOn(Reflect.get(instance, "storage").chatReadCursors, "put");
+      await instance.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", captured);
+      expect(put).not.toHaveBeenCalled();
+    });
+    await evictDurableObject(reader);
+    expect(await reader.getUnreadThreads()).toEqual([
+      expect.objectContaining({chatTitle: "Renamed", readThroughSequence: 0, unreadMessageCount: 1}),
+    ]);
+  });
+
   it("scopes statuses and rollups locally, retaining read rows but dropping deleted/revoked inbox entries", async () => {
     const fixture = await setup();
     const other = await setup(fixture.user);

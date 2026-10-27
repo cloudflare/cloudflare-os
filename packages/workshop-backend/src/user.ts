@@ -1074,7 +1074,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             changed = true;
           } else {
             let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
-            let head = baseline.head && baseline.head.latestSequence >= (cursor.head?.latestSequence ?? -1)
+            // Reopen metadata was captured before an await; live metadata wins at the same position.
+            let head = baseline.head && (!cursor.head || baseline.head.latestSequence > cursor.head.latestSequence)
               ? baseline.head : cursor.head;
             changed = this.#storeCursor({...cursor, head, latestVisibleSequence: latest,
               unreadCount: latest - cursor.readThroughVisibleSequence}) || changed;
