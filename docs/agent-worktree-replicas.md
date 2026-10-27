@@ -108,7 +108,9 @@ only within its original active execution; a later prompt cannot adopt it.
 Stream ordered batches while the command runs. Each batch is at most 128 paths/1 MiB and uses
 the existing lightweight text OT format. The kernel checks the captured revision and ordinary
 path permissions, then atomically persists edits and a payload-bound receipt. Concurrent DO
-edits fail explicitly; this API does not merge them or send them to the container.
+edits may be rejected by this best-effort revision check, but are unsupported: an edit buffered
+during writeback validation can be overwritten by the container. This API does not merge
+concurrent edits or send them to the container. Avoid editing the same worktree while a command runs.
 
 After process exit, the integration drains and seals its filesystem and submits a final batch
 (possibly empty) with `final: true`. Its durable ACK closes write authority atomically.
@@ -135,15 +137,16 @@ shell. An untouched mount may be recaptured after a lost mount reply, before any
 accepted. Once execution begins, its own durable command journal must distinguish dispatched,
 finished and synchronized; a lost reply never proves the shell did not run.
 
-Unsupported concurrent writers, symlink/mode mutations, submodules and binary writeback must
-fail rather than be described as synchronized. This does not change general DO OT semantics.
+Symlink/mode mutations, submodules and binary writeback must fail rather than be described as
+synchronized. Concurrent writers have no preservation guarantee. This does not change general DO OT semantics.
 
 ## Deliberate v0 tradeoffs
 
 - One worktree per mount; no entire-workspace mount or multi-worktree command transaction.
 - One complete initial capture per command, including warm reuse/restore. No incremental
   bootstrap negotiation, live DO-to-container updates, polling, or multi-master reconciliation.
-- Concurrent canonical DO edits fail writeback explicitly; no timestamp last-writer-wins.
+- Concurrent canonical DO edits are unsupported and may be overwritten; revision checks are
+  best-effort, not a conflict-resolution or preservation guarantee.
 - The command's text edits stream during execution, but its result waits for final drain/seal/ACK.
 - Only command-duration authority. No #798 lifecycle hooks, #833 contextual-action redelivery,
   cross-turn write leases, or background workspace access while the guest is idle.

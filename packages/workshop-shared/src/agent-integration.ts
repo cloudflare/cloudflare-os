@@ -66,7 +66,7 @@ export interface WorktreeWriteback extends WorkerEntrypoint {
   /**
    * Durably accept an ordered batch. Retry a lost reply with the identical ID and payload.
    * final closes write authority atomically with the batch. Completion must await its ACK.
-   * Concurrent DO edits fail explicitly rather than being merged or sent to the container.
+   * Concurrent DO edits are unsupported and may be overwritten, not merged or sent back.
    */
   submitChanges(batchId: string, changes: FileChangeByPath[], final: boolean): Promise<void>;
 }

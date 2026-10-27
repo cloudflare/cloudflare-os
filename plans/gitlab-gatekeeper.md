@@ -372,7 +372,7 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   `pendingAction:` where the code uses `action:`; the GitLab one will be written from the code).
 - **Git contract** (`workshop-shared/src/gatekeeper.ts`): `GitOid`, `GitObjectType`,
   `GitCache` (`get`/`has`/`stat`/`put`/`advertiseCommit`/`buildPack`/`consumePack`/`isAncestor`),
-  `GitPullHints`, `GitPullTransfer`, `Gatekeeper.gitPull?(oids, options)`, `Gatekeeper.applyAction(action,
+  `GitPullHints`, `Gatekeeper.gitPull?(request, observer?)`, `Gatekeeper.applyAction(action,
   cache)`, `ActionDescription.pushedCommits`, `ObservationAuthorizer.getGitCache()`. The
   overseer tries sources recorded in `meta.onRemote` and `meta.pullableFrom`, i.e.
   gatekeepers that advertised or proved the object, or populated an object that references it —
@@ -387,7 +387,8 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   composer (`buildRefUpdateRequest`, `report-status` only, no
   side-band), `pushGitRefUpdate(fetchReceivePack, update, pack)`, `GitRefUpdateRejectedError`,
   `emptyPackBytes`; git commit/tree object parsers; `diffGitTrees`/`diffTextLines` over a
-  `TreeDiffSource`. Only their doc comments mention GitHub.
+  `TreeDiffSource`. `GitPullTransfer` is a kit-side helper, not the provider RPC return type.
+  Only their doc comments mention GitHub.
 - **Kit** (`packages/gatekeeper-kit`): leaf modules with explicit subpath exports, JSDoc on every
   public symbol, README inventory, node tests for pure logic (`AGENTS.md` there). No git code
   today. Dependencies: `backend-utils`, `workshop-shared`, `jose`.

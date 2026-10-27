@@ -8,6 +8,7 @@ import {diffFiles, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {OverseerDurableObject} from "./test-worker";
 import type {TestReplicaTransfer} from "./replica-transfer-worker";
 import {runAgent, type WorktreeTurnAccess} from "../src/agent";
+import {UserDurableObject} from "../src/user";
 
 const testEnv = env as Cloudflare.Env & {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -73,7 +74,8 @@ describe("single-worktree command mount and writeback", () => {
     expect([...impl.storage.worktreeReplicaCommits.list()]).toHaveLength(1);
   }));
 
-  it.each(["none", "canonical", "buffered"] as const)("preserves ordinary edits across a %s commit-window conflict", conflict => within(async (impl, f) => {
+  it.each(["none", "canonical", "buffered", "validation"] as const)("documents best-effort conflict checks across a %s writeback race", conflict => within(async (impl, f) => {
+    const accepted = conflict === "none" || conflict === "validation";
     impl.addChatMessages(1, author, [{type: "changes", change: {}, createdWorktrees: [
       {worktreeId: f.tree.id, title: "Repo", bindingName: "REPO"},
     ]}]);
@@ -104,17 +106,21 @@ describe("single-worktree command mount and writeback", () => {
     const paths = vi.spyOn(impl.gitCache, "assertWorktreePathWritable").mockImplementation(async (...args) => {
       // The initial ordinary-buffer flush has finished. This edit joins the replica's commit.
       access.appendChange(f.tree.id, "ordinary.txt", {set: "ordinary"});
+      if (conflict === "validation") access.appendChange(f.tree.id, "a.txt", {set: "Xne\ntwo\n"});
       await writable(...args);
     });
     const faux = createFauxCore({models: [{id: "test"}]});
     faux.setResponses([async () => {
       const mount = await f.context().mountWorktree("REPO");
       for (const pack of mount.packs) await pack.cancel();
-      const result = (async () => { await mount.writeback.submitChanges("batch", [{path: "container.txt", change: {set: "container"}}], false); })();
-      if (conflict === "none") await result;
+      const result = (async () => { await mount.writeback.submitChanges("batch", [
+        {path: "container.txt", change: {set: "container"}},
+        ...(conflict === "validation" ? [{path: "a.txt", change: {edit: [[1, "O"], 7]}}] : []),
+      ], false); })();
+      if (accepted) await result;
       else await expect(result).rejects.toThrow(/concurrent writers/);
       expect(access.getOverlayFiles(f.tree.id).get("container.txt"))
-        .toBe(conflict === "none" ? "container" : undefined);
+        .toBe(accepted ? "container" : undefined);
       expect(await access.flushReplica!({}, access.getRevision!())).toBe(true);
       return fauxAssistantMessage(fauxText("Done."));
     }]);
@@ -124,7 +130,8 @@ describe("single-worktree command mount and writeback", () => {
         {provider: "cloudflare", model: "test", apiToken: ""});
       const files = (await content(1, impl.storage.chatMeta.get(1)!)).get(f.tree.id)!;
       expect(files.get("ordinary.txt")).toBe("ordinary");
-      expect(files.get("container.txt")).toBe(conflict === "none" ? "container" : undefined);
+      expect(files.get("container.txt")).toBe(accepted ? "container" : undefined);
+      if (conflict === "validation") expect(files.get("a.txt")).toBe("One\ntwo\n");
       if (conflict === "canonical") expect(files.get("external.txt")).toBe("canonical");
       if (conflict === "buffered") expect(files.get("later.txt")).toBe("later");
     } finally { registration.mockRestore(); commits.mockRestore(); reads.mockRestore(); paths.mockRestore(); }
@@ -236,18 +243,56 @@ describe("single-worktree command mount and writeback", () => {
     await expect(f.context().mountWorktree("REPO")).rejects.toThrow(/already active/);
     await second.writeback.submitChanges("final", [], true);
   }));
-  it("releases an old segment's untouched mount without reviving its write authority", () => within(async (impl, f) => {
-    const first = await f.context().mountWorktree("REPO");
+  it("retains command writeback across segment rotation without reviving an ephemeral context", () => within(async (impl, f) => {
+    const context = f.context();
+    const first = await context.mountWorktree("REPO");
     for (const pack of first.packs) await pack.cancel();
     const row = impl.storage.activeAgents.get(1)!;
     impl.storage.activeAgents.put({...row, integration: {...row.integration!, segmentId: crypto.randomUUID()}});
-    await expect((async () => { await first.writeback.submitChanges("stale", [], false); })())
-      .rejects.toThrow(/access ended/);
+    await expect(context.getTurn()).rejects.toThrow();
+    await first.writeback.submitChanges("resumed", [{path: "resumed.txt", change: {set: "same command"}}], false);
+    await first.writeback.submitChanges("final", [], true);
     const second = await f.context().mountWorktree("REPO");
     for (const pack of second.packs) await pack.cancel();
     expect([...impl.storage.worktreeReplicaLeases.list()].filter(lease => !lease.released)).toHaveLength(1);
     await second.writeback.submitChanges("final", [], true);
   }));
+
+  it("drains an unfinished command after actual DO reset while model lookup is still pending", async () => {
+    const name = crypto.randomUUID();
+    const gate = Promise.withResolvers<void>();
+    const lookup = vi.spyOn(UserDurableObject.prototype, "getChatContext").mockImplementation(async () => {
+      await gate.promise;
+      throw new Error("End the synthetic resumed model lookup");
+    });
+    try {
+      const before = await runInDurableObject(testEnv.TEST_OVERSEER.getByName(name), async instance => {
+        const impl = instance["impl"], f = await setup(impl);
+        const row = impl.storage.activeAgents.get(1)!;
+        impl.storage.activeAgents.put({...row, initiatorUserId: impl.users.idFromName(name).toString()});
+        const mount = await f.context().mountWorktree("REPO");
+        for (const pack of mount.packs) await pack.cancel();
+        await mount.writeback.submitChanges("first", [{path: "once.txt", change: {set: "once"}}], false);
+        return {leaseId: [...impl.storage.worktreeReplicaLeases.list()][0].id,
+          segmentId: row.integration!.segmentId, treeId: f.tree.id};
+      });
+      await abortAllDurableObjects();
+      const owner = testEnv.TEST_OVERSEER.getByName(name);
+      const endpoint = await owner.testReplicaEndpoint(before.leaseId);
+      await endpoint.submitChanges("final", [{path: "done.txt", change: {set: "drained"}}], true);
+      await endpoint.submitChanges("final", [{path: "done.txt", change: {set: "drained"}}], true);
+      await runInDurableObject(owner, async instance => {
+        const impl = instance["impl"];
+        expect(impl.storage.activeAgents.get(1)?.integration?.segmentId).not.toBe(before.segmentId);
+        expect([...impl.storage.worktreeReplicaCommits.list()]).toHaveLength(2);
+        expect((await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!))
+          .get(before.treeId)?.get("done.txt")).toBe("drained");
+        gate.resolve();
+        await impl.waitForAllAgentsToComplete();
+        delete impl.env.AGENT_INTEGRATION_GRANTS;
+      });
+    } finally { gate.resolve(); lookup.mockRestore(); }
+  });
   it("keeps all receipts for delayed reconciliation without scanning completed commands on mount", () => within(async (impl, f) => {
     const first = await f.context().mountWorktree("REPO");
     for (const pack of first.packs) await pack.cancel();

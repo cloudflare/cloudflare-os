@@ -6569,7 +6569,9 @@ class OverseerImpl implements AgentHooks {
       throw new Error("Worktree command access ended.");
     this.assertGatekeeperUsable(lease.gatekeeperId);
     const execution = this.storage.activeAgents.get(lease.chatId)?.integration;
-    if (execution?.turnId !== lease.turnId || execution.segmentId !== lease.segmentId)
+    // A resumed DO invocation gets a new ephemeral segment, not a new command. The
+    // persisted return capability remains scoped to its original logical execution.
+    if (execution?.turnId !== lease.turnId)
       throw new Error("Worktree command access ended.");
     const current = this.replicaSelection(lease.chatId).find(tree => tree.checkoutId === lease.worktree.checkoutId);
     if (!current || current.baseCommit !== lease.worktree.baseCommit)
