@@ -176,6 +176,29 @@ describe("selection", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
+  it("says why a node cannot be chosen, in place of a leaf's subtitle and of an open container's own row", async () => {
+    const pages: Item = {
+      id: "pages", title: "Site Pages", kind: "container", subtitle: "Open to choose a page",
+      selectable: false, unselectableReason: "Choose one page, or the whole site.",
+    };
+    const draft: Item = {
+      id: "draft", title: "Draft.docx", kind: "leaf", subtitle: "Owned by Kim",
+      selectable: false, unselectableReason: "Only its owner can share it.\u202E",
+    };
+    await render({ loadItems: async ({ parentId }) => ({ items: parentId === "pages" ? [q1] : [pages, draft] }) });
+
+    await expect.element(option("Draft.docx")).toMatchTextContent("Only its owner can share it.");
+    expect(option("Draft.docx").element().textContent).not.toContain("Owned by Kim");
+    expect(container!.textContent).not.toContain("\u202E");
+    // A container's row opens it, so it says what is inside; why it cannot be chosen waits until then.
+    await expect.element(option("Site Pages")).toMatchTextContent("Open to choose a page");
+
+    await userEvent.click(option("Site Pages"));
+    await expect.element(page.getByText("Choose one page, or the whole site.", { exact: true })).toBeVisible();
+    await expect.element(page.getByRole("status")).toHaveTextContent("1 item. Choose one page, or the whole site.");
+    expect(option("Everything in Site Pages").elements()).toHaveLength(0);
+  });
+
   it("shows one selected row when a listing names the open container among its own nodes", async () => {
     const loadItems = vi.fn<LoadItems>(async ({ parentId }) =>
       ({ items: parentId === "reports" ? [{ ...reports, title: "Reports again" }, q1] : TREE[parentId] ?? [] }));

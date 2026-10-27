@@ -8,7 +8,7 @@ import type { ConfiguratorUIHierarchyAncestor, ConfiguratorUIHierarchyItem, Hier
 import { FilterInput } from "./FilterInput.tsx";
 import { Breadcrumb } from "./HierarchyBreadcrumb.tsx";
 import {
-  appendUnique, asAncestor, asContainer, locationOf, reportLoadFailure, requestPage, sanitizeItem, searchSubtitle,
+  appendUnique, asAncestor, asContainer, locationOf, reportLoadFailure, requestPage, rowSubtitle, sanitizeItem,
   type Location, type Page,
 } from "./hierarchyNodes.ts";
 import { ChoiceBody, Row } from "./HierarchyRow.tsx";
@@ -162,6 +162,9 @@ const Navigator = (props: HierarchyPickerProps) => {
   // The open container, offered as a choice of its own. Not under a search, whose results are not
   // its contents.
   const scope = current && current.selectable !== false && !query ? asContainer(current) : null;
+  // Shown above the list: why the open container is not offered there, and what the source notes.
+  const notes = [...new Set([!query && current?.selectable === false && current.unselectableReason, fresh?.notice]
+    .flatMap(note => note || []))];
   // A pre-filled leaf its folder's listing does not show (on a later page, or found without a path)
   // comes first until the listing does, so the choice is in view, and stays while the user is here.
   const pinned = status === "ready" && !query && prefilledLeaf
@@ -351,8 +354,8 @@ const Navigator = (props: HierarchyPickerProps) => {
   if (status === "loading") announcement = "Loading…";
   else if (status === "failed") announcement = fresh?.message;
   else {
-    // The notice is drawn above the list, so it is only said here.
-    const said = [rows.length > 0 && count, fresh?.notice].filter(Boolean).join(". ");
+    // The notes are drawn above the list, so they are only said here.
+    const said = [rows.length > 0 && count, ...notes].filter(Boolean).join(". ");
     announcement = (
       <>
         {rows.length === 0 && !fresh?.notice && (query ? `No results for "${query}".` : "Nothing here.")}
@@ -459,12 +462,12 @@ const Navigator = (props: HierarchyPickerProps) => {
       )}
       {/* One fixed height, so neither a navigation nor the listing it loads moves the form. */}
       <div className={cn("h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
-        {fresh?.notice && (
-          <p aria-hidden="true" className="flex gap-2 px-2 py-1.5 text-xs text-kumo-subtle">
+        {notes.map(note => (
+          <p key={note} aria-hidden="true" className="flex gap-2 px-2 py-1.5 text-xs text-kumo-subtle">
             <InfoIcon size={14} className="mt-px shrink-0" />
-            {fresh.notice}
+            {note}
           </p>
-        )}
+        ))}
         <div
           ref={listRef}
           role="listbox"
@@ -498,7 +501,7 @@ const Navigator = (props: HierarchyPickerProps) => {
             <Row
               key={item.id}
               title={item.title}
-              subtitle={query ? searchSubtitle(item) : item.subtitle}
+              subtitle={rowSubtitle(item, query !== "")}
               icon={iconFor(item.icon, item.kind)}
               action={item.kind === "container" ? "open" : item.selectable ? "choose" : "none"}
               selected={showsChoice(item)}

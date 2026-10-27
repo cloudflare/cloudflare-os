@@ -169,17 +169,12 @@ export type ConfiguratorUIHierarchyChoice = {
   subtitle?: string;
 };
 
-/** An ancestor of a {@link ConfiguratorUIHierarchyItem}, as its breadcrumb shows it. */
-export type ConfiguratorUIHierarchyAncestor = {
-  id: string;
-  title: string;
-  /** As for {@link ConfiguratorUIHierarchyItem.selectable}: whether, once open, it is offered as a choice. */
-  selectable?: boolean;
-  /** As for {@link ConfiguratorUIHierarchyItem.icon}, shown on that choice. */
-  icon?: string;
-  /** As for {@link ConfiguratorUIHierarchyItem.choice}. */
-  choice?: ConfiguratorUIHierarchyChoice;
-};
+/**
+ * An ancestor of a {@link ConfiguratorUIHierarchyItem}, as its breadcrumb shows it, and what it
+ * offers once open.
+ */
+export type ConfiguratorUIHierarchyAncestor =
+  Pick<ConfiguratorUIHierarchyItem, "id" | "title" | "selectable" | "unselectableReason" | "icon" | "choice">;
 
 /** One node listed by a {@link HierarchyPicker}. */
 export type ConfiguratorUIHierarchyItem = {
@@ -205,6 +200,11 @@ export type ConfiguratorUIHierarchyItem = {
    * without being offered as a resource.
    */
   selectable?: boolean;
+  /**
+   * Why the node cannot be connected, so the user knows what to choose instead. Shown in place of a
+   * leaf's subtitle, and of an open container's own row.
+   */
+  unselectableReason?: string;
   /** For a container, how it is offered as a choice once open. */
   choice?: ConfiguratorUIHierarchyChoice;
   /**
@@ -234,18 +234,12 @@ export type ConfiguratorUIHierarchyRoot = {
  * A top-level container a {@link HierarchyPicker} shows as a tab, such as a drive, or a view such as
  * recent files. It is listed with its id as `parentId`, and heads the `path` of every node under it.
  */
-export type ConfiguratorUIHierarchyTab = {
-  id: string;
-  title: string;
+export type ConfiguratorUIHierarchyTab = Omit<ConfiguratorUIHierarchyAncestor, "selectable"> & {
   /**
    * Whether, once open, it is offered as a choice in the row its listing starts with. Unlike a
    * container's, defaults to false, since a tab is as often a view as something to connect.
    */
   selectable?: boolean;
-  /** As for {@link ConfiguratorUIHierarchyItem.icon}, shown on that choice. */
-  icon?: string;
-  /** As for {@link ConfiguratorUIHierarchyItem.choice}. */
-  choice?: ConfiguratorUIHierarchyChoice;
 };
 
 /** One request a {@link HierarchyPicker} makes of its `loadItems`. */

@@ -29,42 +29,41 @@ const sanitizeChoice = (value: unknown): ConfiguratorUIHierarchyChoice | undefin
   return { title: displayText(title), subtitle: displayText(subtitle) };
 };
 
-/** A path whose every ancestor is valid, or none: a partial path would misstate where a node is. */
-const sanitizePath = (value: unknown): Ancestor[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  const path: Ancestor[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") return undefined;
-    const raw = entry as Record<string, unknown>;
-    const id = identifier(raw.id);
-    const title = displayText(raw.title);
-    if (!id || !title) return undefined;
-    path.push({
-      id,
-      title,
-      selectable: typeof raw.selectable === "boolean" ? raw.selectable : undefined,
-      icon: typeof raw.icon === "string" ? raw.icon : undefined,
-      choice: sanitizeChoice(raw.choice),
-    });
-  }
-  return path;
-};
-
-export const sanitizeItem = (value: unknown): Item | undefined => {
+/** What a node shares with its ancestors, or nothing without an id and a title. */
+const sanitizeAncestor = (value: unknown): Ancestor | undefined => {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
   const id = identifier(raw.id);
   const title = displayText(raw.title);
-  if (!id || !title || (raw.kind !== "container" && raw.kind !== "leaf")) return undefined;
+  if (!id || !title) return undefined;
   return {
     id,
     title,
-    kind: raw.kind,
+    selectable: typeof raw.selectable === "boolean" ? raw.selectable : undefined,
+    unselectableReason: displayText(raw.unselectableReason),
     icon: typeof raw.icon === "string" ? raw.icon : undefined,
-    subtitle: displayText(raw.subtitle),
-    selectable: raw.selectable !== false,
     choice: sanitizeChoice(raw.choice),
-    path: sanitizePath(raw.path),
+  };
+};
+
+/** A path whose every ancestor is valid, or none: a partial path would misstate where a node is. */
+const sanitizePath = (value: unknown): Ancestor[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const path = value.map(sanitizeAncestor);
+  return path.every(ancestor => ancestor !== undefined) ? path : undefined;
+};
+
+export const sanitizeItem = (value: unknown): Item | undefined => {
+  const ancestor = sanitizeAncestor(value);
+  if (!ancestor) return undefined;
+  const { kind, subtitle, path } = value as Record<string, unknown>;
+  if (kind !== "container" && kind !== "leaf") return undefined;
+  return {
+    ...ancestor,
+    kind,
+    selectable: ancestor.selectable !== false,
+    subtitle: displayText(subtitle),
+    path: sanitizePath(path),
   };
 };
 
@@ -110,11 +109,18 @@ export const appendUnique = (existing: readonly Item[], incoming: readonly Item[
 export const asContainer = ({ id, title, icon, choice }: Ancestor): Item =>
   ({ id, title, icon, choice, kind: "container", selectable: true });
 
-export const asAncestor = ({ id, title, selectable, icon, choice }: Item): Ancestor => ({ id, title, selectable, icon, choice });
+export const asAncestor = ({ id, title, selectable, unselectableReason, icon, choice }: Item): Ancestor =>
+  ({ id, title, selectable, unselectableReason, icon, choice });
 
-/** A search result's line: where it lives, then its own, so results of one name can be told apart. */
-export const searchSubtitle = ({ path, subtitle }: Item): string | undefined =>
-  [path?.map(ancestor => ancestor.title).join(" / "), subtitle].filter(Boolean).join(" · ") || undefined;
+/**
+ * A row's line: why a leaf cannot be chosen, else its subtitle. Under a search, where it lives comes
+ * first, so results of one name can be told apart.
+ */
+export const rowSubtitle = (item: Item, searching: boolean): string | undefined => {
+  const own = item.kind === "leaf" && !item.selectable ? item.unselectableReason ?? item.subtitle : item.subtitle;
+  if (!searching) return own;
+  return [item.path?.map(({ title }) => title).join(" / "), own].filter(Boolean).join(" · ") || undefined;
+};
 
 /**
  * Where a node found without browsing to it (a search result, a pre-filled value) lives. Under tabs,
