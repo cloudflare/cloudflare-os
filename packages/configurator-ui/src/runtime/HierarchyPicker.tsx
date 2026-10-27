@@ -1,13 +1,15 @@
 import { Button } from "@cloudflare/kumo/components/button";
 import { Loader } from "@cloudflare/kumo/components/loader";
+import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { cn } from "@cloudflare/kumo/utils";
-import { CaretRightIcon, FileIcon, FolderIcon } from "@phosphor-icons/react";
+import { CaretLeftIcon, CaretRightIcon, FileIcon, FolderIcon } from "@phosphor-icons/react";
 import { isValidElement, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type {
   ConfiguratorUIHierarchyAncestor,
   ConfiguratorUIHierarchyChoice,
   ConfiguratorUIHierarchyItem,
   ConfiguratorUIHierarchyRequest,
+  ConfiguratorUIHierarchyTab,
   HierarchyPickerProps,
 } from "../index.ts";
 import { FilterInput } from "./FilterInput.tsx";
@@ -17,13 +19,15 @@ import { useCollectionHold } from "./storeContext.ts";
 
 type Item = ConfiguratorUIHierarchyItem;
 type Ancestor = ConfiguratorUIHierarchyAncestor;
+type Tab = ConfiguratorUIHierarchyTab;
 
 /**
- * The open location: the containers opened below the root, outermost first, or none for the root.
- * `detached` when the first of them is not known to be a direct child of the root -- a search result
- * without a `path` -- so the breadcrumb shows a gap rather than claim it is one.
+ * The open location: the open tab (none without tabs) and the containers opened below it or the
+ * root, outermost first. `detached` when the first of them is not known to be a direct child of
+ * the tab or root -- a search result without a `path` that says so -- so the breadcrumb shows a gap
+ * rather than claim it is one.
  */
-type Location = { trail: Ancestor[]; detached: boolean };
+type Location = { tab: string | null; trail: Ancestor[]; detached: boolean };
 
 type Page = { items: Item[]; nextCursor: string | null };
 
@@ -36,8 +40,6 @@ type Listing = Page & {
   loadingMore: boolean;
   moreMessage?: string;
 };
-
-const AT_ROOT: Location = { trail: [], detached: false };
 
 const sanitizeChoice = (value: unknown): ConfiguratorUIHierarchyChoice | undefined => {
   if (!value || typeof value !== "object") return undefined;
@@ -128,10 +130,19 @@ const asAncestor = ({ id, title, selectable, icon, choice }: Item): Ancestor => 
 const searchSubtitle = ({ path, subtitle }: Item): string | undefined =>
   [path?.map(ancestor => ancestor.title).join(" / "), subtitle].filter(Boolean).join(" · ") || undefined;
 
-/** Where a node found without browsing to it (a search result, a pre-filled value) lives. */
-const locationOf = (item: Item): Location => item.kind === "container"
-  ? { trail: [...item.path ?? [], asAncestor(item)], detached: !item.path }
-  : { trail: item.path ?? [], detached: false };
+/**
+ * Where a node found without browsing to it (a search result, a pre-filled value) lives. Under tabs,
+ * its path names its tab first; one that does not is shown in the open tab, apart from its top.
+ */
+const locationOf = (item: Item, tabs: readonly Tab[], openTab: string | null): Location => {
+  if (tabs.some(({ id }) => id === item.id)) return { tab: item.id, trail: [], detached: false };
+  const tab = tabs.find(({ id }) => id === item.path?.[0]?.id);
+  const path = (tab ? item.path?.slice(1) : item.path) ?? [];
+  const trail = item.kind === "container" ? [...path, asAncestor(item)] : path;
+  return tabs.length > 0
+    ? { tab: tab?.id ?? openTab, trail, detached: !tab }
+    : { tab: null, trail, detached: item.kind === "container" && !item.path };
+};
 
 type ChoiceBodyProps = { mark: "checked" | "unchecked" | "none"; icon: ReactNode; title: string; subtitle?: string };
 
@@ -208,16 +219,17 @@ const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate, ...bod
  * dialog, a choice lasts while it is in view: moving elsewhere or searching lets go of it, except
  * the root's, whose card is always in view.
  *
- * Where it has navigated describes one root, so a new root starts it afresh. A value nothing on
- * screen shows as chosen, pre-filled or set by the module later, is looked up and opened where it
- * lives. Any other change leaves the picker where the user took it: a pick the module takes at once
- * or after awaiting something, one it declines, or a choice it lets go of.
+ * Where it has navigated describes one root and its tabs, so a new root or set of tabs starts it
+ * afresh. A value nothing on screen shows as chosen, pre-filled or set by the module later, is
+ * looked up and opened where it lives. Any other change leaves the picker where the user took it: a
+ * pick the module takes at once or after awaiting something, one it declines, or a choice it lets
+ * go of.
  */
 export const HierarchyPicker = (props: HierarchyPickerProps) =>
-  <Navigator key={`${props.name}\n${props.root.id}`} {...props} />;
+  <Navigator key={[props.name, props.root.id, ...props.tabs?.map(({ id }) => id) ?? []].join("\n")} {...props} />;
 
 const Navigator = (props: HierarchyPickerProps) => {
-  const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
+  const { name, value = null, root, tabs = [], icons, searchPlaceholder, disabled = false } = props;
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
   // restart a load.
@@ -229,7 +241,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   // value is a change like any other.
   const [seenValue, setSeenValue] = useState<string | null>(null);
   const [pendingPrefill, setPendingPrefill] = useState<string | null>(null);
-  const [location, setLocation] = useState<Location>(AT_ROOT);
+  const [location, setLocation] = useState<Location>(() => ({ tab: tabs[0]?.id ?? null, trail: [], detached: false }));
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [listing, setListing] = useState<Listing | null>(null);
@@ -259,7 +271,10 @@ const Navigator = (props: HierarchyPickerProps) => {
   };
 
   const prefilling = pendingPrefill !== null;
-  const current = location.trail.at(-1);
+  const openTab = tabs.find(({ id }) => id === location.tab);
+  // A tab is offered as a choice only when it says so, unlike a container.
+  const current: Ancestor | undefined = location.trail.at(-1)
+    ?? (openTab && { ...openTab, selectable: openTab.selectable === true });
   const locationId = current?.id ?? root.id;
   const locationTitle = current?.title ?? root.title;
 
@@ -268,14 +283,16 @@ const Navigator = (props: HierarchyPickerProps) => {
     /** Shows `item` where it lives, or, with none to show as that choice, leaves nothing chosen. */
     const settle = (item?: Item) => {
       if (item) {
-        setLocation(locationOf(item));
+        setLocation(open => locationOf(item, tabs, open.tab));
         if (item.kind === "leaf") setPrefilledLeaf(item);
       } else dropPrefill();
       setPendingPrefill(null);
     };
-    // An unselectable root is no choice the picker can show, and no node `loadItem` knows.
-    if (pendingPrefill === root.id) {
-      settle();
+    // The root and the tabs are known without a lookup. An unselectable root is no choice the picker
+    // can show; a tab is shown on the row its listing starts with, when it is offered as a choice.
+    const tab = tabs.find(({ id }) => id === pendingPrefill);
+    if (pendingPrefill === root.id || tab) {
+      settle(tab?.selectable === true ? asContainer(tab) : undefined);
       return;
     }
     let cancelled = false;
@@ -334,8 +351,10 @@ const Navigator = (props: HierarchyPickerProps) => {
     && !items.some(item => item.id === prefilledLeaf.id) ? prefilledLeaf : null;
   const rows = pinned ? [pinned, ...items] : items;
   const rowIds = [...scope ? [scope.id] : [], ...rows.map(row => row.id)];
-  // Compact beside the breadcrumb until used; then it takes the breadcrumb's place, since what it
-  // finds is not in the open location.
+  const hasTabs = tabs.length > 0;
+  // Without tabs, the search box sits compact beside the breadcrumb until used, then takes its place;
+  // beside tabs, it has room of its own. Either way the breadcrumb gives way to what a search finds,
+  // which is not in the open location.
   const searchOpen = searchFocused || text !== "";
   const focusId = activeId !== null && rowIds.includes(activeId) ? activeId : rowIds[0];
   const rootChosen = root.selectable === true && value === root.id;
@@ -409,19 +428,19 @@ const Navigator = (props: HierarchyPickerProps) => {
     setLocation(next);
     clearSearch();
     // The row that started it goes with the listing it was in.
-    focusTarget.current = fromList ? { location: next.trail.at(-1)?.id ?? root.id, row: null } : null;
+    focusTarget.current = fromList ? { location: next.trail.at(-1)?.id ?? next.tab ?? root.id, row: null } : null;
   };
 
-  /** Opens the root (depth 0) or the trail's container at that depth; the open one stays as it is. */
+  /** Opens the tab or root (depth 0) or the trail's container at that depth; the open one stays as it is. */
   const goTo = (depth: number, fromList: boolean) => {
     if (depth === location.trail.length) return;
-    navigate({ trail: location.trail.slice(0, depth), detached: depth > 0 && location.detached }, fromList);
+    navigate({ ...location, trail: location.trail.slice(0, depth), detached: depth > 0 && location.detached }, fromList);
   };
 
   const openContainer = (item: Item) => navigate(
     query
-      ? locationOf(item)
-      : { trail: [...location.trail, asAncestor(item)], detached: location.detached },
+      ? locationOf(item, tabs, location.tab)
+      : { ...location, trail: [...location.trail, asAncestor(item)] },
     true);
 
   const retry = () => {
@@ -490,7 +509,8 @@ const Navigator = (props: HierarchyPickerProps) => {
   };
 
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Tab" && event.shiftKey && !text) {
+    // Without tabs, the breadcrumb comes before the search box, which hid it while focused.
+    if (!hasTabs && event.key === "Tab" && event.shiftKey && !text) {
       event.preventDefault();
       focusCrumb.current = true;
       setSearchFocused(false);
@@ -524,6 +544,8 @@ const Navigator = (props: HierarchyPickerProps) => {
     );
   };
   const separator = <CaretRightIcon aria-hidden="true" size={12} className="shrink-0 text-kumo-subtle" />;
+  const atTop = location.trail.length === 0;
+  const count = `${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`;
 
   let announcement: ReactNode;
   if (status === "loading") announcement = "Loading…";
@@ -532,13 +554,71 @@ const Navigator = (props: HierarchyPickerProps) => {
   else {
     announcement = (
       <>
-        <span className="sr-only">
-          {`${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`}
-        </span>
+        <span className="sr-only">{count}</span>
         {fresh?.moreMessage && <>{" "}<span className="text-kumo-danger">{fresh.moreMessage}</span></>}
       </>
     );
   }
+
+  // Hidden from assistive technology, which hears it from the status below the list.
+  const shownCount = status === "ready" && settled && rows.length > 0 && (
+    <span aria-hidden="true" className="shrink-0 px-1 text-xs text-kumo-subtle">{count}</span>
+  );
+
+  const breadcrumb = (
+    <nav ref={crumbsRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 text-sm">
+      {/* `aria-disabled` at the top rather than `disabled`, which would drop the focus of a user who
+          just went up there; out of the tab order there, since it leads nowhere. */}
+      <Button
+        variant="ghost"
+        size="xs"
+        shape="square"
+        aria-label="Up one level"
+        aria-disabled={atTop || undefined}
+        tabIndex={atTop ? -1 : undefined}
+        className={cn(atTop && "cursor-not-allowed opacity-50")}
+        disabled={disabled}
+        icon={<CaretLeftIcon aria-hidden="true" size={14} />}
+        onClick={() => {
+          if (!atTop) goTo(location.trail.length - 1, false);
+        }}
+      />
+      {crumb(openTab?.title ?? root.title, 0)}
+      {location.detached && location.trail.length > 0 && (
+        <>
+          {separator}
+          <span className="px-1 text-kumo-subtle">…</span>
+        </>
+      )}
+      {location.trail.map((ancestor, index) => (
+        <span key={ancestor.id} className="contents">
+          {separator}
+          {crumb(ancestor.title, index + 1)}
+        </span>
+      ))}
+    </nav>
+  );
+
+  const searchBox = searchPlaceholder && (
+    <div
+      className={hasTabs
+        ? "min-w-40 flex-1"
+        : cn("ml-auto shrink-0 transition-[width] duration-150", searchOpen ? "w-full" : "w-40")}
+      onFocus={() => setSearchFocused(true)}
+      onBlur={() => setSearchFocused(false)}
+    >
+      <FilterInput
+        label={searchPlaceholder}
+        placeholder={hasTabs || searchOpen ? searchPlaceholder : "Search"}
+        value={text}
+        disabled={disabled}
+        onChange={search}
+        onKeyDown={onSearchKeyDown}
+      />
+    </div>
+  );
+
+  const bar = "flex min-h-11 items-center gap-2 border-b border-kumo-line p-2";
 
   return (
     <div
@@ -570,41 +650,35 @@ const Navigator = (props: HierarchyPickerProps) => {
           </button>
         </div>
       )}
-      <div className="flex min-h-11 items-center gap-2 border-b border-kumo-line p-2">
-        {!searchOpen && (
-          <nav ref={crumbsRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 text-sm">
-            {crumb(root.title, 0)}
-            {location.detached && location.trail.length > 0 && (
-              <>
-                {separator}
-                <span className="px-1 text-kumo-subtle">…</span>
-              </>
-            )}
-            {location.trail.map((ancestor, index) => (
-              <span key={ancestor.id} className="contents">
-                {separator}
-                {crumb(ancestor.title, index + 1)}
-              </span>
-            ))}
-          </nav>
-        )}
-        {searchPlaceholder && (
-          <div
-            className={cn("ml-auto shrink-0 transition-[width] duration-150", searchOpen ? "w-full" : "w-40")}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-          >
-            <FilterInput
-              label={searchPlaceholder}
-              placeholder={searchOpen ? searchPlaceholder : "Search"}
-              value={text}
-              disabled={disabled}
-              onChange={search}
-              onKeyDown={onSearchKeyDown}
-            />
+      {hasTabs ? (
+        <>
+          <div className={bar}>
+            {/* Kumo's Tabs cannot be disabled; `inert` keeps a disabled picker's out of reach. */}
+            <div inert={disabled || undefined} className="min-w-0">
+              <Tabs
+                variant="segmented"
+                size="sm"
+                tabs={tabs.map(({ id, title }) => ({ value: id, label: title }))}
+                value={location.tab ?? undefined}
+                onValueChange={tab => navigate({ tab, trail: [], detached: false }, false)}
+              />
+            </div>
+            {searchBox}
           </div>
-        )}
-      </div>
+          {/* Kept while searching, so the list does not move. */}
+          <div className={bar}>
+            {text === "" ? breadcrumb : (
+              <span aria-hidden="true" className="min-w-0 flex-1 px-1 text-sm text-kumo-subtle">Search results</span>
+            )}
+            {shownCount}
+          </div>
+        </>
+      ) : (
+        <div className={bar}>
+          {!searchOpen && <>{breadcrumb}{shownCount}</>}
+          {searchBox}
+        </div>
+      )}
       {/* One fixed height, so neither a navigation nor the listing it loads moves the form. */}
       <div className={cn("h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
         <div

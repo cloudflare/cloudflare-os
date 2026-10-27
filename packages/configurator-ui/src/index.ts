@@ -208,14 +208,14 @@ export type ConfiguratorUIHierarchyItem = {
   /** For a container, how it is offered as a choice once open. */
   choice?: ConfiguratorUIHierarchyChoice;
   /**
-   * The node's ancestors below the root, outermost first. Optional in a listing, where the picker
-   * knows where it is, but needed for search results and for `loadItem`, so the breadcrumb can show
-   * where the node lives.
+   * The node's ancestors below the root, outermost first, starting with its tab when the picker has
+   * {@link HierarchyPickerProps.tabs}. Optional in a listing, where the picker knows where it is, but
+   * needed for search results and for `loadItem`, so the breadcrumb can show where the node lives.
    */
   path?: ConfiguratorUIHierarchyAncestor[];
 };
 
-/** Where a {@link HierarchyPicker} starts. */
+/** The top of the hierarchy a {@link HierarchyPicker} shows, and where it starts unless it has tabs. */
 export type ConfiguratorUIHierarchyRoot = {
   id: string;
   title: string;
@@ -230,9 +230,27 @@ export type ConfiguratorUIHierarchyRoot = {
   icon?: string;
 };
 
+/**
+ * A top-level container a {@link HierarchyPicker} shows as a tab, such as a drive, or a view such as
+ * recent files. It is listed with its id as `parentId`, and heads the `path` of every node under it.
+ */
+export type ConfiguratorUIHierarchyTab = {
+  id: string;
+  title: string;
+  /**
+   * Whether, once open, it is offered as a choice in the row its listing starts with. Unlike a
+   * container's, defaults to false, since a tab is as often a view as something to connect.
+   */
+  selectable?: boolean;
+  /** As for {@link ConfiguratorUIHierarchyItem.icon}, shown on that choice. */
+  icon?: string;
+  /** As for {@link ConfiguratorUIHierarchyItem.choice}. */
+  choice?: ConfiguratorUIHierarchyChoice;
+};
+
 /** One request a {@link HierarchyPicker} makes of its `loadItems`. */
 export type ConfiguratorUIHierarchyRequest = {
-  /** Id of the open location: the root's or a container's. */
+  /** Id of the open location: the root's, a tab's or a container's. */
   parentId: string;
   /**
    * Empty to list the open location. Otherwise the user's search; whether it searches under
@@ -266,6 +284,15 @@ export type HierarchyPickerProps = {
    */
   value?: string | null;
   root: ConfiguratorUIHierarchyRoot;
+  /**
+   * Splits what lies below the root into tabs, the first open at the start. The root is then never
+   * listed, only offered above the tabs when selectable, and the breadcrumb starts at the open tab.
+   * A node's `path` names its tab first; one whose path does not opens in the open tab, with a gap
+   * in the breadcrumb, since where it lies in that tab is unknown. Switching tabs moves to another
+   * location. A new set of tab ids starts the picker afresh, as a new root does. Omit it, or leave
+   * it empty, for a picker without tabs.
+   */
+  tabs?: ConfiguratorUIHierarchyTab[];
   loadItems(request: ConfiguratorUIHierarchyRequest): Promise<ConfiguratorUIHierarchyPage>;
   /**
    * Looks up the node a `value` names, with its `path`, so a value the picker is not showing (a
@@ -288,8 +315,10 @@ export type HierarchyPickerProps = {
    */
   icons?: Record<string, unknown>;
   /**
-   * Shows a search box beside the breadcrumb, named by this text. While in use it takes the
-   * breadcrumb's place and shows this text as its placeholder. Omit it for a picker without search.
+   * Shows a search box, named by this text. Without tabs it sits compact beside the breadcrumb and,
+   * while in use, takes the breadcrumb's place and shows this text as its placeholder. With tabs it
+   * sits beside them, showing this text, and the breadcrumb gives way while a search is entered.
+   * Omit it for a picker without search.
    */
   searchPlaceholder?: string;
   disabled?: boolean;
@@ -355,8 +384,8 @@ export function Autocomplete(_props: AutocompleteProps): unknown {
 
 /**
  * Navigable list for choosing one node of a hierarchy -- the whole hierarchy, a container in it, or a
- * single leaf -- with breadcrumbs, optional search, and paging. As in a file dialog, a choice lasts
- * while it is in view. Provided by the sandbox runtime.
+ * single leaf -- with optional tabs, breadcrumbs, optional search, and paging. As in a file dialog, a
+ * choice lasts while it is in view. Provided by the sandbox runtime.
  */
 export function HierarchyPicker(_props: HierarchyPickerProps): unknown {
   throw new Error("HierarchyPicker is provided by the configurator UI sandbox runtime.");
