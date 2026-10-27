@@ -168,6 +168,21 @@ describe("adding a list item", () => {
     expect(unknown.sent).toEqual([]);
   });
 
+  it("undoes adding an item only while it is still as created, since later edits were never part of the action", async () => {
+    const { host } = harness([{ status: 201, body: { id: "9", eTag: '"e1"', fields: { Title: "Ship it" } } }]);
+    const { action } = await definitions.createListItem.apply(payload, host);
+    expect(action).toMatchObject({ createdId: "9", createdETag: '"e1"' });
+    const same = harness([{ status: 200, body: { id: "9", eTag: '"e1"' } }, { status: 204 }]);
+    expect(await revert({ kind: "createListItem", payload: action }, same.host)).toBeUndefined();
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "DELETE"]);
+    const edited = harness([{ status: 200, body: { id: "9", "@odata.etag": '"e2"' } }]);
+    expect(await revert({ kind: "createListItem", payload: action }, edited.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/changed since it was created/) });
+    expect(edited.sent.map(request => request.method)).toEqual(["GET"]);
+    const unknown = harness([]);
+    expect(await revert({ kind: "createListItem", payload: { ...action, createdETag: undefined } }, unknown.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/which version/) });
+    expect(unknown.sent).toEqual([]);
+  });
+
   it("won't add the item again when SharePoint's answer to adding it was lost, since nothing would find the first", async () => {
     const { host } = harness([{ status: -1 }]);
     await expect(definitions.createListItem.apply(payload, host)).rejects.toBeInstanceOf(ActionOutcomeUnknownError);
@@ -270,6 +285,21 @@ describe("updating cells", () => {
     expect(action).toMatchObject({ previousVersionId: "3.0" });
   });
 
+  it("undoes a write over what Excel made of it, since a date typed as text comes back a number and a formula uppercased", async () => {
+    const typed = { ...payload, values: [["=sum(b3:b9)", "2026-01-02"]] };
+    const { host } = harness([{ status: 200, body: item("NOTES") }, versions, { status: 200, body: { formulas: [["=SUM(B3:B9)", 46024]] } }]);
+    const { action } = await definitions.updateCells.apply(typed, host);
+    expect(action.applied).toEqual([["=SUM(B3:B9)", 46024]]);
+    const same = harness([{ status: 200, body: { formulas: [["=SUM(B3:B9)", 46024]] } }, { status: 200, body: {} }]);
+    expect(await revert({ kind: "updateCells", payload: action }, same.host)).toBeUndefined();
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "PATCH"]);
+    const changed = harness([{ status: 200, body: { formulas: [["=SUM(B3:B10)", 46024]] } }]);
+    expect(await revert({ kind: "updateCells", payload: action }, changed.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/has changed since this edit/) });
+    // Excel answering in another shape leaves the write as proposed to compare against.
+    const odd = harness([{ status: 200, body: item("NOTES") }, versions, { status: 200, body: { formulas: [["=SUM(B3:B9)"]] } }]);
+    expect((await definitions.updateCells.apply(typed, odd.host)).action.applied).toBeUndefined();
+  });
+
   it("fails finally when the workbook's tag moved", async () => {
     const { host, sent } = harness([{ status: 200, body: item("NOTES", { cTag: `"c:{NOTES},3"` }) }]);
     await expect(definitions.updateCells.apply(payload, host)).rejects.toThrow(/changed after this was proposed/);
@@ -319,6 +349,15 @@ describe("copying", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await expect(applied).rejects.toThrow(ActionOutcomeUnknownError);
     expect(definitions.copyFile.claimBeforeApply).toBe(true);
+  });
+
+  it("finds a finished copy by its name when SharePoint says it finished without saying where", async () => {
+    const { host, sent } = harness([named("notes.txt"), started, { status: 200, body: { status: "completed" } }, { status: 200, body: { id: "COPY" } }]);
+    vi.useFakeTimers();
+    const applied = definitions.copyFile.apply(payload, host);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect((await applied).action).toMatchObject({ createdId: "COPY" });
+    expect(sent[3]).toMatchObject({ method: "GET", path: expect.stringContaining(`/drives/${DRIVE}/items/ARCHIVE:/notes%20(copy).txt`) });
   });
 
   it("treats a progress check that fails after SharePoint accepted the copy as an unknown outcome, not a failure to retry", async () => {

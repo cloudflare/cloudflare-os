@@ -920,8 +920,14 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
         if (typeof still === "string") return { message: still, canRetry: false };
         messages = still;
       }
-      // Back where each came from: proved covered now, as a chosen destination is when applying.
-      const origins = [...new Set(messages.map(message => message.folderId))].map(folder => ({ folder }));
+      // Back where each came from, which may have been a folder still to be created when this was
+      // proposed; created by now, since the move into it applied before this one. Proved covered
+      // now, as a chosen destination is when applying.
+      const origin = (message: { folderId: string }) => host.refs.resolve(message.folderId);
+      if (messages.some(message => isProvisional(origin(message)))) {
+        return { message: "The folder a message came from was never created, so nothing was put back.", canRetry: false };
+      }
+      const origins = [...new Set(messages.map(origin))].map(folder => ({ folder }));
       for (const check of origins) {
         const left = await leftBinding(host, check);
         if (left !== undefined) return left;
@@ -929,7 +935,7 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
       await host.graph(async api => {
         const box = mail(api, payload.mailbox);
         for (const message of messages) {
-          await box.request("POST", `/messages/${idPath(message.id)}/move`, { destinationId: message.folderId }).catch(error => {
+          await box.request("POST", `/messages/${idPath(message.id)}/move`, { destinationId: origin(message) }).catch(error => {
             if (!(error instanceof GraphApiError && error.status === 404)) throw error;
           });
         }

@@ -763,13 +763,18 @@ describe("reading new mail by cursor", () => {
     await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
     await run();
     expect(delivered.length).toBeGreaterThan(0);
-    expect(watch().continueAt).toContain("%24skip=250");
-    for (let alarms = 0; alarms < 40 && delivered.length < messages.length; alarms++) await run();
-    expect(delivered.toSorted()).toEqual(messages.map(message => message.id));
+    // Cut short after 250: it goes on from when the 250th was received, by time rather than by
+    // Graph's offset page, so the triage that filed the first ones out of the folder in between
+    // doesn't shift what the next read returns.
+    expect(watch().continueAt).toBe(messages[249]!.receivedDateTime);
+    const all = messages.map(message => message.id);
+    messages.splice(0, 40);
+    for (let alarms = 0; alarms < 40 && delivered.length < all.length; alarms++) await run();
+    expect(delivered.toSorted()).toEqual(all);
     expect(watch().continueAt).toBeUndefined();
-    // The continuation read one page past the cut, not the first five again.
-    expect(reads.filter(search => search.includes("%24skip=250"))).toHaveLength(1);
-    expect(reads.filter(search => !search.includes("%24skip="))).toHaveLength(1);
+    // The continuation started a read at the cut, not the first five pages again; the 250th message, read twice, was delivered once.
+    expect(reads.filter(search => !search.includes("%24skip=")).map(search => new URLSearchParams(search).get("$filter")))
+      .toEqual([expect.stringContaining("receivedDateTime ge "), `receivedDateTime ge ${messages[249 - 40]!.receivedDateTime}`]);
   });
 });
 
@@ -918,7 +923,7 @@ describe("organizing at apply", () => {
     const api = new GraphApi("t", { fetch: fetch as typeof globalThis.fetch });
     const inScope = vi.fn(async (_check: { messages?: readonly string[]; folder?: string }) => {});
     const actionHost = {
-      refs: { requireResolved: (id: string) => id, bind: () => {} },
+      refs: { requireResolved: (id: string) => id, resolve: (id: string) => (id === "~3" ? "VENDORS" : id), bind: () => {} },
       graph: async <T>(op: (graph: GraphApi) => Promise<T>) => await op(api),
       invalidate: async () => {},
       inScope,
@@ -975,6 +980,15 @@ describe("organizing at apply", () => {
     left.inScope.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new ActionApplyError("That folder is no longer one this connection covers, so nothing was changed."));
     expect(await revert(applied, left.host)).toEqual({ message: expect.stringMatching(/no longer one this connection covers/), canRetry: false });
     expect(left.calls).toEqual([]);
+    // A message moved on from a folder that was still to be created when this move was proposed goes back to that folder as created.
+    const fromNew: OutlookAction = { kind: "moveMessages", payload: { mailbox: ME, messages: [{ ...target("m1"), folderId: "~3" }], as: "move", to: { id: "archive", name: "Archive", path: "Archive" }, submittedAt: 0, appliedAt: 1 } };
+    const created = host([json({})]);
+    expect(await revert(fromNew, created.host)).toBeUndefined();
+    expect(created.inScope.mock.calls.map(([check]) => check)).toEqual([{ messages: ["m1"] }, { folder: "VENDORS" }]);
+    expect(created.bodies).toEqual([{ destinationId: "VENDORS" }]);
+    const never = host([]);
+    expect(await revert({ kind: "moveMessages", payload: { ...fromNew.payload, messages: [{ ...target("m1"), folderId: "~9" }] } }, never.host)).toEqual({ message: expect.stringMatching(/never created/), canRetry: false });
+    expect(never.calls).toEqual([]);
     const update: OutlookAction = { kind: "updateMessages", payload: { mailbox: ME, messages: [{ ...target("m1"), before: state() }], change: { isRead: false }, submittedAt: 0, appliedAt: 1 } };
     const gone = host([]);
     gone.inScope.mockRejectedValueOnce(new ActionApplyError("gone"));

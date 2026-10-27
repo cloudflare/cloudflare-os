@@ -142,6 +142,8 @@ export type SharePointActions = {
     labels: Record<string, string>;
     submittedAt: number;
     createdId?: string;
+    /** The item's tag as created: its undo deletes it only while it is still that version. */
+    createdETag?: string;
     appliedAt?: number;
   };
   updateListItem: {
@@ -169,6 +171,12 @@ export type SharePointActions = {
     values: CellValue[][];
     /** The range's formulas (or values) when the change was proposed, for the approver. */
     before: CellValue[][];
+    /**
+     * The range's formulas as Excel holds them once written, which differ from `values` wherever it
+     * read something into them (a date typed as text becomes its serial number, a formula is
+     * uppercased, "50%" becomes 0.5): what an undo must still find there.
+     */
+    applied?: CellValue[][];
     ifMatch?: string;
     previousVersionId?: string;
     submittedAt: number;
@@ -268,13 +276,21 @@ const COPY_WAIT_MS = 45_000;
  * whose progress can't be read, is an unknown outcome, not a failure: SharePoint has accepted the
  * copy, which lands regardless, so a replay would make a second one.
  */
-async function awaitCopy(host: SharePointActionHost, monitor: string): Promise<string> {
+async function awaitCopy(host: SharePointActionHost, monitor: string, landing: ItemRef & { name: string }): Promise<string> {
   const deadline = Date.now() + COPY_WAIT_MS;
   for (let wait = 500; ; wait = Math.min(wait * 2, 4_000)) {
     let progress: Awaited<ReturnType<GraphApi["copyProgress"]>>;
     try {
       progress = await host.graph(api => api.copyProgress(monitor), { replayable: true });
+      // Finished without saying where: the copy is under its name in the folder it went to.
+      if (progress.status === "completed" && !progress.resourceId) {
+        const found = await host.graph(api => api.find<{ id?: unknown }>(`/drives/${landing.driveId}/items/${landing.itemId}:/${pathSegment(landing.name)}`,
+          { query: { $select: "id" } }), { replayable: true });
+        if (typeof found?.id === "string") return found.id;
+        throw new ActionOutcomeUnknownError("SharePoint says the copy finished, but it couldn't be found in the folder. Check there before asking for it again.");
+      }
     } catch (error) {
+      if (error instanceof ActionOutcomeUnknownError) throw error;
       throw new ActionOutcomeUnknownError("SharePoint accepted the copy, but whether it has finished couldn't be checked. It will appear " +
         "in the folder when the copy finishes; check there before asking for it again.", { cause: error });
     }
@@ -707,6 +723,7 @@ export const definitions = {
       const { driveId, itemId } = payload.target.ref;
       await requireInScope(host, payload.target.ref, "The workbook");
       let previousVersionId: string | undefined;
+      let applied: CellValue[][] | undefined;
       try {
         // The workbook API has no If-Match, so the fence is checked just before the write. It is the
         // content tag a read saw, or the eTag an agent passed as `ifUnchanged`, as Graph's If-Match takes either.
@@ -718,14 +735,15 @@ export const definitions = {
         previousVersionId = await host.graph(async api => parsePage(
           await api.get<unknown>(`/drives/${driveId}/items/${itemId}/versions`, { query: { $top: 1 } }),
           parseVersion, "version").items[0]?.id, { replayable: true });
-        await host.graph(api => api.request("PATCH",
+        const written = await host.graph(api => api.request<{ formulas?: unknown }>("PATCH",
           `/drives/${driveId}/items/${itemId}/workbook/worksheets/${encodeURIComponent(payload.sheetId)}/range(address='${payload.address}')`, {
             body: { formulas: payload.values.map(row => row.map(value => value ?? "")) },
           }));
+        applied = cellGrid(written?.formulas, payload.values);
       } catch (error) {
         refusal(error, "The workbook");
       }
-      return { action: { ...payload, ...(previousVersionId ? { previousVersionId } : {}), appliedAt: Date.now() } };
+      return { action: { ...payload, ...(applied ? { applied } : {}), ...(previousVersionId ? { previousVersionId } : {}), appliedAt: Date.now() } };
     },
   },
 
@@ -766,7 +784,7 @@ export const definitions = {
         const monitor = await host.graph(api => api.startCopy(`/drives/${driveId}/items/${itemId}/copy`,
           { parentReference: { driveId: parent.driveId, id: parent.itemId }, name: payload.name },
           { "@microsoft.graph.conflictBehavior": "fail" }));
-        createdId = await awaitCopy(host, monitor);
+        createdId = await awaitCopy(host, monitor, { driveId: parent.driveId, itemId: parent.itemId, name: payload.name });
       } catch (error) {
         refusal(error, "The file");
       }
@@ -793,17 +811,17 @@ export const definitions = {
     },
     provides: payload => [payload.ref],
     apply: async (payload, host) => {
-      let id: string;
+      let created: { id: string; eTag?: string };
       try {
-        id = await host.graph(async api => parseListItem(await api.request<unknown>("POST",
-          `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items`, { body: { fields: payload.fields } })).id);
+        created = await host.graph(async api => listItemTag(await api.request<unknown>("POST",
+          `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items`, { body: { fields: payload.fields } })));
       } catch (error) {
         // Nothing identifies the row for a retry to find, so one that may have been added isn't added again.
         if (isOutcomeUnknown(error)) throw new ActionOutcomeUnknownError("SharePoint may have added the item before the connection dropped. Check the list before trying again.");
         refusal(error, "The list");
       }
-      host.refs.bind(payload.ref, id);
-      return { action: { ...payload, createdId: id, appliedAt: Date.now() } };
+      host.refs.bind(payload.ref, created.id);
+      return { action: { ...payload, createdId: created.id, ...(created.eTag ? { createdETag: created.eTag } : {}), appliedAt: Date.now() } };
     },
   },
 
@@ -882,6 +900,25 @@ export const actions = defineActions<SharePointActionHost, SharePointActions>(de
 
 /** The outcome `revertAction` reports. */
 export type RevertOutcome = void | { message?: string; canRetry?: boolean; restart?: boolean };
+
+/** A list item's ID and tag, the latter from whichever of its two spellings Graph sent. */
+function listItemTag(body: unknown): { id: string; eTag?: string } {
+  const item = parseListItem(body);
+  const annotated = (body as Record<string, unknown>)["@odata.etag"];
+  const eTag = item.eTag ?? (typeof annotated === "string" ? annotated : undefined);
+  return { id: item.id, ...(eTag ? { eTag } : {}) };
+}
+
+/** `formulas` as Excel returned them for a write of `values`, when it returned a grid of the same shape. */
+function cellGrid(formulas: unknown, values: CellValue[][]): CellValue[][] | undefined {
+  if (!Array.isArray(formulas) || formulas.length !== values.length) return undefined;
+  const grid: CellValue[][] = [];
+  for (const [index, row] of formulas.entries()) {
+    if (!Array.isArray(row) || row.length !== values[index]!.length) return undefined;
+    grid.push(row.map(cell => cell === null || typeof cell === "string" || typeof cell === "number" || typeof cell === "boolean" ? cell : String(cell)));
+  }
+  return grid;
+}
 
 /** A file's current content tag, or undefined when Graph doesn't give one. */
 async function contentTag(host: SharePointActionHost, ref: ItemRef): Promise<string | undefined> {
@@ -1000,7 +1037,7 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       if (left) return left;
       const range = `/drives/${driveId}/items/${itemId}/workbook/worksheets/${encodeURIComponent(payload.sheetId)}/range(address='${payload.address}')`;
       const current = await host.graph(api => api.get<{ formulas?: unknown }>(range, { query: { $select: "formulas" } }), { replayable: true });
-      const written = payload.values.map(row => row.map(value => cellText(value)));
+      const written = (payload.applied ?? payload.values).map(row => row.map(value => cellText(value)));
       const holds = Array.isArray(current.formulas) && current.formulas.length === written.length
         && current.formulas.every((row, rowIndex) => Array.isArray(row) && row.length === written[rowIndex]!.length
           && row.every((cell, columnIndex) => cellText(cell as CellValue) === written[rowIndex]![columnIndex]));
@@ -1027,8 +1064,17 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
     case "createListItem": {
       const { payload } = action;
       if (payload.createdId === undefined) return { message: "It was never created, so there is nothing to undo.", canRetry: false };
-      await host.graph(api => api.request("DELETE", `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items/${payload.createdId}`,
-        { allow: [404] }), { replayable: true });
+      // Deleted only as created: edited since, its values were never part of this action.
+      if (payload.createdETag === undefined) {
+        return { message: "SharePoint didn't say which version the item was created at, so it wasn't deleted. Delete it in SharePoint if you need to.", canRetry: false };
+      }
+      const path = `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items/${payload.createdId}`;
+      const current = await host.graph(api => api.find<unknown>(path), { replayable: true });
+      if (current === null) return;
+      if (listItemTag(current).eTag !== payload.createdETag) {
+        return { message: "The item has been changed since it was created, so it wasn't deleted. Delete it in SharePoint if you need to.", canRetry: false };
+      }
+      await host.graph(api => api.request("DELETE", path, { allow: [404] }), { replayable: true });
       return;
     }
     case "updateListItem": {
