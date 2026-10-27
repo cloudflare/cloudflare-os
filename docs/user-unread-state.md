@@ -25,8 +25,9 @@ Non-visible records carry the current prefix without incrementing it. Existing r
 preserve their prefix. Visible messages are append-only; deletion removes the whole thread and
 its counts rather than renumbering history.
 
-The workspace extends its existing `nextChatSequences` row with the visible counter and first
-tracked raw position. The counter, stamped record and dirty marker commit synchronously through
+The workspace extends its existing `nextChatSequences` row with the visible counter, first
+tracked raw position and latest visible message's raw position. That last pointer lets fanout read
+the latest preview/time by key without scanning past internal activity. The counter, stamped record and dirty marker commit synchronously through
 the typed-storage write transaction. Raw sequence allocation preserves the visible counter.
 Fanout carries an absolute visible head, so duplicate/older deliveries never increment counts.
 
@@ -47,6 +48,7 @@ Each `chatReadCursors` row contains:
 - `latestVisibleSequence`: latest accepted visible head, monotonic
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
+- `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time
 - `deleted`, only on a deleted thread's tombstone
 
 `notificationOutbox` contains the accepted alerts themselves: stable UUID, kind, bounded chat
@@ -56,8 +58,29 @@ denial flag, new timer or notification backfill process.
 
 Counts and queue headers hydrate from local storage once per User DO lifetime. Snapshot reads
 and subscriptions use that memory, never list threads on other DOs, and never write read rows.
-UI titles/previews and timeline boundaries use the separate authorized workspace metadata path;
-metadata failure does not invalidate badge totals. Native badge replacement uses the existing
+The existing source fanout carries inbox metadata with the count; title changes already dirty the
+same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
+change read horizons. Older rows acquire the projection on their next source update; until then the
+inbox shows a fallback title/preview, without migration or background metadata queries.
+
+Three targeted local queries avoid transferring the full thread state for every consumer:
+
+- `getUnreadThreads()` returns only unread rows, including display metadata, newest first.
+- `getWorkspaceUnreadState(workspaceId)` returns tracked thread horizons/counts for that workspace,
+  including read rows, to merge into the Workspace DO's ordinary thread list. Missing rows are read.
+- `getUnreadSummary()` returns instance totals and nonzero per-workspace rollups, without thread rows.
+
+All three use hydrated local rows, write nothing, and query no other DO.
+`subscribeToUnreadState(scope, subscriber)` requires an explicit scope: `"summary"` sends no
+thread rows, `"unread"` sends only unread rows, and `{workspaceId}` sends read/unread statuses only
+for that workspace. Every scope includes global and per-workspace badge rollups. In-scope changes
+send one thread delta (null removes a now-read inbox row); out-of-scope changes send only rollups.
+Each delta carries just the changed workspace's rollup and global totals, not every workspace.
+Bulk replacements and reconnects retain the same scope, never the full historical thread list.
+The web app uses one subscription, switching its scope with the active view. The inbox refreshes
+its targeted local query on those updates, including title-only updates. Ordinary workspace metadata
+and explicit read-boundary lookups retain their separate authorized workspace path.
+Native badge replacement uses the existing
 versioned `notificationBadge` scalar outbox; its version is not a read-state/source version.
 
 ## Handoff, retries and eviction
@@ -65,7 +88,7 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
 1. The workspace commits the new record, visible counter and `dirtyChats` marker. Its existing
    shared alarm is armed before async dispatch. The marker retains the earliest pending raw event
    and first visible position, including through coalescing and resets.
-2. The workspace reads pending eligibility records once per batch and checks current build
+2. The workspace reads inbox metadata and pending eligibility records once per batch and checks current build
    membership plus previously established observer admission locally. It sends authorized packets
    to the owner and established collaborators in parallel; independent threads also fan out in
    parallel. It does not enroll observers or call external gatekeeper verifiers per message.

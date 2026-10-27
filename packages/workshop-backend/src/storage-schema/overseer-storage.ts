@@ -1612,6 +1612,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         nextSequence: number;
         /** Dense count of messages written since visible-message tracking began; old history is not scanned. */
         visibleThroughSequence?: number;
+        /** Raw position of the latest newly numbered visible message, for constant-time inbox metadata reads. */
+        latestVisibleMessageSequence?: number;
         /** First newly stamped timeline position, so explicit reads never replay pre-rollout alerts. */
         trackingStartSequence?: number;
       }>()({

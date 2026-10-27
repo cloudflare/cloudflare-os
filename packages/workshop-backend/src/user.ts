@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import type { ChatReadReceipt, ChatReadState, ChatTimelineHead, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
+import type { ChatReadReceipt, ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -52,6 +52,8 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
 
 /** Coalesced visible-message progress carried by the workspace's durable handoff. */
 export type ChatMessageProgress = {
+  /** Current inbox metadata. Optional for handoffs from an older source during deployment. */
+  head?: Omit<ChatTimelineHead, "chatId">;
   /** Latest dense visible position; repeated/older deliveries never increment a count. */
   latestVisibleSequence: number;
   /** First new timeline record in this pending batch, for the initial notification boundary. */
@@ -236,7 +238,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #notificationCallsInWindow = 0;
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
-  #unreadSubscribers = new Map<object, RpcStub<UnreadStateSubscriber>>();
+  #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -651,14 +653,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1};
   }
 
-  #storeCursor(cursor: ChatReadCursor): void {
+  #storeCursor(cursor: ChatReadCursor): boolean {
     let old = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
     if (old && old.readThroughSequence === cursor.readThroughSequence &&
         old.readThroughVisibleSequence === cursor.readThroughVisibleSequence &&
         old.latestVisibleSequence === cursor.latestVisibleSequence &&
         old.unreadCount === cursor.unreadCount &&
-        old.notifiedThroughSequence === cursor.notifiedThroughSequence && old.deleted === cursor.deleted) return;
+        old.notifiedThroughSequence === cursor.notifiedThroughSequence && old.deleted === cursor.deleted &&
+        old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
+        old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
+        old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime()) return false;
     this.storage.chatReadCursors.put(cursor);
+    return true;
   }
 
   #workspace(workspaceId: string) {
@@ -690,14 +696,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return {unreadChatCount, unreadMessageCount};
   }
 
-  #unreadSnapshot(): UserUnreadState {
+  #unreadSnapshot(scope: UnreadStateScope, summary = this.#unreadSummary()): UserUnreadState {
     let chats: ChatReadState[] = [];
-    for (let cursor of this.#readCursors.values()) {
-      if (this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted) {
-        chats.push(this.#readState(cursor));
+    if (scope !== "summary") {
+      for (let cursor of this.#readCursors.values()) {
+        if (this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted &&
+            (scope === "unread" ? cursor.unreadCount > 0 : cursor.workspaceId === scope.workspaceId)) {
+          chats.push(this.#readState(cursor));
+        }
       }
     }
-    return {...this.#unreadCounts(), chats};
+    return {...summary, chats};
   }
 
   #readState(cursor: ChatReadCursor): ChatReadState {
@@ -734,7 +743,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           // and its queued alerts, rather than committing the older snapshot over it.
           let current = this.#cursor(workspaceId, chatId);
           let latest = Math.max(current.latestVisibleSequence ?? 0, state.latestVisibleSequence);
-          let updated = {...current, readThroughSequence: through,
+          let updated = {...current, head: current.head ?? state.head, readThroughSequence: through,
             readThroughVisibleSequence: state.readThroughVisibleSequence, latestVisibleSequence: latest,
             unreadCount: latest - state.readThroughVisibleSequence,
             notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : state.notificationBaseline};
@@ -763,9 +772,46 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /** Badge reads use only local rows, including immediately after eviction. */
-  async getUnreadState(): Promise<UserUnreadState> {
-    return this.#unreadSnapshot();
+  /** Local inbox projection; older rows acquire metadata on their next source update. */
+  async getUnreadThreads(): Promise<UnreadThread[]> {
+    return [...this.#readCursors.values()]
+      .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && cursor.unreadCount > 0)
+      .map(cursor => ({...this.#readState(cursor),
+        chatTitle: cursor.head?.chatTitle ?? `Thread ${cursor.chatId}`,
+        latestSequence: cursor.head?.latestSequence ?? -1,
+        latestMessagePreview: cursor.head?.latestMessagePreview,
+        latestActivityAt: cursor.head?.latestActivityAt}))
+      .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0) ||
+        a.chatTitle.localeCompare(b.chatTitle) || a.workspaceId.localeCompare(b.workspaceId) || a.chatId - b.chatId);
+  }
+
+  /** Only tracked private state for this workspace; its ordinary thread list stays source-owned. */
+  async getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]> {
+    if (!this.#hasWorkspace(workspaceId)) return [];
+    return [...this.#readCursors.values()]
+      .filter(cursor => cursor.workspaceId === workspaceId && !cursor.deleted)
+      .map(cursor => this.#readState(cursor));
+  }
+
+  /** Rollups are calculated from the same hydrated rows as live badge updates. */
+  async getUnreadSummary(): Promise<UserUnreadSummary> {
+    return this.#unreadSummary();
+  }
+
+  #unreadSummary(): UserUnreadSummary {
+    let workspaces = new Map<string, WorkspaceUnreadSummary>();
+    let unreadChatCount = 0, unreadMessageCount = 0;
+    for (let cursor of this.#readCursors.values()) {
+      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted || cursor.unreadCount <= 0) continue;
+      unreadChatCount++;
+      unreadMessageCount += cursor.unreadCount;
+      let summary = workspaces.get(cursor.workspaceId) ??
+        {workspaceId: cursor.workspaceId, unreadChatCount: 0, unreadMessageCount: 0};
+      summary.unreadChatCount++;
+      summary.unreadMessageCount += cursor.unreadCount;
+      workspaces.set(cursor.workspaceId, summary);
+    }
+    return {unreadChatCount, unreadMessageCount, workspaces: [...workspaces.values()]};
   }
 
   /** Display metadata follows the workspace's existing authorization and query path. */
@@ -775,16 +821,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.ctx.id.toString(), this.storage.profile.get().id);
   }
 
-  async subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+  async subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
     subscriber = subscriber.dup();
     let token = {};
-    this.#unreadSubscribers.set(token, subscriber);
+    this.#unreadSubscribers.set(token, {scope, subscriber});
     let unsubscribe = () => {
       let existing = this.#unreadSubscribers.get(token);
-      if (existing) { this.#unreadSubscribers.delete(token); existing[Symbol.dispose](); }
+      if (existing) { this.#unreadSubscribers.delete(token); existing.subscriber[Symbol.dispose](); }
     };
     subscriber.onRpcBroken(unsubscribe);
-    this.ctx.waitUntil(subscriber.updated(this.#unreadSnapshot()).catch(unsubscribe));
+    this.ctx.waitUntil(subscriber.updated(this.#unreadSnapshot(scope)).catch(unsubscribe));
     return new RpcStub<{}>({[Symbol.dispose]: unsubscribe});
   }
 
@@ -792,10 +838,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let cursor = workspaceId === undefined || chatId === undefined ? undefined :
       this.#readCursors.get(`${workspaceId}:${chatId}`);
     let chat = cursor && this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted ? this.#readState(cursor) : null;
-    for (let [token, subscriber] of this.#unreadSubscribers) {
-      let update = workspaceId !== undefined && chatId !== undefined
-        ? subscriber.chatUpdated(workspaceId, chatId, chat, this.#unreadCounts())
-        : subscriber.updated(this.#unreadSnapshot());
+    if (!this.#unreadSubscribers.size) return;
+    let summary = this.#unreadSummary();
+    let change = workspaceId === undefined || chatId === undefined ? undefined : {workspaceId, chatId,
+      summary: {unreadChatCount: summary.unreadChatCount, unreadMessageCount: summary.unreadMessageCount,
+        workspace: summary.workspaces.find(workspace => workspace.workspaceId === workspaceId) ??
+          {workspaceId, unreadChatCount: 0, unreadMessageCount: 0}}};
+    for (let [token, {scope, subscriber}] of this.#unreadSubscribers) {
+      let update: Promise<void>;
+      if (!change) {
+        update = subscriber.updated(this.#unreadSnapshot(scope, summary));
+      } else if (scope === "summary" || (scope !== "unread" && scope.workspaceId !== change.workspaceId)) {
+        update = subscriber.summaryUpdated(change.summary);
+      } else {
+        update = subscriber.chatUpdated(change.workspaceId, change.chatId,
+          scope === "unread" && !chat?.unreadMessageCount ? null : chat, change.summary);
+      }
       this.ctx.waitUntil(update.catch(() => {
         this.#unreadSubscribers.delete(token);
         subscriber[Symbol.dispose]();
@@ -812,7 +870,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (cursor.deleted) return;
     // Metadata changes don't enroll history. Wait for a new message or an explicit command.
     if (progress.firstMessageSequence === undefined && !this.#readCursors.has(key)) return;
-    let previous = cursor;
     let readThroughVisibleSequence = cursor.readThroughVisibleSequence;
     if (readThroughVisibleSequence === undefined) {
       readThroughVisibleSequence = (progress.firstVisibleSequence ?? progress.latestVisibleSequence + 1) - 1;
@@ -823,20 +880,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           (progress.firstMessageSequence ?? 0) - 1};
     }
     let latest = Math.max(cursor.latestVisibleSequence ?? 0, progress.latestVisibleSequence);
-    cursor = {...cursor, latestVisibleSequence: latest,
+    let head = progress.head && progress.head.latestSequence >= (cursor.head?.latestSequence ?? -1)
+      ? progress.head : cursor.head;
+    cursor = {...cursor, head, latestVisibleSequence: latest,
       unreadCount: latest - readThroughVisibleSequence};
-    this.ctx.storage.transactionSync(() => {
-      this.#storeCursor(cursor);
+    let changed = this.ctx.storage.transactionSync(() => {
+      let stored = this.#storeCursor(cursor);
       for (let event of progress.notifications) {
         let eventKey = `${workspaceId}:${chatKey(chatId, event.sequence)}`;
         if (event.sequence > cursor.notifiedThroughSequence && !this.storage.notificationOutbox.get(eventKey)) {
           this.storage.notificationOutbox.put({...event, workspaceId, chatId});
         }
       }
+      return stored;
     });
-    if (previous.unreadCount !== cursor.unreadCount || previous.readThroughSequence !== cursor.readThroughSequence) {
-      this.#unreadChanged(workspaceId, chatId);
-    }
+    if (changed) this.#unreadChanged(workspaceId, chatId);
     await this.#armExpirySweep();
     if (this.#notificationChats.has(key)) {
       this.ctx.waitUntil(this.#processChat(workspaceId, chatId).catch(error => {
@@ -974,7 +1032,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
-      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence" | "readThroughVisibleSequence">[]
+      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence" | "readThroughVisibleSequence" | "head">[]
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
@@ -1010,13 +1068,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           let visible = baseline.readThroughVisibleSequence ?? 0;
           if (!cursor || cursor.readThroughVisibleSequence === undefined) {
             this.#storeCursor({workspaceId, chatId: baseline.chatId,
+              head: baseline.head,
               readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
               latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
             changed = true;
-          } else if (visible > (cursor.latestVisibleSequence ?? 0)) {
-            this.#storeCursor({...cursor, latestVisibleSequence: visible,
-              unreadCount: visible - cursor.readThroughVisibleSequence});
-            changed = true;
+          } else {
+            let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
+            let head = baseline.head && baseline.head.latestSequence >= (cursor.head?.latestSequence ?? -1)
+              ? baseline.head : cursor.head;
+            changed = this.#storeCursor({...cursor, head, latestVisibleSequence: latest,
+              unreadCount: latest - cursor.readThroughVisibleSequence}) || changed;
           }
         }
       });

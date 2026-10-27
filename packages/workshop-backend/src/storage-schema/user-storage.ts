@@ -7,7 +7,7 @@
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId, UserNotification,
+  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -132,6 +132,8 @@ export type ChatReadCursor = {
   latestVisibleSequence?: number;
   unreadCount: number;
   notifiedThroughSequence: number;
+  /** Source-owned inbox metadata, copied through the same durable message/title fanout. */
+  head?: Omit<ChatTimelineHead, "chatId">;
   /** Reject delayed pre-deletion handoffs. Chat IDs are never reused. */
   deleted?: true;
 };

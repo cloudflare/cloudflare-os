@@ -1179,6 +1179,7 @@ class OverseerImpl implements AgentHooks {
           }
         }
         let meta = this.storage.chatMeta.get(chatId);
+        let head = this.chatHead(chatId, false);
         let latestVisibleSequence = this.storage.nextChatSequences.get(chatId)?.visibleThroughSequence ?? 0;
         // Read this pending batch once, not all historical candidates once per recipient.
         let firstMessage = [...targets.values()].reduce((earliest, start) =>
@@ -1192,7 +1193,7 @@ class OverseerImpl implements AgentHooks {
           // recipient; retries need neither a source read nor a new authorization decision.
           if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!)) return;
           await this.users.get(this.users.idFromString(userId)).messageArrived(
-            this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence,
+            this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence, head,
               notifications: notifications.filter(event => event.userId === userId &&
                 start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
                 .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null);
@@ -1235,10 +1236,15 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  chatHead(chatId: number): ChatTimelineHead | undefined {
+  chatHead(chatId: number, includeHistory = true): ChatTimelineHead | undefined {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
-    for (let message of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
+    let latest = this.storage.nextChatSequences.get(chatId)?.latestVisibleMessageSequence;
+    let message = latest === undefined ? undefined : this.storage.chats.get(chatKey(chatId, latest));
+    // Inbox fanout tracks newly numbered messages only, so it never needs a legacy tail scan.
+    let candidates = message ? [message] : includeHistory ?
+      this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true}) : [];
+    for (let message of candidates) {
       if (!isCountableChatMessage(message)) continue;
       return {chatId, chatTitle: meta.title, latestSequence: message.sequence,
         latestActivityAt: message.timestamp,
@@ -1272,6 +1278,7 @@ class OverseerImpl implements AgentHooks {
       if (isCountableChatMessage(message)) visible++;
       if (counter.trackingStartSequence === undefined || visible !== counter.visibleThroughSequence) {
         this.storage.nextChatSequences.put({...counter, visibleThroughSequence: visible,
+          latestVisibleMessageSequence: isCountableChatMessage(message) ? message.sequence : counter.latestVisibleMessageSequence,
           trackingStartSequence: counter.trackingStartSequence ?? message.sequence});
       }
       message.visibleThroughSequence = visible;
@@ -10859,6 +10866,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let counter = this.impl.storage.nextChatSequences.get(chatId);
     return {readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
       latestVisibleSequence: counter?.visibleThroughSequence ?? 0, timelineTailSequence: tail,
+      head: this.impl.chatHead(chatId, false),
       notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1};
   }
 
@@ -10978,6 +10986,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // subsequent arrivals fan out normally once the User DO has recorded the listing.
       let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
+        head: this.impl.chatHead(meta.id, false),
         readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
       void (async () => {

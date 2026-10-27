@@ -233,7 +233,7 @@ export type ChatReadState = {
   readThroughSequence: number;
 };
 
-/** Display metadata read directly from a workspace, independently of private unread state. */
+/** Display metadata for a thread's latest visible message, independent of private read horizons. */
 export type ChatTimelineHead = {
   /** Thread identifier, scoped to the workspace. */
   chatId: number;
@@ -247,29 +247,62 @@ export type ChatTimelineHead = {
   latestActivityAt?: Date;
 };
 
+/** An unread inbox row, served entirely from the user's local thread projection. */
+export type UnreadThread = ChatReadState & ChatTimelineHead;
+
+/** Locally calculated counts for one workspace; omitted from rollups when fully read. */
+export type WorkspaceUnreadSummary = {
+  /** Workspace containing the unread threads. */
+  workspaceId: string;
+  /** Number of threads with unread visible messages. */
+  unreadChatCount: number;
+  /** Total unread visible messages in this workspace. */
+  unreadMessageCount: number;
+};
+
+/** Instance-wide and per-workspace badge totals, without individual thread rows. */
+export type UserUnreadSummary = {
+  /** Number of threads with unread visible messages across all listed workspaces. */
+  unreadChatCount: number;
+  /** Total unread visible messages across all listed workspaces. */
+  unreadMessageCount: number;
+  /** Nonzero workspace totals; an absent workspace has no unread messages. */
+  workspaces: WorkspaceUnreadSummary[];
+};
+
+/** Global totals and only the changed workspace's rollup, keeping live updates bounded. */
+export type UnreadSummaryUpdate = Pick<UserUnreadSummary, "unreadChatCount" | "unreadMessageCount"> & {
+  /** Replace this workspace's counts; zero removes it from the nonzero rollup list. */
+  workspace: WorkspaceUnreadSummary;
+};
+
 /** An observed read boundary for a single-thread or bulk mark-read command. */
 export type ChatReadReceipt = Pick<ChatReadState, "workspaceId" | "chatId"> & {
   /** Highest observed sequence to mark read; later activity stays unread. */
   throughSequence: number;
 };
 
-/** Authoritative unread state for one user on one CFOS instance, shared across their devices. */
-export type UserUnreadState = {
-  /** Number of the user's threads with at least one unread visible message. */
-  unreadChatCount: number;
-  /** Total unread visible messages, calculated from the user's locally cached per-thread counts. */
-  unreadMessageCount: number;
-  /** All tracked private thread rows, including read threads; replaces the previous snapshot. */
+/** The thread rows a live unread subscription needs; no scope exposes all historical threads. */
+export type UnreadStateScope = "summary" | "unread" | {
+  /** Include read and unread thread statuses only for this workspace. */
+  workspaceId: string;
+};
+
+/** Global badge rollups plus only the thread rows requested by a subscription's scope. */
+export type UserUnreadState = UserUnreadSummary & {
+  /** Scoped thread rows: none for summary, unread-only for inbox, or one workspace's statuses. */
   chats: ChatReadState[];
 };
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
 export interface UnreadStateSubscriber extends RpcTarget {
-  /** Receive the initial snapshot, or a replacement when a workspace leaves the user's list. */
+  /** Receive the scoped initial snapshot, or a replacement after a bulk change. */
   updated(state: UserUnreadState): Promise<void>;
-  /** Replace one thread (null removes it), together with the user's current aggregate counts. */
+  /** Update global/workspace rollups without sending thread rows outside the requested scope. */
+  summaryUpdated(summary: UnreadSummaryUpdate): Promise<void>;
+  /** Replace one in-scope thread (null removes it), together with current badge rollups. */
   chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
-    counts: Pick<UserUnreadState, "unreadChatCount" | "unreadMessageCount">): Promise<void>;
+    summary: UnreadSummaryUpdate): Promise<void>;
 }
 
 /**
@@ -607,18 +640,25 @@ export interface AuthenticatedApi extends RpcTarget {
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Fetch private horizons and counts from local User DO rows, without querying workspaces. */
-  getUnreadState(): Promise<UserUnreadState>;
+  /** Fetch unread inbox rows, newest first, including locally copied titles and previews. No workspace reads. */
+  getUnreadThreads(): Promise<UnreadThread[]>;
+
+  /** Fetch tracked thread horizons/counts for one workspace to merge with its thread list. Missing rows are read. */
+  getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]>;
+
+  /** Fetch instance and workspace badge rollups without transferring individual thread rows or querying workspaces. */
+  getUnreadSummary(): Promise<UserUnreadSummary>;
 
   /** Query a workspace's thread metadata for display or an observed read boundary; null if access is denied. */
   getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null>;
 
   /**
-   * Subscribe while visible to an immediate snapshot and subsequent unread-state changes.
+   * Subscribe to badge rollups and explicitly scoped thread rows, never all thread history.
+   * Use summary for global indicators, unread for the inbox, or a workspace ID for its thread list.
    * Dispose when hidden; re-subscribe after visibility changes or disconnect/reset.
    * Receiving state never marks messages read or acknowledges alerts.
    */
-  subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
+  subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
 
   /** Advance to the requested boundary without moving an already-later read horizon backward. */
   markChatRead(receipt: ChatReadReceipt): Promise<void>;
