@@ -29,7 +29,7 @@ agent as though already made while it waits, so the agent keeps working.
      `People.Read` and `User.ReadBasic.All` (or the `Calendars.Read` variants for a `read`
      deployment). Without the `.Shared` permission and `User.ReadBasic.All`, only the user's own
      calendars can be connected.
-4. Select **Grant admin consent for <organization>**. Many organizations stop users from consenting
+4. Select **Grant admin consent for `<organization>`**. Many organizations stop users from consenting
    to these permissions themselves. In that case the connect flow shows an admin-consent page with a
    link an administrator can open.
 5. Under **Certificates & secrets**, create a client secret. Connections stop refreshing once it
@@ -204,7 +204,7 @@ told what it will lose, such as "3 images" or "comments". To change part of a fi
 place, and everything else is kept:
 
 - `editDocument` makes find/replace, insert and delete-paragraph edits to a `.docx`. By default it
-  records them as tracked changes for the owner to accept in Word, authored "<owner> (agent)".
+  records them as tracked changes for the owner to accept in Word, authored `<owner> (agent)`.
 - `editPresentation` makes find/replace, add-slides and delete-slide edits to a `.pptx`.
 - `updateCells` sets a range through Excel's own workbook API, so every other cell, format, chart
   and sheet is untouched.

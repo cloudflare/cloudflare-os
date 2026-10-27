@@ -89,23 +89,34 @@ export function checkShape(range: CellRange, values: readonly (readonly CellValu
 
 /**
  * A worksheet read with pending cell changes applied, as Excel will show it once they are
- * approved. A change outside the range read grows it. A formula is shown as its text in `values`
- * too, since nothing has computed it yet.
+ * approved. A change outside the range read grows it, within `maxCells`: one that would grow it
+ * past the read's budget is left out and the sheet reported truncated, as a used range too large
+ * to read is, so a change far from the rest can't make a read allocate the gap. A formula is shown
+ * as its text in `values` too, since nothing has computed it yet.
  */
-export function withPendingCells(sheet: WorksheetContent, changes: readonly { address: string; values: CellValue[][] }[]): WorksheetContent {
+export function withPendingCells(sheet: WorksheetContent, changes: readonly { address: string; values: CellValue[][] }[], maxCells = Infinity): WorksheetContent {
   if (changes.length === 0) return sheet;
   const bang = sheet.address.lastIndexOf("!");
   const prefix = bang >= 0 ? sheet.address.slice(0, bang + 1) : "";
   const read = sheet.values.length === 0 ? undefined : parseRange(sheet.address.slice(bang + 1));
   let range = read;
+  let truncated = sheet.truncated;
+  const shown: { address: string; values: CellValue[][] }[] = [];
   for (const change of changes) {
     const changed = parseRange(change.address);
-    range = range === undefined ? changed : {
+    const union = range === undefined ? changed : {
       firstRow: Math.min(range.firstRow, changed.firstRow), firstColumn: Math.min(range.firstColumn, changed.firstColumn),
       lastRow: Math.max(range.lastRow, changed.lastRow), lastColumn: Math.max(range.lastColumn, changed.lastColumn),
     };
+    if (rangeRows(union) * rangeColumns(union) > maxCells) {
+      truncated = true;
+      continue;
+    }
+    range = union;
+    shown.push(change);
   }
-  const grown = range!;
+  if (range === undefined) return { ...sheet, truncated };
+  const grown = range;
   const grid = (source: CellValue[][]): CellValue[][] => Array.from({ length: rangeRows(grown) }, (_, row) =>
     Array.from({ length: rangeColumns(grown) }, (_, column) => {
       if (read === undefined) return null;
@@ -115,7 +126,7 @@ export function withPendingCells(sheet: WorksheetContent, changes: readonly { ad
     }));
   const values = grid(sheet.values);
   const formulas = grid(sheet.formulas);
-  for (const change of changes) {
+  for (const change of shown) {
     const changed = parseRange(change.address);
     change.values.forEach((row, rowOffset) => row.forEach((value, columnOffset) => {
       const r = changed.firstRow + rowOffset - grown.firstRow;
@@ -124,5 +135,5 @@ export function withPendingCells(sheet: WorksheetContent, changes: readonly { ad
       formulas[r]![c] = value;
     }));
   }
-  return { ...sheet, address: prefix + formatRange(grown), values, formulas };
+  return { ...sheet, address: prefix + formatRange(grown), values, formulas, truncated };
 }

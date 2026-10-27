@@ -328,7 +328,8 @@ function checkCell(value: CellValue, at: string): void {
   if (typeof value === "number" && !Number.isFinite(value)) throw new Error(`${at}: ${value} isn't a number Excel can hold.`);
   if (typeof value !== "string") return;
   if (value.length > MAX_CELL_CHARS) throw new Error(`${at}: a cell can hold at most ${MAX_CELL_CHARS.toLocaleString("en-US")} characters.`);
-  if (value.startsWith("=")) {
+  // Excel reads a string starting with "=", "+" or "-" as a formula, so each is checked as one.
+  if (/^[=+-]/.test(value)) {
     try {
       checkFormula(value);
     } catch (error) {
@@ -834,7 +835,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     // Pending cell changes, shown as made, as every read shows what awaits approval.
     const cells = overlay.pendingCells(id);
     const worksheets = sheets.worksheets.map(sheet =>
-      withPendingCells(sheet, cells.filter(change => change.worksheet.toLowerCase() === sheet.name.toLowerCase())));
+      withPendingCells(sheet, cells.filter(change => change.worksheet.toLowerCase() === sheet.name.toLowerCase()), maxCells));
     await this.ctx.observe("Read a SharePoint workbook", `Read ${sheets.worksheets.length} worksheet${sheets.worksheets.length === 1 ? "" : "s"} of ${md(entry.path || entry.name)}.`,
       units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
     return { entry, worksheets, otherWorksheets: sheets.otherWorksheets };
