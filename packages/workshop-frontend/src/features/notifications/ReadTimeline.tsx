@@ -51,6 +51,7 @@ export const ReadTimeline = ({
   type LocalAction = {
     previousAction?: LocalAction;
     failed?: boolean;
+    readSucceeded?: boolean;
     rollback: {visit: typeof visit; jump: number; target?: number; requestedPage?: number};
   };
   const localUnreadRequests = useRef<(LocalAction & {
@@ -74,11 +75,16 @@ export const ReadTimeline = ({
     while (action.previousAction?.failed) action = action.previousAction;
     latestAction.current = action.previousAction;
     const previous = action.rollback;
-    setVisit(current => previous.visit && {...previous.visit, horizon: current?.horizon ?? previous.visit.horizon});
-    jumpSequence.current = previous.target;
-    requestedPage.current = previous.requestedPage;
-    onUnreadNavigation(!!previous.jump);
-    setJump(previous.jump);
+    // An earlier read can succeed while its successor is pending. Its resume effect is part
+    // of the baseline even though it could not override the successor's optimistic visit.
+    const resumed = action.previousAction?.readSucceeded;
+    setVisit(current => previous.visit && {...previous.visit,
+      horizon: current?.horizon ?? previous.visit.horizon,
+      paused: resumed ? false : previous.visit.paused});
+    jumpSequence.current = resumed ? undefined : previous.target;
+    requestedPage.current = resumed ? undefined : previous.requestedPage;
+    onUnreadNavigation(!resumed && !!previous.jump);
+    setJump(resumed ? 0 : previous.jump);
   };
 
   useLayoutEffect(() => {
@@ -102,9 +108,12 @@ export const ReadTimeline = ({
         !request.acknowledgedSnapshot || request.acknowledgedSnapshot === chat);
     }
     if (!visit || chat.readThroughSequence < visit.horizon) {
+      // A remote rewind establishes a new visit, not a rollback target for older commands.
+      if (visit && !localUnread) latestAction.current = undefined;
       const divider = localUnread && visit ? visit.divider :
         chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;
-      setVisit({ horizon: chat.readThroughSequence, divider, paused: !!visit });
+      setVisit({ horizon: chat.readThroughSequence, divider,
+        paused: localUnread ? !!visit?.paused : !!visit });
       pending.current = -1;
       if (divider !== undefined && !localUnread) {
         jumpSequence.current = divider;
@@ -114,6 +123,7 @@ export const ReadTimeline = ({
       }
     } else if (visit.paused && localUnreadRequests.current.length === 0 &&
         chat.unreadMessageCount === 0) {
+      latestAction.current = undefined;
       setVisit({ ...visit, horizon: chat.readThroughSequence, paused: false });
     } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {
       setVisit({ ...visit, horizon: chat.readThroughSequence, divider: chat.readThroughSequence + 1 });
@@ -308,6 +318,7 @@ export const ReadTimeline = ({
                 const action = createAction();
                 latestAction.current = action;
                 void unread?.markRead(chat, latestSequence).then(() => {
+                  action.readSucceeded = true;
                   action.previousAction = undefined;
                   if (latestAction.current !== action) return;
                   setVisit(current => current && {...current, paused: false});

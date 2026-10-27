@@ -228,6 +228,74 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
   });
 
+  it("preserves a remote rewind when an older mark-read fails", async () => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    await render();
+    await update(snapshot(1, 1));
+    await settle();
+    const failed = Promise.withResolvers<void>();
+    markChatRead.mockReturnValueOnce(failed.promise);
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+    await update(snapshot(2, 0));
+    await settle();
+    await act(async () => failed.reject(new Error("Read command failed")));
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+  });
+
+  it.each(["first", "second"])("retains a successful earlier read when a newer read fails (%s settles first)", async order => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    await render();
+    await update(snapshot(1, 2));
+    await update(snapshot(2, 0));
+    await settle();
+    const first = Promise.withResolvers<void>(), second = Promise.withResolvers<void>();
+    markChatRead.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const markRead = () => act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+    await markRead();
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const state = snapshot(3, 2);
+    await update({...state, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...state.chats[0], unreadMessageCount: 1}]});
+    await markRead();
+    if (order === "first") await act(async () => first.resolve());
+    await act(async () => second.reject(new Error("Second read failed")));
+    if (order === "second") await act(async () => first.resolve());
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    visibleBottom = 450;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead.mock.calls.map(([request]) => request.throughSequence)).toEqual([2, 3, 3]);
+  });
+
+  it.each([false, true])("does not pause a successful read on a delayed local rewind echo (read ACK first: %s)", async ackFirst => {
+    await render();
+    await update(snapshot(1, 1));
+    await settle();
+    await markUnreadFrom(1);
+    const read = Promise.withResolvers<void>();
+    markChatRead.mockReturnValueOnce(read.promise);
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+    if (ackFirst) await act(async () => read.resolve());
+    await update(snapshot(2, 0));
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const state = snapshot(3, 2);
+    await update({...state, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...state.chats[0], unreadMessageCount: 1}]});
+    if (!ackFirst) await act(async () => read.resolve());
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    visibleBottom = 450;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead.mock.calls.map(([request]) => request.throughSequence)).toEqual([2, 3]);
+  });
+
   it("rolls back a failed newer unread without treating the earlier successful rewind as remote", async () => {
     await render();
     await update(snapshot(1, 2));
