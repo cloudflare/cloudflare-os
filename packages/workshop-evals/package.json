@@ -8,7 +8,10 @@
     "test:run": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "evals": "pnpm exec vp run -F @gadgets/integration-tests build:test-gatekeeper && vitest run --config vitest.eval.config.ts --reporter=vitest-evals/reporter --reporter=json --outputFile.json=.wrangler/evals/results.json",
-    "evals:ui": "vitest-evals serve .wrangler/evals/results.json"
+    "evals:ui": "vitest-evals serve .wrangler/evals/results.json",
+    "benchmark:language": "node src/agent-language/runner.ts",
+    "benchmark:language:summary": "node src/agent-language/summarize.ts",
+    "benchmark:language:performance": "node src/agent-language/performance.ts"
   },
   "dependencies": {
     "@gadgets/integration-tests": "workspace:*",
@@ -18,10 +21,15 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@boundaryml/baml-bridge-web": "0.23.0",
     "@cloudflare/workers-types": "catalog:",
     "@types/node": "^26.1.0",
     "chess.js": "1.4.0",
+    "esbuild": "0.28.2",
+    "js-tiktoken": "1.0.21",
+    "miniflare": "catalog:",
     "typescript": "catalog:",
+    "typescript-compiler": "npm:typescript@5.9.3",
     "vitest": "catalog:"
   }
 }

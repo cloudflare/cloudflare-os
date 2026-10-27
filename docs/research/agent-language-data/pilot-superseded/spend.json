@@ -1,0 +1,7 @@
+{
+  "spentEstimatedUsd": 0.15153500000000003,
+  "reservedUsd": 0.12899,
+  "unknownCharges": true,
+  "calls": 29,
+  "stopReason": "Interrupted during a request after review found prompt/oracle fairness defects. Reserved amount is retained as an upper bound, not settled cost."
+}

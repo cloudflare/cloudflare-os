@@ -1,0 +1,27 @@
+{
+  "mode": "dry-run",
+  "created": "2026-10-27T20:15:17.683Z",
+  "node": "v22.22.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "models": [
+    "gpt-5.4-2026-03-05",
+    "gpt-5.4-mini-2026-03-17"
+  ],
+  "prices": {
+    "gpt-5.4-2026-03-05": {
+      "input": 2.5,
+      "cached": 0.25,
+      "output": 15
+    },
+    "gpt-5.4-mini-2026-03-17": {
+      "input": 0.75,
+      "cached": 0.075,
+      "output": 4.5
+    }
+  },
+  "capUsd": 10,
+  "maxRepairs": 2,
+  "maxOutputTokens": 8192,
+  "sourceHash": "21430369b7645f9d69de9d3d2301d4f54933cb7f1ddd91c8a979e0a43ff48b69"
+}

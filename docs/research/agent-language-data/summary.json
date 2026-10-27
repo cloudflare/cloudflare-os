@@ -1,0 +1,202 @@
+{
+  "groups": [
+    {
+      "model": "gpt-5.4-2026-03-05",
+      "variant": "js",
+      "n": 2,
+      "firstSuccess": 2,
+      "finalSuccess": 2,
+      "wilson95": [
+        0.34237195288961925,
+        1
+      ],
+      "tokensPerSuccess": 550,
+      "costPerSuccess": 0.0034124999999999997,
+      "costEstimatedUsd": 0.0068249999999999995,
+      "p50Ms": 2458.8074170000036,
+      "p95Ms": 2884.296166,
+      "repairs": 0,
+      "outcomes": {
+        "completed-correctly": 2
+      }
+    },
+    {
+      "model": "gpt-5.4-2026-03-05",
+      "variant": "checkjs",
+      "n": 2,
+      "firstSuccess": 2,
+      "finalSuccess": 2,
+      "wilson95": [
+        0.34237195288961925,
+        1
+      ],
+      "tokensPerSuccess": 550,
+      "costPerSuccess": 0.0034124999999999997,
+      "costEstimatedUsd": 0.0068249999999999995,
+      "p50Ms": 2517.897041000004,
+      "p95Ms": 2943.779208,
+      "repairs": 0,
+      "outcomes": {
+        "completed-correctly": 2
+      }
+    },
+    {
+      "model": "gpt-5.4-2026-03-05",
+      "variant": "ts",
+      "n": 2,
+      "firstSuccess": 2,
+      "finalSuccess": 2,
+      "wilson95": [
+        0.34237195288961925,
+        1
+      ],
+      "tokensPerSuccess": 585.5,
+      "costPerSuccess": 0.003945000000000001,
+      "costEstimatedUsd": 0.007890000000000001,
+      "p50Ms": 3004.519375,
+      "p95Ms": 13007.208499,
+      "repairs": 0,
+      "outcomes": {
+        "completed-correctly": 2
+      }
+    },
+    {
+      "model": "gpt-5.4-2026-03-05",
+      "variant": "baml",
+      "n": 2,
+      "firstSuccess": 2,
+      "finalSuccess": 2,
+      "wilson95": [
+        0.34237195288961925,
+        1
+      ],
+      "tokensPerSuccess": 881.5,
+      "costPerSuccess": 0.0061475,
+      "costEstimatedUsd": 0.012295,
+      "p50Ms": 7964.750958,
+      "p95Ms": 8046.718875000006,
+      "repairs": 0,
+      "outcomes": {
+        "completed-correctly": 2
+      }
+    },
+    {
+      "model": "gpt-5.4-mini-2026-03-17",
+      "variant": "js",
+      "n": 2,
+      "firstSuccess": 1,
+      "finalSuccess": 2,
+      "wilson95": [
+        0.34237195288961925,
+        1
+      ],
+      "tokensPerSuccess": 870,
+      "costPerSuccess": 0.0015262499999999998,
+      "costEstimatedUsd": 0.0030524999999999997,
+      "p50Ms": 1252.6400420000064,
+      "p95Ms": 2698.2423339999987,
+      "repairs": 1,
+      "outcomes": {
+        "completed-incorrectly": 1,
+        "completed-correctly": 2
+      }
+    },
+    {
+      "model": "gpt-5.4-mini-2026-03-17",
+      "variant": "checkjs",
+      "n": 2,
+      "firstSuccess": 1,
+      "finalSuccess": 2,
+      "wilson95": [
+        0.34237195288961925,
+        1
+      ],
+      "tokensPerSuccess": 861,
+      "costPerSuccess": 0.00148575,
+      "costEstimatedUsd": 0.0029715,
+      "p50Ms": 1283.8548330000049,
+      "p95Ms": 2754.1065419999977,
+      "repairs": 1,
+      "outcomes": {
+        "completed-incorrectly": 1,
+        "completed-correctly": 2
+      }
+    },
+    {
+      "model": "gpt-5.4-mini-2026-03-17",
+      "variant": "ts",
+      "n": 2,
+      "firstSuccess": 2,
+      "finalSuccess": 2,
+      "wilson95": [
+        0.34237195288961925,
+        1
+      ],
+      "tokensPerSuccess": 741,
+      "costPerSuccess": 0.00188325,
+      "costEstimatedUsd": 0.0037665,
+      "p50Ms": 1383.8402490000008,
+      "p95Ms": 2549.8813340000015,
+      "repairs": 0,
+      "outcomes": {
+        "completed-correctly": 2
+      }
+    },
+    {
+      "model": "gpt-5.4-mini-2026-03-17",
+      "variant": "baml",
+      "n": 1,
+      "firstSuccess": 0,
+      "finalSuccess": 1,
+      "wilson95": [
+        0.20654329147389294,
+        1
+      ],
+      "tokensPerSuccess": 2785,
+      "costPerSuccess": 0.00454875,
+      "costEstimatedUsd": 0.00454875,
+      "p50Ms": 9973.597582999999,
+      "p95Ms": 9973.597582999999,
+      "repairs": 1,
+      "outcomes": {
+        "rejected-before-execution": 1,
+        "completed-correctly": 1
+      }
+    }
+  ],
+  "faults": [
+    {
+      "variant": "js",
+      "total": 17,
+      "rejected": 1,
+      "executionFailed": 9,
+      "incorrect": 7
+    },
+    {
+      "variant": "checkjs",
+      "total": 17,
+      "rejected": 11,
+      "executionFailed": 1,
+      "incorrect": 5
+    },
+    {
+      "variant": "ts",
+      "total": 17,
+      "rejected": 11,
+      "executionFailed": 1,
+      "incorrect": 5
+    },
+    {
+      "variant": "baml",
+      "total": 17,
+      "rejected": 11,
+      "executionFailed": 1,
+      "incorrect": 5
+    }
+  ],
+  "notes": [
+    "Pilot intervals are descriptive, pooled across heterogeneous tasks; no significance claim.",
+    "Paired initial JS cost appears in both hypothetical arms; actual spend is in pilot/spend.json.",
+    "Compiler timing inside workerd uses its restricted clock; use external runtimeMs for wall-clock comparisons."
+  ]
+}
