@@ -6510,7 +6510,7 @@ class OverseerImpl implements AgentHooks {
       gitSources: origin.gitSources};
     const previousLeases = [...this.storage.worktreeReplicaLeases.activeByWorktree.get(`${lease.chatId}:${worktree.checkoutId}`)];
     for (const previous of previousLeases) {
-      if (previous.turnId !== lease.turnId || previous.segmentId !== lease.segmentId || previous.version !== lease.version) {
+      if (previous.turnId !== lease.turnId || previous.version !== lease.version) {
         // An old command cannot write against this revision; never let its failed lease
         // prevent a fresh command from capturing the now-canonical view.
         this.storage.worktreeReplicaLeases.put({...previous, released: true});

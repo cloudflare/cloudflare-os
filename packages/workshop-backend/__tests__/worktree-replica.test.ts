@@ -251,6 +251,8 @@ describe("single-worktree command mount and writeback", () => {
     impl.storage.activeAgents.put({...row, integration: {...row.integration!, segmentId: crypto.randomUUID()}});
     await expect(context.getTurn()).rejects.toThrow();
     await first.writeback.submitChanges("resumed", [{path: "resumed.txt", change: {set: "same command"}}], false);
+    await expect(f.context().mountWorktree("REPO")).rejects.toThrow(/already active/);
+    await first.writeback.submitChanges("after-rejected-mount", [], false);
     await first.writeback.submitChanges("final", [], true);
     const second = await f.context().mountWorktree("REPO");
     for (const pack of second.packs) await pack.cancel();
