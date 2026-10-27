@@ -303,6 +303,8 @@ describe("a whole-mailbox binding", () => {
     await writer.move([ADA], INBOX);
     const moves = submitted.map(action => action.payload as OutlookActions["moveMessages"]);
     expect(moves.map(move => move.to.id)).toEqual(["AAMkArchive0", INBOX]);
+    // Undoing the second move returns the message to where the first put it, not to where it was read.
+    expect(moves[1]!.messages[0]).toMatchObject({ id: ADA, folderId: "AAMkArchive0", folder: "Archive" });
     // While one already where it is going, pending moves included, needs no move.
     await writer.move([EVE], INBOX);
     await writer.move([ADA], INBOX);

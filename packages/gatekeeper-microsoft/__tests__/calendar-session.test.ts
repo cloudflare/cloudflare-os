@@ -408,6 +408,12 @@ describe("an all-calendars binding", () => {
     await expect(removal.writer.updateEvent("~1", { subject: "Sync (renamed)" })).rejects.toThrow(pending);
     await expect(removal.writer.deleteEvent("~1")).rejects.toThrow(pending);
     expect(removal.submitted.map(action => action.kind)).toEqual(["createMeeting", "updateMeeting"]);
+    // An invitation pending on an event nobody else is on yet: a change or deletion proposed behind it would reach the invitees once it is approved.
+    const invited = session(scope(), "schedule");
+    await invited.writer.updateEvent("AAMkEvStandup", { attendees: ["sarah@contoso.com"] });
+    await expect(invited.writer.updateEvent("AAMkEvStandup", { subject: "Standup (renamed)" })).rejects.toThrow(pending);
+    await expect(invited.writer.deleteEvent("AAMkEvStandup")).rejects.toThrow(pending);
+    expect(invited.submitted.map(action => action.kind)).toEqual(["updateMeeting"]);
   });
 
   it("keeps a private exception a busy block while a series change that would unhide it is pending", async () => {

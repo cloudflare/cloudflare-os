@@ -969,6 +969,8 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
         ],
       });
     } else {
+      // A pending invitation would make this a change to a meeting, told to everyone on it.
+      ctx.requireInvitesSettled(event);
       await ctx.host.submit(ctx.queue, await ctx.owns(calendar) ? "updateEvent" : "updateSharedEvent", payload);
     }
     const overlay = ctx.overlay();
@@ -1001,6 +1003,8 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       return;
     }
     if (message !== undefined) throw new Error("Nobody else is on this event, so there's nobody to send a message to.");
+    // A pending invitation would make this a cancellation, told to everyone on it.
+    ctx.requireInvitesSettled(event);
     // A single event can be recreated on revert; an occurrence or series can't be put back as it was.
     let snapshot: EventWrite | undefined;
     if (event.type === "singleInstance" && !isProvisional(event.id)) {

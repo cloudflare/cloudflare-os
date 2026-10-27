@@ -1203,7 +1203,12 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
     if (messages.length === 0) return await this.#shown(guarded, await ctx.infos(guarded));
     // Drafts stay in Drafts, and only one this binding wrote is its to remove: deleteDraft checks that.
     if (messages.some(message => message.isDraft)) throw new Error("Drafts stay in Drafts; use deleteDraft to remove one this connection wrote.");
-    const targets = await Promise.all(messages.map(message => ctx.target(message)));
+    // A message with a move pending comes from where that move puts it: that is where undoing this one returns it.
+    const targets = await Promise.all(messages.map(async message => {
+      const from = moved.get(message.id);
+      const target = await ctx.target(message);
+      return from === undefined ? target : { ...target, folderId: from, folder: await ctx.folderPath(from) };
+    }));
     await this.#shown(messages, await ctx.infos(messages));
     await ctx.host.submit(ctx.queue, "moveMessages", { mailbox: ctx.scope.mailbox, messages: targets, to, as, submittedAt: Date.now() });
     return as === "delete" ? [] : await ctx.infos(messages);

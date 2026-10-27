@@ -138,6 +138,15 @@ describe("changing and deleting", () => {
     await expect(definitions.updateEvent.apply({ ...updatePayload, target: { ...TARGET, id: "~2" } }, harness().host)).rejects.toThrow();
   });
 
+  it("won't change or delete a real event once an invitation proposed before it was approved, which made it a meeting", async () => {
+    const invited = placed({ attendees: [{ emailAddress: { address: "sarah@contoso.com" } }] });
+    const { host, sent } = harness([invited, invited]);
+    host.noteEventVersion(TARGET.id, "ckAfterInvite");
+    await expect(definitions.updateEvent.apply({ ...updatePayload, submittedAt: 1 }, host)).rejects.toThrow(/become a meeting/);
+    await expect(definitions.deleteEvent.apply({ ...provisional, target: TARGET, submittedAt: 1 }, host)).rejects.toThrow(/become a meeting/);
+    expect(sent.filter(request => request.method !== "GET")).toHaveLength(0);
+  });
+
   it("won't change or delete an event it created once a later-approved invitation made it a meeting, whatever version that left", async () => {
     const invited = placed({ attendees: [{ emailAddress: { address: "sarah@contoso.com" } }] });
     const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, invited, invited]);
