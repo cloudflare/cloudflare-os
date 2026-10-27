@@ -104,6 +104,8 @@ export const ReadTimeline = ({
   useLayoutEffect(() => {
     if (!chat) {
       pending.current = -1;
+      // A loaded snapshot with no cursor is a read legacy thread, not a pending entry.
+      if (unread?.state && !visit) setVisit({horizon: -1, paused: false});
       return;
     }
     const localIndex = localUnreadRequests.current.findLastIndex(request =>
@@ -129,7 +131,9 @@ export const ReadTimeline = ({
       setVisit({ horizon: chat.readThroughSequence, divider,
         paused: localUnread ? !!visit?.paused : !!visit });
       pending.current = -1;
-      if (divider !== undefined && !localUnread) {
+      // Only entering a thread positions its unread boundary. Live updates and reconnects
+      // must not take over the viewport, regardless of which device changed the horizon.
+      if (divider !== undefined && !visit) {
         jumpSequence.current = divider;
         requestedPage.current = undefined;
         onUnreadNavigation(true);
@@ -144,7 +148,7 @@ export const ReadTimeline = ({
     } else if (visit.horizon !== chat.readThroughSequence) {
       setVisit({...visit, horizon: chat.readThroughSequence});
     }
-  }, [chat, visit, onUnreadNavigation, unread?.replacementSnapshot]);
+  }, [chat, visit, onUnreadNavigation, unread?.state, unread?.replacementSnapshot]);
 
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.

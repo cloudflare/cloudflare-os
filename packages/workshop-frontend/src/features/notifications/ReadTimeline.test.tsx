@@ -180,6 +180,19 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
+  it("does not treat the first unread event on an already-open legacy thread as entry", async () => {
+    await render();
+    await update({chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await settle();
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
+    navigate.mockClear();
+    await updateChat(snapshot(1, 0));
+    await settle();
+    expect(viewport.scrollTop).toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+  });
+
   it.each([false, true])("preserves local unread navigation across an intervening arrival delta (ACK first: %s)", async ackFirst => {
     await render();
     await update(snapshot(1, 2));
@@ -204,6 +217,53 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
     expect(container.textContent).toContain("automatic reading paused");
     expect(markChatRead).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps a local rewind in place when its starting horizon was stale (ACK first: %s)", async ackFirst => {
+    await render();
+    await update(snapshot(1, 0));
+    await settle();
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
+    navigate.mockClear();
+    const ack = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(ack.promise);
+    await markUnreadFrom(1);
+    if (ackFirst) await act(async () => ack.resolve());
+    // Another device advanced the server before this command ran. Its delta and our
+    // real rewind echo arrive after the ACK, despite the unchanged cached boundary.
+    await updateChat(snapshot(2, 2));
+    if (!ackFirst) await act(async () => ack.resolve());
+    await updateChat(snapshot(3, 0));
+    await settle();
+    expect(viewport.scrollTop).toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
+  it.each(["delta", "replacement", "reconnect"])("positions unread only on entry, not a live %s", async change => {
+    await render();
+    await update(snapshot(1, 1));
+    await settle();
+    expect(navigate).toHaveBeenCalledWith(true);
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
+    navigate.mockClear();
+    if (change === "reconnect") await act(async () => subscriber[Symbol.dispose]());
+    await (change === "delta" ? updateChat(snapshot(2, 0)) : update(snapshot(2, 0)));
+    await settle();
+    expect(viewport.scrollTop).toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+
+    await render(<p>Thread list</p>);
+    await render(<View />);
+    await settle();
+    expect(navigate).toHaveBeenCalledWith(true);
+    expect(container.querySelector<HTMLDivElement>("[data-viewport]")!.scrollTop).toBe(80);
+    expect(container.textContent).not.toContain("automatic reading paused");
   });
 
   it.each([
@@ -237,11 +297,11 @@ describe("timeline read/unread experience", () => {
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
     viewport.scrollTop = 40;
     navigate.mockClear();
-    await updateChat(snapshot(4, 0)); // A later real rewind must not inherit the retired marker.
+    await updateChat(snapshot(4, 0)); // Even a later real remote rewind must preserve the viewport.
     await settle();
     expect(container.textContent).toContain("automatic reading paused");
-    expect(navigate).toHaveBeenCalledWith(true);
-    expect(viewport.scrollTop).not.toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+    expect(viewport.scrollTop).toBe(40);
   });
 
   it.each([

@@ -188,6 +188,50 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
   });
 });
 
+it.each(["delta", "replacement", "reconnect"])("preserves real scroll geometry on a live %s", async change => {
+  navigate.mockClear();
+  let subscriber: RpcStub<UnreadStateSubscriber>;
+  let state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 1,
+    chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 1, unreadMessageCount: 1}]};
+  const api = {
+    markChatRead: vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined),
+    subscribeToUnreadState: (_scope: unknown, next: RpcStub<UnreadStateSubscriber>) => {
+      subscriber = next;
+      void next.updated(state);
+      return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
+    },
+  };
+  withdraw = reportVisibleChat(() => ({workspaceId: "workspace", chatId: 1}));
+  host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => root!.render(
+    <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+      <View />
+    </UnreadStateBridge>,
+  ));
+  await vi.waitFor(() => expect(navigate).toHaveBeenLastCalledWith(false));
+  expect(navigate).toHaveBeenCalledWith(true);
+  const viewport = host.querySelector<HTMLElement>("[data-viewport]")!;
+  viewport.scrollTop = 40;
+  const item = host.querySelector<HTMLElement>('[data-read-start="0"]')!;
+  const before = item.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+  navigate.mockClear();
+  state = {...state, unreadMessageCount: 2, chats: [{...state.chats[0], readThroughSequence: 0, unreadMessageCount: 2}]};
+  await act(async () => {
+    if (change === "reconnect") subscriber[Symbol.dispose]();
+    else if (change === "replacement") await subscriber.updated(state);
+    else await subscriber.chatUpdated("workspace", 1, state.chats[0], {
+      unreadChatCount: 1, unreadMessageCount: 2,
+      workspace: {workspaceId: "workspace", unreadChatCount: 1, unreadMessageCount: 2},
+    });
+  });
+  await expect.element(page.getByText(/automatic reading paused/)).toBeVisible();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  // Browser scroll anchoring may compensate for the paused banner's extra height.
+  expect(Math.abs(item.getBoundingClientRect().top - viewport.getBoundingClientRect().top - before)).toBeLessThan(1);
+  expect(navigate).not.toHaveBeenCalledWith(true);
+});
+
 it("keeps unread navigation pending until replay renders its target", async () => {
   navigate.mockClear();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);

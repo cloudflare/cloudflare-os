@@ -22,7 +22,8 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 - Opening an unread thread loads checkpoint history back to its first unread item and positions
   it in view. Failed history loads keep automatic receipts paused; Jump to first unread retries
   the load, and explicit Mark thread read can release it. Jump remains available as the pointer
-  advances.
+  advances. Live horizon changes and reconnect snapshots never initiate another scroll; automatic
+  positioning happens only on thread entry, and subsequent jumps require the explicit button.
 - Automatic reads require a visible document, focused window, visible chat pane and an item's
   bottom edge in the scroll viewport. Fetching/opening a history page alone never reads it.
   Bookkeeping can extend an item's receipt range, but divider placement and first-unread navigation
