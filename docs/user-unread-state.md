@@ -147,6 +147,12 @@ may rewind it. Identical horizons cause no RPC or write. There are no receipt to
 versions. Read commands do not consume alerts waiting for delayed source fanout; the workspace's
 first tracked raw position supplies the new cursor's pre-tracking notification baseline.
 
+The API retains its existing one-time reset retry for read/unread commands. A lost response can
+therefore replay an already-committed command after a conflicting action from another session.
+Retry attempts participate in processing order too: the final horizon is not guaranteed to follow
+the original human-action order in this race. This best-effort conflict behavior is accepted;
+there are no durable operation IDs, deduplication receipts or ordering fences for read commands.
+
 ## Authorization and lifecycle
 
 The **Workspace DO** decides whether it may fan out to a user. Confirmed admission denial skips

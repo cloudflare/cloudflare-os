@@ -237,6 +237,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.subscribeToUnreadState(scope, subscriber);
   }
 
+  // Reset retries are new processing attempts. Ordering between conflicting read/unread
+  // commands is intentionally best-effort; there is no durable operation deduplication.
   markChatRead(receipt: ChatReadReceipt): Promise<void> {
     return retryOnDoReset(() => this.#user.markChatRead(receipt));
   }
