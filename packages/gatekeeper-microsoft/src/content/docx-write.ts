@@ -16,7 +16,7 @@ import { DocumentConversionError } from "./errors";
 import { parseMarkdown, plainText, type MdBlock } from "./markdown-parse";
 import { findMainPart, findRelationship, parsePart, readRelationships, relationshipsPartName, XML_DECLARATION, type Relationships } from "./ooxml";
 import { applySplices, parseRaw, rawChildren, RawXmlError, type Splice } from "./raw-xml";
-import { attribute, childElements, firstChild, type XmlElement } from "./xml";
+import { attribute, childElements, descendants, firstChild, type XmlElement } from "./xml";
 import { writeZip } from "./zip-write";
 import { openZip, type ZipArchive } from "./zip";
 
@@ -257,7 +257,10 @@ function finalSection(documentXml: string): FinalSection {
   const bodyElement = firstChild(root, "w:body");
   const last = childElements(bodyElement).at(-1);
   if (last?.name !== "w:sectPr") return { bodyStart, bodyEnd, xml: DEFAULT_SECTION, textWidth: DEFAULT_TEXT_WIDTH };
-  const sectionStart = [...documentXml.slice(0, bodyEnd).matchAll(/<w:sectPr[\s>/]/g)].at(-1)!.index;
+  // The body's own section properties open before any `w:sectPr` nested in them (a tracked layout
+  // change holds the earlier ones), so theirs is the last opening tag but those.
+  const nested = [...descendants(last, "w:sectPr")].length;
+  const sectionStart = [...documentXml.slice(0, bodyEnd).matchAll(/<w:sectPr[\s>/]/g)].at(-1 - nested)!.index;
   return { bodyStart, bodyEnd, xml: documentXml.slice(sectionStart, bodyEnd), textWidth: textWidth(last) };
 }
 

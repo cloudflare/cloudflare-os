@@ -135,6 +135,8 @@ def churn(rate):
     expect(levels.slice(0, 9)).toEqual(["0", "1", "2", "3", "4", "5", "6", "7", "8"]);
     expect(levels.slice(9).every(level => level === "8")).toBe(true);
     const abstract = childElements(parsePart(await part(bytes, "word/numbering.xml")), "w:abstractNum")[0]!;
+    // Eight hex digits, never a negative number: the hash's high bit is set for about half of them.
+    expect(attribute(firstChild(abstract, "w:nsid"), "w:val")).toMatch(/^[0-9A-F]{8}$/);
     expect(childElements(abstract, "w:lvl").slice(0, 3).map(level => attribute(firstChild(level, "w:numFmt"), "w:val"))).toEqual(["decimal", "lowerLetter", "lowerRoman"]);
   });
 
@@ -336,6 +338,25 @@ describe("markdownToDocx with a template", () => {
         : await zip.readBytes(entry.name),
     })));
     await expect(markdownToDocx("x", { template: await writeZip(entries) })).rejects.toThrow(/Transitional/);
+  });
+
+  it("copies the body's whole section properties when a tracked layout change nests earlier ones", async () => {
+    const zip = openZip(TEMPLATE);
+    const change = '<w:sectPrChange w:id="9" w:author="Avery" w:date="2026-01-01T00:00:00Z"><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:sectPrChange>';
+    const entries = await Promise.all(zip.entries().map(async entry => ({
+      name: entry.name,
+      data: entry.name === "word/document.xml"
+        ? (await zip.readText(entry.name)).replace(/<\/w:sectPr>(?=\s*<\/w:body>)/, `${change}</w:sectPr>`)
+        : await zip.readBytes(entry.name),
+    })));
+    const bytes = await markdownToDocx("New body", { template: await writeZip(entries) });
+    const document = await part(bytes, "word/document.xml");
+    const body = firstChild(parsePart(document), "w:body")!;
+    const last = childElements(body).at(-1)!;
+    expect(last.name).toBe("w:sectPr");
+    expect(firstChild(last, "w:sectPrChange")).toBeDefined();
+    expect(document.match(/<w:sectPr[\s>]/g)).toHaveLength(2);
+    expect(document.match(/<\/w:sectPrChange>/g)).toHaveLength(1);
   });
 });
 

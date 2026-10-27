@@ -135,7 +135,8 @@ export class NumberingAllocator {
   /** A list-definition id Word uses to tell lists apart when pasting, unique in this document. */
   #nsid(seed: number): string {
     for (let attempt = seed; ; attempt++) {
-      const value = ((Math.imul(attempt + 1, 0x9e3779b1) >>> 0) | 0x10000000).toString(16).toUpperCase().padStart(8, "0");
+      // Unsigned last: the OR can set the sign bit, and `w:nsid` is eight hex digits, never negative.
+      const value = ((Math.imul(attempt + 1, 0x9e3779b1) | 0x10000000) >>> 0).toString(16).toUpperCase().padStart(8, "0");
       if (!this.#nsids.has(value)) {
         this.#nsids.add(value);
         return value;
