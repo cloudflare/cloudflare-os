@@ -962,4 +962,11 @@ describe("the Office import grant on a stored account", () => {
     expect(flow?.requestedResources.toSorted())
       .toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT].toSorted());
   });
+
+  // A Docs grant brings drive.metadata.readonly, which is all the browse grant needs.
+  it("leaves a private grant whose scopes a resource brought to be held, unrecorded, without consent", async () => {
+    let { user } = await storedAccount([GOOGLE_DOC_RESOURCE.urlPattern]);
+
+    await expect(user.ensureResources([DRIVE_BROWSE_GRANT, GOOGLE_DOC_RESOURCE.urlPattern])).resolves.toEqual({});
+  });
 });

@@ -573,8 +573,8 @@ export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): strin
 /**
  * The subset of {@link recordedResourceUrlPatterns} whose every OAuth scope is currently held.
  *
- * This is what `ensureResources` decides against, so it fails closed: a scope the user declined,
- * or one a resource gained after it was granted, retracts the grant that needed it and re-prompts.
+ * It fails closed: a scope the user declined, or one a resource gained after it was granted,
+ * retracts the grant that needed it, so {@link holdsGrants} re-prompts for it.
  */
 export function grantedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
@@ -584,8 +584,9 @@ export function grantedResourceUrlPatterns(grant: RecordedResourceGrant): string
 /**
  * Whether the account holds every grant `patterns` names: a resource type once granted, and a
  * private grant once its scopes are held, recorded or not. A private grant records no intent a
- * reconnect must keep, so holding its scopes, as a resource's grant brings them, is holding it, and
- * a configurator need not ask for what the account can already do.
+ * reconnect must keep, so holding its scopes, as a resource's grant brings them, is holding it.
+ * This is what `ensureResources` and the configurators decide against, so neither asks for what
+ * the account can already do.
  */
 export function holdsGrants(grant: RecordedResourceGrant, patterns: readonly string[]): boolean {
   let granted = new Set(grantedResourceUrlPatterns(grant));

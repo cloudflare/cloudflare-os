@@ -978,10 +978,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}> {
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let obj = this.ctx.exports.UserAccount.get(id);
-    let granted = new Set(await obj.getGrantedResourceUrlPatterns());
-    if (resourceUrlPatterns.every(pattern => granted.has(pattern))) {
-      return {};
-    }
+    if (await obj.holdsGrants(resourceUrlPatterns)) return {};
 
     // Union the recorded intent, not the covered subset: a resource whose scope requirements grew
     // is missing from `granted`, and asking only for what this call requested would drop it.
