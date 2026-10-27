@@ -2,34 +2,22 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { Loader } from "@cloudflare/kumo/components/loader";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { cn } from "@cloudflare/kumo/utils";
-import { CaretLeftIcon, CaretRightIcon, FileIcon, FolderIcon } from "@phosphor-icons/react";
+import { FileIcon, FolderIcon } from "@phosphor-icons/react";
 import { isValidElement, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type {
-  ConfiguratorUIHierarchyAncestor,
-  ConfiguratorUIHierarchyChoice,
-  ConfiguratorUIHierarchyItem,
-  ConfiguratorUIHierarchyRequest,
-  ConfiguratorUIHierarchyTab,
-  HierarchyPickerProps,
-} from "../index.ts";
+import type { ConfiguratorUIHierarchyAncestor, ConfiguratorUIHierarchyItem, HierarchyPickerProps } from "../index.ts";
 import { FilterInput } from "./FilterInput.tsx";
-import { displayText, failureMessage, identifier, MAX_OPTIONS, SEARCH_DEBOUNCE_MS } from "./options.ts";
+import { Breadcrumb } from "./HierarchyBreadcrumb.tsx";
+import {
+  appendUnique, asAncestor, asContainer, locationOf, reportLoadFailure, requestPage, sanitizeItem, searchSubtitle,
+  type Location, type Page,
+} from "./hierarchyNodes.ts";
+import { ChoiceBody, Row } from "./HierarchyRow.tsx";
+import { failureMessage, SEARCH_DEBOUNCE_MS } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 import { useCollectionHold } from "./storeContext.ts";
 
 type Item = ConfiguratorUIHierarchyItem;
 type Ancestor = ConfiguratorUIHierarchyAncestor;
-type Tab = ConfiguratorUIHierarchyTab;
-
-/**
- * The open location: the open tab (none without tabs) and the containers opened below it or the
- * root, outermost first. `detached` when the first of them is not known to be a direct child of
- * the tab or root -- a search result without a `path` that says so -- so the breadcrumb shows a gap
- * rather than claim it is one.
- */
-type Location = { tab: string | null; trail: Ancestor[]; detached: boolean };
-
-type Page = { items: Item[]; nextCursor: string | null };
 
 /** What `loadItems` returned for one location and query, page after page. */
 type Listing = Page & {
@@ -39,179 +27,6 @@ type Listing = Page & {
   message?: string;
   loadingMore: boolean;
   moreMessage?: string;
-};
-
-const sanitizeChoice = (value: unknown): ConfiguratorUIHierarchyChoice | undefined => {
-  if (!value || typeof value !== "object") return undefined;
-  const { title, subtitle } = value as Record<string, unknown>;
-  return { title: displayText(title), subtitle: displayText(subtitle) };
-};
-
-/** A path whose every ancestor is valid, or none: a partial path would misstate where a node is. */
-const sanitizePath = (value: unknown): Ancestor[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  const path: Ancestor[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") return undefined;
-    const raw = entry as Record<string, unknown>;
-    const id = identifier(raw.id);
-    const title = displayText(raw.title);
-    if (!id || !title) return undefined;
-    path.push({
-      id,
-      title,
-      selectable: typeof raw.selectable === "boolean" ? raw.selectable : undefined,
-      icon: typeof raw.icon === "string" ? raw.icon : undefined,
-      choice: sanitizeChoice(raw.choice),
-    });
-  }
-  return path;
-};
-
-const sanitizeItem = (value: unknown): Item | undefined => {
-  if (!value || typeof value !== "object") return undefined;
-  const raw = value as Record<string, unknown>;
-  const id = identifier(raw.id);
-  const title = displayText(raw.title);
-  if (!id || !title || (raw.kind !== "container" && raw.kind !== "leaf")) return undefined;
-  return {
-    id,
-    title,
-    kind: raw.kind,
-    icon: typeof raw.icon === "string" ? raw.icon : undefined,
-    subtitle: displayText(raw.subtitle),
-    selectable: raw.selectable !== false,
-    choice: sanitizeChoice(raw.choice),
-    path: sanitizePath(raw.path),
-  };
-};
-
-/** A page saying its location cannot be listed yet: shown as a failed load is, but expected. */
-class Unavailable extends Error {}
-
-/** One page, refused whole rather than truncated when it is too long to show. */
-const sanitizePage = (page: unknown): Page => {
-  const { items, nextCursor, unavailable } =
-    (page && typeof page === "object" ? page : {}) as Record<string, unknown>;
-  const reason = displayText(unavailable);
-  if (reason) throw new Unavailable(reason);
-  const listed: unknown[] = Array.isArray(items) ? items : [];
-  if (listed.length > MAX_OPTIONS) {
-    throw new Error(`The list returned more than ${MAX_OPTIONS} items in one page.`);
-  }
-  return { items: listed.flatMap(item => sanitizeItem(item) ?? []), nextCursor: identifier(nextCursor) ?? null };
-};
-
-const requestPage = (
-  loadItems: HierarchyPickerProps["loadItems"],
-  request: ConfiguratorUIHierarchyRequest,
-): Promise<Page> => Promise.resolve().then(() => loadItems(request)).then(sanitizePage);
-
-const reportLoadFailure = (error: unknown) => {
-  if (!(error instanceof Unavailable)) reportFrontendIssue("configurator.hierarchy-load", error);
-};
-
-/** `incoming` after `existing`, skipping ids already listed, which would collide as row keys. */
-const appendUnique = (existing: readonly Item[], incoming: readonly Item[]): Item[] => {
-  const seen = new Set(existing.map(item => item.id));
-  return [...existing, ...incoming.filter(item => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  })];
-};
-
-const asContainer = ({ id, title, icon, choice }: Ancestor): Item =>
-  ({ id, title, icon, choice, kind: "container", selectable: true });
-
-const asAncestor = ({ id, title, selectable, icon, choice }: Item): Ancestor => ({ id, title, selectable, icon, choice });
-
-/** A search result's line: where it lives, then its own, so results of one name can be told apart. */
-const searchSubtitle = ({ path, subtitle }: Item): string | undefined =>
-  [path?.map(ancestor => ancestor.title).join(" / "), subtitle].filter(Boolean).join(" · ") || undefined;
-
-/**
- * Where a node found without browsing to it (a search result, a pre-filled value) lives. Under tabs,
- * its path names its tab first; one that does not is shown in the open tab, behind a gap above
- * whatever its trail opens. A trail that opens nothing (a leaf with no path, pinned atop the tab's
- * own listing) leaves no gap to show.
- */
-const locationOf = (item: Item, tabs: readonly Tab[], openTab: string | null): Location => {
-  if (tabs.some(({ id }) => id === item.id)) return { tab: item.id, trail: [], detached: false };
-  const tab = tabs.find(({ id }) => id === item.path?.[0]?.id);
-  const path = (tab ? item.path?.slice(1) : item.path) ?? [];
-  const trail = item.kind === "container" ? [...path, asAncestor(item)] : path;
-  return tabs.length > 0
-    ? { tab: tab?.id ?? openTab, trail, detached: !tab && trail.length > 0 }
-    : { tab: null, trail, detached: item.kind === "container" && !item.path };
-};
-
-type ChoiceBodyProps = { mark: "checked" | "unchecked" | "none"; icon: ReactNode; title: string; subtitle?: string };
-
-/**
- * What the root's card and every row show: a radio's look (or room for one, so icons line up), an
- * icon and two lines. The look is only a cue; `aria-selected` or `aria-pressed` says it.
- */
-const ChoiceBody = ({ mark, icon, title, subtitle }: ChoiceBodyProps) => (
-  <>
-    <span
-      className={cn("flex size-4 shrink-0 items-center justify-center rounded-full",
-        mark === "checked" && "bg-kumo-brand ring ring-kumo-brand",
-        mark === "unchecked" && "bg-kumo-base ring ring-kumo-line")}
-    >
-      {mark === "checked" && <span className="size-2 rounded-full bg-kumo-base" />}
-    </span>
-    <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center overflow-hidden text-kumo-subtle [&>svg]:size-5">
-      {icon}
-    </span>
-    <span className="flex min-w-0 flex-1 flex-col">
-      <span className="truncate">{title}</span>
-      {subtitle && <span className="truncate text-xs text-kumo-subtle">{subtitle}</span>}
-    </span>
-  </>
-);
-
-type RowProps = Omit<ChoiceBodyProps, "mark"> & {
-  /** What activating the row does; `none` for a node that can be neither chosen nor opened. */
-  action: "choose" | "open" | "none";
-  selected: boolean;
-  disabled: boolean;
-  /** Whether the list's single tab stop is on this row. */
-  tabbable: boolean;
-  onFocus(): void;
-  onActivate(): void;
-};
-
-/** One option of the list. Moving between rows is the list's job; activating one is the row's. */
-const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate, ...body }: RowProps) => {
-  const inert = disabled || action === "none";
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const activates = event.key === "Enter" || event.key === " " || (event.key === "ArrowRight" && action === "open");
-    if (inert || !activates) return;
-    event.preventDefault();
-    onActivate();
-  };
-  return (
-    <div
-      role="option"
-      aria-selected={selected}
-      aria-disabled={inert || undefined}
-      tabIndex={!disabled && tabbable ? 0 : -1}
-      onFocus={onFocus}
-      onClick={inert ? undefined : onActivate}
-      onKeyDown={onKeyDown}
-      className={cn(
-        "flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm outline-none",
-        "focus-visible:ring-2 focus-visible:ring-kumo-focus",
-        inert ? "cursor-default" : "cursor-pointer hover:bg-kumo-tint",
-        action === "none" && "text-kumo-inactive",
-        selected && "bg-kumo-tint text-kumo-strong",
-      )}
-    >
-      <ChoiceBody {...body} mark={selected ? "checked" : action === "choose" ? "unchecked" : "none"} />
-      {action === "open" && <CaretRightIcon aria-hidden="true" size={16} className="shrink-0 text-kumo-subtle" />}
-    </div>
-  );
 };
 
 /**
@@ -530,23 +345,6 @@ const Navigator = (props: HierarchyPickerProps) => {
     return kind === "container" ? <FolderIcon size={20} /> : <FileIcon size={20} />;
   };
 
-  const crumb = (title: string, depth: number) => {
-    const isCurrent = depth === location.trail.length;
-    return (
-      <Button
-        variant="ghost"
-        size="xs"
-        className={cn("max-w-48 truncate", isCurrent && "text-kumo-strong")}
-        aria-current={isCurrent ? "location" : undefined}
-        disabled={disabled}
-        onClick={() => goTo(depth, false)}
-      >
-        {title}
-      </Button>
-    );
-  };
-  const separator = <CaretRightIcon aria-hidden="true" size={12} className="shrink-0 text-kumo-subtle" />;
-  const atTop = location.trail.length === 0;
   const count = `${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`;
 
   let announcement: ReactNode;
@@ -568,37 +366,13 @@ const Navigator = (props: HierarchyPickerProps) => {
   );
 
   const breadcrumb = (
-    <nav ref={crumbsRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 text-sm">
-      {/* `aria-disabled` at the top rather than `disabled`, which would drop the focus of a user who
-          just went up there; out of the tab order there, since it leads nowhere. */}
-      <Button
-        variant="ghost"
-        size="xs"
-        shape="square"
-        aria-label="Up one level"
-        aria-disabled={atTop || undefined}
-        tabIndex={atTop ? -1 : undefined}
-        className={cn(atTop && "cursor-not-allowed opacity-50")}
-        disabled={disabled}
-        icon={<CaretLeftIcon aria-hidden="true" size={14} />}
-        onClick={() => {
-          if (!atTop) goTo(location.trail.length - 1, false);
-        }}
-      />
-      {crumb(openTab?.title ?? root.title, 0)}
-      {location.detached && location.trail.length > 0 && (
-        <>
-          {separator}
-          <span className="px-1 text-kumo-subtle">…</span>
-        </>
-      )}
-      {location.trail.map((ancestor, index) => (
-        <span key={ancestor.id} className="contents">
-          {separator}
-          {crumb(ancestor.title, index + 1)}
-        </span>
-      ))}
-    </nav>
+    <Breadcrumb
+      top={openTab?.title ?? root.title}
+      location={location}
+      disabled={disabled}
+      navRef={crumbsRef}
+      onGo={depth => goTo(depth, false)}
+    />
   );
 
   const searchBox = searchPlaceholder && (
