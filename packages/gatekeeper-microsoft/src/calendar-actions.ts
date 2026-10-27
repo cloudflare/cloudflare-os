@@ -91,6 +91,8 @@ export type CalendarActions = {
   updateEvent: {
     calendar: CalendarRef; target: EventTarget; changes: Partial<EventWrite>; before: Partial<EventWrite>; zone: string;
     submittedAt: number; appliedAt?: number;
+    /** The change key the update left: an undo writes the old values back only over that version. */
+    appliedChangeKey?: string;
   };
   updateMeeting: {
     calendar: CalendarRef; target: EventTarget; changes: Partial<EventWrite>; before: Partial<EventWrite>; zone: string;
@@ -306,16 +308,18 @@ async function update<P extends CalendarActions["updateEvent"]>(payload: P, host
   const id = realId(host.refs, payload.target.id, "The event");
   const ifMatch = etag(expectedVersion(host, payload.target, id));
   if (!("notified" in payload)) await requireStillPersonal(host, payload.calendar, payload.target, id);
+  let appliedChangeKey: string | undefined;
   try {
     const updated = await host.graph(api => calendarApi(api, payload.calendar).request<{ changeKey?: unknown }>("PATCH", `/events/${idPath(id)}`,
       eventJson(payload.changes, payload.zone), ifMatch));
+    if (typeof updated?.changeKey === "string") appliedChangeKey = updated.changeKey;
     // A later action on the same temporary ID is fenced on what this change left.
-    if (isProvisional(payload.target.id) && typeof updated?.changeKey === "string") host.noteEventVersion(id, updated.changeKey);
+    if (isProvisional(payload.target.id) && appliedChangeKey !== undefined) host.noteEventVersion(id, appliedChangeKey);
   } catch (error) {
     exchangeRefusal(error, "The event");
   }
   await host.invalidate();
-  return { action: { ...payload, appliedAt: Date.now() } };
+  return { action: { ...payload, ...(appliedChangeKey ? { appliedChangeKey } : {}), appliedAt: Date.now() } };
 }
 
 /** Fails unless the event still has the change key it was proposed with: for operations Graph won't fence itself. */
@@ -581,11 +585,23 @@ export async function revert(action: CalendarAction, host: CalendarActionHost): 
       for (const key of Object.keys(payload.changes) as (keyof EventWrite)[]) (before as Record<string, unknown>)[key] = payload.before[key];
       // Times are restored with the all-day flag they had.
       if (before.start !== undefined) before.allDay = payload.before.allDay;
+      // Fenced on the version the change left: edited since, the user's later edits stay.
+      const appliedChangeKey = payload.appliedChangeKey;
+      if (appliedChangeKey === undefined) {
+        return { message: "Outlook didn't say which version this change left, so it wasn't undone. Change the event in Outlook if you need to.", canRetry: false };
+      }
       return await host.graph(async api => {
         const calendar = calendarApi(api, payload.calendar);
         const blocked = await blocksUndo(calendar, payload.calendar, id);
         if (blocked !== undefined) return blocked;
-        await calendar.request("PATCH", `/events/${idPath(id)}`, eventJson(before, payload.zone));
+        try {
+          await calendar.request("PATCH", `/events/${idPath(id)}`, eventJson(before, payload.zone), etag(appliedChangeKey));
+        } catch (error) {
+          if (error instanceof GraphApiError && error.status === 412) {
+            return { message: "The event has been changed since, so it wasn't undone. Change it in Outlook if you need to.", canRetry: false as const };
+          }
+          throw error;
+        }
         return undefined;
       }, { replayable: true });
     }

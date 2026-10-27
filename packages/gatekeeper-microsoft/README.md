@@ -22,7 +22,7 @@ agent as though already made while it waits, so the agent keeps working.
      and `Files.ReadWrite` instead: see [Every site or only selected sites](#every-site-or-only-selected-sites).
    - for Outlook: `Mail.ReadWrite`, `Mail.ReadWrite.Shared`, `Mail.Send`, `Mail.Send.Shared`,
      `MailboxSettings.ReadWrite`, `People.Read` and `User.ReadBasic.All`. A deployment capped below
-     `send` needs neither `Mail.Send` permission, and a `read` one only the `.Read` variants.
+     `send` needs neither `Mail.Send` permission, and a `read` one needs only the `.Read` variants.
      `User.ReadBasic.All` turns a shared mailbox's address into its owner's object ID; without it
      only the user's own mailbox can be connected.
    - for Calendar: `Calendars.ReadWrite`, `Calendars.ReadWrite.Shared`, `MailboxSettings.Read`,
@@ -234,7 +234,7 @@ A binding is one mailbox, optionally narrowed, at one access level:
 | The whole mailbox | `https://outlook.office.com/mail/` | Every folder. |
 | A folder | `…/mail/inbox`, `…/mail/folder/<id>`, `?subfolders=0` | That folder, with its subfolders unless excluded. Resolved once, at binding, to an immutable ID, so renaming or moving it changes nothing. |
 | A conversation | `…/mail/inbox/id/<message id>`, `?conversation=<id>` | Every message in the thread, wherever it is filed. |
-| People | `?senders=ada@contoso.com,@fabrikam.com` | Mail from those addresses or domains. |
+| People | `?senders=ada@contoso.com,@fabrikam.com` | Mail from those addresses or domains, by its From and Sender headers, which the sender writes: a way to narrow what the agent reads, not a defence against spoofed mail. |
 
 A shared mailbox's links put its address first, `…/mail/team@contoso.com/inbox`. Narrowings
 combine, and `&access=read|draft|send` sets the level. Links copied from Outlook on the
