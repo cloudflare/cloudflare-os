@@ -98,6 +98,8 @@ export const UnreadStateBridge = ({
       if (!active || document.visibilityState === "hidden") return;
       const currentGeneration = ++generation;
       latest = undefined;
+      // Cached horizons cannot authorize receipts while the replacement snapshot is pending.
+      setSnapshot(undefined);
       const previous = subscription;
       subscription = undefined;
       previous?.[Symbol.dispose]();
@@ -155,6 +157,7 @@ export const UnreadStateBridge = ({
     const visibilityChanged = () => {
       if (document.visibilityState !== "hidden") { subscribe(); return; }
       ++generation;
+      setSnapshot(undefined);
       clearTimeout(retryTimer);
       const previous = subscription;
       subscription = undefined;

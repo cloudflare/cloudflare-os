@@ -247,6 +247,53 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
+  it.each(["first", "second"])("restores the original visit when both unread commands fail (%s rejects first)", async order => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    await render(<View latestSequence={4} sequences={[0, 1, 2, 3, 4]} />);
+    const state = snapshot(1, 2);
+    await update({...state, unreadChatCount: 1, unreadMessageCount: 2,
+      chats: [{...state.chats[0], unreadMessageCount: 2}]});
+    await settle();
+    const first = Promise.withResolvers<void>(), second = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    await markUnreadFrom(2);
+    await markUnreadFrom(1);
+    for (const request of order === "first" ? [first, second] : [second, first]) {
+      await act(async () => request.reject(new Error("Unread command failed")));
+    }
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("3");
+    visibleBottom = 550;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 4});
+  });
+
+  it.each(["foreground", "reset"])("waits for fresh unread state after %s before sending receipts", async reason => {
+    await render();
+    await update(snapshot(1, 2));
+    await settle();
+    await act(async () => {
+      if (reason === "foreground") {
+        Object.defineProperty(document, "visibilityState", {configurable: true, value: "hidden"});
+        document.dispatchEvent(new Event("visibilitychange"));
+      } else subscriber[Symbol.dispose]();
+    });
+    visibleBottom = 450;
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    if (reason === "foreground") await act(async () => {
+      Object.defineProperty(document, "visibilityState", {configurable: true, value: "visible"});
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await settle(); // History has advanced, but the replacement unread snapshot has not arrived.
+    expect(markChatRead).not.toHaveBeenCalled();
+    await update(snapshot(2, 0)); // Another device rewound while this subscription was absent.
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
   it("waits for replay to render the first unread message before completing navigation", async () => {
     await render();
     const state = snapshot(1, 2);
@@ -435,6 +482,27 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
       workspaceId: "workspace", chatId: 1, throughSequence: 2,
     });
+  });
+
+  it("restores pending history navigation when a manual unread command fails", async () => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    visibleBottom = 350;
+    await render(<View oldest={2} />);
+    await update(snapshot(1, 0));
+    await settle();
+    expect(loadEarlier).toHaveBeenCalledOnce();
+    const failed = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(failed.promise);
+    await markUnreadFrom(2);
+    await act(async () => failed.reject(new Error("Unread command failed")));
+    await settle();
+    expect(navigate).toHaveBeenLastCalledWith(true);
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(loadEarlier).toHaveBeenCalledOnce(); // Restore the no-progress guard too.
+    await render(<View oldest={0} />);
+    await settle();
+    expect(navigate).toHaveBeenLastCalledWith(false);
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
   });
 
   it("allows explicit mark-read to release a failed history jump", async () => {

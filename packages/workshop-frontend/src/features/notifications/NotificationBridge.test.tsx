@@ -300,6 +300,23 @@ describe("NotificationBridge", () => {
     expect(addToast).toHaveBeenCalledOnce();
   });
 
+  it("recovers when the subscriber is released before a successful setup ACK", async () => {
+    const ack = Promise.withResolvers<void>();
+    authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(ack.promise, {[Symbol.dispose]: dispose});
+    });
+    await render();
+    await release(0);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await act(async () => ack.resolve());
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
+    await release(0); // A late release from the replaced callback must not replace the new one.
+    await act(() => subscribers[1].notify(notification));
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
+    expect(addToast).toHaveBeenCalledOnce();
+  });
+
   it("does not immediately retry when a failed subscription releases its arguments", async () => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {

@@ -48,7 +48,12 @@ export const ReadTimeline = ({
   const pending = useRef(-1);
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
-  const localUnreadRequests = useRef<{horizon: number; acknowledgedSnapshot?: object}[]>([]);
+  const localUnreadRequests = useRef<{
+    horizon: number;
+    acknowledgedSnapshot?: object;
+    previousAction?: object;
+    rollback: {visit: typeof visit; jump: number; target?: number; requestedPage?: number};
+  }[]>([]);
   const latestAction = useRef<object | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence });
@@ -234,7 +239,10 @@ export const ReadTimeline = ({
           if (!workspaceId || !unread?.state) return;
           // Untouched pre-rollout threads have no cursor until an arrival or explicit command.
           const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
-          const request: (typeof localUnreadRequests.current)[number] = {horizon: sequence - 1};
+          const request: (typeof localUnreadRequests.current)[number] = {
+            horizon: sequence - 1, previousAction: latestAction.current,
+            rollback: {visit, jump, target: jumpSequence.current, requestedPage: requestedPage.current},
+          };
           localUnreadRequests.current.push(request);
           latestAction.current = request;
           jumpSequence.current = undefined;
@@ -245,12 +253,25 @@ export const ReadTimeline = ({
           // Keep markers across ACKs until a matching echo or a later chat snapshot arrives.
           void unread.markUnread(target, sequence).then(() => {
             request.acknowledgedSnapshot = latest.current.chat ?? {};
+            request.previousAction = undefined; // Only pending commands need the rollback link.
           }).catch(() => {
             const index = localUnreadRequests.current.indexOf(request);
             if (index === -1) return;
+            // A later optimistic selection must not roll back to this failed selection.
+            const next = localUnreadRequests.current[index + 1];
+            if (next?.previousAction === request) {
+              next.previousAction = request.previousAction;
+              next.rollback = request.rollback;
+            }
             localUnreadRequests.current.splice(index, 1);
             if (latestAction.current === request) {
-              setVisit(current => visit && {...visit, horizon: current?.horizon ?? visit.horizon});
+              latestAction.current = request.previousAction;
+              const previous = request.rollback;
+              setVisit(current => previous.visit && {...previous.visit, horizon: current?.horizon ?? previous.visit.horizon});
+              jumpSequence.current = previous.target;
+              requestedPage.current = previous.requestedPage;
+              onUnreadNavigation(!!previous.jump);
+              setJump(previous.jump);
             }
           });
         },
