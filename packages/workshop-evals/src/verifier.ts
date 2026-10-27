@@ -5,11 +5,13 @@ import type {
   AiChatMessage, GadgetClient, WorkpieceId, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { EvalCheck, EvalCheckOutcome } from "./task.js";
+import { RenderedView, ViewHostError } from "./view-host.js";
 
 const EVIDENCE_LIMIT = 2_000;
 const VERIFIER_THREW = "verifier.threw";
 
-export type VerifierSession = Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
+export type VerifierSession =
+  Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
 
 /** The chat as the Workshop recorded it when the turn ended. */
 export type VerifierChat = Pick<AgentTurnResult, "history" | "compactions" | "usage">;
@@ -55,6 +57,7 @@ export class EvalVerifier {
   readonly #session: VerifierSession;
   readonly #checks: EvalCheck[] = [];
   readonly #pending: Promise<void>[] = [];
+  #hostFailure: ViewHostError | undefined;
 
   constructor(
       session: VerifierSession, workpieces: readonly WorkpieceSummary[],
@@ -90,18 +93,26 @@ export class EvalVerifier {
     }
   }
 
+  /** Runs `html`, a `<gadget-ui>` view of this chat, as the Workshop runs it (see RenderedView). */
+  openView(html: string): Promise<RenderedView> {
+    return RenderedView.open(html);
+  }
+
   /**
    * Runs `verify` and returns its checks. Throws instead when a check failed while the Workshop
-   * connection dropped, since that failure says nothing about the agent's work.
+   * connection dropped, or when the browser running a view failed, since such a failure says
+   * nothing about the agent's work.
    */
   async collect(verify: (verifier: EvalVerifier) => Promise<void>): Promise<EvalCheck[]> {
     const drops = this.#session.connectionDrops;
     try {
       await verify(this);
     } catch (error) {
+      this.#noteHostFailure(error);
       this.#checks.push({ id: VERIFIER_THREW, pass: false, evidence: truncate(String(error)) });
     }
     await Promise.all(this.#pending);
+    if (this.#hostFailure !== undefined) throw this.#hostFailure;
     if (this.#checks.some(check => !check.pass)) {
       // A check can see its RPC fail before the session counts the drop behind it.
       await delay(0);
@@ -120,7 +131,12 @@ export class EvalVerifier {
     try {
       this.#checks[index] = { id, ...await body() };
     } catch (error) {
+      this.#noteHostFailure(error);
       this.#checks[index] = { id, pass: false, evidence: truncate(String(error)) };
     }
+  }
+
+  #noteHostFailure(error: unknown): void {
+    if (error instanceof ViewHostError) this.#hostFailure ??= error;
   }
 }

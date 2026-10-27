@@ -109,7 +109,7 @@ describe("EvalVerifier", () => {
   });
 
   it("fails verification when a check fails as the Workshop connection drops", async () => {
-    const session = { openGadget: unusedSession.openGadget, connectionDrops: 0 };
+    const session = { ...unusedSession, connectionDrops: 0 };
     await expect(new EvalVerifier(session, []).collect(async verifier => {
       await verifier.check("reads", async () => {
         session.connectionDrops++;
@@ -119,7 +119,7 @@ describe("EvalVerifier", () => {
   });
 
   it("keeps a verification whose checks passed while the connection dropped", async () => {
-    const session = { openGadget: unusedSession.openGadget, connectionDrops: 0 };
+    const session = { ...unusedSession, connectionDrops: 0 };
     expect(await new EvalVerifier(session, []).collect(async verifier => {
       await verifier.check("reads", async () => {
         session.connectionDrops++;
