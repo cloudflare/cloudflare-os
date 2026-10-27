@@ -481,11 +481,10 @@ Settled before merge:
 - **Naming:** the code says "decision model", the industry term Cloudflare's Clef docs use, rather
   than pi's "classifier".
 
-Pending with the AI Gateway team: whether `/run` can authenticate as chat does, with
-`cf-aig-authorization` alone, or pass on a token the gateway also accepted. If it can, the HTTPS
-route should work as written. If not, the choices are calling Workers AI directly over HTTPS with
-the gateway token (those calls then skip the gateway's logs), refusing decision models over HTTPS,
-or a second token setting.
+Settled since: `/run` does authenticate as chat does, with `cf-aig-authorization` alone, once the
+model is in the path (`workers-ai/run/<model>`) and the request carries no `Authorization`, which
+the gateway would otherwise forward to Workers AI as the credential (`providers/WorkersAI.ts` in
+`ai-gateway-infra`).
 
 Optional: check that the binding path's `metadata` shows up on the gateway's log entries (AI
 Gateway › Read, or the dashboard) for log IDs `01M3Z9A89284H1RT2C7T40T4AB` and

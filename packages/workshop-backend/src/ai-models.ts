@@ -1087,18 +1087,32 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
       },
     });
   }
-  // Unlike the chat route, /run wants a Workers AI credential as `Authorization`, and a request
-  // sending this token there is refused even when the token grants Workers AI. Until AI Gateway
-  // authenticates /run as it does chat, this route fails, so the docs have such deployments
-  // disable decision models.
-  return modelAt(
-      `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}/workers-ai`, {
-        apiKey: gwConfig.apiToken,
+  // The gateway supplies Workers AI's credential only to a request that names the model in the
+  // path (`run/<model>`) and carries no `Authorization`; otherwise it forwards that header to
+  // Workers AI as the credential. pi's transport POSTs {model, input} to `run` and sends its key
+  // as `Authorization`, so this fetch reshapes the request, and pi's key goes unsent. The
+  // response may come back bare or in the REST envelope pi reads.
+  const gatewayRoot =
+      `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}/workers-ai`;
+  return modelAt(catalog.baseUrl, {
+    apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+    fetch: async (_url, init) => {
+      const { model, input } = JSON.parse(init!.body as string);
+      const response = await fetch(`${gatewayRoot}/run/${model}`, {
+        method: "POST",
         headers: {
+          "content-type": "application/json",
           "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
           "cf-aig-metadata": JSON.stringify(metadata),
         },
+        body: JSON.stringify(input),
+        signal: init?.signal,
       });
+      if (!response.ok) return response;
+      const body = await response.json() as object;
+      return Response.json("result" in body ? body : { success: true, result: body });
+    },
+  });
 }
 
 // =======================================================================================

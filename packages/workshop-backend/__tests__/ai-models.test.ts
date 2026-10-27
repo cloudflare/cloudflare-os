@@ -2022,12 +2022,21 @@ describe("getDecisionModel routing", () => {
 
     expect((await decide(CONTEXT)).answers).toEqual(ANSWERS);
     const [request] = capturedRequests;
-    expect(request.url).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/workers-ai/run");
-    // Workers AI's /run checks `authorization` itself; the gateway checks its own header.
-    expect(request.headers.get("authorization")).toBe("Bearer gateway-token");
+    expect(request.url).toBe("https://gateway.ai.cloudflare.com/v1/gateway-account-id/" +
+        "platform-gateway/workers-ai/run/@cf/cloudflare/clef");
+    // An `authorization` header would be forwarded to Workers AI as the credential, in place of
+    // the one the gateway supplies.
+    expect(request.headers.has("authorization")).toBe(false);
     expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
     expect(JSON.parse(request.headers.get("cf-aig-metadata")!)).toEqual(GATEWAY_METADATA);
+    expect(JSON.parse(request.body)).toEqual(WIRE_INPUT);
+  });
+
+  it("reads a bare result from the gateway as well as the REST envelope", async () => {
+    vi.stubGlobal("fetch", async () => Response.json(CLEF_RESULT));
+    const decide = getDecisionModel(env(), CLEF_CONFIG, GADGET_INITIATOR, METADATA_CONTEXT);
+
+    expect((await decide(CONTEXT)).answers).toEqual(ANSWERS);
   });
 
   describe("over the Workers AI binding", () => {
