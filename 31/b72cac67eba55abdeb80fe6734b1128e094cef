@@ -1,0 +1,23 @@
+scripts/evals/eval-keys.test.ts
+  s_c5f8d284ae2719::t_ba808c29c81978 9-13
+scripts/build-bundled-blueprints.test.ts
+  s_c5f8d284ae2719::t_22a6f78222204c 14-18
+packages/gatekeeper-kit/__tests__/git-bootstrap.test.ts
+  s_c5f8d284ae2719::t_132d1b0657c433 12-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "31b72cac67eba55abdeb80fe6734b1128e094cef",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,241 @@
+docs/blueprints.md
+  s_7dfe693742371f::t_ce2599049cc308 272
+docs/observers.md
+  s_7dfe693742371f::t_7ab57e4d4a1941 107,205,214,239,763
+docs/sharing.md
+  s_7dfe693742371f::t_9a8884a270d34e 44,166,169
+packages/gatekeeper-mcp/README.md
+  s_7dfe693742371f::t_b3a9140013c8d5 209
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_7dfe693742371f::t_18cd61d305652d 71,126,298
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_7dfe693742371f::t_fa2fc77c4ed33b 78
+packages/integration-tests/__tests__/connect-handoff.test.ts
+  s_7dfe693742371f::t_d4552fb3cea91f 134
+packages/integration-tests/__tests__/context-sharing.test.ts
+  s_7dfe693742371f::t_8d511999b67940 67,92,119
+packages/integration-tests/__tests__/external-message-round-trip.test.ts
+  s_7dfe693742371f::t_5fb2d5e773201a 159
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_7dfe693742371f::t_37261171b1f5cb 109,136,172
+packages/integration-tests/__tests__/github-hooks-off.test.ts
+  s_7dfe693742371f::t_65fe4d18606933 61
+packages/integration-tests/__tests__/github-hooks.test.ts
+  s_7dfe693742371f::t_1e0f1cc85b3813 67
+packages/integration-tests/__tests__/google-hooks-upgrade.test.ts
+  s_7dfe693742371f::t_f25e9c7d08ac66 75,165
+packages/integration-tests/__tests__/observer-exclusion.test.ts
+  s_7dfe693742371f::t_ce17ce63856614 65,87,121
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_7dfe693742371f::t_43ecb621257859 126,152,172,206,214,354,362
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_7dfe693742371f::t_a9b6b7a90a030f 82,104,132
+packages/integration-tests/__tests__/observer-scope-promotion.test.ts
+  s_7dfe693742371f::t_3b60e1fc9e4c18 53,84
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_7dfe693742371f::t_57cf2a6c9d842f 22,100,139,165,304,337,343,560,590
+packages/integration-tests/__tests__/workshop-action-history.test.ts
+  s_7dfe693742371f::t_e43a893d11ecd4 90,111,152,183,195
+packages/integration-tests/__tests__/workshop-admin-policy.test.ts
+  s_7dfe693742371f::t_c52cce15e64504 55
+packages/integration-tests/__tests__/workshop-agent-context.test.ts
+  s_7dfe693742371f::t_c982cd446a061a 51
+packages/integration-tests/__tests__/workshop-agent-create-resource.test.ts
+  s_7dfe693742371f::t_c4b941d64b21ab 103
+packages/integration-tests/__tests__/workshop-blueprints.test.ts
+  s_7dfe693742371f::t_9c76f15d239fbd 299,324,351,382,397,442,488,543,549,622,631,665,714,721,768,771,852,866,921,932,941,949,974,977,987,1000,1030,1049,1072
+packages/integration-tests/__tests__/workshop-changes.test.ts
+  s_7dfe693742371f::t_8c6f297ff74099 5,86,95,98,384-385,485,529,735
+packages/integration-tests/__tests__/workshop-chat-recovery.test.ts
+  s_7dfe693742371f::t_e7589671ef08db 50,83,107,169,218,225,253,263,295,344,381
+packages/integration-tests/__tests__/workshop-connections.test.ts
+  s_7dfe693742371f::t_11f9948193924e 312,333
+packages/integration-tests/__tests__/workshop-console-logs.test.ts
+  s_7dfe693742371f::t_a21bedd8c8c351 67,144
+packages/integration-tests/__tests__/workshop-gadget-removal.test.ts
+  s_7dfe693742371f::t_46aa64282e29db 93,179
+packages/integration-tests/__tests__/workshop-hooks.test.ts
+  s_7dfe693742371f::t_0baace397d61a8 91,149
+packages/integration-tests/__tests__/workshop-lifecycle.test.ts
+  s_7dfe693742371f::t_20d4933e4d1e9a 4,42,53,55,62,77,83,108,124,135,163,168,173,185
+packages/integration-tests/__tests__/workshop-presence.test.ts
+  s_7dfe693742371f::t_63fe543316a36a 50,55
+packages/integration-tests/__tests__/workshop-prompt-cache.test.ts
+  s_7dfe693742371f::t_24f73e172a5158 110,207
+packages/integration-tests/__tests__/workshop-sharing.test.ts
+  s_7dfe693742371f::t_cdbe7266da1a9e 4,47,52,92,94,111,132,144,179,185,218,229-230,262,268,295,322,354,362,376
+packages/integration-tests/__tests__/workshop-steering.test.ts
+  s_7dfe693742371f::t_d83417eca0358d 74,113,237
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_7dfe693742371f::t_f48358a7731dec 182,218
+packages/integration-tests/__tests__/workshop-user-models.test.ts
+  s_7dfe693742371f::t_9a2b008fceab63 72
+packages/integration-tests/__tests__/workshop-worktrees.test.ts
+  s_7dfe693742371f::t_80a1e3532e9de1 39
+packages/integration-tests/src/agent-session.ts
+  s_7dfe693742371f::t_02d6d3e3c6f4e6 535,686,1072
+packages/integration-tests/src/rpc-client.ts
+  s_7dfe693742371f::t_34f02008462ab8 151,154
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_7dfe693742371f::t_f9ec0d8d1a0665 9-11,13,25-28,49,53,82,87,89-90,112,122,132,144,147,211
+packages/workshop-backend/__tests__/blueprints.test.ts
+  s_7dfe693742371f::t_4616ff6c3bd84f 276
+packages/workshop-backend/__tests__/bundled-blueprints.test.ts
+  s_7dfe693742371f::t_3f0dc40cd3c270 86
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_7dfe693742371f::t_1424d8ffd34879 3-5,10-11,13,20,25,29,32,37-38
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_7dfe693742371f::t_72398fc3a6970f 6,643,645,672,688,719
+packages/workshop-backend/src/overseer.ts
+  s_7dfe693742371f::t_e6ee3c6347e065 3,9591,10391,10399,10474,10679,11203-11204,11220,11229,12691,12702,12709
+packages/workshop-backend/src/server.ts
+  s_7dfe693742371f::t_cd3cee98d8fa70 4,297,332,341-342,349,358,365,432,512,520
+packages/workshop-backend/src/sharing.ts
+  s_7dfe693742371f::t_48fa9b96be4a3a 26,121,125
+packages/workshop-backend/src/storage-schema/user-storage.ts
+  s_7dfe693742371f::t_fbc5005d384220 10,116,120
+packages/workshop-backend/src/user.ts
+  s_7dfe693742371f::t_2e085fd61d81fc 2,133,917
+packages/workshop-frontend/src/Activity.tsx
+  s_7dfe693742371f::t_07dffc89fba504 32
+packages/workshop-frontend/src/ActivityNotifications.tsx
+  s_7dfe693742371f::t_d60fe85d9fc296 23
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_7dfe693742371f::t_2af09150afff14 624,759,764
+packages/workshop-frontend/src/BlueprintModal.tsx
+  s_7dfe693742371f::t_9bbfa131f2b297 5,70
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7dfe693742371f::t_b956aea6c9278f 2489
+packages/workshop-frontend/src/GadgetEditor.blueprintUpdate.test.tsx
+  s_7dfe693742371f::t_1f5ad7f303e406 8,50,60
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_7dfe693742371f::t_f53e37955fb2f3 1421
+packages/workshop-frontend/src/GadgetUseView.tsx
+  s_7dfe693742371f::t_593102712bc145 9,24,40
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_7dfe693742371f::t_f1b0d2be9b1e37 29
+packages/workshop-frontend/src/SandboxedGatekeeperApp.test.tsx
+  s_7dfe693742371f::t_a813a30aa496f0 72,75,134,398,408,412
+packages/workshop-frontend/src/SandboxedGatekeeperApp.tsx
+  s_7dfe693742371f::t_c19bb8719ad2e8 335
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_7dfe693742371f::t_4ca230ffacd062 13,102,287,292,322,434,1217,1259,1290,1308,1318,1328
+packages/workshop-frontend/src/ShareModal.tsx
+  s_7dfe693742371f::t_3cf8b85720e869 13,52
+packages/workshop-frontend/src/components/AppShell/CommandPalette.tsx
+  s_7dfe693742371f::t_6aa3270e37b1f1 11,31,150,183
+packages/workshop-frontend/src/components/AppShell/SidebarGadgetRow.tsx
+  s_7dfe693742371f::t_633c3aa7e3e5dc 6,32,34-38
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_7dfe693742371f::t_7dc21c99563617 23,46,48-55,77,83,85,97,128-129,135,144,156,158,170,173,185,193,195
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_7dfe693742371f::t_798b0d23f3ca56 7,49-55,188,194,198,201,213,246,255,258,276,279,291,318,321-322,334
+packages/workshop-frontend/src/components/RecentApps.tsx
+  s_7dfe693742371f::t_3a6c4751f7f822 5,35,75,81
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_7dfe693742371f::t_de391545be31bd 7,101,104,107,110
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_7dfe693742371f::t_18084c2ef64a8b 4-5,40-41,43,45
+packages/workshop-frontend/src/components/format/useOutputFormats.ts
+  s_7dfe693742371f::t_d1759c1c70099c 68
+packages/workshop-frontend/src/homePromptFlow.test.tsx
+  s_7dfe693742371f::t_0a0863a627c581 10,13,17,84
+packages/workshop-frontend/src/routes/index.tsx
+  s_7dfe693742371f::t_de43462e861f8c 101
+packages/workshop-frontend/src/routes/outputs.tsx
+  s_7dfe693742371f::t_e7aef276f22db6 488,512
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_7dfe693742371f::t_f015ff1cccfb7c 9-10,12,37,44,118,127,150
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_7dfe693742371f::t_a595d04808f24e 5,34,47,119
+packages/workshop-shared/src/api.ts
+  s_7dfe693742371f::t_cc6daa46bddb9c 397-398,404-406,408-411,416-417,419-420,658,661-662,664,667-668,671-673,675-676,681-682,685-686,688,691,693,697,708-709,819-820,822,873,882,2197,2199,2213,2220,2226,2233,2241,2263-2264,2266,2313-2314,2355,2651,2662,2667,2671,2916,4243,5484
+packages/api-schema/src/emit/tools.ts
+  s_c5f8d284ae2719::t_96f6c3d7d495e8 1-15,17-111,113-120,122-155,158,162-176,178-230,239-281,284-285,287-303,305-330,332-355
+  s_c5f8d284ae2719::t_88e20fe6e75f18 16,112,121,156-157,159-161,177,231-238,282-283,286,304,331
+packages/api-schema/__tests__/dts.test.ts
+  s_c5f8d284ae2719::t_7b918e5e01d4fa 870-871
+  s_c5f8d284ae2719::t_48920874bc225b 920-929,931,935,949-950,954,1000,1011,1025,1033,1043,1078,1114,1120-1154,1157-1160,1248
+  s_c5f8d284ae2719::t_151abdf621632f 746,813,932,958,960,962-990,995,997,1006,1008,1017,1019,1028,1030,1037,1039,1049,1051
+  s_c5f8d284ae2719::t_6f6026e6b5ef27 1-9,11-13,16-31,33-38,42-55,57-63,65-139,141-152,158-159,162-181,184-215,220-223,226-234,236-316,318-321,324,327,330-337,341,344-346,352,355,367-372,374-376,379-388,392-393,395-588,591-612,614-619,622-642,644-661,665,696-704,712-715,717,719-720,724-725,738,749-750,754,756,758,786-798,800-806,814-817,829,839,842,844,851,865-867,875-877,883-891,893-902,904-917,919,936-937,944,947,955,957,994,1005,1016,1044-1045,1048,1052-1053,1080-1081,1087,1093,1161-1200,1202-1244,1249-1250,1252
+  s_c5f8d284ae2719::t_0b844af09404dd 10,14-15,32,39-41,56,64,140,153-157,160-161,182-183,216-219,224-225,235,317,322-323,325-326,328-329,338-340,342-343,347-351,353-354,356-366,373,377-378,389-391,394,589-590,613,620-621,643,662-664,666-695,705-711,716,718,721-723,726-737,739-745,747-748,751-753,755,757,759-785,799,807-812,818-828,830-838,840-841,843,845-850,852-864,868-869,872-874,878-882,892,903,918,930,933-934,938-943,945-946,948,951-953,956,959,961,991-993,996,998-999,1001-1004,1007,1009-1010,1012-1015,1018,1020-1024,1026-1027,1029,1031-1032,1034-1036,1038,1040-1042,1046-1047,1050,1054-1077,1079,1082-1086,1088-1092,1094-1113,1115-1119,1155-1156,1201,1245-1247,1251,1253
+packages/api-schema/README.md
+  s_c5f8d284ae2719::t_e1acd1ed3368d5 1-63
+  s_c5f8d284ae2719::t_e4cc4670993aac 64-79
+packages/api-schema/__tests__/tools.test.ts
+  s_c5f8d284ae2719::t_0e8c1a81d62fca 1-178,180-191,193-227,229-250,252-270,272-382,384-389,391-407,409-415
+  s_c5f8d284ae2719::t_f831f759a8f07c 179,192,228,251,271,383,390,408
+packages/api-schema/__tests__/extract.test.ts
+  s_c5f8d284ae2719::t_26172d4fa16aee 1-6,8-12,14-135,141-160,207-208,212,220-221,235,237,242,244,255,259,263-299
+  s_c5f8d284ae2719::t_fb7efde5f9c864 161-190,192-193,195-198,202-203,205,227,234,238-239,245,260-262
+  s_c5f8d284ae2719::t_50e2b0663580b7 7,13,136-140,191,194,199-201,204,206,209-211,213-219,222-226,228-233,236,240-241,243,246-254,256-258
+packages/api-schema/src/emit/dts.ts
+  s_c5f8d284ae2719::t_c59353421288e8 257-258
+  s_c5f8d284ae2719::t_d3590c8273471f 580-581
+  s_c5f8d284ae2719::t_97e1464f82b211 563-566,569
+  s_c5f8d284ae2719::t_ce4c5868f100ef 508-509,514-515,517
+  s_c5f8d284ae2719::t_5bfef3f2a2278a 1-7,17-19,43,50-58,63,65,68-121,123,125-131,134-162,168,170-172,177,186,189-191,193,195,197,199,204,208,211-212,214-217,223-256,259-277,280,282-283,286-295,298,300-301,303-305,307-309,312-335,344-350,353-357,359-360,370-374,378-381,387,402,408-410,414,416,418,422,425-428,431,433-446,448,450,452,454,456,458-462,464,466-483,486-490,492-493,496-503,505-507,512-513,518-562,567-568,570-572,582-616,618-619,621,623,628-632
+  s_c5f8d284ae2719::t_9e7ade9c840c3a 8-16,20-42,44-49,59-62,64,66-67,122,124,132-133,163-167,169,173-176,178-185,187-188,192,194,196,198,200-203,205-207,209-210,213,218-222,278-279,281,284-285,296-297,299,302,306,310-311,336-343,351-352,358,361-369,375-377,382-386,388-401,403-407,411-413,415,417,419-421,423-424,429-430,432,447,449,451,453,455,457,463,465,484-485,491,494-495,504,510-511,516,573-579,617,620,622,624-627
+packages/api-schema/src/extract.ts
+  s_c5f8d284ae2719::t_3f8de52aa89327 45,88-90,112,120,204-205,229,242-243,256,268,280,284,288,302,311,343
+  s_c5f8d284ae2719::t_46cb1894d948fe 1-44,46-87,91-111,113-119,121-203,206-228,230-241,244-255,257-267,269-279,281-283,285-287,289-301,303-310,312-342,344-519
+packages/api-schema/scripts/generate.ts
+  s_c5f8d284ae2719::t_ca497905ffee7c 96
+  s_c5f8d284ae2719::t_a51d2d0fc87b94 1-6,8-95,97-105
+  s_c5f8d284ae2719::t_df68f5097f4839 7
+plans/capnweb-api-schema.md
+  s_c5f8d284ae2719::t_076f829176df19 1-50,52-56,59-63,67-152,155-191,193,214-222,225-236,251-259,266-278,289-300,304-331,334-345,350-351
+  s_c5f8d284ae2719::t_49f6a9aad0e13f 51,57-58,64-66,153-154,192,194-213,223-224,237-250,260-265,279-288,301-303,332-333,346-349,352-379
+packages/api-schema/src/schema.ts
+  s_c5f8d284ae2719::t_4367e939444950 1-101
+.github/workflows/ci.yml
+  s_c5f8d284ae2719::t_56c2f4d64b4de9 58-60
+package.json
+  s_c5f8d284ae2719::t_2cc10345b36ca2 24,27-29
+packages/api-schema/__tests__/__fixtures__/api.ts
+  s_c5f8d284ae2719::t_eee6bda997100b 1-113
+packages/api-schema/__tests__/__fixtures__/schema.json
+  s_c5f8d284ae2719::t_6d764054112c56 1-571
+packages/api-schema/generated/workshop-api.agent.d.ts
+  s_c5f8d284ae2719::t_dbe2552d1c410f 1-3089
+packages/api-schema/generated/workshop-api.fragments.json
+  s_c5f8d284ae2719::t_c7a3653e0430be 1-16
+packages/api-schema/generated/workshop-api.schema.json
+  s_c5f8d284ae2719::t_346f3fc35c8419 1-12648
+packages/api-schema/generated/workshop-api.tools.json
+  s_c5f8d284ae2719::t_c08100219b6afd 1-16455
+packages/api-schema/package.json
+  s_c5f8d284ae2719::t_3c1f3f242fd407 1-27
+packages/api-schema/tsconfig.json
+  s_c5f8d284ae2719::t_947bfdee44d5f9 1-28
+packages/api-schema/vite.config.ts
+  s_c5f8d284ae2719::t_d69e8c19314057 1-5
+packages/api-schema/vitest.config.ts
+  s_c5f8d284ae2719::t_c6f6ac08a49ade 1-8
+pnpm-lock.yaml
+  s_c5f8d284ae2719::t_c10b0e34716acd 85-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7af5bb21bf2d7ddb4fecf86c58cfb78ec2e56d9f",
+  "prompts": {},
+  "sessions": {
+    "s_7dfe693742371f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284f7677-ca13-40a4-af48-4e4872d6f382",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
