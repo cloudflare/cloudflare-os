@@ -861,7 +861,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     // Pending cell changes, shown as made, as every read shows what awaits approval.
     const cells = overlay.pendingCells(id);
     const worksheets = sheets.worksheets.map(sheet =>
-      withPendingCells(sheet, cells.filter(change => change.worksheet.toLowerCase() === sheet.name.toLowerCase()), maxCells));
+      withPendingCells(sheet, cells.filter(change => change.worksheet.toLowerCase() === sheet.name.toLowerCase()), { maxCells, within: range !== undefined }));
     await this.ctx.observe("Read a SharePoint workbook", `Read ${sheets.worksheets.length} worksheet${sheets.worksheets.length === 1 ? "" : "s"} of ${md(entry.path || entry.name)}.`,
       units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
     return { entry, worksheets, otherWorksheets: sheets.otherWorksheets };

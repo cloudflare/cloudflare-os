@@ -41,6 +41,13 @@ describe("withPendingCells", () => {
     expect(shown.values).toEqual([["Item", "Cost"], ["Rent", 1300]]);
   });
 
+  it("keeps a range the agent asked for, showing only the changed cells inside it", () => {
+    const shown = withPendingCells(sheet, [
+      { address: "B2:C3", values: [[1300, 1], [2, 3]] }, { address: "Z100", values: [[9]] },
+    ], { within: true });
+    expect(shown).toEqual({ ...sheet, values: [["Item", "Cost"], ["Rent", 1300]], formulas: [["Item", "Cost"], ["Rent", 1300]] });
+  });
+
   it("grows the range for a change outside it, later changes winning", () => {
     const shown = withPendingCells(sheet, [
       { address: "A3:B3", values: [["Total", "=SUM(B2:B2)"]] },
@@ -54,16 +61,16 @@ describe("withPendingCells", () => {
   it("leaves out a change that would grow the range past the read's budget, and says the sheet is truncated", () => {
     const far = { address: "CV100", values: [["far"]] };
     const near = { address: "A3", values: [["Total"]] };
-    const bounded = withPendingCells(sheet, [far, near], 10);
+    const bounded = withPendingCells(sheet, [far, near], { maxCells: 10 });
     expect(bounded.address).toBe("Budget!A1:B3");
     expect(bounded.values[2]).toEqual(["Total", null]);
     expect(bounded.truncated).toBe(true);
-    const roomy = withPendingCells(sheet, [far, near], 10_000);
+    const roomy = withPendingCells(sheet, [far, near], { maxCells: 10_000 });
     expect(roomy.address).toBe("Budget!A1:CV100");
     expect(roomy.truncated).toBe(false);
     // Nothing fits: the read stands as it was.
     const empty: WorksheetContent = { name: "New", address: "", values: [], formulas: [], truncated: false };
-    expect(withPendingCells(empty, [{ address: "A1:D5", values: Array.from({ length: 5 }, () => [1, 2, 3, 4]) }], 4)).toEqual({ ...empty, truncated: true });
+    expect(withPendingCells(empty, [{ address: "A1:D5", values: Array.from({ length: 5 }, () => [1, 2, 3, 4]) }], { maxCells: 4 })).toEqual({ ...empty, truncated: true });
   });
 
   it("fills an empty worksheet with only the change", () => {

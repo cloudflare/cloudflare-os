@@ -91,19 +91,26 @@ export function checkShape(range: CellRange, values: readonly (readonly CellValu
  * A worksheet read with pending cell changes applied, as Excel will show it once they are
  * approved. A change outside the range read grows it, within `maxCells`: one that would grow it
  * past the read's budget is left out and the sheet reported truncated, as a used range too large
- * to read is, so a change far from the rest can't make a read allocate the gap. A formula is shown
- * as its text in `values` too, since nothing has computed it yet.
+ * to read is, so a change far from the rest can't make a read allocate the gap. A read of a range
+ * the agent asked for (`within`) never grows: only the changed cells inside it show. A formula is
+ * shown as its text in `values` too, since nothing has computed it yet.
  */
-export function withPendingCells(sheet: WorksheetContent, changes: readonly { address: string; values: CellValue[][] }[], maxCells = Infinity): WorksheetContent {
+export function withPendingCells(sheet: WorksheetContent, changes: readonly { address: string; values: CellValue[][] }[],
+                                 { maxCells = Infinity, within = false }: { maxCells?: number; within?: boolean } = {}): WorksheetContent {
   if (changes.length === 0) return sheet;
   const bang = sheet.address.lastIndexOf("!");
   const prefix = bang >= 0 ? sheet.address.slice(0, bang + 1) : "";
   const read = sheet.values.length === 0 ? undefined : parseRange(sheet.address.slice(bang + 1));
+  if (within && read === undefined) return sheet;
   let range = read;
   let truncated = sheet.truncated;
   const shown: { address: string; values: CellValue[][] }[] = [];
   for (const change of changes) {
     const changed = parseRange(change.address);
+    if (within) {
+      if (intersects(changed, read!)) shown.push(change);
+      continue;
+    }
     const union = range === undefined ? changed : {
       firstRow: Math.min(range.firstRow, changed.firstRow), firstColumn: Math.min(range.firstColumn, changed.firstColumn),
       lastRow: Math.max(range.lastRow, changed.lastRow), lastColumn: Math.max(range.lastColumn, changed.lastColumn),
@@ -131,9 +138,16 @@ export function withPendingCells(sheet: WorksheetContent, changes: readonly { ad
     change.values.forEach((row, rowOffset) => row.forEach((value, columnOffset) => {
       const r = changed.firstRow + rowOffset - grown.firstRow;
       const c = changed.firstColumn + columnOffset - grown.firstColumn;
+      // Only inside the range shown: a change overlapping an asked-for range reaches past it.
+      if (r < 0 || c < 0 || r >= values.length || c >= values[r]!.length) return;
       values[r]![c] = value;
       formulas[r]![c] = value;
     }));
   }
   return { ...sheet, address: prefix + formatRange(grown), values, formulas, truncated };
+}
+
+/** Whether two ranges share a cell. */
+function intersects(a: CellRange, b: CellRange): boolean {
+  return a.firstRow <= b.lastRow && b.firstRow <= a.lastRow && a.firstColumn <= b.lastColumn && b.firstColumn <= a.lastColumn;
 }
