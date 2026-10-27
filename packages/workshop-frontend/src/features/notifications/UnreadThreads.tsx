@@ -2,7 +2,7 @@ import { Button } from "@cloudflare/kumo";
 import { Chats, Check } from "@phosphor-icons/react";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { UnreadThread } from "@gadgets/workshop-shared/api";
 import type { RpcStub } from "capnweb";
 import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
 import { useAuthenticatedApi } from "../../AuthContext";
@@ -14,37 +14,24 @@ export const UnreadThreads = () => {
   const unread = useUnreadState();
   const { authenticatedApi } = useAuthenticatedApi();
   const state = unread?.state;
-  const [metadata, setMetadata] = useState<{
+  const [result, setResult] = useState<{
     api: RpcStub<AuthenticatedApi>;
-    heads: Map<string, ChatTimelineHead>;
+    chats: UnreadThread[];
     failed: boolean;
   }>();
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     let active = true;
-    const workspaceIds = [...new Set((state?.chats ?? [])
-      .filter(chat => chat.unreadMessageCount > 0).map(chat => chat.workspaceId))];
-    void Promise.allSettled(workspaceIds.map(async workspaceId =>
-      ({workspaceId, heads: await authenticatedApi.getChatHeads(workspaceId)})))
-      .then(results => {
-        if (!active) return;
-        const heads = new Map<string, ChatTimelineHead>();
-        let failed = false;
-        for (const result of results) {
-          if (result.status === "rejected" || result.value.heads === null) { failed = true; continue; }
-          for (const head of result.value.heads) heads.set(`${result.value.workspaceId}:${head.chatId}`, head);
-        }
-        setMetadata({api: authenticatedApi, heads, failed});
-      });
+    void authenticatedApi.getUnreadThreads().then(chats => {
+      if (active) setResult({api: authenticatedApi, chats, failed: false});
+    }, () => {
+      if (active) setResult(previous => ({api: authenticatedApi,
+        chats: previous?.api === authenticatedApi ? previous.chats : [], failed: true}));
+    });
     return () => { active = false; };
   }, [authenticatedApi, state, retry]);
-  const heads = metadata?.api === authenticatedApi ? metadata.heads : undefined;
-  const chats = (state?.chats ?? [])
-    .filter(chat => chat.unreadMessageCount > 0)
-    .map(chat => ({...heads?.get(`${chat.workspaceId}:${chat.chatId}`), ...chat}))
-    .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0)
-      || (a.chatTitle ?? "").localeCompare(b.chatTitle ?? "") || a.workspaceId.localeCompare(b.workspaceId)
-      || a.chatId - b.chatId);
+  const inbox = result?.api === authenticatedApi ? result : undefined;
+  const chats = inbox?.chats ?? [];
   const [markingRead, setMarkingRead] = useState(false);
 
   return (
@@ -66,15 +53,15 @@ export const UnreadThreads = () => {
           Mark all read
         </Button>
       </header>
-      {metadata?.api === authenticatedApi && metadata.failed && (
+      {inbox?.failed && (
         <div role="status" className="flex items-center gap-2 px-3 py-2 text-sm text-kumo-subtle">
-          Some thread previews couldn’t load. Your unread counts are still available.
+          Couldn’t refresh unread threads. Please try again.
           <Button size="xs" variant="ghost" onClick={() => setRetry(value => value + 1)}>Retry</Button>
         </div>
       )}
-      {!unread?.state ? (
+      {!inbox ? (
         <p role="status" className="px-3 py-8 text-sm text-kumo-subtle">Loading unread threads…</p>
-      ) : chats.length === 0 ? (
+      ) : chats.length === 0 && !inbox.failed ? (
         <div role="status" className="flex flex-col items-center gap-3 px-3 py-16 text-center">
           <Chats size={32} className="text-kumo-inactive" />
           <h2 className="text-base font-medium text-kumo-default">You’re all caught up</h2>

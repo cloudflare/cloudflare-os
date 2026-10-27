@@ -13,6 +13,7 @@ import { UnreadStateBridge, useUnreadState } from "./UnreadStateBridge";
 import { reportVisibleChat } from "./visibleChat";
 
 const snapshot = (_sequence: number): UserUnreadState => ({
+  workspaces: [{workspaceId: "workspace-1", unreadChatCount: 1, unreadMessageCount: 1}],
   unreadChatCount: 1, unreadMessageCount: 1,
   chats: [
     {
@@ -64,19 +65,20 @@ describe("UnreadStateBridge", () => {
   const dispose = vi.fn<() => void>();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
   const subscribeToUnreadState = vi.fn<
-    (subscriber: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable
-  >((subscriber) => {
+    (_scope: unknown, subscriber: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable
+  >((_scope, subscriber) => {
     subscribers.push(subscriber);
     return Object.assign(Promise.resolve(), { [Symbol.dispose]: dispose });
   });
   const markChatsRead = vi.fn<AuthenticatedApi["markChatsRead"]>().mockResolvedValue(undefined);
   const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>().mockResolvedValue(undefined);
+  const getWorkspaceUnreadState = vi.fn<AuthenticatedApi["getWorkspaceUnreadState"]>().mockResolvedValue([]);
   const getChatHeads = vi.fn<AuthenticatedApi["getChatHeads"]>().mockResolvedValue([{chatId: 1, chatTitle: "Demo", latestSequence: 4}]);
-  const api = { subscribeToUnreadState, markChatRead, markChatsRead, markChatUnread, getChatHeads };
-  const render = (authenticatedApi = api) =>
+  const api = { subscribeToUnreadState, markChatRead, markChatsRead, markChatUnread, getChatHeads, getWorkspaceUnreadState };
+  const render = (authenticatedApi = api, scope: Parameters<AuthenticatedApi["subscribeToUnreadState"]>[0] = {workspaceId: "workspace-1"}) =>
     act(async () =>
       root.render(
-        <UnreadStateBridge
+        <UnreadStateBridge scope={scope}
           authenticatedApi={authenticatedApi as unknown as RpcStub<AuthenticatedApi>}
         >
           <Commands />
@@ -161,12 +163,75 @@ describe("UnreadStateBridge", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t update read state");
   });
 
+  it("marks the inbox's already observed boundaries without fetching workspace heads again", async () => {
+    await render();
+    const state = snapshot(1);
+    const observed = {...state.chats[0], latestSequence: 7};
+    await update({...state, chats: [observed]});
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "all")!.click());
+    expect(getChatHeads).not.toHaveBeenCalled();
+    expect(markChatsRead).toHaveBeenCalledExactlyOnceWith([
+      {workspaceId: "workspace-1", chatId: 1, throughSequence: 7},
+    ]);
+  });
+
   it("merges a thread delta and its authoritative totals", async () => {
     await render();
     await update(snapshot(3));
     await act(() => subscribers[0].chatUpdated("workspace-1", 1, null,
-      {unreadChatCount: 0, unreadMessageCount: 0}));
-    expect(currentState()).toEqual({unreadChatCount: 0, unreadMessageCount: 0, chats: []});
+      {unreadChatCount: 0, unreadMessageCount: 0, workspace: {workspaceId: "workspace-1", unreadChatCount: 0, unreadMessageCount: 0}}));
+    expect(currentState()).toEqual({unreadChatCount: 0, unreadMessageCount: 0, workspaces: [], chats: []});
+  });
+
+  it("switches scopes without showing old workspace rows or accepting late callbacks", async () => {
+    await render();
+    await update(snapshot(1));
+    expect(subscribeToUnreadState.mock.calls[0][0]).toEqual({workspaceId: "workspace-1"});
+    await render(api, "summary");
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(currentState()).toBeNull();
+    await update(snapshot(1), 0);
+    expect(currentState()).toBeNull();
+    await update({unreadChatCount: 0, unreadMessageCount: 0, workspaces: [], chats: []});
+    const workspaces = [{workspaceId: "workspace-2", unreadChatCount: 1, unreadMessageCount: 3}];
+    await act(() => subscribers.at(-1)!.summaryUpdated({workspace: workspaces[0], unreadChatCount: 1, unreadMessageCount: 3}));
+    expect(currentState()).toEqual({chats: [], workspaces, unreadChatCount: 1, unreadMessageCount: 3});
+    await render(api, "unread");
+    expect(subscribeToUnreadState.mock.calls.at(-1)?.[0]).toBe("unread");
+  });
+
+  it("merges an out-of-scope badge delta without replacing scoped rows or unrelated workspace counts", async () => {
+    await render(); await update(snapshot(1));
+    await act(() => subscribers[0].summaryUpdated({unreadChatCount: 2, unreadMessageCount: 4,
+      workspace: {workspaceId: "workspace-2", unreadChatCount: 1, unreadMessageCount: 3}}));
+    expect(currentState()).toEqual({...snapshot(1), unreadChatCount: 2, unreadMessageCount: 4,
+      workspaces: [...snapshot(1).workspaces, {workspaceId: "workspace-2", unreadChatCount: 1, unreadMessageCount: 3}]});
+    await act(() => subscribers[0].summaryUpdated({unreadChatCount: 1, unreadMessageCount: 1,
+      workspace: {workspaceId: "workspace-2", unreadChatCount: 0, unreadMessageCount: 0}}));
+    expect(currentState()).toEqual(snapshot(1));
+    expect(getWorkspaceUnreadState).not.toHaveBeenCalled();
+  });
+
+  it("fetches workspace rows only for an explicit mark-workspace-read command", async () => {
+    const WorkspaceCommand = () => {
+      const unread = useUnreadState()!;
+      return <button onClick={() => void unread.markWorkspaceRead("workspace-1")}>workspace read</button>;
+    };
+    await act(async () => root.render(
+      <UnreadStateBridge scope="summary" authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+        <WorkspaceCommand />
+      </UnreadStateBridge>,
+    ));
+    await update({...snapshot(1), chats: []});
+    expect(getWorkspaceUnreadState).not.toHaveBeenCalled();
+    expect(getChatHeads).not.toHaveBeenCalled();
+    getWorkspaceUnreadState.mockResolvedValueOnce([snapshot(1).chats[0],
+      {...snapshot(1).chats[0], chatId: 2, unreadMessageCount: 0}]);
+    await act(async () => container.querySelector("button")!.click());
+    expect(getWorkspaceUnreadState).toHaveBeenCalledExactlyOnceWith("workspace-1");
+    expect(markChatsRead).toHaveBeenCalledExactlyOnceWith([
+      {workspaceId: "workspace-1", chatId: 1, throughSequence: 4},
+    ]);
   });
 
   it("re-subscribes after a User DO reset while visible, but not after unmount", async () => {
@@ -196,7 +261,7 @@ describe("UnreadStateBridge", () => {
   it("does not retry a rejected subscription in a tight loop", async () => {
     vi.useFakeTimers();
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
-    subscribeToUnreadState.mockImplementationOnce((subscriber) => {
+    subscribeToUnreadState.mockImplementationOnce((_scope, subscriber) => {
       subscribers.push(subscriber);
       return Object.assign(Promise.reject(new Error("not supported")), {
         [Symbol.dispose]: dispose,
@@ -215,7 +280,7 @@ describe("UnreadStateBridge", () => {
 
   it("recovers when the subscriber is released before the subscribe ACK arrives", async () => {
     const ack = deferred();
-    subscribeToUnreadState.mockImplementationOnce((subscriber) => {
+    subscribeToUnreadState.mockImplementationOnce((_scope, subscriber) => {
       subscribers.push(subscriber);
       return Object.assign(ack.promise, { [Symbol.dispose]: dispose });
     });

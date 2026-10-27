@@ -56,7 +56,7 @@ const View = ({sequences = [0, 1, 2]}: {sequences?: number[]}) => {
 it.each([false, true])("keeps manual unread in place, then resumes on return (ACK before snapshot: %s)", async ackFirst => {
   navigate.mockClear();
   let subscriber: RpcStub<UnreadStateSubscriber> | undefined;
-  let state: UserUnreadState = {
+  let state: UserUnreadState = {workspaces: [],
 
     unreadChatCount: 1, unreadMessageCount: 1,
     chats: [
@@ -93,7 +93,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
     markChatRead,
     markChatUnread,
     markChatsRead: async () => {},
-    subscribeToUnreadState: (next: RpcStub<UnreadStateSubscriber>) => {
+    subscribeToUnreadState: (_scope: unknown, next: RpcStub<UnreadStateSubscriber>) => {
       subscriber = next;
       void next.updated(state);
       return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} });
@@ -104,7 +104,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
   root = createRoot(host);
   const render = (child: ReactNode) => act(async () =>
     root!.render(
-      <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+      <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
         {child}
       </UnreadStateBridge>,
     ),
@@ -191,9 +191,9 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
 it("keeps unread navigation pending until replay renders its target", async () => {
   navigate.mockClear();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
-  const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 2,
+  const state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 2,
     chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 2, unreadMessageCount: 2}]};
-  const api = {markChatRead, subscribeToUnreadState: (subscriber: RpcStub<UnreadStateSubscriber>) => {
+  const api = {markChatRead, subscribeToUnreadState: (_scope: unknown, subscriber: RpcStub<UnreadStateSubscriber>) => {
     void subscriber.updated(state);
     return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
   }};
@@ -201,7 +201,7 @@ it("keeps unread navigation pending until replay renders its target", async () =
   host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const render = (sequences: number[]) => act(async () => root!.render(
-    <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+    <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
       <View sequences={sequences} />
     </UnreadStateBridge>,
   ));
@@ -226,12 +226,12 @@ it.each([
 ])("completes unread navigation with real scroll geometry (short: $short, initially hidden: $hidden)", async ({short, hidden}) => {
   navigate.mockClear();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
-  const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 1,
+  const state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 1,
     chats: [{workspaceId: "workspace", chatId: 1,
       readThroughSequence: short ? -1 : 0, unreadMessageCount: 1}]};
   const api = {
     markChatRead,
-    subscribeToUnreadState: (subscriber: RpcStub<UnreadStateSubscriber>) => {
+    subscribeToUnreadState: (_scope: unknown, subscriber: RpcStub<UnreadStateSubscriber>) => {
       void subscriber.updated(state);
       return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
     },
@@ -258,7 +258,7 @@ it.each([
   if (hidden) host.style.display = "none";
   root = createRoot(host);
   await act(async () => root!.render(
-    <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}><NavigationView /></UnreadStateBridge>,
+    <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}><NavigationView /></UnreadStateBridge>,
   ));
   await new Promise(resolve => setTimeout(resolve, 100));
   expect(navigate).toHaveBeenLastCalledWith(hidden);
@@ -282,10 +282,10 @@ it.each([
 it("jumps below the sticky toolbar and does not acknowledge a message hidden underneath it", async () => {
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
   let subscriber: RpcStub<UnreadStateSubscriber> | undefined;
-  const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 3,
+  const state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 3,
     chats: [{workspaceId: "workspace", chatId: 1,
       readThroughSequence: -1, unreadMessageCount: 3}]};
-  const api = {markChatRead, subscribeToUnreadState: (next: RpcStub<UnreadStateSubscriber>) => {
+  const api = {markChatRead, subscribeToUnreadState: (_scope: unknown, next: RpcStub<UnreadStateSubscriber>) => {
     subscriber = next;
     void next.updated(state);
     return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
@@ -305,7 +305,7 @@ it("jumps below the sticky toolbar and does not acknowledge a message hidden und
   host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   await act(async () => root!.render(
-    <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}><StickyView /></UnreadStateBridge>,
+    <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}><StickyView /></UnreadStateBridge>,
   ));
   const viewport = host.querySelector<HTMLElement>("[data-viewport]")!;
   await vi.waitFor(() => expect(navigate).toHaveBeenLastCalledWith(false));

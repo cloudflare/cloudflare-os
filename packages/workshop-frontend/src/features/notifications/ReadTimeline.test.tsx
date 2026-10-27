@@ -16,6 +16,7 @@ import { reportVisibleChat } from "./visibleChat";
 import { TimelineContext } from "./readTimelineContext";
 
 const snapshot = (_update = 1, readThroughSequence = -1): UserUnreadState => ({
+  workspaces: [],
   unreadChatCount: readThroughSequence < 2 ? 1 : 0, unreadMessageCount: readThroughSequence < 2 ? 1 : 0,
   chats: [
     {
@@ -39,8 +40,8 @@ describe("timeline read/unread experience", () => {
   const markChatsRead = vi.fn<AuthenticatedApi["markChatsRead"]>().mockResolvedValue(undefined);
   const dispose = vi.fn<() => void>();
   const subscribeToUnreadState = vi.fn<
-    (value: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable
-  >((value) => {
+    (_scope: unknown, value: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable
+  >((_scope, value) => {
     subscriber = value;
     return Object.assign(Promise.resolve(), { [Symbol.dispose]: dispose });
   });
@@ -78,7 +79,7 @@ describe("timeline read/unread experience", () => {
   const render = (child = <View />) =>
     act(async () =>
       root.render(
-        <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+        <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
           {child}
         </UnreadStateBridge>,
       ),
@@ -156,7 +157,7 @@ describe("timeline read/unread experience", () => {
 
   it("can mark an untouched legacy thread unread without initializing it on open", async () => {
     await render();
-    await update({chats: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await update({chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;

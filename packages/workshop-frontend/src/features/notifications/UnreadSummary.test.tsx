@@ -31,15 +31,19 @@ const chats = [
     latestSequence: 6, readThroughSequence: 6, unreadMessageCount: 0,
     latestMessagePreview: "Old message", latestActivityAt: new Date("2026-10-14T01:00:00Z") },
 ];
-const getChatHeads = vi.fn<AuthenticatedApi["getChatHeads"]>().mockImplementation(async workspaceId =>
-  chats.filter(chat => chat.workspaceId === workspaceId));
-  const api = {getChatHeads};
+const getUnreadThreads = vi.fn<AuthenticatedApi["getUnreadThreads"]>();
+const getChatHeads = vi.fn<AuthenticatedApi["getChatHeads"]>();
+const api = {getUnreadThreads, getChatHeads};
 vi.mock("../../AuthContext", () => ({useAuthenticatedApi: () => ({authenticatedApi: api})}));
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.clearAllMocks();
+  getUnreadThreads.mockReset().mockImplementation(async () =>
+    (mock.unread?.state?.chats ?? []).filter(chat => chat.unreadMessageCount > 0)
+      .map(chat => ({...chats.find(item => item.workspaceId === chat.workspaceId && item.chatId === chat.chatId)!, ...chat})));
   vi.stubGlobal("scrollTo", vi.fn<() => void>());
-  mock.unread = { state: { unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markManyRead,
+  mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markManyRead,
+    markWorkspaceRead: vi.fn<Unread["markWorkspaceRead"]>().mockResolvedValue(undefined),
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
     markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(undefined) };
   container = document.body.appendChild(document.createElement("div"));
@@ -66,7 +70,7 @@ it("uses a standard navigation link with a trailing unread count", async () => {
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 it("shows message counts in the summary and each thread, not just unread-thread counts", async () => {
-  mock.unread = { ...mock.unread!, state: { unreadChatCount: 2, unreadMessageCount: 7,
+  mock.unread = { ...mock.unread!, state: { workspaces: [], unreadChatCount: 2, unreadMessageCount: 7,
     chats: [{ ...chats[0], unreadMessageCount: 4 },
       { ...chats[0], chatId: 9, unreadMessageCount: 3 }] } };
   await render();
@@ -87,12 +91,11 @@ it("lists previews of only unread threads and opens the exact conversation", asy
   expect(router.state.location.search).toEqual({ chat: 3, showChat: true });
 });
 
-it("orders threads by latest activity and updates when read state changes", async () => {
-  mock.unread!.state!.chats = [...chats, { ...chats[0], chatId: 9, chatTitle: "Newest",
-    latestActivityAt: new Date("2026-10-15T02:00:00Z") }];
+it("uses the User DO inbox order and refreshes when read state changes", async () => {
+  getUnreadThreads.mockResolvedValueOnce([{...chats[0], chatId: 9, chatTitle: "Newest"}, chats[0]]);
   await render();
   expect([...container.querySelectorAll("ul h2")].map(item => item.textContent)).toEqual(["Newest", "Unread elsewhere"]);
-  mock.unread = { ...mock.unread!, state: { unreadChatCount: 0, unreadMessageCount: 0, chats: [] } };
+  mock.unread = { ...mock.unread!, state: { workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: [] } };
   await act(async () => mock.listeners.forEach(listener => listener()));
   expect(container.textContent).toContain("You’re all caught up");
 });
@@ -105,15 +108,37 @@ it("marks only the currently observed unread boundaries read", async () => {
 
 it("does not show all caught up while local state is loading", async () => {
   mock.unread!.state = undefined;
+  getUnreadThreads.mockReturnValueOnce(new Promise(() => {}));
   await render(true);
   expect(container.textContent).toContain("Loading unread threads…");
   expect(container.textContent).not.toContain("You’re all caught up");
 });
-it("keeps unread rows and counts when metadata fails, and supports retrying previews", async () => {
-  getChatHeads.mockRejectedValueOnce(new Error("Unavailable"));
+it("loads the whole inbox without workspace metadata calls, retaining rows on a failed refresh", async () => {
   await render();
-  expect(container.textContent).toContain("Your unread counts are still available");
+  expect(getChatHeads).not.toHaveBeenCalled();
+  getUnreadThreads.mockRejectedValueOnce(new Error("Unavailable"));
+  mock.unread = {...mock.unread!, state: {...mock.unread!.state!}};
+  await act(async () => mock.listeners.forEach(listener => listener()));
+  expect(container.textContent).toContain("Couldn’t refresh unread threads");
   expect(container.querySelector('ul [aria-label="1 unread message"]')).not.toBeNull();
   await act(async () => action("Retry").click());
   expect(container.textContent).toContain("The deployment is ready.");
+});
+
+it("does not report all caught up when the first inbox query fails", async () => {
+  getUnreadThreads.mockRejectedValueOnce(new Error("Unavailable"));
+  await render();
+  expect(container.textContent).toContain("Couldn’t refresh unread threads");
+  expect(container.textContent).not.toContain("You’re all caught up");
+});
+
+it("ignores an older inbox response when a newer unread update has arrived", async () => {
+  const pending = Promise.withResolvers<Awaited<ReturnType<AuthenticatedApi["getUnreadThreads"]>>>();
+  getUnreadThreads.mockReturnValueOnce(pending.promise);
+  await render();
+  mock.unread = {...mock.unread!, state: {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: []}};
+  await act(async () => mock.listeners.forEach(listener => listener()));
+  await act(async () => pending.resolve([chats[0]]));
+  expect(container.textContent).toContain("You’re all caught up");
+  expect(container.textContent).not.toContain("Unread elsewhere");
 });

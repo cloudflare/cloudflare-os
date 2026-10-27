@@ -14,7 +14,7 @@ import type { useUnreadState } from "../../features/notifications/UnreadStateBri
 import "../../styles.css";
 
 const mock = vi.hoisted(() => ({
-  markManyRead: vi.fn<NonNullable<ReturnType<typeof useUnreadState>>["markManyRead"]>()
+  markWorkspaceRead: vi.fn<NonNullable<ReturnType<typeof useUnreadState>>["markWorkspaceRead"]>()
     .mockResolvedValue(undefined),
   setMute: vi.fn<(workspaceId: string, mute: NotificationMute | null) => Promise<void>>()
     .mockResolvedValue(undefined),
@@ -23,10 +23,8 @@ const mock = vi.hoisted(() => ({
 vi.mock("../../AuthContext", () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: { setWorkspaceNotificationMute: mock.setMute } }),
 }));
-const chat = { workspaceId: "workspace", chatId: 1, chatTitle: "Thread", latestSequence: 2,
-  readThroughSequence: 0, unreadMessageCount: 1 };
 vi.mock("../../features/notifications/UnreadStateBridge", () => ({
-  useUnreadState: () => ({ state: { chats: [chat] }, markManyRead: mock.markManyRead }),
+  useUnreadState: () => ({ state: { chats: [], workspaces: [{workspaceId: "workspace", unreadMessageCount: 1, unreadChatCount: 1}] }, markWorkspaceRead: mock.markWorkspaceRead }),
 }));
 let host: HTMLDivElement | undefined, root: Root | undefined;
 afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); });
@@ -69,7 +67,7 @@ it("gives workspace rows the nav width without reserving separate badge/action c
   await expect.element(page.getByRole("menuitem", { name: "Mark workspace read" })).toBeVisible();
   expect(router.state.location.pathname).toBe("/");
   await act(async () => userEvent.click(page.getByRole("menuitem", { name: "Mark workspace read" })));
-  expect(mock.markManyRead).toHaveBeenCalledExactlyOnceWith([chat]);
+  expect(mock.markWorkspaceRead).toHaveBeenCalledExactlyOnceWith("workspace");
 
   await act(async () => userEvent.click(page.getByRole("button", { name: "Workspace actions" })));
   await act(async () => userEvent.click(page.getByRole("menuitem", { name: "Mute notifications" })));

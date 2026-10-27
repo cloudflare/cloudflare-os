@@ -50,7 +50,7 @@ it.each([1000, 360])("keeps the composer inside a %ipx viewport after a read fai
     <div className="flex flex-col overflow-hidden" style={{ width, height: 320 }}>
       {/* The router host is a block, while its routed workspace fills its height. */}
       <div className="h-full min-h-0 flex-1" data-viewport>
-        <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+        <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
           <Workspace />
         </UnreadStateBridge>
       </div>

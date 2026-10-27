@@ -6,11 +6,17 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 
 ## Web experience
 
-- Thread list, workspace list and sidebar indicators use the same User DO snapshot.
+- One User DO subscription follows the active view: rollups only on ordinary pages, one workspace's
+  thread statuses in its editor, or unread-only rows in the inbox. Global/sidebar workspace badges
+  use rollups, not the user's historical thread rows. Returning, reconnecting or changing views
+  replaces the subscription with the same explicit scope; stale callbacks cannot replace new data.
 - Unread threads opens a live, newest-first inbox with a one-line latest-message preview, direct
   thread links, an empty state and Mark all read. Browsing it does not read threads. Previews arrive
-  with the counts, not through a separate hydration flow.
-- Thread menus offer Mark thread read/unread; workspace menus offer Mark workspace read.
+  from `getUnreadThreads()` on the User DO, refreshed by live count/title updates. Loading the inbox
+  never queries Workspace DOs. Its observed latest positions also avoid another metadata fetch for
+  Mark all read; the read command still authorizes/translates the boundary at the source.
+- Thread menus offer Mark thread read/unread; workspace menus offer Mark workspace read. The latter
+  fetches that workspace's statuses only when invoked, then submits observed unread boundaries.
 - Each rendered timeline item offers Mark unread from here. The new-items divider moves there.
   A local mark-unread keeps the viewed item in place rather than initiating a history jump.
 - Opening an unread thread loads checkpoint history back to its first unread item and positions
@@ -25,8 +31,8 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   pauses automatic reads in already-open views until leaving/re-entering the thread or explicitly
   marking it read. This prevents immediate accidental acknowledgement, but does not cancel
   already-dispatched reads; a later-processed read can clear the manual unread.
-- Failed read commands display an error without pretending the state advanced. Missing workspace
-  summaries show a status and retry with backoff; incomplete totals do not replace native badges.
+- Failed read commands display an error without pretending the state advanced. An inbox query
+  failure retains its previous rows and offers retry; it does not present an empty inbox as caught up.
 
 `UnreadStateBridge` releases its live callback while hidden, and refreshes on return or transport/DO
 reset. Unread support therefore adds no hidden-tab callback keeping the User DO resident. Background native badges use the

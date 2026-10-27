@@ -60,8 +60,7 @@ function AppRow({
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const renameInputRef = useRef<HTMLInputElement>(null)
   const unread = useUnreadState()
-  const unreadChats = unread?.state?.chats.filter(chat =>
-    chat.workspaceId === gadget.id && chat.unreadMessageCount > 0) ?? []
+  const unreadMessages = unread?.state?.workspaces.find(workspace => workspace.workspaceId === gadget.id)?.unreadMessageCount ?? 0
 
   useEffect(() => {
     if (isRenaming) renameInputRef.current?.focus()
@@ -136,7 +135,7 @@ function AppRow({
         <Clock size={10} />
         {formatRelativeTime(gadget.lastActive)}
       </span>
-      <UnreadBadge count={unreadChats.reduce((count, chat) => count + chat.unreadMessageCount, 0)} />
+      <UnreadBadge count={unreadMessages} />
 
       {/* Overflow menu — wrapper stops clicks from reaching the parent Link */}
       <div onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
@@ -151,8 +150,8 @@ function AppRow({
           }
         />
         <DropdownMenu.Content className={MENU_CONTENT}>
-          <DropdownMenu.Item disabled={unreadChats.length === 0} onClick={() => {
-            void unread?.markManyRead(unreadChats).catch(() => {})
+          <DropdownMenu.Item disabled={unreadMessages === 0} onClick={() => {
+            void unread?.markWorkspaceRead(gadget.id).catch(() => {})
           }} className={MENU_ITEM}>Mark workspace read</DropdownMenu.Item>
           <DropdownMenu.Item onClick={startRenaming} className={MENU_ITEM}>
             <Pencil size={13} />

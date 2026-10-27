@@ -43,9 +43,7 @@ export default function SidebarGadgetRow({
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const inputRef = useRef<HTMLInputElement>(null)
   const unread = useUnreadState()
-  const unreadChats = unread?.state?.chats.filter(chat =>
-    chat.workspaceId === gadget.id && chat.unreadMessageCount > 0) ?? []
-  const unreadMessages = unreadChats.reduce((count, chat) => count + chat.unreadMessageCount, 0)
+  const unreadMessages = unread?.state?.workspaces.find(workspace => workspace.workspaceId === gadget.id)?.unreadMessageCount ?? 0
 
   useEffect(() => {
     if (renaming) inputRef.current?.focus()
@@ -77,7 +75,7 @@ export default function SidebarGadgetRow({
     >
       <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle">
         <span aria-hidden="true">{initials(gadget.title)}</span>
-        {collapsed && unreadChats.length > 0 && <span
+        {collapsed && unreadMessages > 0 && <span
           role="img"
           aria-label={`${unreadMessages} unread ${unreadMessages === 1 ? "message" : "messages"}`}
           className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-kumo-badge-blue" />}
@@ -126,8 +124,8 @@ export default function SidebarGadgetRow({
                 }
               />
               <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE}>
-                <DropdownMenu.Item disabled={unreadChats.length === 0} onClick={() => {
-                  void unread?.markManyRead(unreadChats).catch(() => {})
+                <DropdownMenu.Item disabled={unreadMessages === 0} onClick={() => {
+                  void unread?.markWorkspaceRead(gadget.id).catch(() => {})
                 }} className={MENU_ITEM}>Mark workspace read</DropdownMenu.Item>
                 <DropdownMenu.Item
                   onClick={startRename}
