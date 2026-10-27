@@ -254,6 +254,23 @@ describe("copying", () => {
     expect(same.sent.map(request => request.method)).toEqual(["GET", "PATCH"]);
   });
 
+  it("restores a name in another format only to the content the file had when renamed", async () => {
+    const target = { ...NOTES, name: "report.xlsx" };
+    const { host } = harness([named("report.xlsx"), { status: 200, body: item("NOTES", { cTag: "c-renamed" }) }]);
+    const applied = await definitions.rename.apply({ target, name: "report.zip", submittedAt: 1 }, host);
+    expect(applied.action.cTag).toBe("c-renamed");
+    const changed = harness([{ status: 200, body: { cTag: "c-replaced" } }]);
+    expect(await revert({ kind: "rename", payload: applied.action }, changed.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/content of "report.zip" has changed/) });
+    expect(changed.sent.map(request => request.method)).toEqual(["GET"]);
+    const same = harness([{ status: 200, body: { cTag: "c-renamed" } }, { status: 200, body: item("NOTES") }]);
+    expect(await revert({ kind: "rename", payload: applied.action }, same.host)).toBeUndefined();
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "PATCH"]);
+    // Within one format the name is simply restored.
+    const plain = harness([{ status: 200, body: item("NOTES") }]);
+    expect(await revert({ kind: "rename", payload: { target: NOTES, name: "n.txt", submittedAt: 1, appliedAt: 2 } }, plain.host)).toBeUndefined();
+    expect(plain.sent.map(request => request.method)).toEqual(["PATCH"]);
+  });
+
   it("refuses a source since renamed into another format, whose bytes the copy's name was never checked as", async () => {
     const { host, sent } = harness([named("report.zip")]);
     await expect(definitions.copyFile.apply({ ...payload, source: { ...NOTES, name: "report.xlsx" }, name: "copy.xlsx" }, host)).rejects.toThrow(/renamed into another format/);

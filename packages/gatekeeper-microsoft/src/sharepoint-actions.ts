@@ -111,7 +111,15 @@ export type SharePointActions = {
     submittedAt: number;
     appliedAt?: number;
   };
-  rename: { target: ItemTarget; name: string; ifMatch?: string; submittedAt: number; appliedAt?: number };
+  rename: {
+    target: ItemTarget;
+    name: string;
+    ifMatch?: string;
+    /** The file's content tag once renamed: an undo across formats restores the old name only to that content. */
+    cTag?: string;
+    submittedAt: number;
+    appliedAt?: number;
+  };
   move: {
     target: ItemTarget;
     /** Where it was, which a revert moves it back to. */
@@ -540,6 +548,7 @@ export const definitions = {
       const { driveId, itemId } = payload.target.ref;
       const what = payload.target.kind === "folder" ? "The folder" : "The file";
       await requireInScope(host, payload.target.ref, what);
+      let cTag: string | undefined;
       try {
         if (payload.target.kind !== "folder") {
           // The new name was checked against the file's format at proposal: one since renamed into
@@ -549,14 +558,15 @@ export const definitions = {
             throw new ActionApplyError("The file has been renamed into another format since this was proposed, so it wasn't renamed. Ask the agent to read it again.");
           }
         }
-        await host.graph(api => api.request("PATCH", `/drives/${driveId}/items/${itemId}`, {
+        const renamed = await host.graph(api => api.request<{ cTag?: unknown }>("PATCH", `/drives/${driveId}/items/${itemId}`, {
           body: { name: payload.name }, ...(payload.ifMatch ? { ifMatch: payload.ifMatch } : {}),
         }), { replayable: true });
+        if (typeof renamed?.cTag === "string") cTag = renamed.cTag;
       } catch (error) {
         if (error instanceof ActionApplyError) throw error;
         refusal(error, what);
       }
-      return { action: { ...payload, appliedAt: Date.now() } };
+      return { action: { ...payload, ...(cTag ? { cTag } : {}), appliedAt: Date.now() } };
     },
   },
 
@@ -869,10 +879,19 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       return;
     }
     case "rename": {
-      const { driveId, itemId } = action.payload.target.ref;
-      const left = await leftBinding(host, action.payload.target.ref, "It");
+      const { payload } = action;
+      const { driveId, itemId } = payload.target.ref;
+      const left = await leftBinding(host, payload.target.ref, "It");
       if (left) return left;
-      await host.graph(api => api.request("PATCH", `/drives/${driveId}/items/${itemId}`, { body: { name: action.payload.target.name } }),
+      if (payload.target.kind !== "folder" && extensionOf(payload.target.name) !== extensionOf(payload.name)) {
+        // Restoring a name in another format gives the file's bytes that format's reading, which
+        // they were checked for only as they were when renamed: changed since, they stay as named.
+        const current = await host.graph(api => api.get<{ cTag?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "cTag" } }), { replayable: true });
+        if (payload.cTag === undefined || current.cTag !== payload.cTag) {
+          return { message: `The content of "${payload.name}" has changed since it was renamed, so its old name wasn't restored. Ask the agent to rename it instead.`, canRetry: false };
+        }
+      }
+      await host.graph(api => api.request("PATCH", `/drives/${driveId}/items/${itemId}`, { body: { name: payload.target.name } }),
         { replayable: true });
       return;
     }

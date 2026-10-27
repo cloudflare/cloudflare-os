@@ -110,6 +110,14 @@ function fakeGraph(options: FakeOptions = {}) {
       return { status: 404, body: {} };
     }
     if (rest === "/mailboxSettings/timeZone") return { status: 200, body: { value: "Pacific Standard Time" } };
+    if (rest === "/mailboxSettings") {
+      // A schedule set in Outlook: wall times in the mailbox's Windows zone.
+      return { status: 200, body: { automaticRepliesSetting: {
+        status: "scheduled", externalAudience: "all", internalReplyMessage: "<p>Away</p>", externalReplyMessage: "<p>Away</p>",
+        scheduledStartDateTime: { dateTime: "2026-11-02T09:00:00.0000000", timeZone: "Pacific Standard Time" },
+        scheduledEndDateTime: { dateTime: "2026-11-06T17:00:00.0000000", timeZone: "Pacific Standard Time" },
+      } } };
+    }
     if (rest === "/mailFolders") return { status: 200, body: { value: FOLDERS.filter(folder => folder.parentId === ROOT).map(folderRow) } };
     const folder = /^\/mailFolders\/([^/]+)(\/childFolders|\/messages)?$/.exec(rest);
     if (folder) {
@@ -287,6 +295,12 @@ describe("a whole-mailbox binding", () => {
     await writer.send(USER_DRAFT);
     expect(submitted.map(action => action.kind)).toEqual(["send"]);
     expect((submitted[0]!.payload as OutlookActions["send"]).draft).toEqual({ id: USER_DRAFT, changeKey: "ck-user" });
+  });
+
+  it("reads an automatic-reply schedule set in Outlook as the instants its zone means", async () => {
+    const { writer } = session(whole("draft"), "draft");
+    const replies = await writer.getAutomaticReplies();
+    expect(replies).toMatchObject({ status: "scheduled", start: "2026-11-02T17:00:00.000Z", end: "2026-11-07T01:00:00.000Z" });
   });
 
   it("changes a draft it wrote itself", async () => {

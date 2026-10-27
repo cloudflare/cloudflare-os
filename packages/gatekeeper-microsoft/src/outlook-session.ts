@@ -18,6 +18,7 @@ import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { isProvisional, OutsideBindingError } from "./binding";
 import { DownloadTooLargeError, GraphApiError, type GraphApi } from "./graph-api";
+import { graphInstant } from "./calendar-time";
 import { organizationDomains } from "./directory";
 import type { StoredIdentity } from "./microsoft-credentials";
 import { MAX_BATCH, replaceOwnPart, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
@@ -1357,10 +1358,10 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
     const externalAudience = setting.externalAudience === "contactsOnly" || setting.externalAudience === "all" ? setting.externalAudience : "none";
     const internalHtml = typeof setting.internalReplyMessage === "string" ? setting.internalReplyMessage : "";
     const externalHtml = typeof setting.externalReplyMessage === "string" ? setting.externalReplyMessage : "";
+    // A schedule set in Outlook is a wall time in a Windows zone; one this binding set is UTC.
     const when = (value: unknown) => {
-      if (value === null || typeof value !== "object") return undefined;
-      const { dateTime } = value as { dateTime?: unknown };
-      return typeof dateTime === "string" ? new Date(`${dateTime.replace(/\.\d+$/, "")}Z`).toISOString() : undefined;
+      const ms = graphInstant(value);
+      return ms === undefined ? undefined : new Date(ms).toISOString();
     };
     const start = when(setting.scheduledStartDateTime);
     const end = when(setting.scheduledEndDateTime);
