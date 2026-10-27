@@ -1163,7 +1163,8 @@ class OverseerImpl implements AgentHooks {
         let recipients = new Map([[ownerId, ""], ...sharing.listCollaborators()
           .filter(reader => reader.role === "build")
           .map(reader => [this.users.idFromName(reader.profile.id).toString(), reader.profile.id] as const)]);
-        let dirty = this.storage.dirtyChats.get(chatId)!;
+        let dirty = this.storage.dirtyChats.get(chatId);
+        if (!dirty) return;
         // Mutations after this snapshot accumulate their own start without another write on
         // the successful path. Until checkpoint, the durable row still covers the whole batch.
         let token: ChatFanoutStart = {};
@@ -1198,6 +1199,8 @@ class OverseerImpl implements AgentHooks {
                 start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
                 .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null);
         }));
+        // Workspace deletion cancels the durable intent, including outstanding failed handoffs.
+        if (!this.storage.dirtyChats.get(chatId)) return;
         let failedRecipients = entries.flatMap(([userId, start], index) =>
           results[index].status === "rejected" ? [{userId, ...start}] : []);
         let newer = this.#dirtyChatTokens.get(chatId)!;

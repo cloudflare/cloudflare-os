@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { describe, expect, it, vi } from "vitest";
@@ -392,6 +392,44 @@ describe("local counts and explicit read boundaries", () => {
 });
 
 describe("durable forward handoff", () => {
+  it("does not recreate fanout work when a handoff fails after workspace deletion", async () => {
+    const fixture = await setup();
+    await runInDurableObject(fixture.workspace, async instance => {
+      const impl = instance.impl;
+      using _ambient = vi.spyOn(impl, "ensureAmbientCapsules").mockResolvedValue(undefined);
+      using _outputs = vi.spyOn(impl, "markOutputsDirty").mockImplementation(() => {});
+      using _restart = vi.spyOn(impl, "scheduleAccessRestart").mockResolvedValue(undefined);
+      using closed = new NativeRpcStub<() => void>(() => {});
+      using client = await instance.open(fixture.user.id.toString(), "owner", closed);
+      // The test-pool caller cannot accept an RPC callback while deletion holds the input gate.
+      Reflect.get(client, "notifyClosed")[Symbol.dispose]();
+      Reflect.set(client, "notifyClosed", Object.assign(async () => {}, {[Symbol.dispose]: () => {}}));
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      const restore = interceptDelivery(impl, async () => {
+        entered.resolve(); await release.promise; throw new Error("Late recipient failure");
+      });
+      try {
+        write(impl, 0);
+        const delivery = impl.deliverDirtyChats().catch(() => {});
+        await entered.promise;
+        await client.deleteSelf();
+        expect([...impl.storage.dirtyChats.list()]).toEqual([]);
+        release.resolve();
+        await delivery;
+        expect([...impl.storage.dirtyChats.list()]).toEqual([]);
+      } finally { release.resolve(); restore(); }
+    });
+    await expect(runInDurableObject(fixture.workspace, (_instance, ctx) => {
+      ctx.abort("Reset deleted workspace");
+    })).rejects.toThrow("Reset deleted workspace");
+    fixture.workspace = env.TEST_OVERSEER.get(fixture.workspace.id);
+    await withImpl(fixture.workspace, async impl => {
+      await impl.deliverDirtyChats();
+      expect([...impl.storage.dirtyChats.list()]).toEqual([]);
+      expect(await impl.ctx.storage.getAlarm()).toBeNull();
+    });
+  });
+
   it("adds no recipient checkpoint write when all recipients ACK", async () => {
     const fixture = await setup(); await addReader(fixture); await addReader(fixture);
     await withImpl(fixture.workspace, async impl => {

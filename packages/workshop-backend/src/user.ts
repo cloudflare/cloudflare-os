@@ -686,16 +686,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
   }
 
-  #unreadCounts() {
-    let unreadChatCount = 0, unreadMessageCount = 0;
-    for (let cursor of this.#readCursors.values()) {
-      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted) continue;
-      unreadMessageCount += cursor.unreadCount;
-      if (cursor.unreadCount > 0) unreadChatCount++;
-    }
-    return {unreadChatCount, unreadMessageCount};
-  }
-
   #unreadSnapshot(scope: UnreadStateScope, summary = this.#unreadSummary()): UserUnreadState {
     let chats: ChatReadState[] = [];
     if (scope !== "summary") {
@@ -719,7 +709,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async #processChat(workspaceId: string, chatId: number, options: {
     horizon?: {through: number; rewind: boolean};
   } = {}): Promise<void> {
-    let changed = false;
     let admission = this.#unreadWorkspaces.get(workspaceId);
     try {
       await this.#serialize(`${workspaceId}:${chatId}`, async () => {
@@ -748,7 +737,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             unreadCount: latest - state.readThroughVisibleSequence,
             notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : state.notificationBaseline};
           this.#storeCursor(updated);
-          changed = !existing || current.readThroughSequence !== through || current.unreadCount !== updated.unreadCount;
+          // Publish the committed read position before alert delivery can suspend or reset us.
+          if (!existing || current.readThroughSequence !== through || current.unreadCount !== updated.unreadCount) {
+            this.#unreadChanged(workspaceId, chatId);
+          }
         }
         while (this.#unreadWorkspaces.get(workspaceId) === admission) {
           let [event] = this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`, limit: 1});
@@ -767,7 +759,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         }
       });
     } finally {
-      if (changed) this.#unreadChanged(workspaceId, chatId);
       await this.#armExpirySweep();
     }
   }
