@@ -321,6 +321,12 @@ describe("copying", () => {
     expect(definitions.copyFile.claimBeforeApply).toBe(true);
   });
 
+  it("treats a progress check that fails after SharePoint accepted the copy as an unknown outcome, not a failure to retry", async () => {
+    const { host, sent } = harness([named("notes.txt"), started, { status: -1 }]);
+    await expect(definitions.copyFile.apply(payload, host)).rejects.toThrow(ActionOutcomeUnknownError);
+    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET"]);
+  });
+
   it("undoes a copy only while it still holds what was copied", async () => {
     const applied = { ...payload, createdId: "COPY", cTag: "c-copy", appliedAt: 2 };
     const edited = harness([{ status: 200, body: { cTag: "c-edited" } }]);

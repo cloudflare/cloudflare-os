@@ -4,7 +4,7 @@
 // animations, images or design.
 
 import { parseMarkdown, textWithLinks } from "./markdown-parse";
-import { escapeText, parsePart } from "./ooxml";
+import { escapeText, parsePart, withRelationshipsNs } from "./ooxml";
 import { imageOf, items, paragraphs, fitScale, type ImageItem } from "./pptx-content";
 import { Deck, type Box } from "./pptx-deck";
 import { placeholderHandles, placeholderKind, slidePlaceholders } from "./pptx-describe";
@@ -271,7 +271,7 @@ function replaceText(deck: Deck, edit: { find: string; replace: string; all?: bo
         summary: `Slide ${place.slide}${place.notes ? " notes" : ""}: replaced ${quoted(find)} with ${quoted(replace)}.` });
       splices.push({ start: paragraph.openEnd, end: paragraph.closeStart, text: tokens.map(token => token.kind === "run" ? runXml(token) : token.raw).join("") });
     }
-    deck.pkg.set(place.part, applySplices(deck.pkg.text(place.part)!, splices));
+    deck.pkg.set(place.part, withRelationshipsNs(applySplices(deck.pkg.text(place.part)!, splices)));
   });
   return changes;
 }
@@ -439,7 +439,7 @@ function setText(deck: Deck, edit: { slide: number; placeholder: string; markdow
       ? existing.replace(/<a:normAutofit\b[^>]*?(?:\/>|>[\s\S]*?<\/a:normAutofit>)/, autofit(scale)) : existing);
     after = paragraphList.map(paragraph => textWithLinks(paragraph.inlines)).filter(Boolean).join("\n");
   }
-  deck.pkg.set(part, xml.slice(0, target.start) + replacement + xml.slice(target.end));
+  deck.pkg.set(part, withRelationshipsNs(xml.slice(0, target.start) + replacement + xml.slice(target.end)));
   return { slide: edit.slide, before, after, summary: `Slide ${edit.slide}: replaced the ${handles[at]} text.` };
 }
 
@@ -471,6 +471,6 @@ function setNotes(deck: Deck, edit: { slide: number; markdown: string }): Presen
     updated = xml.replace(/<\/p:spTree>/, `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Notes Placeholder ${id - 1}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>` +
       `<p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>${paragraphXml}</p:txBody></p:sp></p:spTree>`);
   }
-  deck.pkg.set(notes, updated);
+  deck.pkg.set(notes, withRelationshipsNs(updated));
   return { slide: edit.slide, before, after, notes: true, summary: `Slide ${edit.slide}: ${after ? "replaced" : "cleared"} the speaker notes.` };
 }

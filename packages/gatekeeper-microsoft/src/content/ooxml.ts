@@ -185,6 +185,18 @@ export function isOn(element: XmlElement | undefined, valueAttribute: string): b
 /** The XML declaration every written part starts with. */
 export const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
 
+const RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+/**
+ * `xml` with the relationships namespace declared on its root element when an edit gave a part
+ * that never needed it an `r:` attribute: a slide or document without a picture or link may not
+ * declare the prefix, and an undeclared prefix is a malformed part.
+ */
+export function withRelationshipsNs(xml: string): string {
+  if (!/\sr:[A-Za-z]+="/.test(xml) || /\sxmlns:r="/.test(xml)) return xml;
+  return xml.replace(/<([A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*(?=[\s/>])/, root => `${root} xmlns:r="${RELATIONSHIPS_NS}"`);
+}
+
 /** An ISO 8601 timestamp to the second, as core properties and revision marks use. */
 export function isoSeconds(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");

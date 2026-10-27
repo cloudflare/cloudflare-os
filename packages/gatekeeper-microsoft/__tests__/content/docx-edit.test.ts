@@ -4,6 +4,7 @@ import { docxToMarkdown } from "../../src/content/docx";
 import { DocumentEditError, editDocx, type DocumentEdit } from "../../src/content/docx-edit";
 import { docxFeatures, markdownToDocx } from "../../src/content/docx-write";
 import { parsePart } from "../../src/content/ooxml";
+import { OpcPackage } from "../../src/content/pptx-package";
 import { attribute, childElements, descendants, firstChild } from "../../src/content/xml";
 import { openZip } from "../../src/content/zip";
 import { writeZip } from "../../src/content/zip-write";
@@ -124,6 +125,17 @@ describe("editDocx: replacing text", () => {
     const { bytes } = await edit(REPORT, [{ find: "Owners\tDue", replace: "Owner\tDate\nTBD" }], SILENT);
     const xml = await documentXml(bytes);
     expect(xml).toContain('<w:t xml:space="preserve">Owner</w:t><w:tab/><w:t xml:space="preserve">Date</w:t><w:br/><w:t xml:space="preserve">TBD</w:t>');
+  });
+
+  it("declares the relationships prefix on a document that never had one when a link is inserted", async () => {
+    const pkg = await OpcPackage.open(await markdownToDocx("Plain prose."));
+    const xmlnsR = ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+    expect(pkg.text("word/document.xml")).toContain(xmlnsR);
+    pkg.set("word/document.xml", pkg.text("word/document.xml")!.replace(xmlnsR, ""));
+    const { bytes } = await edit(await pkg.toBytes(), [{ insertAfter: "Plain prose.", markdown: "See [the plan](https://example.com/plan)." }], SILENT);
+    const xml = await documentXml(bytes);
+    expect(xml).toContain("<w:hyperlink r:id=");
+    expect(/<w:document\b[^>]*>/.exec(xml)![0]).toContain(xmlnsR);
   });
 
   it("edits text inside a table cell and a hyperlink", async () => {

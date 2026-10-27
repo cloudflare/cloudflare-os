@@ -14,7 +14,7 @@ import { CONTENT_TYPES, ContentTypesEditor, PackageEditor, RelationshipsEditor }
 import { StyleCatalog } from "./docx-styles";
 import { requireTransitional, textWidth } from "./docx-write";
 import { parseMarkdown } from "./markdown-parse";
-import { escapeText, findMainPart, findRelationship, parsePart, readRelationships, relationshipsPartName } from "./ooxml";
+import { escapeText, findMainPart, findRelationship, parsePart, readRelationships, relationshipsPartName, withRelationshipsNs } from "./ooxml";
 import { applySplices, elementText, parseRaw, rawChild, rawChildren, RawXmlError, type RawElement, type Splice } from "./raw-xml";
 import { childElements, firstChild } from "./xml";
 import { openZip } from "./zip";
@@ -198,7 +198,7 @@ class EditableDocument {
   }
 
   async save(): Promise<Uint8Array> {
-    this.#pkg.set(this.#mainPart, this.#xml);
+    this.#pkg.set(this.#mainPart, withRelationshipsNs(this.#xml));
     const parts = this.#parts;
     if (parts) {
       const directory = this.#mainPart.slice(0, this.#mainPart.lastIndexOf("/") + 1);

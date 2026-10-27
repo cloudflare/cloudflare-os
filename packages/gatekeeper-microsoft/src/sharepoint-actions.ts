@@ -264,13 +264,20 @@ async function calculateWorkbook(host: Pick<SharePointActionHost, "graph">, ref:
 const COPY_WAIT_MS = 45_000;
 
 /**
- * Waits for a copy to finish, and returns the new file's ID. One still running at the deadline is
- * an unknown outcome, not a failure: the copy lands later, so a replay would make a second one.
+ * Waits for a copy to finish, and returns the new file's ID. One still running at the deadline, or
+ * whose progress can't be read, is an unknown outcome, not a failure: SharePoint has accepted the
+ * copy, which lands regardless, so a replay would make a second one.
  */
 async function awaitCopy(host: SharePointActionHost, monitor: string): Promise<string> {
   const deadline = Date.now() + COPY_WAIT_MS;
   for (let wait = 500; ; wait = Math.min(wait * 2, 4_000)) {
-    const progress = await host.graph(api => api.copyProgress(monitor), { replayable: true });
+    let progress: Awaited<ReturnType<GraphApi["copyProgress"]>>;
+    try {
+      progress = await host.graph(api => api.copyProgress(monitor), { replayable: true });
+    } catch (error) {
+      throw new ActionOutcomeUnknownError("SharePoint accepted the copy, but whether it has finished couldn't be checked. It will appear " +
+        "in the folder when the copy finishes; check there before asking for it again.", { cause: error });
+    }
     if (progress.status === "completed" && progress.resourceId) return progress.resourceId;
     if (progress.status === "failed") {
       throw new ActionApplyError(`SharePoint couldn't copy the file${progress.error ? `: ${progress.error}` : "."}`);

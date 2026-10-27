@@ -198,6 +198,25 @@ describe("editPptx: placeholders and notes", () => {
     expect(changes[1]).toMatchObject({ after: "Open the plan (https://example.com/plan).", notes: true });
   });
 
+  it("declares the relationships prefix on a slide or notes page that never had one when a link is added", async () => {
+    const withNotes = await editPptx(await markdownToPptx("# One\n\n- a"), [{ setNotes: { slide: 1, markdown: "Say this." } }]);
+    const pkg = await OpcPackage.open(withNotes.bytes);
+    const xmlnsR = ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+    for (const part of ["ppt/slides/slide1.xml", "ppt/notesSlides/notesSlide1.xml"]) {
+      expect(pkg.text(part)).toContain(xmlnsR);
+      pkg.set(part, pkg.text(part)!.replace(xmlnsR, ""));
+    }
+    const { pkg: edited } = await edit(await pkg.toBytes(), [
+      { setText: { slide: 1, placeholder: "body", markdown: "- See [the plan](https://example.com/plan)" } },
+      { setNotes: { slide: 1, markdown: "Open [the plan](https://example.com/plan)." } },
+    ]);
+    for (const part of ["ppt/slides/slide1.xml", "ppt/notesSlides/notesSlide1.xml"]) {
+      const xml = edited.text(part)!;
+      expect(xml).toContain("hlinkClick r:id=");
+      expect(/<p:(?:sld|notes)\b[^>]*>/.exec(xml)![0]).toContain(xmlnsR);
+    }
+  });
+
   it("sets speaker notes, adding a notes page (and a notes master) where there was none", async () => {
     const deck = await markdownToPptx("# One\n\n- a\n\n# Two\n\n- b");
     const { bytes, pkg, changes } = await edit(deck, [{ setNotes: { slide: 2, markdown: "Say **this**." } }, { setNotes: { slide: 2, markdown: "Say that." } }]);
