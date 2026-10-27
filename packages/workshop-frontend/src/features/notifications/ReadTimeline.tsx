@@ -49,6 +49,7 @@ export const ReadTimeline = ({
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
   type LocalAction = {
+    kind: "read" | "unread";
     previousAction?: LocalAction;
     failed?: boolean;
     readSucceeded?: boolean;
@@ -58,13 +59,15 @@ export const ReadTimeline = ({
     horizon: number;
     startedSnapshot: typeof chat;
     acknowledgedReplacement?: object;
+    retired?: true;
   })[]>([]);
   const latestAction = useRef<LocalAction | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence });
   latest.current = { chat, unread, visit, latestSequence };
 
-  const createAction = (): LocalAction => ({
+  const createAction = (kind: LocalAction["kind"]): LocalAction => ({
+    kind,
     previousAction: latestAction.current,
     rollback: {visit, jump, target: jumpSequence.current, requestedPage: requestedPage.current},
   });
@@ -89,14 +92,17 @@ export const ReadTimeline = ({
   const retireUnchangedRequests = () => {
     // A command at the already-observed boundary can ACK without publishing any echo.
     // Keep it behind earlier unobserved rewinds, which may still change that boundary.
-    let request = localUnreadRequests.current[0];
+    let request = localUnreadRequests.current.find(request => !request.retired);
     while (request?.acknowledgedReplacement && request.startedSnapshot?.readThroughSequence === request.horizon) {
-      localUnreadRequests.current.shift();
-      request = localUnreadRequests.current[0];
+      // It no longer blocks resumption, but an explicit read still needs to recognize its late echo.
+      request.retired = true;
+      request = localUnreadRequests.current.find(request => !request.retired);
     }
     const current = latest.current.chat;
-    if (!localUnreadRequests.current.length && current?.unreadMessageCount === 0) {
-      latestAction.current = undefined;
+    localUnreadRequests.current = localUnreadRequests.current.filter(request => !request.retired ||
+      request.startedSnapshot === current || latestAction.current?.kind === "read");
+    if (!localUnreadRequests.current.some(request => !request.retired) && current?.unreadMessageCount === 0) {
+      if (!localUnreadRequests.current.length) latestAction.current = undefined;
       setVisit(visit => visit?.paused ? {...visit, horizon: current.readThroughSequence, paused: false} : visit);
     }
   };
@@ -113,7 +119,14 @@ export const ReadTimeline = ({
     const localUnread = localIndex !== -1;
     // Subscriber snapshots can coalesce earlier local commands; consume those markers together.
     if (localUnread) {
-      localUnreadRequests.current.splice(0, localIndex + 1);
+      for (const request of localUnreadRequests.current.splice(0, localIndex + 1)) {
+        const previous = request.rollback.visit;
+        if (previous && chat.readThroughSequence < previous.horizon) {
+          // Even a matching echo is authoritative if the RPC later fails or loses its response.
+          request.rollback = {visit: {horizon: chat.readThroughSequence,
+            divider: chat.readThroughSequence + 1, paused: true}, jump: 0};
+        }
+      }
       // An earlier local echo must still leave later commands' markers intact on re-render.
       for (const request of localUnreadRequests.current) {
         if (request.acknowledgedReplacement) request.acknowledgedReplacement = unread?.replacementSnapshot;
@@ -121,7 +134,8 @@ export const ReadTimeline = ({
     } else {
       // A replacement can supersede a rewind missed while hidden; ordinary deltas cannot.
       localUnreadRequests.current = localUnreadRequests.current.filter(request =>
-        !request.acknowledgedReplacement || request.acknowledgedReplacement === unread?.replacementSnapshot);
+        (!request.retired || latestAction.current?.kind === "read") &&
+        (!request.acknowledgedReplacement || request.acknowledgedReplacement === unread?.replacementSnapshot));
     }
     if (!visit || chat.readThroughSequence < visit.horizon) {
       // A remote rewind establishes a new visit, not a rollback target for older commands.
@@ -139,9 +153,9 @@ export const ReadTimeline = ({
         onUnreadNavigation(true);
         setJump((request) => request + 1);
       }
-    } else if (visit.paused && localUnreadRequests.current.length === 0 &&
+    } else if (visit.paused && !localUnreadRequests.current.some(request => !request.retired) &&
         chat.unreadMessageCount === 0) {
-      latestAction.current = undefined;
+      if (!localUnreadRequests.current.length) latestAction.current = undefined;
       setVisit({ ...visit, horizon: chat.readThroughSequence, paused: false });
     } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {
       setVisit({ ...visit, horizon: chat.readThroughSequence, divider: chat.readThroughSequence + 1 });
@@ -291,7 +305,7 @@ export const ReadTimeline = ({
           // Untouched pre-rollout threads have no cursor until an arrival or explicit command.
           const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
           const request: (typeof localUnreadRequests.current)[number] = {
-            ...createAction(), horizon: sequence - 1, startedSnapshot: chat,
+            ...createAction("unread"), horizon: sequence - 1, startedSnapshot: chat,
           };
           localUnreadRequests.current.push(request);
           latestAction.current = request;
@@ -335,7 +349,7 @@ export const ReadTimeline = ({
               size="xs"
               variant="ghost"
               onClick={() => {
-                const action = createAction();
+                const action = createAction("read");
                 latestAction.current = action;
                 void unread?.markRead(chat, latestSequence).then(() => {
                   action.readSucceeded = true;

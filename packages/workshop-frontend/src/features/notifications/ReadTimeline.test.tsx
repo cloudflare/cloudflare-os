@@ -401,19 +401,23 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead.mock.calls.map(([request]) => request.throughSequence)).toEqual([2, 3, 3]);
   });
 
-  it.each([false, true])("does not pause a successful read on a delayed local rewind echo (read ACK first: %s)", async ackFirst => {
+  it.each([
+    {ackFirst: false, initialHorizon: 1}, {ackFirst: true, initialHorizon: 1},
+    {ackFirst: false, initialHorizon: 0}, {ackFirst: true, initialHorizon: 0},
+  ])("does not pause a successful read on a delayed local rewind echo (read ACK first: $ackFirst, initial horizon: $initialHorizon)", async ({ackFirst, initialHorizon}) => {
     await render();
-    await update(snapshot(1, 1));
+    await update(snapshot(1, initialHorizon));
     await settle();
     await markUnreadFrom(1);
     const read = Promise.withResolvers<void>();
     markChatRead.mockReturnValueOnce(read.promise);
     await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
     if (ackFirst) await act(async () => read.resolve());
-    await update(snapshot(2, 0));
+    if (initialHorizon === 0) await updateChat(snapshot(2, 2)); // Earlier remote read, delivered late.
+    await updateChat(snapshot(3, 0));
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
-    const state = snapshot(3, 2);
-    await update({...state, unreadChatCount: 1, unreadMessageCount: 1,
+    const state = snapshot(4, 2);
+    await updateChat({...state, unreadChatCount: 1, unreadMessageCount: 1,
       chats: [{...state.chats[0], unreadMessageCount: 1}]});
     if (!ackFirst) await act(async () => read.resolve());
     await settle();
@@ -422,6 +426,24 @@ describe("timeline read/unread experience", () => {
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
     expect(markChatRead.mock.calls.map(([request]) => request.throughSequence)).toEqual([2, 3]);
+  });
+
+  it.each([false, true])("preserves an authoritative rewind matching a failed local request (update first: %s)", async updateFirst => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    await render();
+    await update(snapshot(1, 2));
+    await settle();
+    const failed = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(failed.promise);
+    await markUnreadFrom(1);
+    if (updateFirst) await updateChat(snapshot(2, 0));
+    await act(async () => failed.reject(new Error("Unread command failed")));
+    if (!updateFirst) await updateChat(snapshot(2, 0));
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
   });
 
   it("rolls back a failed newer unread without treating the earlier successful rewind as remote", async () => {
