@@ -5,9 +5,10 @@
 
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SharePointBrowserPage } from "../../src/configurator/sharepoint-configurator-types";
 import type { DriveEntry, ResolvedLink, SharePointScopeInfo } from "../../src/types";
 import {
-  BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, NOTES, OTHER, OTHER_FILE, PHILLIP, READ_SCOPES, ROOT, SARAH, SITE_ID, SPECS,
+  BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, GRAPH, NOTES, OTHER, OTHER_FILE, PHILLIP, READ_SCOPES, ROOT, SARAH, SITE_ID, SPECS,
   accountStub, facet, failure, folderProps, hooks, identityOf, json, props, ref, seedAccount, unwrap,
 } from "./fake-graph";
 import type { GatekeeperProps, Outcome, Step } from "./worker";
@@ -272,6 +273,18 @@ describe("links", () => {
     expect(link).toMatchObject({ kind: "file", id: ref(NOTES), name: "notes.txt" });
   });
 
+  it("resolves a library link to its root folder, which list() and getEntry() take", async () => {
+    const graph = shares(new FakeGraph().install());
+    const id = await seedAccount(graph);
+    const binding = props(id, { kind: "library", siteId: SITE_ID, driveId: DRIVE });
+    const name = facet("link-library");
+    const link = unwrap<ResolvedLink>(await hooks().run(name, binding,
+      [["resolveUrl", "https://contoso.sharepoint.com/sites/Engineering/Shared%20Documents"]]));
+    expect(link).toMatchObject({ kind: "library", id: `${DRIVE}/root` });
+    expect((await walk<DriveEntry>(name, binding, [["list", { folderId: link.id }]])).map(entry => entry.name).toSorted()).toEqual(["Other", "Specs"]);
+    expect(unwrap<DriveEntry>(await hooks().run(name, binding, [["getEntry", link.id!]]))).toMatchObject({ kind: "folder", path: "" });
+  });
+
   it("refuses a link the owner can open but the binding doesn't cover exactly as one that leads nowhere, observing nothing", async () => {
     const graph = shares(new FakeGraph().install());
     const id = await seedAccount(graph);
@@ -307,6 +320,30 @@ describe("links", () => {
     expect(failure(await hooks().run(name, binding,
       [["resolveUrl", "https://contoso.sharepoint.com/sites/Engineering/Shared%20Documents/Specs/deleted.docx"]]))).toMatch(/doesn't lead to anything/);
     expect(graph.count("GET", /\/sites\/contoso\.sharepoint\.com:/)).toBe(asked);
+  });
+});
+
+describe("the configurator", () => {
+  it("returns the OneDrive tab's next page of a search, not its first page again", async () => {
+    const graph = new FakeGraph().install();
+    graph.on("GET", /^\/v1\.0\/me\/drive(\?|$)/, () => json({
+      id: DRIVE, name: "OneDrive", driveType: "business", webUrl: "https://contoso-my.sharepoint.com/personal/phillip_contoso_com/Documents",
+    }));
+    const wire = (itemId: string) => {
+      const { parentId: _parentId, ...rest } = graph.items.get(itemId)!;
+      return rest;
+    };
+    graph.on("GET", /\/root\/search\(q=/, request => request.url.searchParams.has("$skiptoken")
+      ? json({ value: [wire(BRIEF)] })
+      : json({ value: [wire(NOTES)], "@odata.nextLink": `${GRAPH}/v1.0/drives/${DRIVE}/root/search(q='plan')?$skiptoken=page2` }));
+    const id = await seedAccount(graph);
+    const first = unwrap<SharePointBrowserPage>(await hooks().configurator(id, "write", "loadItems", { tab: "onedrive", query: "plan" }));
+    expect(first.items.map(item => item.title)).toEqual(["notes.txt"]);
+    expect(first.nextPageToken).toContain("$skiptoken=page2");
+    const second = unwrap<SharePointBrowserPage>(await hooks().configurator(id, "write", "loadItems",
+      { tab: "onedrive", query: "plan", pageToken: first.nextPageToken }));
+    expect(second.items.map(item => item.title)).toEqual(["brief.docx"]);
+    expect(graph.count("GET", /skiptoken=page2/)).toBe(1);
   });
 });
 

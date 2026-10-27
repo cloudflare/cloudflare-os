@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import type { GraphDriveItem } from "../src/graph-parse";
 import type { FolderTarget, ItemTarget, SharePointAction } from "../src/sharepoint-actions";
-import { Overlay, drivePath, itemSiteId, toEntry, toPageInfo } from "../src/sharepoint-overlay";
+import { Overlay, drivePath, itemSiteId, pageWebUrl, toEntry, toPageInfo } from "../src/sharepoint-overlay";
 import type { DriveEntry } from "../src/types";
 
 const DRIVE = "b!AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -74,6 +74,11 @@ describe("drivePath and toEntry", () => {
   it("resolves a page's site-relative URL against its site", () => {
     const page = { id: "p", name: "Home.aspx", title: "Home", webUrl: "SitePages/Home.aspx" };
     expect(toPageInfo(page, SITE, "https://contoso.sharepoint.com/sites/eng/").webUrl).toBe("https://contoso.sharepoint.com/sites/eng/SitePages/Home.aspx");
+    // Graph's site URLs have no trailing slash; the join must not drop the site's last segment.
+    expect(pageWebUrl(page, "https://contoso.sharepoint.com/sites/eng")).toBe("https://contoso.sharepoint.com/sites/eng/SitePages/Home.aspx");
+    expect(pageWebUrl({ webUrl: "https://contoso.sharepoint.com/sites/eng/SitePages/Home.aspx" }, "https://contoso.sharepoint.com/sites/other"))
+      .toBe("https://contoso.sharepoint.com/sites/eng/SitePages/Home.aspx");
+    expect(pageWebUrl(page, undefined)).toBe("SitePages/Home.aspx");
     expect(toPageInfo({ ...page, state: "draft" }, SITE).published).toBe(false);
   });
 });
@@ -162,9 +167,22 @@ describe("Overlay over list items", () => {
       { kind: "createListItem", payload: { ref: "~1", list: LIST, fields: { Title: "New" }, labels: {}, submittedAt: AT } },
       { kind: "createListItem", payload: { ref: "~2", list: other, fields: { Title: "Elsewhere" }, labels: {}, submittedAt: AT } },
     ), identity);
-    expect(overlay.createdItems(LIST)).toEqual([{
+    expect(overlay.createdItems(LIST, true)).toEqual([{
       id: "~1", fields: { Title: "New" }, createdAt: new Date(AT).toISOString(), modifiedAt: new Date(AT).toISOString(), pending: "create",
     }]);
+  });
+
+  it("shows a created item with its own pending changes, still as a creation, and hides its pending deletion from listings only", () => {
+    const create: SharePointAction = { kind: "createListItem", payload: { ref: "~1", list: LIST, fields: { Title: "New", Status: "Open" }, labels: {}, submittedAt: AT } };
+    const updated = new Overlay(pending(create,
+      { kind: "updateListItem", payload: { list: LIST, itemId: "~1", fields: { Title: "Renamed" }, labels: {}, before: { Title: "New" }, submittedAt: AT } },
+    ), identity);
+    expect(updated.createdItems(LIST, true)).toMatchObject([{ id: "~1", fields: { Title: "Renamed", Status: "Open" }, pending: "create" }]);
+    expect(updated.hasPendingItemChange(LIST, "~1")).toBe(true);
+
+    const deleted = new Overlay(pending(create, { kind: "deleteListItem", payload: { list: LIST, itemId: "~1", submittedAt: AT } }), identity);
+    expect(deleted.createdItems(LIST, true)).toEqual([]);
+    expect(deleted.createdItems(LIST, false)).toMatchObject([{ id: "~1", pending: "delete" }]);
   });
 
   it("merges pending updates in order, and hides a pending delete from listings only", () => {

@@ -20,7 +20,7 @@ import {
 import { accountSource, type StoredIdentity } from "./microsoft-credentials";
 import { SHAREPOINT_RESOURCE, grantedResourcePatterns, grantedSharePoint, type SharePointAccess, type SharePointGrant } from "./microsoft-env";
 import { extensionOf } from "./sharepoint-content";
-import { itemSiteId } from "./sharepoint-overlay";
+import { itemSiteId, pageWebUrl } from "./sharepoint-overlay";
 import * as reads from "./sharepoint-reads";
 import { SiteNotGrantedError, UnresolvableUrlError, resolveSharePointUrl } from "./sharepoint-resolve";
 import { allUrl, parseSharePointUrl } from "./sharepoint-urls";
@@ -367,7 +367,7 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
     const token = request.pageToken === undefined ? undefined : pageTokenOf(request.pageToken);
     return await this.#read(async api => {
       if (container === undefined) {
-        return request.tab === TABS.onedrive ? await this.#oneDriveRoot(api, query) : await this.#sitesRoot(api, query, token);
+        return request.tab === TABS.onedrive ? await this.#oneDriveRoot(api, query, token) : await this.#sitesRoot(api, query, token);
       }
       switch (container.kind) {
         case "site": return await this.#siteContents(api, container.siteId, query, token);
@@ -397,9 +397,9 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
         case "file": return (await reads.getItem(api, parsed))?.webUrl ?? Promise.reject(new Error(gone));
         case "list": return (await reads.getList(api, parsed))?.webUrl ?? Promise.reject(new Error(gone));
         case "page": {
-          const page = await reads.getPage(api, parsed);
-          if (page === null) throw new Error(gone);
-          return new URL(page.page.webUrl, (await reads.getSite(api, parsed.siteId))?.webUrl ?? "https://invalid/").href;
+          const [page, site] = await Promise.all([reads.getPage(api, parsed), reads.getSite(api, parsed.siteId)]);
+          if (page === null || site === null) throw new Error(gone);
+          return pageWebUrl(page.page, site.webUrl);
         }
         case "pages": throw new Error("Choose one page, or the whole site.");
         case "shared": throw new Error("Choose one of the things shared with you.");
@@ -435,8 +435,8 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
     return { items, ...(page.nextFrom !== undefined ? { nextPageToken: `from:${page.nextFrom}` } : {}), ...(notice ? { notice } : {}) };
   }
 
-  /** The OneDrive tab: the user's own OneDrive, to open or choose, and what others have shared. */
-  async #oneDriveRoot(api: GraphApi, query: string | undefined): Promise<SharePointBrowserPage> {
+  /** The OneDrive tab: the user's own OneDrive, to open or choose, and what others have shared; searched, the OneDrive's matches. */
+  async #oneDriveRoot(api: GraphApi, query: string | undefined, token: string | undefined): Promise<SharePointBrowserPage> {
     // Under Sites.Selected nobody else's OneDrive is granted, so nothing shared from one can be opened.
     const { grant } = await this.#state();
     if (grant?.sites === "selected" && !grant.oneDrive) {
@@ -446,7 +446,7 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
     const drive = await this.#myOneDrive(api);
     if (drive === null) return { items: shared, notice: "You don't have a OneDrive of your own." };
     if (query === undefined) return { items: [driveRow(drive, await this.#viewer()), ...shared] };
-    return await this.#folder(api, drive.id, "root", query, undefined);
+    return await this.#folder(api, drive.id, "root", query, token);
   }
 
   /**

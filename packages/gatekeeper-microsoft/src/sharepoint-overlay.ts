@@ -112,15 +112,22 @@ export function toListInfo(list: GraphList, siteId: string): ListInfo {
   };
 }
 
+/**
+ * A page's absolute URL. Graph gives some pages' `webUrl` relative to the site ("SitePages/Home.aspx"),
+ * which `siteUrl` completes; a site URL has no trailing slash, so the join is spelled out rather
+ * than left to `new URL`, which would drop the site's last path segment.
+ */
+export function pageWebUrl(page: Pick<GraphSitePage, "webUrl">, siteUrl: string | undefined): string {
+  return /^https:/i.test(page.webUrl) || siteUrl === undefined ? page.webUrl : `${siteUrl.replace(/\/$/, "")}/${page.webUrl}`;
+}
+
 /** A page as the agent sees it. `siteUrl` completes a site-relative `webUrl`. */
 export function toPageInfo(page: GraphSitePage, siteId: string, siteUrl?: string): PageInfo {
-  // Graph gives some pages' `webUrl` relative to the site ("SitePages/Home.aspx").
-  const webUrl = /^https:/i.test(page.webUrl) || siteUrl === undefined ? page.webUrl : `${siteUrl.replace(/\/$/, "")}/${page.webUrl}`;
   return {
     id: encodePageRef({ siteId, pageId: page.id }),
     title: page.title,
     name: page.name,
-    webUrl,
+    webUrl: pageWebUrl(page, siteUrl),
     siteId,
     ...(page.description ? { description: page.description } : {}),
     ...(page.modifiedAt ? { modifiedAt: page.modifiedAt } : {}),
@@ -327,18 +334,22 @@ export class Overlay {
 
   // -- list items -------------------------------------------------------------------------------
 
-  /** Pending creations in a list, as items with temporary IDs. */
-  createdItems(list: ListRef): ListItem[] {
+  /**
+   * Pending creations in a list, as items with temporary IDs, with the changes pending on them
+   * applied as {@link applyItem} applies them: `listing` leaves out one pending deletion.
+   */
+  createdItems(list: ListRef, listing: boolean): ListItem[] {
     const items: ListItem[] = [];
     for (const { action } of this.#pending) {
       if (action.kind === "createListItem" && sameList(action.payload.list, list)) {
-        items.push({
+        const created = this.applyItem(list, {
           id: this.#resolve(action.payload.ref),
           fields: { ...action.payload.fields },
           createdAt: new Date(action.payload.submittedAt).toISOString(),
           modifiedAt: new Date(action.payload.submittedAt).toISOString(),
           pending: "create",
-        });
+        }, listing);
+        if (created !== null) items.push(created);
       }
     }
     return items;
@@ -346,13 +357,14 @@ export class Overlay {
 
   /**
    * An item with its pending updates merged, or null when it is pending deletion and `listing` is
-   * set: listings leave it out, a direct read shows it marked.
+   * set: listings leave it out, a direct read shows it marked. An item still awaiting creation
+   * stays marked as such through its updates.
    */
   applyItem(list: ListRef, item: ListItem, listing: boolean): ListItem | null {
     let result = item;
     for (const { action } of this.#pending) {
       if (action.kind === "updateListItem" && sameList(action.payload.list, list) && this.#resolve(action.payload.itemId) === item.id) {
-        result = { ...result, fields: { ...result.fields, ...action.payload.fields }, pending: "update" };
+        result = { ...result, fields: { ...result.fields, ...action.payload.fields }, pending: result.pending === "create" ? "create" : "update" };
       }
       if (action.kind === "deleteListItem" && sameList(action.payload.list, list) && this.#resolve(action.payload.itemId) === item.id) {
         if (listing) return null;

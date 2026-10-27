@@ -48,7 +48,7 @@ export type SharePointScopeInfo = {
     files: boolean;
     lists: boolean;
     pages: boolean;
-    /** Whether changes can be proposed. False on a read-only deployment. */
+    /** Whether changes can be proposed. False on a read-only deployment, and for a page, which has no write methods. */
     write: boolean;
   };
 };
@@ -244,7 +244,11 @@ export type PageContent = {
 /** What a link turned out to be, with the ID to pass to the matching method. */
 export type ResolvedLink = {
   kind: SharePointScopeKind;
-  /** A site, library, file/folder, list or page ID; absent for `all`. */
+  /**
+   * A site ID for `getSite`, a folder or file ID for `list` and `getEntry` (a library's is its root
+   * folder's, as `LibraryInfo.rootFolderId`), a list ID for `openList`, or a page ID for `readPage`;
+   * absent for `all`.
+   */
   id?: string;
   name: string;
   webUrl: string;

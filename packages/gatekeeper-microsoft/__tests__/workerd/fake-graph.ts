@@ -269,6 +269,16 @@ export class FakeGraph {
       };
     }
     if (path === `/drives/${DRIVE}/root`) return { status: 200, body: this.#wire(this.items.get(ROOT)!) };
+    if ((match = path.match(/^\/drives\/([^/]+)\/root:\/(.+)$/))) {
+      // An item addressed by path (`root:/Specs/Deep`), walked from the root by name.
+      const [, driveId, itemPath] = match;
+      if (driveId !== DRIVE) return notFound;
+      let current: WireItem | undefined = this.items.get(ROOT);
+      for (const segment of itemPath.split("/")) {
+        current = [...this.items.values()].find(child => child.parentId === current?.id && child.name === segment);
+      }
+      return current && this.#visible(user, current.id) ? { status: 200, body: this.#wire(current) } : notFound;
+    }
     if ((match = path.match(/^\/drives\/([^/]+)\/items\/([^/:]+)(.*)$/))) {
       const [, driveId, itemId, rest] = match;
       if (driveId !== DRIVE || !this.#visible(user, itemId)) return notFound;

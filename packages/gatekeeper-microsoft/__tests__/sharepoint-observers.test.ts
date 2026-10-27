@@ -37,10 +37,13 @@ describe("access units", () => {
     expect(decodeUnit("someday:x")).toBeNull();
   });
 
-  it("asks for a file's content, not just its details, and pins only a draft's version", () => {
+  it("asks for a file's content, not just its details, and pins a draft or an unapproved version", () => {
     expect(units.fileRead(file).map(id => decodeUnit(id)?.kind)).toEqual(["item", "content"]);
     expect(units.fileRead(file, "4.0").map(id => decodeUnit(id)?.kind)).toEqual(["item", "content"]);
+    expect(units.fileRead(file, "4.0", 0).map(id => decodeUnit(id)?.kind)).toEqual(["item", "content"]);
     expect(units.fileRead(file, "4.2").map(id => decodeUnit(id))).toContainEqual({ kind: "fileVersion", ...file, version: "4.2" });
+    // A major version awaiting approval: a reader without approval rights is shown the last approved one.
+    expect(units.fileRead(file, "4.0", 2).map(id => decodeUnit(id))).toContainEqual({ kind: "fileVersion", ...file, version: "4.0" });
     expect(units.versions(file).map(id => decodeUnit(id)?.kind)).toEqual(["item", "versions"]);
   });
 

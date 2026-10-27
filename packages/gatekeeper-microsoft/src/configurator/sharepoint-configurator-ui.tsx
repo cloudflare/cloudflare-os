@@ -64,6 +64,8 @@ let connection: Connection = { state: "loading" };
 let asked = false;
 // Bumped by every status request, so a reply that a newer one overtook is dropped.
 let generation = 0;
+/** The resource URL the frame opened with, when SharePoint couldn't find it: the user chooses instead. */
+let missing: string | null = null;
 // Re-renders with what has loaded. Every render installs its own, so a late reply reaches the
 // current tree. It changes no values, so it never invalidates a resource URL being collected.
 let rerender: () => void = () => {};
@@ -1216,7 +1218,11 @@ export default {
 
   async initialValuesFromResourceUrl({ resourceUrl, ui }) {
     const located = await ui.locate(resourceUrl);
-    if (located === null) return {};
+    if (located === null) {
+      // Not a fallback to "all": that would bind everything with one click, in place of what was asked for.
+      missing = resourceUrl;
+      return { ref: null };
+    }
     return {
       ref: located.ref,
       title: located.title,
@@ -1238,6 +1244,9 @@ export default {
     }
     return <Section>
       <style>{STYLE}</style>
+      {missing !== null && !context.values.ref
+        ? <Notice>{`Couldn't find ${missing} in SharePoint. Choose what to connect.`}</Notice>
+        : null}
       <Field
         label={FIELD_LABEL}
         description="Choose everything, or open a site or your OneDrive to choose one part of it. It never includes more than you can open yourself."

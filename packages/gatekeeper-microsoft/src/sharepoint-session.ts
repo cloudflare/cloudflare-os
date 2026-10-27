@@ -413,7 +413,8 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       ...root.ids,
       can: {
         sites: guard.coversSites, files: guard.coversFiles, lists: guard.coversLists, pages: guard.coversPages,
-        write: this.ctx.host.access === "write",
+        // Pages have no write methods, whatever the deployment allows.
+        write: this.ctx.host.access === "write" && this.ctx.host.scope.kind !== "page",
       },
     };
   }
@@ -530,7 +531,8 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
         break;
       case "library":
         await guard.drive(target.driveId);
-        link = { kind: "library", id: target.driveId, name: resolved.name, webUrl: resolved.webUrl };
+        // What list() and getEntry() take is a folder: the library's root, by the alias LibraryInfo.rootFolderId uses.
+        link = { kind: "library", id: encodeItemRef({ driveId: target.driveId, itemId: "root" }), name: resolved.name, webUrl: resolved.webUrl };
         revealed = [units.drive(target.driveId)];
         break;
       case "folder":
@@ -764,7 +766,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     if (item.kind !== "file") throw new Error("That ID is a folder. Use list({ folderId }) to see what it holds.");
     const entry = await this.entry(item, overlay);
     const key = `text:${item.driveId}:${item.id}:${item.cTag ?? item.eTag ?? item.modifiedAt ?? ""}:${maxChars}`;
-    const [converted, version] = await Promise.all([
+    const [converted, shown] = await Promise.all([
       this.ctx.host.cached<Converted>(key, TEXT_TTL_MS, () =>
         this.ctx.host.read(api => convertFile({ api, ...(this.ctx.host.ai ? { ai: this.ctx.host.ai } : {}) }, item, maxChars))
           .then(result => result.content.length > MAX_CACHED_TEXT ? Promise.reject(new UncachedResult(result)) : result))
@@ -775,15 +777,16 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       this.fileVersion(item),
     ]);
     await this.ctx.observe("Read a SharePoint file", `Read the content of ${md(entry.path || entry.name)}.`,
-      units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
+      units.fileRead({ driveId: item.driveId, itemId: item.id }, shown.version, shown.moderation));
     return { entry, ...converted };
   }
 
   /**
-   * The version of a file this read is shown, so an observer is admitted to a draft only if they
-   * would be shown the same draft. Read uncached: a cached label could vouch for a newer draft.
+   * The version of a file this read is shown, and whether it awaits approval, so an observer is
+   * admitted to a draft only if they would be shown the same draft. Read uncached: a cached label
+   * could vouch for a newer draft.
    */
-  protected readonly fileVersion = async (item: GraphDriveItem): Promise<string | undefined> => {
+  protected readonly fileVersion = async (item: GraphDriveItem): Promise<{ version?: string; moderation?: number }> => {
     return await this.ctx.host.read(api => reads.fileVersion(api, { driveId: item.driveId, itemId: item.id }));
   };
 
@@ -819,13 +822,13 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     if (item.size !== undefined && item.size > MAX_READ_BYTES) {
       throw new Error(`The file is larger than the ${MAX_READ_BYTES / (1024 * 1024)} MB readBytes can return.`);
     }
-    const [download, version] = await Promise.all([
+    const [download, shown] = await Promise.all([
       this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_READ_BYTES)),
       this.fileVersion(item),
     ]);
     const entry = await this.entry(item, overlay);
     await this.ctx.observe("Downloaded a SharePoint file", `Downloaded ${md(entry.path || entry.name)} (${download.bytes.byteLength.toLocaleString("en-US")} bytes).`,
-      units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
+      units.fileRead({ driveId: item.driveId, itemId: item.id }, shown.version, shown.moderation));
     return download.bytes;
   }
 
@@ -852,7 +855,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     }
     const item = await this.item(id);
     if (!isWorkbook(item)) throw new Error("readWorkbook reads Excel workbooks (.xlsx, .xlsm, .xlsb). Use readFile for other files.");
-    const [sheets, version] = await Promise.all([
+    const [sheets, shown] = await Promise.all([
       this.ctx.host.read(api => readWorkbookSheets(api, { driveId: item.driveId, itemId: item.id },
         { ...(options?.sheet !== undefined ? { sheet: options.sheet } : {}), ...(range !== undefined ? { range } : {}), maxCells })),
       this.fileVersion(item),
@@ -863,7 +866,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     const worksheets = sheets.worksheets.map(sheet =>
       withPendingCells(sheet, cells.filter(change => change.worksheet.toLowerCase() === sheet.name.toLowerCase()), { maxCells, within: range !== undefined }));
     await this.ctx.observe("Read a SharePoint workbook", `Read ${sheets.worksheets.length} worksheet${sheets.worksheets.length === 1 ? "" : "s"} of ${md(entry.path || entry.name)}.`,
-      units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
+      units.fileRead({ driveId: item.driveId, itemId: item.id }, shown.version, shown.moderation));
     return { entry, worksheets, otherWorksheets: sheets.otherWorksheets };
   }
 
@@ -1073,7 +1076,7 @@ export class SharePointListReaderImpl extends RpcTarget implements SharePointLis
       dispose: () => walk[Symbol.dispose](),
       // A filtered query shows a pending new item only if it would match; that is the agent's own
       // data, so rather than guess, new items join unfiltered queries only.
-      inject: filtered ? undefined : { items: overlay.createdItems(this.ref), compare: () => -1, identity: item => item.id },
+      inject: filtered ? undefined : { items: overlay.createdItems(this.ref, true), compare: () => -1, identity: item => item.id },
       fetchPage: async (token, perPage) => {
         let page;
         try {
@@ -1100,7 +1103,7 @@ export class SharePointListReaderImpl extends RpcTarget implements SharePointLis
     // A temporary ID names a real item once its creation applied, so it is resolved first.
     const resolved = this.ctx.host.resolve(itemId);
     if (isProvisional(resolved)) {
-      const created = overlay.createdItems(this.ref).find(item => item.id === resolved);
+      const created = overlay.createdItems(this.ref, false).find(item => item.id === resolved);
       if (created === undefined) throw new OutsideScopeError();
       return created;
     }
@@ -1189,9 +1192,13 @@ export class SharePointListImpl extends SharePointListReaderImpl implements Shar
     return { ...this.ref, name: this.list.name, webUrl: this.list.webUrl };
   }
 
-  /** An existing item with a change of ours awaiting approval can't take another: its version fence would have to go. */
+  /**
+   * An item with a change of ours awaiting approval can't take another: an existing item's version
+   * fence would have to go, and a new item's second change would record a `before` the first may
+   * never write, so its undo would restore the wrong values.
+   */
   #requireNoPendingItemChange(resolved: string, before: "changing" | "deleting"): void {
-    if (!isProvisional(resolved) && this.overlay().hasPendingItemChange(this.ref, resolved)) {
+    if (this.overlay().hasPendingItemChange(this.ref, resolved)) {
       throw new Error(`A change to this item is already awaiting approval. Wait for it to be decided before ${before} it.`);
     }
   }
@@ -1416,13 +1423,13 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
         throw new Error(`The file is larger than the ${MAX_READ_BYTES / (1024 * 1024)} MB that can be edited here.`);
       }
       this.#requireNoPendingChange(entry.id, kind);
-      const [current, version, owner] = await Promise.all([
+      const [current, shown, owner] = await Promise.all([
         this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_READ_BYTES)).then(download => download.bytes),
         this.fileVersion(item), this.ctx.host.owner(),
       ]);
       // Whether a find matched says what the file holds, so the edit counts as reading it.
       await this.ctx.observe("Read a SharePoint file", `Read the content of ${md(entry.path || entry.name)} to edit it.`,
-        units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
+        units.fileRead({ driveId: item.driveId, itemId: item.id }, shown.version, shown.moderation));
       const result = await edit(current, `${owner.name} (agent)`).catch(error => { throw editFailure(error); });
       if (result.bytes.byteLength > MAX_UPLOAD_BYTES) throw new Error(`Files can be at most ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`);
       const ifMatch = ifUnchanged(options) ?? item.cTag;
@@ -1454,9 +1461,9 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
       }
       this.#requireNoPendingChange(entry.id, "workbook");
       const ref = { driveId: item.driveId, itemId: item.id };
-      const [sheets, version] = await Promise.all([this.ctx.host.read(api => reads.listWorksheets(api, ref)), this.fileVersion(item)]);
+      const [sheets, shown] = await Promise.all([this.ctx.host.read(api => reads.listWorksheets(api, ref)), this.fileVersion(item)]);
       await this.ctx.observe("Read a SharePoint workbook", `Read ${md(worksheet)}!${formatRange(range)} of ${md(entry.path || entry.name)} to change it.`,
-        units.fileRead(ref, version));
+        units.fileRead(ref, shown.version, shown.moderation));
       const sheet = sheets.find(candidate => candidate.name.toLowerCase() === worksheet.toLowerCase());
       if (sheet === undefined) {
         throw new Error(`This workbook has no worksheet named "${worksheet}". Its worksheets are: ${sheets.map(candidate => candidate.name).join(", ")}.`);
@@ -1505,12 +1512,12 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
       if (item.kind !== "file") throw new Error("The template must be a file.");
       checkTemplate(name, item.name);
       if (item.size !== undefined && item.size > MAX_READ_BYTES) throw new Error("The template is too large to use.");
-      const [download, version] = await Promise.all([
+      const [download, shown] = await Promise.all([
         this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_READ_BYTES)), this.fileVersion(item),
       ]);
       const entry = await this.entry(item, this.overlay());
       await this.ctx.observe("Read a SharePoint file", `Read ${md(entry.path || entry.name)} to use as a template.`,
-        units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
+        units.fileRead({ driveId: item.driveId, itemId: item.id }, shown.version, shown.moderation));
       template = { name: item.name, bytes: download.bytes };
     }
     const images = typeof content === "string" && writtenAs(name) === "powerpoint" ? await this.#slideImages(content) : undefined;
@@ -1538,12 +1545,12 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
       const mimeType = item.mimeType ?? "";
       if (item.kind !== "file" || !SLIDE_IMAGE_TYPES.has(mimeType)) throw new Error(`"${item.name}" isn't a PNG, JPEG or GIF picture.`);
       if (item.size !== undefined && item.size > MAX_SLIDE_IMAGE_BYTES) throw new Error(`"${item.name}" is larger than the ${MAX_SLIDE_IMAGE_BYTES / (1024 * 1024)} MB a slide picture can be.`);
-      const [download, version] = await Promise.all([
+      const [download, shown] = await Promise.all([
         this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_SLIDE_IMAGE_BYTES)), this.fileVersion(item),
       ]);
       const entry = await this.entry(item, this.overlay());
       await this.ctx.observe("Read a SharePoint file", `Read ${md(entry.path || entry.name)} to place it on a slide.`,
-        units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
+        units.fileRead({ driveId: item.driveId, itemId: item.id }, shown.version, shown.moderation));
       images.set(ref, { bytes: download.bytes, mimeType: mimeType as "image/png" | "image/jpeg" | "image/gif" });
     }
     return images;

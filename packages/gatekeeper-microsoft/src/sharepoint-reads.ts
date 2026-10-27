@@ -68,14 +68,15 @@ export async function getItem(api: GraphApi, ref: ItemRef): Promise<GraphDriveIt
 }
 
 /**
- * The version of a file the reader is shown, `_UIVersionString` from its list item: `3.0`, or a
- * draft's `3.1`. Undefined where the file has none to report.
+ * The version of a file the reader is shown, `_UIVersionString` from its list item (`3.0`, or a
+ * draft's `3.1`), with its approval state where the library moderates content. Empty where the
+ * file has none to report.
  */
-export async function fileVersion(api: GraphApi, ref: ItemRef): Promise<string | undefined> {
+export async function fileVersion(api: GraphApi, ref: ItemRef): Promise<{ version?: string; moderation?: number }> {
   const fields = await api.find<unknown>(`/drives/${ref.driveId}/items/${ref.itemId}/listItem/fields`, {
-    query: { $select: "_UIVersionString" },
+    query: { $select: "_UIVersionString,_ModerationStatus" },
   });
-  return versionOf(fields !== null && typeof fields === "object" ? fields as Record<string, unknown> : undefined).version;
+  return versionOf(fields !== null && typeof fields === "object" ? fields as Record<string, unknown> : undefined);
 }
 
 /** Graph's sort parameter for each listing order. Folders first is the default for "name". */

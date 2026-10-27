@@ -96,15 +96,14 @@ export const units = {
   list: (ref: ListRef): string => encodeUnit({ kind: "list", ...ref }),
   listItem: (ref: ListRef, itemId: string): string => encodeUnit({ kind: "listItem", ...ref, itemId }),
   page: (ref: PageRef): string => encodeUnit({ kind: "page", ...ref }),
-  /** Reading a file's bytes. `version` is its `_UIVersionString`, when known. */
+  /** Reading a file's bytes, pinned to the version read when it is a draft or awaits approval. */
   fileRead,
   /** Reading a file's version history. */
   versions: (ref: ItemRef): string[] => [encodeUnit({ kind: "item", ...ref }), encodeUnit({ kind: "versions", ...ref })],
   /** Reading a list item, pinned to the version read when it is a draft or awaits approval. */
   listItemRead: (ref: ListRef, itemId: string, version?: string, moderation?: number): string[] => [
     encodeUnit({ kind: "listItem", ...ref, itemId }),
-    ...(version !== undefined && VERSION.test(version) && (!PUBLISHED.test(version) || (moderation !== undefined && moderation !== 0))
-      ? [encodeUnit({ kind: "listItemVersion", ...ref, itemId, version })] : []),
+    ...(pinned(version, moderation) ? [encodeUnit({ kind: "listItemVersion", ...ref, itemId, version })] : []),
   ],
   /** Reading a page, pinned to the version read unless it is the published one. */
   pageRead: (ref: PageRef, state?: string, version?: string): string[] => [
@@ -120,13 +119,21 @@ const VERSION = /^[0-9]{1,6}\.[0-9]{1,6}$/;
 /** A major version: what every reader of the item is shown. */
 const PUBLISHED = /^[0-9]{1,6}\.0$/;
 
-/** The units for reading a file's bytes: its details, its content, and the draft version if it is one. */
-function fileRead(ref: ItemRef, version?: string): string[] {
+/**
+ * Whether a read must be pinned to the version it saw: a minor version (a draft), or a major one
+ * still awaiting approval (`_ModerationStatus` other than 0, approved), which a reader without
+ * approval rights is quietly shown the last approved version of instead.
+ */
+function pinned(version: string | undefined, moderation: number | undefined): version is string {
+  return version !== undefined && VERSION.test(version) && (!PUBLISHED.test(version) || (moderation !== undefined && moderation !== 0));
+}
+
+/** The units for reading a file's bytes: its details, its content, and the version read when it is a draft or awaits approval. */
+function fileRead(ref: ItemRef, version?: string, moderation?: number): string[] {
   return [
     encodeUnit({ kind: "item", ...ref }),
     encodeUnit({ kind: "content", ...ref }),
-    ...(version !== undefined && VERSION.test(version) && !PUBLISHED.test(version)
-      ? [encodeUnit({ kind: "fileVersion", ...ref, version })] : []),
+    ...(pinned(version, moderation) ? [encodeUnit({ kind: "fileVersion", ...ref, version })] : []),
   ];
 }
 

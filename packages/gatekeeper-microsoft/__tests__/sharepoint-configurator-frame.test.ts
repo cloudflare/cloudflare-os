@@ -520,6 +520,25 @@ describe("the SharePoint picker's keyboard and focus", () => {
 });
 
 describe("editing a SharePoint binding", () => {
+  it("asks the user to choose when the resource it opened with can't be found, rather than binding everything", async () => {
+    const gone = "https://contoso.sharepoint.com/sites/gone";
+    const picker = await start({ initialResource: gone });
+    expect(picker.requests()).toEqual([{ tab: "sites" }]);
+    // The visible notice; the runtime also mirrors its text into a live region.
+    const notice = picker.frame().locator("[data-configurator-info-notice]", { hasText: `Couldn't find ${gone} in SharePoint. Choose what to connect.` });
+    await poll(() => notice.count()).toBe(1);
+    expect(await picker.row(ALL).getAttribute("aria-checked")).toBe("false");
+    await poll(async () => (await picker.state()).ready).toBe(false);
+    expect(await picker.collect()).toHaveProperty("error");
+
+    await picker.respond(SITES);
+    await picker.row("Engineering").locator(".browser-radio-hit").click();
+    await poll(() => picker.row("Engineering").getAttribute("aria-checked")).toBe("true");
+    await poll(async () => (await picker.state()).ready).toBe(true);
+    expect(await notice.count()).toBe(0);
+    expect(await picker.collected()).toBe("site:eng");
+  });
+
   it("opens where the bound item is, makes it the tab stop, and offers to show it once the user has moved", async () => {
     const picker = await start({
       initialResource: "https://contoso-my.sharepoint.com/personal/me/Documents/Projects/Two.docx",
