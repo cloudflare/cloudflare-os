@@ -46,7 +46,8 @@ const SEEDS = [
   { category: "Food", amount: 300, note: "restaurants" },
   { category: "Books", amount: 96, note: "novels" },
 ] as const;
-const EXPECTED_TOTALS = { Food: 420, Travel: 185, Books: 96 } as const;
+// What the seeds add to each category.
+const SEEDED = { Food: 420, Travel: 185, Books: 96 } as const;
 
 const OkSchema = z.object({ ok: z.literal(true) });
 const TotalsSchema = z.object({ byCategory: z.record(z.string(), z.number()) });
@@ -114,12 +115,15 @@ async function verifyExpenseLog(verifier: EvalVerifier): Promise<void> {
   await checkBuildsGadget(verifier);
   await verifier.check("records-and-totals-expenses", async () => {
     using api = await verifier.connect<ExpenseApi>(LOG);
+    const before = TotalsSchema.parse(await api.totals()).byCategory;
     const added = [];
     for (const entry of SEEDS) added.push(OkSchema.safeParse(await api.add({ ...entry })).success);
-    const totals = TotalsSchema.parse(await api.totals()).byCategory;
+    const after = TotalsSchema.parse(await api.totals()).byCategory;
+    // The agent may have logged entries of its own: the seeds must add exactly their amounts.
     return {
-      pass: added.every(Boolean) && CATEGORIES.every(category => totals[category] === EXPECTED_TOTALS[category]),
-      evidence: asEvidence({ added, totals }),
+      pass: added.every(Boolean) && CATEGORIES.every(category =>
+        Math.abs((after[category] ?? 0) - (before[category] ?? 0) - SEEDED[category]) < 0.005),
+      evidence: asEvidence({ added, before, after }),
     };
   });
 }
@@ -130,9 +134,11 @@ async function verifySpendingView(verifier: EvalVerifier): Promise<void> {
   if (view === undefined) return;
   await checkView(verifier, view, async rendered => {
     await verifier.check("shows-each-category-total", async () => {
+      using api = await verifier.connect<ExpenseApi>(LOG);
+      const expected = TotalsSchema.parse(await api.totals()).byCategory;
       const shown = await rendered.waitForText(text => CATEGORIES.every(category =>
-        mentions(text, category) && showsAmount(text, EXPECTED_TOTALS[category])));
-      return { pass: shown.pass, evidence: asEvidence({ expected: EXPECTED_TOTALS, text: shown.text }) };
+        mentions(text, category) && showsAmount(text, expected[category] ?? Number.NaN)));
+      return { pass: shown.pass, evidence: asEvidence({ expected, text: shown.text }) };
     });
     await verifier.check("asks-about-a-category", async () => {
       const tried = await rendered.click("Travel", ["Food", "Books"]);
