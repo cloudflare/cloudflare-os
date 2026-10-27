@@ -109,6 +109,9 @@ describe("parseXml", () => {
 
     it("bounds the elements in one tree", () => {
       expectXmlError(`<r>${"<x/>".repeat(101)}</r>`, "limit", { maxElements: 100 });
+      // Four attributes weigh as much as an element: 1 + 51 × (1 + 4 / 4) > 100.
+      expectXmlError(`<r>${'<x a="1" b="2" c="3" d="4"/>'.repeat(51)}</r>`, "limit", { maxElements: 100 });
+      expect(childElements(parseXml(`<r>${'<x a="1" b="2" c="3" d="4"/>'.repeat(49)}</r>`, { ...options, maxElements: 100 }))).toHaveLength(49);
     });
   });
 

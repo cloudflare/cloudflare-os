@@ -178,7 +178,15 @@ export function renderTable(rows: readonly (readonly string[])[], maxChars = Num
 }
 
 function tableCell(markdown: string): string {
-  return markdown.trim().replace(/\|/g, "\\|").replace(/\s*\n\s*/g, "<br>");
+  return joinLines(markdown.trim().replace(/\|/g, "\\|"), "<br>");
+}
+
+/**
+ * Replaces each run of whitespace that holds a newline with `separator`, in one pass. The pattern
+ * `\s*\n\s*` says the same thing but backtracks quadratically over a long run of spaces.
+ */
+export function joinLines(markdown: string, separator: string): string {
+  return markdown.replace(/\s+/g, whitespace => whitespace.includes("\n") ? separator : whitespace);
 }
 
 /** A rendered block. Consecutive list items are joined by one newline; everything else by a blank line. */

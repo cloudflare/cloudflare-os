@@ -120,6 +120,21 @@ describe("editPptx: slides", () => {
     expect(charts.pkg.names().filter(name => name.startsWith("ppt/embeddings/"))).toHaveLength(2);
   });
 
+  it("leaves a copied slide's modern comments, and the commentRel that named them, on the original", async () => {
+    const P188 = "http://schemas.microsoft.com/office/powerpoint/2018/8/main";
+    const pkg = await OpcPackage.open(await markdownToPptx("# One\n\n- a"));
+    const slide = pkg.names().find(name => /^ppt\/slides\/slide\d+\.xml$/.test(name))!;
+    pkg.set("ppt/comments/modernComment_1.xml", `<p188:cmLst xmlns:p188="${P188}"/>`, "application/vnd.ms-powerpoint.comments+xml");
+    const id = pkg.relate(slide, "http://schemas.microsoft.com/office/2018/10/relationships/comments", "ppt/comments/modernComment_1.xml");
+    pkg.set(slide, pkg.text(slide)!.replace("</p:sld>", `<p:extLst><p:ext uri="{6950BFC3-D8DA-4A85-94F7-54DA5524770B}"><p188:commentRel xmlns:p188="${P188}" r:id="${id}"/></p:ext></p:extLst></p:sld>`));
+    const { pkg: edited, slides } = await edit(await pkg.toBytes(), [{ duplicateSlide: 1 }]);
+    const comments = (part: string) => edited.relationships(part).filter(relationship => relationship.type.endsWith("/comments"));
+    expect(comments(slides[0]!)).toHaveLength(1);
+    expect(edited.text(slides[0]!)).toContain("<p188:commentRel");
+    expect(comments(slides[1]!)).toHaveLength(0);
+    expect(edited.text(slides[1]!)).not.toContain("commentRel");
+  });
+
   it("moves slides, numbering each edit against the deck as the edits before left it", async () => {
     const { bytes, changes } = await edit(DECK, [{ moveSlide: 5, to: 1 }, { deleteSlide: 2 }, { moveSlide: 1, to: 4 }]);
     expect(changes.map(change => change.summary)).toEqual([

@@ -11,7 +11,7 @@
 
 import { escapeHtml } from "@gadgets/gatekeeper-kit/connect-pages";
 import { parseMarkdown, safeHref as safeMarkdownHref, type MdBlock, type MdInline } from "./content/markdown-parse";
-import { VOID, decodeEntities, htmlToMarkdown, tokenize } from "./html-markdown";
+import { VOID, decodeEntities, htmlToMarkdown, tokenize, trimTrailingBlanks } from "./html-markdown";
 import type { AttachmentInput, EmailAddress, MessageLink, SenderKind } from "./outlook-types";
 
 // -- reading ------------------------------------------------------------------------------------
@@ -114,6 +114,34 @@ function buildTree(html: string): { root: Element; base?: string } {
 }
 
 /** CSS declarations (`a: b; c: d`) by property, lower-cased, `!important` dropped. */
+/**
+ * Each `selectors { declarations }` of a stylesheet, in one pass. A selector list runs from the
+ * nearest `{`, `}` or `@` before its brace, so an at-rule's prelude is never one, and a block that
+ * holds other blocks (`@media`) yields no rule itself, only the rules inside it. The regex
+ * `/([^{}@]+)\{([^{}]*)\}/g` found the same rules but backtracked quadratically over a long
+ * stylesheet with no braces.
+ */
+function cssRules(css: string): { selectors: string; declarations: string }[] {
+  const rules: { selectors: string; declarations: string }[] = [];
+  let from = 0;
+  let close = -1;
+  for (let open = css.indexOf("{"); open !== -1;) {
+    if (close < open) close = css.indexOf("}", open + 1);
+    if (close === -1) break;
+    const next = css.indexOf("{", open + 1);
+    const before = css.slice(from, open);
+    const selectors = before.slice(Math.max(before.lastIndexOf("}"), before.lastIndexOf("@")) + 1);
+    if (selectors && (next === -1 || next > close)) {
+      rules.push({ selectors, declarations: css.slice(open + 1, close) });
+      from = close + 1;
+    } else {
+      from = open + 1;
+    }
+    open = next;
+  }
+  return rules;
+}
+
 function parseDeclarations(css: string): Map<string, string> {
   const declarations = new Map<string, string>();
   for (const declaration of css.split(";")) {
@@ -150,11 +178,10 @@ function stylesheetRules(html: string): StyleRules {
     into.set(key, merged);
   };
   for (const block of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)) {
-    const css = block[1]!.replace(/\/\*[\s\S]*?\*\//g, "");
-    for (const rule of css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)) {
-      const declarations = parseDeclarations(rule[2]!);
+    for (const rule of cssRules(block[1]!.replace(/\/\*[\s\S]*?\*\//g, ""))) {
+      const declarations = parseDeclarations(rule.declarations);
       const hides = hidesElement(declarations);
-      for (const selector of rule[1]!.split(",")) {
+      for (const selector of rule.selectors.split(",")) {
         const compounds = selector.trim().split(/[\s>+~]+/);
         if (!hides && compounds.length > 1) continue;
         // The last compound, without pseudo-classes: `div > p.x:first-child` → `p.x`.
@@ -733,7 +760,12 @@ export function linkMismatch(text: string, url: string): boolean {
   if (textHost === undefined) return false;
   let targetHost: string;
   if (url.toLowerCase().startsWith("mailto:")) {
-    const address = decodeURIComponent(url.slice(7).split("?")[0] ?? "");
+    let address: string;
+    try {
+      address = decodeURIComponent(url.slice(7).split("?")[0] ?? "");
+    } catch {
+      return true;
+    }
     targetHost = address.slice(address.lastIndexOf("@") + 1);
   } else {
     try {
@@ -762,7 +794,7 @@ function textToMarkdown(content: string, counters: Counters, links: LinkCollecto
     links.add(url, url);
     return (unwrapped ? url : bare) + trailing;
   });
-  return text.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+  return text.split("\n").map(trimTrailingBlanks).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** Cuts Markdown to `maxChars` at a paragraph, line or word boundary near the limit. */

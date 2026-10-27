@@ -189,6 +189,13 @@ describe("markdownToPptx: the outline", () => {
     expect(pkg.text(slides[0]!)).toContain('<a:buAutoNum type="arabicPeriod" startAt="4"/>');
   });
 
+  it("keeps an ordered list's start inside the 1..32767 that ST_TextBulletStartAtNum allows", async () => {
+    const zero = await validatePptx(await markdownToPptx("# S\n\n0. a"));
+    expect(zero.pkg.text(zero.slides[0]!)).toContain('<a:buAutoNum type="arabicPeriod"/>');
+    const huge = await validatePptx(await markdownToPptx("# S\n\n40000. a"));
+    expect(huge.pkg.text(huge.slides[0]!)).toContain('<a:buAutoNum type="arabicPeriod" startAt="32767"/>');
+  });
+
   it("links through external hyperlink relationships, one per target", async () => {
     const { pkg, slides } = await validatePptx(await markdownToPptx("# S\n\n[a](https://example.com/x) and [b](https://example.com/x) and [c](javascript:alert(1))"));
     const links = pkg.relationships(slides[0]!).filter(relationship => relationship.type.endsWith("/hyperlink"));

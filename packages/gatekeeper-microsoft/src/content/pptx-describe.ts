@@ -2,7 +2,7 @@
 // placeholders under stable names it can pass back to `setText`, its other text and tables, its
 // pictures, and its speaker notes, all as Markdown.
 
-import { PLAIN, escapeLineStarts, renderInlines, renderTable, safeLinkTarget, type Inline, type TextStyle } from "./markdown";
+import { PLAIN, escapeLineStarts, joinLines, renderInlines, renderTable, safeLinkTarget, type Inline, type TextStyle } from "./markdown";
 import { parsePart } from "./ooxml";
 import { Deck, relKind } from "./pptx-deck";
 import { attribute, childAt, childElements, firstChild, firstDescendant, textContent, type XmlElement } from "./xml";
@@ -110,7 +110,7 @@ export async function describePptx(bytes: Uint8Array): Promise<SlideInfo[]> {
       const kind = placeholderKind(info.type);
       const paragraphs = childElements(firstChild(shape, "p:txBody"), "a:p");
       const markdown = kind === "title"
-        ? paragraphs.map(paragraph => paragraphMarkdown(paragraph, link).replace(/\s*\n\s*/g, " ")).filter(Boolean).join(" ")
+        ? paragraphs.map(paragraph => joinLines(paragraphMarkdown(paragraph, link), " ")).filter(Boolean).join(" ")
         : textMarkdown(paragraphs, kind === "body", link);
       const index = info.idx !== undefined && /^\d+$/.test(info.idx) ? Number(info.idx) : undefined;
       return { name: handles[at]!, type: kind, ...(index !== undefined ? { index } : {}), markdown };

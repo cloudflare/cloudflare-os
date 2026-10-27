@@ -19,6 +19,11 @@ describe("pptxToMarkdown", () => {
     expect(markdown).toBe("## Slide 1: Written third\n\n## Slide 2: Written first\n\n## Slide 3: Written second");
   });
 
+  it("renders a slide once however many times the slide list names it", async () => {
+    const markdown = await markdownOf([{ shapes: title("Once") }], Array<number>(50).fill(0));
+    expect(markdown).toBe("## Slide 1: Once");
+  });
+
   it("renders body placeholders as bullets nested by paragraph level", async () => {
     const markdown = await markdownOf([{
       shapes: title("Plan") + body(

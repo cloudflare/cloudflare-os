@@ -7,7 +7,7 @@
 // bulleted or numbered, and document.xml.rels maps hyperlink and image ids to their targets.
 
 import {
-  MarkdownWriter, PLAIN, escapeLineStarts, imagePlaceholder, renderInlines, renderTable, safeLinkTarget,
+  MarkdownWriter, PLAIN, escapeLineStarts, imagePlaceholder, joinLines, renderInlines, renderTable, safeLinkTarget,
   type Block, type Inline, type TextStyle,
 } from "./markdown";
 import {
@@ -118,7 +118,7 @@ function renderParagraph(paragraph: XmlElement, context: DocxContext): Block[] {
 
 /** A code paragraph's text as written: line breaks kept, no Markdown escaping. */
 function codeText(inlines: readonly Inline[]): string {
-  return inlines.map(inline => inline.kind === "text" ? inline.text : inline.kind === "break" ? "\n" : inline.markdown).join("").replace(/\s+$/, "");
+  return inlines.map(inline => inline.kind === "text" ? inline.text : inline.kind === "break" ? "\n" : inline.markdown).join("").trimEnd();
 }
 
 /** A fenced code block, its fence longer than any run of backticks in the code. */
@@ -132,7 +132,7 @@ function paragraphBlock(markdown: string, properties: XmlElement | undefined, st
   const level = paragraphHeadingLevel(properties, styleId, context.styles);
   if (level !== undefined) {
     context.listDepth = -1;
-    return { kind: "other", markdown: `${"#".repeat(level)} ${markdown.replace(/\s*\n\s*/g, " ")}` };
+    return { kind: "other", markdown: `${"#".repeat(level)} ${joinLines(markdown, " ")}` };
   }
   const marker = listMarker(properties, styleId, context);
   if (marker) {

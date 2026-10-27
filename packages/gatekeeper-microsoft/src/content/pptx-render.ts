@@ -125,10 +125,13 @@ export class PartWriter {
           ? `<a:pPr marL="${BODY_MARGINS[level]}"${lvl} indent="${BULLET_INDENT}"><a:buFont typeface="Arial" panose="020B0604020202020204"/><a:buChar char="${level % 2 ? "–" : "•"}"/></a:pPr>`
           : template?.levels?.get(level) ?? (lvl ? `<a:pPr${lvl}/>` : "");
         break;
-      case "number":
+      case "number": {
+        // ST_TextBulletStartAtNum is 1..32767; a number outside it is XML PowerPoint offers to repair.
+        const startAt = Math.min(32767, Math.max(1, paragraph.number ?? 1));
         properties = `<a:pPr marL="${BODY_MARGINS[level]! + 171450}"${lvl} indent="-457200"><a:buFont typeface="+mj-lt"/>` +
-          `<a:buAutoNum type="arabicPeriod"${paragraph.number !== 1 ? ` startAt="${paragraph.number}"` : ""}/></a:pPr>`;
+          `<a:buAutoNum type="arabicPeriod"${startAt !== 1 ? ` startAt="${startAt}"` : ""}/></a:pPr>`;
         break;
+      }
       case "task":
       case "continuation":
         properties = `<a:pPr marL="${BODY_MARGINS[level]}"${lvl} indent="0"><a:buNone/></a:pPr>`;

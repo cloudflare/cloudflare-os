@@ -35,7 +35,7 @@ export interface XmlOptions {
   /** Namespace URI to the prefix element and attribute names are reported with. */
   readonly namespaces: Readonly<Record<string, string>>;
   readonly maxDepth?: number;
-  /** The most elements one parsed tree (or one streamed subtree) may hold. */
+  /** The most elements one parsed tree (or one streamed subtree) may hold; an attribute counts as a quarter of one, costing about that much memory. */
   readonly maxElements?: number;
   /**
    * Called as each element closes; a returned list of nodes replaces the element in its parent.
@@ -90,7 +90,7 @@ interface MutableElement {
 /** Reads tokens up to the close of `open`, returning the element they make. */
 function buildElement(tokenizer: XmlTokenizer, open: OpenToken, options: XmlOptions): XmlElement {
   const maxElements = options.maxElements ?? DEFAULT_MAX_ELEMENTS;
-  let count = 1;
+  let count = 1 + (open.attributes.size >> 2);
   const root: MutableElement = { name: open.name, attributes: open.attributes, children: [] };
   if (open.selfClosing) return root;
   const stack: MutableElement[] = [root];
@@ -102,7 +102,7 @@ function buildElement(tokenizer: XmlTokenizer, open: OpenToken, options: XmlOpti
     if (token.kind === "text") {
       appendText(parent.children, token.text);
     } else if (token.kind === "open") {
-      if (++count > maxElements) throw new XmlError("limit", `Part has more than ${maxElements} elements`);
+      if ((count += 1 + (token.attributes.size >> 2)) > maxElements) throw new XmlError("limit", `Part has more than ${maxElements} elements`);
       const element: MutableElement = { name: token.name, attributes: token.attributes, children: [] };
       if (token.selfClosing) appendElement(parent, element, options);
       else stack.push(element);

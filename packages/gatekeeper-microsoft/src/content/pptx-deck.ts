@@ -141,13 +141,16 @@ export class Deck {
   slides(): SlideRef[] {
     const relationships = new Map(this.pkg.relationships(this.presentationPart).map(relationship => [relationship.id, relationship]));
     const slides: SlideRef[] = [];
+    const seen = new Set<string>();
     for (const entry of rawChildren(this.#slideList(this.presentationXml), "p:sldId")) {
       const id = Number(entry.attributes.get("id"));
       const rId = entry.attributes.get("r:id");
       const relationship = rId ? relationships.get(rId) : undefined;
       if (!relationship || relationship.external) continue;
       const part = this.pkg.target(this.presentationPart, relationship);
-      if (this.pkg.has(part)) slides.push({ id, rId: rId!, part });
+      // A part the list names twice is one slide, under its first entry.
+      if (this.pkg.has(part) && !seen.has(part)) slides.push({ id, rId: rId!, part });
+      seen.add(part);
     }
     return slides;
   }
@@ -374,8 +377,11 @@ export class Deck {
     const isXml = /\.xml$/i.test(part);
     let content: Uint8Array | string = data;
     if (isXml) {
-      // A slide's creation ID identifies it to co-authoring; a copy needs its own.
-      content = this.pkg.text(part)!.replace(/<p14:creationId\s+val="\d+"\s*\/>/g, () => `<p14:creationId val="${creationId(name)}"/>`);
+      // A slide's creation ID identifies it to co-authoring; a copy needs its own. Its comments stay
+      // with the original (the relationship is dropped below), so the commentRel naming them goes too.
+      content = this.pkg.text(part)!
+        .replace(/<p14:creationId\s+val="\d+"\s*\/>/g, () => `<p14:creationId val="${creationId(name)}"/>`)
+        .replace(/<p:ext\s+uri="\{6950BFC3-D8DA-4A85-94F7-54DA5524770B\}"\s*>[\s\S]*?<\/p:ext>/g, "");
     }
     const override = this.pkg.contentType(part);
     this.pkg.set(name, content);

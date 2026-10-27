@@ -100,6 +100,12 @@ describe("mailToMarkdown: what is removed", () => {
     expect(removed).toEqual(["hidden text (7 places)"]);
   });
 
+  it("reads the rules inside an @media block, never its prelude", () => {
+    const content = "<style>@media (max-width: 600px) { .m { display: none } } .n{display:none} @font-face { font-family: x }</style>" +
+      "<p class=\"m\">one</p><p class=\"n\">two</p><p>shown</p>";
+    expect(html(content).markdown).toBe("shown");
+  });
+
   it("keeps a font-size:0 wrapper's resized children, as responsive email uses", () => {
     expect(html("<div style=\"font-size:0\"><div style=\"font-size:14px\">Left</div><div style=\"font-size:10pt\">Right</div></div>").markdown).toBe("Left\n\nRight");
   });
@@ -294,6 +300,8 @@ describe("linkMismatch and registrableDomain", () => {
     expect(linkMismatch("ada@contoso.com", "mailto:ada@contoso.com")).toBe(false);
     expect(linkMismatch("ada@contoso.com", "mailto:ada@evil.com")).toBe(true);
     expect(linkMismatch("ada@contoso.com", "https://contoso.com/")).toBe(false);
+    // An address that can't be percent-decoded is treated like a URL that can't be parsed.
+    expect(linkMismatch("bob@contoso.com", "mailto:%@contoso.com")).toBe(true);
   });
 });
 

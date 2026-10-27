@@ -1,19 +1,25 @@
-// Inputs shaped to make a regex over raw XML backtrack for seconds (unclosed tags repeated, a tag
-// that never reaches `=`). Every reader here is now a linear parser with bounds, so each must fail
-// or finish in well under a second even when the input is hostile.
+// Inputs shaped to make a regex over raw XML or text backtrack for seconds (unclosed tags repeated,
+// a tag that never reaches `=`, a run of 100,000 spaces), or to make output grow faster than input.
+// Every reader here is now a linear parser with bounds, so each must fail or finish in well under a
+// second even when the input is hostile.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { docxToMarkdown } from "../../src/content/docx";
 import { docxFeatures } from "../../src/content/docx-features";
 import { checkOfficePackage } from "../../src/content/package-check";
 import { editPptx, PresentationEditError } from "../../src/content/pptx-edit";
 import { pptxFeatures } from "../../src/content/pptx-features";
+import { pptxToMarkdown } from "../../src/content/pptx";
+import { describePptx } from "../../src/content/pptx-describe";
 import { OpcPackage } from "../../src/content/pptx-package";
 import { parseRaw, RawXmlError } from "../../src/content/raw-xml";
 import { parseXml, XmlError } from "../../src/content/xml";
 import { writeZip } from "../../src/content/zip-write";
+import { htmlToMarkdown } from "../../src/html-markdown";
 import { featuresLost } from "../../src/office-write";
-import { buildDocx } from "./test-fixtures";
+import { mailToMarkdown } from "../../src/outlook-content";
+import { buildDocx, buildPptx, paragraph, run, shape, slideParagraph } from "./test-fixtures";
 
 const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`../fixtures/${name}`, import.meta.url).pathname));
 const DECK = fixture("python-pptx-deck.pptx");
@@ -100,5 +106,43 @@ describe("pathological XML", () => {
     const { error } = await timed(() => editPptx(hostile, [{ deleteSlide: 1 }]));
     expect(error).toBeInstanceOf(PresentationEditError);
     expect((error as Error).message).toMatch(/presentation's XML can't be edited/);
+  });
+});
+
+describe("pathological text", () => {
+  const spaces = " ".repeat(100_000);
+
+  it("docxToMarkdown trims a heading of 100,000 spaces in one pass", async () => {
+    const bytes = await buildDocx({ body: paragraph(run(`Title${spaces}end`), '<w:outlineLvl w:val="0"/>') });
+    const { result } = await timed(() => docxToMarkdown(bytes));
+    expect(result?.markdown).toBe(`# Title${spaces}end`);
+  });
+
+  it("pptxToMarkdown and describePptx trim a title of 100,000 spaces in one pass", async () => {
+    const bytes = await buildPptx([{ shapes: shape('<p:ph type="title"/>', slideParagraph(`Title${spaces}end`)) }]);
+    const { result } = await timed(() => pptxToMarkdown(bytes));
+    expect(result?.markdown).toBe(`## Slide 1: Title${spaces}end`);
+    const deck = await OpcPackage.open(DECK);
+    deck.set("ppt/slides/slide1.xml", deck.text("ppt/slides/slide1.xml")!.replace("<a:t>Northwind Quarterly Review</a:t>", `<a:t>Title${spaces}end</a:t>`));
+    const retitled = await deck.toBytes();
+    const described = await timed(() => describePptx(retitled));
+    expect(described.result?.[0]?.placeholders.find(placeholder => placeholder.type === "title")?.markdown).toBe(`Title${spaces}end`);
+  });
+
+  it("htmlToMarkdown trims preformatted text in one pass and bounds list and quote nesting", async () => {
+    const pre = await timed(() => htmlToMarkdown(`<pre>x${spaces}y${spaces}</pre>`));
+    expect(pre.result).toBe(`\`\`\`\nx${spaces}y\n\`\`\``);
+    const lists = await timed(() => htmlToMarkdown(`${"<ul><li>".repeat(4000)}deep${"</li></ul>".repeat(4000)}`));
+    expect(lists.result!.length).toBeLessThan(300_000);
+    expect(lists.result!.endsWith(`\n${"  ".repeat(31)}- deep`)).toBe(true);
+    const quotes = await timed(() => htmlToMarkdown(`${"<blockquote>".repeat(4000)}deep${"</blockquote>".repeat(4000)}`));
+    expect(quotes.result).toBe(`${"> ".repeat(32)}deep`);
+  });
+
+  it("mailToMarkdown reads a brace-less 200 KB stylesheet and a text body of 200,000 spaces in one pass", async () => {
+    const styled = { contentType: "html" as const, content: `<style>${"a".repeat(200_000)}</style><p>Hi</p>` };
+    expect((await timed(() => mailToMarkdown(styled, { maxChars: 50_000 }))).result?.markdown).toBe("Hi");
+    const text = { contentType: "text" as const, content: `x${spaces}${spaces}y` };
+    expect((await timed(() => mailToMarkdown(text, { maxChars: 500_000 }))).result?.markdown).toBe(`x${spaces}${spaces}y`);
   });
 });

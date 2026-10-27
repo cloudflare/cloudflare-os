@@ -42,7 +42,7 @@ export class RawXmlError extends Error {
 }
 
 const MAX_DEPTH = 256;
-/** The same bound as `xml.ts`: every node here also keeps its offsets and parent. */
+/** The same bound as `xml.ts`, an attribute again counting as a quarter of an element: every node here also keeps its offsets and parent. */
 const MAX_ELEMENTS = 250_000;
 
 /** Parses `text` into a tree whose nodes point back into it. Refuses DTDs, as every reader here does. */
@@ -82,12 +82,10 @@ export function parseRaw(text: string): RawElement {
       const inner = text.slice(open + 1, end - (selfClosing ? 2 : 1));
       const nameMatch = /^[^\s/>]+/.exec(inner);
       if (!nameMatch) throw new RawXmlError("A tag has no name.");
-      if (++count > MAX_ELEMENTS) throw new RawXmlError(`The part has more than ${MAX_ELEMENTS} elements.`);
+      const attributes = parseAttributes(inner.slice(nameMatch[0].length));
+      if ((count += 1 + (attributes.size >> 2)) > MAX_ELEMENTS) throw new RawXmlError(`The part has more than ${MAX_ELEMENTS} elements.`);
       const parent = stack.at(-1);
-      const element: RawElement = {
-        name: nameMatch[0], attributes: parseAttributes(inner.slice(nameMatch[0].length)),
-        start: open, openEnd: end, closeStart: end, end, children: [], parent,
-      };
+      const element: RawElement = { name: nameMatch[0], attributes, start: open, openEnd: end, closeStart: end, end, children: [], parent };
       if (parent) parent.children.push(element);
       else if (root) throw new RawXmlError("The part has more than one root element.");
       else root = element;

@@ -112,6 +112,19 @@ function safeHref(href: string | undefined): string | undefined {
 
 type ListFrame = { ordered: boolean; index: number };
 
+/** Lists and quotes nested deeper than this indent or prefix no further: output would otherwise grow with the square of the depth. */
+const MAX_NESTING = 32;
+
+/**
+ * `text` without its trailing spaces and tabs (other whitespace kept), in one pass; `/[ \t]+$/`
+ * backtracks quadratically over a long run of spaces that stops short of the end.
+ */
+export function trimTrailingBlanks(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === " " || text[end - 1] === "\t")) end--;
+  return text.slice(0, end);
+}
+
 /**
  * Converts HTML to Markdown. Whitespace is collapsed as a browser would, block elements become
  * paragraphs, and tables become GitHub-style tables (cell line breaks become spaces).
@@ -132,12 +145,12 @@ export function htmlToMarkdown(html: string): string {
     if (table?.cell !== null && table?.cell !== undefined) table.cell += text;
     else line += text;
   };
-  const prefix = () => "> ".repeat(quote);
+  const prefix = () => "> ".repeat(Math.min(quote, MAX_NESTING));
   // A paragraph break: empty, or inside a quote the bare marker, so the quote continues past it.
   const isBreak = (text: string | undefined) => text !== undefined && /^[> ]*$/.test(text);
   const flush = () => {
     // Leading spaces are a list's indentation or code's: whitespace text is already collapsed away.
-    const text = line.replace(/[ \t]+$/g, "");
+    const text = trimTrailingBlanks(line);
     if (text.trim() !== "") out.push(prefix() + text);
     line = "";
   };
@@ -195,7 +208,7 @@ export function htmlToMarkdown(html: string): string {
           flush();
           const frame = lists[lists.length - 1] ?? { ordered: false, index: 0 };
           frame.index++;
-          line = `${"  ".repeat(Math.max(0, lists.length - 1))}${frame.ordered ? `${frame.index}.` : "-"} `;
+          line = `${"  ".repeat(Math.max(0, Math.min(lists.length, MAX_NESTING) - 1))}${frame.ordered ? `${frame.index}.` : "-"} `;
           break;
         }
         case "table":

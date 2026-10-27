@@ -4,7 +4,7 @@
 // and the speaker notes.
 
 import {
-  MarkdownWriter, PLAIN, escapeLineStarts, imagePlaceholder, renderInlines, renderTable, safeLinkTarget,
+  MarkdownWriter, PLAIN, escapeLineStarts, imagePlaceholder, joinLines, renderInlines, renderTable, safeLinkTarget,
   type Block, type Inline, type TextStyle,
 } from "./markdown";
 import {
@@ -24,10 +24,14 @@ export async function pptxToMarkdown(bytes: Uint8Array, options: OfficeConversio
   const writer = new MarkdownWriter(options.maxChars);
 
   let number = 0;
+  // A slide list naming one part many times reads it once; each repeat would cost a full parse.
+  const rendered = new Set<string>();
   for (const slideId of childElements(childAt(presentation, "p:sldIdLst"), "p:sldId")) {
     if (!writer.hasRoom) break;
     const relationship = relationships.get(attribute(slideId, "r:id") ?? "");
     if (!relationship || relationship.external || relationship.type !== "slide" || !zip.has(relationship.target)) continue;
+    if (rendered.has(relationship.target)) continue;
+    rendered.add(relationship.target);
     number++;
     for (const block of await renderSlide(zip, relationship.target, number, { warnings, writer })) writer.push(block);
   }
@@ -121,7 +125,7 @@ function renderTextShape(shape: XmlElement, context: SlideContext, content: Slid
   if (type !== undefined && FURNITURE_PLACEHOLDERS.has(type)) return;
   const paragraphs = childElements(firstChild(shape, "p:txBody"), "a:p");
   if (type !== undefined && TITLE_PLACEHOLDERS.has(type) && content.title === undefined) {
-    const title = paragraphs.map(paragraph => paragraphMarkdown(paragraph, context).replace(/\s*\n\s*/g, " ")).filter(Boolean).join(" ");
+    const title = paragraphs.map(paragraph => joinLines(paragraphMarkdown(paragraph, context), " ")).filter(Boolean).join(" ");
     if (title) {
       content.title = title;
       return;
