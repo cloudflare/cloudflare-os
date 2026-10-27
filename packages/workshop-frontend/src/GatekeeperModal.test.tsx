@@ -437,21 +437,23 @@ describe('GatekeeperModal types whose configurator asks for their grant', () => 
     expect(testState.frameKeys).toHaveLength(1)
   })
 
-  it('connects one only once the account holds its grant', async () => {
+  it('connects one only once the gatekeeper says the account holds its grant', async () => {
     stubResizeObserver()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     testState.ready = true
     testState.collectedUrl = 'https://catalog.example.com/services/s1'
+    api.ensureAccountResources.mockResolvedValueOnce({ url: 'https://catalog.example.com/consent', nonce: 'n' })
     await renderModal(OPEN_CATALOG, { ...FLAGGED, granted: [CATALOG.urlPattern] })
 
     await vi.waitFor(() => expect(button('Add connection').disabled).toBe(false))
     await act(async () => button('Add connection').click())
     expect(testState.toasts).toEqual([{ title: 'Grant access to Service to connect it.', variant: 'error' }])
 
+    // The grant has landed, but the account's stored description doesn't list it yet.
     testState.toasts = []
-    await act(async () => api.subscriber!.add(
-      1, accountDescription(1, [CATALOG.urlPattern, SERVICE.urlPattern]), VENDOR, [SERVICE, CATALOG], true, 'catalog'))
+    api.ensureAccountResources.mockResolvedValueOnce(null)
     await act(async () => button('Add connection').click())
+    expect(api.ensureAccountResources.mock.calls).toEqual([[1, [SERVICE.urlPattern]], [1, [SERVICE.urlPattern]]])
     // Past the grant check, to the overseer this test does not provide.
     expect(testState.toasts).toEqual([{ title: 'not called', variant: 'error' }])
   })

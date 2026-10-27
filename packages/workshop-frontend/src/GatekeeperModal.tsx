@@ -788,9 +788,13 @@ export default function GatekeeperModal({
       // A URL no narrower type names binds the card's whole-instance catch-all, if it has one.
       const resource = resourceForUrl(selectedConnection, resourceUrl) ??
         selectedConnection.resources?.find(({ urlPattern }) => urlPattern === 'https://*')
+      // A configurator that asks for its type's grant confirmed it with the gatekeeper, which sees it
+      // before this account's stored description does, so a type that description lacks is asked of
+      // the gatekeeper, which refreshes the description when nothing is missing.
       const ungranted = resource && (!acceptedResourceUrlPatterns.includes(resource.urlPattern) ||
         (resource.configuratorRequestsGrant && grantedPatterns !== undefined &&
-          !grantedPatterns.includes(resource.urlPattern)))
+          !grantedPatterns.includes(resource.urlPattern) &&
+          await authenticatedApi.ensureAccountResources(selectedAccountId, [resource.urlPattern]) !== null))
       if (ungranted) {
         throw new Error(`Grant access to ${resource.title} to connect it.`)
       }
