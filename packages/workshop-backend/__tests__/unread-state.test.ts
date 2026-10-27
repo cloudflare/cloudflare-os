@@ -53,6 +53,7 @@ const event = (sequence: number) => ({id: crypto.randomUUID(), sequence,
 const notificationBaselines = (fixture: Fixture) => withImpl(fixture.workspace, async impl =>
   [...impl.storage.chatMeta.list()].map(meta => ({chatId: meta.id,
     head: impl.chatHead(meta.id, false),
+    headUpdatedAt: meta.lastActive,
     notifiedThroughSequence: impl.nextChatSequencePeek(meta.id) - 1,
     readThroughVisibleSequence: impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0})));
 const addReader = async (fixture: Fixture) => {
@@ -127,7 +128,7 @@ describe("persisted visible positions", () => {
     await withImpl(fixture.workspace, async impl => {
       expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       using scan = vi.spyOn(impl.storage.chats, "list");
-      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed"});
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed", lastActive: impl.getChatTimestamp()});
       await impl.deliverDirtyChats();
       write(impl, 10); write(impl, 15);
       await impl.deliverDirtyChats();
@@ -248,7 +249,7 @@ describe("local counts and explicit read boundaries", () => {
       write(impl, 0, " \nFirst line\nSecond line");
       write(impl, 2, ""); // Internal/non-visible activity must not replace the preview or date.
       await impl.deliverDirtyChats();
-      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed"});
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed", lastActive: impl.getChatTimestamp()});
       await impl.deliverDirtyChats();
       expect(scan).not.toHaveBeenCalled();
     });
@@ -279,18 +280,41 @@ describe("local counts and explicit read boundaries", () => {
     await append(fixture, 1);
     const captured = await notificationBaselines(fixture);
     await withImpl(fixture.workspace, async impl => {
-      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed"});
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed", lastActive: impl.getChatTimestamp()});
       await impl.deliverDirtyChats();
     });
     expect((await reader.getUnreadThreads())[0]?.chatTitle).toBe("Renamed");
     await runInDurableObject(reader, async instance => {
       using put = vi.spyOn(Reflect.get(instance, "storage").chatReadCursors, "put");
       await instance.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", captured);
+      await instance.messageArrived(fixture.workspaceId, 1, {head: captured[0].head, headUpdatedAt: captured[0].headUpdatedAt,
+        latestVisibleSequence: captured[0].readThroughVisibleSequence, notifications: []});
       expect(put).not.toHaveBeenCalled();
     });
     await evictDurableObject(reader);
     expect(await reader.getUnreadThreads()).toEqual([
       expect.objectContaining({chatTitle: "Renamed", readThroughSequence: 0, unreadMessageCount: 1}),
+    ]);
+  });
+
+  it("repairs a rename skipped during admission denial when the collaborator reopens", async () => {
+    const fixture = await setup();
+    const {reader, owner} = await addReader(fixture);
+    await append(fixture, 0);
+    await reader.markChatRead(receipt(fixture, 0));
+    await append(fixture, 1);
+    await withImpl(fixture.workspace, async impl => {
+      using _admission = vi.spyOn(impl, "mayReadChatState")
+        .mockImplementation(async userId => userId === fixture.user.id.toString());
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed", lastActive: impl.getChatTimestamp()});
+      await impl.deliverDirtyChats();
+      expect([...impl.storage.dirtyChats.list()]).toEqual([]); // Denied deliveries are intentionally skipped.
+    });
+    expect((await reader.getUnreadThreads())[0]?.chatTitle).toBe("Demo");
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
+    await evictDurableObject(reader);
+    expect(await reader.getUnreadThreads()).toEqual([
+      expect.objectContaining({chatTitle: "Renamed", latestSequence: 1, readThroughSequence: 0, unreadMessageCount: 1}),
     ]);
   });
 

@@ -54,6 +54,8 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
 export type ChatMessageProgress = {
   /** Current inbox metadata. Optional for handoffs from an older source during deployment. */
   head?: Omit<ChatTimelineHead, "chatId">;
+  /** Source metadata's existing monotonic timestamp, independent of the latest visible message. */
+  headUpdatedAt?: Date;
   /** Latest dense visible position; repeated/older deliveries never increment a count. */
   latestVisibleSequence: number;
   /** First new timeline record in this pending batch, for the initial notification boundary. */
@@ -662,9 +664,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         old.notifiedThroughSequence === cursor.notifiedThroughSequence && old.deleted === cursor.deleted &&
         old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
         old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
+        old.headUpdatedAt?.getTime() === cursor.headUpdatedAt?.getTime() &&
         old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime()) return false;
     this.storage.chatReadCursors.put(cursor);
     return true;
+  }
+
+  #mergeHead(current: ChatReadCursor, incoming: Pick<ChatReadCursor, "head" | "headUpdatedAt">, acceptUnstamped = false) {
+    let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
+    let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
+      (incoming.head.latestSequence === current.head.latestSequence &&
+        (at !== undefined ? previous === undefined || at > previous : acceptUnstamped && previous === undefined)));
+    // Legacy live fanout can update an unstamped title, but cannot replace a stamped projection.
+    return newer ? {head: incoming.head, headUpdatedAt: incoming.headUpdatedAt} :
+      {head: current.head, headUpdatedAt: current.headUpdatedAt};
   }
 
   #workspace(workspaceId: string) {
@@ -732,7 +745,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           // and its queued alerts, rather than committing the older snapshot over it.
           let current = this.#cursor(workspaceId, chatId);
           let latest = Math.max(current.latestVisibleSequence ?? 0, state.latestVisibleSequence);
-          let updated = {...current, head: current.head ?? state.head, readThroughSequence: through,
+          let updated = {...current, ...this.#mergeHead(current, state), readThroughSequence: through,
             readThroughVisibleSequence: state.readThroughVisibleSequence, latestVisibleSequence: latest,
             unreadCount: latest - state.readThroughVisibleSequence,
             notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : state.notificationBaseline};
@@ -871,9 +884,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           (progress.firstMessageSequence ?? 0) - 1};
     }
     let latest = Math.max(cursor.latestVisibleSequence ?? 0, progress.latestVisibleSequence);
-    let head = progress.head && progress.head.latestSequence >= (cursor.head?.latestSequence ?? -1)
-      ? progress.head : cursor.head;
-    cursor = {...cursor, head, latestVisibleSequence: latest,
+    cursor = {...cursor, ...this.#mergeHead(cursor, progress, true), latestVisibleSequence: latest,
       unreadCount: latest - readThroughVisibleSequence};
     let changed = this.ctx.storage.transactionSync(() => {
       let stored = this.#storeCursor(cursor);
@@ -1023,7 +1034,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
-      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence" | "readThroughVisibleSequence" | "head">[]
+      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence" | "readThroughVisibleSequence" | "head" | "headUpdatedAt">[]
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
@@ -1059,16 +1070,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           let visible = baseline.readThroughVisibleSequence ?? 0;
           if (!cursor || cursor.readThroughVisibleSequence === undefined) {
             this.#storeCursor({workspaceId, chatId: baseline.chatId,
-              head: baseline.head,
+              head: baseline.head, headUpdatedAt: baseline.headUpdatedAt,
               readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
               latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
             changed = true;
           } else {
             let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
-            // Reopen metadata was captured before an await; live metadata wins at the same position.
-            let head = baseline.head && (!cursor.head || baseline.head.latestSequence > cursor.head.latestSequence)
-              ? baseline.head : cursor.head;
-            changed = this.#storeCursor({...cursor, head, latestVisibleSequence: latest,
+            changed = this.#storeCursor({...cursor, ...this.#mergeHead(cursor, baseline), latestVisibleSequence: latest,
               unreadCount: latest - cursor.readThroughVisibleSequence}) || changed;
           }
         }

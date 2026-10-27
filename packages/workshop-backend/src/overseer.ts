@@ -1194,7 +1194,7 @@ class OverseerImpl implements AgentHooks {
           // recipient; retries need neither a source read nor a new authorization decision.
           if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!)) return;
           await this.users.get(this.users.idFromString(userId)).messageArrived(
-            this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence, head,
+            this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence, head, headUpdatedAt: meta.lastActive,
               notifications: notifications.filter(event => event.userId === userId &&
                 start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
                 .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null);
@@ -10870,6 +10870,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return {readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
       latestVisibleSequence: counter?.visibleThroughSequence ?? 0, timelineTailSequence: tail,
       head: this.impl.chatHead(chatId, false),
+      headUpdatedAt: meta.lastActive,
       notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1};
   }
 
@@ -10990,6 +10991,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
         head: this.impl.chatHead(meta.id, false),
+        headUpdatedAt: meta.lastActive,
         readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
       void (async () => {

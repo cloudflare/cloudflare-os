@@ -134,6 +134,8 @@ export type ChatReadCursor = {
   notifiedThroughSequence: number;
   /** Source-owned inbox metadata, copied through the same durable message/title fanout. */
   head?: Omit<ChatTimelineHead, "chatId">;
+  /** Source metadata's existing lastActive timestamp, ordering renames at the same message position. */
+  headUpdatedAt?: Date;
   /** Reject delayed pre-deletion handoffs. Chat IDs are never reused. */
   deleted?: true;
 };

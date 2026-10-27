@@ -49,6 +49,7 @@ Each `chatReadCursors` row contains:
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
 - `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time
+- `headUpdatedAt`: the workspace metadata's existing monotonic `lastActive`, ordering titles at the same message position
 - `deleted`, only on a deleted thread's tombstone
 
 `notificationOutbox` contains the accepted alerts themselves: stable UUID, kind, bounded chat
@@ -60,7 +61,9 @@ Counts and queue headers hydrate from local storage once per User DO lifetime. S
 and subscriptions use that memory, never list threads on other DOs, and never write read rows.
 The existing source fanout carries inbox metadata with the count; title changes already dirty the
 same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
-change read horizons. Older rows acquire the projection on their next source update; until then the
+change read horizons. The existing admission callback can repair metadata skipped during denied
+admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
+Older rows acquire the projection on their next source update; until then the
 inbox shows a fallback title/preview, without migration or background metadata queries.
 
 Three targeted local queries avoid transferring the full thread state for every consumer:
