@@ -208,6 +208,7 @@ calendars, delegates, forwarding events, changing someone else's event.
 |---|---|---|---|
 | `calendar.events` | create, change, delete an event without attendees | Yes | delete / restore the previous fields / recreate it |
 | `calendar.invitations` | create, change or cancel a meeting with attendees | **Never** | can't be unsent |
+| `calendar.shared-events` | create, change, delete an event in a calendar someone else owns (`createSharedEvent`, `updateSharedEvent`, `deleteSharedEvent`: the `calendar.events` definitions under a kind that is never auto-approved, since "your own events" doesn't cover them) | **Never** | as `calendar.events` |
 | `calendar.responses` | accept, tentatively accept, decline, propose a new time | **Never** | can't be unsent |
 
 Every action reads back as done while it waits (`calendar-overlay.ts`), with a provisional `~N` ID

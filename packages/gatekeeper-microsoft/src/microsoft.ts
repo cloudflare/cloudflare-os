@@ -259,7 +259,6 @@ function previewOAuthFor(env: Env): PreviewOAuth | Response {
   }
 }
 
-/** Whether a binding URL is a calendar's: Outlook on the web's `/calendar/` app. */
 /** A URL path segment decoded, or kept as written when its percent-escapes are malformed. */
 function safeDecode(segment: string): string {
   try {
@@ -269,6 +268,7 @@ function safeDecode(segment: string): string {
   }
 }
 
+/** Whether a binding URL is a calendar's: Outlook on the web's `/calendar/` app. */
 function isCalendarUrl(url: string): boolean {
   try {
     parseCalendarUrl(url);
