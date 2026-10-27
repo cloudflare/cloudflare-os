@@ -949,9 +949,17 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
       // Fenced on the key the update left: a draft changed since (in Outlook, or sent) isn't rewound.
       const restored = await host.graph(async api => {
         const box = mail(api, payload.mailbox);
+        let html = payload.before.html;
+        if (payload.keepsQuote) {
+          // `before` is the draft's own part alone: it goes back above the quoted original the draft has now.
+          const current = await box.find<{ body?: { content?: unknown } }>(`/messages/${idPath(id)}`, { $select: "body" });
+          if (current === null) return true;
+          if (typeof current.body?.content !== "string") throw new GraphApiError(502, "Outlook didn't return the draft's text.");
+          html = replaceOwnPart(current.body.content, html);
+        }
         const patched = await box.request("PATCH", `/messages/${idPath(id)}`, {
           subject: payload.before.subject, importance: payload.before.importance,
-          body: { contentType: "HTML", content: payload.before.html },
+          body: { contentType: "HTML", content: html },
           toRecipients: recipientsJson(payload.before.to), ccRecipients: recipientsJson(payload.before.cc), bccRecipients: recipientsJson(payload.before.bcc),
         }, { ...(payload.appliedChangeKey ? { ifMatch: payload.appliedChangeKey } : {}), allow: [404] }).then(() => true, error => {
           if (error instanceof GraphApiError && error.status === 412) return false;

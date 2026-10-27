@@ -21,10 +21,11 @@ import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import { diffTextLines, type GitDiffHunk } from "@gadgets/gatekeeper-kit/git-diff";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import { isProvisional, realId } from "./binding";
-import { GraphApiError, type GraphApi } from "./graph-api";
+import { GraphApiError, isOutcomeUnknown, type GraphApi } from "./graph-api";
 import { ITEM_SELECT, parseDriveItem, parseListItem, parseVersion, parsePage } from "./graph-parse";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
+import { extensionOf } from "./sharepoint-content";
 import { OutsideScopeError, decodeItemRef, encodeItemRef, type ItemRef, type ListRef } from "./sharepoint-scope";
 import type { CellValue, FieldValue } from "./types";
 import { columnIndex, columnLetters } from "./workbook-ranges";
@@ -497,6 +498,12 @@ export const definitions = {
       const bytes = await host.readFile(payload.file);
       let previousVersionId: string | undefined;
       try {
+        // The bytes were checked as the format the name said at proposal, and a rename leaves the
+        // content tag alone: a file since renamed into another format isn't given them.
+        const current = await host.graph(api => api.get<{ name?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }), { replayable: true });
+        if (typeof current.name !== "string" || extensionOf(current.name) !== extensionOf(payload.target.name)) {
+          throw new ActionApplyError("The file has been renamed into another format since this was proposed, so it wasn't replaced. Ask the agent to read it again.");
+        }
         // The current version, recorded first: it is what a revert restores.
         previousVersionId = await host.graph(async api => parsePage(
           await api.get<unknown>(`/drives/${driveId}/items/${itemId}/versions`, { query: { $top: 1 } }),
@@ -505,6 +512,7 @@ export const definitions = {
           rawBody: bytes, contentType: payload.mimeType, ...(payload.ifMatch ? { ifMatch: payload.ifMatch } : {}),
         }));
       } catch (error) {
+        if (error instanceof ActionApplyError) throw error;
         refusal(error, "The file");
       }
       host.releaseFile(payload.file);
@@ -723,6 +731,8 @@ export const definitions = {
         id = await host.graph(async api => parseListItem(await api.request<unknown>("POST",
           `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items`, { body: { fields: payload.fields } })).id);
       } catch (error) {
+        // Nothing identifies the row for a retry to find, so one that may have been added isn't added again.
+        if (isOutcomeUnknown(error)) throw new ActionOutcomeUnknownError("SharePoint may have added the item before the connection dropped. Check the list before trying again.");
         refusal(error, "The list");
       }
       host.refs.bind(payload.ref, id);

@@ -30,6 +30,7 @@ function harness(replies: Reply[] = [], options: { outside?: string[] } = {}) {
       body: typeof init?.body === "string" ? JSON.parse(init.body) : init?.body, ifMatch: new Headers(init?.headers).get("if-match"),
     });
     const reply = replies.shift() ?? { status: 204 };
+    if (reply.status === -1) throw new Error("the connection dropped");
     return new Response(reply.status === 204 ? null : JSON.stringify(reply.body ?? {}), {
       status: reply.status, headers: { "content-type": "application/json", ...reply.headers },
     });
@@ -58,6 +59,7 @@ const item = (id: string, extra: Record<string, unknown> = {}) =>
   ({ id, name: id, webUrl: `https://contoso.sharepoint.com/${id}`, parentReference: { driveId: DRIVE, id: "SPECS" }, eTag: `"{${id}},2"`, cTag: `"c:{${id}},2"`, ...extra });
 const nameTaken = { status: 409, body: { error: { code: "nameAlreadyExists", message: "The specified item name already exists." } } };
 const versions = { status: 200, body: { value: [{ id: "3.0" }, { id: "2.0" }] } };
+const named = (name: string) => ({ status: 200, body: { name } });
 
 afterEach(() => {
   vi.useRealTimers();
@@ -117,13 +119,28 @@ describe("creating", () => {
   });
 });
 
+describe("adding a list item", () => {
+  const payload: SharePointActions["createListItem"] = {
+    ref: "~1", list: { siteId: "contoso.sharepoint.com,11111111-1111-1111-1111-111111111111,33333333-3333-3333-3333-333333333333", listId: "44444444-4444-4444-4444-444444444444", name: "Tasks" },
+    fields: { Title: "Ship it" }, labels: { Title: "Title" }, submittedAt: 1,
+  };
+
+  it("won't add the item again when SharePoint's answer to adding it was lost, since nothing would find the first", async () => {
+    const { host } = harness([{ status: -1 }]);
+    await expect(definitions.createListItem.apply(payload, host)).rejects.toBeInstanceOf(ActionOutcomeUnknownError);
+    const refused = harness([{ status: 400, body: { error: { code: "invalidRequest", message: "bad field" } } }]);
+    await expect(definitions.createListItem.apply(payload, refused.host)).rejects.toBeInstanceOf(ActionApplyError);
+  });
+});
+
 describe("replacing content", () => {
   const payload: SharePointActions["replaceFile"] = { target: NOTES, file: FILE, mimeType: "text/plain", ifMatch: `"c:{NOTES},2"`, submittedAt: 1 };
 
   it("records the version it supersedes, writes under the content fence, and releases the bytes", async () => {
-    const { host, sent, released } = harness([versions, { status: 200, body: item("NOTES") }]);
+    const { host, sent, released } = harness([named("notes.txt"), versions, { status: 200, body: item("NOTES") }]);
     const { action } = await definitions.replaceFile.apply(payload, host);
     expect(sent.map(request => [request.method, request.path, request.ifMatch])).toEqual([
+      ["GET", `/drives/${DRIVE}/items/NOTES?%24select=name`, null],
       ["GET", `/drives/${DRIVE}/items/NOTES/versions?%24top=1`, null],
       ["PUT", `/drives/${DRIVE}/items/NOTES/content`, `"c:{NOTES},2"`],
     ]);
@@ -137,9 +154,18 @@ describe("replacing content", () => {
   });
 
   it("fails finally when the file changed since it was proposed", async () => {
-    const { host, released } = harness([versions, { status: 412, body: { error: { code: "notAllowed", message: "ETag mismatch" } } }]);
+    const { host, released } = harness([named("notes.txt"), versions, { status: 412, body: { error: { code: "notAllowed", message: "ETag mismatch" } } }]);
     await expect(definitions.replaceFile.apply(payload, host)).rejects.toThrow(/changed after this was proposed/);
     expect(released).toEqual([]);
+  });
+
+  it("refuses bytes checked as one format for a file since renamed into another, which a rename's unchanged content tag wouldn't catch", async () => {
+    const { host, sent } = harness([named("report.xlsx")]);
+    await expect(definitions.replaceFile.apply({ ...payload, target: { ...NOTES, name: "report.zip" } }, host)).rejects.toThrow(/renamed into another format/);
+    expect(sent.map(request => request.method)).toEqual(["GET"]);
+    const same = harness([named("Report.ZIP"), versions, { status: 200, body: item("NOTES") }]);
+    await definitions.replaceFile.apply({ ...payload, target: { ...NOTES, name: "report.zip" } }, same.host);
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "GET", "PUT"]);
   });
 
   it("refuses a file that has since left the binding without reading its bytes", async () => {

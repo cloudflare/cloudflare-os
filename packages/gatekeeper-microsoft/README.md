@@ -3,9 +3,11 @@
 Connects Microsoft 365 work and school accounts to Gadgets, for [SharePoint and
 OneDrive](#sharepoint-and-onedrive), [Outlook](#outlook) mail and [Outlook Calendar](#calendar), all
 through one connection. Agents act with the user's **delegated** permissions, so they never see more
-than the user can open themselves, and each binding narrows that further. Every change waits for the
-user's approval, and shows to the agent as though already made while it waits, so the agent keeps
-working. `plans/microsoft-365-gatekeeper.md` is the design record.
+than the user can open themselves, and each binding narrows that further. Every change goes through
+the approval workflow, where the user may let a kind of change be auto-approved, except sending mail
+and anything that mails a meeting's attendees, which are never auto-approved. A change shows to the
+agent as though already made while it waits, so the agent keeps working.
+`plans/microsoft-365-gatekeeper.md` is the design record.
 
 ## Setting up the app registration
 
@@ -139,7 +141,8 @@ connection holding both kinds of permission reaches every site. Under `Sites.Sel
 
 ### SharePoint approvals
 
-Every change is an action that waits for approval:
+Every change is an action that goes through the approval workflow; every SharePoint kind may be
+auto-approved if the user chooses:
 
 | Kind | Actions | Can be auto-approved |
 |---|---|---|

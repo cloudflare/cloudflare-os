@@ -562,6 +562,15 @@ describe("editing a draft", () => {
     const since = host([json({ error: { code: "ErrorIrresolvableConflict", message: "changed" } }, 412)]);
     expect(await revert(applied, since.host)).toEqual({ message: expect.stringMatching(/changed since/), canRetry: false });
   });
+
+  it("undoes an edit of a reply or forward by putting back its own part alone, above the quoted original it has now", async () => {
+    const quoted = '<html><body><p>Edited intro</p><hr style="display:inline-block"><div id="divRplyFwdMsg"><b>From:</b> Ada</div><div>Original</div></body></html>';
+    const applied: OutlookAction = { kind: "updateDraft", payload: { ...edit("AAMk1", "k1"), keepsQuote: true, appliedChangeKey: "k2", appliedAt: 1 } };
+    const { host: h, calls, fetch } = host([json({ body: { contentType: "html", content: quoted } }), json({})]);
+    expect(await revert(applied, h)).toBeUndefined();
+    expect(calls.map(entry => entry.call)).toEqual(["GET /messages/AAMk1", "PATCH /messages/AAMk1"]);
+    expect(sentBody(fetch, "PATCH /messages/AAMk1").body).toEqual({ contentType: "HTML", content: replaceOwnPart(quoted, composed().html) });
+  });
 });
 
 describe("observer units", () => {
