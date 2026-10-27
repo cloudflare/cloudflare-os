@@ -294,6 +294,9 @@ describe("a whole-mailbox binding", () => {
     await writer.updateDraft(USER_DRAFT, { subject: "Mine" });
     expect(submitted.map(action => action.kind)).toEqual(["updateDraft"]);
     expect((submitted[0]!.payload as OutlookActions["updateDraft"]).changeKey).toBe("ck-user");
+    // A second edit would start from the text Outlook still has and be fenced on the version the first moves.
+    await expect(writer.updateDraft(USER_DRAFT, { body: "And more" })).rejects.toThrow(/already has an edit waiting/);
+    expect(submitted).toHaveLength(1);
   });
 
   it("creates a folder at the top of the mailbox by the root's real ID as by its name", async () => {

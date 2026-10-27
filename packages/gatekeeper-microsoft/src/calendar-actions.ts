@@ -289,9 +289,23 @@ async function create<P extends CalendarActions["createEvent"]>(payload: P, host
   return { action: { ...payload, createdId: created.id, appliedAt: Date.now() } };
 }
 
+/**
+ * A change or deletion that tells nobody, proposed against an event's temporary ID, is fenced on
+ * the version the binding's last approved change left, which a later-proposed invitation may have
+ * moved: Outlook would then send this change to the invitees. The live event is checked instead.
+ */
+async function requireStillPersonal(host: CalendarActionHost, calendar: CalendarRef, target: EventTarget, id: string): Promise<void> {
+  if (!isProvisional(target.id)) return;
+  const placement = await host.graph(api => calendarApi(api, calendar).placement(id), { replayable: true });
+  if (placement?.ownMeeting) {
+    throw new ActionApplyError("The event has become a meeting since this was proposed, so nothing was changed. Ask the agent to read it again.");
+  }
+}
+
 async function update<P extends CalendarActions["updateEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
   const id = realId(host.refs, payload.target.id, "The event");
   const ifMatch = etag(expectedVersion(host, payload.target, id));
+  if (!("notified" in payload)) await requireStillPersonal(host, payload.calendar, payload.target, id);
   try {
     const updated = await host.graph(api => calendarApi(api, payload.calendar).request<{ changeKey?: unknown }>("PATCH", `/events/${idPath(id)}`,
       eventJson(payload.changes, payload.zone), ifMatch));
@@ -404,6 +418,7 @@ const ownDefinitions = {
     apply: async (payload, host) => {
       const id = realId(host.refs, payload.target.id, "The event");
       const ifMatch = etag(expectedVersion(host, payload.target, id));
+      await requireStillPersonal(host, payload.calendar, payload.target, id);
       try {
         await host.graph(api => calendarApi(api, payload.calendar).request("DELETE", `/events/${idPath(id)}`, undefined, ifMatch), { replayable: true });
       } catch (error) {

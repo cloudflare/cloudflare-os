@@ -541,10 +541,19 @@ export const definitions = {
       const what = payload.target.kind === "folder" ? "The folder" : "The file";
       await requireInScope(host, payload.target.ref, what);
       try {
+        if (payload.target.kind !== "folder") {
+          // The new name was checked against the file's format at proposal: one since renamed into
+          // another format isn't given a name that would pass its bytes off as an unchecked Office file.
+          const current = await host.graph(api => api.get<{ name?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }), { replayable: true });
+          if (typeof current.name !== "string" || extensionOf(current.name) !== extensionOf(payload.target.name)) {
+            throw new ActionApplyError("The file has been renamed into another format since this was proposed, so it wasn't renamed. Ask the agent to read it again.");
+          }
+        }
         await host.graph(api => api.request("PATCH", `/drives/${driveId}/items/${itemId}`, {
           body: { name: payload.name }, ...(payload.ifMatch ? { ifMatch: payload.ifMatch } : {}),
         }), { replayable: true });
       } catch (error) {
+        if (error instanceof ActionApplyError) throw error;
         refusal(error, what);
       }
       return { action: { ...payload, appliedAt: Date.now() } };

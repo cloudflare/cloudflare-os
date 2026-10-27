@@ -244,6 +244,16 @@ describe("copying", () => {
     await expect(definitions.copyFile.apply(payload, host)).rejects.toThrow(ActionApplyError);
   });
 
+  it("refuses renaming a file since renamed into another format, which its new name was never checked against", async () => {
+    const target = { ...NOTES, name: "report.xlsx" };
+    const { host, sent } = harness([named("report.zip")]);
+    await expect(definitions.rename.apply({ target, name: "approved.xlsx", submittedAt: 1 }, host)).rejects.toThrow(/renamed into another format/);
+    expect(sent.map(request => request.method)).toEqual(["GET"]);
+    const same = harness([named("Report.XLSX"), { status: 200, body: item("NOTES") }]);
+    await definitions.rename.apply({ target, name: "approved.xlsx", submittedAt: 1 }, same.host);
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "PATCH"]);
+  });
+
   it("refuses a source since renamed into another format, whose bytes the copy's name was never checked as", async () => {
     const { host, sent } = harness([named("report.zip")]);
     await expect(definitions.copyFile.apply({ ...payload, source: { ...NOTES, name: "report.xlsx" }, name: "copy.xlsx" }, host)).rejects.toThrow(/renamed into another format/);

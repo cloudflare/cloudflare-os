@@ -1038,6 +1038,11 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
     const ctx = this.ctx;
     const draft = await this.#draft(draftId, { own: true });
     this.#refuseWhileSending(draft.id);
+    // A created draft is read from Outlook, which a pending edit hasn't reached: a second edit would
+    // start from the old text and be fenced on a version the first edit moves.
+    if (!draft.provisional && ctx.overlay().draftEdits.has(draft.id)) {
+      throw new Error("This draft already has an edit waiting for approval. Wait until it's approved or rejected before changing it again.");
+    }
     const removals = patch.removeAttachments ?? [];
     if (removals.some(id => !isMailId(id))) throw new Error("removeAttachments must be a list of attachment IDs.");
     const existing = draft.provisional || removals.length === 0 ? [] : await ctx.mail(mail => mail.attachments(draft.id));

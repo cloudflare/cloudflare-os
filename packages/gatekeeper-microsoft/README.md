@@ -150,9 +150,9 @@ auto-approved if the user chooses:
 | `sharepoint.files.create` | Create a folder, upload or copy a file | Yes |
 | `sharepoint.files.edit` | Replace a file's content, edit a Word document or deck in place, set cells in a workbook | Yes |
 | `sharepoint.files.organize` | Rename, move within a library | Yes |
-| `sharepoint.files.delete` | Delete a file or folder | Yes |
+| `sharepoint.files.delete` | Delete a file or folder | **Never** |
 | `sharepoint.lists.edit` | Add or edit a list item | Yes |
-| `sharepoint.lists.delete` | Delete a list item | Yes |
+| `sharepoint.lists.delete` | Delete a list item | **Never** |
 
 A binding offers only the kinds it can submit, so a list binding offers no file actions. Changes are
 fenced: a replace or delete is refused if the file changed after it was proposed (on its `cTag`),
@@ -328,6 +328,7 @@ The levels:
 | `edit` | Create, change and delete events only the user sees (no attendees), and their own copy's categories, show-as and reminder on others' meetings | `calendar.events` | Yes |
 | `schedule` | Meetings: invitations, updates and cancellations | `calendar.invitations` | **Never** |
 | `schedule` | Accept, tentatively accept or decline, optionally proposing another time | `calendar.responses` | **Never** |
+| `edit` | Create, change and delete events in a calendar someone else owns | `calendar.shared-events` | **Never** |
 
 Only a `full` binding can change events, since nothing a binding can't fully see can be changed
 through it. A read binding's session is a `CalendarReader`, with no write methods at all. A change

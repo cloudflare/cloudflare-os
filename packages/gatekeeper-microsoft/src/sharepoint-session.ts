@@ -371,6 +371,11 @@ function provisional(id: string): string | undefined {
 }
 
 /** Read access to what a binding covers. */
+/**
+ * Cap'n Web lets a stub's holder call every method on an `RpcTarget`'s prototype, `protected` or
+ * not (the keyword is erased), and only `#private` or instance members are out of reach. The
+ * helpers the session subclasses share are therefore instance members, which RPC never sees.
+ */
 @validateRpc()
 export class SharePointReaderImpl extends RpcTarget implements SharePointReader {
   protected readonly ctx: SessionContext;
@@ -385,11 +390,10 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
   }
 
   /** An ID as given, or the real one a temporary ID became once its action applied. */
-  protected resolved(id: string): string;
-  protected resolved(id: string | undefined): string | undefined;
-  protected resolved(id: string | undefined): string | undefined {
-    return typeof id === "string" ? this.ctx.host.resolve(id) : id;
-  }
+  protected readonly resolved = ((id?: string) => typeof id === "string" ? this.ctx.host.resolve(id) : id) as {
+    (id: string): string;
+    (id: string | undefined): string | undefined;
+  };
 
   async getScope(): Promise<SharePointScopeInfo> {
     const root = await this.ctx.root();
@@ -545,16 +549,16 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
   // -- files ------------------------------------------------------------------------------------
 
   /** The path base for entries of a drive: the binding's own, or the drive's root. */
-  protected async baseFor(driveId: string): Promise<PathBase> {
+  protected readonly baseFor = async (driveId: string): Promise<PathBase> => {
     const root = await this.ctx.root();
     return root.base && root.base.driveId === driveId ? root.base : { driveId, path: "" };
-  }
+  };
 
   /**
    * A real item, proven in scope; the drive-root alias `driveId/root` is resolved to the root's ID
    * first, so the guard compares real IDs.
    */
-  protected async item(id: string): Promise<GraphDriveItem> {
+  protected readonly item = async (id: string): Promise<GraphDriveItem> => {
     const decoded = decodeItemRef(id);
     if ("provisional" in decoded) throw new Error("That file or folder is still awaiting approval, so it can't be read from SharePoint yet.");
     let ref = decoded;
@@ -564,16 +568,16 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       ref = { driveId: ref.driveId, itemId: root.id };
     }
     return await this.ctx.guard.item(ref);
-  }
+  };
 
   /** An entry as the agent sees it, pending changes applied. */
-  protected async entry(item: GraphDriveItem, overlay: Overlay): Promise<DriveEntry> {
+  protected readonly entry = async (item: GraphDriveItem, overlay: Overlay): Promise<DriveEntry> => {
     return overlay.apply(toEntry(item, await this.baseFor(item.driveId)))!;
-  }
+  };
 
-  protected overlay(): Overlay {
+  protected readonly overlay = (): Overlay => {
     return new Overlay(this.ctx.host.pending(), id => this.ctx.host.resolve(id));
-  }
+  };
 
   /** The folder a listing opens: the one named, or the top of the binding. */
   async #listingFolder(folderId: string | undefined): Promise<GraphDriveItem> {
@@ -766,9 +770,9 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
    * The version of a file this read is shown, so an observer is admitted to a draft only if they
    * would be shown the same draft. Read uncached: a cached label could vouch for a newer draft.
    */
-  protected async fileVersion(item: GraphDriveItem): Promise<string | undefined> {
+  protected readonly fileVersion = async (item: GraphDriveItem): Promise<string | undefined> => {
     return await this.ctx.host.read(api => reads.fileVersion(api, { driveId: item.driveId, itemId: item.id }));
-  }
+  };
 
   /** For a copy awaiting approval, the file it copies, which is what reading the copy reads. */
   #copied(id: string, overlay: Overlay): { source: string; entry: DriveEntry } | undefined {
@@ -873,7 +877,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
   // -- lists ------------------------------------------------------------------------------------
 
   /** The list a call names, or the binding's own; proven in scope and read. */
-  protected async listTarget(listId?: string): Promise<{ ref: ListRef; list: GraphList }> {
+  protected readonly listTarget = async (listId?: string): Promise<{ ref: ListRef; list: GraphList }> => {
     const scope = this.ctx.host.scope;
     if (!this.ctx.guard.coversLists) throw notInScope("open lists", scope);
     let ref: ListRef;
@@ -889,7 +893,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     if (list === null) throw new OutsideScopeError();
     if (list.template === "documentLibrary") throw new Error("That is a document library; read its files with list({ folderId }).");
     return { ref, list };
-  }
+  };
 
   async openList(listId?: string): Promise<SharePointListReader> {
     const { ref, list } = await this.listTarget(listId);
@@ -1003,14 +1007,15 @@ export class SharePointListReaderImpl extends RpcTarget implements SharePointLis
     this.ctx[Symbol.dispose]();
   }
 
-  protected columns(): Promise<GraphColumn[]> {
+  /** The list's visible columns. An instance member, kept off the RPC surface; see SharePointReaderImpl. */
+  protected readonly columns = (): Promise<GraphColumn[]> => {
     return this.ctx.host.cached(`columns:${this.ref.siteId}:${this.ref.listId}`, METADATA_TTL_MS,
       async () => visibleColumns(await this.ctx.host.read(api => reads.listColumns(api, this.ref))));
-  }
+  };
 
-  protected overlay(): Overlay {
+  protected readonly overlay = (): Overlay => {
     return new Overlay(this.ctx.host.pending(), id => this.ctx.host.resolve(id));
-  }
+  };
 
   async getInfo(): Promise<ListInfo> {
     await this.ctx.observe("Read a SharePoint list", `Read the details of the list ${md(this.list.name)}.`, [units.list(this.ref)]);

@@ -127,18 +127,28 @@ describe("changing and deleting", () => {
   const provisional: CalendarActions["deleteEvent"] = { calendar: CALENDAR, target: { ...TARGET, id: "~1", changeKey: "" }, zone: ZONE, submittedAt: 2 };
 
   it("changes an event created earlier in the same batch by its real ID, fenced on the version its creation left", async () => {
-    const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, { status: 200, body: { changeKey: "ckB" } }]);
+    const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, placed(), { status: 200, body: { changeKey: "ckB" } }, placed()]);
     await definitions.createEvent.apply(createPayload, host);
     await definitions.updateEvent.apply({ ...updatePayload, target: provisional.target }, host);
-    expect(sent[1]).toMatchObject({ method: "PATCH", path: "/me/events/AAMkNew", ifMatch: 'W/"ckA"' });
+    expect(sent[2]).toMatchObject({ method: "PATCH", path: "/me/events/AAMkNew", ifMatch: 'W/"ckA"' });
     // The next action on it is fenced on what that change left.
     await definitions.deleteEvent.apply(provisional, host);
-    expect(sent[2]).toMatchObject({ method: "DELETE", path: "/me/events/AAMkNew", ifMatch: 'W/"ckB"' });
+    expect(sent[4]).toMatchObject({ method: "DELETE", path: "/me/events/AAMkNew", ifMatch: 'W/"ckB"' });
     await expect(definitions.updateEvent.apply({ ...updatePayload, target: { ...TARGET, id: "~2" } }, harness().host)).rejects.toThrow();
   });
 
+  it("won't change or delete an event it created once a later-approved invitation made it a meeting, whatever version that left", async () => {
+    const invited = placed({ attendees: [{ emailAddress: { address: "sarah@contoso.com" } }] });
+    const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, invited, invited]);
+    await definitions.createEvent.apply(createPayload, host);
+    host.noteEventVersion("AAMkNew", "ckAfterInvite");
+    await expect(definitions.updateEvent.apply({ ...updatePayload, target: provisional.target }, host)).rejects.toThrow(/become a meeting/);
+    await expect(definitions.deleteEvent.apply(provisional, host)).rejects.toThrow(/become a meeting/);
+    expect(sent.filter(request => request.method !== "GET")).toHaveLength(1);
+  });
+
   it("won't delete an event it created once Outlook changed it, as it may have become a meeting", async () => {
-    const { host } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, conflict]);
+    const { host } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, placed(), conflict]);
     await definitions.createEvent.apply(createPayload, host);
     await expect(definitions.deleteEvent.apply(provisional, host))
       .rejects.toThrow(new ActionApplyError("The event changed after this was proposed, so it was not applied. Ask the agent to read it again."));
