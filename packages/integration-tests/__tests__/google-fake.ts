@@ -1,7 +1,8 @@
 // Google, as the real Google gatekeeper reaches it from the integration harness: its OAuth token
 // and userinfo endpoints, one Gmail mailbox per account, Chat spaces, Workspace Events
-// subscriptions, and Pub/Sub pushes signed as Google signs them, delivered through the gatekeeper's
-// own route. A handler module for the harness's NetworkInterceptor, as github-fake.ts is for GitHub.
+// subscriptions, Drive files' comments and replies, and Pub/Sub pushes signed as Google signs them,
+// delivered through the gatekeeper's own route. A handler module for the harness's
+// NetworkInterceptor, as github-fake.ts is for GitHub.
 //
 // Each account is whoever completes OAuth with code `<code>`: its access token is `token-<code>`,
 // its Google subject `sub-<code>`, and its mailbox `<code>@example.com`.
@@ -132,6 +133,26 @@ type Subscription = {
 /** A Chat message as Workspace Events carries it, posted by someone other than the account. */
 export type ChatMessage = Row & { name: string; text: string };
 
+/** A Drive reply as stored: `code` is the OAuth code of the account that wrote it. */
+type DriveReply = {
+  id: string; content: string; code: string; createdTime: string; modifiedTime: string;
+  action?: "resolve" | "reopen";
+};
+/** A Drive comment as stored. `resolved` stays absent until it is first resolved, as Drive sends it. */
+type DriveComment = Omit<DriveReply, "action"> & { replies: DriveReply[]; resolved?: boolean };
+type DriveFile = { canComment: boolean; comments: DriveComment[] };
+
+/** Drive's error body: `errors[0].reason` is what a caller tells failures apart by. */
+const driveError = (status: number, reason: string, message: string, location?: string) => json({
+  error: {
+    code: status, message,
+    errors: [{ message, domain: "global", reason, ...(location ? { location, locationType: "parameter" } : {}) }],
+  },
+}, status);
+
+/** Google's limit on a comment's or reply's content, in bytes of UTF-8. */
+const MAX_COMMENT_BYTES = 4096;
+
 export class FakeGoogle {
   /** Each Google API request, as `METHOD host/path`. */
   readonly requests: string[] = [];
@@ -144,6 +165,8 @@ export class FakeGoogle {
   /** Workspace Events subscriptions, by name. */
   readonly subscriptions = new Map<string, Subscription>();
   readonly #mailboxes = new Map<string, Mailbox>();
+  /** Drive files by ID, each with its comments. */
+  readonly #driveFiles = new Map<string, DriveFile>();
   /** Gates holding every `messages.get` of a message until released, by message ID. */
   readonly #held = new Map<string, Gate>();
   readonly #keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -185,11 +208,14 @@ export class FakeGoogle {
       });
     }
     const host = url.hostname;
-    if (host !== "gmail.googleapis.com" && host !== "chat.googleapis.com" && host !== "workspaceevents.googleapis.com") {
+    const drive = host === "www.googleapis.com" && url.pathname.startsWith("/drive/v3/files/");
+    if (!drive && host !== "gmail.googleapis.com" && host !== "chat.googleapis.com" &&
+        host !== "workspaceevents.googleapis.com") {
       return null;
     }
     this.requests.push(`${method} ${host}${url.pathname}`);
     if (code === undefined) return json({ error: { code: 401, status: "UNAUTHENTICATED" } }, 401);
+    if (drive) return this.#drive(url, method, code, request);
     if (host === "gmail.googleapis.com") return this.#gmail(url, method, code);
     if (host === "chat.googleapis.com") return this.#chat(url);
     return this.#events(url, method, code, request);
@@ -221,6 +247,16 @@ export class FakeGoogle {
     box.historyId += 3;
     box.records.push({ id: String(box.historyId), message: { id, threadId: id, labelIds: message.labelIds } });
     return id;
+  }
+
+  /** A Google Doc every account can open, and comment on unless `canComment` is false. */
+  driveFile(fileId: string, { canComment = true }: { canComment?: boolean } = {}): void {
+    this.#driveFiles.set(fileId, { canComment, comments: this.#driveFiles.get(fileId)?.comments ?? [] });
+  }
+
+  /** The comments on Drive file `fileId`, as stored, oldest first. */
+  driveComments(fileId: string): readonly DriveComment[] {
+    return this.#driveFiles.get(fileId)?.comments ?? [];
   }
 
   /** The history ID `mailbox` has reached. */
@@ -326,6 +362,88 @@ export class FakeGoogle {
         { name: "Subject", value: message.subject }, { name: "Message-ID", value: `<${id}@example.com>` },
       ] },
     });
+  }
+
+  /**
+   * Drive's files.get and its comments and replies, answering as Google was seen to: content is
+   * stored byte for byte and refused over 4096 bytes of UTF-8, an empty comment is accepted, a
+   * plain reply to a resolved comment reopens it, and resolving a resolved one adds another reply.
+   */
+  async #drive(url: URL, method: string, code: string, request: Request): Promise<Response | null> {
+    const match = /^\/drive\/v3\/files\/([^/]+)(\/comments(?:\/([^/]+)(\/replies)?)?)?$/.exec(url.pathname);
+    if (!match) return null;
+    const [, rawFileId, commentsPath, rawCommentId, repliesPath] = match;
+    const fileId = decodeURIComponent(rawFileId!);
+    const file = this.#driveFiles.get(fileId);
+    if (!file) return driveError(404, "notFound", `File not found: ${fileId}.`, "fileId");
+    const wireReply = (reply: DriveReply) => ({
+      id: reply.id, content: reply.content, htmlContent: reply.content.replaceAll("\n", "<br>"),
+      author: { displayName: reply.code, me: reply.code === code }, createdTime: reply.createdTime,
+      modifiedTime: reply.modifiedTime, deleted: false, ...(reply.action ? { action: reply.action } : {}),
+    });
+    const wireComment = (comment: DriveComment) => ({
+      ...wireReply(comment), replies: comment.replies.map(wireReply),
+      ...(comment.resolved === undefined ? {} : { resolved: comment.resolved }),
+    });
+    if (!commentsPath) {
+      return json({
+        id: fileId, name: fileId, mimeType: "application/vnd.google-apps.document",
+        modifiedTime: new Date().toISOString(), trashed: false,
+        capabilities: { canListChildren: false, canComment: file.canComment },
+      });
+    }
+    const now = new Date().toISOString();
+    const write = async () => {
+      const body = await request.json() as { content?: string; action?: string };
+      const content = body.content ?? "";
+      if (!file.canComment) {
+        return driveError(403, "insufficientFilePermissions",
+          `The user does not have sufficient permissions for file ${fileId}.`);
+      }
+      if (Buffer.byteLength(content, "utf8") > MAX_COMMENT_BYTES) {
+        return driveError(403, "commentLengthLimitExceeded",
+          "Comment content is limited to 4096 bytes in UTF-8 encoding.");
+      }
+      return { content, action: body.action };
+    };
+    if (rawCommentId === undefined) {
+      if (method === "POST") {
+        const sent = await write();
+        if (sent instanceof Response) return sent;
+        const comment: DriveComment = {
+          id: `doco.${randomUUID().replaceAll("-", "").slice(0, 22)}`, content: sent.content, code,
+          createdTime: now, modifiedTime: now, replies: [],
+        };
+        file.comments.push(comment);
+        return json(wireComment(comment));
+      }
+      const since = url.searchParams.get("startModifiedTime");
+      if (since !== null && Number.isNaN(Date.parse(since))) {
+        return driveError(400, "badRequest", "Invalid value for startModifiedTime.", "startModifiedTime");
+      }
+      return json({
+        comments: file.comments
+          .filter(comment => since === null || Date.parse(comment.modifiedTime) >= Date.parse(since))
+          .map(wireComment),
+      });
+    }
+    const commentId = decodeURIComponent(rawCommentId);
+    const comment = file.comments.find(candidate => candidate.id === commentId);
+    if (!comment) return driveError(404, "notFound", `Comment not found: ${commentId}.`, "commentId");
+    if (!repliesPath) return json(wireComment(comment));
+    if (method !== "POST") return json({ replies: comment.replies.map(wireReply) });
+    const sent = await write();
+    if (sent instanceof Response) return sent;
+    const action = sent.action === "resolve" ? "resolve"
+      : sent.action === "reopen" || comment.resolved ? "reopen" : undefined;
+    const reply: DriveReply = {
+      id: `kix.${randomUUID().replaceAll("-", "").slice(0, 12)}`, content: sent.content, code,
+      createdTime: now, modifiedTime: now, ...(action ? { action } : {}),
+    };
+    comment.replies.push(reply);
+    comment.modifiedTime = now;
+    if (action) comment.resolved = action === "resolve";
+    return json(wireReply(reply));
   }
 
   #chat(url: URL): Response | null {

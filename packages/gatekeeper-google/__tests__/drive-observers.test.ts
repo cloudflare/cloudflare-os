@@ -90,6 +90,44 @@ describe("driveObserverTracker", () => {
     expect(asked).toEqual([[{kind: "file", fileId: "old/file"}]]);
   });
 
+  it("records a comments unit under its own key and reads it back", async () => {
+    let { kv, track } = tracker({ kind: "account" }, allow);
+    let check = await track.prepareObservation([{kind: "comments", fileId: "doc/1"}]);
+    check.commit();
+    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}comments:doc%2F1`]);
+    expect(track.listTracked()).toEqual([{kind: "comments", fileId: "doc/1"}]);
+  });
+
+  it("keeps file, folder and comments units for one ID apart, and asks about each", async () => {
+    let { kv, asked, track } = tracker({ kind: "account" }, allow);
+    let units: DriveObservation[] = [
+      {kind: "file", fileId: "same"},
+      {kind: "folder", fileId: "same"},
+      {kind: "comments", fileId: "same"},
+      // A file whose ID spells a typed prefix is still a file.
+      {kind: "file", fileId: "comments:same"},
+    ];
+    (await track.prepareObservation(units)).commit();
+    expect([...kv.entries.keys()].toSorted()).toEqual([
+      `${DRIVE_OBSERVATION_PREFIX}comments%3Asame`,
+      `${DRIVE_OBSERVATION_PREFIX}comments:same`,
+      `${DRIVE_OBSERVATION_PREFIX}folder:same`,
+      `${DRIVE_OBSERVATION_PREFIX}same`,
+    ]);
+    expect(track.listTracked()).toEqual(expect.arrayContaining(units));
+    expect(track.listTracked()).toHaveLength(units.length);
+    await track.addObserver("obs", "verifier");
+    expect(asked.at(-1)).toEqual(expect.arrayContaining(units));
+  });
+
+  it("refuses a joiner the verifier denies a comments unit", async () => {
+    let { track } = tracker({ kind: "file", fileId: "doc" },
+      units => ({ baselineAllowed: true, allowed: units.map(unit => unit.kind !== "comments") }));
+    (await track.prepareObservation([{kind: "comments", fileId: "doc"}])).commit();
+    await expect(track.addObserver("obs", "verifier"))
+      .rejects.toThrow("This collaborator cannot access Drive data this workspace has read.");
+  });
+
   it("percent-encodes IDs without colliding with the typed key grammar", async () => {
     let { kv, asked, track } = tracker({ kind: "folder", folderId: "folder:a/b" }, allow);
     expect([...kv.entries.keys()]).toEqual([

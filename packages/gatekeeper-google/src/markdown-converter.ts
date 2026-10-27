@@ -259,6 +259,16 @@ function docsLinkDestination(link: TextStyle["link"]): string | undefined {
   return internalDocsDestination("heading", link.headingId);
 }
 
+/**
+ * The text one paragraph element shows in a tab's Markdown before any formatting: a run's content,
+ * a chip's name, title or date, or the placeholder of an element with no text of its own.
+ */
+export function paragraphElementText(element: ParagraphElement): string | undefined {
+  // A run's text needs nothing of its style.
+  if (element.textRun) return element.textRun.content;
+  return visibleParagraphElement(element)?.text;
+}
+
 function visibleParagraphElement(element: ParagraphElement): VisibleParagraphElement | undefined {
   let textRun = element.textRun;
   if (textRun) {

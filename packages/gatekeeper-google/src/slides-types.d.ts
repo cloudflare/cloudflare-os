@@ -250,7 +250,8 @@ export type SlideChange =
  * Changes are queued for the user's approval. `getPresentation()` and `getSlides()` show them as
  * if already applied; `getSlideThumbnail()` renders the presentation as saved. A queued change
  * that no longer applies, because the presentation was edited elsewhere, fails when approved, and
- * reads of what it changes report it in `queuedChangeConflict`.
+ * reads of what it changes report it in `queuedChangeConflict`. Its comments are read and
+ * written through a Google Drive connection to the same file, not this one.
  */
 export interface GooglePresentationSession extends GooglePresentationReadSession {
   /**

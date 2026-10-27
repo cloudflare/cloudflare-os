@@ -133,8 +133,8 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Files, folders, read-only native Google Docs, Sheets and Slides, and PDF text available to the
- * connected account.
+ * Files, folders, read-only native Google Docs, Sheets and Slides, PDF text, and comments available
+ * to the connected account.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
@@ -146,28 +146,35 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
       "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
-      "read-only, and PDFs can be read as text.",
+      "read-only, and PDFs can be read as text. Agents can read comments on files you can " +
+      "comment on and, once you allow commenting, add comments, each queued for your approval.",
   grantable: true,
 };
 
-/** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
+/**
+ * A selected Drive folder or shared-drive root, exposed through direct-child navigation, with its
+ * direct children's comments.
+ */
 export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/folders/:folderId",
   title: "Google Drive Folder",
   description:
       "Browse a selected folder or shared drive, search its direct children, and read native " +
-      "Google Docs, Sheets and Slides, and PDFs as text.",
+      "Google Docs, Sheets and Slides, and PDFs as text. Agents can read comments on its files " +
+      "you can comment on and, once you allow commenting, add comments, each queued for your " +
+      "approval.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
 };
 
-/** Metadata and, when native or a PDF, read-only content for one immutable Drive file ID. */
+/** Metadata, comments and, when native or a PDF, read-only content of one immutable Drive file. */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
   description:
       "Read metadata and, for a native Google Doc, Sheet or Slides presentation, content from one " +
-      "Drive file, or its text when it is a PDF.",
+      "Drive file, or its text when it is a PDF. Agents can read its comments when you can " +
+      "comment on it and, once you allow commenting, add comments, each queued for your approval.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
 };
@@ -340,8 +347,9 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
 
 /**
  * Wider Drive grants. `drive.readonly` is requested by the Drive resources, by
- * {@link OFFICE_IMPORT_GRANT} and by {@link SHARED_DRIVES_GRANT}; full `drive` never is, and
- * appears only in {@link SCOPE_COVERED_BY}, where it truthfully subsumes the narrow requirements.
+ * {@link OFFICE_IMPORT_GRANT} and by {@link SHARED_DRIVES_GRANT}; full `drive` is requested only by
+ * {@link DRIVE_COMMENTS_GRANT}, and in {@link SCOPE_COVERED_BY} it truthfully subsumes the narrow
+ * requirements.
  */
 const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
@@ -368,10 +376,21 @@ export const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
  */
 export const SHARED_DRIVES_GRANT = "https://drive.google.com/drive/shared-drives";
 
+/**
+ * The grant that lets a Drive binding write comments: full `drive`, because comment writes need it
+ * and `drive.file` does not reach a file picked in Drive.
+ *
+ * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the Drive connect dialog's Allow
+ * commenting button, so a connection that never opts in is never asked for it. The token it yields
+ * reaches every file the account can, so binding scope stays enforced by the gatekeeper's code.
+ */
+export const DRIVE_COMMENTS_GRANT = "https://drive.google.com/drive/comments";
+
 /** Grants requested and recorded like resources, but never bindable or shown to the Workshop. */
 const PRIVATE_GRANT_SCOPES: {urlPattern: string, scopes: string[]}[] = [
   { urlPattern: OFFICE_IMPORT_GRANT, scopes: [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE] },
   { urlPattern: SHARED_DRIVES_GRANT, scopes: [DRIVE_READONLY_SCOPE] },
+  { urlPattern: DRIVE_COMMENTS_GRANT, scopes: [DRIVE_READWRITE_SCOPE] },
 ];
 
 /** Every grant's scopes, resources first: what consent asks for and what coverage is checked on. */

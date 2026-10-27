@@ -4,7 +4,8 @@ import { CursorPager, type Pager } from "./cursor";
 import {
   FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, SHORTCUT_MIME_TYPE,
   isFileInvisible, isListableFolderFile, isListableFolderNode,
-  type DriveApi, type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
+  type DriveApi, type DriveCommentList, type DriveFile, type DriveListFilesOptions,
+  type DriveScopeNode,
 } from "./drive-api";
 import {
   isDirectChild, outsideScope, readFolderLocation,
@@ -13,8 +14,8 @@ import {
 import type { DriveObservation } from "./drive-observers";
 import type { ObserverCheck } from "./observers";
 import type {
-  DriveEntry, DriveFolderListOptions, DriveFolderSearchQuery, DriveListOptions, DriveOrder,
-  DriveScope, DriveSearchQuery,
+  DriveComment, DriveEntry, DriveFolderListOptions, DriveFolderSearchQuery, DriveListOptions,
+  DriveOrder, DriveScope, DriveSearchQuery,
 } from "./drive-types";
 
 /** Exact MIME type for native Google Docs files. */
@@ -56,7 +57,8 @@ export function requireDriveBindingScope(scope: DriveBindingScope): DriveBinding
 }
 
 type DriveSessionScope = Exclude<DriveBindingScope, { kind: "folder" }>;
-type DriveSessionApi = Pick<DriveApi, "listFiles" | "getFile" | "getScopeNodes">;
+type DriveSessionApi =
+  Pick<DriveApi, "listFiles" | "getFile" | "getScopeNodes" | "canComment" | "listComments">;
 /** A page's proven scope: the bound drive, and the parents its files must sit directly under. */
 type FolderPageScope = {driveId: string | undefined; parents: DriveScopeNode[]};
 
@@ -109,6 +111,24 @@ export type DriveFolderSessionCoreOptions = Omit<DriveSessionCoreOptions, "scope
 
 /** Either core a Drive session can be driving. */
 export type DriveCore = DriveSessionCore | DriveFolderSessionCore;
+
+/** An in-scope file comments are read or written on, as its scope check found it. */
+export type CommentTarget = {
+  fileId: string;
+  mimeType?: string;
+  /** For a folder binding, the path from the bound root to the file's parent. */
+  folderIds?: string[];
+};
+
+/**
+ * Fetches one page of a file's comments with `fetch` and maps it to what the caller sees, with
+ * whatever this binding has queued for the file.
+ */
+export type CommentPageReader = (
+  fetch: () => Promise<DriveCommentList>,
+) => Promise<{ comments: DriveComment[]; nextPageToken?: string }>;
+
+const COMMENT_ACCESS_TITLE = "Check Google Drive comment access";
 
 function requiredString(value: string | undefined, field: string): string {
   if (!value) throw new Error(`Google Drive omitted required file ${field}`);
@@ -363,6 +383,54 @@ abstract class DriveCoreBase {
     check.commit();
   }
 
+  /**
+   * Refuses a file this account cannot comment on, through the withheld fence since the answer is
+   * owner-relative, and otherwise records the file's comments unit alongside `units`.
+   */
+  protected async authorizeCommentable(
+    fileId: string, units: readonly DriveObservation[],
+  ): Promise<void> {
+    let description = `Check whether the connected account can comment on Drive file ${fileId}.`;
+    if (!(await this.api.canComment(fileId))) {
+      await this.authorizeWithheld(COMMENT_ACCESS_TITLE, description);
+      throw new Error(`The connected account cannot comment on Drive file ${fileId}, so its ` +
+        "comments cannot be read or added to here.");
+    }
+    await this.authorizeUnits([...units, {kind: "comments", fileId}], COMMENT_ACCESS_TITLE,
+      description);
+  }
+
+  /**
+   * Pages through a file's comments, disclosing each page with `units` and the comments unit.
+   * `revalidate` runs before each fetch and again after it, where the file can leave scope.
+   */
+  protected commentPages(
+    fileId: string,
+    units: readonly DriveObservation[],
+    readPage: CommentPageReader,
+    revalidate?: () => Promise<unknown>,
+  ): Pager<DriveComment> {
+    return new CursorPager<DriveComment, DriveComment>({
+      provider: "Google Drive",
+      fetchPage: async pageToken => {
+        await revalidate?.();
+        let page = await readPage(
+          () => this.api.listComments(fileId, pageToken ? {pageToken} : {}));
+        return {
+          items: page.comments, ...(page.nextPageToken ? {nextPageToken: page.nextPageToken} : {}),
+        };
+      },
+      buildEntries: async comments => {
+        await revalidate?.();
+        return comments;
+      },
+      authorize: comments => this.authorizeUnits(
+        [...units, {kind: "comments", fileId}], "Read Google Drive comments",
+        `Read ${comments.length} ${comments.length === 1 ? "comment" : "comments"} on Drive file ` +
+        `${fileId}.`),
+    });
+  }
+
   /** Current metadata for one file, or `undefined` when it is invisible to this account. */
   protected async tryFetchFile(fileId: string): Promise<DriveFile | undefined> {
     try {
@@ -483,6 +551,26 @@ export class DriveSessionCore extends DriveCoreBase {
   /** Native reads need no moving-scope check for immutable account/file capabilities. */
   nativeRead(_fileId: string, _expectedMimeType: string): NativeRead {
     return unguardedNativeRead(this.authorize);
+  }
+
+  /** Validate and authorize one file whose comments are about to be read or written. */
+  async commentTarget(fileId: string): Promise<CommentTarget> {
+    if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) outsideScope();
+    let file = await this.#fetchFile(fileId);
+    if (file.id !== fileId) outsideScope();
+    await this.authorizeFiles([file.id], "Open Google Drive comments",
+      `Check current metadata for Drive file ${file.id} to work with its comments.`);
+    return {fileId: file.id, ...(file.mimeType ? {mimeType: file.mimeType} : {})};
+  }
+
+  /** Refuses a {@link commentTarget} this account cannot comment on. */
+  requireCommentable(fileId: string): Promise<void> {
+    return this.authorizeCommentable(fileId, [{kind: "file", fileId}]);
+  }
+
+  /** A {@link commentTarget}'s comments, page by page. */
+  commentPager(fileId: string, readPage: CommentPageReader): Pager<DriveComment> {
+    return this.commentPages(fileId, [{kind: "file", fileId}], readPage);
   }
 
   async #cursor(query: DriveListFilesOptions, denyEmptySearch = false): Promise<Pager<DriveEntry>> {
@@ -656,6 +744,33 @@ export class DriveFolderSessionCore extends DriveCoreBase {
       [this.#folderObservation(), {kind: "folder", fileId: folder.id}],
       "Open Google Drive folder", `Open direct child folder ${folder.id}.`);
     return {folderIds: [...this.#location.folderIds, folder.id]};
+  }
+
+  /** Validate and authorize one direct child whose comments are about to be read or written. */
+  async commentTarget(fileId: string): Promise<CommentTarget> {
+    let file = await this.#requireDirectFile(fileId);
+    await this.authorizeUnits(
+      [this.#folderObservation(), {kind: "file", fileId: file.id}], "Open Google Drive comments",
+      `Check current metadata for Drive file ${file.id} to work with its comments.`);
+    return {
+      fileId: file.id,
+      ...(file.mimeType ? {mimeType: file.mimeType} : {}),
+      folderIds: [...this.#location.folderIds],
+    };
+  }
+
+  /** Refuses a {@link commentTarget} this account cannot comment on. */
+  requireCommentable(fileId: string): Promise<void> {
+    return this.authorizeCommentable(fileId, [this.#folderObservation(), {kind: "file", fileId}]);
+  }
+
+  /**
+   * A {@link commentTarget}'s comments, page by page. The saved path and the direct child are
+   * proven before each fetch and again after it, so a file moved out mid-listing ends it.
+   */
+  commentPager(fileId: string, readPage: CommentPageReader): Pager<DriveComment> {
+    return this.commentPages(fileId, [this.#folderObservation(), {kind: "file", fileId}], readPage,
+      () => this.#requireDirectFile(fileId));
   }
 
   /** Revalidate the saved path and direct child on every Docs, Sheets, Slides or PDF read. */

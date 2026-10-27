@@ -301,6 +301,51 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     expect(driveTypes).toContain("export interface GoogleDriveReadSession");
   });
 
+  it("declares comments on both Drive sessions", () => {
+    const driveTypes = source("drive-types.d.ts");
+    for (const signature of [
+      "listComments(fileId: string): Promise<Cursor<DriveComment>>;",
+      "comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;",
+      "fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,\n  ): Promise<DriveComment>;",
+      "reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply>;",
+      "resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply>;",
+    ]) {
+      expect(driveTypes.split(signature), signature).toHaveLength(3);
+    }
+    for (const phrase of [
+      "Comments are plain text, never anchored to text in the file.",
+      "makes Google email the file's owner",
+      "queued for the\n * user's approval",
+      "the connection's \"Allow commenting\" permission",
+      "`quote` works only on native Google Docs.",
+      "Native Google Docs only.",
+      "Defaults to the first tab.",
+      "Replying to a resolved comment reopens it.",
+    ]) {
+      expect(driveTypes, phrase).toContain(phrase);
+    }
+    expect(compileAgentTypes(driveBundle() + `
+declare const drive: GoogleDriveReadSession;
+declare const folder: GoogleDriveFolderSession;
+async function use(): Promise<void> {
+  const cursor = await drive.listComments("file-1");
+  const page: DriveComment[] | null = await cursor.next();
+  const resolved: boolean | undefined = page?.[0]?.resolved;
+  const pending: true | undefined = page?.[0]?.replies[0]?.pending;
+  const reply: DriveCommentReply = await folder.reply("file-1", "doco.x", "Agreed.");
+  const action: "resolve" | "reopen" | undefined = reply.action;
+  const queued: DriveComment = await drive.comment("file-1", "Why?", { quote: "May", tabId: "t.0" });
+  await folder.suggestEdit("file-1", "May", "June", { note: "It moved." });
+  await drive.resolve("file-1", "doco.x");
+  await (await folder.listComments("file-2")).next();
+}
+// @ts-expect-error A comment is never anchored.
+drive.comment("file-1", "Why?", { anchor: "kix.1" });
+// @ts-expect-error Drive marks a reply as resolving or reopening, nothing else.
+const deleting: DriveCommentReply = { id: "r", author: { name: "A", me: false }, text: "", createdTime: "", action: "delete" };
+`)).toEqual([]);
+  });
+
   it("streams PDF text from both Drive sessions", () => {
     const driveTypes = source("drive-types.d.ts");
     expect(driveTypes).toContain("export type DrivePdfText = {");
