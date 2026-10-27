@@ -40,7 +40,7 @@ catalog:
   '@vitest/browser-playwright': ^5.0.5
   playwright: ^1.64.0
   wrangler: ^4.147.0
-  zod: ^4.6.5
+  zod: ^4.6.7
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
