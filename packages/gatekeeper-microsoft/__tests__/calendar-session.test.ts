@@ -59,6 +59,13 @@ function seed(): Seeded[] {
     // A series whose master is in one calendar and an occurrence in another, the day after, outside the listing window.
     seedEvent("AAMkEvSeries", DEFAULT, "2026-10-20T16:00:00", "2026-10-20T16:30:00", { type: "seriesMaster" }),
     seedEvent("AAMkEvSeriesOcc", TEAM, "2026-10-20T16:00:00", "2026-10-20T16:30:00", { type: "occurrence", seriesMasterId: "AAMkEvSeries" }),
+    // A private series with an exception that isn't, and a Teams meeting; both outside the listing window.
+    seedEvent("AAMkEvPrivateSeries", TEAM, "2026-10-21T16:00:00", "2026-10-21T16:30:00", { type: "seriesMaster", sensitivity: "private" }),
+    seedEvent("AAMkEvPrivateSeriesOcc", TEAM, "2026-10-21T16:00:00", "2026-10-21T16:30:00", { type: "exception", seriesMasterId: "AAMkEvPrivateSeries" }),
+    seedEvent("AAMkEvTeams", DEFAULT, "2026-10-21T18:00:00", "2026-10-21T18:30:00", {
+      subject: "Design review", isOnlineMeeting: true, onlineMeeting: { joinUrl: "https://teams.microsoft.com/l/meetup-join/x" },
+      attendees: [{ emailAddress: { address: "sarah@contoso.com", name: "Sarah" }, type: "required", status: { response: "accepted" } }],
+    }),
   ];
 }
 
@@ -355,6 +362,22 @@ describe("an all-calendars binding", () => {
     // And reads back as made.
     const listed = await all(await writer.listEvents(window));
     expect(listed.map(event => event.id)).toContain("~1");
+  });
+
+  it("holds a whole-series change to the checks its exception passed, so a shown exception can't change a private series", async () => {
+    const { writer, submitted } = session(teamBinding("full", "busy", "edit"), "edit");
+    await writer.updateEvent("AAMkEvPrivateSeriesOcc", { subject: "This one only" });
+    expect(submitted.map(action => action.kind)).toEqual(["updateEvent"]);
+    await expect(writer.updateEvent("AAMkEvPrivateSeriesOcc", { subject: "All of them" }, { series: true })).rejects.toThrow(/private/);
+    await expect(writer.deleteEvent("AAMkEvPrivateSeriesOcc", { series: true })).rejects.toThrow(/private/);
+    expect(submitted).toHaveLength(1);
+  });
+
+  it("won't rewrite a Teams meeting's description, which holds its join details", async () => {
+    const { writer, submitted } = session(scope(), "schedule");
+    await expect(writer.updateEvent("AAMkEvTeams", { body: "Agenda: the new design." })).rejects.toThrow(/Teams meeting/);
+    await writer.updateEvent("AAMkEvTeams", { subject: "Design review (moved)" });
+    expect(submitted.map(action => action.kind)).toEqual(["updateMeeting"]);
   });
 
   it("reads back a pending change to an event's description, as it does the rest of the event", async () => {

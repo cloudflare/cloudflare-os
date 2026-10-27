@@ -98,6 +98,13 @@ describe("creating", () => {
     expect(sent).toEqual([{ method: "DELETE", path: `/drives/${DRIVE}/items/NEW`, ifMatch: null, body: undefined }]);
     expect(await revert({ kind: "createFolder", payload }, host)).toMatchObject({ canRetry: false });
   });
+
+  it("won't undo a creation once what it made has been moved out of the binding", async () => {
+    const { host, sent } = harness([], { outside: ["NEW"] });
+    expect(await revert({ kind: "createFolder", payload: { ...payload, createdId: "NEW" } }, host))
+      .toEqual({ message: expect.stringContaining("no longer inside what this connection covers"), canRetry: false });
+    expect(sent).toEqual([]);
+  });
 });
 
 describe("replacing content", () => {

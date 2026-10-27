@@ -842,6 +842,15 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       return { event: pending.event, calendar, view: await ctx.view(calendar) };
     }
     const { event, calendar } = await ctx.guarded(eventId);
+    return await this.#checkChangeable(event, calendar);
+  }
+
+  /**
+   * The checks every event a change names must pass, as Exchange holds it. A whole-series change
+   * passes its series through them too: a private series can have an exception that isn't.
+   */
+  async #checkChangeable(event: GraphEvent, calendar: GraphCalendar): Promise<{ event: GraphEvent; calendar: GraphCalendar; view: EventView }> {
+    const ctx = this.ctx;
     if (ctx.overlay().hides(event)) throw new OutsideCalendarError();
     const view = await ctx.view(calendar);
     if (hidesDetails(event, view)) throw new Error("That event is private. This connection shows it only as busy time, so it can't change it.");
@@ -889,10 +898,15 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
         throw new Error("A series' times can't be changed here: change one occurrence at a time, or delete the series and create it again.");
       }
       if (isProvisional(event.id)) throw new Error("That event hasn't been created yet.");
-      ({ event, calendar } = await ctx.series({ event, calendar }));
+      const master = await ctx.series({ event, calendar });
+      ({ event, calendar, view } = await this.#checkChangeable(master.event, master.calendar));
     }
     const [zone, me] = await Promise.all([ctx.zone(), ctx.me()]);
     const fields = eventFields(changes, zone, me.address, event);
+    // Outlook keeps a Teams meeting's join details in its description, and drops the meeting with them.
+    if (fields.markdown !== undefined && event.joinUrl !== undefined) {
+      throw new Error("This is a Teams meeting, whose description holds its join details. Change the description in Outlook, which keeps them.");
+    }
     const target = await ctx.target(event, series ? "series" : undefined);
     const meetingBefore = hasOthers(event);
     const meetingAfter = fields.attendees !== undefined ? fields.attendees.length > 0 : meetingBefore;
@@ -944,7 +958,8 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
     let { event, calendar } = await this.#changeable(eventId);
     if (series) {
       if (isProvisional(event.id)) throw new Error("That event hasn't been created yet.");
-      ({ event, calendar } = await ctx.series({ event, calendar }));
+      const master = await ctx.series({ event, calendar });
+      ({ event, calendar } = await this.#checkChangeable(master.event, master.calendar));
     }
     const [zone, me] = await Promise.all([ctx.zone(), ctx.me()]);
     const target = await ctx.target(event, series ? "series" : undefined);

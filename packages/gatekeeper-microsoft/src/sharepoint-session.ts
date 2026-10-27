@@ -1125,10 +1125,11 @@ export class SharePointListImpl extends SharePointListReaderImpl implements Shar
     if (current.pending === "delete") throw new Error("That item is already awaiting deletion.");
     const before: Record<string, FieldValue> = {};
     for (const name of Object.keys(values)) before[name] = current.fields[name] ?? null;
-    const overlay = this.overlay();
     const resolved = this.ctx.host.resolve(itemId);
-    // Fenced on the version this read saw, unless another pending change to it will move that.
-    const ifMatch = ifUnchanged(options) ?? (current.pending || overlay.hasPendingItemChange(this.ref, resolved) ? undefined : current.eTag);
+    // Fenced on the version this read saw. A pending change of ours would move that, and may yet be
+    // rejected, so a second change waits for it rather than going unfenced.
+    this.#requireNoPendingItemChange(resolved, "changing");
+    const ifMatch = ifUnchanged(options) ?? (isProvisional(resolved) ? undefined : current.eTag);
     const title = typeof current.fields.Title === "string" ? current.fields.Title : undefined;
     await this.ctx.host.submit(this.ctx.queue, "updateListItem", {
       list: this.#target(), itemId: isProvisional(resolved) ? itemId : resolved, ...(title ? { title } : {}),
@@ -1142,7 +1143,8 @@ export class SharePointListImpl extends SharePointListReaderImpl implements Shar
     if (current.pending === "delete") return;
     const resolved = this.ctx.host.resolve(itemId);
     const title = typeof current.fields.Title === "string" ? current.fields.Title : undefined;
-    const ifMatch = ifUnchanged(options) ?? (current.pending ? undefined : current.eTag);
+    this.#requireNoPendingItemChange(resolved, "deleting");
+    const ifMatch = ifUnchanged(options) ?? (isProvisional(resolved) ? undefined : current.eTag);
     await this.ctx.host.submit(this.ctx.queue, "deleteListItem", {
       list: this.#target(), itemId: isProvisional(resolved) ? itemId : resolved, ...(title ? { title } : {}),
       ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now(),
@@ -1151,6 +1153,13 @@ export class SharePointListImpl extends SharePointListReaderImpl implements Shar
 
   #target(): ListTarget {
     return { ...this.ref, name: this.list.name, webUrl: this.list.webUrl };
+  }
+
+  /** An existing item with a change of ours awaiting approval can't take another: its version fence would have to go. */
+  #requireNoPendingItemChange(resolved: string, before: "changing" | "deleting"): void {
+    if (!isProvisional(resolved) && this.overlay().hasPendingItemChange(this.ref, resolved)) {
+      throw new Error(`A change to this item is already awaiting approval. Wait for it to be decided before ${before} it.`);
+    }
   }
 }
 
@@ -1546,9 +1555,10 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
     id = this.resolved(id);
     this.#requireWrite();
     const { item, target } = await this.#itemTarget(id);
-    const overlay = this.overlay();
-    // A file is fenced on its content, so a colleague's edit since this read is never binned unseen.
-    const ifMatch = ifUnchanged(options) ?? (item.kind === "file" && overlay.pendingContent(encodeItemRef(target.ref)) === undefined ? item.cTag : undefined);
+    // A file is fenced on its content, so a colleague's edit since this read is never binned unseen;
+    // a change of ours awaiting approval would move that, so the deletion waits for it.
+    this.#requireNoPendingChange(encodeItemRef(target.ref), item.kind === "file" ? "file" : "folder");
+    const ifMatch = ifUnchanged(options) ?? (item.kind === "file" ? item.cTag : undefined);
     await this.ctx.host.submit(this.ctx.queue, "deleteItem", { target, ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now() });
   }
 }

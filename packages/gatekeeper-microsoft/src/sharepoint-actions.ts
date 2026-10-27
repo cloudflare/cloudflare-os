@@ -815,6 +815,8 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       const { payload } = action;
       if (payload.createdId === undefined) return { message: "It was never created, so there is nothing to undo.", canRetry: false };
       const parent = folderRef(host, payload.parent);
+      const left = await leftBinding(host, { driveId: parent.driveId, itemId: payload.createdId }, "What was created");
+      if (left) return left;
       await host.graph(api => api.request("DELETE", `/drives/${parent.driveId}/items/${payload.createdId}`, { allow: [404] }),
         { replayable: true });
       return;
@@ -825,12 +827,16 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
         return { message: "SharePoint kept no earlier version of this file to restore.", canRetry: false };
       }
       const { driveId, itemId } = payload.target.ref;
+      const left = await leftBinding(host, payload.target.ref, "The file");
+      if (left) return left;
       await host.graph(api => api.request("POST", `/drives/${driveId}/items/${itemId}/versions/${payload.previousVersionId}/restoreVersion`),
         { replayable: true });
       return;
     }
     case "rename": {
       const { driveId, itemId } = action.payload.target.ref;
+      const left = await leftBinding(host, action.payload.target.ref, "It");
+      if (left) return left;
       await host.graph(api => api.request("PATCH", `/drives/${driveId}/items/${itemId}`, { body: { name: action.payload.target.name } }),
         { replayable: true });
       return;
@@ -839,6 +845,8 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       const { driveId, itemId } = action.payload.target.ref;
       const from = decodeItemRef(action.payload.from.id);
       if ("provisional" in from) return { message: "The folder it came from no longer exists.", canRetry: false };
+      const left = (await leftBinding(host, action.payload.target.ref, "It")) ?? (await leftBinding(host, from, "The folder it came from"));
+      if (left) return left;
       await host.graph(api => api.request("PATCH", `/drives/${driveId}/items/${itemId}`, {
         body: { parentReference: { id: from.itemId } },
       }), { replayable: true });
@@ -850,6 +858,8 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
         return { message: "SharePoint kept no earlier version of this workbook to restore.", canRetry: false };
       }
       const { driveId, itemId } = payload.target.ref;
+      const left = await leftBinding(host, payload.target.ref, "The workbook");
+      if (left) return left;
       await host.graph(api => api.request("POST", `/drives/${driveId}/items/${itemId}/versions/${payload.previousVersionId}/restoreVersion`),
         { replayable: true });
       return;
@@ -858,6 +868,8 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       const { payload } = action;
       if (payload.createdId === undefined) return { message: "It was never copied, so there is nothing to undo.", canRetry: false };
       const parent = folderRef(host, payload.parent);
+      const left = await leftBinding(host, { driveId: parent.driveId, itemId: payload.createdId }, "The copy");
+      if (left) return left;
       await host.graph(api => api.request("DELETE", `/drives/${parent.driveId}/items/${payload.createdId}`, { allow: [404] }),
         { replayable: true });
       return;
@@ -926,5 +938,20 @@ export function showableText(bytes: Uint8Array, mimeType: string): string | unde
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Why an undo is refused when what it would touch has left the binding since the change applied:
+ * an item keeps its ID wherever it is moved, so the ID alone would reach outside what the connection
+ * covers. Undefined while it is still inside.
+ */
+async function leftBinding(host: SharePointActionHost, ref: ItemRef, what: string): Promise<{ message: string; canRetry: false } | undefined> {
+  try {
+    await host.inScope(ref);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof OutsideScopeError)) throw error;
+    return { message: `${what} is no longer inside what this connection covers, so it was left as it is.`, canRetry: false };
   }
 }
