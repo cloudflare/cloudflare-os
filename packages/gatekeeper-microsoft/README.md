@@ -260,7 +260,8 @@ The levels:
 | `send` | Send a draft, a new message, a reply or a forward | `outlook.send` | **Never** |
 | `send`, whole mailbox | Automatic replies, which answer whoever writes | `outlook.settings` | **Never** |
 
-A `read` binding's session is an `OutlookReader`, with no write methods at all. Everything else is
+A `read` binding's session is an `OutlookReader`, with no write methods at all, and a `draft`
+binding's an `OutlookDrafter`, without the send methods. Everything else is
 an action, shown to the agent as though already applied while it waits, and reverted for 30 days
 where Exchange allows: moves go back, flags, categories and read state are restored, folders and
 drafts are deleted, a draft edit is undone, automatic replies return to what they were. An undo is

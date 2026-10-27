@@ -10,7 +10,7 @@ import {
   BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, NOTES, OTHER, OTHER_FILE, PHILLIP, READ_SCOPES, ROOT, SARAH, SITE_ID, SPECS,
   accountStub, facet, failure, folderProps, hooks, identityOf, json, props, ref, seedAccount, unwrap,
 } from "./fake-graph";
-import type { GatekeeperProps, Step } from "./worker";
+import type { GatekeeperProps, Outcome, Step } from "./worker";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -49,7 +49,7 @@ describe("the binding", () => {
       title: "Specs",
       snippet: "Engineering › Documents › Specs",
       suggestedBindingName: "SHAREPOINT_FOLDER",
-      tsType: "SharePointSession",
+      tsType: "SharePointFolderSession",
     });
   });
 
@@ -69,7 +69,7 @@ describe("the binding", () => {
       title: "Unavailable SharePoint item",
       snippet: "The folder this connection is for no longer exists, or you can no longer open it.",
       suggestedBindingName: "SHAREPOINT_FOLDER",
-      tsType: "SharePointSession",
+      tsType: "SharePointFolderSession",
     });
   });
 
@@ -90,7 +90,7 @@ describe("read-only access", () => {
     const id = await seedAccount(graph, PHILLIP, { scopes: READ_SCOPES });
     const binding = folderProps(id);
     const name = facet("read-only");
-    expect(unwrap(await hooks().describe(name, binding))).toMatchObject({ tsType: "SharePointReader" });
+    expect(unwrap(await hooks().describe(name, binding))).toMatchObject({ tsType: "SharePointFolderReader" });
     expect(unwrap<SharePointScopeInfo>(await hooks().run(name, binding, [["getScope"]])))
       .toMatchObject({ kind: "folder", can: { files: true, write: false } });
     // The session simply has no write methods.
@@ -105,7 +105,7 @@ describe("read-only access", () => {
     graph.items.get(SPECS)!.shared = { effectiveRoles: ["read"], scope: "users" };
     const binding = folderProps(id);
     const name = facet("shared-to-view");
-    expect(unwrap(await hooks().describe(name, binding))).toMatchObject({ tsType: "SharePointReader" });
+    expect(unwrap(await hooks().describe(name, binding))).toMatchObject({ tsType: "SharePointFolderReader" });
     expect(unwrap<SharePointScopeInfo>(await hooks().run(name, binding, [["getScope"]]))).toMatchObject({ can: { write: false } });
     expect(unwrap(await hooks().autoApprovable(name, binding))).toEqual([]);
   });
@@ -114,9 +114,9 @@ describe("read-only access", () => {
     const graph = new FakeGraph().install();
     const id = await seedAccount(graph);
     graph.items.get(SPECS)!.shared = { effectiveRoles: ["write"], scope: "users" };
-    expect(unwrap(await hooks().describe(facet("shared-to-edit"), folderProps(id)))).toMatchObject({ tsType: "SharePointSession" });
+    expect(unwrap(await hooks().describe(facet("shared-to-edit"), folderProps(id)))).toMatchObject({ tsType: "SharePointFolderSession" });
     graph.items.get(SPECS)!.shared = { scope: "users" };
-    expect(unwrap(await hooks().describe(facet("shared-unsaid"), folderProps(id)))).toMatchObject({ tsType: "SharePointSession" });
+    expect(unwrap(await hooks().describe(facet("shared-unsaid"), folderProps(id)))).toMatchObject({ tsType: "SharePointFolderSession" });
   });
 
   it("refuses a binding whose connection no longer grants SharePoint", async () => {
@@ -378,6 +378,42 @@ describe("changes", () => {
     });
     expect(unwrap(await hooks().revertAction(name, binding, actionId))).toMatchObject({ message: expect.stringMatching(/no longer allows changes to SharePoint/), canRetry: true });
     expect(graph.count("DELETE", /items\//)).toBe(0);
+  });
+});
+
+describe("preparing writes", () => {
+  it("prepares writes one at a time, so a second of two concurrent proposals sees the first", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const binding = folderProps(id);
+    const name = facet("together");
+    const outcomes = await hooks().runTogether(name, binding, [
+      ["createFolder", ref(SPECS), "Drafts"], ["createFolder", ref(SPECS), "drafts"], ["uploadFile", ref(SPECS), "Drafts", "x"],
+    ]) as unknown as Outcome<unknown>[];
+    expect(outcomes.filter(outcome => "ok" in outcome)).toHaveLength(1);
+    expect(outcomes.filter(outcome => "error" in outcome).map(failure)).toEqual([
+      expect.stringMatching(/already awaiting approval/), expect.stringMatching(/already awaiting approval/),
+    ]);
+    expect((await hooks().queueLog(name)).submitted).toHaveLength(1);
+  });
+});
+
+describe("listing sites", () => {
+  it("puts the user's own OneDrive first, as a personal site", async () => {
+    const graph = new FakeGraph().install();
+    graph.on("GET", /^\/v1\.0\/me\/drive(\?|$)/, () => json({
+      id: "b!PhillipOneDrive0000000000000000", name: "OneDrive", driveType: "business",
+      webUrl: "https://contoso-my.sharepoint.com/personal/phillip_contoso_com/Documents",
+    }));
+    graph.on("GET", /^\/v1\.0\/sites\/contoso-my\.sharepoint\.com:\/personal\/phillip_contoso_com(\?|$)/, () => json({
+      id: "contoso-my.sharepoint.com,dddddddd-0000-0000-0000-000000000000,eeeeeeee-0000-0000-0000-000000000000",
+      displayName: "Phillip Jones", webUrl: "https://contoso-my.sharepoint.com/personal/phillip_contoso_com", isPersonalSite: true,
+    }));
+    const id = await seedAccount(graph);
+    const binding = props(id, { kind: "all" });
+    const [sites] = unwrap<{ name: string; personal: boolean }[][]>(await hooks().run(facet("sites"), binding, [["listSites"]], { pages: 1 }));
+    expect(sites![0]).toMatchObject({ name: "Phillip Jones", personal: true });
+    expect(sites!.slice(1).map(site => site.name)).toEqual(["Communication site"]);
   });
 });
 

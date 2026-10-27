@@ -113,7 +113,7 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
   async describe(): Promise<ResourceDescription> {
     const scope = this.ctx.props.scope;
     const access = await this.#access();
-    const tsType = access === "read" ? "OutlookReader" : "OutlookSession";
+    const tsType = access === "read" ? "OutlookReader" : access === "draft" ? "OutlookDrafter" : "OutlookSession";
     const kv = this.ctx.storage.kv;
     const stored = kv.get<{ value: ResourceDescription; at: number }>(DESCRIPTION_KEY);
     if (stored && Date.now() - stored.at < DESCRIPTION_TTL_MS) return { ...stored.value, tsType };

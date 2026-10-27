@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { DriveEntry, FileContent, ListItem, SharePointScopeInfo, SiteContents, WorkbookContent } from "../../src/types";
-import { account, bind, failure, facet, hooks, live, oneDrive, origin, run, unwrap, walk } from "./tenant";
+import { bind, failure, facet, hooks, live, oneDrive, origin, run, unwrap, walk } from "./tenant";
 
 const OUTSIDE = /is outside what this SharePoint connection covers, or doesn.t exist\./;
 
@@ -149,8 +149,9 @@ describe.skipIf(!live)("search", () => {
     const props = await bind("phillip", `${await origin()}/_layouts/15/sharepoint.aspx`);
     const sites = await walk<{ name: string; personal?: boolean }>(facet("sites"), props, [["listSites"]]);
     expect(sites.map(site => site.name)).toEqual(expect.arrayContaining(["Engineering", "Marketing"]));
-    // OneDrives are personal sites, reached through their library, not listed as sites.
-    expect(sites.map(site => site.name)).not.toContain(account("phillip").name);
+    // The user's own OneDrive heads the list, as a personal site; nobody else's is listed.
+    expect(sites[0]).toMatchObject({ personal: true });
+    expect(sites.slice(1).some(site => site.personal)).toBe(false);
   });
 
   it("searches files within a folder binding, keeping only hits inside it", async () => {

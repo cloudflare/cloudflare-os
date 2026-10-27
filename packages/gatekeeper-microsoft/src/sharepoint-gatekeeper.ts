@@ -19,6 +19,7 @@ import { ActionFileStore } from "@gadgets/gatekeeper-kit/action-files";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
+import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import TYPES_CODE from "./types.txt";
 import { DESCRIPTION_TTL_MS, housekeep, isProvisional, PinnedUser, provisionalId, revertRefused } from "./binding";
 import { GraphApi, GraphApiError } from "./graph-api";
@@ -54,6 +55,17 @@ const ROLE_TTL_MS = 2 * 60 * 1000;
 const DESCRIPTION_KEY = "description";
 
 /** The binding name the agent sees for each kind of scope. */
+/** The agent-facing type of a binding, by what its scope reaches and whether it can write. */
+const TS_TYPES: Record<ScopeKind, Record<SharePointAccess, string>> = {
+  all: { read: "SharePointReader", write: "SharePointSession" },
+  site: { read: "SharePointReader", write: "SharePointSession" },
+  library: { read: "SharePointFolderReader", write: "SharePointFolderSession" },
+  folder: { read: "SharePointFolderReader", write: "SharePointFolderSession" },
+  file: { read: "SharePointFileReader", write: "SharePointFileSession" },
+  list: { read: "SharePointListScopeReader", write: "SharePointListScopeSession" },
+  page: { read: "SharePointPageReader", write: "SharePointPageReader" },
+};
+
 const BINDING_NAMES: Record<ScopeKind, string> = {
   all: "SHAREPOINT",
   site: "SHAREPOINT_SITE",
@@ -95,6 +107,12 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
     maxTotalBytes: PENDING_FILE_BYTES,
   });
   readonly #observers = sharePointObservers(this.ctx.storage.kv, () => this.#user.get());
+  /**
+   * Writes prepare one at a time, across every session of this binding: each checks what is pending
+   * before its slow steps (a download, an edit, capturing bytes), and two prepared together would
+   * both pass and both be submitted, the second certain to fail at apply.
+   */
+  readonly #preparing = new SerialTaskQueue();
 
   readonly #user = new PinnedUser(this.ctx.storage.kv, () => this.#account().getIdentity(), "SharePoint");
 
@@ -126,6 +144,7 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
       submit: async (queue, kind, payload) => {
         return await this.#actions.submit(queue, kind, payload, { fence: await this.#user.fence() });
       },
+      prepareExclusively: body => this.#preparing.run(body),
       capture: async bytes => {
         const referenced = new Set(this.#journal.listPending().flatMap(({ action }) => fileHandles(action)));
         this.#files.pruneUnreferenced(referenced, Date.now() - FILE_GRACE_MS);
@@ -139,7 +158,7 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
   async describe(): Promise<ResourceDescription> {
     const scope = this.ctx.props.scope;
     const grant = await this.#grant();
-    const tsType = grant.access === "write" ? "SharePointSession" : "SharePointReader";
+    const tsType = TS_TYPES[scope.kind][grant.access];
     const kv = this.ctx.storage.kv;
     const stored = kv.get<{ value: ResourceDescription; at: number }>(DESCRIPTION_KEY);
     if (stored && Date.now() - stored.at < DESCRIPTION_TTL_MS) return { ...stored.value, tsType };

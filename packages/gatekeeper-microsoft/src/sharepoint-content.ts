@@ -209,7 +209,7 @@ function cell(value: unknown): CellValue {
 }
 
 /** Reads a workbook's worksheets, within a per-sheet cell budget. */
-export async function readWorkbookSheets(api: GraphApi, ref: ItemRef, options: { sheet?: string; maxCells: number }):
+export async function readWorkbookSheets(api: GraphApi, ref: ItemRef, options: { sheet?: string; range?: string; maxCells: number }):
     Promise<{ worksheets: WorksheetContent[]; otherWorksheets: string[]; notes: string[] }> {
   const all = await listWorksheets(api, ref);
   const wanted = options.sheet === undefined
@@ -221,6 +221,15 @@ export async function readWorkbookSheets(api: GraphApi, ref: ItemRef, options: {
   const worksheets: WorksheetContent[] = [];
   const notes: string[] = [];
   for (const sheet of wanted.slice(0, 20)) {
+    if (options.range !== undefined) {
+      const range = await readRange(api, ref, sheet.id, options.range);
+      const values = range.values.map(row => row.map(cell));
+      worksheets.push({
+        name: sheet.name, address: range.address || `${sheet.name}!${options.range}`, values,
+        formulas: range.formulas ? range.formulas.map(row => row.map(cell)) : values, truncated: false,
+      });
+      continue;
+    }
     const shape = await usedRangeShape(api, ref, sheet.id);
     if (shape.rowCount === 0 || shape.columnCount === 0 || shape.address === "") {
       worksheets.push({ name: sheet.name, address: shape.address, values: [], formulas: [], truncated: false });

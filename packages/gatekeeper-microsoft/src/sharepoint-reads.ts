@@ -211,6 +211,23 @@ export async function getSite(api: GraphApi, siteId: string): Promise<GraphSite 
   return body === null ? null : parseSite(body);
 }
 
+/**
+ * The user's own OneDrive, as the personal site it lives in, or null without one: no OneDrive, or
+ * a grant without `Files.*`. Graph's site search and followed sites leave personal sites out, so a
+ * listing that should offer the OneDrive adds it. Nothing it needs is worth failing a listing for.
+ */
+export async function myOneDriveSite(api: GraphApi): Promise<GraphSite | null> {
+  const drive = await api.find<unknown>("/me/drive", { query: { $select: DRIVE_SELECT } })
+    .then(body => body === null ? null : parseDrive(body), () => null);
+  if (drive === null) return null;
+  const url = new URL(drive.webUrl);
+  // The library sits in the personal site: `/personal/<user>/Documents`.
+  const path = /^\/personal\/[^/]+/.exec(url.pathname)?.[0];
+  if (path === undefined) return null;
+  return await api.find<unknown>(`/sites/${url.hostname}:${path}`, { query: { $select: SITE_SELECT } })
+    .then(body => body === null ? null : parseSite(body), () => null);
+}
+
 /** A site's document libraries. */
 export function listDrives(api: GraphApi, siteId: string): Promise<GraphDrive[]> {
   return all(api, `/sites/${siteId}/drives`, { $select: DRIVE_SELECT }, parseDrive, "library");

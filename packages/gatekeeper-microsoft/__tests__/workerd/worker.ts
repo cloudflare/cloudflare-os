@@ -246,6 +246,16 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     });
   }
 
+  /** Starts one session and makes every call on it at once, answering each call's own outcome. */
+  async runTogether(facetName: string, props: AnyGatekeeperProps, calls: Step[]): Promise<Outcome<unknown>[]> {
+    const session = await this.#gatekeeper(facetName, props).startSession(this.#queue(facetName));
+    try {
+      return await Promise.all(calls.map(([method, ...args]) => outcome(() => session[method](...args))));
+    } finally {
+      session[Symbol.dispose]?.();
+    }
+  }
+
   /** What the facet's approval queue has recorded. */
   queueLog(facetName: string): { submitted: RecordingQueue["submitted"]; observations: RecordingQueue["observations"]; hooks: RecordingQueue["hooks"] } {
     const queue = this.#queue(facetName);

@@ -131,8 +131,10 @@ be asked for the right facet. The order: `/site` when the path is exactly a site
 
 ### The session
 
-One session type serves every scope (`SharePointReader` / `SharePointSession` in `types.d.ts`); `getScope()` says
-what it covers, and anything outside it is refused with the same error whether or not it exists. The agent sees
+One session class serves every scope, typed to the agent by what the scope reaches (`SharePointFileSession`,
+`SharePointFolderSession`, `SharePointListScopeSession`, `SharePointPageReader`, and `SharePointSession` for a site or
+everything, each with a `Reader` form in `types.d.ts`, built from shared fragments); `getScope()` says what it covers,
+and anything outside it is refused with the same error whether or not it exists. The agent sees
 opaque references that carry the container as well as the object (`ItemRef`, `ListRef`, `PageRef`), because a
 Graph item ID is only addressable within its drive, and a list or page within its site. Paths are shown relative
 to the binding's top, never above it.

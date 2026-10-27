@@ -342,9 +342,12 @@ export interface OutlookReader {
   subscribeNewMessages(hook: RpcStub<NewMessageHook>): Promise<void>;
 }
 
-/** Read access plus changes, each proposed for the user's approval. */
-export interface OutlookSession extends OutlookReader {
-  // -- organize (access "draft" and above) --
+/**
+ * Read access plus organizing and drafting, each proposed for the user's approval: the session of
+ * a binding with `draft` access. Nothing here leaves the mailbox.
+ */
+export interface OutlookDrafter extends OutlookReader {
+  // -- organize --
 
   /** Moves messages (up to 50) to a folder the binding covers. */
   move(ids: string[], folderId: string): Promise<MessageInfo[]>;
@@ -359,7 +362,7 @@ export interface OutlookSession extends OutlookReader {
   categorize(ids: string[], change: { add?: string[]; remove?: string[] }): Promise<MessageInfo[]>;
   createFolder(parentId: string, name: string): Promise<FolderInfo>;
 
-  // -- draft (access "draft" and above) --
+  // -- draft --
 
   /** A new draft in Drafts, where the user can also open, finish and send it. */
   createDraft(message: MessageInput): Promise<MessageInfo>;
@@ -373,7 +376,13 @@ export interface OutlookSession extends OutlookReader {
   /** Deletes a draft this binding wrote (to Deleted Items). */
   deleteDraft(draftId: string): Promise<void>;
 
-  // -- send (access "send") --
+  /** The automatic replies setting (whole own mailbox). */
+  getAutomaticReplies(): Promise<AutomaticReplies>;
+}
+
+/** An `OutlookDrafter` that can also send: the session of a binding with `send` access. */
+export interface OutlookSession extends OutlookDrafter {
+  // -- send --
 
   /**
    * Sends a draft the binding covers, its own or one the user wrote, exactly as the approver sees
@@ -384,10 +393,9 @@ export interface OutlookSession extends OutlookReader {
   reply(messageId: string, body: string, options?: ReplyOptions): Promise<MessageInfo>;
   forward(messageId: string, to: Recipient[], body?: string, options?: ForwardOptions): Promise<MessageInfo>;
 
-  // -- mailbox settings (whole own mailbox) --
-
-  /** The automatic replies setting (access "draft" and above). */
-  getAutomaticReplies(): Promise<AutomaticReplies>;
-  /** Changes it (access "send": an automatic reply goes to whoever writes, outside the organization too). */
+  /**
+   * Changes the automatic replies setting (whole own mailbox). An automatic reply goes to whoever
+   * writes, outside the organization too, which is why this needs `send` access.
+   */
   setAutomaticReplies(replies: AutomaticReplies): Promise<void>;
 }

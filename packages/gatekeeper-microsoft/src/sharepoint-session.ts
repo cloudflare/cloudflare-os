@@ -89,6 +89,11 @@ export type SessionHost = {
   resolve(id: string): string;
   allocate(kind: string): string;
   submit<K extends keyof SharePointActions>(queue: ActionSubmitter, kind: K, payload: SharePointActions[K]): Promise<number>;
+  /**
+   * Runs a write's preparation, from its checks against what is pending through its submission,
+   * after every other's: a check that passed can't be overtaken by a submission it didn't see.
+   */
+  prepareExclusively<T>(body: () => Promise<T>): Promise<T>;
   capture(bytes: Uint8Array): Promise<ActionFileReference>;
   readCaptured(file: ActionFileReference): Promise<Uint8Array>;
   ai?: Ai;
@@ -432,11 +437,19 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       remotePageSize: 50,
       dispose: () => walk[Symbol.dispose](),
       fetchPage: async (token, perPage) => {
-        const page = await this.ctx.host.read(api =>
-          reads.browseSites(api, query, token === undefined ? 0 : Number(token), perPage, this.ctx.host.sites === "selected"));
+        const from = token === undefined ? 0 : Number(token);
+        // The user's own OneDrive heads the first page: it is a personal site, which site search
+        // and followed sites leave out, and otherwise nothing names it.
+        const [page, oneDrive] = await this.ctx.host.read(api => Promise.all([
+          reads.browseSites(api, query, from, perPage, this.ctx.host.sites === "selected"),
+          from === 0 ? reads.myOneDriveSite(api) : Promise.resolve(null),
+        ]));
+        const sites = oneDrive !== null && (query === undefined || /one\s*drive/i.test(query) || oneDrive.name.toLowerCase().includes(query.toLowerCase()))
+          ? [oneDrive, ...page.sites.filter(site => site.id !== oneDrive.id)]
+          : page.sites;
         // With search down, the home and followed sites are still worth returning; the agent is told.
-        if (page.searchError !== undefined && page.sites.length === 0) throw searchFailure(page.searchError, "Site search");
-        return { items: page.sites.map(toSiteInfo), ...(page.nextFrom !== undefined ? { nextToken: String(page.nextFrom) } : {}) };
+        if (page.searchError !== undefined && sites.length === 0) throw searchFailure(page.searchError, "Site search");
+        return { items: sites.map(toSiteInfo), ...(page.nextFrom !== undefined ? { nextToken: String(page.nextFrom) } : {}) };
       },
       authorizePage: (items, { terminal }) => items.length === 0
         ? walk.authorize({ title: "Listed SharePoint sites", description: `${described}${terminal ? "; there were no more" : ""}.` }, { kind: "baseline" })
@@ -822,6 +835,15 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     if (!Number.isInteger(maxCells) || maxCells < 1 || maxCells > MAX_MAX_CELLS) {
       throw new Error(`maxCells must be a whole number from 1 to ${MAX_MAX_CELLS.toLocaleString("en-US")}.`);
     }
+    let range: string | undefined;
+    if (options?.range !== undefined) {
+      if (options.sheet === undefined) throw new Error("Pass sheet with range: the worksheet the range is on.");
+      const parsed = parseCellRange(options.range);
+      if (rangeRows(parsed) * rangeColumns(parsed) > maxCells) {
+        throw new Error(`${options.range} has more than maxCells (${maxCells.toLocaleString("en-US")}) cells. Read a smaller range, or raise maxCells.`);
+      }
+      range = formatRange(parsed);
+    }
     const overlay = this.overlay();
     const copied = this.#copied(id, overlay);
     if (copied !== undefined) return { ...await this.readWorkbook(copied.source, options), entry: copied.entry };
@@ -832,7 +854,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     if (!isWorkbook(item)) throw new Error("readWorkbook reads Excel workbooks (.xlsx, .xlsm, .xlsb). Use readFile for other files.");
     const [sheets, version] = await Promise.all([
       this.ctx.host.read(api => readWorkbookSheets(api, { driveId: item.driveId, itemId: item.id },
-        { ...(options?.sheet !== undefined ? { sheet: options.sheet } : {}), maxCells })),
+        { ...(options?.sheet !== undefined ? { sheet: options.sheet } : {}), ...(range !== undefined ? { range } : {}), maxCells })),
       this.fileVersion(item),
     ]);
     const entry = await this.entry(item, overlay);
@@ -1269,75 +1291,81 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
     parentId = this.resolved(parentId);
     this.#requireWrite();
     checkName(name);
-    const parent = await this.#folderTarget(parentId);
-    await this.#requireFreeName(parent, name);
-    const ref = this.ctx.host.allocate("item");
-    const submittedAt = Date.now();
-    await this.ctx.host.submit(this.ctx.queue, "createFolder", { ref, parent, name, submittedAt });
-    return {
-      id: ref, name, kind: "folder", webUrl: "", path: join(parent.path, name), parentId: parent.id, libraryId: parent.driveId,
-      childCount: 0, createdAt: new Date(submittedAt).toISOString(), modifiedAt: new Date(submittedAt).toISOString(), pending: "create",
-    };
+    return await this.ctx.host.prepareExclusively(async () => {
+      const parent = await this.#folderTarget(parentId);
+      await this.#requireFreeName(parent, name);
+      const ref = this.ctx.host.allocate("item");
+      const submittedAt = Date.now();
+      await this.ctx.host.submit(this.ctx.queue, "createFolder", { ref, parent, name, submittedAt });
+      return {
+        id: ref, name, kind: "folder", webUrl: "", path: join(parent.path, name), parentId: parent.id, libraryId: parent.driveId,
+        childCount: 0, createdAt: new Date(submittedAt).toISOString(), modifiedAt: new Date(submittedAt).toISOString(), pending: "create",
+      };
+    });
   }
 
   async uploadFile(parentId: string, name: string, content: string | Uint8Array | WorkbookRows, options?: WriteOptions): Promise<DriveEntry> {
     parentId = this.resolved(parentId);
     this.#requireWrite();
     checkName(name);
-    const parent = await this.#folderTarget(parentId);
-    await this.#requireFreeName(parent, name);
-    const encoded = await this.#encode(name, content, options?.template);
-    const mimeType = mimeTypeFor(name, content);
-    const file = await this.ctx.host.capture(encoded.bytes);
-    const ref = this.ctx.host.allocate("item");
-    const submittedAt = Date.now();
-    const text = encoded.writing ? encoded.source : showableText(encoded.bytes, mimeType);
-    await this.ctx.host.submit(this.ctx.queue, "uploadFile", {
-      ref, parent, name, file, mimeType, ...shownTexts(text),
-      ...(encoded.writing ? { writing: encoded.writing } : {}), submittedAt,
+    return await this.ctx.host.prepareExclusively(async () => {
+      const parent = await this.#folderTarget(parentId);
+      await this.#requireFreeName(parent, name);
+      const encoded = await this.#encode(name, content, options?.template);
+      const mimeType = mimeTypeFor(name, content);
+      const file = await this.ctx.host.capture(encoded.bytes);
+      const ref = this.ctx.host.allocate("item");
+      const submittedAt = Date.now();
+      const text = encoded.writing ? encoded.source : showableText(encoded.bytes, mimeType);
+      await this.ctx.host.submit(this.ctx.queue, "uploadFile", {
+        ref, parent, name, file, mimeType, ...shownTexts(text),
+        ...(encoded.writing ? { writing: encoded.writing } : {}), submittedAt,
+      });
+      return {
+        id: ref, name, kind: "file", webUrl: "", path: join(parent.path, name), parentId: parent.id, libraryId: parent.driveId,
+        size: encoded.bytes.byteLength, mimeType, createdAt: new Date(submittedAt).toISOString(), modifiedAt: new Date(submittedAt).toISOString(),
+        pending: "create",
+      };
     });
-    return {
-      id: ref, name, kind: "file", webUrl: "", path: join(parent.path, name), parentId: parent.id, libraryId: parent.driveId,
-      size: encoded.bytes.byteLength, mimeType, createdAt: new Date(submittedAt).toISOString(), modifiedAt: new Date(submittedAt).toISOString(),
-      pending: "create",
-    };
   }
 
   async replaceFile(id: string, content: string | Uint8Array | WorkbookRows, options?: ChangeOptions & WriteOptions): Promise<DriveEntry> {
     id = this.resolved(id);
     this.#requireWrite();
-    // A file binding's own file is its top: its content can change, though it can't move or go.
-    const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
-    if (item.kind !== "file") throw new Error("Only a file's content can be replaced.");
-    this.#requireNoPendingChange(entry.id, "file");
-    const encoded = await this.#encode(item.name, content, options?.template);
-    const mimeType = item.mimeType ?? mimeTypeFor(item.name, content);
-    const text = encoded.writing ? encoded.source : showableText(encoded.bytes, mimeType);
-    // For the approver: the current text to diff against, and what a rewrite of an Office file loses.
-    let previousText: string | undefined;
-    let loses: string[] = [];
-    if (text !== undefined && (item.size ?? Infinity) <= MAX_COMPARED_BYTES) {
-      try {
-        const current = (await this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_READ_BYTES))).bytes;
-        if (encoded.writing) {
-          loses = await featuresLost(item.name, current);
-          const converted = await convertToText({ bytes: current, name: item.name, mimeType, maxChars: MAX_COMPARED_CHARS });
-          if (converted !== null && !converted.truncated) previousText = converted.content;
-        } else {
-          previousText = showableText(current, mimeType);
+    return await this.ctx.host.prepareExclusively(async () => {
+      // A file binding's own file is its top: its content can change, though it can't move or go.
+      const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
+      if (item.kind !== "file") throw new Error("Only a file's content can be replaced.");
+      this.#requireNoPendingChange(entry.id, "file");
+      const encoded = await this.#encode(item.name, content, options?.template);
+      const mimeType = item.mimeType ?? mimeTypeFor(item.name, content);
+      const text = encoded.writing ? encoded.source : showableText(encoded.bytes, mimeType);
+      // For the approver: the current text to diff against, and what a rewrite of an Office file loses.
+      let previousText: string | undefined;
+      let loses: string[] = [];
+      if (text !== undefined && (item.size ?? Infinity) <= MAX_COMPARED_BYTES) {
+        try {
+          const current = (await this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_READ_BYTES))).bytes;
+          if (encoded.writing) {
+            loses = await featuresLost(item.name, current);
+            const converted = await convertToText({ bytes: current, name: item.name, mimeType, maxChars: MAX_COMPARED_CHARS });
+            if (converted !== null && !converted.truncated) previousText = converted.content;
+          } else {
+            previousText = showableText(current, mimeType);
+          }
+        } catch {
+          // The diff is a courtesy; the approver still sees the full new content.
         }
-      } catch {
-        // The diff is a courtesy; the approver still sees the full new content.
       }
-    }
-    const ifMatch = ifUnchanged(options) ?? item.cTag;
-    const file = await this.ctx.host.capture(encoded.bytes);
-    await this.ctx.host.submit(this.ctx.queue, "replaceFile", {
-      target, file, mimeType, ...shownTexts(text, previousText),
-      ...(encoded.writing ? { writing: encoded.writing } : {}), ...(loses.length ? { loses } : {}),
-      ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now(),
+      const ifMatch = ifUnchanged(options) ?? item.cTag;
+      const file = await this.ctx.host.capture(encoded.bytes);
+      await this.ctx.host.submit(this.ctx.queue, "replaceFile", {
+        target, file, mimeType, ...shownTexts(text, previousText),
+        ...(encoded.writing ? { writing: encoded.writing } : {}), ...(loses.length ? { loses } : {}),
+        ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now(),
+      });
+      return { ...entry, size: encoded.bytes.byteLength, mimeType, pending: "replace" };
     });
-    return { ...entry, size: encoded.bytes.byteLength, mimeType, pending: "replace" };
   }
 
   async editDocument(id: string, edits: DocumentEdit[], options?: EditDocumentOptions): Promise<DriveEntry> {
@@ -1377,34 +1405,36 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
     const ext = kind === "document" ? "docx" : "pptx";
     if (edits.length === 0) throw new Error("Pass at least one edit.");
     if (edits.length > MAX_EDITS) throw new Error(`Pass at most ${MAX_EDITS} edits at once.`);
-    const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
-    if (item.kind !== "file" || extensionOf(item.name) !== ext) {
-      throw new Error(kind === "document"
-        ? "editDocument edits Word documents (.docx). Use replaceFile for other files."
-        : "editPresentation edits PowerPoint decks (.pptx). Use replaceFile for other files.");
-    }
-    if (item.size !== undefined && item.size > MAX_READ_BYTES) {
-      throw new Error(`The file is larger than the ${MAX_READ_BYTES / (1024 * 1024)} MB that can be edited here.`);
-    }
-    this.#requireNoPendingChange(entry.id, kind);
-    const [current, version, owner] = await Promise.all([
-      this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_READ_BYTES)).then(download => download.bytes),
-      this.fileVersion(item), this.ctx.host.owner(),
-    ]);
-    // Whether a find matched says what the file holds, so the edit counts as reading it.
-    await this.ctx.observe("Read a SharePoint file", `Read the content of ${md(entry.path || entry.name)} to edit it.`,
-      units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
-    const result = await edit(current, `${owner.name} (agent)`).catch(error => { throw editFailure(error); });
-    if (result.bytes.byteLength > MAX_UPLOAD_BYTES) throw new Error(`Files can be at most ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`);
-    const ifMatch = ifUnchanged(options) ?? item.cTag;
-    const file = await this.ctx.host.capture(result.bytes);
-    const mimeType = item.mimeType ?? mimeTypeFor(item.name, result.bytes);
-    await this.ctx.host.submit(this.ctx.queue, "replaceFile", {
-      target, file, mimeType,
-      edit: { kind, ...shownChanges(result.changes), ...(result.trackChanges !== undefined ? { trackChanges: result.trackChanges } : {}) },
-      ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now(),
+    return await this.ctx.host.prepareExclusively(async () => {
+      const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
+      if (item.kind !== "file" || extensionOf(item.name) !== ext) {
+        throw new Error(kind === "document"
+          ? "editDocument edits Word documents (.docx). Use replaceFile for other files."
+          : "editPresentation edits PowerPoint decks (.pptx). Use replaceFile for other files.");
+      }
+      if (item.size !== undefined && item.size > MAX_READ_BYTES) {
+        throw new Error(`The file is larger than the ${MAX_READ_BYTES / (1024 * 1024)} MB that can be edited here.`);
+      }
+      this.#requireNoPendingChange(entry.id, kind);
+      const [current, version, owner] = await Promise.all([
+        this.ctx.host.read(api => api.download(`/drives/${item.driveId}/items/${item.id}/content`, MAX_READ_BYTES)).then(download => download.bytes),
+        this.fileVersion(item), this.ctx.host.owner(),
+      ]);
+      // Whether a find matched says what the file holds, so the edit counts as reading it.
+      await this.ctx.observe("Read a SharePoint file", `Read the content of ${md(entry.path || entry.name)} to edit it.`,
+        units.fileRead({ driveId: item.driveId, itemId: item.id }, version));
+      const result = await edit(current, `${owner.name} (agent)`).catch(error => { throw editFailure(error); });
+      if (result.bytes.byteLength > MAX_UPLOAD_BYTES) throw new Error(`Files can be at most ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`);
+      const ifMatch = ifUnchanged(options) ?? item.cTag;
+      const file = await this.ctx.host.capture(result.bytes);
+      const mimeType = item.mimeType ?? mimeTypeFor(item.name, result.bytes);
+      await this.ctx.host.submit(this.ctx.queue, "replaceFile", {
+        target, file, mimeType,
+        edit: { kind, ...shownChanges(result.changes), ...(result.trackChanges !== undefined ? { trackChanges: result.trackChanges } : {}) },
+        ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now(),
+      });
+      return { ...entry, size: result.bytes.byteLength, mimeType, pending: "replace" };
     });
-    return { ...entry, size: result.bytes.byteLength, mimeType, pending: "replace" };
   }
 
   async updateCells(id: string, worksheet: string, address: string, values: CellValue[][], options?: ChangeOptions): Promise<DriveEntry> {
@@ -1417,50 +1447,54 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
       throw new Error(`Change at most ${MAX_UPDATED_CELLS.toLocaleString("en-US")} cells at once.`);
     }
     values.forEach((row, rowIndex) => row.forEach((value, columnIndex) => checkCell(value, cellAt(formatRange(range), rowIndex, columnIndex))));
-    const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
-    if (item.kind !== "file" || extensionOf(item.name) !== "xlsx") {
-      throw new Error("updateCells changes Excel workbooks (.xlsx). Use replaceFile for other files.");
-    }
-    this.#requireNoPendingChange(entry.id, "workbook");
-    const ref = { driveId: item.driveId, itemId: item.id };
-    const [sheets, version] = await Promise.all([this.ctx.host.read(api => reads.listWorksheets(api, ref)), this.fileVersion(item)]);
-    await this.ctx.observe("Read a SharePoint workbook", `Read ${md(worksheet)}!${formatRange(range)} of ${md(entry.path || entry.name)} to change it.`,
-      units.fileRead(ref, version));
-    const sheet = sheets.find(candidate => candidate.name.toLowerCase() === worksheet.toLowerCase());
-    if (sheet === undefined) {
-      throw new Error(`This workbook has no worksheet named "${worksheet}". Its worksheets are: ${sheets.map(candidate => candidate.name).join(", ")}.`);
-    }
-    const current = await this.ctx.host.read(api => reads.readRange(api, ref, sheet.id, formatRange(range)));
-    const before = (current.formulas ?? current.values).map(row => row.map(value =>
-      value === null || value === undefined || typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value ?? null : String(value)));
-    const ifMatch = ifUnchanged(options) ?? item.cTag;
-    await this.ctx.host.submit(this.ctx.queue, "updateCells", {
-      target, worksheet: sheet.name, sheetId: sheet.id, address: formatRange(range), values, before, ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now(),
+    return await this.ctx.host.prepareExclusively(async () => {
+      const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
+      if (item.kind !== "file" || extensionOf(item.name) !== "xlsx") {
+        throw new Error("updateCells changes Excel workbooks (.xlsx). Use replaceFile for other files.");
+      }
+      this.#requireNoPendingChange(entry.id, "workbook");
+      const ref = { driveId: item.driveId, itemId: item.id };
+      const [sheets, version] = await Promise.all([this.ctx.host.read(api => reads.listWorksheets(api, ref)), this.fileVersion(item)]);
+      await this.ctx.observe("Read a SharePoint workbook", `Read ${md(worksheet)}!${formatRange(range)} of ${md(entry.path || entry.name)} to change it.`,
+        units.fileRead(ref, version));
+      const sheet = sheets.find(candidate => candidate.name.toLowerCase() === worksheet.toLowerCase());
+      if (sheet === undefined) {
+        throw new Error(`This workbook has no worksheet named "${worksheet}". Its worksheets are: ${sheets.map(candidate => candidate.name).join(", ")}.`);
+      }
+      const current = await this.ctx.host.read(api => reads.readRange(api, ref, sheet.id, formatRange(range)));
+      const before = (current.formulas ?? current.values).map(row => row.map(value =>
+        value === null || value === undefined || typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value ?? null : String(value)));
+      const ifMatch = ifUnchanged(options) ?? item.cTag;
+      await this.ctx.host.submit(this.ctx.queue, "updateCells", {
+        target, worksheet: sheet.name, sheetId: sheet.id, address: formatRange(range), values, before, ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now(),
+      });
+      return { ...entry, pending: "update" };
     });
-    return { ...entry, pending: "update" };
   }
 
   async copyFile(id: string, folderId: string, name?: string): Promise<DriveEntry> {
     id = this.resolved(id);
     folderId = this.resolved(folderId);
     this.#requireWrite();
-    const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
-    if (item.kind !== "file") throw new Error("Only files can be copied.");
-    const copyName = checkName(name ?? entry.name);
-    requireNotMadeOffice(entry.name, copyName);
-    const parent = await this.#folderTarget(folderId);
-    await this.#requireFreeName(parent, copyName);
-    const ref = this.ctx.host.allocate("item");
-    const submittedAt = Date.now();
-    await this.ctx.host.submit(this.ctx.queue, "copyFile", {
-      ref, source: target, parent, name: copyName,
-      ...(item.size !== undefined ? { size: item.size } : {}), ...(item.mimeType ? { mimeType: item.mimeType } : {}), submittedAt,
+    return await this.ctx.host.prepareExclusively(async () => {
+      const { item, target, entry } = await this.#itemTarget(id, { top: "allowed" });
+      if (item.kind !== "file") throw new Error("Only files can be copied.");
+      const copyName = checkName(name ?? entry.name);
+      requireNotMadeOffice(entry.name, copyName);
+      const parent = await this.#folderTarget(folderId);
+      await this.#requireFreeName(parent, copyName);
+      const ref = this.ctx.host.allocate("item");
+      const submittedAt = Date.now();
+      await this.ctx.host.submit(this.ctx.queue, "copyFile", {
+        ref, source: target, parent, name: copyName,
+        ...(item.size !== undefined ? { size: item.size } : {}), ...(item.mimeType ? { mimeType: item.mimeType } : {}), submittedAt,
+      });
+      return {
+        id: ref, name: copyName, kind: "file", webUrl: "", path: join(parent.path, copyName), parentId: parent.id, libraryId: parent.driveId,
+        ...(item.size !== undefined ? { size: item.size } : {}), ...(item.mimeType ? { mimeType: item.mimeType } : {}),
+        createdAt: new Date(submittedAt).toISOString(), modifiedAt: new Date(submittedAt).toISOString(), pending: "create",
+      };
     });
-    return {
-      id: ref, name: copyName, kind: "file", webUrl: "", path: join(parent.path, copyName), parentId: parent.id, libraryId: parent.driveId,
-      ...(item.size !== undefined ? { size: item.size } : {}), ...(item.mimeType ? { mimeType: item.mimeType } : {}),
-      createdAt: new Date(submittedAt).toISOString(), modifiedAt: new Date(submittedAt).toISOString(), pending: "create",
-    };
   }
 
   /** Encodes content for a file, reading the template it names, which counts as reading that file. */
@@ -1531,49 +1565,55 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
     id = this.resolved(id);
     this.#requireWrite();
     checkName(name);
-    const { item, target, entry } = await this.#itemTarget(id);
-    if (name === entry.name) return entry;
-    if (item.kind === "file") requireNotMadeOffice(entry.name, name);
-    const parent = parentPath(entry.path);
-    if (item.parentId !== undefined) {
-      const parentEntryId = entry.parentId ?? encodeItemRef({ driveId: item.driveId, itemId: item.parentId });
-      await this.#requireFreeName({ id: parentEntryId, driveId: item.driveId, name: "this folder", location: "", path: parent }, name, entry.id);
-    }
-    await this.ctx.host.submit(this.ctx.queue, "rename", {
-      target, name, ...fenceOf(options), submittedAt: Date.now(),
+    return await this.ctx.host.prepareExclusively(async () => {
+      const { item, target, entry } = await this.#itemTarget(id);
+      if (name === entry.name) return entry;
+      if (item.kind === "file") requireNotMadeOffice(entry.name, name);
+      const parent = parentPath(entry.path);
+      if (item.parentId !== undefined) {
+        const parentEntryId = entry.parentId ?? encodeItemRef({ driveId: item.driveId, itemId: item.parentId });
+        await this.#requireFreeName({ id: parentEntryId, driveId: item.driveId, name: "this folder", location: "", path: parent }, name, entry.id);
+      }
+      await this.ctx.host.submit(this.ctx.queue, "rename", {
+        target, name, ...fenceOf(options), submittedAt: Date.now(),
+      });
+      return { ...entry, name, path: join(parent, name), pending: "rename" };
     });
-    return { ...entry, name, path: join(parent, name), pending: "rename" };
   }
 
   async move(id: string, folderId: string, options?: ChangeOptions): Promise<DriveEntry> {
     id = this.resolved(id);
     folderId = this.resolved(folderId);
     this.#requireWrite();
-    const { item, target, entry } = await this.#itemTarget(id);
-    const to = await this.#folderTarget(folderId);
-    if (to.driveId !== item.driveId) throw new Error("Files can only be moved within their own library.");
-    if (to.id === entry.parentId) return entry;
-    if (to.id === entry.id || (item.kind === "folder" && (to.path === entry.path || to.path.startsWith(`${entry.path}/`)))) {
-      throw new Error("A folder can't be moved into itself.");
-    }
-    await this.#requireFreeName(to, entry.name, entry.id);
-    await this.ctx.host.submit(this.ctx.queue, "move", {
-      target,
-      from: { id: entry.parentId ?? encodeItemRef({ driveId: item.driveId, itemId: item.parentId ?? "root" }), location: target.location || parentPath(entry.path) },
-      to, ...fenceOf(options), submittedAt: Date.now(),
+    return await this.ctx.host.prepareExclusively(async () => {
+      const { item, target, entry } = await this.#itemTarget(id);
+      const to = await this.#folderTarget(folderId);
+      if (to.driveId !== item.driveId) throw new Error("Files can only be moved within their own library.");
+      if (to.id === entry.parentId) return entry;
+      if (to.id === entry.id || (item.kind === "folder" && (to.path === entry.path || to.path.startsWith(`${entry.path}/`)))) {
+        throw new Error("A folder can't be moved into itself.");
+      }
+      await this.#requireFreeName(to, entry.name, entry.id);
+      await this.ctx.host.submit(this.ctx.queue, "move", {
+        target,
+        from: { id: entry.parentId ?? encodeItemRef({ driveId: item.driveId, itemId: item.parentId ?? "root" }), location: target.location || parentPath(entry.path) },
+        to, ...fenceOf(options), submittedAt: Date.now(),
+      });
+      return { ...entry, parentId: to.id, path: join(to.path, entry.name), pending: "move" };
     });
-    return { ...entry, parentId: to.id, path: join(to.path, entry.name), pending: "move" };
   }
 
   async delete(id: string, options?: ChangeOptions): Promise<void> {
     id = this.resolved(id);
     this.#requireWrite();
-    const { item, target } = await this.#itemTarget(id);
-    // A file is fenced on its content, so a colleague's edit since this read is never binned unseen;
-    // a change of ours awaiting approval would move that, so the deletion waits for it.
-    this.#requireNoPendingChange(encodeItemRef(target.ref), item.kind === "file" ? "file" : "folder");
-    const ifMatch = ifUnchanged(options) ?? (item.kind === "file" ? item.cTag : undefined);
-    await this.ctx.host.submit(this.ctx.queue, "deleteItem", { target, ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now() });
+    return await this.ctx.host.prepareExclusively(async () => {
+      const { item, target } = await this.#itemTarget(id);
+      // A file is fenced on its content, so a colleague's edit since this read is never binned unseen;
+      // a change of ours awaiting approval would move that, so the deletion waits for it.
+      this.#requireNoPendingChange(encodeItemRef(target.ref), item.kind === "file" ? "file" : "folder");
+      const ifMatch = ifUnchanged(options) ?? (item.kind === "file" ? item.cTag : undefined);
+      await this.ctx.host.submit(this.ctx.queue, "deleteItem", { target, ...(ifMatch ? { ifMatch } : {}), submittedAt: Date.now() });
+    });
   }
 }
 

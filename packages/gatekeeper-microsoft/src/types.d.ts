@@ -203,6 +203,8 @@ export type WorkbookContent = {
 export type ReadWorkbookOptions = {
   /** Read only this worksheet. Defaults to every visible worksheet. */
   sheet?: string;
+  /** Read only this range of `sheet`, e.g. "A1:D20" or "B2". Needs `sheet`; `maxCells` still caps it. */
+  range?: string;
   /** The most cells to read per worksheet, up to 100,000. Defaults to 10,000. */
   maxCells?: number;
 };
@@ -336,33 +338,25 @@ export interface SharePointList extends SharePointListReader {
 }
 
 // -- the session --------------------------------------------------------------------------------
+//
+// A connection is typed by what its scope can reach: `SharePointReader` / `SharePointSession` for
+// all of SharePoint & OneDrive or a site, `SharePointFolderReader` / `SharePointFolderSession` for
+// a library or folder, `SharePointFileReader` / `SharePointFileSession` for one file,
+// `SharePointListScopeReader` / `SharePointListScopeSession` for one list, and
+// `SharePointPageReader` for one page. A read-only connection has the Reader type.
 
-/** Read access to what this connection covers. */
-export interface SharePointReader {
+/** What every connection answers: its scope, and where a link leads. */
+export interface SharePointScopeReader {
   /** What this connection covers, and where to start. */
   getScope(): Promise<SharePointScopeInfo>;
-
-  /**
-   * Sites you can open. With no query, the sites you follow; with one, sites whose name matches.
-   * A site connection lists just its site.
-   */
-  listSites(options?: { query?: string }): Promise<Cursor<SiteInfo>>;
-  /** A site's libraries, lists and subsites. Defaults to the connection's own site. */
-  getSite(siteId?: string): Promise<SiteContents>;
   /** What a SharePoint or OneDrive link points to, if this connection covers it. */
   resolveUrl(url: string): Promise<ResolvedLink>;
+}
 
-  /** A folder's files and folders. */
-  list(options?: ListOptions): Promise<Cursor<DriveEntry>>;
+/** Reads of files, in every connection that reaches them. */
+export interface SharePointFileReads {
   /** One file or folder. */
   getEntry(id: string): Promise<DriveEntry>;
-  /**
-   * Files and folders whose name or content matches `query`: words, or a phrase in quotes, every
-   * one of which must match. Not a query language: operators and `property:` filters are searched
-   * for as words. Search is SharePoint's own, so a new or just-changed file can take a few minutes
-   * to appear.
-   */
-  search(query: string, options?: SearchOptions): Promise<Cursor<DriveEntry>>;
   /** A file's content as text. Word, PowerPoint, Excel, PDF and HTML are converted to Markdown. */
   readFile(id: string, options?: ReadFileOptions): Promise<FileContent>;
   /** A file's bytes, up to 25 MB. */
@@ -373,15 +367,60 @@ export interface SharePointReader {
   readPresentation(id: string): Promise<PresentationContent>;
   /** A file's saved versions, newest first. */
   listVersions(id: string): Promise<FileVersion[]>;
+}
 
+/** Reads of folders and what they hold. */
+export interface SharePointFolderReads extends SharePointFileReads {
+  /** A folder's files and folders. */
+  list(options?: ListOptions): Promise<Cursor<DriveEntry>>;
+  /**
+   * Files and folders whose name or content matches `query`: words, or a phrase in quotes, every
+   * one of which must match. Not a query language: operators and `property:` filters are searched
+   * for as words. Search is SharePoint's own, so a new or just-changed file can take a few minutes
+   * to appear.
+   */
+  search(query: string, options?: SearchOptions): Promise<Cursor<DriveEntry>>;
+}
+
+/** Reads of sites, and of their lists and pages. */
+export interface SharePointSiteReads {
+  /**
+   * Sites you can open: your own OneDrive first (`personal: true`), then with no query the sites
+   * you follow, with one the sites whose name matches. A site connection lists just its site.
+   */
+  listSites(options?: { query?: string }): Promise<Cursor<SiteInfo>>;
+  /** A site's libraries, lists and subsites. Defaults to the connection's own site. */
+  getSite(siteId?: string): Promise<SiteContents>;
   /** A list. Defaults to the connection's own list. */
   openList(listId?: string): Promise<SharePointListReader>;
-
   /** A site's pages. Defaults to the connection's own site. */
   listPages(siteId?: string): Promise<Cursor<PageInfo>>;
   /** A page's content. Defaults to the connection's own page. */
   readPage(pageId?: string): Promise<PageContent>;
 }
+
+/** Read access to one file. */
+export interface SharePointFileReader extends SharePointScopeReader, SharePointFileReads {}
+
+/** Read access to a library or folder. */
+export interface SharePointFolderReader extends SharePointScopeReader, SharePointFolderReads {}
+
+/** Read access to one list. */
+export interface SharePointListScopeReader extends SharePointScopeReader {
+  /** The connection's list. */
+  openList(): Promise<SharePointListReader>;
+}
+
+/** Read access to one page. */
+export interface SharePointPageReader extends SharePointScopeReader {
+  /** The connection's page, as a listing of one. */
+  listPages(): Promise<Cursor<PageInfo>>;
+  /** The page's content. */
+  readPage(): Promise<PageContent>;
+}
+
+/** Read access to all of SharePoint & OneDrive, or to a site. */
+export interface SharePointReader extends SharePointScopeReader, SharePointFolderReads, SharePointSiteReads {}
 
 /** Options for a change to an existing file or folder. */
 export type ChangeOptions = {
@@ -482,10 +521,32 @@ export type PresentationContent = {
   layouts: string[];
 };
 
-/** Read access, plus changes that need the user's approval. */
-export interface SharePointSession extends SharePointReader {
-  openList(listId?: string): Promise<SharePointList>;
+/** Changes to a file's content, each proposed for the user's approval. */
+export interface SharePointFileWrites {
+  /**
+   * Proposes replacing a file's whole content, written as `uploadFile` writes it. SharePoint keeps
+   * the current content as an earlier version. Rewriting a Word, PowerPoint or Excel file from
+   * Markdown or rows loses what they can't express (images, comments, formatting, other sheets), and
+   * the approver is told what; to change part of one, use `editDocument`, `editPresentation` or
+   * `updateCells`, which keep everything else.
+   */
+  replaceFile(id: string, content: string | Uint8Array | WorkbookRows, options?: ChangeOptions & WriteOptions): Promise<DriveEntry>;
+  /** Proposes changes to a Word document (.docx), in place, as tracked changes by default. */
+  editDocument(id: string, edits: DocumentEdit[], options?: EditDocumentOptions): Promise<DriveEntry>;
+  /** Proposes changes to a PowerPoint deck (.pptx), in place. */
+  editPresentation(id: string, edits: PresentationEdit[], options?: ChangeOptions): Promise<DriveEntry>;
+  /**
+   * Proposes setting a range of cells in an Excel workbook (.xlsx), as Excel itself does: every
+   * other cell, formula, format, chart and sheet stays as it is. `address` is a range on the
+   * worksheet, e.g. "B2:D4" or "A10"; `values` has one row per row of the range, one value per
+   * column. A string starting with "=" is a formula; null clears a cell. Read the workbook first
+   * (`readWorkbook`) to find where to write.
+   */
+  updateCells(id: string, worksheet: string, address: string, values: CellValue[][], options?: ChangeOptions): Promise<DriveEntry>;
+}
 
+/** Changes to folders and what they hold, each proposed for the user's approval. */
+export interface SharePointFolderWrites extends SharePointFileWrites {
   /** Proposes a new folder. */
   createFolder(parentId: string, name: string): Promise<DriveEntry>;
   /**
@@ -510,26 +571,6 @@ export interface SharePointSession extends SharePointReader {
    */
   uploadFile(parentId: string, name: string, content: string | Uint8Array | WorkbookRows, options?: WriteOptions): Promise<DriveEntry>;
   /**
-   * Proposes replacing a file's whole content, written as `uploadFile` writes it. SharePoint keeps
-   * the current content as an earlier version. Rewriting a Word, PowerPoint or Excel file from
-   * Markdown or rows loses what they can't express (images, comments, formatting, other sheets), and
-   * the approver is told what; to change part of one, use `editDocument`, `editPresentation` or
-   * `updateCells`, which keep everything else.
-   */
-  replaceFile(id: string, content: string | Uint8Array | WorkbookRows, options?: ChangeOptions & WriteOptions): Promise<DriveEntry>;
-  /** Proposes changes to a Word document (.docx), in place, as tracked changes by default. */
-  editDocument(id: string, edits: DocumentEdit[], options?: EditDocumentOptions): Promise<DriveEntry>;
-  /** Proposes changes to a PowerPoint deck (.pptx), in place. */
-  editPresentation(id: string, edits: PresentationEdit[], options?: ChangeOptions): Promise<DriveEntry>;
-  /**
-   * Proposes setting a range of cells in an Excel workbook (.xlsx), as Excel itself does: every
-   * other cell, formula, format, chart and sheet stays as it is. `address` is a range on the
-   * worksheet, e.g. "B2:D4" or "A10"; `values` has one row per row of the range, one value per
-   * column. A string starting with "=" is a formula; null clears a cell. Read the workbook first
-   * (`readWorkbook`) to find where to write.
-   */
-  updateCells(id: string, worksheet: string, address: string, values: CellValue[][], options?: ChangeOptions): Promise<DriveEntry>;
-  /**
    * Proposes copying a file into a folder (in any library this connection covers), keeping
    * everything about it. The copy reads as its source while it waits, and can be edited once it is
    * approved. To write a new document in a template's look, pass `template` to `uploadFile` instead.
@@ -541,4 +582,20 @@ export interface SharePointSession extends SharePointReader {
   move(id: string, folderId: string, options?: ChangeOptions): Promise<DriveEntry>;
   /** Proposes deleting a file or folder, to the site's recycle bin. */
   delete(id: string, options?: ChangeOptions): Promise<void>;
+}
+
+/** Read and write access to one file. Its content can change; it can't be renamed, moved or deleted. */
+export interface SharePointFileSession extends SharePointFileReader, SharePointFileWrites {}
+
+/** Read and write access to a library or folder. */
+export interface SharePointFolderSession extends SharePointFolderReader, SharePointFolderWrites {}
+
+/** Read and write access to one list. */
+export interface SharePointListScopeSession extends SharePointListScopeReader {
+  openList(): Promise<SharePointList>;
+}
+
+/** Read and write access to all of SharePoint & OneDrive, or to a site. */
+export interface SharePointSession extends SharePointReader, SharePointFolderWrites {
+  openList(listId?: string): Promise<SharePointList>;
 }

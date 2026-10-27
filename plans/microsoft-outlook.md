@@ -62,7 +62,7 @@ type OutlookScope = {
 `access` is chosen per binding and capped by the deployment's `MICROSOFT_OUTLOOK_ACCESS` and by the
 grant's scopes, the lowest winning. The levels follow Microsoft's permissions: `Mail.Read`,
 `Mail.ReadWrite` (drafts and organizing both) and `Mail.Send`. A `read` binding's session is an `OutlookReader`, with no write
-methods at all.
+methods at all, and a `draft` binding's an `OutlookDrafter`, without the send methods.
 
 A shared mailbox is keyed by its owner's object ID, so a reassigned address can't redirect the
 binding, and it is bound only after its Inbox opens as the user: a directory entry alone isn't
