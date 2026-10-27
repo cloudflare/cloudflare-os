@@ -155,7 +155,9 @@ export default function ActivityNotifications({
                     </div>
                   )}
                   {incomplete && (
-                    <IncompleteDescriptionNotice id={incompleteId} className="mt-2 px-2.5 py-2" />
+                    <IncompleteDescriptionNotice id={incompleteId}
+                      reason={action.type === 'action' ? action.description.incompleteDescriptionReason : undefined}
+                      className="mt-2 px-2.5 py-2" />
                   )}
                 </div>
               )

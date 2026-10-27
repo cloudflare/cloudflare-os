@@ -1661,6 +1661,13 @@ export type ActionDescription = {
   descriptionIsComplete?: boolean;
 
   /**
+   * Plain-text explanation shown instead of the generic incomplete-description notice when
+   * `descriptionIsComplete` is not true. Explain what cannot be shown; this does not assert
+   * completeness or change approval policy. An absent or blank explanation uses the default notice.
+   */
+  incompleteDescriptionReason?: string;
+
+  /**
    * If present, applying this action will push the named commits to the remote resource this
    * gatekeeper fronts.
    *

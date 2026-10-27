@@ -723,7 +723,9 @@ function ReviewRequest({
         </p>
       ))}
 
-      {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2 max-w-2xl" />}
+      {incomplete && <IncompleteDescriptionNotice id={incompleteId}
+        reason={record.type === 'action' ? record.description.incompleteDescriptionReason : undefined}
+        className="mt-2 max-w-2xl" />}
     </article>
   )
 }

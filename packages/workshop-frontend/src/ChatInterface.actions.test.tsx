@@ -259,6 +259,24 @@ describe('restricted approval', () => {
 })
 
 describe('incomplete description notice', () => {
+  const reason = 'This command can access workspace files and send data to permitted network destinations.'
+
+  for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
+    it(`explains a ${name} command's undisclosed effects without claiming completeness`, async () => {
+      await renderPendingCard(pendingLog({ ...over, incompleteDescriptionReason: reason }), { restricted: true })
+
+      expect(document.body.textContent).toContain(reason)
+      expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
+      expect(approveDescribedBy()).toContain(reason)
+      expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
+    })
+  }
+
+  it('keeps the default notice for a blank explanation', async () => {
+    await renderPendingCard(pendingLog({ incompleteDescriptionReason: '  \n' }))
+    expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
+  })
+
   it('flags a pending action whose description is not marked complete', async () => {
     await renderPendingCard(pendingLog())
 
@@ -272,10 +290,11 @@ describe('incomplete description notice', () => {
   })
 
   it('shows no notice when the description is complete', async () => {
-    await renderPendingCard(pendingLog({ descriptionIsComplete: true }))
+    await renderPendingCard(pendingLog({ descriptionIsComplete: true, incompleteDescriptionReason: reason }))
 
     expect(document.body.textContent).toContain('Regards, the workspace.')
     expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
+    expect(document.body.textContent).not.toContain(reason)
   })
 })
 

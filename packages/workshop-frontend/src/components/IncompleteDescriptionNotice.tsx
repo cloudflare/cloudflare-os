@@ -21,7 +21,9 @@ export function isDescriptionIncomplete(entry: ActionLogEntry): boolean {
  * chat card, notifications popover) when the description is not complete. The action is still
  * submitted and approvable; the notice only tells the approver what they are not seeing.
  */
-export function IncompleteDescriptionNotice({ id, className = '' }: { id?: string, className?: string }) {
+export const IncompleteDescriptionNotice = ({ id, reason, className = '' }: {
+  id?: string, reason?: string, className?: string,
+}) => {
   return (
     <div
       id={id}
@@ -32,7 +34,7 @@ export function IncompleteDescriptionNotice({ id, className = '' }: { id?: strin
         <Warning size={18} weight="duotone" />
       </div>
       <p className="m-0 text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
-        {INCOMPLETE_DESCRIPTION_COPY}
+        {reason?.trim() ? reason : INCOMPLETE_DESCRIPTION_COPY}
       </p>
     </div>
   )

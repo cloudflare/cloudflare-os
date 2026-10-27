@@ -5229,7 +5229,8 @@ function ChatInterface({
                     <ActionFields fields={entryFields(log)} uncapped={restricted} />
                   </div>
                 )}
-                {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
+                {incomplete && <IncompleteDescriptionNotice id={incompleteId}
+                  reason={log.description.incompleteDescriptionReason} className="mt-2" />}
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
@@ -5296,7 +5297,8 @@ function ChatInterface({
                 <ActionFields fields={entryFields(log)} uncapped={restrictedReview} />
               </div>
             )}
-            {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
+            {incomplete && <IncompleteDescriptionNotice id={incompleteId}
+              reason={log.description.incompleteDescriptionReason} />}
             {resourceMeta}
           </div>
         )}

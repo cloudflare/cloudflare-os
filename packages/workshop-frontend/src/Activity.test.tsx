@@ -4,7 +4,7 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
-import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import type { AccountDescription, ActionDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
 
@@ -23,6 +23,7 @@ import {
   clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
 } from './action-test-harness'
 import Activity from './Activity'
+import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
 
 const view = makeTestRoot()
 
@@ -37,7 +38,7 @@ const fields = [
 ]
 
 // Renders the review view with one complete pending request carrying `fields`.
-async function renderReview(restricted: boolean) {
+async function renderReview(restricted: boolean, description: Partial<ActionDescription> = {}) {
   const server = makeOverseer()
   await view.render(
     <Activity overseer={server.overseer} restricted={restricted} view="review" onViewChange={() => {}} />,
@@ -47,7 +48,7 @@ async function renderReview(restricted: boolean) {
     entries: [entry(1, {
       description: {
         title: 'Send email', description: 'Send an email.', implementsRevert: false,
-        descriptionIsComplete: true, fields,
+        descriptionIsComplete: true, fields, ...description,
       },
     })],
   })
@@ -72,6 +73,16 @@ function approveDescribedBy(): string | null {
 }
 
 describe('Activity review request fields', () => {
+  it('names the command disclosure for approval without removing restricted review', async () => {
+    const reason = 'This command can access workspace files and send data to permitted network destinations.'
+    await renderReview(true, { descriptionIsComplete: false, incompleteDescriptionReason: reason })
+
+    expect(document.body.textContent).toContain(reason)
+    expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
+    expect(approveDescribedBy()).toContain(reason)
+    expect(approveDescribedBy()).toContain('Full body text')
+  })
+
   it('shows the fields in full, named by the approve button, while restricted', async () => {
     await renderReview(true)
     expect(document.body.textContent).toContain('Full body text')

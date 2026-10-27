@@ -828,6 +828,19 @@ describe("defineActions", () => {
     }
   });
 
+  it("forwards an explanation of undisclosed effects without asserting completeness", async () => {
+    const incompleteDescriptionReason = "This command can send file contents that are not shown.";
+    const { actions } = bind({ describe: () => ({ ...presentation, incompleteDescriptionReason }) });
+    const submitAction = submitSpy();
+    await actions.submit(fakeQueue(submitAction), "execute", { sql: "one" });
+
+    expect(submitAction.mock.calls[0]![1]).toMatchObject({
+      incompleteDescriptionReason, autoApprovable: true,
+      actionKind: { tag: "sql", label: "Run SQL" },
+    });
+    expect(submitAction.mock.calls[0]![1].descriptionIsComplete).toBeUndefined();
+  });
+
   it("forwards only a true claim of completeness, and never for a push", async () => {
     const complete = bind({ describe: () => ({ ...presentation, descriptionIsComplete: true }) });
     const submitAction = submitSpy();

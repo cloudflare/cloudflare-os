@@ -32,7 +32,7 @@ const longDescription = [
 
 // Renders the popover with one pending request and returns the span carrying its description.
 async function renderPending(
-  restricted?: boolean, descriptionIsComplete?: true, fields?: unknown[],
+  restricted?: boolean, descriptionIsComplete?: true, fields?: unknown[], incompleteDescriptionReason?: string,
 ): Promise<HTMLElement> {
   const server = makeOverseer()
   await view.render(
@@ -43,7 +43,7 @@ async function renderPending(
     entries: [entry(1, {
       description: {
         title: 'Send email', description: longDescription, implementsRevert: false,
-        descriptionIsComplete, fields,
+        descriptionIsComplete, fields, incompleteDescriptionReason,
       },
     })],
   })
@@ -68,6 +68,16 @@ function approveDescribedBy(): string | null {
 }
 
 describe('ActivityNotifications', () => {
+  it('names the command disclosure instead of the generic warning for approval', async () => {
+    const reason = 'This command can access workspace files and send data to permitted network destinations.'
+    await renderPending(true, undefined, undefined, reason)
+
+    expect(document.body.textContent).toContain(reason)
+    expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
+    expect(approveDescribedBy()).toContain(reason)
+    expect(approveDescribedBy()).toContain(RESTRICTED_APPROVAL_COPY)
+  })
+
   it('shows the review notice and the untruncated request while restricted', async () => {
     const description = await renderPending(true)
     expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
