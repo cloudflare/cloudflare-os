@@ -3,8 +3,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
-  OFFICE_IMPORT_GRANT, parseResourceUrl,
+  DRIVE_BROWSE_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, OFFICE_IMPORT_GRANT,
+  parseResourceUrl,
 } from "../src/resources";
 import { nodes, text } from "./configurator-tree";
 
@@ -31,19 +32,32 @@ type Spec = {
   render(context: unknown): unknown;
 };
 
+const DRIVE_PATTERNS = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
+  .map(resource => resource.urlPattern);
+
+/** What an account that has connected every type on the Drive card holds, short of converting. */
+const EVERY_TYPE = [
+  DRIVE_BROWSE_GRANT, ...DRIVE_PATTERNS,
+  ...[GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE].map(resource => resource.urlPattern),
+];
+
 const COPY_DATE = "2026-10-04T00:00:00.000Z";
 
 /**
  * A fresh module, since it keeps the flow at module level, and the frame the sandbox runtime gives
- * it: values, the calls it makes, and its rendered tree.
+ * it: values, the calls it makes, and its rendered tree. The account holds `granted`.
  */
-async function open(accepted?: string[]) {
+async function open(accepted?: string[], granted: string[] = EVERY_TYPE) {
   vi.resetModules();
   const spec = (await import("../src/configurator/drive-configurator-ui")).default as unknown as Spec;
   let values: Values = { ...spec.initial };
+  const held = new Set(granted);
   const ui = {
+    listDriveNodes: vi.fn(async (_parentId: string, _query: string, _cursor: string | null): Promise<unknown> =>
+      held.has(DRIVE_BROWSE_GRANT) ? { nodes: [] } : { nodes: [], needsGrant: DRIVE_BROWSE_GRANT }),
+    getDriveNode: vi.fn(async (_id: string): Promise<unknown> => null),
     inspectFile: vi.fn(async (_kind: string, _fileId: string): Promise<unknown> => ({ type: "native" })),
-    hasConversionAccess: vi.fn(async () => false),
+    holdsResources: vi.fn(async (patterns: string[]) => patterns.every(pattern => held.has(pattern))),
     convertFile: vi.fn(async (_kind: string, _fileId: string, _opts?: { reuse?: string }): Promise<unknown> =>
       ({ type: "needsAccess" })),
   };
@@ -63,7 +77,8 @@ async function open(accepted?: string[]) {
     return patch;
   });
   return {
-    spec, ui, ensureResources, find, prefill,
+    spec, ui, ensureResources, find, prefill, held,
+    list: (parentId = "drive") => find("HierarchyPicker")[0].props.loadItems({ parentId, query: "", cursor: null }),
     values: () => values,
     ready: () => spec.isReady({ values, acceptedResourceUrlPatterns: accepted }),
     url: () => spec.resourceUrl({ values, acceptedResourceUrlPatterns: accepted }),
@@ -121,6 +136,7 @@ describe.each([
 
     const readOnly = await open([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]);
     readOnly.choose(`${kind}:native-1`);
+    await settle();
     expect(readOnly.ui.inspectFile).not.toHaveBeenCalled();
     expect(readOnly.ready()).toBe(true);
     expect(parseResourceUrl(readOnly.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
@@ -141,6 +157,7 @@ describe("the Drive picker's Office flow", () => {
     frame.ui.inspectFile.mockResolvedValue(officeFile(overrides));
     frame.choose("sheets:source-1");
     await settle();
+    frame.ui.holdsResources.mockClear();
     return frame;
   }
 
@@ -158,6 +175,7 @@ describe("the Drive picker's Office flow", () => {
     const frame = await open();
 
     frame.choose("file:F1");
+    await settle();
 
     expect(frame.ready()).toBe(true);
     expect(frame.ui.inspectFile).not.toHaveBeenCalled();
@@ -266,7 +284,7 @@ describe("the Drive picker's Office flow", () => {
   it("waits for the pop-up's grant, polling, and says when the copy is in My Drive", async () => {
     const frame = await chooseOffice();
     frame.ensureResources.mockResolvedValue(false);
-    frame.ui.hasConversionAccess.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    frame.ui.holdsResources.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     frame.ui.convertFile.mockResolvedValue(converted({ location: "myDrive" }));
 
     frame.button("Convert")!.onClick();
@@ -275,7 +293,7 @@ describe("the Drive picker's Office flow", () => {
     expect(frame.ui.convertFile).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(frame.ui.hasConversionAccess).toHaveBeenCalledTimes(1);
+    expect(frame.ui.holdsResources).toHaveBeenCalledTimes(1);
     expect(frame.ui.convertFile).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(2_000);
 
@@ -288,7 +306,7 @@ describe("the Drive picker's Office flow", () => {
     const frame = await chooseOffice();
     frame.ensureResources.mockResolvedValue(false);
     frame.ui.convertFile.mockResolvedValueOnce({ type: "needsAccess" }).mockResolvedValueOnce(converted());
-    frame.ui.hasConversionAccess.mockResolvedValue(true);
+    frame.ui.holdsResources.mockResolvedValue(true);
 
     frame.button("Convert")!.onClick();
     await vi.advanceTimersByTimeAsync(2_000);
@@ -312,7 +330,7 @@ describe("the Drive picker's Office flow", () => {
     });
     expect(frame.button("Convert")!.disabled).toBe(false);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(frame.ui.hasConversionAccess).not.toHaveBeenCalled();
+    expect(frame.ui.holdsResources).not.toHaveBeenCalled();
     expect(frame.ready()).toBe(false);
   });
 
@@ -323,14 +341,14 @@ describe("the Drive picker's Office flow", () => {
     frame.button("Convert")!.onClick();
     await vi.advanceTimersByTimeAsync(3 * 60_000);
 
-    expect(frame.ui.hasConversionAccess).toHaveBeenCalledTimes(90);
+    expect(frame.ui.holdsResources).toHaveBeenCalledTimes(90);
     expect(frame.ui.convertFile).not.toHaveBeenCalled();
     expect(frame.notices()).toContainEqual({
       tone: "error", text: "Access wasn't granted within 3 minutes. Select Convert to try again.",
     });
     expect(frame.button("Convert")!.disabled).toBe(false);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(frame.ui.hasConversionAccess).toHaveBeenCalledTimes(90);
+    expect(frame.ui.holdsResources).toHaveBeenCalledTimes(90);
   });
 
   it("shows why access was not given, and lets Convert be tried again", async () => {
@@ -432,7 +450,7 @@ describe("the Drive picker's Office flow", () => {
     frame.button("Convert")!.onClick();
     await settle();
     frame.choose(null);
-    frame.ui.hasConversionAccess.mockResolvedValue(true);
+    frame.ui.holdsResources.mockResolvedValue(true);
     await vi.advanceTimersByTimeAsync(10_000);
 
     expect(frame.ui.convertFile).not.toHaveBeenCalled();
@@ -491,6 +509,8 @@ describe("the Drive picker's Office flow", () => {
     frame.ui.inspectFile.mockReturnValueOnce(new Promise(resolve => { answer = resolve; }));
 
     const prefilled = frame.prefill("https://docs.google.com/spreadsheets/d/source-1/edit");
+    await settle();
+    expect(frame.ui.inspectFile).toHaveBeenCalledWith("sheets", "source-1");
     frame.choose("sheets:native-1");
     await settle();
     answer(officeFile());
@@ -523,5 +543,83 @@ describe("the Drive picker's Office flow", () => {
 
     await expect(frame.prefill(url)).resolves.toEqual({});
     expect(frame.ui.inspectFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("the Drive picker on an account that lacks a type's grant", () => {
+  it("holds a choice back until its type is granted, asking from the click", async () => {
+    const frame = await open(undefined, [DRIVE_BROWSE_GRANT]);
+
+    frame.choose("doc:native-1");
+    await settle();
+
+    expect(frame.ready()).toBe(false);
+    expect(frame.notices()).toEqual([{
+      tone: undefined,
+      text: 'Google will ask to let this app "See, edit, create, and delete all your Google Docs ' +
+        'files". A connection still reaches only the file you choose.',
+    }]);
+    frame.button("Allow access")!.onClick();
+    // Synchronously, so the click's activation still lets Workshop open the pop-up.
+    expect(frame.ensureResources).toHaveBeenCalledWith([GOOGLE_DOC_RESOURCE.urlPattern]);
+    expect(frame.button("Allow access")!.disabled).toBe(true);
+    await settle();
+
+    expect(frame.ready()).toBe(true);
+    expect(frame.notices()).toEqual([]);
+    expect(frame.url()).toBe("https://docs.google.com/document/d/native-1/edit");
+  });
+
+  it("asks for the Drive types together, and polls for the pop-up's grant", async () => {
+    const frame = await open(undefined, [DRIVE_BROWSE_GRANT]);
+    frame.ensureResources.mockResolvedValue(false);
+    frame.choose("folder:D1");
+    await settle();
+
+    frame.button("Allow access")!.onClick();
+    expect(frame.ensureResources).toHaveBeenCalledWith(DRIVE_PATTERNS);
+    await settle();
+    expect(frame.notices().map(notice => notice.text)).toContain("Waiting for access in the pop-up…");
+    DRIVE_PATTERNS.forEach(pattern => frame.held.add(pattern));
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(frame.ready()).toBe(true);
+    expect(parseResourceUrl(frame.url())).toEqual({ kind: "driveFolder", folderId: "D1" });
+  });
+
+  it("drops a grant that lands after a newer choice", async () => {
+    const frame = await open(undefined, [DRIVE_BROWSE_GRANT, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]);
+    let grant!: (granted: boolean) => void;
+    frame.ensureResources.mockReturnValue(new Promise(resolve => { grant = resolve; }));
+    frame.choose("doc:native-1");
+    await settle();
+
+    frame.button("Allow access")!.onClick();
+    frame.choose("folder:D1");
+    await settle();
+    grant(true);
+    await settle();
+
+    expect(frame.values().target).toBe("folder:D1");
+    expect(frame.ready()).toBe(false);
+  });
+
+  it("asks to browse before listing, and opens a pasted link once it may", async () => {
+    const frame = await open(undefined, []);
+
+    await expect(frame.prefill("https://drive.google.com/drive/folders/D1")).resolves.toEqual({});
+    await expect(frame.list()).resolves.toEqual(expect.objectContaining({ items: [] }));
+    await settle();
+    expect(frame.notices()[0].text).toContain('"See information about your Google Drive files"');
+    frame.button("Allow access")!.onClick();
+    expect(frame.ensureResources).toHaveBeenCalledWith([DRIVE_BROWSE_GRANT]);
+
+    [DRIVE_BROWSE_GRANT, ...DRIVE_PATTERNS].forEach(pattern => frame.held.add(pattern));
+    await frame.list();
+    await settle();
+
+    expect(frame.values().target).toBe("folder:D1");
+    expect(frame.ready()).toBe(true);
+    expect(frame.button("Allow access")).toBeUndefined();
   });
 });

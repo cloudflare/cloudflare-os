@@ -377,10 +377,21 @@ export const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
  */
 export const SHARED_DRIVES_GRANT = "https://drive.google.com/drive/shared-drives";
 
+/**
+ * The grant that lets the Drive picker browse and search Drive, and look up what it names, before
+ * the account holds the type of what the user picks: `drive.metadata.readonly`.
+ *
+ * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for by the picker when it opens on an
+ * account that cannot list Drive yet. It reaches file metadata only, never content, and binding
+ * scope stays enforced by the gatekeepers' code.
+ */
+export const DRIVE_BROWSE_GRANT = "https://drive.google.com/drive/browse";
+
 /** Grants requested and recorded like resources, but never bindable or shown to the Workshop. */
 const PRIVATE_GRANT_SCOPES: {urlPattern: string, scopes: string[]}[] = [
   { urlPattern: OFFICE_IMPORT_GRANT, scopes: [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE] },
   { urlPattern: SHARED_DRIVES_GRANT, scopes: [DRIVE_READONLY_SCOPE] },
+  { urlPattern: DRIVE_BROWSE_GRANT, scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"] },
 ];
 
 /** Every grant's scopes, resources first: what consent asks for and what coverage is checked on. */
@@ -561,6 +572,20 @@ export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): strin
 export function grantedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
   return resourcesCoveredByScopes(recordedResourceUrlPatterns(grant), grant.oauthScopes);
+}
+
+/**
+ * Whether the account holds every grant `patterns` names: a resource type once granted, and a
+ * private grant once its scopes are held, recorded or not. A private grant records no intent a
+ * reconnect must keep, so holding its scopes, as a resource's grant brings them, is holding it, and
+ * a configurator need not ask for what the account can already do.
+ */
+export function holdsGrants(grant: RecordedResourceGrant, patterns: readonly string[]): boolean {
+  let granted = new Set(grantedResourceUrlPatterns(grant));
+  let ungranted = patterns.filter(pattern => !granted.has(pattern));
+  if (ungranted.length === 0) return true;
+  if (grant.oauthScopes === undefined || !ungranted.every(isPrivateGrant)) return false;
+  return resourcesCoveredByScopes(ungranted, grant.oauthScopes).length === new Set(ungranted).size;
 }
 
 /** A resource URL resolved to the binding parameters its gatekeeper takes. */

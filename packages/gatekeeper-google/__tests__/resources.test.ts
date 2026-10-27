@@ -4,9 +4,9 @@ import {
   GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
-  LEGACY_GRANTED_RESOURCE_URL_PATTERNS, OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND, RESOURCE_SCOPES,
-  SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SHARED_DRIVES_GRANT, SUPPORTED_RESOURCES, creatableKind,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
+  DRIVE_BROWSE_GRANT, LEGACY_GRANTED_RESOURCE_URL_PATTERNS, OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND,
+  RESOURCE_SCOPES, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SHARED_DRIVES_GRANT, SUPPORTED_RESOURCES,
+  creatableKind, grantedResourceUrlPatterns, hasDriveResourceGrant, holdsGrants, isPrivateGrant,
   nativeFileUrl, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
   validateResourceUrlPatterns,
@@ -919,6 +919,36 @@ describe("shared drives grant", () => {
     };
     expect(grantedResourceUrlPatterns(grant)).toEqual([SHARED_DRIVES_GRANT]);
     expect(hasDriveResourceGrant(grantedResourceUrlPatterns(grant))).toBe(false);
+  });
+});
+
+describe("holding a grant", () => {
+  const docGrant = {
+    resourceUrlPatterns: [GOOGLE_DOC_RESOURCE.urlPattern],
+    oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_DOC_RESOURCE.urlPattern]),
+  };
+
+  // A Docs grant brings drive.metadata.readonly, so its account browses Drive without being asked.
+  it("holds a private grant whose scopes a resource's grant brought, unrecorded", () => {
+    expect(holdsGrants(docGrant, [DRIVE_BROWSE_GRANT])).toBe(true);
+    expect(holdsGrants(docGrant, [DRIVE_BROWSE_GRANT, GOOGLE_DOC_RESOURCE.urlPattern])).toBe(true);
+    expect(holdsGrants(docGrant, [SHARED_DRIVES_GRANT])).toBe(false);
+  });
+
+  // drive.metadata.readonly covers much of a Drive type's scopes, but a type is held only once chosen.
+  it("holds a resource type only once granted, whatever scopes the account holds", () => {
+    let browsing = {
+      resourceUrlPatterns: [DRIVE_BROWSE_GRANT, SHARED_DRIVES_GRANT],
+      oauthScopes: resourceUrlPatternsToOAuthScopes([DRIVE_BROWSE_GRANT, SHARED_DRIVES_GRANT]),
+    };
+    expect(holdsGrants(browsing, [DRIVE_BROWSE_GRANT])).toBe(true);
+    expect(holdsGrants(browsing, [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern])).toBe(false);
+    expect(holdsGrants(browsing, [DRIVE_BROWSE_GRANT, GOOGLE_DOC_RESOURCE.urlPattern])).toBe(false);
+  });
+
+  it("holds no private grant on an account that recorded no scopes", () => {
+    expect(holdsGrants({}, [DRIVE_BROWSE_GRANT])).toBe(false);
+    expect(holdsGrants({}, [GOOGLE_DOC_RESOURCE.urlPattern])).toBe(true);
   });
 });
 

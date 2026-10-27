@@ -26,10 +26,16 @@ const EDITORS: Record<OfficeKind, { pattern: string; path: string; title: string
   },
 };
 
-/** Must equal `OFFICE_IMPORT_GRANT` in resources.ts. */
+// Must equal `OFFICE_IMPORT_GRANT`, `DRIVE_BROWSE_GRANT` and `SHARED_DRIVES_GRANT` in resources.ts.
 const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
+const DRIVE_BROWSE_GRANT = "https://drive.google.com/drive/browse";
+const SHARED_DRIVES_GRANT = "https://drive.google.com/drive/shared-drives";
 const ACCESS_POLL_MS = 2_000;
 const ACCESS_WAIT_MS = 3 * 60_000;
+
+/** The Drive types, which need the same scopes, so connecting one asks for all three. */
+const DRIVE_PATTERNS = [ACCOUNT_PATTERN, FOLDER_PATTERN, FILE_PATTERN];
+const grantsFor = (pattern: string) => DRIVE_PATTERNS.includes(pattern) ? DRIVE_PATTERNS : [pattern];
 
 /** The whole account's node, the picker's root. */
 const ROOT_ID = "drive";
@@ -193,10 +199,24 @@ const toItem = (node: DriveNode, accepted: readonly string[] | undefined): Confi
 type Context = ConfiguratorUIRenderContext<DriveConfiguratorRpc, DriveConfiguratorValues>;
 type Note = { text: string; tone?: "error" };
 
+/** What a location that cannot be listed without a grant says, and what asking for it means. */
+const LISTING_GRANTS: Record<string, { unavailable: string; notice: string }> = {
+  [DRIVE_BROWSE_GRANT]: {
+    unavailable: "Browsing Drive needs permission from Google. Allow it below, then select Retry.",
+    notice: 'Google will ask to let this app "See information about your Google Drive files", so you ' +
+      "can find what to connect. A connection still reaches only what you choose.",
+  },
+  [SHARED_DRIVES_GRANT]: {
+    unavailable: "Listing shared drives needs one more permission from Google. Allow it below, then select Retry.",
+    notice: 'Google will ask to let this app "View and download all your Drive files". It is used only ' +
+      "to list your shared drives: a connection still reaches only what you choose.",
+  },
+};
+
 /**
- * The grant a location needs that the account lacks (shared drives), while the picker shows that it
- * could not list it, and what asking for the grant came to. Module state, as the runtime keeps none
- * for a module.
+ * The grant a location needs that the account lacks (browsing at all, or shared drives), while the
+ * picker shows that it could not list it, and what asking for the grant came to. Module state, as
+ * the runtime keeps none for a module.
  */
 let access: { grant: string; note?: Note } | null = null;
 
@@ -206,26 +226,32 @@ let access: { grant: string; note?: Note } | null = null;
  */
 let listings = 0;
 
+/** A pre-filled choice put off until the account may browse to it, then chosen. */
+let heldPrefill: string | null = null;
+
+/** Grants the account was seen to hold. Grants are not withdrawn while the dialog is open. */
+const held = new Set<string>();
+
 /** Asks from the click, so the browser lets Workshop open Google's consent pop-up. */
 const allow = async ({ ensureResources, setValues }: Context, grant: string) => {
   const note = await ensureResources([grant]).then(
-    (held): Note => ({ text: held ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Retry." }),
-    (error: unknown): Note => ({
-      text: error instanceof Error && error.message ? error.message : "Access wasn't allowed.",
-      tone: "error",
-    }));
+    (granted): Note => ({ text: granted ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Retry." }),
+    (error: unknown): Note => ({ text: errorText(error, "Access wasn't allowed."), tone: "error" }));
   if (access?.grant !== grant) return;
   access = { grant, note };
   setValues({});
 };
+
+const errorText = (error: unknown, fallback: string) =>
+  error instanceof Error && error.message ? error.message : fallback;
 
 type OfficeFile = Extract<OfficeFileInspection, { type: "office" }>;
 type Converted = Extract<OfficeConversionResult, { type: "converted" }>;
 type Busy = "converting" | "waiting";
 
 /**
- * What the chosen Docs, Sheets or Slides file needs before it can be connected. `checked` holds only
- * a target that can be connected as it is.
+ * What the chosen node needs before it can be connected. `checked` holds only a target that can be
+ * connected as it is: one that needs no converting, and whose type the account holds the grant for.
  */
 type Flow =
   | { step: "idle" }
@@ -233,10 +259,11 @@ type Flow =
   | { step: "unsupported"; target: string }
   | { step: "refused"; target: string; message: string }
   | { step: "office"; target: string; file: OfficeFile; busy?: Busy; error?: string }
+  | { step: "granting"; target: string; grants: string[]; waiting?: boolean; error?: string }
   | { step: "converted"; kind: OfficeKind; copy: Converted };
 
 let flow: Flow = { step: "idle" };
-// Bumped by every choice, prefill and Convert, so an await that resolves after one is a no-op.
+// Bumped by every choice, prefill, Convert and Allow, so an await that resolves after one is a no-op.
 let generation = 0;
 
 const begin = (next: Flow): number => {
@@ -245,6 +272,32 @@ const begin = (next: Flow): number => {
 };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** Whether the account holds `grants`. A failed check reads as no, so the user is offered Allow. */
+async function holds(ui: DriveConfiguratorRpc, grants: string[]): Promise<boolean> {
+  if (grants.every(grant => held.has(grant))) return true;
+  const granted = await ui.holdsResources(grants).catch(() => false);
+  if (granted) grants.forEach(grant => held.add(grant));
+  return granted;
+}
+
+/**
+ * Polls until the account holds `grants`, after a consent pop-up was opened for them: false when a
+ * newer choice took over, and an error once `deadline` passes.
+ */
+async function awaitGrants(ui: DriveConfiguratorRpc, grants: string[], run: number, deadline: number, retry: string) {
+  while (Date.now() < deadline) {
+    await sleep(ACCESS_POLL_MS);
+    if (run !== generation) return false;
+    const granted = await ui.holdsResources(grants);
+    if (run !== generation) return false;
+    if (granted) {
+      grants.forEach(grant => held.add(grant));
+      return true;
+    }
+  }
+  throw new Error(`Access wasn't granted within 3 minutes. Select ${retry} to try again.`);
+}
 
 /**
  * What `target` needs before it can be connected. `idle` means nothing: it is native, or Drive could
@@ -262,34 +315,75 @@ async function inspect(ui: DriveConfiguratorRpc, target: string): Promise<Flow> 
   }
 }
 
-/** The user's choice. A Docs, Sheets or Slides file is held back until it is known to connect as it is. */
+/**
+ * What `target` needs before it can be connected: converting, when it is an Office file to edit, or
+ * else the grant for the type it connects as. The grant is checked either way, so Convert knows
+ * from the click whether to ask for it.
+ */
+async function assess(ui: DriveConfiguratorRpc, target: string, accepted: readonly string[] | undefined): Promise<Flow> {
+  const grants = grantsFor(patternOf(target, accepted)!);
+  const [inspected, granted] = await Promise.all([
+    editing(target, accepted) ? inspect(ui, target) : { step: "idle" } as const,
+    holds(ui, grants),
+  ]);
+  if (inspected.step !== "idle") return inspected;
+  return granted ? inspected : { step: "granting", target, grants };
+}
+
+/** The user's choice, held back until it is known to connect as it is. */
 async function choose(context: Context, target: string | null) {
-  const { setValues, ui, acceptedResourceUrlPatterns } = context;
-  if (target === null || !editing(target, acceptedResourceUrlPatterns)) {
+  const { setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
+  heldPrefill = null;
+  if (target === null || patternOf(target, accepted) === undefined) {
     begin({ step: "idle" });
     setValues({ target, checked: null });
     return;
   }
-  const run = begin({ step: "inspecting", target });
+  const run = begin(editing(target, accepted) ? { step: "inspecting", target } : { step: "idle" });
   setValues({ target, checked: null });
-  const next = await inspect(ui, target);
+  const next = await assess(ui, target, accepted);
   if (run !== generation) return;
   flow = next;
   setValues({ checked: next.step === "idle" ? target : null });
 }
 
 /**
- * Converts the chosen Office file, or with `reuse` takes the copy made of it before. A new copy asks
- * for access first, from the click, so the browser lets Workshop open the consent pop-up; when the
- * grant is still to come, the gatekeeper is polled until it holds it. Reusing a copy reads only what
- * the connection already may, so it asks for nothing.
+ * Asks for the chosen node's grants from the click, so the browser lets Workshop open the consent
+ * pop-up, then polls the gatekeeper until the account holds them.
+ */
+async function grant({ ensureResources, setValues, ui }: Context) {
+  if (flow.step !== "granting") return;
+  const { target, grants } = flow;
+  const asked = ensureResources(grants);
+  const run = begin({ step: "granting", target, grants, waiting: true });
+  setValues({});
+  try {
+    if (!(await asked) && !(await awaitGrants(ui, grants, run, Date.now() + ACCESS_WAIT_MS, "Allow access"))) return;
+    if (run !== generation) return;
+    grants.forEach(granted => held.add(granted));
+    flow = { step: "idle" };
+    setValues({ checked: target });
+  } catch (error) {
+    if (run !== generation) return;
+    flow = { step: "granting", target, grants, error: errorText(error, "Access wasn't allowed.") };
+    setValues({});
+  }
+}
+
+/**
+ * Converts the chosen Office file, or with `reuse` takes the copy made of it before. Asks first, from
+ * the click, so the browser lets Workshop open the consent pop-up, for what the copy needs: its
+ * type's grant, and for a new copy the Office import grant too. When a grant is still to come, the
+ * gatekeeper is polled until the account holds it.
  */
 async function convert({ setValues, ensureResources, ui }: Context, reuse?: string) {
   if (flow.step !== "office") return;
-  const access = reuse === undefined ? ensureResources([OFFICE_IMPORT_GRANT]) : Promise.resolve(true);
   const { target, file } = flow;
   const kind = editorOf(target)!;
   const fileId = fileIdOf(target);
+  const grants = [...(reuse === undefined ? [OFFICE_IMPORT_GRANT] : []), ...grantsFor(EDITORS[kind].pattern)];
+  const missing = grants.filter(granted => !held.has(granted));
+  const asked = missing.length === 0 ? Promise.resolve(true) : ensureResources(missing);
   const run = begin({ step: "office", target, file, busy: "converting" });
   const show = (busy: Busy | undefined, error?: string) => {
     flow = { step: "office", target, file, ...(busy ? { busy } : {}), ...(error ? { error } : {}) };
@@ -300,30 +394,23 @@ async function convert({ setValues, ensureResources, ui }: Context, reuse?: stri
   const waitForAccess = async () => {
     deadline ??= Date.now() + ACCESS_WAIT_MS;
     show("waiting");
-    while (Date.now() < deadline) {
-      await sleep(ACCESS_POLL_MS);
-      if (run !== generation) return false;
-      const granted = await ui.hasConversionAccess();
-      if (run !== generation) return false;
-      if (granted) {
-        show("converting");
-        return true;
-      }
-    }
-    throw new Error("Access wasn't granted within 3 minutes. Select Convert to try again.");
+    if (!(await awaitGrants(ui, grants, run, deadline, "Convert"))) return false;
+    show("converting");
+    return true;
   };
 
   try {
     setValues({});
-    const held = await access;
+    const granted = await asked;
     if (run !== generation) return;
-    if (!held && !(await waitForAccess())) return;
+    if (!granted && !(await waitForAccess())) return;
     for (;;) {
       const result = reuse === undefined
         ? await ui.convertFile(kind, fileId)
         : await ui.convertFile(kind, fileId, { reuse });
       if (run !== generation) return;
       if (result.type === "converted") {
+        grants.forEach(grant => held.add(grant));
         // The copy is a new value, which the picker looks up and opens where it lives.
         const copy = `${kind}:${result.fileId}`;
         flow = { step: "converted", kind, copy: result };
@@ -331,14 +418,14 @@ async function convert({ setValues, ensureResources, ui }: Context, reuse?: stri
         return;
       }
       // No pop-up was opened, so no grant is on its way.
-      if (held) {
+      if (granted) {
         throw new Error("Google hasn't granted access to copy the file. Select Convert to try again.");
       }
       if (!(await waitForAccess())) return;
     }
   } catch (error) {
     if (run !== generation) return;
-    const message = error instanceof Error && error.message ? error.message : "The copy could not be made.";
+    const message = errorText(error, "The copy could not be made.");
     show(undefined, message);
     // A copy whose reply was lost may still have been made, and a copy offered for reuse may be
     // gone, so look again before offering either.
@@ -363,11 +450,32 @@ function convertedText({ kind, copy }: Extract<Flow, { step: "converted" }>): st
     "The original is unchanged, and later edits to it won't sync.";
 }
 
-function officeNotices(context: Context) {
+/** What connecting needs Google to allow for `grants`, in the words of Google's consent screen. */
+function grantText(grants: string[]): string {
+  const editor = Object.values(EDITORS).find(({ pattern }) => grants.includes(pattern));
+  return editor
+    ? `Google will ask to let this app "See, edit, create, and delete all your Google ${editor.title} ` +
+      `files". A connection still reaches only the file you choose.`
+    : 'Google will ask to let this app "See and download all your Google Drive files". A connection ' +
+      "still reaches only what you choose.";
+}
+
+function notices(context: Context) {
   if (flow.step === "idle") return null;
   if (flow.step === "converted") return <Notice>{convertedText(flow)}</Notice>;
-  // A notice describes the file chosen now; a choice the picker let go of takes its notice with it.
+  // A notice describes the node chosen now; a choice the picker let go of takes its notice with it.
   if (flow.target !== context.values.target) return null;
+  if (flow.step === "granting") {
+    const { grants, waiting, error } = flow;
+    return <Fragment>
+      <Notice>{grantText(grants)}</Notice>
+      {waiting && <Notice>Waiting for access in the pop-up…</Notice>}
+      {error && <Notice tone="error">{error}</Notice>}
+      <div style={{ display: "flex" }}>
+        <Button variant="primary" disabled={waiting} onClick={() => void grant(context)}>Allow access</Button>
+      </div>
+    </Fragment>;
+  }
   const product = EDITORS[editorOf(flow.target)!].title;
   if (flow.step === "inspecting") return <Notice>Checking the file…</Notice>;
   if (flow.step === "unsupported") {
@@ -419,33 +527,47 @@ function officeNotices(context: Context) {
 
 const EDITOR_BY_PATH: Record<string, OfficeKind> = { document: "doc", spreadsheets: "sheets", presentation: "slides" };
 
+/** The node a resource URL names, read as `parseDriveUrl` and `parseDocsUrl` do. */
+function targetOf(resourceUrl: string): string | undefined {
+  if (!URL.canParse(resourceUrl)) return undefined;
+  const { pathname } = new URL(resourceUrl);
+  if (/^\/drive\/my-drive\/?$/.test(pathname)) return ROOT_ID;
+  const folder = /^\/drive\/folders\/([^/]+)\/?$/.exec(pathname);
+  if (folder) return `folder:${decodeURIComponent(folder[1])}`;
+  const file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(pathname);
+  if (file) return `file:${decodeURIComponent(file[1])}`;
+  // Only with an ID in Drive's alphabet, which `inspectFile` requires.
+  const [, path, d, id] = pathname.split("/");
+  const kind = Object.hasOwn(EDITOR_BY_PATH, path) ? EDITOR_BY_PATH[path] : undefined;
+  if (!kind || d !== "d" || id === undefined || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) return undefined;
+  return `${kind}:${id}`;
+}
+
 export default {
   initial: { target: null },
-  async initialValuesFromResourceUrl({ resourceUrl, ui, acceptedResourceUrlPatterns }) {
-    if (!URL.canParse(resourceUrl)) return {};
-    const { pathname } = new URL(resourceUrl);
-    if (/^\/drive\/my-drive\/?$/.test(pathname)) return { target: ROOT_ID };
-    const folder = /^\/drive\/folders\/([^/]+)\/?$/.exec(pathname);
-    if (folder) return { target: `folder:${decodeURIComponent(folder[1])}` };
-    const file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(pathname);
-    if (file) return { target: `file:${decodeURIComponent(file[1])}` };
-    // An editor's URL, read as `parseDocsUrl` does, but only with an ID in Drive's alphabet, which
-    // `inspectFile` requires.
-    const [, path, d, id] = pathname.split("/");
-    const kind = Object.hasOwn(EDITOR_BY_PATH, path) ? EDITOR_BY_PATH[path] : undefined;
-    if (!kind || d !== "d" || id === undefined || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) return {};
-    const target = `${kind}:${id}`;
-    if (!editing(target, acceptedResourceUrlPatterns)) return { target };
-    const run = begin({ step: "inspecting", target });
-    const next = await inspect(ui, target);
+  async initialValuesFromResourceUrl({ resourceUrl, ui, acceptedResourceUrlPatterns: accepted }) {
+    const target = targetOf(resourceUrl);
+    if (target === undefined) return {};
+    // Taken before any await, so a choice the user makes meanwhile wins.
+    const run = begin({ step: "idle" });
+    // Nothing can be looked up before the account may browse, which the root listing asks for.
+    const browsable = await holds(ui, [DRIVE_BROWSE_GRANT]);
+    if (run !== generation) return {};
+    if (!browsable) {
+      heldPrefill = target;
+      return {};
+    }
+    // A type the Workshop doesn't take is let go by the picker.
+    if (patternOf(target, accepted) === undefined) return { target };
+    if (editing(target, accepted)) flow = { step: "inspecting", target };
+    const next = await assess(ui, target, accepted);
     if (run !== generation) return {};
     flow = next;
-    // Anything else stays chosen but unchecked, so its notice says why it cannot be connected.
+    // Anything else stays chosen but unchecked, so its notice says what it needs.
     return next.step === "idle" ? { target, checked: target } : { target };
   },
   isReady: ({ values: { target, checked }, acceptedResourceUrlPatterns: accepted }) =>
-    typeof target === "string" && patternOf(target, accepted) !== undefined &&
-    (editing(target, accepted) === undefined || checked === target),
+    typeof target === "string" && patternOf(target, accepted) !== undefined && checked === target,
   resourceUrl: ({ values: { target }, acceptedResourceUrlPatterns: accepted }) => {
     const pattern = target ? patternOf(target, accepted) : undefined;
     if (!target || !pattern) throw new Error("Choose what to connect.");
@@ -475,9 +597,11 @@ export default {
               access = page.needsGrant ? { grant: page.needsGrant } : null;
               setValues({});
             }
-            return page.needsGrant
-              ? { items: [], unavailable: "Listing shared drives needs one more permission from Google. Allow it below, then select Retry." }
-              : { items: page.nodes.map(node => toItem(node, accepted)), nextCursor: page.nextCursor };
+            if (page.needsGrant) {
+              return { items: [], unavailable: LISTING_GRANTS[page.needsGrant]?.unavailable ?? "This location can't be listed yet." };
+            }
+            if (heldPrefill !== null) void choose(context, heldPrefill);
+            return { items: page.nodes.map(node => toItem(node, accepted)), nextCursor: page.nextCursor };
           }}
           loadItem={async id => {
             const node = await ui.getDriveNode(id);
@@ -488,12 +612,9 @@ export default {
           searchPlaceholder="Search all of Drive or paste a link…"
         />
       </Field>
-      {officeNotices(context)}
+      {notices(context)}
       {pending && <Fragment>
-        <Notice>
-          Google will ask to let this app "View and download all your Drive files". It is used only to
-          list your shared drives: a connection still reaches only what you choose.
-        </Notice>
+        {LISTING_GRANTS[pending.grant] && <Notice>{LISTING_GRANTS[pending.grant].notice}</Notice>}
         <Button onClick={() => void allow(context, pending.grant)}>Allow access</Button>
         {pending.note && <Notice tone={pending.note.tone}>{pending.note.text}</Notice>}
       </Fragment>}

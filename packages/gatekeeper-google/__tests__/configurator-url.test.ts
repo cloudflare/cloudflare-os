@@ -37,8 +37,9 @@ import {
   parseResourceUrl,
 } from "../src/resources";
 
-// The configurators never call `ui` from these two methods; it is present only to satisfy the
-// context type, and touching it is a bug.
+// Apart from the Drive picker's prefill, which asks what the account holds, the configurators never
+// call `ui` from these two methods; it is present only to satisfy the context type, and touching it
+// is a bug.
 const noUi = new Proxy({}, {
   get() { throw new Error("must not call the ui capability"); },
 }) as never;
@@ -286,8 +287,10 @@ describe("Google Chat thread configurator URLs", () => {
 });
 
 describe("Drive configurator URLs", () => {
+  // An account that holds every grant, so a pasted URL is read back as a checked choice.
+  const grantedUi = { holdsResources: async () => true } as never;
   const driveValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
-    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: noUi,
+    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: grantedUi,
   });
 
   it.for([
@@ -297,7 +300,7 @@ describe("Drive configurator URLs", () => {
   ] as const)("mints %s, and reads the URL back into the same choice", async ([, target, parsed]) => {
     let url = configurableUrl(driveConfigurator, { target });
     expect(parseResourceUrl(url)).toEqual(parsed);
-    await expect(driveValues(url)).resolves.toEqual({ target });
+    await expect(driveValues(url)).resolves.toEqual({ target, checked: target });
   });
 
   it("mints the natural Drive folder URL", () => {
@@ -306,8 +309,10 @@ describe("Drive configurator URLs", () => {
   });
 
   it("reads a pasted sharing link", async () => {
-    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing")).resolves.toEqual({ target: "file:F1" });
-    await expect(driveValues("https://drive.google.com/drive/folders/D1/")).resolves.toEqual({ target: "folder:D1" });
+    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing"))
+      .resolves.toEqual({ target: "file:F1", checked: "file:F1" });
+    await expect(driveValues("https://drive.google.com/drive/folders/D1/"))
+      .resolves.toEqual({ target: "folder:D1", checked: "folder:D1" });
   });
 
   it("refuses to mint without a choice, or for a grouping, which is not a resource", () => {
@@ -320,7 +325,7 @@ describe("Drive configurator URLs", () => {
   // checked against its resource.
   it("is ready only for a type the Workshop accepts, or any type when it does not say", () => {
     let ready = (target: string, accepted?: string[]) =>
-      driveConfigurator.isReady({ values: { target }, acceptedResourceUrlPatterns: accepted });
+      driveConfigurator.isReady({ values: { target, checked: target }, acceptedResourceUrlPatterns: accepted });
     let folderOnly = [GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern];
     expect(ready("folder:D1", folderOnly)).toBe(true);
     expect(ready("file:F1", folderOnly)).toBe(false);

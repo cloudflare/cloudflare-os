@@ -27,7 +27,7 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type {
   DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
 } from "./configurator/drive-configurator-types";
-import { OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
+import { DRIVE_BROWSE_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -36,7 +36,7 @@ import { OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./re
 type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAccessToken>;
 
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
-const grantChecks = new WeakMap<object, (grant: string) => Promise<boolean>>();
+const grantChecks = new WeakMap<object, (grants: string[]) => Promise<boolean>>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
@@ -434,8 +434,8 @@ function linkedDriveNodeId(text: string): string | undefined {
 
 @validateRpc()
 export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorRpc {
-  /** `holds` says whether the account holds a grant, asked afresh: one can arrive while the picker is open. */
-  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+  /** `holds` says whether the account holds every grant named, asked afresh: one can arrive while the picker is open. */
+  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grants: string[]) => Promise<boolean>) {
     super();
     googleTokenGetters.set(this, getToken);
     grantChecks.set(this, holds);
@@ -447,6 +447,9 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
    * is answered with the node the picker would list for what it names.
    */
   async listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
+    // An account connected from a card whose configurator asks for each type's grant holds no Drive
+    // scope yet, so the picker asks to browse before it lists anything.
+    if (!(await grantChecks.get(this)!([DRIVE_BROWSE_GRANT]))) return { nodes: [], needsGrant: DRIVE_BROWSE_GRANT };
     let linked = linkedDriveNodeId(query);
     if (linked) {
       let node = await driveNode(this, linked, false);
@@ -476,7 +479,7 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
       if (parentId === SHARED_DRIVES.id) {
         // Drive lists shared drives only under a wider grant than browsing needs, so the picker asks
         // for it when the user first opens them.
-        if (!(await grantChecks.get(this)!(SHARED_DRIVES_GRANT))) {
+        if (!(await grantChecks.get(this)!([SHARED_DRIVES_GRANT]))) {
           return { nodes: [], needsGrant: SHARED_DRIVES_GRANT };
         }
         let { drives, nextPageToken } = await drive.listSharedDrives(page);
@@ -502,6 +505,7 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
   }
 
   async getDriveNode(id: string): Promise<DriveNode | null> {
+    if (!(await grantChecks.get(this)!([DRIVE_BROWSE_GRANT]))) return null;
     return driveNode(this, id, true);
   }
 
@@ -509,8 +513,8 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
     return officeConversion(this, kind).inspectFile(fileId);
   }
 
-  async hasConversionAccess(): Promise<boolean> {
-    return grantChecks.get(this)!(OFFICE_IMPORT_GRANT);
+  async holdsResources(resourceUrlPatterns: string[]): Promise<boolean> {
+    return grantChecks.get(this)!(resourceUrlPatterns);
   }
 
   async convertFile(kind: OfficeKind, fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
@@ -519,7 +523,7 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
 }
 
 function officeConversion(picker: DriveConfiguratorUI, kind: OfficeKind): OfficeConversion {
-  return new OfficeConversion(kind, googleTokenProvider(picker), () => grantChecks.get(picker)!(OFFICE_IMPORT_GRANT));
+  return new OfficeConversion(kind, googleTokenProvider(picker), () => grantChecks.get(picker)!([OFFICE_IMPORT_GRANT]));
 }
 
 /**

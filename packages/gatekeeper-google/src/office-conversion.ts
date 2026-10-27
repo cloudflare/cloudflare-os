@@ -187,11 +187,6 @@ export class OfficeConversion {
     };
   }
 
-  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
-  hasConversionAccess(): Promise<boolean> {
-    return this.#hasAccess();
-  }
-
   /**
    * Makes a native copy of Office file `fileId`, or with `reuse` returns that earlier copy of it
    * once it is confirmed to be one. `needsAccess` when a copy is to be made and the account does

@@ -100,7 +100,7 @@ import {
   GOOGLE_DRIVE_RESOURCE,
   RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
+  grantedResourceUrlPatterns, hasDriveResourceGrant, holdsGrants, isPrivateGrant,
   parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
 import { explainUnopenedFile, officeFileError, officeLabel } from "./office-conversion";
@@ -485,6 +485,11 @@ export class UserAccount extends DurableObject<Env> {
    */
   async getRequestableResourceUrlPatterns(): Promise<string[]> {
     return recordedResourceUrlPatterns(this.#recordedGrant());
+  }
+
+  /** Whether this account holds every grant `patterns` names; see holdsGrants() in resources.ts. */
+  async holdsGrants(patterns: string[]): Promise<boolean> {
+    return holdsGrants(this.#recordedGrant(), patterns);
   }
 
   #recordedGrant(): RecordedResourceGrant {
@@ -890,9 +895,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let account = this.ctx.exports.UserAccount.get(id);
     let getToken = async (opts?: AccessTokenRequest) => await account.getAccessToken(opts);
-    // A grant is read on every call, since a private one arrives through a pop-up while the dialog is
-    // open.
-    let holds = async (grant: string) => (await account.getGrantedResourceUrlPatterns()).includes(grant);
+    // A grant is read on every call, since one arrives through a pop-up while the dialog is open.
+    let holds = async (grants: string[]) => await account.holdsGrants(grants);
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {

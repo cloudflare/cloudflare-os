@@ -378,9 +378,8 @@ describe("OfficeConversion.convertFile", () => {
     let conversion = new OfficeConversion("sheets", token, hasAccess);
 
     await expect(conversion.convertFile("src-1")).resolves.toEqual({ type: "needsAccess" });
-    await expect(conversion.hasConversionAccess()).resolves.toBe(false);
     expect(drive.requests).toEqual([]);
-    expect(hasAccess).toHaveBeenCalledTimes(2);
+    expect(hasAccess).toHaveBeenCalledOnce();
   });
 
   it("copies into My Drive's root, and says so, when the original's folder cannot take it", async () => {

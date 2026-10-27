@@ -15,7 +15,7 @@ import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
 import {
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
-  OFFICE_IMPORT_GRANT,
+  DRIVE_BROWSE_GRANT, OFFICE_IMPORT_GRANT,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
 
@@ -43,8 +43,10 @@ describe("Google resource configurators", () => {
   });
 
   describe("Drive picker", () => {
-    const picker = (holdsSharedDrivesGrant = true) => new DriveConfiguratorUI(
-      async () => token("access-token"), async grant => grant !== SHARED_DRIVES_GRANT || holdsSharedDrivesGrant);
+    const picker = (holdsSharedDrivesGrant = true, browsable = true) => new DriveConfiguratorUI(
+      async () => token("access-token"),
+      async grants => grants.every(grant =>
+        grant === SHARED_DRIVES_GRANT ? holdsSharedDrivesGrant : grant !== DRIVE_BROWSE_GRANT || browsable));
 
     /**
      * Answers each Drive request from `routes` by path, recording every URL asked for. A batch is
@@ -231,6 +233,19 @@ describe("Google resource configurators", () => {
 
       await expect(picker(false).listDriveNodes("shared-drives", "", null))
         .resolves.toEqual({ nodes: [], needsGrant: SHARED_DRIVES_GRANT });
+      expect(calls).toEqual([]);
+    });
+
+    // An account connected from the Drive card holds no Drive scope until the picker asks to browse.
+    it("names the browse grant, without asking Drive, until the account holds it", async () => {
+      const calls = stubDrive({ "/files/root": { id: "0AMyRoot", name: "My Drive" } });
+      const browser = picker(true, false);
+
+      await expect(browser.listDriveNodes("drive", "", null))
+        .resolves.toEqual({ nodes: [], needsGrant: DRIVE_BROWSE_GRANT });
+      await expect(browser.listDriveNodes("drive", "https://drive.google.com/drive/folders/F1", null))
+        .resolves.toEqual({ nodes: [], needsGrant: DRIVE_BROWSE_GRANT });
+      await expect(browser.getDriveNode("folder:F1")).resolves.toBeNull();
       expect(calls).toEqual([]);
     });
 
@@ -543,7 +558,7 @@ describe("Google resource configurators", () => {
 /** The Drive picker's conversion calls, bound to one kind. */
 type OfficeConfigurator = {
   inspectFile(fileId: string): Promise<OfficeFileInspection>;
-  hasConversionAccess(): Promise<boolean>;
+  holdsResources(resourceUrlPatterns: string[]): Promise<boolean>;
   convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult>;
 };
 
@@ -666,6 +681,7 @@ async function startOfficeConfigurator(testCase: OfficeKindCase, granted: string
   let account = {
     getAccessToken: vi.fn(async () => token("access-token")),
     getGrantedResourceUrlPatterns: vi.fn(async () => granted),
+    holdsGrants: vi.fn(async (patterns: string[]) => patterns.every(pattern => granted.includes(pattern))),
   };
   let ctx = {
     props: { userObjectId: "account-id" },
@@ -678,7 +694,7 @@ async function startOfficeConfigurator(testCase: OfficeKindCase, granted: string
   // would call it.
   let ui: OfficeConfigurator = {
     inspectFile: async fileId => await stub.inspectFile(testCase.kind, fileId),
-    hasConversionAccess: async () => await stub.hasConversionAccess(),
+    holdsResources: async patterns => await stub.holdsResources(patterns),
     convertFile: async (fileId, opts) => opts === undefined
       ? await stub.convertFile(testCase.kind, fileId) : await stub.convertFile(testCase.kind, fileId, opts),
   };
@@ -693,7 +709,7 @@ function directOfficeConfigurator(testCase: OfficeKindCase): OfficeConfigurator 
   let target = new DriveConfiguratorUI(async () => token("access-token"), async () => true);
   return {
     inspectFile: fileId => target.inspectFile(testCase.kind, fileId),
-    hasConversionAccess: () => target.hasConversionAccess(),
+    holdsResources: patterns => target.holdsResources(patterns),
     convertFile: (fileId, opts) => target.convertFile(testCase.kind, fileId, opts),
   };
 }
@@ -758,17 +774,16 @@ describe.each(OFFICE_KIND_CASES)("the $title type's Office files", testCase => {
 
   it("asks for access, without calling Drive, until the account holds the grant", async () => {
     let drive = new FakeDrive(officeSource(testCase)).install();
-    let granted: string[] = [];
-    let { ui, account } = await startOfficeConfigurator(testCase, granted);
+    let granted: string[] = [testCase.pattern];
+    let { ui } = await startOfficeConfigurator(testCase, granted);
 
-    await expect(ui.hasConversionAccess()).resolves.toBe(false);
+    await expect(ui.holdsResources([OFFICE_IMPORT_GRANT, testCase.pattern])).resolves.toBe(false);
     await expect(ui.convertFile("source-1")).resolves.toEqual({ type: "needsAccess" });
     expect(drive.requests).toEqual([]);
 
     // The grant lands while the dialog is open, and the same configurator sees it.
     granted.push(OFFICE_IMPORT_GRANT);
-    await expect(ui.hasConversionAccess()).resolves.toBe(true);
-    expect(account.getGrantedResourceUrlPatterns).toHaveBeenCalledTimes(3);
+    await expect(ui.holdsResources([OFFICE_IMPORT_GRANT, testCase.pattern])).resolves.toBe(true);
   });
 
   it("copies an Office file beside the original once the grant is held", async () => {
@@ -812,7 +827,7 @@ describe.each(OFFICE_KIND_CASES)("the $title type's Office files", testCase => {
     await expect(ui.convertFile("source-1", { reuse: "copy-a" })).resolves.toEqual({
       type: "converted", fileId: "copy-a", title: "Report", location: "besideOriginal", reused: true,
     });
-    expect(account.getGrantedResourceUrlPatterns).not.toHaveBeenCalled();
+    expect(account.holdsGrants).not.toHaveBeenCalled();
     expect(drive.copies).toEqual([]);
   });
 

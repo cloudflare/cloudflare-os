@@ -2,8 +2,8 @@ import type { OfficeConversionResult, OfficeFileInspection, OfficeKind } from ".
 export type { OfficeConversionResult, OfficeFileInspection, OfficeKind };
 
 /**
- * The chosen node, by its {@link DriveNode.id}, or null when nothing is chosen; and, when it is a
- * Google Docs, Sheets or Slides file, the same id once it is known to connect as it is.
+ * The chosen node, by its {@link DriveNode.id}, or null when nothing is chosen; and the same id once
+ * it is known to connect as it is: it needs no converting, and the account holds its type's grant.
  */
 export type DriveConfiguratorValues = { target?: string | null; checked?: string | null };
 
@@ -37,7 +37,7 @@ export type DriveNodePage = {
   nextCursor?: string;
   /**
    * The grant to ask for with `ensureResources` when this location cannot be listed without it
-   * (shared drives); the page then has no nodes.
+   * (browsing at all, or shared drives); the page then has no nodes.
    */
   needsGrant?: string;
 };
@@ -48,12 +48,15 @@ export interface DriveConfiguratorRpc {
    * folder's children, or, when `query` is not empty, every node anywhere whose name contains it.
    */
   listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage>;
-  /** The folder or file a node id names, or null if this account cannot see it. */
+  /** The folder or file a node id names, or null if this account cannot see it or cannot browse yet. */
   getDriveNode(id: string): Promise<DriveNode | null>;
   /** Whether `fileId` is a native file of `kind`, an Office file that converts into one, or neither. */
   inspectFile(kind: OfficeKind, fileId: string): Promise<OfficeFileInspection>;
-  /** Whether the account holds the grant `convertFile` needs; asked again after a consent pop-up. */
-  hasConversionAccess(): Promise<boolean>;
+  /**
+   * Whether the account holds every grant `resourceUrlPatterns` names, resource types and private
+   * grants alike; asked again after a consent pop-up.
+   */
+  holdsResources(resourceUrlPatterns: string[]): Promise<boolean>;
   /** Makes a native `kind` copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
   convertFile(kind: OfficeKind, fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult>;
 }
