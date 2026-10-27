@@ -86,6 +86,20 @@ export const ReadTimeline = ({
     onUnreadNavigation(!resumed && !!previous.jump);
     setJump(resumed ? 0 : previous.jump);
   };
+  const retireUnchangedRequests = () => {
+    // A command at the already-observed boundary can ACK without publishing any echo.
+    // Keep it behind earlier unobserved rewinds, which may still change that boundary.
+    let request = localUnreadRequests.current[0];
+    while (request?.acknowledgedReplacement && request.startedSnapshot?.readThroughSequence === request.horizon) {
+      localUnreadRequests.current.shift();
+      request = localUnreadRequests.current[0];
+    }
+    const current = latest.current.chat;
+    if (!localUnreadRequests.current.length && current?.unreadMessageCount === 0) {
+      latestAction.current = undefined;
+      setVisit(visit => visit?.paused ? {...visit, horizon: current.readThroughSequence, paused: false} : visit);
+    }
+  };
 
   useLayoutEffect(() => {
     if (!chat) {
@@ -282,14 +296,16 @@ export const ReadTimeline = ({
           if (jump) onUnreadNavigation(false);
           setJump(0);
           setVisit({ horizon: visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
-          // Keep markers across ACKs until a matching echo or a later chat snapshot arrives.
+          // Changed boundaries retain markers until an echo or a replacement snapshot arrives.
           void unread.markUnread(target, sequence).then(() => {
             request.acknowledgedReplacement = latest.current.unread?.replacementSnapshot ?? {};
             request.previousAction = undefined; // Only pending commands need the rollback link.
+            retireUnchangedRequests();
           }).catch(() => {
             const index = localUnreadRequests.current.indexOf(request);
             if (index !== -1) localUnreadRequests.current.splice(index, 1);
             rollbackAction(request);
+            retireUnchangedRequests();
           });
         },
       }}

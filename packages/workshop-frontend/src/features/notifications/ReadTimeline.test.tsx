@@ -207,6 +207,44 @@ describe("timeline read/unread experience", () => {
   });
 
   it.each([
+    {ackFirst: false, earlierFailure: false}, {ackFirst: true, earlierFailure: false},
+    {ackFirst: true, earlierFailure: true},
+  ])("resumes after a remote read supersedes a no-op unread selection (ACK first: $ackFirst, earlier failure: $earlierFailure)", async ({ackFirst, earlierFailure}) => {
+    await render();
+    await update(snapshot(1, 0));
+    await settle();
+    const failed = Promise.withResolvers<void>();
+    if (earlierFailure) {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      markChatUnread.mockReturnValueOnce(failed.promise);
+      await markUnreadFrom(2);
+    }
+    const ack = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(ack.promise);
+    await markUnreadFrom(1); // Already at this boundary: the server sends no rewind echo.
+    if (ackFirst) await act(async () => ack.resolve());
+    await updateChat(snapshot(2, 2));
+    if (!ackFirst) await act(async () => ack.resolve());
+    if (earlierFailure) await act(async () => failed.reject(new Error("Earlier rewind failed")));
+    visibleBottom = 450;
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const arrival = snapshot(3, 2);
+    await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 3});
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
+    navigate.mockClear();
+    await updateChat(snapshot(4, 0)); // A later real rewind must not inherit the retired marker.
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(navigate).toHaveBeenCalledWith(true);
+    expect(viewport.scrollTop).not.toBe(40);
+  });
+
+  it.each([
     {sequences: [2, 1], coalesced: false, firstFails: false},
     {sequences: [2, 1], coalesced: false, firstFails: false, initialHorizon: 0},
     {sequences: [2, 1], coalesced: true, firstFails: false, initialHorizon: 0},
