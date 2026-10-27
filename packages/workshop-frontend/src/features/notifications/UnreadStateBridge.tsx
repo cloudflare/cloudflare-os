@@ -40,6 +40,8 @@ type ObservedChat = ChatReadState & Partial<Pick<ChatTimelineHead, "latestSequen
 
 type UnreadContextValue = {
   state?: UserUnreadState;
+  /** Last full replacement, retaining its identity across deltas so visits can recognize reconnects. */
+  replacementSnapshot?: UserUnreadState;
   markRead: (chat: ChatReadState, throughSequence?: number) => Promise<void>;
   markManyRead: (chats: ObservedChat[]) => Promise<void>;
   markWorkspaceRead: (workspaceId: string) => Promise<void>;
@@ -79,6 +81,7 @@ export const UnreadStateBridge = ({
     api: RpcStub<AuthenticatedApi>;
     scopeKey: string;
     state: UserUnreadState;
+    replacement: UserUnreadState;
   }>();
   const [failure, setFailure] = useState<{ api: RpcStub<AuthenticatedApi> }>();
   // Don't display another authenticated session's state while its replacement is connecting.
@@ -87,7 +90,7 @@ export const UnreadStateBridge = ({
 
   useEffect(() => {
     let subscription: RpcStub<{}> | undefined;
-    let latest: UserUnreadState | undefined;
+    let latest: typeof snapshot;
     let active = true;
     let generation = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -108,24 +111,24 @@ export const UnreadStateBridge = ({
       const subscriber = new UnreadSubscriber(
         (next) => {
           if (!active || currentGeneration !== generation) return;
-          latest = next;
-          setSnapshot({ api: authenticatedApi, scopeKey, state: next });
+          latest = {api: authenticatedApi, scopeKey, state: next, replacement: next};
+          setSnapshot(latest);
           clearTimeout(retryTimer);
           retryTimer = undefined;
           retryDelay = 1_000;
         },
         async (summary) => {
           if (!active || currentGeneration !== generation || !latest) return;
-          latest = applySummary(latest, summary);
-          setSnapshot({api: authenticatedApi, scopeKey, state: latest});
+          latest = {...latest, state: applySummary(latest.state, summary)};
+          setSnapshot(latest);
         },
         async (workspaceId, chatId, chat, counts) => {
           if (!active || currentGeneration !== generation || !latest) return;
-          const chats = latest.chats.filter(item =>
+          const chats = latest.state.chats.filter(item =>
             item.workspaceId !== workspaceId || item.chatId !== chatId);
           if (chat) chats.push(chat);
-          latest = {...applySummary(latest, counts), chats};
-          setSnapshot({api: authenticatedApi, scopeKey, state: latest});
+          latest = {...latest, state: {...applySummary(latest.state, counts), chats}};
+          setSnapshot(latest);
         },
         () => {
           released = true;
@@ -216,6 +219,7 @@ export const UnreadStateBridge = ({
     <UnreadContext.Provider
       value={{
         state,
+        replacementSnapshot: state ? snapshot?.replacement : undefined,
         markRead: (chat, through) =>
           perform((async () => {
             const receipt = through === undefined ? await observedReceipt(chat) : receiptFor(chat, through);

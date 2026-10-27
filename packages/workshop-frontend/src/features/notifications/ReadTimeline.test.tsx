@@ -85,6 +85,10 @@ describe("timeline read/unread experience", () => {
       ),
     );
   const update = (state: UserUnreadState) => act(async () => subscriber.updated(state));
+  const updateChat = (state: UserUnreadState) => act(async () => subscriber.chatUpdated("workspace", 1, state.chats[0], {
+    unreadChatCount: state.unreadChatCount, unreadMessageCount: state.unreadMessageCount,
+    workspace: {workspaceId: "workspace", unreadChatCount: state.unreadChatCount, unreadMessageCount: state.unreadMessageCount},
+  }));
   const settle = async () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -174,6 +178,32 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
     expect(viewport.scrollTop).toBe(40);
     expect(navigate).not.toHaveBeenCalledWith(true);
+  });
+
+  it.each([false, true])("preserves local unread navigation across an intervening arrival delta (ACK first: %s)", async ackFirst => {
+    await render();
+    await update(snapshot(1, 2));
+    await settle();
+    navigate.mockClear();
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
+    const ack = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(ack.promise);
+    await markUnreadFrom(1);
+    if (ackFirst) await act(async () => ack.resolve());
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const arrival = snapshot(2, 2);
+    await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
+    if (!ackFirst) await act(async () => ack.resolve());
+    const rewind = snapshot(3, 0);
+    await updateChat({...rewind, unreadMessageCount: 3,
+      chats: [{...rewind.chats[0], unreadMessageCount: 3}]});
+    await settle();
+    expect(viewport.scrollTop).toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
   });
 
   it.each([

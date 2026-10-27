@@ -57,7 +57,7 @@ export const ReadTimeline = ({
   const localUnreadRequests = useRef<(LocalAction & {
     horizon: number;
     startedSnapshot: typeof chat;
-    acknowledgedSnapshot?: object;
+    acknowledgedReplacement?: object;
   })[]>([]);
   const latestAction = useRef<LocalAction | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
@@ -100,12 +100,12 @@ export const ReadTimeline = ({
       localUnreadRequests.current.splice(0, localIndex + 1);
       // An earlier local echo must still leave later commands' markers intact on re-render.
       for (const request of localUnreadRequests.current) {
-        if (request.acknowledgedSnapshot) request.acknowledgedSnapshot = chat;
+        if (request.acknowledgedReplacement) request.acknowledgedReplacement = unread?.replacementSnapshot;
       }
     } else {
-      // A later snapshot can supersede a completed rewind whose echo was missed while hidden.
+      // A replacement can supersede a rewind missed while hidden; ordinary deltas cannot.
       localUnreadRequests.current = localUnreadRequests.current.filter(request =>
-        !request.acknowledgedSnapshot || request.acknowledgedSnapshot === chat);
+        !request.acknowledgedReplacement || request.acknowledgedReplacement === unread?.replacementSnapshot);
     }
     if (!visit || chat.readThroughSequence < visit.horizon) {
       // A remote rewind establishes a new visit, not a rollback target for older commands.
@@ -130,7 +130,7 @@ export const ReadTimeline = ({
     } else if (visit.horizon !== chat.readThroughSequence) {
       setVisit({...visit, horizon: chat.readThroughSequence});
     }
-  }, [chat, visit, onUnreadNavigation]);
+  }, [chat, visit, onUnreadNavigation, unread?.replacementSnapshot]);
 
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.
@@ -284,7 +284,7 @@ export const ReadTimeline = ({
           setVisit({ horizon: visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
           // Keep markers across ACKs until a matching echo or a later chat snapshot arrives.
           void unread.markUnread(target, sequence).then(() => {
-            request.acknowledgedSnapshot = latest.current.chat ?? {};
+            request.acknowledgedReplacement = latest.current.unread?.replacementSnapshot ?? {};
             request.previousAction = undefined; // Only pending commands need the rollback link.
           }).catch(() => {
             const index = localUnreadRequests.current.indexOf(request);
