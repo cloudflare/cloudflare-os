@@ -398,6 +398,21 @@ describe("preparing writes", () => {
   });
 });
 
+describe("reading a workbook range", () => {
+  it("refuses a range without its sheet, or larger than the cell budget, before reading anything", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const binding = folderProps(id);
+    const name = facet("range");
+    expect(failure(await hooks().run(name, binding, [["readWorkbook", ref(NOTES), { range: "A1:B2" }]]))).toMatch(/Pass sheet with range/);
+    expect(failure(await hooks().run(name, binding, [["readWorkbook", ref(NOTES), { sheet: "Budget", range: "A1:Z100", maxCells: 100 }]])))
+      .toMatch(/more than maxCells \(100\)/);
+    expect(failure(await hooks().run(name, binding, [["readWorkbook", ref(NOTES), { sheet: "Budget", range: "Budget!A1" }]])))
+      .toMatch(/Pass the worksheet separately/);
+    expect(graph.count("GET", /\/workbook\//)).toBe(0);
+  });
+});
+
 describe("listing sites", () => {
   it("puts the user's own OneDrive first, as a personal site", async () => {
     const graph = new FakeGraph().install();
