@@ -849,6 +849,20 @@ describe("organizing at apply", () => {
     expect(calls).toEqual([]);
   });
 
+  it("records where a move landed the messages, so an undo can find them there even outside the binding", async () => {
+    const { host: h } = host([json({ parentFolderId: "DEL" })]);
+    const applied = await definitions.moveMessages.apply({ mailbox: ME, messages: [target("m1")], to: { id: "deleteditems", name: "Deleted Items", path: "Deleted Items" }, as: "delete", submittedAt: 0 }, h);
+    expect(applied.action.movedTo).toBe("DEL");
+    const undone: OutlookAction = { kind: "moveMessages", payload: applied.action };
+    const back = host([json({ parentFolderId: "DEL" }), json({})]);
+    expect(await revert(undone, back.host)).toBeUndefined();
+    expect(back.inScope.mock.calls.map(([check]) => check)).toEqual([{ folder: "F1" }]);
+    expect(back.calls.map(call => call.replace("/v1.0/me", ""))).toEqual(["GET /messages/m1", "POST /messages/m1/move"]);
+    const moved = host([json({ parentFolderId: "ELSEWHERE" })]);
+    expect(await revert(undone, moved.host)).toEqual({ message: expect.stringMatching(/moved again since/), canRetry: false });
+    expect(moved.calls).toHaveLength(1);
+  });
+
   it("proves an undo's messages, and the folders they came from, still covered before moving them back", async () => {
     const applied: OutlookAction = { kind: "moveMessages", payload: { mailbox: ME, messages: [target("m1"), { ...target("m2"), folderId: "team" }, target("m3")], as: "archive", to: { id: "archive", name: "Archive", path: "Archive" }, submittedAt: 0, appliedAt: 1 } };
     const { host: h, calls, inScope } = host([json({}), json({}), json({})]);

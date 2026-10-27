@@ -329,6 +329,13 @@ describe("a whole-mailbox binding", () => {
     expect(observations.map(observation => observation.title)).toContain("Read an Outlook message");
   });
 
+  it("won't send a reply draft before Outlook has written the quote the approver would be shown", async () => {
+    const { writer, submitted } = session(whole("send"), "send");
+    const reply = await writer.createReplyDraft(ADA, "Thanks, will do.", { cc: ["outside@example.com"] });
+    await expect(writer.send(reply.id)).rejects.toThrow(/hasn't been created yet/);
+    expect(submitted.map(action => action.kind)).toEqual(["createDraft"]);
+  });
+
   it("fails rather than guessing when Graph leaves a folder out of the well-known batch", async () => {
     const { reader } = session(fromAda(), "read", { omitFromBatch: "junkemail" });
     await expect(reader.listFolders()).rejects.toThrow(/left a folder out of a batch/);

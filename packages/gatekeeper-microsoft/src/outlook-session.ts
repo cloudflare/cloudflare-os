@@ -1099,6 +1099,12 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
     let attached: AttachedFile[];
     if (draft.provisional) {
       const pending = overlay.drafts.get(draft.id)!;
+      // Outlook writes the quoted original under a reply or forward when the draft is created, and
+      // that quote is what the complete-draft check below reads: until then it can't be shown.
+      if (pending.origin.kind !== "new") {
+        throw new Error("This reply or forward draft hasn't been created yet, so what Outlook will quote under it can't be shown to the approver. " +
+          "Send it once it has been created, or send directly with reply or forward.");
+      }
       fence = { id: draft.id, created: true };
       origin = pending.origin;
       attached = pending.message.attachments.map(({ name, contentType, size }) => ({ name, contentType, size }));

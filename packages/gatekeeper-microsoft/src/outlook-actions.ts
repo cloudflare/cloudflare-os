@@ -94,6 +94,8 @@ export type OutlookActions = {
     to: FolderTarget;
     /** How the change is put to the approver. */
     as: "move" | "archive" | "delete";
+    /** The folder Exchange said the messages landed in, where an undo expects to still find them. */
+    movedTo?: string;
     submittedAt: number;
     appliedAt?: number;
   };
@@ -524,20 +526,23 @@ export const definitions = {
       // A message keeps its ID wherever it is moved, so it is proved still covered now, as is a
       // chosen destination; Deleted Items and Archive are Outlook's own.
       await host.inScope({ messages: payload.messages.map(message => message.id), ...(payload.as === "move" ? { folder: to } : {}) });
-      await host.graph(async api => {
+      const movedTo = await host.graph(async api => {
         const box = mail(api, payload.mailbox);
+        let landed: string | undefined;
         for (const message of payload.messages) {
           try {
             // A move keeps the immutable ID, so a replay finds the message already there and moves it again harmlessly.
-            await box.request("POST", `/messages/${idPath(message.id)}/move`, { destinationId: to });
+            const moved = await box.request<{ parentFolderId?: unknown }>("POST", `/messages/${idPath(message.id)}/move`, { destinationId: to });
+            if (typeof moved?.parentFolderId === "string") landed ??= moved.parentFolderId;
           } catch (error) {
             if (error instanceof GraphApiError && error.status === 404) continue;
             exchangeRefusal(error, `"${message.subject}"`);
           }
         }
+        return landed;
       }, { replayable: true });
       await host.invalidate();
-      return { action: { ...payload, appliedAt: Date.now() } };
+      return { action: { ...payload, ...(movedTo ? { movedTo } : {}), appliedAt: Date.now() } };
     },
   },
 
@@ -878,15 +883,38 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
   switch (action.kind) {
     case "moveMessages": {
       const { payload } = action;
+      // The move itself may have taken the messages out of the binding (a deletion or archive from
+      // an Inbox-only one does), so what is undone is that move: each message is put back only if
+      // it is still where the move left it. A move applied before that was recorded proves them covered.
+      let messages = payload.messages;
+      if (payload.movedTo === undefined) {
+        const left = await leftBinding(host, { messages: messages.map(message => message.id) });
+        if (left !== undefined) return left;
+      } else {
+        const landed = payload.movedTo;
+        const still = await host.graph(async api => {
+          const box = mail(api, payload.mailbox);
+          const kept: typeof payload.messages = [];
+          for (const message of payload.messages) {
+            const current = await box.find<{ parentFolderId?: unknown }>(`/messages/${idPath(message.id)}`, { $select: "parentFolderId" });
+            if (current === null) continue;
+            if (current.parentFolderId !== landed) return `"${message.subject}" has been moved again since, so nothing was put back.`;
+            kept.push(message);
+          }
+          return kept;
+        }, { replayable: true });
+        if (typeof still === "string") return { message: still, canRetry: false };
+        messages = still;
+      }
       // Back where each came from: proved covered now, as a chosen destination is when applying.
-      const origins = [...new Set(payload.messages.map(message => message.folderId))].map(folder => ({ folder }));
-      for (const check of [{ messages: payload.messages.map(message => message.id) }, ...origins]) {
+      const origins = [...new Set(messages.map(message => message.folderId))].map(folder => ({ folder }));
+      for (const check of origins) {
         const left = await leftBinding(host, check);
         if (left !== undefined) return left;
       }
       await host.graph(async api => {
         const box = mail(api, payload.mailbox);
-        for (const message of payload.messages) {
+        for (const message of messages) {
           await box.request("POST", `/messages/${idPath(message.id)}/move`, { destinationId: message.folderId }).catch(error => {
             if (!(error instanceof GraphApiError && error.status === 404)) throw error;
           });

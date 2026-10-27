@@ -58,8 +58,9 @@ It passes the tenant ID, `MICROSOFT_ALLOWED_TENANT_IDS`, `MICROSOFT_SHAREPOINT_A
 
 ## SharePoint and OneDrive
 
-Agents browse sites and OneDrive, read files (Word, PowerPoint and PDF as Markdown or text,
-workbooks as cells), query lists and read pages. They can propose new folders and files, uploads,
+Agents browse sites and OneDrive, read files (Word and PowerPoint as Markdown, workbooks as
+cells, and PDFs and legacy Office formats as text where the worker has its optional Workers AI
+binding; without it agents are told to read the bytes instead), query lists and read pages. They can propose new folders and files, uploads,
 in-place edits, renames, moves and deletions, and list item changes. `src/types.d.ts` is the
 agent's API.
 
@@ -251,7 +252,7 @@ The levels:
 
 | Level | Adds | Kind | Can be auto-approved |
 |---|---|---|---|
-| `read` | Reading, search, attachments (Office files and PDFs as text), categories, people | — | — |
+| `read` | Reading, search, attachments (Office files as text; PDFs and workbooks too with the Workers AI binding), categories, people | — | — |
 | `draft` | Move, archive, delete (to Deleted Items), mark read, flag, categorize, create folders | `outlook.organize` | Yes |
 | `draft` | Create drafts, including replies and forwards that keep the quoted thread, and edit and delete the drafts it wrote (never the user's own, which an auto-approved edit could change under them) | `outlook.drafts` | Yes |
 | `send` | Send a draft, a new message, a reply or a forward | `outlook.send` | **Never** |
