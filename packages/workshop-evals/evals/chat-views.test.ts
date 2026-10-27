@@ -1,9 +1,11 @@
-import type { AiChatMessage } from "@gadgets/workshop-shared/api";
+import { newMessagePortRpcSession, RpcTarget } from "capnweb";
+import type { AiChatMessage, GadgetClient, WorkpieceSummary } from "@gadgets/workshop-shared/api";
 import { afterAll, describe, it, vi } from "vitest";
 import { EvalVerifier, type VerifierSession } from "../src/verifier.js";
 import { closeViewBrowser } from "../src/view-host.js";
 import {
-  verifyBillSplitter, verifyChart, verifyPlanPicker,
+  verifyBillSplitter, verifyChart, verifyExpenseLog, verifyExpenseLogKept, verifyPlanPicker,
+  verifySpendingView,
 } from "./chat-views.eval.js";
 
 // The turns' verifiers, run on views written by hand: each must pass a view that does what the
@@ -18,11 +20,77 @@ const USAGE = [
   ["Jul", 520], ["Aug", 610], ["Sep", 450], ["Oct", 330], ["Nov", 370], ["Dec", 430],
 ] as const;
 const PLANS = [["Basic", 15], ["Everyday", 30], ["Streamer", 45], ["Family", 80]] as const;
+const TOTALS = { Food: 420, Travel: 185, Books: 96 };
 
-const session: VerifierSession = {
-  openGadget: async () => { throw new Error("openGadget is not used by these turns"); },
-  connectionDrops: 0,
-};
+const LOG: WorkpieceSummary = { id: 7, type: "gadget", title: "Expense Log" };
+
+type Totals = Record<string, number>;
+
+// An Expense Log that adds each entry to `byCategory`: shared by every connection, as storage is,
+// or a connection's own.
+class ExpenseLog extends RpcTarget {
+  readonly #byCategory: Totals;
+
+  constructor(byCategory: Totals) {
+    super();
+    this.#byCategory = byCategory;
+  }
+
+  add({ category, amount }: { category: string; amount: number }) {
+    this.#byCategory[category] = (this.#byCategory[category] ?? 0) + amount;
+    return { ok: true };
+  }
+
+  totals() {
+    return { byCategory: this.#byCategory };
+  }
+}
+
+class FakeGadget extends RpcTarget {
+  readonly #connect: () => ExpenseLog;
+
+  constructor(connect: () => ExpenseLog) {
+    super();
+    this.#connect = connect;
+  }
+
+  connectToGadget() {
+    return this.#connect();
+  }
+}
+
+class FakeWorkshop extends RpcTarget {
+  readonly #connect: () => ExpenseLog;
+
+  constructor(connect: () => ExpenseLog) {
+    super();
+    this.#connect = connect;
+  }
+
+  gadget() {
+    return new FakeGadget(this.#connect);
+  }
+}
+
+interface Workshop {
+  gadget(): GadgetClient;
+}
+
+// Connects the verifier to the Expense Log `connect` makes over a real Cap'n Web session, as the
+// Workshop would. The Gadget's client comes from the session's main stub, which the verifier must
+// not dispose.
+function connectingTo(connect: () => ExpenseLog): VerifierSession {
+  return {
+    openGadget: async () => {
+      const { port1, port2 } = new MessageChannel();
+      newMessagePortRpcSession(port2, new FakeWorkshop(connect));
+      return { client: await newMessagePortRpcSession<Workshop>(port1).gadget(), chatId: 1 };
+    },
+    connectionDrops: 0,
+  };
+}
+
+const session = connectingTo(() => new ExpenseLog({ ...TOTALS }));
 
 function answer(...views: string[]): AiChatMessage[] {
   return [{
@@ -32,11 +100,42 @@ function answer(...views: string[]): AiChatMessage[] {
   }];
 }
 
+/** The IDs of the checks `verify` fails through `verifier`. */
+async function failedThrough(
+    verifier: EvalVerifier, verify: (verifier: EvalVerifier) => Promise<void>): Promise<string[]> {
+  return (await verifier.collect(verify)).filter(check => !check.pass).map(check => check.id);
+}
+
 /** The IDs of the checks `verify` fails on an answer made of `views`. */
-async function failed(
+function failed(
     verify: (verifier: EvalVerifier) => Promise<void>, ...views: string[]): Promise<string[]> {
-  const checks = await new EvalVerifier(session, [], answer(...views)).collect(verify);
-  return checks.filter(check => !check.pass).map(check => check.id);
+  return failedThrough(new EvalVerifier(session, [LOG], answer(...views)), verify);
+}
+
+// A turn that creates the Expense Log and writes its code.
+const BUILT: AiChatMessage[] = [{
+  chatId: 1, sequence: 4, timestamp: new Date(), type: "message",
+  author: { type: "agent", id: "agent", name: "agent" }, message: "Done.",
+  toolCalls: [
+    { toolCallId: "1", toolName: "createGadget", input: { title: "Expense Log", bindingName: "expenseLog" } },
+    { toolCallId: "2", toolName: "writeFile", input: { workpiece: "expenseLog", filename: "server.js", content: "" } },
+    { toolCallId: "3", toolName: "writeFile", input: { workpiece: "expenseLog", filename: "client.js", content: "" } },
+  ],
+}];
+
+/**
+ * The IDs of the checks the Expense Log's turn fails on the Log `connect` makes, before and after
+ * its changes are accepted, as the harness runs them, then those the spending view's turn fails on
+ * an answer of `view`.
+ */
+async function failedLog(connect: () => ExpenseLog, view: string): Promise<string[]> {
+  const logSession = connectingTo(connect);
+  const chat = { history: [], compactions: [], usage: {} };
+  return [
+    ...await failedThrough(new EvalVerifier(logSession, [LOG], BUILT, chat), verifyExpenseLog),
+    ...await failedThrough(new EvalVerifier(logSession, [LOG], BUILT, chat), verifyExpenseLogKept),
+    ...await failedThrough(new EvalVerifier(logSession, [LOG], answer(view)), verifySpendingView),
+  ];
 }
 
 const svg = (body: string) => `<svg width="330" height="240" viewBox="0 0 330 240">${body}</svg>`;
@@ -116,6 +215,19 @@ const splitter = (input: string, formula = "184.6 * 1.18 / Number(people.value)"
     const show = () => { document.getElementById("each").textContent = "$" + (${formula}).toFixed(2); };
     people.addEventListener("${listen}", show);
     show();
+  </script>`;
+
+// Each total with its share of the spending after it, in a span of its own: "$420.0060%" unless
+// `gap` parts them.
+const spending = (amounts: Record<string, number>, gap = "") => `
+  <ul>${Object.entries(amounts).map(([category, amount]) => `
+    <li><button data-category="${category}">${category}</button>
+      <span>$${amount.toFixed(2)}</span>${gap}<span>${Math.round(amount / 701 * 100)}%</span></li>`).join("")}
+  </ul>
+  <script type="module">
+    for (const button of document.querySelectorAll("button")) {
+      button.onclick = () => agent.send("Tell me about my " + button.dataset.category + " spending");
+    }
   </script>`;
 
 describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
@@ -331,6 +443,47 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
       expect(await failed(verifyBillSplitter, splitter(
           `<input id="people" type="number" value="4">`, "-184.6 * 1.18 / Number(people.value)")))
         .toEqual(["shows-each-share", "splits-again-for-five"]);
+    });
+  });
+
+  describe("the spending view", () => {
+    it("passes a view of each category's total, with its share beside it", async ({ expect }) => {
+      expect(await failed(verifySpendingView, spending(TOTALS))).toEqual([]);
+    });
+
+    it("passes the totals of an Expense Log that stores its entries", async ({ expect }) => {
+      const stored: Totals = {};
+      expect(await failedLog(() => new ExpenseLog(stored), spending(TOTALS))).toEqual([]);
+      const withOwn: Totals = { Food: 12 };
+      expect(await failedLog(() => new ExpenseLog(withOwn), spending({ ...TOTALS, Food: 432 }))).toEqual([]);
+    });
+
+    it("fails an Expense Log that keeps its entries only for a connection", async ({ expect }) => {
+      expect(await failedLog(() => new ExpenseLog({ Food: 0, Travel: 0, Books: 0 }),
+          spending({ Food: 0, Travel: 0, Books: 0 }))).toEqual(["expenses-survive-commit-and-reload"]);
+    });
+
+    it("passes each category's total in a line of text, and fails them out of place", async ({ expect }) => {
+      const line = (food: number, travel: number, books: number) => `
+        <p>Food $${food} · Travel $${travel} · Books $${books}</p>
+        <button>Ask about Travel</button>
+        <script type="module">
+          document.querySelector("button").addEventListener("click", () => agent.send("Tell me about travel"));
+        </script>`;
+      expect(await failed(verifySpendingView, line(420, 185, 96))).toEqual([]);
+      expect(await failed(verifySpendingView, line(185, 96, 420))).toEqual(["shows-each-category-total"]);
+    });
+
+    it("fails totals shown against the wrong categories", async ({ expect }) => {
+      expect(await failed(verifySpendingView, spending({ Food: 185, Travel: 96, Books: 420 }, " ")))
+        .toEqual(["shows-each-category-total"]);
+    });
+
+    it("fails a message sent as the view loads, from a button that does nothing", async ({ expect }) => {
+      expect(await failed(verifySpendingView, spending(TOTALS).replace(
+          `button.onclick = () => agent.send("Tell me about my " + button.dataset.category + " spending");`,
+          `if (button.dataset.category === "Travel") button.onclick = agent.send("What about travel?");`)))
+        .toEqual(["asks-about-a-category"]);
     });
   });
 });

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineTaskEval } from "../src/eval.js";
 import { asEvidence, defineEvalTask } from "../src/task.js";
-import type { EvalVerifier } from "../src/verifier.js";
+import type { EvalVerifier, VerifierChat } from "../src/verifier.js";
 import {
   checkAnswersInProse, checkAnswersWithView, checkBuildsGadget, checkMakesNoGadget, checkView,
   countAmount, mentions, plotsValues, showsAmount,
@@ -46,7 +46,8 @@ const SEEDS = [
   { category: "Food", amount: 300, note: "restaurants" },
   { category: "Books", amount: 96, note: "novels" },
 ] as const;
-const EXPECTED_TOTALS = { Food: 420, Travel: 185, Books: 96 } as const;
+// What the seeds add to each category.
+const SEEDED = { Food: 420, Travel: 185, Books: 96 } as const;
 
 const OkSchema = z.object({ ok: z.literal(true) });
 const TotalsSchema = z.object({ byCategory: z.record(z.string(), z.number()) });
@@ -55,6 +56,10 @@ interface ExpenseApi {
   add(entry: { category: string; amount: number; note: string }): Promise<z.infer<typeof OkSchema>>;
   totals(): Promise<z.infer<typeof TotalsSchema>>;
 }
+
+// The Expense Log's totals once its turn's checks seeded it, by the chat the harness gives both
+// that turn's verifier and the one it runs after accepting the turn's changes.
+const seededTotals = new WeakMap<VerifierChat, Record<string, number>>();
 
 async function verifyProse(verifier: EvalVerifier): Promise<void> {
   await checkAnswersInProse(verifier);
@@ -138,35 +143,63 @@ export async function verifyBillSplitter(verifier: EvalVerifier): Promise<void> 
   });
 }
 
-async function verifyExpenseLog(verifier: EvalVerifier): Promise<void> {
+export async function verifyExpenseLog(verifier: EvalVerifier): Promise<void> {
   await checkBuildsGadget(verifier);
   await verifier.check("records-and-totals-expenses", async () => {
     using api = await verifier.connect<ExpenseApi>(LOG);
+    const before = TotalsSchema.parse(await api.totals()).byCategory;
     const added = [];
     for (const entry of SEEDS) added.push(OkSchema.safeParse(await api.add({ ...entry })).success);
-    const totals = TotalsSchema.parse(await api.totals()).byCategory;
+    const after = TotalsSchema.parse(await api.totals()).byCategory;
+    seededTotals.set(verifier.chat, after);
+    // The agent may have logged entries of its own: the seeds must add exactly their amounts.
     return {
-      pass: added.every(Boolean) && CATEGORIES.every(category => totals[category] === EXPECTED_TOTALS[category]),
-      evidence: asEvidence({ added, totals }),
+      pass: added.every(Boolean) && CATEGORIES.every(category =>
+        Math.abs((after[category] ?? 0) - (before[category] ?? 0) - SEEDED[category]) < 0.005),
+      evidence: asEvidence({ added, before, after }),
     };
   });
 }
 
-async function verifySpendingView(verifier: EvalVerifier): Promise<void> {
+/** After the Expense Log's changes are accepted and it reloads, its totals are those seeded. */
+export async function verifyExpenseLogKept(verifier: EvalVerifier): Promise<void> {
+  await verifier.check("expenses-survive-commit-and-reload", async () => {
+    using api = await verifier.connect<ExpenseApi>(LOG);
+    const totals = TotalsSchema.parse(await api.totals()).byCategory;
+    const seeded = seededTotals.get(verifier.chat);
+    return {
+      pass: seeded !== undefined && [...new Set([...Object.keys(seeded), ...Object.keys(totals)])]
+        .every(category => Math.abs((totals[category] ?? 0) - (seeded[category] ?? 0)) < 0.005),
+      evidence: asEvidence({ seeded: seeded ?? null, totals }),
+    };
+  });
+}
+
+export async function verifySpendingView(verifier: EvalVerifier): Promise<void> {
   const view = await checkAnswersWithView(verifier);
   await checkMakesNoGadget(verifier, "makes-no-new-gadget");
   if (view === undefined) return;
   await checkView(verifier, view, async rendered => {
     await verifier.check("shows-each-category-total", async () => {
-      const shown = await rendered.waitForText(text => CATEGORIES.every(category =>
-        mentions(text, category) && showsAmount(text, EXPECTED_TOTALS[category])));
-      return { pass: shown.pass, evidence: asEvidence({ expected: EXPECTED_TOTALS, text: shown.text }) };
+      using api = await verifier.connect<ExpenseApi>(LOG);
+      const expected = TotalsSchema.parse(await api.totals()).byCategory;
+      const shown = await rendered.waitForSeries(CATEGORIES, series => CATEGORIES.every((category, index) =>
+        showsAmount(series.beside[index] ?? "", expected[category] ?? Number.NaN)));
+      return {
+        pass: shown.pass,
+        evidence: asEvidence({
+          expected,
+          shown: Object.fromEntries(CATEGORIES.map((category, index) => [category, shown.series.beside[index] ?? ""])),
+        }),
+      };
     });
     await verifier.check("asks-about-a-category", async () => {
+      const before = rendered.messages.length;
       const tried = await rendered.click("Travel", ["Food", "Books"]);
+      const sent = rendered.messages.slice(before);
       return {
-        pass: rendered.messages.some(message => mentions(message, "travel")),
-        evidence: asEvidence({ tried, messages: rendered.messages }),
+        pass: sent.some(message => mentions(message, "travel")),
+        evidence: asEvidence({ tried, sent, before: rendered.messages.slice(0, before) }),
       };
     });
   });
@@ -202,6 +235,7 @@ data:
 - totals() -> { byCategory: { [category: string]: number } }, the sum of the amounts in each
   category`,
     verify: verifyExpenseLog,
+    verifyAfterAccept: verifyExpenseLogKept,
   }, {
     prompt: `Now show me where my money goes: each category's total, right here in the chat. Let me
 click a category to ask you about it.`,
