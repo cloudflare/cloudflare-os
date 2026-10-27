@@ -1,8 +1,9 @@
 // What an Office file the agent passes as bytes may hold. Such a file is shown to the approver as
 // its text, if at all, and its upload can be approved automatically, so it gets the limits a file
 // written here has by construction: no macros or ActiveX, nothing fetched from elsewhere when it is
-// opened (a remote template, linked picture or workbook link), no DDE, and no formula
-// `checkFormula` refuses. Links people click stay allowed, as a written file may have them.
+// opened (a remote template, linked picture or workbook link), no DDE, no imported HTML or RTF
+// chunk (whose fields this can't read), and no formula `checkFormula` refuses. Links people click
+// stay allowed, as a written file may have them.
 //
 // Office finds a part by its content type and the relationship that points at it, never by its
 // name, so the check does too: a macro project is one whatever it is called. Every XML part is then
@@ -31,6 +32,7 @@ const REFUSED_CONTENT_TYPES: readonly [RegExp, string][] = [
 const REFUSED_RELATIONSHIPS: Readonly<Record<string, string>> = {
   vbaProject: "macros", xlMacrosheet: "macros", xlIntlMacrosheet: "macros", control: "ActiveX controls", oleObject: "embedded objects",
   externalLink: "links to other workbooks", connections: "external data connections", queryTable: "external data connections",
+  aFChunk: "imported HTML or RTF content",
 };
 
 /** Word fields that run a program or fetch content from elsewhere. */

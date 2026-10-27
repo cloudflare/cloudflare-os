@@ -190,9 +190,10 @@ export function isoSeconds(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-/** Characters XML 1.0 forbids (C0 controls but tab, newline and return; lone surrogates; U+FFFE/F). */
+/** A character XML 1.0 forbids (a C0 control but tab, newline and return; a lone surrogate; U+FFFE/F). */
 // oxlint-disable-next-line no-control-regex -- the characters XML 1.0 can't hold
-const INVALID_XML = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+export const INVALID_XML_CHAR = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const INVALID_XML = new RegExp(INVALID_XML_CHAR.source, "g");
 
 /** Text as XML character data. Characters XML can't hold are dropped. */
 export function escapeText(text: string): string {

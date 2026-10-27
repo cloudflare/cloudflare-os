@@ -111,6 +111,19 @@ describe("checkFormula", () => {
     ]) expect(() => checkFormula(formula!), formula).toThrow(new RegExp(`uses ${name!.replace(".", "\\.")}`));
   });
 
+  it("refuses a function passed by name, and a name split by a character the file would drop", () => {
+    expect(() => checkFormula("=MAP(A1:A3, _xleta.WEBSERVICE)")).toThrow(/uses WEBSERVICE/);
+    expect(() => checkFormula("=_xleta.IMAGE")).toThrow(/uses IMAGE/);
+    expect(() => checkFormula("=BYROW(A1:B2, _xleta._xlfn.PY)")).toThrow(/uses PY/);
+    expect(() => checkFormula("=LET(f, LAMBDA(x, x+1), f(2))")).not.toThrow();
+    expect(() => checkFormula("=MAP(A1:A3, _xleta.SQRT)")).not.toThrow();
+    // XML can't hold U+0001, so writing would drop it and the file would say WEBSERVICE.
+    expect(() => checkFormula("=WEB\u0001SERVICE(\"https://x.test\")")).toThrow(/control character/);
+    expect(() => checkFormula("=WEB\ufffeSERVICE(\"https://x.test\")")).toThrow(/control character/);
+    expect(() => checkFormula("=WEB\ud800SERVICE(\"https://x.test\")")).toThrow(/control character/);
+    expect(() => checkFormula("=\"tab\there\"&\"\ud83d\ude00\"")).not.toThrow();
+  });
+
   it("refuses CELL(\"filename\") and a computed CELL info type", () => {
     expect(() => checkFormula("=CELL(\"filename\")")).toThrow(/reports where the file is saved/);
     expect(() => checkFormula("=CELL(\"FileName\",A1)")).toThrow(FormulaError);
@@ -296,6 +309,8 @@ describe("rowsToXlsx", () => {
 
   it("names the cell of a refused formula", async () => {
     await expect(rowsToXlsx([["x"], ["=WEBSERVICE(\"https://x.test\")"]])).rejects.toThrow(/Cell A2 of "Sheet1": .*uses WEBSERVICE/);
+    await expect(rowsToXlsx([["x"], ["=WEB\u0001SERVICE(\"https://x.test\")"]])).rejects.toThrow(/Cell A2 of "Sheet1": .*control character/);
+    await expect(rowsToXlsx([["x"], ["=MAP(A1:A1, _xleta.WEBSERVICE)"]])).rejects.toThrow(/Cell A2 of "Sheet1": .*uses WEBSERVICE/);
   });
 
   it("writes several sheets, cleaning and de-duplicating their names, and selects the first", async () => {

@@ -10,7 +10,7 @@
 // it. Functions that reach outside the workbook, run code, or read the opener's environment are
 // refused, as are links to other workbooks and DDE.
 
-import { escapeAttribute, isoSeconds, XML_DECLARATION } from "./ooxml";
+import { INVALID_XML_CHAR, escapeAttribute, isoSeconds, XML_DECLARATION } from "./ooxml";
 import { cutText } from "./text";
 import { childElements, firstChild, attribute, parseXml, type XmlElement } from "./xml";
 import { openZip, type ZipArchive } from "./zip";
@@ -256,10 +256,14 @@ function nextToken(tokens: readonly Token[], index: number): { token: Token; ind
   return undefined;
 }
 
-/** A function's name without the prefixes the file format adds: `_xlfn._xlws.FILTER` is FILTER. */
+/**
+ * A function's name without the prefixes the file format adds: `_xlfn._xlws.FILTER` is FILTER, and
+ * `_xleta.WEBSERVICE` (a function passed by name, as to MAP) is WEBSERVICE.
+ */
 function bareName(name: string): string {
-  return name.toUpperCase().replace(/^(?:_XLFN\.)?(?:_XLWS\.)?/, "").replace(/^_XLUDF\./, "");
+  return name.toUpperCase().replace(/^(?:_XLETA\.)?(?:_XLFN\.)?(?:_XLWS\.)?/, "").replace(/^_XLUDF\./, "");
 }
+
 
 /**
  * Functions refused, and why. Each reaches beyond the workbook when it calculates (a web request,
@@ -293,12 +297,14 @@ const REFUSED_CELL_INFO = new Set(["filename"]);
  * Throws a `FormulaError` for a formula this writer won't put in a workbook: one that uses a
  * function listed in `REFUSED_FUNCTIONS`, `CELL("filename")` (or a CELL whose info type is
  * computed), a reference into another workbook (`[Book.xlsx]Sheet!A1`, `'C:\[a.xlsx]S'!A1`), or DDE
- * (`cmd|'/c calc'!A0`). Text inside string literals is never mistaken for any of these. The
- * leading `=` is optional.
+ * (`cmd|'/c calc'!A0`). A refused function is found whether called or passed by name (`_xleta.`).
+ * Text inside string literals is never mistaken for any of these. The leading `=` is optional.
  */
 export function checkFormula(formula: string): void {
   const body = formula.startsWith("=") ? formula.slice(1) : formula;
   if (body.trim() === "") throw new FormulaError("The formula is empty.");
+  // One that `escapeText` would strip on writing is refused here, else it could split a refused name.
+  if (INVALID_XML_CHAR.test(body)) throw new FormulaError("The formula contains a control character or another character a workbook can't hold.");
   if (body.length > MAX_FORMULA_CHARS) throw new FormulaError(`A formula can be at most ${MAX_FORMULA_CHARS.toLocaleString("en-US")} characters.`);
   const tokens = tokenize(body);
   tokens.forEach((token, index) => {
@@ -317,11 +323,12 @@ export function checkFormula(formula: string): void {
         throw new FormulaError(`=${body} refers to another workbook (${token.text}), which Excel would link to and update from. Workbooks written here can only refer to their own sheets.`);
       }
     }
-    if (token.kind === "name" && nextToken(tokens, index)?.token.text === "(") {
+    // A function is used when called, or when passed by name for another to call: `MAP(A1:A3, _xleta.WEBSERVICE)`.
+    if (token.kind === "name" && (nextToken(tokens, index)?.token.text === "(" || /^_xleta\./i.test(token.text))) {
       const name = bareName(token.text);
       const reason = REFUSED_FUNCTIONS[name];
       if (reason) throw new FormulaError(`=${body} uses ${name}, which ${reason}. Workbooks written here can't use it.`);
-      if (name === "CELL") {
+      if (name === "CELL" && nextToken(tokens, index)?.token.text === "(") {
         const argument = nextToken(tokens, nextToken(tokens, index)!.index);
         if (argument?.token.kind !== "string") {
           throw new FormulaError(`=${body} uses CELL with an info type that isn't written out, which could report where the file is. Write the info type as text, such as CELL("address", A1).`);
