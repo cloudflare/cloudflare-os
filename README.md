@@ -216,6 +216,7 @@ Each gatekeeper package contains instructions for how to set it up:
 * [Slack API](packages/gatekeeper-slack/README.md)
 * [Spotify](packages/gatekeeper-spotify/README.md)
 * [X API](packages/gatekeeper-x/README.md)
+* [Canva API](packages/gatekeeper-canva/README.md)
 * [ZoomInfo API](packages/gatekeeper-zoominfo/README.md)
 
 ## Developing

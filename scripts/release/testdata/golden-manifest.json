@@ -18,6 +18,76 @@
   "manifestVersion": 1,
   "releaseId": "r000000-fixture",
   "workers": {
+    "gatekeeper-canva": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://www.canva.com/developers/integrations",
+          "kind": "secret",
+          "label": "OAuth client ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/canva/oauth",
+          "setupSteps": [
+            "In the Canva Developer Portal, create a new integration (Public is fine; Private limits it to your own team).",
+            "Under Authentication, add the redirect URL below.",
+            "Under Scopes, enable the scopes this gatekeeper requests: design:meta:read, design:content:write, asset:read, asset:write, folder:read, profile:read.",
+            "Copy the integration's Client ID here, then generate a Client Secret and copy that below."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth client secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "canva.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "CanvaGatekeeperImpl"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "canva.js",
+          "r2Key": "blobs/modules/ea41295a9261714670df6956fd745293f0d686c0aa9c9e33634e54cb0b2c56cf",
+          "sha256": "ea41295a9261714670df6956fd745293f0d686c0aa9c9e33634e54cb0b2c56cf",
+          "size": 58,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "canva",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/canva"
+      }
+    },
     "gatekeeper-cloudflare": {
       "bindings": [
         {

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "CLIENT_ID",
+    "kind": "secret",
+    "label": "OAuth client ID",
+    "consoleUrl": "https://www.canva.com/developers/integrations",
+    "setupSteps": [
+      "In the Canva Developer Portal, create a new integration (Public is fine; Private limits it to your own team).",
+      "Under Authentication, add the redirect URL below.",
+      "Under Scopes, enable the scopes this gatekeeper requests: design:meta:read, design:content:write, asset:read, asset:write, folder:read, profile:read.",
+      "Copy the integration's Client ID here, then generate a Client Secret and copy that below."
+    ],
+    "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/canva/oauth"
+  },
+  {
+    "name": "CLIENT_SECRET",
+    "kind": "secret",
+    "label": "OAuth client secret"
+  }
+]
