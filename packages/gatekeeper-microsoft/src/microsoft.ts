@@ -702,7 +702,8 @@ export class UserAccount extends DurableObject<Env> {
         return stored;
       }
       // A license removed since connecting leaves the old host: it still names the right tenant.
-      const updated = { ...fresh, sharePointTenant: fresh.sharePointTenant ?? stored.sharePointTenant };
+      const sharePointTenant = fresh.sharePointTenant ?? stored.sharePointTenant;
+      const updated = { ...fresh, ...(sharePointTenant ? { sharePointTenant } : {}) };
       this.ctx.storage.kv.put<StoredIdentity>("identity", updated);
       return updated;
     } catch (error) {

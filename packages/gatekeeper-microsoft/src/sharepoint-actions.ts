@@ -153,6 +153,8 @@ export type SharePointActions = {
     /** The values these fields held when the change was proposed: what a revert writes back. */
     before: Record<string, FieldValue>;
     ifMatch?: string;
+    /** The item's tag once changed: an undo writes the old values back only over that version. */
+    appliedETag?: string;
     submittedAt: number;
     appliedAt?: number;
   };
@@ -817,15 +819,18 @@ export const definitions = {
     dependsOn: payload => isProvisional(payload.itemId) ? [payload.itemId] : [],
     apply: async (payload, host) => {
       const itemId = host.refs.requireResolved(payload.itemId);
+      let appliedETag: string | undefined;
       try {
-        await host.graph(api => api.request("PATCH",
+        const updated = await host.graph(api => api.request<Record<string, unknown>>("PATCH",
           `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items/${itemId}/fields`, {
             body: payload.fields, ...(payload.ifMatch ? { ifMatch: payload.ifMatch } : {}),
           }), { replayable: true });
+        const tag = updated?.["@odata.etag"];
+        if (typeof tag === "string") appliedETag = tag;
       } catch (error) {
         refusal(error, "The item");
       }
-      return { action: { ...payload, appliedAt: Date.now() } };
+      return { action: { ...payload, ...(appliedETag ? { appliedETag } : {}), appliedAt: Date.now() } };
     },
   },
 
@@ -1009,9 +1014,20 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
     case "updateListItem": {
       const { payload } = action;
       const itemId = host.refs.resolve(payload.itemId);
-      await host.graph(api => api.request("PATCH", `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items/${itemId}/fields`, {
-        body: payload.before,
-      }), { replayable: true });
+      // Fenced on the version the change left: edited since, the later edits stay.
+      if (payload.appliedETag === undefined) {
+        return { message: "SharePoint didn't say which version this change left, so it wasn't undone. Change the item in SharePoint if you need to.", canRetry: false };
+      }
+      try {
+        await host.graph(api => api.request("PATCH", `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items/${itemId}/fields`, {
+          body: payload.before, ifMatch: payload.appliedETag,
+        }), { replayable: true });
+      } catch (error) {
+        if (error instanceof GraphApiError && error.status === 412) {
+          return { message: "The item has been changed since, so it wasn't put back. Change it in SharePoint if you need to.", canRetry: false };
+        }
+        throw error;
+      }
       return;
     }
     case "deleteListItem":

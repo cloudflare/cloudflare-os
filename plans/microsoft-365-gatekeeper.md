@@ -151,7 +151,7 @@ or search returns, is checked by ID before it is used:
 | `all` | Everything the user can open |
 | `site` | Drives and items whose site is the bound site, and its lists and pages |
 | `library` | The bound drive |
-| `folder` | The bound drive, where the item's ancestry, walked by `parentReference.id`, reaches the bound folder. Proven folders are cached for the guard's life, and a listing's children inherit their parent's proof. |
+| `folder` | The bound drive, where the item's ancestry, walked by `parentReference.id`, reaches the bound folder. A folder's proof is kept for a minute (`PROOF_TTL_MS` in `sharepoint-scope.ts`), and a listing's children inherit their parent's proof. |
 | `file`, `list`, `page` | That exact object |
 
 Cheap refusals (wrong drive, wrong item) come before any Graph call. A provisional `~N` ID, for something created

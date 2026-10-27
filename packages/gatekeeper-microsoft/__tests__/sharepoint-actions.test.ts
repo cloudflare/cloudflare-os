@@ -138,6 +138,24 @@ describe("adding a list item", () => {
     fields: { Title: "Ship it" }, labels: { Title: "Title" }, submittedAt: 1,
   };
 
+  it("undoes a field change fenced on the version the change left, so later edits stay", async () => {
+    const change: SharePointActions["updateListItem"] = {
+      list: payload.list, itemId: "7", fields: { Title: "Agent title" }, labels: { Title: "Title" }, before: { Title: "Original" }, ifMatch: '"e1"', submittedAt: 1,
+    };
+    const { host, sent } = harness([{ status: 200, body: { "@odata.etag": '"e2"', Title: "Agent title" } }]);
+    const { action } = await definitions.updateListItem.apply(change, host);
+    expect(sent[0]).toMatchObject({ method: "PATCH", ifMatch: '"e1"' });
+    expect(action.appliedETag).toBe('"e2"');
+    const back = harness([{ status: 200, body: {} }]);
+    expect(await revert({ kind: "updateListItem", payload: action }, back.host)).toBeUndefined();
+    expect(back.sent[0]).toMatchObject({ method: "PATCH", ifMatch: '"e2"', body: { Title: "Original" } });
+    const edited = harness([{ status: 412, body: { error: { code: "resourceModified", message: "ETag mismatch" } } }]);
+    expect(await revert({ kind: "updateListItem", payload: action }, edited.host)).toMatchObject({ message: expect.stringContaining("changed since"), canRetry: false });
+    const unknown = harness([]);
+    expect(await revert({ kind: "updateListItem", payload: change }, unknown.host)).toMatchObject({ message: expect.stringContaining("which version"), canRetry: false });
+    expect(unknown.sent).toEqual([]);
+  });
+
   it("won't add the item again when SharePoint's answer to adding it was lost, since nothing would find the first", async () => {
     const { host } = harness([{ status: -1 }]);
     await expect(definitions.createListItem.apply(payload, host)).rejects.toBeInstanceOf(ActionOutcomeUnknownError);
