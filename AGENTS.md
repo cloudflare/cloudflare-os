@@ -20,6 +20,7 @@ reviewing or answering questions about code under its directory:
 | `packages/gatekeeper-context/AGENTS.md` | Context Library collections and sharing |
 | `packages/gatekeeper-cloudflare/AGENTS.md` | Cloudflare OAuth, billing, Workers Observability |
 | `packages/gatekeeper-x/AGENTS.md` | X, whose reads are billed |
+| `packages/gatekeeper-microsoft/AGENTS.md` | Microsoft 365: SharePoint, Outlook, Calendar |
 | `packages/gatekeeper-websearch/AGENTS.md` | Web Search |
 | `packages/mcp-shared/AGENTS.md` | MCP / MCP Server Portal gatekeepers |
 | `packages/observability/AGENTS.md` | server logging, issue reporting, metrics |
