@@ -62,11 +62,10 @@ execute models and report their costs (over HTTPS the Gateway may live in the Wo
 account or a different one). The token stays required for the `google` provider regardless of the
 binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
 it, so the platform server itself still needs the token). Every provider, Workers AI included,
-routes through the same Gateway. Decision models (Clef) need the binding transport: over HTTPS
-the Gateway supplies Workers AI's credential only for chat, and a decision model request that sends
-the Gateway token in its place is refused with "Authentication error". Without the binding
-transport, set Clef and Clef Flash to **Disabled** on the Models tab (below), so gadgets that call
-them get a clear refusal.
+routes through the same Gateway, except decision models (Clef) under the opt-out: over HTTPS the
+Gateway supplies Workers AI's credential only for chat, so they run on `WORKERS_AI` in the
+Worker's own account instead, outside the Gateway. With no `WORKERS_AI` at all, set Clef and Clef
+Flash to **Disabled** on the Models tab (below), so gadgets that call them get a clear refusal.
 
 Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
 environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can

@@ -1073,7 +1073,11 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
   }
   const metadata = buildMetadata(initiator, metadataContext);
   const binding = gwConfig.bindingFor(config.provider);
-  if (binding) {
+  // A gateway in another account (CF_AI_GATEWAY_USE_BINDING=false) leaves WORKERS_AI bound for
+  // webFetch, and the HTTPS route below is refused, so decision models run on the binding in the
+  // Worker's own account, outside the gateway.
+  const workersAi = binding ?? (env as { WORKERS_AI?: Ai }).WORKERS_AI;
+  if (workersAi) {
     // The gateway's passthrough refuses /run even with the binding's identity, so binding
     // requests take the binding's own run(), which reaches the same gateway. pi's System One
     // transport POSTs {model, input} as Workers AI's REST API takes them and reads back the REST
@@ -1082,15 +1086,16 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
       apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
       fetch: async (_url, init) => {
         const { model, input } = JSON.parse(init!.body as string);
-        const result = await binding.run(model, input, { gateway: { id: gwConfig.gateway, metadata } });
+        const result = await workersAi.run(model, input,
+            binding ? { gateway: { id: gwConfig.gateway, metadata } } : {});
         return Response.json({ success: true, result });
       },
     });
   }
   // Unlike the chat route, /run wants a Workers AI credential as `Authorization`, and a request
   // sending this token there is refused even when the token grants Workers AI. Until AI Gateway
-  // authenticates /run as it does chat, this route fails, so the docs have such deployments
-  // disable decision models.
+  // authenticates /run as it does chat, this route fails, so the docs have deployments without
+  // WORKERS_AI disable decision models.
   return modelAt(
       `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}/workers-ai`, {
         apiKey: gwConfig.apiToken,

@@ -2046,6 +2046,18 @@ describe("getDecisionModel routing", () => {
       expect(capturedRequests).toEqual([]);
     });
 
+    it("decides outside a gateway in another account, on the Worker's own account", async () => {
+      const runs: unknown[][] = [];
+      const decide = getDecisionModel(env({
+        CF_AI_GATEWAY_USE_BINDING: "false",
+        WORKERS_AI: { run: async (...args: unknown[]) => (runs.push(args), CLEF_RESULT) } as unknown as Ai,
+      }), CLEF_CONFIG, GADGET_INITIATOR, METADATA_CONTEXT);
+
+      expect((await decide(CONTEXT)).answers).toEqual(ANSWERS);
+      expect(runs).toEqual([["@cf/cloudflare/clef", WIRE_INPUT, {}]]);
+      expect(capturedRequests).toEqual([]);
+    });
+
     it("reports a failed run() as an error result", async () => {
       const decide = getDecisionModel(bindingRunEnv(async () => {
         throw new Error("3040: Capacity temporarily exceeded");

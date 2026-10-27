@@ -70,11 +70,11 @@ runtime — a deployment whose Gateway is in a different account must set
 than an unbinding because `WORKERS_AI` also backs the webFetch tool's document-to-Markdown
 conversion (and is hardcoded for every released backend), so removing it would break that instead
 of just moving gateway traffic. The token stays required for the `google` provider even when the
-binding transport applies. Every provider, Workers AI included, routes through the same Gateway.
-Decision models (Clef) need the binding transport: over HTTPS the Gateway supplies Workers AI's
-credential only for chat, and a decision model request that sends the Gateway token in its place
-is refused with "Authentication error". A deployment without the binding transport should set them
-to **Disabled** on the admin Models tab.
+binding transport applies. Every provider, Workers AI included, routes through the same Gateway,
+except decision models (Clef) under the opt-out: over HTTPS the Gateway supplies Workers AI's
+credential only for chat, so they run on `WORKERS_AI` in the Worker's own account instead, outside
+the Gateway. A deployment with no `WORKERS_AI` at all should set them to **Disabled** on the admin
+Models tab.
 
 The Cloudflare dashboard OAuth endpoints and scopes are **hardcoded** in the Cloudflare gatekeeper
 (`packages/gatekeeper-cloudflare/src/oauth.ts`):
