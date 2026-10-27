@@ -360,6 +360,8 @@ while one reading the user's own mail is kept from everyone else.
 For Calendar, a collaborator observes a calendar binding's reads only if that calendar's sharing list
 gives them a role that sees at least as much as the binding shows (`freeBusyRead` for `freeBusy`,
 `limitedRead` for `limited`, `read` for `full`, delegate access to private events for `private=show`).
+Only a calendar's owner can read its sharing list, so this decides the user's own calendars; a binding
+on someone else's calendar is observed by that calendar's owner and nobody else.
 So a gadget showing the team calendar at free/busy can be shared with the whole organization if the
 calendar is, and one showing full details only with the people it is shared with at `read`. An
 availability read admits whoever can see those people's free/busy themselves, and an every-calendar

@@ -70,6 +70,7 @@ Identity and tenant wiring are env vars, deliberately outside the admin UI (see 
 | `MICROSOFT_TENANT_ID` | The authority: a tenant GUID or verified domain, or `organizations` (the default). |
 | `MICROSOFT_ALLOWED_TENANT_IDS` | Comma-separated tenant GUIDs, checked against the token's `tid`. Required with `organizations`. |
 | `MICROSOFT_SHAREPOINT_ACCESS` | `write` (default) or `read`. |
+| `MICROSOFT_SHAREPOINT_SITES` | `all` (default) or `selected`: whether connections ask for every site the user can open or only the sites a SharePoint admin grants the app (`Sites.Selected`). |
 | `MICROSOFT_OUTLOOK_ACCESS`, `MICROSOFT_CALENDAR_ACCESS` | The Outlook and Calendar ceilings; see their plans. |
 | `AI` binding | Workers AI, for reading PDFs and legacy Office formats. Optional. |
 

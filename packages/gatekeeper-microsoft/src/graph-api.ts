@@ -12,6 +12,8 @@ const logger = obsContext.createLogger({ component: "gatekeeper.microsoft.graph"
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
+/** The redirect statuses a download follows: Graph answers 302, and a 303 or 308 means the same for a GET. */
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 /** Graph's largest JSON page (999 list items with every field) is a few megabytes. */
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 /** How long a throttled request may be told to wait and still be retried here, not by the caller. */
@@ -410,7 +412,7 @@ export class GraphApi {
         redirect: "manual",
         signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
       });
-      if (response.status === 302 || response.status === 301 || response.status === 307) {
+      if (REDIRECTS.has(response.status)) {
         const location = response.headers.get("location");
         await response.body?.cancel();
         if (location === null || !isDownloadHost(location)) {
