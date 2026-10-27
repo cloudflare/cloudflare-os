@@ -609,6 +609,24 @@ describe("loading", () => {
     await expect.element(option("Budget.xlsx")).toBeVisible();
   });
 
+  it("shows a page's notice above its rows, or in place of saying the listing is empty, and says it", async () => {
+    const partial = "Search is down, so only recent files are listed.";
+    const loadItems = vi.fn<LoadItems>(async ({ parentId }) => parentId === "reports"
+      ? { items: [], notice: "Nothing has been shared here yet." }
+      : { items: [reports, budget], notice: `${partial}\u202E` });
+    await render({ loadItems });
+    const status = page.getByRole("status");
+
+    await expect.element(page.getByText(partial, { exact: true })).toBeVisible();
+    await expect.element(status).toHaveTextContent(`2 items. ${partial}`);
+    expect(container!.textContent).not.toContain("\u202E");
+
+    await userEvent.click(option("Reports"));
+    await expect.element(status).toHaveTextContent("Nothing has been shared here yet.");
+    await expect.element(page.getByText("Nothing has been shared here yet.").first()).toBeVisible();
+    expect(status.element().textContent).not.toContain("Nothing here.");
+  });
+
   it("moves focus from Retry or Load more to the first row it brings", async () => {
     const loadItems = vi.fn<LoadItems>(async ({ cursor }) => {
       if (cursor === "page-2") return { items: [q1], nextCursor: "page-3" };

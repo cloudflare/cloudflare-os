@@ -2,7 +2,7 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { Loader } from "@cloudflare/kumo/components/loader";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { cn } from "@cloudflare/kumo/utils";
-import { FileIcon, FolderIcon } from "@phosphor-icons/react";
+import { FileIcon, FolderIcon, InfoIcon } from "@phosphor-icons/react";
 import { isValidElement, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { ConfiguratorUIHierarchyAncestor, ConfiguratorUIHierarchyItem, HierarchyPickerProps } from "../index.ts";
 import { FilterInput } from "./FilterInput.tsx";
@@ -133,8 +133,8 @@ const Navigator = (props: HierarchyPickerProps) => {
     const token = generation.current;
     requestPage(loadItems, { parentId: locationId, query, cursor: null }).then(page => {
       if (generation.current !== token) return;
-      setListing({ parentId: locationId, query, items: appendUnique([], page.items),
-        nextCursor: page.nextCursor, status: "ready", loadingMore: false });
+      setListing({ ...page, parentId: locationId, query, items: appendUnique([], page.items), status: "ready",
+        loadingMore: false });
     }, error => {
       if (generation.current !== token) return;
       reportLoadFailure(error);
@@ -281,7 +281,7 @@ const Navigator = (props: HierarchyPickerProps) => {
         focusTarget.current = { location: parentId, row: added?.id ?? rowIds.at(-1) ?? null };
       }
       setListing(shown => shown && { ...shown, items: appendUnique(shown.items, page.items),
-        nextCursor: page.nextCursor, loadingMore: false });
+        nextCursor: page.nextCursor, notice: page.notice ?? shown.notice, loadingMore: false });
     }, error => {
       if (generation.current !== token) return;
       reportLoadFailure(error);
@@ -350,11 +350,13 @@ const Navigator = (props: HierarchyPickerProps) => {
   let announcement: ReactNode;
   if (status === "loading") announcement = "Loading…";
   else if (status === "failed") announcement = fresh?.message;
-  else if (rows.length === 0) announcement = query ? `No results for "${query}".` : "Nothing here.";
   else {
+    // The notice is drawn above the list, so it is only said here.
+    const said = [rows.length > 0 && count, fresh?.notice].filter(Boolean).join(". ");
     announcement = (
       <>
-        <span className="sr-only">{count}</span>
+        {rows.length === 0 && !fresh?.notice && (query ? `No results for "${query}".` : "Nothing here.")}
+        {said && <span className="sr-only">{said}</span>}
         {fresh?.moreMessage && <>{" "}<span className="text-kumo-danger">{fresh.moreMessage}</span></>}
       </>
     );
@@ -457,6 +459,12 @@ const Navigator = (props: HierarchyPickerProps) => {
       )}
       {/* One fixed height, so neither a navigation nor the listing it loads moves the form. */}
       <div className={cn("h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
+        {fresh?.notice && (
+          <p aria-hidden="true" className="flex gap-2 px-2 py-1.5 text-xs text-kumo-subtle">
+            <InfoIcon size={14} className="mt-px shrink-0" />
+            {fresh.notice}
+          </p>
+        )}
         <div
           ref={listRef}
           role="listbox"

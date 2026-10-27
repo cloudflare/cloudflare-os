@@ -21,7 +21,7 @@ type Tab = ConfiguratorUIHierarchyTab;
  */
 export type Location = { tab: string | null; trail: Ancestor[]; detached: boolean };
 
-export type Page = { items: Item[]; nextCursor: string | null };
+export type Page = { items: Item[]; nextCursor: string | null; notice?: string };
 
 const sanitizeChoice = (value: unknown): ConfiguratorUIHierarchyChoice | undefined => {
   if (!value || typeof value !== "object") return undefined;
@@ -73,7 +73,7 @@ class Unavailable extends Error {}
 
 /** One page, refused whole rather than truncated when it is too long to show. */
 const sanitizePage = (page: unknown): Page => {
-  const { items, nextCursor, unavailable } =
+  const { items, nextCursor, unavailable, notice } =
     (page && typeof page === "object" ? page : {}) as Record<string, unknown>;
   const reason = displayText(unavailable);
   if (reason) throw new Unavailable(reason);
@@ -81,7 +81,11 @@ const sanitizePage = (page: unknown): Page => {
   if (listed.length > MAX_OPTIONS) {
     throw new Error(`The list returned more than ${MAX_OPTIONS} items in one page.`);
   }
-  return { items: listed.flatMap(item => sanitizeItem(item) ?? []), nextCursor: identifier(nextCursor) ?? null };
+  return {
+    items: listed.flatMap(item => sanitizeItem(item) ?? []),
+    nextCursor: identifier(nextCursor) ?? null,
+    notice: displayText(notice),
+  };
 };
 
 export const requestPage = (

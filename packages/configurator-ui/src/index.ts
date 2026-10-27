@@ -269,6 +269,11 @@ export type ConfiguratorUIHierarchyPage = {
   /** Present when more nodes follow; passed back as the next request's `cursor`. */
   nextCursor?: string | null;
   /**
+   * Something to tell the user about the listing, such as that it is partial or why it is empty.
+   * Shown above its nodes, or in place of saying it has none. A later page's replaces it.
+   */
+  notice?: string;
+  /**
    * Why this location cannot be listed yet, such as a grant the user has still to give. Shown with
    * Retry in place of its nodes, as a rejected load is, but expected, so not reported as an error.
    */
