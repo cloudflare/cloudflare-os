@@ -637,4 +637,37 @@ describe("Notice", () => {
       observer.disconnect();
     }
   });
+
+  it("carries one action, which disabled keeps focus and ignores clicks, and announces only the message", async () => {
+    const onClick = vi.fn();
+    const { session } = await mount({
+      initial: { busy: null, failure: null },
+      resourceUrl: () => "https://example.com/",
+      render: ({ values }) => (
+        <div>
+          <Notice action={{ label: "Allow access", onClick, disabled: values.busy === "yes" }}>
+            Listing needs one more permission.
+          </Notice>
+          {values.failure ? <Notice tone="error" action={{ label: "Try again", onClick }}>{values.failure}</Notice> : null}
+        </div>
+      ),
+    });
+    const allow = page.getByRole("button", { name: "Allow access" });
+
+    await userEvent.click(allow);
+    expect(onClick).toHaveBeenCalledOnce();
+    await act(() => session.store.setValues({ busy: "yes" }));
+    await expect.element(allow).toHaveAttribute("aria-disabled", "true");
+    await expect.element(allow).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(onClick).toHaveBeenCalledOnce();
+    await expect.element(page.getByRole("status")).toHaveTextContent("Listing needs one more permission.");
+    expect(page.getByRole("status").element().textContent).not.toContain("Allow access");
+
+    await act(() => session.store.setValues({ failure: "The pop-up was blocked." }));
+    await expect.element(page.getByRole("alert")).toHaveTextContent("The pop-up was blocked.");
+    expect(page.getByRole("alert").element().textContent).not.toContain("Try again");
+    await userEvent.click(page.getByRole("button", { name: "Try again" }));
+    expect(onClick).toHaveBeenCalledTimes(2);
+  });
 });

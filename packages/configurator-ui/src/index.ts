@@ -305,8 +305,14 @@ export type ButtonProps = {
   variant?: "primary" | "secondary";
 };
 
+/**
+ * The one step a {@link Notice} offers, as a button at its trailing end. `disabled` behaves as on
+ * {@link Button}.
+ */
+export type NoticeAction = Pick<ButtonProps, "onClick" | "disabled"> & { label: string };
+
 /** Props of {@link Notice}. */
-export type NoticeProps = { children?: unknown; tone?: "info" | "error" };
+export type NoticeProps = { children?: unknown; tone?: "info" | "error"; action?: NoticeAction };
 
 /** Groups related configurator fields. Provided by the sandbox runtime. */
 export function Section(_props: SectionProps): unknown {
@@ -367,7 +373,8 @@ export function Button(_props: ButtonProps): unknown {
 /**
  * Inline message provided by the sandbox runtime. An `error` notice is announced assertively. An
  * `info` notice is announced politely, through one live region that announces the last info notice
- * on screen whenever its text changes.
+ * on screen whenever its text changes. Only the message is announced, not its `action`, which suits
+ * the one step the message leads to (allow access, try again); a choice between steps is Buttons.
  */
 export function Notice(_props: NoticeProps): unknown {
   throw new Error("Notice is provided by the configurator UI sandbox runtime.");

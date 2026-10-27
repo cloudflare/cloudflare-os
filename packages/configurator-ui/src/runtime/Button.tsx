@@ -3,18 +3,18 @@ import type { ReactNode } from "react";
 import type { ButtonProps } from "../index.ts";
 
 /**
- * `aria-disabled` rather than `disabled`, which would drop focus from a Button that disables itself
- * on click (Convert, while it converts); the classes are Kumo's own for a disabled Button.
+ * A Kumo button's props for `disabled`: `aria-disabled` rather than `disabled`, which would drop
+ * focus from a button that disables itself on click (Convert, while it converts); the classes are
+ * Kumo's own for a disabled button.
  */
-export const Button = ({ children, onClick, disabled = false, variant = "primary" }: ButtonProps) => (
-  <KumoButton
-    variant={variant}
-    aria-disabled={disabled || undefined}
-    className={disabled ? "cursor-not-allowed opacity-50" : undefined}
-    onClick={() => {
-      if (!disabled) onClick();
-    }}
-  >
-    {children as ReactNode}
-  </KumoButton>
+export const disabledButtonProps = ({ onClick, disabled = false }: Pick<ButtonProps, "onClick" | "disabled">) => ({
+  "aria-disabled": disabled || undefined,
+  className: disabled ? "cursor-not-allowed opacity-50" : undefined,
+  onClick: () => {
+    if (!disabled) onClick();
+  },
+});
+
+export const Button = ({ children, variant = "primary", ...props }: ButtonProps) => (
+  <KumoButton variant={variant} {...disabledButtonProps(props)}>{children as ReactNode}</KumoButton>
 );
