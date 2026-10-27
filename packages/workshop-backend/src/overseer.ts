@@ -2965,6 +2965,10 @@ class OverseerImpl implements AgentHooks {
             throw new ReplicaChangedError();
         }
         if (step.replicaCommit !== undefined) {
+          // Recovery can register its live view during the offline path's prefetches.
+          // Retry through that view instead of ACKing an edit it has never seen.
+          if (!step.replicaAccess && this.#worktreeReplicaTurns.get(chatId)?.access.flushReplica)
+            throw new ReplicaChangedError();
           let lease: WorktreeReplicaLease;
           try { lease = this.requireReplicaLease(step.replicaCommit.leaseId); }
           catch { throw new ReplicaChangedError(); }
@@ -6675,7 +6679,12 @@ class OverseerImpl implements AgentHooks {
           // An empty final batch has no transcript changes, but still commits its closure receipt.
           const accepted = this.storage.worktreeReplicaCommits.get(receipt.id)?.digest === receipt.digest;
           return accepted;
-        } catch (error) { if (error instanceof ReplicaChangedError) return false; throw error; }
+        } catch (error) {
+          if (!(error instanceof ReplicaChangedError)) throw error;
+          if (!active && this.#worktreeReplicaTurns.get(lease.chatId)?.access.flushReplica)
+            return host.commit(lease, version, change, receipt);
+          return false;
+        }
       },
     };
     return new WorktreeWritebackSession(host, id);

@@ -260,6 +260,47 @@ describe("single-worktree command mount and writeback", () => {
     await second.writeback.submitChanges("final", [], true);
   }));
 
+  it("retries offline writeback through the live view when recovery registers during prefetch", () => within(async (impl, f) => {
+    impl.addChatMessages(1, author, [{type: "changes", change: {}, createdWorktrees: [
+      {worktreeId: f.tree.id, title: "Repo", bindingName: "REPO"},
+    ]}]);
+    impl.addChatMessages(1, {type: "user", id: "test-user", name: "Test"}, [{type: "message", message: "Run the command."}]);
+    const mount = await f.context().mountWorktree("REPO");
+    for (const pack of mount.packs) await pack.cancel();
+    const prefetch = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    let access!: WorktreeTurnAccess;
+    let observed: string | null | undefined;
+    const register = impl.registerWorktreeReplicaTurn.bind(impl);
+    const registration = vi.spyOn(impl, "registerWorktreeReplicaTurn").mockImplementation((...args) => {
+      access = args[1]; return register(...args);
+    });
+    const content = impl.getCurrentChatContent.bind(impl);
+    let held = false;
+    const reads = vi.spyOn(impl, "getCurrentChatContent").mockImplementation(async (...args) => {
+      const result = await content(...args);
+      if (!held) { held = true; prefetch.resolve(); await resume.promise; }
+      return result;
+    });
+    const writeback = mount.writeback.submitChanges("recovery", [{path: "a.txt", change: {set: "container"}}], false);
+    void writeback.catch(() => {});
+    await prefetch.promise;
+    const faux = createFauxCore({models: [{id: "test"}]});
+    faux.setResponses([async () => {
+      resume.resolve();
+      await writeback;
+      observed = await access.readFile(f.tree.id, "a.txt");
+      return fauxAssistantMessage(fauxText("Done."));
+    }]);
+    try {
+      await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, author,
+        new AbortController().signal, {type: "user", id: "test-user", name: "Test"},
+        {provider: "cloudflare", model: "test", apiToken: ""});
+      await writeback;
+      expect(observed).toBe("container");
+      expect((await content(1, impl.storage.chatMeta.get(1)!)).get(f.tree.id)?.get("a.txt")).toBe("container");
+    } finally { resume.resolve(); registration.mockRestore(); reads.mockRestore(); }
+  }));
+
   it("drains an unfinished command after actual DO reset while model lookup is still pending", async () => {
     const name = crypto.randomUUID();
     const gate = Promise.withResolvers<void>();
