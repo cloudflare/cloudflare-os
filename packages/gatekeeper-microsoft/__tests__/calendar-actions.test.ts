@@ -128,7 +128,8 @@ describe("changing and deleting", () => {
 
   it("changes an event created earlier in the same batch by its real ID, fenced on the version its creation left", async () => {
     const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, placed(), { status: 200, body: { changeKey: "ckB" } }, placed()]);
-    await definitions.createEvent.apply(createPayload, host);
+    const { action: made } = await definitions.createEvent.apply(createPayload, host);
+    expect(made.createdChangeKey).toBe("ckA");
     await definitions.updateEvent.apply({ ...updatePayload, target: provisional.target }, host);
     expect(sent[2]).toMatchObject({ method: "PATCH", path: "/me/events/AAMkNew", ifMatch: 'W/"ckA"' });
     // The next action on it is fenced on what that change left.
@@ -186,7 +187,7 @@ describe("changing and deleting", () => {
     expect(await revert({ kind: "updateEvent", payload: undoable }, changed.host)).toMatchObject({ message: expect.stringContaining("become a meeting"), canRetry: false });
     expect(changed.sent.map(request => request.method)).toEqual(["GET", "GET"]);
     const created = harness([meeting, boundCalendar]);
-    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew" } }, created.host)).toMatchObject({ canRetry: false });
+    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew", createdChangeKey: "ckA" } }, created.host)).toMatchObject({ canRetry: false });
     expect(created.sent.map(request => request.method)).toEqual(["GET", "GET"]);
   });
 
@@ -195,7 +196,7 @@ describe("changing and deleting", () => {
     expect(await revert({ kind: "updateEvent", payload: undoable }, elsewhere.host)).toEqual({ message: expect.stringContaining("no longer in the calendar"), canRetry: false });
     expect(elsewhere.sent.map(request => request.method)).toEqual(["GET", "GET"]);
     const noCalendar = harness([placed(), { status: 404, body: { error: { code: "ErrorItemNotFound", message: "x" } } }]);
-    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew" } }, noCalendar.host)).toEqual({ message: expect.stringContaining("no longer in the calendar"), canRetry: false });
+    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew", createdChangeKey: "ckA" } }, noCalendar.host)).toEqual({ message: expect.stringContaining("no longer in the calendar"), canRetry: false });
     expect(noCalendar.sent.map(request => request.method)).toEqual(["GET", "GET"]);
   });
 
@@ -225,11 +226,16 @@ describe("changing and deleting", () => {
     expect(await revert({ kind: "deleteEvent", payload: { ...payload, snapshot: undefined } }, harness().host)).toMatchObject({ canRetry: false });
   });
 
-  it("reverts a creation by deleting what it created, even if it is already gone", async () => {
+  it("reverts a creation by deleting what it created, fenced on the version it left, even if it is already gone", async () => {
     const gone = { status: 404, body: { error: { code: "ErrorItemNotFound", message: "x" } } };
     const { host, sent } = harness([gone, gone]);
-    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew" } }, host)).toBeUndefined();
-    expect(sent[1]).toMatchObject({ method: "DELETE", path: "/me/events/AAMkNew" });
+    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew", createdChangeKey: "ckA" } }, host)).toBeUndefined();
+    expect(sent[1]).toMatchObject({ method: "DELETE", path: "/me/events/AAMkNew", ifMatch: 'W/"ckA"' });
+    const edited = harness([placed(), boundCalendar, conflict]);
+    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew", createdChangeKey: "ckA" } }, edited.host)).toMatchObject({ message: expect.stringContaining("changed since it was created"), canRetry: false });
+    const unknown = harness([]);
+    expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew" } }, unknown.host)).toMatchObject({ message: expect.stringContaining("which version"), canRetry: false });
+    expect(unknown.sent).toEqual([]);
   });
 });
 

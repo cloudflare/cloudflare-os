@@ -217,7 +217,7 @@ for an edit counts as reading the file, so the [observation rules](#sharing-a-wo
 
 To see what the writers produce the way people will, `scripts/office-render.ts` uploads files to a
 scratch folder in the contract user's OneDrive, has Microsoft 365 render them to PDF, draws each page
-to PNG with macOS PDFKit, and deletes the folder:
+to PNG with macOS PDFKit, and deletes the folder. From this package's directory:
 
 ```sh
 node scripts/office-render.ts out/*.docx out/*.pptx --out /tmp/m365-render

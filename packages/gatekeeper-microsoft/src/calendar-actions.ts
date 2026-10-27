@@ -82,7 +82,11 @@ export type EventTarget = {
 
 /** What each kind of action stores. `zone` is the user's, which times are written and shown in. */
 export type CalendarActions = {
-  createEvent: { calendar: CalendarRef; ref: string; transactionId: string; event: EventWrite; zone: string; submittedAt: number; createdId?: string; appliedAt?: number };
+  createEvent: {
+    calendar: CalendarRef; ref: string; transactionId: string; event: EventWrite; zone: string; submittedAt: number; createdId?: string; appliedAt?: number;
+    /** The change key the creation left: an undo deletes the event only while it is still that version. */
+    createdChangeKey?: string;
+  };
   createMeeting: { calendar: CalendarRef; ref: string; transactionId: string; event: EventWrite; zone: string; submittedAt: number; createdId?: string; appliedAt?: number };
   /** The `*Event` kinds in a calendar someone else owns: the same change, never auto-approved. */
   createSharedEvent: CalendarActions["createEvent"];
@@ -288,7 +292,7 @@ async function create<P extends CalendarActions["createEvent"]>(payload: P, host
   host.refs.bind(payload.ref, created.id);
   if (created.changeKey !== undefined) host.noteEventVersion(created.id, created.changeKey);
   await host.invalidate();
-  return { action: { ...payload, createdId: created.id, appliedAt: Date.now() } };
+  return { action: { ...payload, createdId: created.id, ...(created.changeKey ? { createdChangeKey: created.changeKey } : {}), appliedAt: Date.now() } };
 }
 
 /**
@@ -566,13 +570,25 @@ export async function revert(action: CalendarAction, host: CalendarActionHost): 
       const { payload } = action;
       if (payload.createdId === undefined) return { message: "The event was never created, so there is nothing to undo.", canRetry: false };
       const createdId = payload.createdId;
+      // Fenced on the version the creation left: edited since, the user's later work stays.
+      const createdChangeKey = payload.createdChangeKey;
+      if (createdChangeKey === undefined) {
+        return { message: "Outlook didn't say which version the creation left, so it wasn't undone. Delete the event in Outlook if you need to.", canRetry: false };
+      }
       return await host.graph(async api => {
         const calendar = calendarApi(api, payload.calendar);
         // Deleting a meeting the user organizes cancels it for everyone.
         const blocked = await blocksUndo(calendar, payload.calendar, createdId);
         if (blocked !== undefined) return blocked;
-        await calendar.request("DELETE", `/events/${idPath(createdId)}`)
-          .catch(error => { if (!(error instanceof GraphApiError && error.status === 404)) throw error; });
+        try {
+          await calendar.request("DELETE", `/events/${idPath(createdId)}`, undefined, etag(createdChangeKey));
+        } catch (error) {
+          if (error instanceof GraphApiError && error.status === 404) return undefined;
+          if (error instanceof GraphApiError && error.status === 412) {
+            return { message: "The event has been changed since it was created, so it wasn't deleted. Delete it in Outlook if you need to.", canRetry: false as const };
+          }
+          throw error;
+        }
         return undefined;
       }, { replayable: true });
     }

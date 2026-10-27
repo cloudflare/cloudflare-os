@@ -139,14 +139,16 @@ function fallbackMessage(status: number): string {
   }
 }
 
-/** When a throttled response says to retry, in epoch milliseconds. */
+/** The longest a Retry-After is believed: an absurd one would otherwise make an unrepresentable date. */
+const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/** When a throttled response says to retry, in epoch milliseconds, at most a day out. */
 function retryAtOf(response: Response): number | undefined {
   const header = response.headers.get("retry-after");
   if (header === null) return undefined;
   const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return Date.now() + seconds * 1000;
-  const date = Date.parse(header);
-  return Number.isFinite(date) ? date : undefined;
+  const at = Number.isFinite(seconds) && seconds >= 0 ? Date.now() + seconds * 1000 : Date.parse(header);
+  return Number.isFinite(at) ? Math.min(at, Date.now() + MAX_RETRY_AFTER_MS) : undefined;
 }
 
 /** Maps a failed response onto this gatekeeper's error classes. */

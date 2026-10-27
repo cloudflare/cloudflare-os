@@ -314,7 +314,6 @@ export class CalendarContext implements Disposable {
     };
   }
 
-  /** Notes on each person a meeting invites, for the approver. */
   /**
    * Whom a new meeting invites, while a pending change takes everyone off it: that change may be
    * rejected, so what follows it is still a change to a meeting (and is refused until it is decided).

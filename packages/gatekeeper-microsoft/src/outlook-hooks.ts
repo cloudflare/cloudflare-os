@@ -237,6 +237,8 @@ export class OutlookHookDriver extends DurableObject<Env> {
       for (const [key, watch] of watches(kv)) {
         const folderId = key.slice("watch:".length);
         const from = new Date(Date.parse(watch.cursor) - CURSOR_OVERLAP_MS).toISOString();
+        const scanStartedAt = Date.now();
+        let completed = true;
         let newest = watch.cursor;
         let next: string | undefined = `${this.#mailboxPath()}/mailFolders/${idPath(folderId)}/messages`;
         let query: Record<string, string | number> | undefined = {
@@ -245,6 +247,7 @@ export class OutlookHookDriver extends DurableObject<Env> {
         for (let pages = 0; next !== undefined; pages++) {
           if (pages === MAX_PAGES_PER_SYNC) {
             nextSyncAt = Date.now();
+            completed = false;
             break;
           }
           const page: { value?: { id?: unknown; receivedDateTime?: unknown; isDraft?: unknown }[]; "@odata.nextLink"?: unknown } =
@@ -261,8 +264,14 @@ export class OutlookHookDriver extends DurableObject<Env> {
           next = typeof page["@odata.nextLink"] === "string" ? page["@odata.nextLink"] : undefined;
           query = undefined;
         }
+        // A finished scan moves the cursor up to when it started (less the overlap), so an idle
+        // folder doesn't keep re-reading its last message: the delivery queue forgets what it
+        // delivered after a day, and would hand the message to the gadget again as new. A scan cut
+        // short keeps the cursor on the newest message it reached, to continue from there.
+        const settled = new Date(scanStartedAt - CURSOR_OVERLAP_MS).toISOString();
+        const cursor = completed && Date.parse(settled) > Date.parse(newest) ? settled : newest;
         const current = kv.get<Watch>(key);
-        if (current) kv.put<Watch>(key, { ...current, cursor: newest });
+        if (current) kv.put<Watch>(key, { ...current, cursor });
       }
     } catch (error) {
       logger.warn("failed to read new Outlook mail", { event: "outlook.hooks.sync.failed", error });
