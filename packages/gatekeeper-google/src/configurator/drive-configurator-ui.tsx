@@ -297,6 +297,8 @@ async function inspect(ui: DriveConfiguratorRpc, target: string): Promise<Flow> 
 /** The user's choice. A Docs, Sheets or Slides file is held back until it is known to connect as it is. */
 async function choose(context: Context, target: string | null) {
   const { setValues, ui, acceptedResourceUrlPatterns } = context;
+  // A failed request's error belongs to the file it was made from; busy and unavailable do not.
+  if (editAccess.error) editAccess = {};
   if (target === null || !editing(target, acceptedResourceUrlPatterns)) {
     begin({ step: "idle" });
     setValues({ target, checked: null });

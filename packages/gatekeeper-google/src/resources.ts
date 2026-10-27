@@ -155,7 +155,8 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
       "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
-      "read-only, and PDFs can be read as text.",
+      "read-only, and PDFs can be read as text. A Doc, spreadsheet or presentation chosen on its " +
+      "own can be edited, with your approval.",
   grantable: true,
 };
 

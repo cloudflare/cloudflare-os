@@ -575,7 +575,7 @@ describe("the Drive picker on a Drive card account without an editable type's gr
     expect(frame.action()!.disabled).toBeFalsy();
   });
 
-  it("shows why asking failed, and once the account holds the types the card leaves out, says so", async () => {
+  it("shows why asking failed until another file is chosen, and once the account holds the types the card leaves out, says so", async () => {
     const frame = await open([...DRIVE_TYPES, GOOGLE_DOC_RESOURCE.urlPattern]);
     frame.ensureResources.mockRejectedValueOnce(new Error("The pop-up was blocked.")).mockResolvedValueOnce(true);
     frame.choose("sheets:native-1");
@@ -583,6 +583,11 @@ describe("the Drive picker on a Drive card account without an editable type's gr
     frame.action()!.onClick();
     await settle();
     expect(frame.notices()).toEqual([{ tone: "error", text: "The pop-up was blocked." }]);
+    frame.choose("slides:native-2");
+    expect(frame.notices()).toEqual([{
+      tone: undefined,
+      text: "Connects read-only as a Drive file. To edit it as a Google Slides file, allow editing and choose it again.",
+    }]);
 
     frame.action()!.onClick();
     await settle();
