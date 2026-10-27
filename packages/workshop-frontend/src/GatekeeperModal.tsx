@@ -195,12 +195,21 @@ function connectionForResources(
   }
 }
 
-// The grantable resource `urlPattern`s a connection requires before its configurator can load: one
-// for each type the configurator may return.
+// The grantable resource `urlPattern`s a connection asks for before its configurator can offer them:
+// one for each type the configurator may return, except those whose grant the configurator asks for
+// itself (SupportedResource.configuratorRequestsGrant).
 function requiredResourceUrlPatterns(connection: ConnectionType): string[] {
   return (connection.resources ?? [])
-    .filter(resource => resource.grantable)
+    .filter(resource => resource.grantable && !resource.configuratorRequestsGrant)
     .map(resource => resource.urlPattern)
+}
+
+// What connecting a new account for `connection` asks for: its required types, nothing when every
+// grantable type is left to the configurator, or everything when it has no grantable type.
+function connectResourceUrlPatterns(connection: ConnectionType): string[] | undefined {
+  const required = requiredResourceUrlPatterns(connection)
+  if (required.length) return required
+  return connection.resources?.some(resource => resource.grantable) ? [] : undefined
 }
 
 // A URL's own type on the connection, if it names one: the first match in the vendor's declared
@@ -545,10 +554,11 @@ export default function GatekeeperModal({
     ? resourceForUrl(selectedConnection, initialResourceUrl)
     : undefined
 
-  // The card's grantable types the selected account hasn't granted. Its configurator offers every
+  // The card's required types the selected account hasn't granted. Its configurator offers every
   // other type, and opens once there is one to offer; the account's Grant access button asks for the
-  // rest. (An undefined granted set means a legacy account predating grant tracking; treat it as
-  // fully granted.)
+  // rest. A type whose grant the configurator asks for is always offered, and checked on connect.
+  // (An undefined granted set means a legacy account predating grant tracking; treat it as fully
+  // granted.)
   const requiredGrants = selectedConnection ? requiredResourceUrlPatterns(selectedConnection) : []
   const grantedPatterns = selectedAccount?.description.grantedResourceUrlPatterns
   const missingGrants = grantedPatterns === undefined
@@ -778,7 +788,10 @@ export default function GatekeeperModal({
       // A URL no narrower type names binds the card's whole-instance catch-all, if it has one.
       const resource = resourceForUrl(selectedConnection, resourceUrl) ??
         selectedConnection.resources?.find(({ urlPattern }) => urlPattern === 'https://*')
-      if (resource && !acceptedResourceUrlPatterns.includes(resource.urlPattern)) {
+      const ungranted = resource && (!acceptedResourceUrlPatterns.includes(resource.urlPattern) ||
+        (resource.configuratorRequestsGrant && grantedPatterns !== undefined &&
+          !grantedPatterns.includes(resource.urlPattern)))
+      if (ungranted) {
         throw new Error(`Grant access to ${resource.title} to connect it.`)
       }
       const overseer = await getOverseer()
@@ -889,9 +902,7 @@ export default function GatekeeperModal({
                     onSelect={handleSelectAccount}
                     onConnect={() => {
                       if (!selectedConnection.vendorId) return
-                      const required = requiredResourceUrlPatterns(selectedConnection)
-                      // No grantable requirement -> request authorization for everything
-                      handleConnectAccount(selectedConnection.vendorId, required.length ? required : undefined)
+                      handleConnectAccount(selectedConnection.vendorId, connectResourceUrlPatterns(selectedConnection))
                     }}
                     onReconnect={handleReconnectAccount}
                     onGrantAccess={handleGrantResourceAccess}

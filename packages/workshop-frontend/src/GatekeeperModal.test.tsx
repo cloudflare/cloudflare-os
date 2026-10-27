@@ -128,6 +128,7 @@ const api = vi.hoisted(() => ({
   subscriber: null as ConnectedAccountsSubscriber | null,
   startResourceConfigurator: vi.fn<(accountId: number, resourceUrlPattern: string) => Promise<object>>(),
   ensureAccountResources: vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>(),
+  connectAccount: vi.fn<(vendorId: string, patterns?: string[]) => Promise<ConnectFlowStart>>(),
 }))
 
 function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], granted }: {
@@ -158,6 +159,7 @@ function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds
     },
     startResourceConfigurator: api.startResourceConfigurator,
     ensureAccountResources: api.ensureAccountResources,
+    connectAccount: api.connectAccount,
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
@@ -177,6 +179,7 @@ afterEach(() => {
   api.subscriber = null
   api.startResourceConfigurator.mockReset()
   api.ensureAccountResources.mockReset()
+  api.connectAccount.mockReset()
   openConnectWindow.mockReset()
   testState.configurator = null
   vi.unstubAllGlobals()
@@ -382,6 +385,88 @@ describe('GatekeeperModal grouped resource types', () => {
 
     expect(Array.from(document.body.querySelectorAll('button p:first-child'), title => title.textContent))
       .toEqual([CATALOG.title])
+  })
+})
+
+describe('GatekeeperModal types whose configurator asks for their grant', () => {
+  const CATALOG = {
+    urlPattern: 'https://catalog.example.com/:path+',
+    title: 'Whole catalog',
+    description: 'Every service',
+    grantable: true,
+    configuratorRequestsGrant: true,
+  }
+  const SERVICE = {
+    urlPattern: 'https://catalog.example.com/services/:id',
+    title: 'Service',
+    description: 'One service',
+    grantable: true,
+    groupedWith: CATALOG.urlPattern,
+    configuratorRequestsGrant: true,
+  }
+  const FLAGGED = { resource: SERVICE, otherResources: [CATALOG] }
+  const OPEN_CATALOG = { initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }
+
+  const buttons = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+  const button = (label: string) => buttons().find(candidate => candidate.textContent === label)!
+
+  it('connects a new account asking for none of them', async () => {
+    stubResizeObserver()
+    api.connectAccount.mockResolvedValue({ url: 'https://catalog.example.com/consent', nonce: 'n' })
+    openConnectWindow.mockResolvedValue('opened')
+    await renderModal(OPEN_CATALOG, { ...FLAGGED, accountIds: [] })
+
+    await vi.waitFor(() => expect(button('Connect Service catalog')).toBeDefined())
+    await act(async () => button('Connect Service catalog').click())
+
+    expect(api.connectAccount.mock.calls).toEqual([['catalog', []]])
+  })
+
+  // The configurator asks for each type once the user chooses it, so it opens with nothing granted
+  // and is not restarted, losing the choice, when a grant arrives.
+  it('offers them all to the configurator before any is granted, and keeps it open as grants arrive', async () => {
+    stubResizeObserver()
+    await renderModal(OPEN_CATALOG, { ...FLAGGED, granted: [] })
+
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(1))
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([SERVICE.urlPattern, CATALOG.urlPattern])
+    expect(buttons().map(candidate => candidate.textContent)).not.toContain('Grant access')
+
+    await act(async () => api.subscriber!.add(
+      1, accountDescription(1, [SERVICE.urlPattern]), VENDOR, [SERVICE, CATALOG], true, 'catalog'))
+    expect(testState.frameKeys).toHaveLength(1)
+  })
+
+  it('connects one only once the account holds its grant', async () => {
+    stubResizeObserver()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    testState.ready = true
+    testState.collectedUrl = 'https://catalog.example.com/services/s1'
+    await renderModal(OPEN_CATALOG, { ...FLAGGED, granted: [CATALOG.urlPattern] })
+
+    await vi.waitFor(() => expect(button('Add connection').disabled).toBe(false))
+    await act(async () => button('Add connection').click())
+    expect(testState.toasts).toEqual([{ title: 'Grant access to Service to connect it.', variant: 'error' }])
+
+    testState.toasts = []
+    await act(async () => api.subscriber!.add(
+      1, accountDescription(1, [CATALOG.urlPattern, SERVICE.urlPattern]), VENDOR, [SERVICE, CATALOG], true, 'catalog'))
+    await act(async () => button('Add connection').click())
+    // Past the grant check, to the overseer this test does not provide.
+    expect(testState.toasts).toEqual([{ title: 'not called', variant: 'error' }])
+  })
+
+  // The flag is each type's own: the card still asks up front for a type without it.
+  it('still asks up front for a type on the same card without the flag', async () => {
+    stubResizeObserver()
+    api.ensureAccountResources.mockResolvedValue(null)
+    const catalog = { ...CATALOG, configuratorRequestsGrant: undefined }
+    await renderModal(OPEN_CATALOG, { resource: SERVICE, otherResources: [catalog], granted: [] })
+
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(1))
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([SERVICE.urlPattern])
+    await act(async () => button('Grant access').click())
+    expect(api.ensureAccountResources.mock.calls).toEqual([[1, [CATALOG.urlPattern]]])
   })
 })
 

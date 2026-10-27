@@ -14,7 +14,8 @@ export type ConfiguratorUIHostContext = {
   /**
    * The resource types (urlPatterns) the Workshop asks this configurator to choose among; absent
    * when it did not say (an older Workshop, which takes any). A configurator that can return several
-   * types offers only these.
+   * types offers only these. A type that sets `configuratorRequestsGrant` may be among them before
+   * the account holds its grant: ask for it with `ensureResources` once the user chooses it.
    */
   acceptedResourceUrlPatterns?: readonly string[];
 };

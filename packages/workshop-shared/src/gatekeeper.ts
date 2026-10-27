@@ -372,11 +372,21 @@ export type SupportedResource = {
    * own. A card's types share one configurator, which may return a URL of any of them, so
    * startResourceConfigurator must return that configurator for each of them.
    *
-   * Each type is still granted separately: holding a grant for one does not cover the others. The
-   * configurator offers only the types the account has granted, and the Workshop asks for the rest
-   * in a single consent request, so a user connecting any type on the card is asked for all of them.
+   * Each type is still granted separately: holding a grant for one does not cover the others. On
+   * connect the Workshop asks for every grantable type on the card that does not set
+   * `configuratorRequestsGrant`, in one consent request, and the configurator offers those only once
+   * granted. Group only types that need the same authorization, or types that set
+   * `configuratorRequestsGrant`.
    */
   groupedWith?: string;
+
+  /**
+   * With `grantable`: on its connect card, the Workshop does not ask for this type's grant when
+   * connecting or granting access, and offers it to the card's configurator ungranted. The
+   * configurator asks for it with ResourceConfiguratorHost.ensureResources once the user chooses
+   * something of this type, and returns a URL of it only once the account holds the grant.
+   */
+  configuratorRequestsGrant?: boolean;
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -504,8 +514,10 @@ export interface ResourceConfiguratorHost extends RpcTarget {
 
   /**
    * The resource types (urlPatterns) the Workshop asks this configurator to choose among, so one
-   * that can return several (see SupportedResource.groupedWith) offers only these. For a creation
-   * configurator, this is the type being created.
+   * that can return several (see SupportedResource.groupedWith) offers only these. They include
+   * types the account has yet to grant that set SupportedResource.configuratorRequestsGrant, whose
+   * grant the configurator asks for itself. For a creation configurator, this is the type being
+   * created.
    */
   getAcceptedResourceUrlPatterns(): Promise<string[]>;
 
@@ -896,7 +908,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
   /**
    * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
-   * on this account, expanding the grant if needed.
+   * on this account, expanding the grant if needed. A pattern may also name a grant private to the
+   * gatekeeper, one its own configurator asks for through ResourceConfiguratorHost.ensureResources.
    *
    * Returns the URL for the user to visit to authorize them, or no URL if nothing was needed.
    * Gatekeepers with no grantable resource types should return no URL. A returned URL completes
