@@ -87,6 +87,19 @@ describe("creating", () => {
     expect(host.refs.isResolved("~1")).toBe(false);
   });
 
+  it("undoes an upload only while the file still holds what it uploaded", async () => {
+    const upload = { ...payload, file: FILE, mimeType: "text/plain" };
+    const { host } = harness([{ status: 201, body: item("NEW", { file: { mimeType: "text/plain" }, size: 9, cTag: "c-up" }) }]);
+    const { action } = await definitions.uploadFile.apply(upload, host);
+    expect(action).toMatchObject({ createdId: "NEW", cTag: "c-up" });
+    const edited = harness([{ status: 200, body: { cTag: "c-edited" } }]);
+    expect(await revert({ kind: "uploadFile", payload: action }, edited.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/changed since it was created/) });
+    expect(edited.sent.map(request => request.method)).toEqual(["GET"]);
+    const same = harness([{ status: 200, body: { cTag: "c-up" } }, { status: 204 }]);
+    expect(await revert({ kind: "uploadFile", payload: action }, same.host)).toBeUndefined();
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "DELETE"]);
+  });
+
   it("refuses, finally, a parent that has since left the binding, before anything is sent", async () => {
     const { host, sent } = harness([], { outside: ["SPECS"] });
     await expect(definitions.createFolder.apply(payload, host)).rejects.toThrow(/no longer inside what this connection covers/);
@@ -276,6 +289,16 @@ describe("copying", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await expect(applied).rejects.toThrow(ActionOutcomeUnknownError);
     expect(definitions.copyFile.claimBeforeApply).toBe(true);
+  });
+
+  it("undoes a copy only while it still holds what was copied", async () => {
+    const applied = { ...payload, createdId: "COPY", cTag: "c-copy", appliedAt: 2 };
+    const edited = harness([{ status: 200, body: { cTag: "c-edited" } }]);
+    expect(await revert({ kind: "copyFile", payload: applied }, edited.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/changed since/) });
+    expect(edited.sent.map(request => request.method)).toEqual(["GET"]);
+    const same = harness([{ status: 200, body: { cTag: "c-copy" } }, { status: 204 }]);
+    expect(await revert({ kind: "copyFile", payload: applied }, same.host)).toBeUndefined();
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "DELETE"]);
   });
 
   it("fails finally when SharePoint reports the copy failed", async () => {

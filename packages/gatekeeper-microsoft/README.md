@@ -13,8 +13,10 @@ agent as though already made while it waits, so the agent keeps working.
 
 1. In the [Microsoft Entra admin center](https://entra.microsoft.com), open **App registrations →
    New registration**.
-2. For supported account types, choose **Accounts in this organizational directory only**. Then add
-   a **Web** redirect URI, `{PUBLIC_BASE_URL}/gatekeeper/microsoft/oauth`.
+2. For supported account types, choose **Accounts in this organizational directory only**; a
+   multitenant deployment (`MICROSOFT_TENANT_ID=organizations` with `MICROSOFT_ALLOWED_TENANT_IDS`,
+   below) needs **Accounts in any organizational directory** instead. Then add a **Web** redirect
+   URI, `{PUBLIC_BASE_URL}/gatekeeper/microsoft/oauth`.
 3. Under **API permissions**, add these Microsoft Graph **delegated** permissions:
    - `openid`, `profile`, `email`, `offline_access`, `User.Read`
    - `Sites.ReadWrite.All` and `Files.ReadWrite.All`, or `Sites.Read.All` and `Files.Read.All` for

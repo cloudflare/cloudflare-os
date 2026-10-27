@@ -89,6 +89,8 @@ export type SharePointActions = {
     text?: string;
     writing?: Writing;
     submittedAt: number;
+    /** The content tag the file was left with: an undo deletes it only while it is still that content. */
+    cTag?: string;
     createdId?: string;
     appliedAt?: number;
   };
@@ -179,6 +181,8 @@ export type SharePointActions = {
     size?: number;
     mimeType?: string;
     submittedAt: number;
+    /** The content tag the file was left with: an undo deletes it only while it is still that content. */
+    cTag?: string;
     createdId?: string;
     appliedAt?: number;
   };
@@ -460,20 +464,26 @@ export const definitions = {
       await requireInScope(host, parent, "The folder this goes in");
       const bytes = await host.readFile(payload.file);
       let id: string;
+      let cTag: string | undefined;
       try {
-        id = await host.graph(async api => parseDriveItem(await api.request<unknown>("PUT",
+        const created = await host.graph(async api => parseDriveItem(await api.request<unknown>("PUT",
           `/drives/${parent.driveId}/items/${parent.itemId}:/${pathSegment(payload.name)}:/content`, {
             query: { "@microsoft.graph.conflictBehavior": "fail", $select: ITEM_SELECT },
             rawBody: bytes,
             contentType: payload.mimeType,
-          })).id);
+          })));
+        id = created.id;
+        cTag = created.cTag;
       } catch (error) {
         refusal(error, "The file");
       }
       host.refs.bind(payload.ref, encodeItemRef({ driveId: parent.driveId, itemId: id }));
       host.releaseFile(payload.file);
-      if (payload.writing?.as === "excel") await calculateWorkbook(host, { driveId: parent.driveId, itemId: id });
-      return { action: { ...payload, createdId: id, appliedAt: Date.now() } };
+      if (payload.writing?.as === "excel") {
+        await calculateWorkbook(host, { driveId: parent.driveId, itemId: id });
+        cTag = await contentTag(host, { driveId: parent.driveId, itemId: id });
+      }
+      return { action: { ...payload, createdId: id, ...(cTag ? { cTag } : {}), appliedAt: Date.now() } };
     },
     reject: async (payload, host) => host.releaseFile(payload.file),
   },
@@ -753,7 +763,8 @@ export const definitions = {
         refusal(error, "The file");
       }
       host.refs.bind(payload.ref, encodeItemRef({ driveId: parent.driveId, itemId: createdId }));
-      return { action: { ...payload, createdId, appliedAt: Date.now() } };
+      const cTag = await contentTag(host, { driveId: parent.driveId, itemId: createdId });
+      return { action: { ...payload, createdId, ...(cTag ? { cTag } : {}), appliedAt: Date.now() } };
     },
   },
 
@@ -861,6 +872,23 @@ export const actions = defineActions<SharePointActionHost, SharePointActions>(de
 /** The outcome `revertAction` reports. */
 export type RevertOutcome = void | { message?: string; canRetry?: boolean; restart?: boolean };
 
+/** A file's current content tag, or undefined when Graph doesn't give one. */
+async function contentTag(host: SharePointActionHost, ref: ItemRef): Promise<string | undefined> {
+  const current = await host.graph(api => api.find<{ cTag?: unknown }>(`/drives/${ref.driveId}/items/${ref.itemId}`, { query: { $select: "cTag" } }), { replayable: true });
+  return typeof current?.cTag === "string" ? current.cTag : undefined;
+}
+
+/**
+ * Why a file this action created can't be deleted by its undo: edited since, its content was never
+ * part of the action. Nothing when it is still as the action left it, or when that wasn't recorded.
+ */
+async function editedSince(host: SharePointActionHost, ref: ItemRef, left: string | undefined, name: string): Promise<{ message: string; canRetry: false } | undefined> {
+  if (left === undefined) return undefined;
+  const current = await contentTag(host, ref);
+  if (current === undefined || current === left) return undefined;
+  return { message: `"${name}" has been changed since it was created, so it wasn't deleted. Delete it in SharePoint if you need to.`, canRetry: false };
+}
+
 /**
  * Undoes an applied action: a created file, folder or item is deleted, a replaced file's previous
  * version restored, a rename or move put back, and a list item's old values written back. Deletions
@@ -883,6 +911,9 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
         if (typeof current.folder?.childCount === "number" && current.folder.childCount > 0) {
           return { message: `The folder "${payload.name}" isn't empty anymore, so it wasn't deleted. Move what's in it out first.`, canRetry: true };
         }
+      } else {
+        const edited = await editedSince(host, { driveId: parent.driveId, itemId: payload.createdId }, action.payload.cTag, payload.name);
+        if (edited) return edited;
       }
       await host.graph(api => api.request("DELETE", `/drives/${parent.driveId}/items/${payload.createdId}`, { allow: [404] }),
         { replayable: true });
@@ -960,6 +991,8 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       const parent = folderRef(host, payload.parent);
       const left = await leftBinding(host, { driveId: parent.driveId, itemId: payload.createdId }, "The copy");
       if (left) return left;
+      const edited = await editedSince(host, { driveId: parent.driveId, itemId: payload.createdId }, payload.cTag, payload.name);
+      if (edited) return edited;
       await host.graph(api => api.request("DELETE", `/drives/${parent.driveId}/items/${payload.createdId}`, { allow: [404] }),
         { replayable: true });
       return;
