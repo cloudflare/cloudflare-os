@@ -164,7 +164,7 @@ after 45 seconds is recorded with an unknown outcome (the copy still lands, so i
 rejecting it rather than retried). The approver sees a replacement as a unified diff when the file is
 text and no larger than 64 KB. Applied actions can be reverted for 30 days:
 
-- A replace, in-place edit or cell change restores the previous version.
+- A replace or in-place edit restores the previous version, while the file is still as the edit left it (restoring replaces the whole file). A cell change puts the range back, while it still holds what was written.
 - A create deletes what it made, unless a created folder has gained contents since; those were never part of the action.
 - A rename or move is undone.
 - An item update restores the values it overwrote.

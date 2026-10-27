@@ -108,6 +108,8 @@ export type SharePointActions = {
     ifMatch?: string;
     /** The version the replace superseded, recorded when applied: what a revert restores. */
     previousVersionId?: string;
+    /** The content tag the write left: an undo restores the earlier version only over that content. */
+    cTag?: string;
     submittedAt: number;
     appliedAt?: number;
   };
@@ -308,6 +310,19 @@ function joinWords(words: readonly string[]): string {
 /** The most changed paragraphs or slides shown to an approver in full. */
 const MAX_SHOWN_CHANGES = 40;
 
+/** The most changed cells listed for an approver. */
+const MAX_SHOWN_CELLS = 200;
+
+/**
+ * A rendered description whose preview left some of the change out: `descriptionIsComplete` is
+ * dropped, as the builder drops it for its own truncation, so the approval surface says so.
+ */
+function omitting<T extends { descriptionIsComplete?: true }>(rendered: T, omitted: boolean): T {
+  if (!omitted) return rendered;
+  const { descriptionIsComplete: _complete, ...rest } = rendered;
+  return rest as T;
+}
+
 /** An in-place edit's changes, each paragraph or slide as removed and added lines. */
 function addEditChanges(builder: ReturnType<typeof buildDescription>, edit: NonNullable<SharePointActions["replaceFile"]["edit"]>): void {
   const count = edit.changes.length + (edit.more ?? 0);
@@ -479,7 +494,7 @@ export const definitions = {
         addEditChanges(builder, payload.edit);
         return {
           title: sanitizeTitle(`Edit "${payload.target.name}" in SharePoint`),
-          ...builder.finish(),
+          ...omitting(builder.finish(), (payload.edit.more ?? 0) > 0 || payload.edit.changes.length > MAX_SHOWN_CHANGES),
           implementsRevert: true,
         } satisfies ActionPresentation;
       }
@@ -505,6 +520,7 @@ export const definitions = {
       await requireInScope(host, payload.target.ref, "The file");
       const bytes = await host.readFile(payload.file);
       let previousVersionId: string | undefined;
+      let cTag: string | undefined;
       try {
         // The bytes were checked as the format the name said at proposal, and a rename leaves the
         // content tag alone: a file since renamed into another format isn't given them.
@@ -516,16 +532,22 @@ export const definitions = {
         previousVersionId = await host.graph(async api => parsePage(
           await api.get<unknown>(`/drives/${driveId}/items/${itemId}/versions`, { query: { $top: 1 } }),
           parseVersion, "version").items[0]?.id, { replayable: true });
-        await host.graph(api => api.request("PUT", `/drives/${driveId}/items/${itemId}/content`, {
+        const written = await host.graph(api => api.request<{ cTag?: unknown }>("PUT", `/drives/${driveId}/items/${itemId}/content`, {
           rawBody: bytes, contentType: payload.mimeType, ...(payload.ifMatch ? { ifMatch: payload.ifMatch } : {}),
         }));
+        if (typeof written?.cTag === "string") cTag = written.cTag;
       } catch (error) {
         if (error instanceof ActionApplyError) throw error;
         refusal(error, "The file");
       }
       host.releaseFile(payload.file);
-      if (payload.writing?.as === "excel") await calculateWorkbook(host, payload.target.ref);
-      return { action: { ...payload, ...(previousVersionId ? { previousVersionId } : {}), appliedAt: Date.now() } };
+      if (payload.writing?.as === "excel") {
+        await calculateWorkbook(host, payload.target.ref);
+        // Calculating rewrote the file; what an undo must find is the content that left.
+        const settled = await host.graph(api => api.get<{ cTag?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "cTag" } }), { replayable: true });
+        cTag = typeof settled.cTag === "string" ? settled.cTag : undefined;
+      }
+      return { action: { ...payload, ...(previousVersionId ? { previousVersionId } : {}), ...(cTag ? { cTag } : {}), appliedAt: Date.now() } };
     },
     reject: async (payload, host) => host.releaseFile(payload.file),
   },
@@ -656,10 +678,10 @@ export const definitions = {
         if (cellText(before) !== cellText(value)) rows.push(`${cellAt(payload.address, rowIndex, columnOffset)}: ${cellText(before)} → ${cellText(value)}`);
       }));
       if (rows.length === 0) builder.prose("Every cell already holds what this writes.");
-      else builder.list(`${rows.length} cell${rows.length === 1 ? "" : "s"} change`, rows.length > 200 ? [...rows.slice(0, 200), `… and ${rows.length - 200} more`] : rows);
+      else builder.list(`${rows.length} cell${rows.length === 1 ? "" : "s"} change`, rows.length > MAX_SHOWN_CELLS ? [...rows.slice(0, MAX_SHOWN_CELLS), `… and ${rows.length - MAX_SHOWN_CELLS} more`] : rows);
       return {
         title: sanitizeTitle(`Edit cells ${payload.address} in "${payload.target.name}" in SharePoint`),
-        ...builder.finish(),
+        ...omitting(builder.finish(), rows.length > MAX_SHOWN_CELLS),
         implementsRevert: true,
       } satisfies ActionPresentation;
     },
@@ -874,6 +896,13 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       const { driveId, itemId } = payload.target.ref;
       const left = await leftBinding(host, payload.target.ref, "The file");
       if (left) return left;
+      // Restoring a version replaces the whole file, so it happens only over the content this write left.
+      if (payload.cTag !== undefined) {
+        const current = await host.graph(api => api.get<{ cTag?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "cTag" } }), { replayable: true });
+        if (current.cTag !== payload.cTag) {
+          return { message: `"${payload.target.name}" has changed since this edit, so the earlier version wasn't restored. Restore it from the file's version history in SharePoint if you need to.`, canRetry: false };
+        }
+      }
       await host.graph(api => api.request("POST", `/drives/${driveId}/items/${itemId}/versions/${payload.previousVersionId}/restoreVersion`),
         { replayable: true });
       return;
@@ -907,15 +936,22 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       return;
     }
     case "updateCells": {
+      // Only the range is put back, and only while it still holds what this wrote: restoring a
+      // version would replace the whole workbook, edits made elsewhere since included.
       const { payload } = action;
-      if (payload.previousVersionId === undefined) {
-        return { message: "SharePoint kept no earlier version of this workbook to restore.", canRetry: false };
-      }
       const { driveId, itemId } = payload.target.ref;
       const left = await leftBinding(host, payload.target.ref, "The workbook");
       if (left) return left;
-      await host.graph(api => api.request("POST", `/drives/${driveId}/items/${itemId}/versions/${payload.previousVersionId}/restoreVersion`),
-        { replayable: true });
+      const range = `/drives/${driveId}/items/${itemId}/workbook/worksheets/${encodeURIComponent(payload.sheetId)}/range(address='${payload.address}')`;
+      const current = await host.graph(api => api.get<{ formulas?: unknown }>(range, { query: { $select: "formulas" } }), { replayable: true });
+      const written = payload.values.map(row => row.map(value => cellText(value)));
+      const holds = Array.isArray(current.formulas) && current.formulas.length === written.length
+        && current.formulas.every((row, rowIndex) => Array.isArray(row) && row.length === written[rowIndex]!.length
+          && row.every((cell, columnIndex) => cellText(cell as CellValue) === written[rowIndex]![columnIndex]));
+      if (!holds) {
+        return { message: `${payload.worksheet}!${payload.address} has changed since this edit, so it wasn't put back. Ask the agent to read it and change it instead.`, canRetry: false };
+      }
+      await host.graph(api => api.request("PATCH", range, { body: { formulas: payload.before.map(row => row.map(value => value ?? "")) } }), { replayable: true });
       return;
     }
     case "copyFile": {

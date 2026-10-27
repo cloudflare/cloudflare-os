@@ -136,6 +136,26 @@ describe("adding a list item", () => {
 describe("replacing content", () => {
   const payload: SharePointActions["replaceFile"] = { target: NOTES, file: FILE, mimeType: "text/plain", ifMatch: `"c:{NOTES},2"`, submittedAt: 1 };
 
+  it("restores the earlier version only over the content it wrote, since restoring replaces the whole file", async () => {
+    const { host } = harness([named("notes.txt"), versions, { status: 200, body: item("NOTES", { cTag: "c-written" }) }]);
+    const { action } = await definitions.replaceFile.apply(payload, host);
+    expect(action.cTag).toBe("c-written");
+    const same = harness([{ status: 200, body: { cTag: "c-written" } }, { status: 204 }]);
+    expect(await revert({ kind: "replaceFile", payload: action }, same.host)).toBeUndefined();
+    expect(same.sent.map(request => request.method)).toEqual(["GET", "POST"]);
+    const changed = harness([{ status: 200, body: { cTag: "c-later" } }]);
+    expect(await revert({ kind: "replaceFile", payload: action }, changed.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/has changed since this edit/) });
+    expect(changed.sent.map(request => request.method)).toEqual(["GET"]);
+  });
+
+  it("says an in-place edit's description is incomplete once changes are left out of it", () => {
+    const change = { before: "old", after: "new" };
+    const shown = definitions.replaceFile.describe({ ...payload, edit: { kind: "document", changes: [change] } });
+    expect(shown.descriptionIsComplete).toBe(true);
+    const more = definitions.replaceFile.describe({ ...payload, edit: { kind: "document", changes: [change], more: 3 } });
+    expect(more.descriptionIsComplete).toBeUndefined();
+  });
+
   it("records the version it supersedes, writes under the content fence, and releases the bytes", async () => {
     const { host, sent, released } = harness([named("notes.txt"), versions, { status: 200, body: item("NOTES") }]);
     const { action } = await definitions.replaceFile.apply(payload, host);
@@ -211,6 +231,25 @@ describe("updating cells", () => {
     const { host, sent } = harness([{ status: 200, body: item("NOTES", { cTag: `"c:{NOTES},3"` }) }]);
     await expect(definitions.updateCells.apply(payload, host)).rejects.toThrow(/changed after this was proposed/);
     expect(sent).toHaveLength(1);
+  });
+
+  it("undoes only the range, and only while it still holds what was written, rather than restoring the whole workbook", async () => {
+    const applied = { kind: "updateCells" as const, payload: { ...payload, previousVersionId: "3.0", appliedAt: 2 } };
+    const { host, sent } = harness([{ status: 200, body: { formulas: [["=SUM(B3:B9)", ""]] } }, { status: 200, body: {} }]);
+    expect(await revert(applied, host)).toBeUndefined();
+    expect(sent.map(request => request.method)).toEqual(["GET", "PATCH"]);
+    expect(sent[1]).toMatchObject({ path: expect.stringContaining("range(address='B2:C2')"), body: { formulas: [[1, 2]] } });
+    const changed = harness([{ status: 200, body: { formulas: [["=SUM(B3:B9)", "later"]] } }]);
+    expect(await revert(applied, changed.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/has changed since this edit/) });
+    expect(changed.sent.map(request => request.method)).toEqual(["GET"]);
+  });
+
+  it("lists at most 200 changed cells, and says the description is incomplete past that", () => {
+    const wide = (value: number) => [Array.from({ length: 201 }, () => value)];
+    const many = definitions.updateCells.describe({ ...payload, address: "A1:GS1", values: wide(1), before: wide(0) });
+    expect(many.descriptionIsComplete).toBeUndefined();
+    expect(JSON.stringify(many.fields?.find(field => field.label.endsWith("change")))).toContain("… and 1 more");
+    expect(definitions.updateCells.describe(payload).descriptionIsComplete).toBe(true);
   });
 });
 
