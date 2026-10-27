@@ -584,6 +584,10 @@ describe("editing a draft", () => {
     expect(calls).toEqual([{ call: "PATCH /messages/AAMk1", ifMatch: "k2" }]);
     const since = host([json({ error: { code: "ErrorIrresolvableConflict", message: "changed" } }, 412)]);
     expect(await revert(applied, since.host)).toEqual({ message: expect.stringMatching(/changed since/), canRetry: false });
+    // The key the edit left unread: what may have been typed into the draft since isn't overwritten.
+    const unread = host([]);
+    expect(await revert({ kind: "updateDraft", payload: { ...edit("AAMk1", "k1"), appliedAt: 1 } }, unread.host)).toEqual({ message: expect.stringMatching(/didn't say which version/), canRetry: false });
+    expect(unread.calls).toEqual([]);
   });
 
   it("undoes an edit of a reply or forward by putting back its own part alone, above the quoted original it has now", async () => {

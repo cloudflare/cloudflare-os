@@ -87,6 +87,18 @@ describe("creating", () => {
     expect(host.refs.isResolved("~1")).toBe(false);
   });
 
+  it("keeps an upload whose content tag couldn't be read afterwards, and won't undo it blind", async () => {
+    const upload = { ...payload, file: FILE, name: "book.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", writing: { as: "excel" as const } };
+    const { host, released } = harness([{ status: 201, body: item("NEW", { file: { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }, size: 9, cTag: "c-up" }) }, { status: 204 }, { status: -1 }]);
+    const { action } = await definitions.uploadFile.apply(upload, host);
+    expect(action).toMatchObject({ createdId: "NEW" });
+    expect(action.cTag).toBeUndefined();
+    expect(released).toEqual([FILE.handle]);
+    const undone = harness();
+    expect(await revert({ kind: "uploadFile", payload: action }, undone.host)).toMatchObject({ canRetry: false, message: expect.stringMatching(/didn't say which version/) });
+    expect(undone.sent).toEqual([]);
+  });
+
   it("undoes an upload only while the file still holds what it uploaded", async () => {
     const upload = { ...payload, file: FILE, mimeType: "text/plain" };
     const { host } = harness([{ status: 201, body: item("NEW", { file: { mimeType: "text/plain" }, size: 9, cTag: "c-up" }) }]);

@@ -483,7 +483,7 @@ export const definitions = {
       host.releaseFile(payload.file);
       if (payload.writing?.as === "excel") {
         await calculateWorkbook(host, { driveId: parent.driveId, itemId: id });
-        cTag = await contentTag(host, { driveId: parent.driveId, itemId: id });
+        cTag = await contentTagLeft(host, { driveId: parent.driveId, itemId: id });
       }
       return { action: { ...payload, createdId: id, ...(cTag ? { cTag } : {}), appliedAt: Date.now() } };
     },
@@ -556,8 +556,7 @@ export const definitions = {
       if (payload.writing?.as === "excel") {
         await calculateWorkbook(host, payload.target.ref);
         // Calculating rewrote the file; what an undo must find is the content that left.
-        const settled = await host.graph(api => api.get<{ cTag?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "cTag" } }), { replayable: true });
-        cTag = typeof settled.cTag === "string" ? settled.cTag : undefined;
+        cTag = await contentTagLeft(host, payload.target.ref);
       }
       return { action: { ...payload, ...(previousVersionId ? { previousVersionId } : {}), ...(cTag ? { cTag } : {}), appliedAt: Date.now() } };
     },
@@ -765,7 +764,7 @@ export const definitions = {
         refusal(error, "The file");
       }
       host.refs.bind(payload.ref, encodeItemRef({ driveId: parent.driveId, itemId: createdId }));
-      const cTag = await contentTag(host, { driveId: parent.driveId, itemId: createdId });
+      const cTag = await contentTagLeft(host, { driveId: parent.driveId, itemId: createdId });
       return { action: { ...payload, createdId, ...(cTag ? { cTag } : {}), appliedAt: Date.now() } };
     },
   },
@@ -884,11 +883,24 @@ async function contentTag(host: SharePointActionHost, ref: ItemRef): Promise<str
 }
 
 /**
+ * The content tag a write left, read once the write is done and its bytes released: a failed read
+ * can't fail the write, so the tag goes unrecorded and the undo that would need it refuses instead.
+ */
+async function contentTagLeft(host: SharePointActionHost, ref: ItemRef): Promise<string | undefined> {
+  try {
+    return await contentTag(host, ref);
+  } catch (error) {
+    logger.warn("couldn't read the content tag a write left", { event: "sharepoint.content-tag.unread", error });
+    return undefined;
+  }
+}
+
+/**
  * Why a file this action created can't be deleted by its undo: edited since, its content was never
- * part of the action. Nothing when it is still as the action left it, or when that wasn't recorded.
+ * part of the action, and unrecorded, nobody can say. Nothing when it is still as the action left it.
  */
 async function editedSince(host: SharePointActionHost, ref: ItemRef, left: string | undefined, name: string): Promise<{ message: string; canRetry: false } | undefined> {
-  if (left === undefined) return undefined;
+  if (left === undefined) return { message: `SharePoint didn't say which version "${name}" was created at, so it wasn't deleted. Delete it in SharePoint if you need to.`, canRetry: false };
   const current = await contentTag(host, ref);
   if (current === undefined || current === left) return undefined;
   return { message: `"${name}" has been changed since it was created, so it wasn't deleted. Delete it in SharePoint if you need to.`, canRetry: false };
@@ -933,11 +945,12 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       const left = await leftBinding(host, payload.target.ref, "The file");
       if (left) return left;
       // Restoring a version replaces the whole file, so it happens only over the content this write left.
-      if (payload.cTag !== undefined) {
-        const current = await host.graph(api => api.get<{ cTag?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "cTag" } }), { replayable: true });
-        if (current.cTag !== payload.cTag) {
-          return { message: `"${payload.target.name}" has changed since this edit, so the earlier version wasn't restored. Restore it from the file's version history in SharePoint if you need to.`, canRetry: false };
-        }
+      if (payload.cTag === undefined) {
+        return { message: `SharePoint didn't say which version this edit left "${payload.target.name}" at, so it wasn't restored. Restore it from the file's version history in SharePoint if you need to.`, canRetry: false };
+      }
+      const current = await host.graph(api => api.get<{ cTag?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "cTag" } }), { replayable: true });
+      if (current.cTag !== payload.cTag) {
+        return { message: `"${payload.target.name}" has changed since this edit, so the earlier version wasn't restored. Restore it from the file's version history in SharePoint if you need to.`, canRetry: false };
       }
       await host.graph(api => api.request("POST", `/drives/${driveId}/items/${itemId}/versions/${payload.previousVersionId}/restoreVersion`),
         { replayable: true });

@@ -987,7 +987,12 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
       const { payload } = action;
       const id = host.refs.resolve(payload.draftId);
       if (isProvisional(id)) return;
-      // Fenced on the key the update left: a draft changed since (in Outlook, or sent) isn't rewound.
+      // Fenced on the key the update left: a draft changed since (in Outlook, or sent) isn't rewound,
+      // nor one whose key went unread after the edit, which may have been typed in since.
+      if (payload.appliedChangeKey === undefined) {
+        return { message: "Outlook didn't say which version this edit left, so it wasn't undone. Change the draft in Outlook if you need to.", canRetry: false };
+      }
+      const ifMatch = payload.appliedChangeKey;
       const restored = await host.graph(async api => {
         const box = mail(api, payload.mailbox);
         let html = payload.before.html;
@@ -1002,7 +1007,7 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
           subject: payload.before.subject, importance: payload.before.importance,
           body: { contentType: "HTML", content: html },
           toRecipients: recipientsJson(payload.before.to), ccRecipients: recipientsJson(payload.before.cc), bccRecipients: recipientsJson(payload.before.bcc),
-        }, { ...(payload.appliedChangeKey ? { ifMatch: payload.appliedChangeKey } : {}), allow: [404] }).then(() => true, error => {
+        }, { ifMatch, allow: [404] }).then(() => true, error => {
           if (error instanceof GraphApiError && error.status === 412) return false;
           throw error;
         });
