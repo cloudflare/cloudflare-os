@@ -120,8 +120,8 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
   }
 
   const matching = target ? accounts.filter(a => a.vendorId === target.vendor.id) : []
-  const resource = target?.vendor.supportedResources
-    .find(r => r.urlPattern === target.typeUrlPattern)
+  const resource = target?.vendor.description.creatableResources
+    ?.find(r => r.urlPattern === target.typeUrlPattern)
   // A separately grantable type needs its grant on the account the resource is created in.
   const required = resource?.grantable ? [resource.urlPattern] : []
   const usable = (account: AccountEvent) => account.credentialsValid &&
