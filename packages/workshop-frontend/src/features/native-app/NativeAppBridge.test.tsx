@@ -187,7 +187,7 @@ describe('native app bridge', () => {
     })
     let subscriber!: RpcStub<UnreadStateSubscriber>
     const api = {...apiWithWhoami(() => identity.promise),
-      subscribeToUnreadState: (value: RpcStub<UnreadStateSubscriber>) => {
+      subscribeToUnreadState: (_scope: unknown, value: RpcStub<UnreadStateSubscriber>) => {
         subscriber = value
         return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}})
       },
@@ -195,10 +195,10 @@ describe('native app bridge', () => {
     const root = createRoot(document.createElement('div'))
     await act(async () => root.render(
       <AuthProvider authenticatedApi={api} onLogout={() => {}}>
-        <UnreadStateBridge authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
+        <UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
       </AuthProvider>
     ))
-    const state: UserUnreadState = {unreadMessageCount: 8, unreadChatCount: 1, chats: []}
+    const state: UserUnreadState = {workspaces: [], unreadMessageCount: 8, unreadChatCount: 1, chats: []}
     await act(async () => subscriber.updated(state))
     expect(calls).toEqual([])
     await act(async () => identity.resolve(user))
@@ -217,7 +217,7 @@ describe('native app bridge', () => {
     })
     const dispose = vi.fn<() => void>()
     let subscriber!: RpcStub<UnreadStateSubscriber>
-    const subscribeToUnreadState = vi.fn<(value: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable>((value) => {
+    const subscribeToUnreadState = vi.fn<(_scope: unknown, value: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable>((_scope, value) => {
       subscriber = value
       return Object.assign(Promise.resolve(), {[Symbol.dispose]: dispose})
     })
@@ -227,7 +227,7 @@ describe('native app bridge', () => {
     try {
       await act(async () => root.render(
         <AuthProvider authenticatedApi={api} onLogout={() => {}}>
-          <UnreadStateBridge authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
+          <UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
         </AuthProvider>
       ))
       expect(subscribeToUnreadState).toHaveBeenCalledOnce()
@@ -236,11 +236,11 @@ describe('native app bridge', () => {
         await act(async () => document.dispatchEvent(new Event('visibilitychange')))
       }
       expect(dispose).not.toHaveBeenCalled()
-      const state: UserUnreadState = {unreadMessageCount: 8, unreadChatCount: 1, chats: []}
+      const state: UserUnreadState = {workspaces: [], unreadMessageCount: 8, unreadChatCount: 1, chats: []}
       await act(async () => subscriber.updated(state))
       expect(badge).toHaveBeenLastCalledWith({...state, revision: 1})
-      await act(async () => subscriber.chatUpdated('workspace-1', 1, null,
-        {unreadMessageCount: 0, unreadChatCount: 0}))
+      await act(async () => subscriber.summaryUpdated(
+        {workspace: {workspaceId: 'workspace-1', unreadMessageCount: 0, unreadChatCount: 0}, unreadMessageCount: 0, unreadChatCount: 0}))
       expect(badge).toHaveBeenLastCalledWith({...state, unreadMessageCount: 0, unreadChatCount: 0, revision: 2})
       expect(document.visibilityState).toBe('hidden')
       expect(document.hasFocus()).toBe(false)
