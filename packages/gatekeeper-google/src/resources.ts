@@ -33,13 +33,14 @@ export const GMAIL_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** The whole-Drive type's pattern, which names the card Docs, Sheets and Slides appear on too. */
+/**
+ * The whole-Drive type's pattern, which names the card Docs, Sheets and Slides appear on too. Every
+ * type on it sets `configuratorRequestsGrant`, since their scopes differ: connecting from the card
+ * asks for none of them, and the picker asks for the type of what the user picks once it is chosen.
+ */
 const DRIVE_CARD = "https://drive.google.com/drive/my-drive";
 
-/**
- * A single Google Doc. On the Drive card, whose picker binds a native file as its editable type;
- * Workshop asks for the card's types together, though their scopes differ.
- */
+/** A single Google Doc. On the Drive card, whose picker binds a native file as its editable type. */
 export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/document/d/:docId/*",
   title: "Google Doc",
@@ -47,6 +48,7 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   grantable: true,
   creatable: true,
   groupedWith: DRIVE_CARD,
+  configuratorRequestsGrant: true,
 };
 
 /**
@@ -62,6 +64,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   grantable: true,
   creatable: true,
   groupedWith: DRIVE_CARD,
+  configuratorRequestsGrant: true,
 };
 
 /** A single Google Slides presentation. */
@@ -75,6 +78,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
   grantable: true,
   creatable: true,
   groupedWith: DRIVE_CARD,
+  configuratorRequestsGrant: true,
 };
 
 /** A single Google Calendar. */
@@ -157,6 +161,7 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
       "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
       "read-only, and PDFs can be read as text.",
   grantable: true,
+  configuratorRequestsGrant: true,
 };
 
 /** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
@@ -168,6 +173,7 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
       "Google Docs, Sheets and Slides, and PDFs as text.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
+  configuratorRequestsGrant: true,
 };
 
 /** Metadata and, when native or a PDF, read-only content for one immutable Drive file ID. */
@@ -179,6 +185,7 @@ export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
       "Drive file, or its text when it is a PDF.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
+  configuratorRequestsGrant: true,
 };
 
 /**
