@@ -1,0 +1,19 @@
+.gitattributes
+  s_bfd2947bc4cac9::t_b7b9e5811ccc24 13-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da3da7881874b46454e1811afcb0d87f17955041",
+  "prompts": {},
+  "sessions": {
+    "s_bfd2947bc4cac9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b0264d5-e72c-4a1d-b98d-75522f6a7c1e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
