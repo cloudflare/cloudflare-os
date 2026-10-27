@@ -125,7 +125,7 @@ jobs:
           # and the backend's WORKERS_AI binding only reaches gateways in its own account. So
           # inference and cost-log reads go over HTTPS with this AI Gateway Run + Read token,
           # scoped to the gateway's account. WORKERS_AI stays bound for webFetch's Markdown
-          # conversion. Decision models (Clef) need the binding and are refused over HTTPS.
+          # conversion, and decision models run on it, since the gateway refuses them over HTTPS.
           CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_API_TOKEN }}
           CF_AI_GATEWAY_USE_BINDING: "false"
           # The GitHub gatekeeper's OAuth app, uploaded to *that worker's* Preview base config the
