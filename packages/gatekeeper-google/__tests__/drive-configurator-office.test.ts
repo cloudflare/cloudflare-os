@@ -570,7 +570,7 @@ describe("the Drive picker on an account that lacks a type's grant", () => {
     expect(frame.url()).toBe("https://docs.google.com/document/d/native-1/edit");
   });
 
-  it("asks for the Drive types together, and polls for the pop-up's grant", async () => {
+  it("asks for the Drive types together, and waits only for the chosen one", async () => {
     const frame = await open(undefined, [DRIVE_BROWSE_GRANT]);
     frame.ensureResources.mockResolvedValue(false);
     frame.choose("folder:D1");
@@ -580,11 +580,27 @@ describe("the Drive picker on an account that lacks a type's grant", () => {
     expect(frame.ensureResources).toHaveBeenCalledWith(DRIVE_PATTERNS);
     await settle();
     expect(frame.notices().map(notice => notice.text)).toContain("Waiting for access in the pop-up…");
-    DRIVE_PATTERNS.forEach(pattern => frame.held.add(pattern));
+    // Google lets the user leave out the types they didn't choose.
+    frame.held.add(GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern);
     await vi.advanceTimersByTimeAsync(2_000);
 
     expect(frame.ready()).toBe(true);
     expect(parseResourceUrl(frame.url())).toEqual({ kind: "driveFolder", folderId: "D1" });
+  });
+
+  // A blueprint's folder binding grants and takes the folder type alone.
+  it("connects a Drive type the account holds alone, and asks only for types the Workshop takes", async () => {
+    const folderOnly = [GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern];
+    const granted = await open(folderOnly, [DRIVE_BROWSE_GRANT, ...folderOnly]);
+    granted.choose("folder:D1");
+    await settle();
+    expect(granted.ready()).toBe(true);
+
+    const ungranted = await open(folderOnly, [DRIVE_BROWSE_GRANT]);
+    ungranted.choose("folder:D1");
+    await settle();
+    ungranted.button("Allow access")!.onClick();
+    expect(ungranted.ensureResources).toHaveBeenCalledWith(folderOnly);
   });
 
   it("drops a grant that lands after a newer choice", async () => {

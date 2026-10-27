@@ -33,9 +33,14 @@ const SHARED_DRIVES_GRANT = "https://drive.google.com/drive/shared-drives";
 const ACCESS_POLL_MS = 2_000;
 const ACCESS_WAIT_MS = 3 * 60_000;
 
-/** The Drive types, which need the same scopes, so connecting one asks for all three. */
+/**
+ * What asking for `pattern` asks for: a Drive type brings the other Drive types the Workshop takes,
+ * which need the same scopes, so a later choice of one asks nothing more.
+ */
 const DRIVE_PATTERNS = [ACCOUNT_PATTERN, FOLDER_PATTERN, FILE_PATTERN];
-const grantsFor = (pattern: string) => DRIVE_PATTERNS.includes(pattern) ? DRIVE_PATTERNS : [pattern];
+const grantsFor = (pattern: string, accepted: readonly string[] | undefined) => DRIVE_PATTERNS.includes(pattern)
+  ? DRIVE_PATTERNS.filter(drive => drive === pattern || allows(accepted, drive))
+  : [pattern];
 
 /** The whole account's node, the picker's root. */
 const ROOT_ID = "drive";
@@ -259,7 +264,7 @@ type Flow =
   | { step: "unsupported"; target: string }
   | { step: "refused"; target: string; message: string }
   | { step: "office"; target: string; file: OfficeFile; busy?: Busy; error?: string }
-  | { step: "granting"; target: string; grants: string[]; waiting?: boolean; error?: string }
+  | { step: "granting"; target: string; pattern: string; waiting?: boolean; error?: string }
   | { step: "converted"; kind: OfficeKind; copy: Converted };
 
 let flow: Flow = { step: "idle" };
@@ -321,13 +326,13 @@ async function inspect(ui: DriveConfiguratorRpc, target: string): Promise<Flow> 
  * from the click whether to ask for it.
  */
 async function assess(ui: DriveConfiguratorRpc, target: string, accepted: readonly string[] | undefined): Promise<Flow> {
-  const grants = grantsFor(patternOf(target, accepted)!);
+  const pattern = patternOf(target, accepted)!;
   const [inspected, granted] = await Promise.all([
     editing(target, accepted) ? inspect(ui, target) : { step: "idle" } as const,
-    holds(ui, grants),
+    holds(ui, [pattern]),
   ]);
   if (inspected.step !== "idle") return inspected;
-  return granted ? inspected : { step: "granting", target, grants };
+  return granted ? inspected : { step: "granting", target, pattern };
 }
 
 /** The user's choice, held back until it is known to connect as it is. */
@@ -348,24 +353,25 @@ async function choose(context: Context, target: string | null) {
 }
 
 /**
- * Asks for the chosen node's grants from the click, so the browser lets Workshop open the consent
- * pop-up, then polls the gatekeeper until the account holds them.
+ * Asks for the chosen node's type from the click, so the browser lets Workshop open the consent
+ * pop-up, then polls the gatekeeper until the account holds it.
  */
-async function grant({ ensureResources, setValues, ui }: Context) {
+async function grant({ ensureResources, setValues, ui, acceptedResourceUrlPatterns: accepted }: Context) {
   if (flow.step !== "granting") return;
-  const { target, grants } = flow;
-  const asked = ensureResources(grants);
-  const run = begin({ step: "granting", target, grants, waiting: true });
+  const { target, pattern } = flow;
+  const asked = ensureResources(grantsFor(pattern, accepted));
+  const run = begin({ step: "granting", target, pattern, waiting: true });
   setValues({});
   try {
-    if (!(await asked) && !(await awaitGrants(ui, grants, run, Date.now() + ACCESS_WAIT_MS, "Allow access"))) return;
+    // Polls the chosen type alone: Google lets the user leave out the others.
+    if (!(await asked) && !(await awaitGrants(ui, [pattern], run, Date.now() + ACCESS_WAIT_MS, "Allow access"))) return;
     if (run !== generation) return;
-    grants.forEach(granted => held.add(granted));
+    held.add(pattern);
     flow = { step: "idle" };
     setValues({ checked: target });
   } catch (error) {
     if (run !== generation) return;
-    flow = { step: "granting", target, grants, error: errorText(error, "Access wasn't allowed.") };
+    flow = { step: "granting", target, pattern, error: errorText(error, "Access wasn't allowed.") };
     setValues({});
   }
 }
@@ -381,7 +387,7 @@ async function convert({ setValues, ensureResources, ui }: Context, reuse?: stri
   const { target, file } = flow;
   const kind = editorOf(target)!;
   const fileId = fileIdOf(target);
-  const grants = [...(reuse === undefined ? [OFFICE_IMPORT_GRANT] : []), ...grantsFor(EDITORS[kind].pattern)];
+  const grants = [...(reuse === undefined ? [OFFICE_IMPORT_GRANT] : []), EDITORS[kind].pattern];
   const missing = grants.filter(granted => !held.has(granted));
   const asked = missing.length === 0 ? Promise.resolve(true) : ensureResources(missing);
   const run = begin({ step: "office", target, file, busy: "converting" });
@@ -450,9 +456,9 @@ function convertedText({ kind, copy }: Extract<Flow, { step: "converted" }>): st
     "The original is unchanged, and later edits to it won't sync.";
 }
 
-/** What connecting needs Google to allow for `grants`, in the words of Google's consent screen. */
-function grantText(grants: string[]): string {
-  const editor = Object.values(EDITORS).find(({ pattern }) => grants.includes(pattern));
+/** What connecting `pattern` needs Google to allow, in the words of Google's consent screen. */
+function grantText(pattern: string): string {
+  const editor = Object.values(EDITORS).find(editor => editor.pattern === pattern);
   return editor
     ? `Google will ask to let this app "See, edit, create, and delete all your Google ${editor.title} ` +
       `files". A connection still reaches only the file you choose.`
@@ -466,9 +472,9 @@ function notices(context: Context) {
   // A notice describes the node chosen now; a choice the picker let go of takes its notice with it.
   if (flow.target !== context.values.target) return null;
   if (flow.step === "granting") {
-    const { grants, waiting, error } = flow;
+    const { pattern, waiting, error } = flow;
     return <Fragment>
-      <Notice>{grantText(grants)}</Notice>
+      <Notice>{grantText(pattern)}</Notice>
       {waiting && <Notice>Waiting for access in the pop-up…</Notice>}
       {error && <Notice tone="error">{error}</Notice>}
       <div style={{ display: "flex" }}>
