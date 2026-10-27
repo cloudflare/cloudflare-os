@@ -2111,6 +2111,9 @@ const SUGGESTED_MODEL_CATALOG = {
   "anthropic": {
     "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
     "claude-sonnet-5-5": {name: "Claude Sonnet 5.5", contextWindow: 1000000},
+    "claude-haiku-5-5": {
+      name: "Claude Haiku 5.5", contextWindow: 1000000, outputLimit: 128000,
+    },
     "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000},
     "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000, hidden: true},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000, hidden: true},
