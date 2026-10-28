@@ -6,8 +6,9 @@ import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { Button } from '@/components/Button'
 import { AppShell } from '@/layouts/AppShell'
 import { ChatLayout } from '@/layouts/ChatLayout'
+import { useApi } from '@/rpc/ApiContext'
 
-export const Route = createFileRoute('/')({
+export const Route = createFileRoute('/_app/')({
   component: Home,
 })
 
@@ -38,11 +39,12 @@ const conversations: SidebarConversation[] = [
 const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 rounded-full bg-kumo-fill" />)
 
 function Home() {
+  const { user } = useApi()
   return (
     <AppShell
       sidebar={
         <Sidebar
-          user={{ name: 'Balint' }}
+          user={{ name: user.name }}
           conversations={conversations}
           selectedConversationId="1"
           connections={placeholderLogos}

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
@@ -35,18 +35,24 @@ const runConfig = {
   },
 }
 
-export default defineConfig({
-  // Spread rather than a literal: `run` is Vite+'s field, absent from vite's own `defineConfig`.
-  ...runConfig,
-  plugins: [
-    TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
-    react(),
-    tailwindcss(),
-    tsconfigPaths(),
-  ],
-  server: {
-    // The existing Workshop frontend owns :3000; this app runs beside it.
-    port: 3001,
-    host: true,
-  },
+export default defineConfig(({ mode }) => {
+  const backendHost = loadEnv(mode, process.cwd()).VITE_BACKEND_HOST?.trim() || 'localhost:8787'
+  return {
+    // Spread rather than a literal: `run` is Vite+'s field, absent from vite's own `defineConfig`.
+    ...runConfig,
+    plugins: [
+      TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
+      react(),
+      tailwindcss(),
+      tsconfigPaths(),
+    ],
+    server: {
+      // The existing Workshop frontend owns :3000; this app runs beside it.
+      port: 3001,
+      host: true,
+      // The app talks to its own origin, as in production, where the router fronts the backend.
+      // `ws` carries the RPC WebSocket.
+      proxy: { '/api': { target: `http://${backendHost}`, ws: true } },
+    },
+  }
 })
