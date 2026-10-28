@@ -256,6 +256,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // device that registers again replaces its own subscription. Only this installation's signing
       // key can deliver to them.
       notificationSubscriptions: <Record<string, string>>{},
+      // Latest-value push outbox; its version belongs only to the push replacement protocol.
+      notificationBadge: <{version: number; count: number | null; retryAt?: number}>
+          {version: 0, count: null},
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index
       // (see #backfillOutputs()). Workspaces created since push on their own.

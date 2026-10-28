@@ -99,7 +99,7 @@ export async function registerDevice(
 export async function deliver(
     env: Cloudflare.Env, subscriptionId: string,
     { id, kind, workspaceId, chatId, chatTitle }: UserNotification,
-    signal?: AbortSignal): Promise<boolean> {
+    badge?: {count: number; version: number}, signal?: AbortSignal): Promise<boolean> {
   let response = await signedPost(env, "/v1/deliveries", {
     type: kind === "taskCompleted" ? "task_completed" : "permission_requested",
     eventId: id,
@@ -107,6 +107,7 @@ export async function deliver(
     threadTitle: threadTitle(chatTitle),
     path: `/workspace/${workspaceId}?chat=${chatId}&showChat=true`,
     subscriptionId,
+    ...(badge ? {badge} : {}),
   }, signal);
   if (response.ok) return true;
   // Only the service's verdict on the subscription retires it: a 401 can also mean a bad signature,
@@ -116,4 +117,16 @@ export async function deliver(
     if (status === "invalid_subscription" || status === "device_gone") return false;
   }
   throw new Error(`Notification delivery failed with status ${response.status}.`);
+}
+
+/** Replace the subscription's instance unread total. Retrying the same version is idempotent. */
+export async function deliverBadge(
+    env: Cloudflare.Env, subscriptionId: string, version: number, count: number): Promise<boolean> {
+  let response = await signedPost(env, "/v1/badges", {subscriptionId, version, count}, AbortSignal.timeout(15_000));
+  if (response.ok) return true;
+  if (response.status === 401 || response.status === 410) {
+    let {status} = await response.json<{status?: unknown}>();
+    if (status === "invalid_subscription" || status === "device_gone") return false;
+  }
+  throw new Error(`Badge delivery failed with status ${response.status}.`);
 }

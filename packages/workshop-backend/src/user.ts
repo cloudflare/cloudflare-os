@@ -23,7 +23,7 @@ import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
-import { deliver, registerDevice } from "./notification-service.js";
+import { deliver, deliverBadge, registerDevice } from "./notification-service.js";
 import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
@@ -547,6 +547,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let { deviceKey, subscriptionId } = await registerDevice(this.env, registration);
     this.storage.notificationSubscriptions.put(
         { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
+    this.#queueBadge(true);
   }
 
   /** Subscribe an authenticated client, including background listeners, to live notifications. */
@@ -633,6 +634,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.#chatWork.set(key, current);
     try { await current; }
     finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
+  }
+
+  #unreadCounts() {
+    let unreadChatCount = 0, unreadMessageCount = 0;
+    for (let cursor of this.#readCursors.values()) {
+      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted) continue;
+      unreadMessageCount += cursor.unreadCount;
+      if (cursor.unreadCount > 0) unreadChatCount++;
+    }
+    return {unreadChatCount, unreadMessageCount};
   }
 
   #unreadSnapshot(scope: UnreadStateScope, summary = this.#unreadSummary()): UserUnreadState {
@@ -802,6 +813,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #unreadChanged(workspaceId?: string, chatId?: number): void {
+    this.#queueBadge();
     let cursor = workspaceId === undefined || chatId === undefined ? undefined :
       this.#readCursors.get(`${workspaceId}:${chatId}`);
     let chat = cursor && this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted ? this.#readState(cursor) : null;
@@ -825,6 +837,56 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         this.#unreadSubscribers.delete(token);
         subscriber[Symbol.dispose]();
       }));
+    }
+  }
+
+  // This version belongs to the existing push-service replacement protocol, not read state.
+  #queueBadge(force = false): void {
+    if (!this.env.NOTIFICATION_SERVICE_URL ||
+        !Object.keys(this.storage.notificationSubscriptions.get()).length) return;
+    let previous = this.storage.notificationBadge.get();
+    let {unreadMessageCount} = this.#unreadCounts();
+    if (!force && previous.count === unreadMessageCount) return;
+    this.storage.notificationBadge.put({version: previous.version + 1,
+      count: unreadMessageCount, retryAt: Date.now() + 1_000});
+    this.ctx.waitUntil(this.#armExpirySweep());
+  }
+
+  async #flushBadge(): Promise<void> {
+    let pending = this.storage.notificationBadge.get();
+    if (pending.retryAt === undefined || pending.retryAt > Date.now()) return;
+    if (!Object.keys(this.storage.notificationSubscriptions.get()).length) {
+      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
+      return;
+    }
+    // The retry deadline precedes the network effect, so eviction/lost ACK can only replay a
+    // versioned replacement, never lose the pending intent or duplicate an alert.
+    this.storage.notificationBadge.put({...pending, retryAt: Date.now() + 30_000});
+    await this.#armExpirySweep();
+    if (pending.count === null) {
+      this.#queueBadge();
+      return;
+    }
+    let failed = false;
+    for (let [deviceKey, subscriptionId] of Object.entries(this.storage.notificationSubscriptions.get())) {
+      let currentBadge = this.storage.notificationBadge.get();
+      if (currentBadge.version !== pending.version || currentBadge.count !== pending.count) return;
+      try {
+        if (!await deliverBadge(this.env, subscriptionId, pending.version, pending.count)) {
+          let current = this.storage.notificationSubscriptions.get();
+          if (current[deviceKey] === subscriptionId) {
+            delete current[deviceKey];
+            this.storage.notificationSubscriptions.put(current);
+          }
+        }
+      } catch {
+        failed = true;
+        logger.warn("unread badge delivery deferred", {event: "notification.badge.deferred"});
+      }
+    }
+    let currentBadge = this.storage.notificationBadge.get();
+    if (!failed && currentBadge.version === pending.version && currentBadge.count === pending.count) {
+      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
     }
   }
 
@@ -938,6 +1000,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     });
     if (cursors.length) this.#unreadChanged();
+    else this.#queueBadge(); // A cold deletion can still change a previously delivered badge.
   }
 
   /**
@@ -966,9 +1029,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (acknowledged) return;
     signal.throwIfAborted();
     if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
+    this.#queueBadge();
+    let badge = this.storage.notificationBadge.get();
     let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
     let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
-      if (await deliver(this.env, subscriptionId, notification, signal)) return;
+      if (await deliver(this.env, subscriptionId, notification,
+          badge.count !== null ? {count: badge.count, version: badge.version} : undefined, signal)) return;
       // This subscription is dead; the device gets a new one when its app next opens. Keep one it
       // registered while this delivery was in flight.
       let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();
@@ -2573,6 +2639,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       // Other activity must not postpone an outstanding retry; a fired alarm can schedule anew.
       consider(Math.min(scheduled ?? Infinity, Date.now() + 30_000));
     }
+    let badgeRetry = this.storage.notificationBadge.get().retryAt;
+    if (badgeRetry !== undefined) consider(badgeRetry);
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
     for (let pending of this.storage.pendingDeviceHandoffs.list()) {
       consider(pending.expiresAt.getTime());
@@ -2608,7 +2676,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async alarm(): Promise<void> {
     // A stalled workspace/push service must not prevent unrelated auth expiry cleanup.
-    let deliveries = Promise.allSettled([this.#deliverNotifications()]);
+    let deliveries = Promise.allSettled([this.#deliverNotifications(), this.#flushBadge()]);
     let now = Date.now();
     let expiredFlows = Array.from(this.storage.pendingConnectFlows.list())
         .filter(flow => flow.expiresAt.getTime() <= now);
