@@ -1099,8 +1099,9 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
   // Over HTTPS the gateway supplies Workers AI's credential only to a request that names the model
   // in the path and carries no `Authorization`, which it would otherwise forward to Workers AI as
   // the credential.
-  return modelRunning((input, signal) => fetch(`https://gateway.ai.cloudflare.com/v1/` +
-      `${gwConfig.accountId}/${gwConfig.gateway}/workers-ai/run/${config.model}`, {
+  const gatewayUrl =
+      `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}`;
+  return modelRunning((input, signal) => fetch(`${gatewayUrl}/workers-ai/run/${config.model}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
