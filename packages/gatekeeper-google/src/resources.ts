@@ -152,11 +152,9 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   urlPattern: DRIVE_CARD,
   title: "Google Drive",
   description:
-      "Find files and folders anywhere this Google account can read in Drive, including shared " +
-      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
-      "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
-      "read-only, and PDFs can be read as text. A Doc, spreadsheet or presentation chosen on its " +
-      "own can be edited, with your approval.",
+      "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
+      "Slides and PDFs. Connect all of Drive, or just one shared drive, folder or file; a Doc, " +
+      "spreadsheet or presentation connected on its own can also be edited, with your approval.",
   grantable: true,
 };
 
