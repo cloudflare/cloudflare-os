@@ -5,13 +5,14 @@
 // harness at the package and plug in a handler module", not a forked copy of this file. Per-vendor
 // suites in consumer repos use this as-is.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { createTestHarness, type TestHarness } from "wrangler";
 import { z } from "zod";
+import { waitFor } from "./rpc-client.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -77,13 +78,15 @@ export type GatekeeperSpec = {
   patch?: (config: WorkerConfig) => void;
 };
 
-// Read a checked-in wrangler.jsonc and make it usable as an *inline* harness config.
-//
-// A worker whose `main` is generated (capnweb-validate) needs `build.cwd` pinned to its own directory
-// or the output lands in the wrong place -- run-dev-server.ts pins it for the same reason. `main` then
-// has to be absolute too: an inline config has no file path of its own, so wrangler resolves a
-// relative `main` against the harness `root` rather than the worker directory.
-function readWorkerConfig(dir: string): WorkerConfig {
+/**
+ * Read a checked-in wrangler.jsonc and make it usable as an *inline* harness config.
+ *
+ * A worker whose `main` is generated (capnweb-validate) needs `build.cwd` pinned to its own directory
+ * or the output lands in the wrong place -- run-dev-server.ts pins it for the same reason. `main` then
+ * has to be absolute too: an inline config has no file path of its own, so wrangler resolves a
+ * relative `main` against the harness `root` rather than the worker directory.
+ */
+export function readWorkerConfig(dir: string): WorkerConfig {
   const path = join(dir, "wrangler.jsonc");
   const parsed = WORKER_CONFIG.safeParse(parse(readFileSync(path, "utf8")));
   if (!parsed.success) {
@@ -181,6 +184,34 @@ export async function startHarness(opts: {
     fetchWorker: (name, ...args) => server.getWorker(name).fetch(...args),
     redeployWorkshop: patchWorkshop => server.update(options(patchWorkshop)),
   };
+}
+
+/**
+ * Deploy `config` over the running Worker of the same name, as releasing it does: the same Worker,
+ * so the same Durable Objects and storage, running the new code. Every Worker restarts, which breaks
+ * the RPC sessions open at the time, so only a suite that started its own harness should call this.
+ */
+export async function redeployWorker(harness: Harness, config: WorkerConfig): Promise<void> {
+  // update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so that
+  // reload can still be running either one's earlier build, with another to come. Every Worker
+  // carries this redeploy's mark, and it is done once each reports it.
+  const mark = randomUUID();
+  const workers: string[] = [];
+  await harness.server.update(current => ({
+    ...current,
+    workers: current.workers.map(worker => {
+      if (!("config" in worker)) throw new Error("The harness boots inline configs only");
+      const next = worker.config.name === config.name ? config : worker.config;
+      workers.push(next.name!);
+      return { config: { ...next, vars: { ...next.vars, TEST_UPGRADE: mark } } };
+    }),
+  }));
+  await waitFor("every Worker to run the redeploy", async () => {
+    for (const name of workers) {
+      if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== mark) return null;
+    }
+    return true;
+  });
 }
 
 // Takes the place of the module the Workshop's build generates its bundled blueprints into.

@@ -293,7 +293,7 @@ What changes for the gatekeeper:
 - **The switch is all at once and permanent.** The Workshop switches a connection when one of its reads calls `authorizeTrackedObservation()` or its `addObserver()` refuses a collaborator, then imports its history in the background without interrupting it. From then on the Workshop refuses every `authorizeObservation()` through it, whichever session made it, so every session, sub-session, cursor, and hook path must use `authorizeTrackedObservation()` before the flag ships; a read that uses `authorizeObservation()` before the Workshop has noticed the upgrade is treated as legacy. Tracking is never downgraded.
 - **Registrations made before the switch keep working.** Hook controllers and other persistent stubs stored by an earlier version keep the `props` they were minted with, and their hooks keep firing after the upgrade. Choose the protocol from the binding's current state, never from props or stored fields an earlier version did not write.
 
-`docs/observers.md` §10 describes the Workshop's side in full. No shipping gatekeeper opts in yet; the integration fixture's tracked mode (`packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts`) is a minimal working example.
+`docs/observers.md` §10 describes the Workshop's side in full. The integration fixture's tracked mode (`packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts`) is a minimal working example; the Context Library (`packages/gatekeeper-context/src/context-observers.ts`) is the first shipping gatekeeper to opt in, exporting the history its gatekeeper-kit tracker recorded.
 
 #### Implementing strategy C (legacy protocol)
 

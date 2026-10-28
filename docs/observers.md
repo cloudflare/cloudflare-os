@@ -891,7 +891,7 @@ its resource types.
 | **confluence** | Space | **C** | Verify space access; track observed pages and blog posts because content restrictions may be narrower. |
 | **confluence** | Page / Blog Post | **C** | Verify bound-content access; track observed child pages because they may have stricter restrictions than their parent. |
 | **zoominfo** | Account | **A** | Always throw. The whole-account binding exposes licensed, entitlement-dependent and account-specific intelligence, and ZoomInfo provides no ACL oracle proving another account can read every historical result. |
-| **context** | Context Library singleton | **C** | Track collections whose contents a read revealed (search results, a collection's listing, a document); verify each is in the observer's sharing domain and is public, is everyone-viewable, or grants the observer's Context account a viewer, editor, or owner role. Uses the kit's default observer cap to bound per-read verifier fanout. The top-level collection listing tracks nothing: its titles, descriptions and counts are discovery metadata the agent catalog already advertises unobserved. The denial never names the collection, which the refused collaborator cannot read. |
+| **context** | Context Library singleton | **C**, kernel-tracked (§10) | Throws: the connection advertises `supportsObserverTracking`. Each read reports the collections whose contents it revealed (search results, a collection's listing, a document) as subresources, one collection ID each, and `verifyObserverAccess` allows an observer only if their Context account can read every one now: public, everyone-viewable, or granted to the account as viewer, editor, or owner, in the binding's sharing domain. The top-level collection listing reports `[]`: its titles, descriptions and counts are discovery metadata the agent catalog already advertises unobserved. `getHistoricalSubresources` exports every `observedCollection:` marker the binding's gatekeeper-kit tracker left before the move, pending ones included, so those markers are never deleted; `removeObserver` retires that tracker's registrations. The Workshop's denial never names the collection. |
 | **x** | Account | **C** | Admit any observer with a working X connection: public posts, profiles, public Lists and follow graphs need only an X account. Reads private to the account -- bookmarks, likes, mute state, private Lists, and any page holding a protected account's post -- authorize against one synthetic `owner` collection, which admits only an observer connected as the same X user. |
 | **x** | Post / List | **C** | As Account, plus a check on every open that the observer's own X account can see the bound post or List (`canViewPost` / `canViewList`). Each check is a read billed to the observer's connection, so a passed check is trusted for an hour; a failed one never is. |
 | **microsoft** | SharePoint (all, site, library, folder, file, list, page) | **C** | Track every object a read revealed as a unit (`sharepoint-observers.ts`), since SharePoint breaks inheritance at any level and one container's ACL never vouches for its contents; verify each by probing it with the observer's own token, twenty to a `$batch`, where 403 and 404 both mean no access. A file's content and its version history are their own units, since someone may see a file they can't open; a draft the owner read pins its version, and the probe passes only if the observer is shown the same one. |
@@ -938,9 +938,9 @@ This is why the broad bindings split the way they do:
 A connection whose `describe()` returns `supportsObserverTracking: true` is tracked by the
 Workshop itself instead of the protocol above (`src/observer-ledger.ts`). Connections without the
 flag keep the legacy `addObserver`/`removeObserver`/`excludeObservers` protocol unchanged, and one
-workspace can mix the two. No shipping gatekeeper opts in yet. The gatekeeper's side of the
-contract (ID rules and limits, `verifyObserverAccess()` answers, the history export) is
-documented on those members in `workshop-shared/src/gatekeeper.ts`, and
+workspace can mix the two. The Context Library is the first shipping gatekeeper to opt in (§9.2).
+The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAccess()` answers, the
+history export) is documented on those members in `workshop-shared/src/gatekeeper.ts`, and
 `plans/kernel-observer-tracking.md` records why it is shaped this way.
 
 - **A separate authorization method.** A tracked connection's gatekeeper authorizes every read
@@ -1064,7 +1064,9 @@ documented on those members in `workshop-shared/src/gatekeeper.ts`, and
   through it, which includes the hook's own gadget.
 
 The integration fixture's tracked mode (`/control/observer-tracking`) exercises this end to end in
-`packages/integration-tests/__tests__/observer-tracking.test.ts`.
+`packages/integration-tests/__tests__/observer-tracking.test.ts`, and
+`context-observer-upgrade.test.ts` upgrades the real Context Library from the release that tracked
+its own observers, through both switches, importing what that release recorded.
 
 ---
 

@@ -1,6 +1,9 @@
-import {
-  trackedCollectionObservers, type ObserverKv, type ObserverStrategy,
-} from "@gadgets/gatekeeper-kit/observers";
+// The Workshop tracks the Context Library's observers itself (docs/observers.md §10). A read's
+// subresources are the collections whose contents it revealed, each named by its ID: every
+// document and skill in a collection shares its access, and a binding reads only its own sharing
+// domain, so the ID alone tells the binding what to check.
+
+import { asVerifier, ObserverTracker, type ObserverKv } from "@gadgets/gatekeeper-kit/observers";
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 import { VENDOR_ID } from "./context-types.js";
 
@@ -18,27 +21,43 @@ export interface ContextVerifierApi extends GatekeeperUserVerifier {
   getAccountId(sharingDomain: string): Promise<string | null>;
 }
 
-/**
- * Shown to a collaborator refused admission. It must not name the collection: the collaborator
- * cannot read it, and a private collection's title is its members' data.
- */
-export const CONTEXT_OBSERVER_DENIED =
-  "This workspace has read from a Skills collection that hasn't been shared with your account, so " +
-  "you can't open it. Only collaborators who can read every collection the workspace has used may " +
-  "open it.";
+/** The IDs of the `observers` whose Context account can read every one of `collectionIds` now. */
+export async function observersWithAccess(
+    sharingDomain: string, observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    collectionIds: string[]): Promise<string[]> {
+  let unique = [...new Set(collectionIds)];
+  let allowed = await Promise.all(observers.map(async ({ id, verifier }) => {
+    let access = await asVerifier<Fetcher<ContextVerifierApi>>(verifier)
+      .hasCollectionsAccess(sharingDomain, unique);
+    // A verdict is tied to its collection only by position, so a ragged answer grants nothing.
+    return access.length === unique.length && unique.every((_, index) => access[index] === true)
+      ? id : null;
+  }));
+  return allowed.filter(id => id !== null);
+}
+
+// Where the gatekeeper-kit tracker the binding used before kept a marker for each collection a read
+// revealed. Never deleted: the Workshop may ask for the export again until it commits the import.
+const LEGACY_COLLECTION_PREFIX = "observedCollection:";
 
 /**
- * Strategy C for the broad Context Library singleton. Collections are the data sets: public
- * collections are domain-wide; private collections admit their grantees and, when enabled, everyone
- * in the sharing domain. The prefix keeps markers recorded before this tracker moved to the kit.
+ * Every collection the binding's reads revealed while it tracked its observers itself. A marker of
+ * any state counts: a "pending" one belongs to a read whose authorization outcome the tracker never
+ * learned, so the Workshop may have disclosed it.
  */
-export function contextObserverStrategy(kv: ObserverKv, sharingDomain: string): ObserverStrategy {
-  return trackedCollectionObservers<Fetcher<ContextVerifierApi>>({
+export function legacyObservedCollections(kv: ObserverKv): string[] {
+  return Array.from(kv.list({ prefix: LEGACY_COLLECTION_PREFIX }), ([key]) =>
+    key.slice(LEGACY_COLLECTION_PREFIX.length));
+}
+
+/** Drops the registration, and any admission in flight, the binding's own tracker kept for `id`. */
+export function retireLegacyObserver(kv: ObserverKv, id: string): void {
+  new ObserverTracker({
     kv,
-    collectionPrefix: "observedCollection:",
-    hasCollectionAccess: (verifier, collectionIds) =>
-      verifier.hasCollectionsAccess(sharingDomain, [...collectionIds]),
-    denyMessage: () => CONTEXT_OBSERVER_DENIED,
+    collectionPrefix: LEGACY_COLLECTION_PREFIX,
+    // Only its storage layout is still used: the Workshop checks every observer now.
+    hasCollectionAccess: () =>
+      Promise.reject(new Error("Skills observers are verified by the Workshop.")),
     vendorId: VENDOR_ID,
-  });
+  }).removeObserver(id);
 }

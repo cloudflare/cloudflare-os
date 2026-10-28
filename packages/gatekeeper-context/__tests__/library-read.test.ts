@@ -1,34 +1,14 @@
+import type { RpcStub } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { ObservationGate, type ObserverKv } from "@gadgets/gatekeeper-kit/observers";
 import type {
-  GatekeeperUserVerifier, ObservationDescription,
+  ObservationAuthorizer, TrackedObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { CONTEXT_OBSERVER_DENIED, contextObserverStrategy } from "../src/context-observers.js";
 import type { ContextCollectionDurableObject } from "../src/context-collection.js";
 import { LibraryReadSession } from "../src/library-read.js";
 import type { UserLibraryDurableObject } from "../src/user-library.js";
 import { domainName } from "../src/domain.js";
 
 const DOMAIN = "workshop.example";
-
-function makeKv(): ObserverKv {
-  let map = new Map<string, unknown>();
-  return {
-    get: <T>(key: string) => map.get(key) as T | undefined,
-    put: <T>(key: string, value: T) => void map.set(key, value),
-    delete: (key: string) => void map.delete(key),
-    list: <T>({ prefix }: { prefix: string }) =>
-      [...map.entries()].filter(([key]) => key.startsWith(prefix)) as [string, T][],
-  };
-}
-
-function verifier(allowed: string[]): Fetcher<GatekeeperUserVerifier> {
-  return {
-    async hasCollectionsAccess(_sharingDomain: string, collectionIds: string[]) {
-      return collectionIds.map(id => allowed.includes(id));
-    },
-  } as unknown as Fetcher<GatekeeperUserVerifier>;
-}
 
 const DOCUMENT = {
   path: "plan.md",
@@ -39,16 +19,18 @@ const DOCUMENT = {
 };
 
 // The owner's library: one public collection and one private collection.
-function makeSession({ publicDiscoveryFails = false, publicAccessFails = false } = {}) {
-  let kv = makeKv();
-  let strategy = contextObserverStrategy(kv, DOMAIN);
-  let authorized: ObservationDescription[] = [];
+function makeSession({ publicDiscoveryFails = false, publicAccessFails = false, refusal }: {
+  publicDiscoveryFails?: boolean; publicAccessFails?: boolean; refusal?: Error;
+} = {}) {
+  let authorized: TrackedObservationDescription[] = [];
+  // Only authorizeTrackedObservation() and disposal are reached by the read session.
   let authorizer = {
-    async authorizeObservation(description: ObservationDescription) {
+    async authorizeTrackedObservation(description: TrackedObservationDescription) {
+      if (refusal) throw refusal;
       authorized.push(description);
     },
     [Symbol.dispose]() {},
-  };
+  } as unknown as RpcStub<ObservationAuthorizer>;
   let collections = {
     idFromName: (name: string) => name,
     get: (name: string) => ({
@@ -89,42 +71,52 @@ function makeSession({ publicDiscoveryFails = false, publicAccessFails = false }
       },
     },
   } as unknown as Pick<Cloudflare.Env, "CONTEXT_COLLECTIONS">;
-  let session = new LibraryReadSession(
-    env, collections, userLibraries, DOMAIN, "owner",
-    new ObservationGate(
-      authorizer as unknown as ConstructorParameters<typeof ObservationGate>[0], strategy));
-  return { session, strategy, authorized };
+  let session = new LibraryReadSession(env, collections, userLibraries, DOMAIN, "owner", authorizer);
+  return { session, authorized };
 }
 
-describe("LibraryReadSession sharing", () => {
-  it("lists every collection without restricting who may open the workspace", async () => {
-    let { session, strategy, authorized } = makeSession();
-    await strategy.addObserver("existing", verifier(["public"]));
+describe("LibraryReadSession observations", () => {
+  it("lists every collection without depending on any of them", async () => {
+    let { session, authorized } = makeSession();
 
     let listing = await session.list();
 
     expect(listing.entries.map(entry => entry.type === "collection" && entry.id))
       .toEqual(["private", "public"]);
-    expect(authorized).toHaveLength(1);
-    expect(authorized[0].excludeObservers).toBeUndefined();
-    await strategy.addObserver("later", verifier(["public"]));
+    expect(authorized.map(description => description.subresources)).toEqual([[]]);
   });
 
-  it("restricts sharing once a private collection's contents are listed or read", async () => {
+  it("depends on a private collection once its contents are listed or read", async () => {
     for (let reveal of [
       (session: LibraryReadSession) => session.list({ collectionId: "private" }),
       (session: LibraryReadSession) => session.read("private/plan.md"),
     ]) {
-      let { session, strategy, authorized } = makeSession();
-      await strategy.addObserver("existing", verifier(["public"]));
+      let { session, authorized } = makeSession();
 
       await reveal(session);
 
-      expect(authorized[0].excludeObservers).toEqual(["existing"]);
-      await expect(strategy.addObserver("later", verifier(["public"])))
-        .rejects.toThrow(CONTEXT_OBSERVER_DENIED);
-      await strategy.addObserver("owner-account", verifier(["public", "private"]));
+      expect(authorized.map(description => description.subresources)).toEqual([["private"]]);
     }
+  });
+
+  it("depends only on the collections a search returned results from", async () => {
+    let { session, authorized } = makeSession();
+
+    expect((await session.search("plan", { limit: 1 })).map(result => result.docId))
+      .toEqual(["private/plan.md"]);
+    expect(await session.search("plan")).toHaveLength(2);
+
+    expect(authorized.map(description => description.subresources))
+      .toEqual([["private"], ["private", "public"]]);
+  });
+
+  it("returns nothing a refused observation covered", async () => {
+    let refusal = new Error("This workspace may not read that.");
+    let { session } = makeSession({ refusal });
+
+    await expect(session.read("private/plan.md")).rejects.toBe(refusal);
+    await expect(session.list({ collectionId: "private" })).rejects.toBe(refusal);
+    await expect(session.search("plan")).rejects.toBe(refusal);
   });
 
   it("keeps healthy private and public results when another public collection is unavailable", async () => {

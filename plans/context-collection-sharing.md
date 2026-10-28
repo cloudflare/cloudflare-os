@@ -193,29 +193,28 @@ must survive flag changes, and removing an explicit grant must not erase another
 
 ## Observer verification
 
-Retain the existing collection-tracking observer strategy: the Context singleton spans collections
-with different ACLs, and the tracker already records collection IDs.
-
-Update `ContextVerifier.hasCollectionsAccess()` to accept:
+The Context singleton spans collections with different ACLs, so a read depends on each collection
+whose contents it revealed. The Workshop tracks those collections itself (`docs/observers.md` §10):
+each observation reports them as subresources, and `ContextGatekeeper.verifyObserverAccess()` asks
+each observer's `ContextVerifier.hasCollectionsAccess()` about them, which accepts:
 
 - Ownership.
 - Explicit viewer or editor grants.
 - Everyone-viewable permission.
 - Existing deployment-public access.
 
-Keep it free of side effects: the tracker calls it on every read and on admission attempts that
+Keep it free of side effects: the Workshop calls it on every read and on admission attempts that
 fail, so it is not a successful-join notification. Use the same authoritative policy as management
 and agent reads. A stale shared-list reference must not satisfy observer verification. Revocation
 must affect subsequent checks even when a read session or discovery entry already exists.
 
-Update `CONTEXT_OBSERVER_DENIED`, which names "another user's private collection" as the example,
-so it still makes sense when the collection is shared with others, and keep it free of collection
-names.
+The Workshop's denial never names a collection, whose title is its members' data.
 
 Relevant files:
 
-- `src/context-observers.ts`: vendor-specific batched access oracle and tracked strategy.
-- `src/library-gatekeeper.ts`: Context account, verifier, observer admission, and catalog integration.
+- `src/context-observers.ts`: the batched access check and the legacy tracker's history export.
+- `src/library-gatekeeper.ts`: Context account, verifier, observer tracking opt-in, and catalog
+  integration.
 - `src/library-read.ts`: collection-scoped observations and enabled-set caching.
 - `src/user-library.ts`: owned/shared discovery indexes.
 

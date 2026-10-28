@@ -20,9 +20,9 @@ export default {
         ],
       },
       /**
-       * gatekeeper-google as the release before the hook delivery queue moved, for the suite that
-       * upgrades it in place (`scripts/build-upgrade-base.ts`). Uncached: the script reads git and
-       * the pnpm store, which no fingerprint covers, and returns at once when its output is current.
+       * gatekeeper-google and gatekeeper-context as earlier releases shipped them, for the suites
+       * that upgrade them in place (`scripts/build-upgrade-base.ts`). Uncached: the script reads git
+       * and the pnpm store, which no fingerprint covers, and returns at once when its output is current.
        */
       'build:upgrade-base': {
         command: withTestTimeout('node scripts/build-upgrade-base.ts'),
@@ -51,7 +51,7 @@ export default {
           ...WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS,
         ]),
         // Real gatekeepers boot from prebuilt validated trees, tracked as inputs like the fixture,
-        // plus the release the Google upgrade suite starts from.
+        // plus the releases the upgrade suites start from.
         dependsOn: [
           'build:test-gatekeeper', 'build:upgrade-base',
           '@gadgets/github-gatekeeper#build:integration-worker',

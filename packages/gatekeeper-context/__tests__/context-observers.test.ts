@@ -1,58 +1,109 @@
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { ObserverKv } from "@gadgets/gatekeeper-kit/observers";
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
+import type { ContextCollectionDurableObject } from "../src/context-collection.js";
 import {
-  CONTEXT_OBSERVER_DENIED, contextObserverStrategy,
+  legacyObservedCollections, observersWithAccess, retireLegacyObserver,
 } from "../src/context-observers.js";
+import { domainName } from "../src/domain.js";
+import { ContextVerifier } from "../src/library-gatekeeper.js";
 
-function makeKv(): ObserverKv & { map: Map<string, unknown> } {
-  let map = new Map<string, unknown>();
-  return {
-    map,
-    get: <T>(key: string) => map.get(key) as T | undefined,
-    put: <T>(key: string, value: T) => void map.set(key, value),
-    delete: (key: string) => map.delete(key),
-    list: <T>({ prefix }: { prefix?: string } = {}) =>
-      [...map.entries()].filter(([key]) => key.startsWith(prefix ?? "")) as Iterable<[string, T]>,
-  } as ObserverKv & { map: Map<string, unknown> };
+// The miniflare bindings vitest.config.ts declares, which Cloudflare.Env does not.
+const testEnv = env as unknown as { COLLECTIONS: DurableObjectNamespace<ContextCollectionDurableObject> };
+const collections = testEnv.COLLECTIONS;
+
+// Storage persists across the file's tests, so each gets its own sharing domain.
+let domain = "";
+let domains = 0;
+beforeEach(() => {
+  domain = `observers-${domains++}.example`;
+});
+
+const collection = (id: string) => collections.get(collections.idFromName(domainName(domain, id)));
+
+async function createCollection(id: string, visibility: "private" | "public", owner = "alice") {
+  let now = new Date();
+  await collection(id).initialize({
+    id, title: id, description: "", visibility,
+    created: now, lastUpdated: now, documentCount: 0, content: { source: "web" },
+  }, domain, visibility === "private" ? owner : "");
 }
 
-function verifier(allowed: string[]) {
-  let calls: Array<{ sharingDomain: string; collectionIds: string[] }> = [];
-  let user = {
-    async hasCollectionsAccess(sharingDomain: string, collectionIds: string[]) {
-      calls.push({ sharingDomain, collectionIds });
-      return collectionIds.map(id => allowed.includes(id));
-    },
-  } as unknown as Fetcher<GatekeeperUserVerifier>;
-  return { user, calls };
-}
+// An observer as the Workshop hands it over: the account's own verifier. The test runner's exports
+// hold only the Durable Objects, so the verifier is built around a context giving it theirs.
+const observer = (accountId: string, sharingDomain = domain) => ({
+  id: accountId,
+  verifier: new ContextVerifier({
+    props: { sharingDomain, accountId },
+    exports: { ContextCollectionDurableObject: collections },
+  } as unknown as ConstructorParameters<typeof ContextVerifier>[0], env as Cloudflare.Env) as
+    unknown as Fetcher<GatekeeperUserVerifier>,
+});
 
-describe("contextObserverStrategy", () => {
-  it("keeps enforcing collections recorded before the move to the kit tracker", async () => {
-    for (let legacy of [true, "observed", "pending"]) {
-      let kv = makeKv();
-      kv.put("observedCollection:private", legacy);
-      let strategy = contextObserverStrategy(kv, "workshop.example");
+const allowed = (accountIds: string[], collectionIds: string[]) =>
+  observersWithAccess(domain, accountIds.map(accountId => observer(accountId)), collectionIds);
 
-      await expect(strategy.addObserver("denied", verifier([]).user))
-        .rejects.toThrow(CONTEXT_OBSERVER_DENIED);
-      let allowed = verifier(["private"]);
-      await strategy.addObserver("allowed", allowed.user);
-      expect(allowed.calls).toEqual([
-        { sharingDomain: "workshop.example", collectionIds: ["private"] },
-      ]);
-    }
+describe("observersWithAccess", () => {
+  it("allows exactly the observers who can read every collection now", async () => {
+    await createCollection("shared", "private");
+    await collection("shared").share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
+    await createCollection("everyone", "private");
+    await collection("everyone").setEveryoneCanView("alice", true);
+    await createCollection("public", "public");
+    await createCollection("unshared", "private");
+    await createCollection("deleted", "private");
+    await collection("deleted").removeAccount("alice");
+
+    let everyone = ["alice", "bob", "carol"];
+    expect(await allowed(everyone, ["everyone", "public"])).toEqual(everyone);
+    expect(await allowed(everyone, ["shared", "everyone", "public"])).toEqual(["alice", "bob"]);
+    expect(await allowed(everyone, ["unshared", "public"])).toEqual(["alice"]);
+    expect(await allowed(everyone, ["deleted"])).toEqual([]);
+    expect(await allowed(everyone, ["never-created"])).toEqual([]);
+    // Another sharing domain's account, even one with the same ID, reads none of this domain.
+    expect(await observersWithAccess(domain, [observer("alice", "elsewhere.example")], ["public"]))
+      .toEqual([]);
   });
 
-  it("refuses without disclosing which collection the collaborator cannot read", async () => {
-    let kv = makeKv();
-    let strategy = contextObserverStrategy(kv, "workshop.example");
-    let check = await strategy.prepare!(["private-collection-id"]);
-    check.commit();
+  it("denies an observer as soon as their access is revoked", async () => {
+    await createCollection("shared", "private");
+    await collection("shared").share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
+    expect(await allowed(["bob"], ["shared"])).toEqual(["bob"]);
 
-    let denial = strategy.addObserver("denied", verifier([]).user);
-    await expect(denial).rejects.toThrow(CONTEXT_OBSERVER_DENIED);
-    await expect(denial).rejects.not.toThrow(/private-collection-id/);
+    await collection("shared").removeMember("alice", "bob");
+
+    expect(await allowed(["bob"], ["shared", "shared"])).toEqual([]);
+  });
+});
+
+describe("legacy observer tracking", () => {
+  it("exports every collection the binding's own tracker recorded, after retiring its observers", () => {
+    // The layout the kit tracker left in a binding's storage: one marker per collection a read
+    // revealed, beside each admitted observer and each admission in flight.
+    let storage = new Map<string, unknown>([
+      ["observedCollection:unshared", true],
+      ["observedCollection:shared", "observed"],
+      ["observedCollection:uncertain", "pending"],
+      ["observer:collaborator", "verifier"],
+      ["observer-attempt:candidate", { verifier: "verifier", at: Date.now() }],
+      ["observer-nonce:candidate", "nonce"],
+    ]);
+    let kv: ObserverKv = {
+      get: <T>(key: string) => storage.get(key) as T | undefined,
+      put: (key, value) => void storage.set(key, value),
+      delete: key => storage.delete(key),
+      list: <T>({ prefix = "" }: { prefix?: string } = {}) =>
+        [...storage].filter(([key]) => key.startsWith(prefix)) as [string, T][],
+    };
+
+    retireLegacyObserver(kv, "collaborator");
+    retireLegacyObserver(kv, "candidate");
+
+    expect([...storage.keys()].every(key => key.startsWith("observedCollection:"))).toBe(true);
+    // Repeatable: the Workshop asks again if its import does not commit.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(legacyObservedCollections(kv).toSorted()).toEqual(["shared", "uncertain", "unshared"]);
+    }
   });
 });

@@ -13,11 +13,12 @@ import type {
   SlashCommandDescriptor, SlashCommandProvider, SlashCommandResult,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
-import { ObservationGate } from "@gadgets/gatekeeper-kit/observers";
 import { LibraryReadSession } from "./library-read.js";
 import { ContextApiImpl } from "./context-api.js";
-import { contextObserverStrategy } from "./context-observers.js";
-import type { ContextVerifierApi } from "./context-observers.js";
+import {
+  legacyObservedCollections, observersWithAccess, retireLegacyObserver,
+  type ContextVerifierApi,
+} from "./context-observers.js";
 import { canReadCollection } from "./collection-access.js";
 import {
   buildAgentSkillCommands, buildAgentSkillMessage, buildContextCatalog, parseSkillManifest,
@@ -199,7 +200,7 @@ export class ContextAccount
 
   /**
    * Mint a verifier tied to this account. ContextGatekeeper uses it to check whether a prospective
-   * observer can independently read each collection the Gadget has observed.
+   * observer can independently read each collection a workspace has observed.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -231,9 +232,6 @@ export class ContextGatekeeper
     implements Gatekeeper<LibraryReadSession> {
   #collections() { return this.ctx.exports.ContextCollectionDurableObject; }
   #userLibraries() { return this.ctx.exports.UserLibraryDurableObject; }
-  // One strategy over the same storage object for the DO's lifetime: the kit coordinates in-flight
-  // reads in memory keyed on it.
-  readonly #observers = contextObserverStrategy(this.ctx.storage.kv, this.ctx.props.sharingDomain);
 
   async #loadSkills(
       collections: EnabledCollectionInfo[]):
@@ -270,6 +268,21 @@ export class ContextGatekeeper
       suggestedBindingName: "CONTEXT",
       tsType: "ContextLibrary",
       hasSlashCommands: true,
+      supportsObserverTracking: true,
+    };
+  }
+
+  /** The collections this binding's reads revealed while it tracked its observers itself. */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return legacyObservedCollections(this.ctx.storage.kv);
+  }
+
+  async verifyObserverAccess(
+      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    return {
+      allowedObserverIds:
+        await observersWithAccess(this.ctx.props.sharingDomain, observers, subresources),
     };
   }
 
@@ -278,17 +291,10 @@ export class ContextGatekeeper
   }
 
   #newReadSession(authorizer: NativeRpcStub<ObservationAuthorizer>): LibraryReadSession {
-    // The read session uses this authorizer after startSession() returns, so its gate owns a
-    // duplicate.
-    let gate = new ObservationGate(authorizer.dup(), this.#observers);
-    try {
-      return new LibraryReadSession(
-        this.env, this.#collections(), this.#userLibraries(),
-        this.ctx.props.sharingDomain, this.ctx.props.accountId, gate);
-    } catch (err) {
-      gate[Symbol.dispose]();
-      throw err;
-    }
+    // The read session uses this authorizer after startSession() returns, so it owns a duplicate.
+    return new LibraryReadSession(
+      this.env, this.#collections(), this.#userLibraries(),
+      this.ctx.props.sharingDomain, this.ctx.props.accountId, authorizer.dup());
   }
 
   async startSession(approvalQueue: NativeRpcStub<ApprovalQueue>): Promise<LibraryReadSession> {
@@ -343,15 +349,16 @@ export class ContextGatekeeper
   }
 
   /**
-   * The Context singleton is a broad binding over public and shared collections. Track the
-   * collections actually revealed and verify every observer against each one.
+   * The Workshop checks this binding's observers itself (see verifyObserverAccess()). Refusing
+   * tells a Workshop still treating the binding as legacy that it has upgraded.
    */
-  async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    await this.#observers.addObserver(id, user);
+  async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    throw new Error("Skills observers are verified by the Workshop.");
   }
 
+  /** Retires an observer the binding registered before the Workshop checked them itself. */
   async removeObserver(id: string): Promise<void> {
-    await this.#observers.removeObserver(id);
+    retireLegacyObserver(this.ctx.storage.kv, id);
   }
 
   /** Read-only gatekeeper: no actions are submitted, so these callbacks should never run. */

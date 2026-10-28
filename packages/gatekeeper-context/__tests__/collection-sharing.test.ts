@@ -1,7 +1,9 @@
 import { createExecutionContext, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import type { RpcStub } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ObservationGate, privateObservers } from "@gadgets/gatekeeper-kit/observers";
-import type { GatekeeperUserSelectionExchange } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  GatekeeperUserSelectionExchange, ObservationAuthorizer,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { ContextApiImpl } from "../src/context-api.js";
 import { canReadCollection, collectionPermissions } from "../src/collection-access.js";
 import { ContextCollectionDurableObject } from "../src/context-collection.js";
@@ -70,13 +72,13 @@ async function permissions(id: string, accountId: string) {
 }
 
 function readSession(accountId: string): LibraryReadSession {
+  // Only authorizeTrackedObservation() and disposal are reached by the read session.
   let authorizer = {
-    async authorizeObservation() {},
+    async authorizeTrackedObservation() {},
     [Symbol.dispose]() {},
-  } as unknown as ConstructorParameters<typeof ObservationGate>[0];
+  } as unknown as RpcStub<ObservationAuthorizer>;
   return new LibraryReadSession(
-    testEnv, testEnv.COLLECTIONS, testEnv.USER_LIBRARIES, domain, accountId,
-    new ObservationGate(authorizer, privateObservers("No observers in this access-check fixture.")));
+    testEnv, testEnv.COLLECTIONS, testEnv.USER_LIBRARIES, domain, accountId, authorizer);
 }
 
 /**

@@ -13,12 +13,12 @@ import { fileURLToPath } from "node:url";
 import type { RpcStub } from "capnweb";
 import { parse } from "jsonc-parser";
 import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
-import { UPGRADE_BASE_DIR } from "../scripts/build-upgrade-base.js";
-import type { GatekeeperSpec, Harness, WorkerConfig } from "../src/harness.js";
+import { upgradeBaseDir } from "../scripts/build-upgrade-base.js";
+import { redeployWorker, type GatekeeperSpec, type Harness, type WorkerConfig } from "../src/harness.js";
 import type { Handler } from "../src/network-interceptor.js";
 import { listConnectedAccounts, waitFor } from "../src/rpc-client.js";
-
 const GOOGLE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../gatekeeper-google");
+const UPGRADE_BASE_DIR = upgradeBaseDir("gatekeeper-google");
 export const GOOGLE_WORKER = "gatekeeper-google";
 export const GOOGLE_VENDOR_ID = "google";
 /** Where browsers and Pub/Sub reach the gatekeeper, through the router, as `/gatekeeper/google`. */
@@ -78,26 +78,7 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   const google = parse(readFileSync(join(GOOGLE_DIR, "wrangler.jsonc"), "utf8")) as WorkerConfig;
   configure(google);
   google.main = main;
-  // update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so
-  // that reload can still be running either one's earlier build, with another to come. Every
-  // Worker carries this upgrade's mark, and it is done once each reports it.
-  const upgrade = randomUUID();
-  const workers: string[] = [];
-  await harness.server.update(current => ({
-    ...current,
-    workers: current.workers.map(worker => {
-      if (!("config" in worker)) throw new Error("The harness boots inline configs only");
-      const config = worker.config.name === GOOGLE_WORKER ? google : worker.config;
-      workers.push(config.name!);
-      return { config: { ...config, vars: { ...config.vars, TEST_UPGRADE: upgrade } } };
-    }),
-  }));
-  await waitFor("every Worker to run the upgrade", async () => {
-    for (const name of workers) {
-      if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
-    }
-    return true;
-  });
+  await redeployWorker(harness, google);
 }
 
 type Row = Record<string, unknown>;
