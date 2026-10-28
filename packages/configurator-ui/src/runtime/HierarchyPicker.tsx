@@ -229,7 +229,8 @@ const Navigator = (props: HierarchyPickerProps) => {
     ? listing : null;
   const status = fresh?.status ?? "loading";
   // A listing naming the open container or the root among its own nodes would show one choice twice.
-  const shows = (item: Item) => item.id !== locationId && item.id !== root.id;
+  // A search may find the open container, whose own row it does not show.
+  const shows = (item: Item) => (query !== "" || item.id !== locationId) && item.id !== root.id;
   const items = (fresh?.items ?? []).filter(shows);
   // The open container, offered as a choice of its own. Not under a search, whose results are not
   // its contents.
@@ -484,11 +485,12 @@ const Navigator = (props: HierarchyPickerProps) => {
     setQuery("");
   };
 
-  const iconFor = (icon: string | undefined, kind: Item["kind"]): ReactNode => {
+  /** The module's icon `icon` names, when its `icons` has one. */
+  const customIcon = (icon: string | undefined): ReactNode => {
     const custom = icon && icons && Object.hasOwn(icons, icon) ? icons[icon] : undefined;
-    if (isValidElement(custom)) return custom;
-    return DEFAULT_ICONS[kind];
+    return isValidElement(custom) ? custom : undefined;
   };
+  const iconFor = (icon: string | undefined, kind: Item["kind"]): ReactNode => customIcon(icon) ?? DEFAULT_ICONS[kind];
 
   const count = `${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`;
 
@@ -586,7 +588,16 @@ const Navigator = (props: HierarchyPickerProps) => {
               <Tabs
                 variant="segmented"
                 size="sm"
-                tabs={tabs.map(({ id, title }) => ({ value: id, label: title }))}
+                tabs={tabs.map(({ id, title, icon }) => {
+                  const drawn = customIcon(icon);
+                  // Hidden from assistive technology, which names the tab by its title.
+                  return { value: id, label: drawn ? (
+                    <span className="flex items-center gap-1.5">
+                      <span aria-hidden="true" className="flex size-3.5 shrink-0 [&>svg]:size-3.5">{drawn}</span>
+                      {title}
+                    </span>
+                  ) : title };
+                })}
                 value={location.tab ?? undefined}
                 onValueChange={tab => navigate({ tab, trail: [], detached: false }, false)}
               />

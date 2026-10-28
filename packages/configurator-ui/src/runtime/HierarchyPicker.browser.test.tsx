@@ -834,6 +834,16 @@ describe("search", () => {
     await expect.element(list()).toHaveAccessibleName("Loose");
   });
 
+  it("lists the open container when a search finds it, as a pasted link to it would", async () => {
+    await render({ loadItems: source({ reports: [reports] }), searchPlaceholder: "Search Drive" });
+    await userEvent.click(option("Reports"));
+    await expect.element(option("Everything in Reports")).toBeVisible();
+
+    await userEvent.fill(page.getByRole("searchbox", { name: "Search Drive" }), "reports");
+    await expect.element(list()).toHaveAccessibleName("Search results");
+    expect(page.getByRole("option").elements().map(row => row.textContent)).toEqual(["Reports"]);
+  });
+
   it("tells same-named results apart by where they live and what they say of themselves", async () => {
     const copies: Item[] = [
       { ...q1, subtitle: "Owned by Kim", path: [{ id: "reports", title: "Reports" }] },

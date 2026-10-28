@@ -237,6 +237,7 @@ export type ConfiguratorUIHierarchyRoot = {
 /**
  * A top-level container a {@link HierarchyPicker} shows as a tab, such as a drive, or a view such as
  * recent files. It is listed with its id as `parentId`, and heads the `path` of every node under it.
+ * Its `icon`, when the picker's `icons` has it, is drawn before its title; a tab has no default icon.
  */
 export type ConfiguratorUIHierarchyTab = Omit<ConfiguratorUIHierarchyAncestor, "selectable"> & {
   /**
