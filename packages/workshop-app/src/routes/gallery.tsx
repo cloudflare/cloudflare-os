@@ -2,7 +2,10 @@ import type { ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { Checkbox, Input } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, MagnifyingGlassIcon } from '@phosphor-icons/react'
+import { Composer } from '@/blocks/Composer'
 import { ConversationListItem } from '@/blocks/ConversationListItem'
+import { MessageBubble } from '@/blocks/MessageBubble'
+import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
@@ -61,6 +64,19 @@ function Gallery() {
             title="Create a new slideshow about the history of Paris"
             preview="Here’s your new slideshow with twelve slides…"
           />
+        </div>
+      </Section>
+      <Section title="MessageBubble, ThinkingIndicator">
+        <div className="flex w-full flex-col gap-1">
+          <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
+          <MessageBubble role="assistant">I’ll build a personal Jira dashboard.</MessageBubble>
+          <MessageBubble role="assistant">Missing implementation</MessageBubble>
+          <ThinkingIndicator />
+        </div>
+      </Section>
+      <Section title="Composer">
+        <div className="w-full">
+          <Composer onSend={() => {}} />
         </div>
       </Section>
       <Section title="Borders: line (input) and hairline (checkbox)">
