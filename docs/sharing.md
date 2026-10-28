@@ -23,7 +23,7 @@ New grants are `build` or `use` of a single gadget (`CollaboratorGrant`: `"build
 - **Use their own connected accounts for bindings.** When a collaborator adds a gatekeeper binding, it connects through that collaborator's third-party accounts, not the owner's. This prevents collaborators from gaining access to the owner's accounts beyond what the gadget's existing bindings already expose.
 - **Limited revocation authority.** A collaborator can only remove users that they themselves added (see "Permission graph" below).
 
-A caller may never grant access they don't hold. Today only the owner and `build` collaborators can share at all (sharing methods are not in the `use` allowlist), so in practice gadget access is granted by the owner or a `build` collaborator. The permission graph nevertheless models access generally, so allowing `use` collaborators to reshare the gadgets they hold in the future requires no algorithmic changes.
+A caller may never grant access they don't hold. Only the owner and `build` collaborators can share (sharing methods are not in the `use` allowlist). A stored invitation or share link remains active only while its sharer retains `build` access.
 
 ### Restricted capability
 
@@ -72,7 +72,7 @@ A collaborator can accumulate multiple edges -- for example, if they were added 
 
 ### Effective access
 
-A collaborator's **effective access** is everything reachable from the owner through their valid edges. Each edge grants what it confers (its grant) intersected with its sharer's effective access: the owner is the implicit root with `build`, a user edge's sharer is the owner or another collaborator, and a share-link edge's "sharer" is the link's creator. A collaborator's effective access is the union of what all their valid edges grant. Intersection and union treat `build` as covering every gadget and each gadget as independent: someone holding only gadget A supports grants of A, and nothing they ever granted of gadget B. A grant of a gadget that no longer exists (or is still provisional to a chat) confers nothing. Effective access is computed live (it is never denormalized into storage), so it is always consistent with the current graph -- which also means a session's access is recomputed from scratch at each `open()`, and a gadget's at each `getGadget()`.
+A collaborator's **effective access** is the union of their valid grants reachable from the owner. Each edge confers its grant only while its sharer has `build` access: the owner is the implicit root with `build`, a user edge's sharer is the owner or another collaborator, and a share-link edge's "sharer" is the link's creator. Gadget-only access, including legacy `use` of every gadget, supports no downstream invitations or share links, even if they were created while the sharer held `build`. Those records stay stored but inactive. The union treats `build` as covering every gadget and each gadget as independent. A grant of a gadget that no longer exists (or is still provisional to a chat) confers nothing. Effective access is computed live (it is never denormalized into storage), so it is always consistent with the current graph -- which also means a session's access is recomputed from scratch at each `open()`, and a gadget's at each `getGadget()`.
 
 ### Legacy workspace-wide `use`
 
@@ -80,9 +80,9 @@ Edges and links granting `use` without a `gadgetId` predate gadget-level sharing
 
 ### Share links in the graph
 
-Share links are first-class nodes in the permission graph, connected to their creator. A share link is "supported" by its creator: if the creator loses access, the link is transitively revoked, which in turn removes anyone who gained access solely through it.
+Share links are first-class nodes in the permission graph, connected to their creator. A share link is "supported" only while its creator holds `build` access: if the creator loses that access, the link becomes inactive, which in turn removes anyone who gained access solely through it.
 
-Concretely, revoking a share link or removing its creator triggers the same transitive revocation algorithm described below, treating all edges referencing that link as invalid. A link may have several keys, but they all resolve to the same link node, so redeeming any of them yields one edge. Because a link's grant is fixed and stored on the link, every key of it grants the same thing.
+Concretely, revoking a share link, removing its creator, or narrowing its creator to gadget-only access triggers the same transitive revocation algorithm described below, treating all edges referencing that link as invalid. A link may have several keys, but they all resolve to the same link node, so redeeming any of them yields one edge. Because a link's grant is fixed and stored on the link, every key of it grants the same thing.
 
 ### The owner as root
 
@@ -90,7 +90,7 @@ The owner is the implicit root of the permission graph. The owner is never store
 
 ## Lazy revocation
 
-Access is determined by **reachability from the owner**, recomputed live at every `open()` (see "Authorization model" below). Revocation exploits this: rather than eagerly cascading and deleting records, the system only **severs the edges that grant the removed party access** and lets reachability do the rest.
+Access is determined by **reachability from the owner through sharers with `build` access**, recomputed live at every `open()` (see "Authorization model" below). Revocation exploits this: rather than eagerly cascading and deleting records, the system only **severs the edges that grant the removed party access** and lets reachability do the rest.
 
 - **Removing a collaborator** deletes the edges that grant *them* access -- or, given a `gadgetId`, only the edges granting that gadget (access the target holds through `build` or a legacy workspace-wide grant is unaffected). The owner severs *all* such incoming edges to the target; a non-owner severs only their own `user` edges. The target's record is retained even if it becomes empty, and crucially the edges where the target is the *sharer* of access to others are left untouched.
 - **Revoking a share link** sets the link's `revoked` flag instead of deleting it. A revoked link contributes nothing to the permission graph and none of its keys can be redeemed, but the link record and all edges referencing it stay intact (no dangling references). The link's copies are deleted outright, since no edge ever references an alias.
@@ -99,7 +99,7 @@ Nothing cascades. A dependent who loses their only path to the owner (e.g. Carol
 
 ### Restoring access (undo)
 
-Because the graph is never destructively pruned, revocation is reversible. If you accidentally remove someone who had in turn shared with five other people, you can **undo** simply by re-adding them: their record and their five outgoing grants were never deleted, so re-adding an edge from the owner restores their reachability and, transitively, all five downstream collaborators. (Share-link revocation is likewise non-destructive via the `revoked` flag, though there is no UI to un-revoke a link yet -- see Future work.) The undo applies only while `ownerInvitesOnly` is unset: once it is set, only direct grants from the owner count, so re-adding someone restores nobody else (see "`ownerInvitesOnly`").
+Because the graph is never destructively pruned, revocation is reversible. If you accidentally remove someone who had in turn shared with five other people, you can **undo** by re-adding them with `build` access: their record and their five outgoing grants were never deleted, so restoring their `build` access reactivates those grants. Re-adding them for one gadget restores only their own access, not their downstream invitations or share links. (Share-link revocation is likewise non-destructive via the `revoked` flag, though there is no UI to un-revoke a link yet -- see Future work.) The undo applies only while `ownerInvitesOnly` is unset: once it is set, only direct grants from the owner count, so re-adding someone restores nobody else (see "`ownerInvitesOnly`").
 
 This does mean removed collaborators and revoked links accumulate in storage. Listing RPCs (`listCollaborators`, `listShareLinks`) return only currently-active entries, so removed users disappear from the UI; a future GC could reclaim long-dead records.
 
@@ -116,7 +116,7 @@ Once `ownerInvitesOnly` is set, the computation follows only `user` edges whose 
 The algorithm:
 
 1. **Collect share-link metadata.** Build a map from link ID to `{creator, grant}`, skipping links that are `revoked` (or the hypothetical `revokedLinkId`), and links granting a gadget that can't be shared.
-2. **Iterate to fixed point.** Repeatedly scan all collaborators. For each edge, compute what it grants -- its grant intersected with its sharer's access, where the sharer (or share link creator) is the owner (always `build`) or another collaborator's current effective access -- and add it to the collaborator's access. Widening one collaborator's access may unlock or widen others on the next pass.
+2. **Iterate to fixed point.** Repeatedly scan all collaborators. For each edge whose sharer (or share link creator) is the owner or currently holds `build`, add its grant to the collaborator's access. Edges from all other sharers confer nothing. Widening one collaborator to `build` may activate their downstream grants on the next pass.
 3. **Converge.** Access only ever widens, so the loop terminates when a full pass changes nothing.
 4. **Return the access map.** Collaborators absent from the map have no access; collaborators present with less than before have been narrowed.
 
@@ -195,7 +195,7 @@ The abort has a third use, unrelated to access. A workspace can get stuck with e
 ## Future work
 
 - **More permission levels.** Beyond `build` and `use` of a gadget, planned levels include: chat-only (can create chats but not merge to mainline) and read-only.
-- **Resharing of gadget access.** Allow `use` collaborators to grant the gadgets they hold to others. The permission graph already supports this; it only requires adding the relevant sharing methods to the `use` allowlist.
+- **Resharing of gadget access.** Allow `use` collaborators to grant the gadgets they hold to others. This would require both exposing sharing methods to `use` sessions and changing the permission graph's requirement that sharers hold `build`.
 - **Binding-aware access control.** Prohibit adding collaborators when the gadget holds binding permissions that the collaborator lacks, and conversely prohibit adding sensitive bindings when existing collaborators lack the required permissions.
 - **Share link expiration and usage limits.** Including single-use links.
 - **Un-revoking share links.** Revocation is non-destructive (the `revoked` flag), but there is no UI or RPC to list revoked links or clear the flag, so link revocation is currently one-way in practice.
