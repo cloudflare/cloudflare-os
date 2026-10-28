@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppWorkspaceWorkspaceIdRouteImport } from './routes/_app/workspace.$workspaceId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -27,27 +28,40 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppWorkspaceWorkspaceIdRoute = AppWorkspaceWorkspaceIdRouteImport.update({
+  id: '/workspace/$workspaceId',
+  path: '/workspace/$workspaceId',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
+  '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
   '/': typeof AppIndexRoute
+  '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/gallery'
+  fullPaths: '/' | '/gallery' | '/workspace/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/gallery' | '/'
-  id: '__root__' | '/_app' | '/gallery' | '/_app/'
+  to: '/gallery' | '/' | '/workspace/$workspaceId'
+  id:
+    | '__root__'
+    | '/_app'
+    | '/gallery'
+    | '/_app/'
+    | '/_app/workspace/$workspaceId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -78,15 +92,24 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/workspace/$workspaceId': {
+      id: '/_app/workspace/$workspaceId'
+      path: '/workspace/$workspaceId'
+      fullPath: '/workspace/$workspaceId'
+      preLoaderRoute: typeof AppWorkspaceWorkspaceIdRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
+  AppWorkspaceWorkspaceIdRoute: typeof AppWorkspaceWorkspaceIdRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
+  AppWorkspaceWorkspaceIdRoute: AppWorkspaceWorkspaceIdRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

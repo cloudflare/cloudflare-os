@@ -54,16 +54,24 @@ function Gallery() {
           <ConversationListItem
             workspaceLabel="EN"
             title="Refactor conditional rendering logic"
-            preview="I see what you’re aiming for…"
+            subtitle="I see what you’re aiming for…"
             unread
             selected
+            onSelect={() => {}}
           />
-          <ConversationListItem workspaceLabel="DE" title="Short title" preview="Short message" />
+          <ConversationListItem
+            workspaceLabel="DE"
+            title="Short title"
+            subtitle="Yesterday"
+            onSelect={() => {}}
+          />
           <ConversationListItem
             workspaceLabel="FR"
             title="Create a new slideshow about the history of Paris"
-            preview="Here’s your new slideshow with twelve slides…"
+            subtitle="Here’s your new slideshow with twelve slides…"
+            onSelect={() => {}}
           />
+          <ConversationListItem workspaceLabel="UW" title="Title only, no subtitle" onSelect={() => {}} />
         </div>
       </Section>
       <Section title="MessageBubble, ThinkingIndicator">
