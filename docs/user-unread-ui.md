@@ -32,6 +32,10 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   pauses automatic reads in already-open views until leaving/re-entering the thread or explicitly
   marking it read. This prevents immediate accidental acknowledgement, but does not cancel
   already-dispatched reads; a later-processed read can clear the manual unread.
+  The mark-unread result distinguishes a changed horizon from a no-op, so a missing local echo
+  cannot mask a later remote rewind. If the subscription reconnects while that command is pending,
+  refresh it once after the ACK before relying on its replacement snapshot; ordinary deltas do not
+  cause another request.
 - Failed read commands display an error without pretending the state advanced. An inbox query
   failure retains its previous rows and offers retry; it does not present an empty inbox as caught up.
 

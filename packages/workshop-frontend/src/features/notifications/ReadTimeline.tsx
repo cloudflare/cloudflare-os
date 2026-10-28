@@ -49,7 +49,6 @@ export const ReadTimeline = ({
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
   type LocalAction = {
-    kind: "read" | "unread";
     previousAction?: LocalAction;
     failed?: boolean;
     readSucceeded?: boolean;
@@ -59,15 +58,13 @@ export const ReadTimeline = ({
     horizon: number;
     startedSnapshot: typeof chat;
     acknowledgedReplacement?: object;
-    retired?: true;
   })[]>([]);
   const latestAction = useRef<LocalAction | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence });
   latest.current = { chat, unread, visit, latestSequence };
 
-  const createAction = (kind: LocalAction["kind"]): LocalAction => ({
-    kind,
+  const createAction = (): LocalAction => ({
     previousAction: latestAction.current,
     rollback: {visit, jump, target: jumpSequence.current, requestedPage: requestedPage.current},
   });
@@ -89,20 +86,10 @@ export const ReadTimeline = ({
     onUnreadNavigation(!resumed && !!previous.jump);
     setJump(resumed ? 0 : previous.jump);
   };
-  const retireUnchangedRequests = () => {
-    // A command at the already-observed boundary can ACK without publishing any echo.
-    // Keep it behind earlier unobserved rewinds, which may still change that boundary.
-    let request = localUnreadRequests.current.find(request => !request.retired);
-    while (request?.acknowledgedReplacement && request.startedSnapshot?.readThroughSequence === request.horizon) {
-      // It no longer blocks resumption, but an explicit read still needs to recognize its late echo.
-      request.retired = true;
-      request = localUnreadRequests.current.find(request => !request.retired);
-    }
+  const resumeIfRead = () => {
     const current = latest.current.chat;
-    localUnreadRequests.current = localUnreadRequests.current.filter(request => !request.retired ||
-      request.startedSnapshot === current || latestAction.current?.kind === "read");
-    if (!localUnreadRequests.current.some(request => !request.retired) && current?.unreadMessageCount === 0) {
-      if (!localUnreadRequests.current.length) latestAction.current = undefined;
+    if (!localUnreadRequests.current.length && current?.unreadMessageCount === 0) {
+      latestAction.current = undefined;
       setVisit(visit => visit?.paused ? {...visit, horizon: current.readThroughSequence, paused: false} : visit);
     }
   };
@@ -134,7 +121,6 @@ export const ReadTimeline = ({
     } else {
       // A replacement can supersede a rewind missed while hidden; ordinary deltas cannot.
       localUnreadRequests.current = localUnreadRequests.current.filter(request =>
-        (!request.retired || latestAction.current?.kind === "read") &&
         (!request.acknowledgedReplacement || request.acknowledgedReplacement === unread?.replacementSnapshot));
     }
     if (!visit || chat.readThroughSequence < visit.horizon) {
@@ -153,9 +139,9 @@ export const ReadTimeline = ({
         onUnreadNavigation(true);
         setJump((request) => request + 1);
       }
-    } else if (visit.paused && !localUnreadRequests.current.some(request => !request.retired) &&
+    } else if (visit.paused && !localUnreadRequests.current.length &&
         chat.unreadMessageCount === 0) {
-      if (!localUnreadRequests.current.length) latestAction.current = undefined;
+      latestAction.current = undefined;
       setVisit({ ...visit, horizon: chat.readThroughSequence, paused: false });
     } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {
       setVisit({ ...visit, horizon: chat.readThroughSequence, divider: chat.readThroughSequence + 1 });
@@ -305,7 +291,7 @@ export const ReadTimeline = ({
           // Untouched pre-rollout threads have no cursor until an arrival or explicit command.
           const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
           const request: (typeof localUnreadRequests.current)[number] = {
-            ...createAction("unread"), horizon: sequence - 1, startedSnapshot: chat,
+            ...createAction(), horizon: sequence - 1, startedSnapshot: chat,
           };
           localUnreadRequests.current.push(request);
           latestAction.current = request;
@@ -315,15 +301,21 @@ export const ReadTimeline = ({
           setJump(0);
           setVisit({ horizon: visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
           // Changed boundaries retain markers until an echo or a replacement snapshot arrives.
-          void unread.markUnread(target, sequence).then(() => {
+          void unread.markUnread(target, sequence).then(changed => {
+            if (!changed) {
+              // No echo will arrive for a no-op. Keeping its marker could swallow a later
+              // remote rewind to this same horizon after the user marks the thread read.
+              const index = localUnreadRequests.current.indexOf(request);
+              if (index !== -1) localUnreadRequests.current.splice(index, 1);
+            }
             request.acknowledgedReplacement = latest.current.unread?.replacementSnapshot ?? {};
             request.previousAction = undefined; // Only pending commands need the rollback link.
-            retireUnchangedRequests();
+            resumeIfRead();
           }).catch(() => {
             const index = localUnreadRequests.current.indexOf(request);
             if (index !== -1) localUnreadRequests.current.splice(index, 1);
             rollbackAction(request);
-            retireUnchangedRequests();
+            resumeIfRead();
           });
         },
       }}
@@ -349,7 +341,7 @@ export const ReadTimeline = ({
               size="xs"
               variant="ghost"
               onClick={() => {
-                const action = createAction("read");
+                const action = createAction();
                 latestAction.current = action;
                 void unread?.markRead(chat, latestSequence).then(() => {
                   action.readSucceeded = true;

@@ -36,7 +36,7 @@ describe("timeline read/unread experience", () => {
   let visibleBottom = 150;
   let shown = true;
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
-  const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>().mockResolvedValue(undefined);
+  const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>().mockResolvedValue(true);
   const markChatsRead = vi.fn<AuthenticatedApi["markChatsRead"]>().mockResolvedValue(undefined);
   const dispose = vi.fn<() => void>();
   const subscribeToUnreadState = vi.fn<
@@ -200,15 +200,15 @@ describe("timeline read/unread experience", () => {
     navigate.mockClear();
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
     viewport.scrollTop = 40;
-    const ack = Promise.withResolvers<void>();
+    const ack = Promise.withResolvers<boolean>();
     markChatUnread.mockReturnValueOnce(ack.promise);
     await markUnreadFrom(1);
-    if (ackFirst) await act(async () => ack.resolve());
+    if (ackFirst) await act(async () => ack.resolve(true));
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
     const arrival = snapshot(2, 2);
     await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
-    if (!ackFirst) await act(async () => ack.resolve());
+    if (!ackFirst) await act(async () => ack.resolve(true));
     const rewind = snapshot(3, 0);
     await updateChat({...rewind, unreadMessageCount: 3,
       chats: [{...rewind.chats[0], unreadMessageCount: 3}]});
@@ -226,14 +226,14 @@ describe("timeline read/unread experience", () => {
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
     viewport.scrollTop = 40;
     navigate.mockClear();
-    const ack = Promise.withResolvers<void>();
+    const ack = Promise.withResolvers<boolean>();
     markChatUnread.mockReturnValueOnce(ack.promise);
     await markUnreadFrom(1);
-    if (ackFirst) await act(async () => ack.resolve());
+    if (ackFirst) await act(async () => ack.resolve(true));
     // Another device advanced the server before this command ran. Its delta and our
     // real rewind echo arrive after the ACK, despite the unchanged cached boundary.
     await updateChat(snapshot(2, 2));
-    if (!ackFirst) await act(async () => ack.resolve());
+    if (!ackFirst) await act(async () => ack.resolve(true));
     await updateChat(snapshot(3, 0));
     await settle();
     expect(viewport.scrollTop).toBe(40);
@@ -273,18 +273,18 @@ describe("timeline read/unread experience", () => {
     await render();
     await update(snapshot(1, 0));
     await settle();
-    const failed = Promise.withResolvers<void>();
+    const failed = Promise.withResolvers<never>();
     if (earlierFailure) {
       vi.spyOn(console, "error").mockImplementation(() => {});
       markChatUnread.mockReturnValueOnce(failed.promise);
       await markUnreadFrom(2);
     }
-    const ack = Promise.withResolvers<void>();
+    const ack = Promise.withResolvers<boolean>();
     markChatUnread.mockReturnValueOnce(ack.promise);
     await markUnreadFrom(1); // Already at this boundary: the server sends no rewind echo.
-    if (ackFirst) await act(async () => ack.resolve());
+    if (ackFirst) await act(async () => ack.resolve(false));
     await updateChat(snapshot(2, 2));
-    if (!ackFirst) await act(async () => ack.resolve());
+    if (!ackFirst) await act(async () => ack.resolve(false));
     if (earlierFailure) await act(async () => failed.reject(new Error("Earlier rewind failed")));
     visibleBottom = 450;
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
@@ -320,7 +320,7 @@ describe("timeline read/unread experience", () => {
     navigate.mockClear();
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
     viewport.scrollTop = 40;
-    const first = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<never>();
     if (firstFails) markChatUnread.mockReturnValueOnce(first.promise);
     for (const sequence of sequences) await markUnreadFrom(sequence);
     expect(markChatUnread.mock.calls).toEqual(sequences.map(sequence => ["workspace", 1, sequence]));
@@ -428,12 +428,28 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead.mock.calls.map(([request]) => request.throughSequence)).toEqual([2, 3]);
   });
 
+  it.each([0, 1])("pauses for a later remote rewind after a no-op unread and completed read (remote horizon: %s)", async horizon => {
+    await render();
+    await update(snapshot(1, 0));
+    await settle();
+    markChatUnread.mockResolvedValueOnce(false);
+    await markUnreadFrom(1); // The server is already at 0 and publishes no local echo.
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+    await updateChat(snapshot(2, 2));
+    await updateChat(snapshot(3, horizon)); // A genuinely later command from another device.
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+  });
+
   it.each([false, true])("preserves an authoritative rewind matching a failed local request (update first: %s)", async updateFirst => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     await render();
     await update(snapshot(1, 2));
     await settle();
-    const failed = Promise.withResolvers<void>();
+    const failed = Promise.withResolvers<never>();
     markChatUnread.mockReturnValueOnce(failed.promise);
     await markUnreadFrom(1);
     if (updateFirst) await updateChat(snapshot(2, 0));
@@ -453,8 +469,8 @@ describe("timeline read/unread experience", () => {
     navigate.mockClear();
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
     viewport.scrollTop = 40;
-    const failed = Promise.withResolvers<void>();
-    markChatUnread.mockResolvedValueOnce(undefined).mockReturnValueOnce(failed.promise);
+    const failed = Promise.withResolvers<never>();
+    markChatUnread.mockResolvedValueOnce(true).mockReturnValueOnce(failed.promise);
     await markUnreadFrom(2);
     await markUnreadFrom(1);
     await update(snapshot(2, 1)); // The first command's snapshot precedes the second failure.
@@ -472,7 +488,7 @@ describe("timeline read/unread experience", () => {
     await render();
     await update(snapshot(1, 0));
     await settle();
-    const failed = Promise.withResolvers<void>();
+    const failed = Promise.withResolvers<never>();
     markChatUnread.mockReturnValueOnce(failed.promise);
     await markUnreadFrom(1);
     if (freshSnapshot) await update(snapshot(2, 0));
@@ -496,7 +512,7 @@ describe("timeline read/unread experience", () => {
     await update({...state, unreadChatCount: 1, unreadMessageCount: 2,
       chats: [{...state.chats[0], unreadMessageCount: 2}]});
     await settle();
-    const first = Promise.withResolvers<void>(), second = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<never>(), second = Promise.withResolvers<never>();
     markChatUnread.mockReturnValueOnce(first.promise);
     await markUnreadFrom(2);
     if (secondAction === "unread") {
@@ -560,22 +576,22 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("resumes after a hidden rewind is superseded (ACK while hidden: %s)", async ackHidden => {
+  it.each(["before hide", "hidden", "after refresh"])("resumes after a hidden rewind is superseded (ACK: %s)", async ackAt => {
     const allRead = (): UserUnreadState => ({...snapshot(1, 1), unreadChatCount: 0, unreadMessageCount: 0,
       chats: [{...snapshot(1, 1).chats[0], unreadMessageCount: 0}]});
-    const ack = Promise.withResolvers<void>();
+    const ack = Promise.withResolvers<boolean>();
     markChatUnread.mockReturnValueOnce(ack.promise);
     await render(<View latestSequence={1} />);
     await update(allRead());
     await settle();
     await act(async () => container.querySelector<HTMLButtonElement>('[data-read-start="1"] button')!.click());
     await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
-    if (!ackHidden) await act(async () => ack.resolve());
+    if (ackAt === "before hide") await act(async () => ack.resolve(true));
     await act(async () => {
       Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    if (ackHidden) await act(async () => ack.resolve());
+    if (ackAt === "hidden") await act(async () => ack.resolve(true));
     await update(snapshot(2, 0)); // The unsubscribed callback misses the local echo.
     await update(allRead()); // Another device marks the thread read while this one is hidden.
     await act(async () => {
@@ -583,6 +599,11 @@ describe("timeline read/unread experience", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await update(allRead());
+    if (ackAt === "after refresh") await act(async () => ack.resolve(true));
+    expect(subscribeToUnreadState).toHaveBeenCalledTimes(ackAt === "after refresh" ? 3 : 2);
+    await settle(); // The pre-ACK replacement cannot authorize receipts.
+    expect(markChatRead).not.toHaveBeenCalled();
+    if (ackAt === "after refresh") await update(allRead());
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
     visibleBottom = 350;
@@ -740,7 +761,7 @@ describe("timeline read/unread experience", () => {
     await update(snapshot(1, 0));
     await settle();
     expect(loadEarlier).toHaveBeenCalledOnce();
-    const failed = Promise.withResolvers<void>();
+    const failed = Promise.withResolvers<never>();
     markChatUnread.mockReturnValueOnce(failed.promise);
     await markUnreadFrom(2);
     await act(async () => failed.reject(new Error("Unread command failed")));

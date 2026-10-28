@@ -71,7 +71,7 @@ describe("UnreadStateBridge", () => {
     return Object.assign(Promise.resolve(), { [Symbol.dispose]: dispose });
   });
   const markChatsRead = vi.fn<AuthenticatedApi["markChatsRead"]>().mockResolvedValue(undefined);
-  const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>().mockResolvedValue(undefined);
+  const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>().mockResolvedValue(true);
   const getWorkspaceUnreadState = vi.fn<AuthenticatedApi["getWorkspaceUnreadState"]>().mockResolvedValue([]);
   const getChatHeads = vi.fn<AuthenticatedApi["getChatHeads"]>().mockResolvedValue([{chatId: 1, chatTitle: "Demo", latestSequence: 4}]);
   const api = { subscribeToUnreadState, markChatRead, markChatsRead, markChatUnread, getChatHeads, getWorkspaceUnreadState };
@@ -145,6 +145,27 @@ describe("UnreadStateBridge", () => {
         throughSequence: 4,
       },
     ]);
+  });
+
+  it.each(["delta", "reconnect"])("refreshes a pending unread command after a %s only when needed", async overlap => {
+    const ack = Promise.withResolvers<boolean>();
+    markChatUnread.mockReturnValueOnce(ack.promise);
+    await render(); await update(snapshot(1));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "unread")!.click());
+    if (overlap === "reconnect") {
+      await act(async () => subscribers[0][Symbol.dispose]());
+      await update(snapshot(2));
+    } else await act(() => subscribers[0].summaryUpdated({unreadChatCount: 2, unreadMessageCount: 2,
+      workspace: {workspaceId: "workspace-2", unreadChatCount: 1, unreadMessageCount: 1}}));
+    await act(async () => ack.resolve(true));
+    expect(subscribeToUnreadState).toHaveBeenCalledTimes(overlap === "reconnect" ? 3 : 1);
+    expect(dispose).toHaveBeenCalledTimes(overlap === "reconnect" ? 2 : 0);
+    expect(currentState() === null).toBe(overlap === "reconnect");
+    await update(snapshot(3));
+    // A late pre-ACK callback must not replace the post-ACK snapshot.
+    if (overlap === "reconnect") await update({...snapshot(4), chats: []}, 1);
+    expect(currentState()).toEqual(snapshot(3));
+    expect(subscribeToUnreadState.mock.calls.at(-1)?.[0]).toEqual({workspaceId: "workspace-1"});
   });
 
   it.each(["rejected", "denied", "deleted"] as const)("marks healthy threads read when another workspace is %s", async failure => {
