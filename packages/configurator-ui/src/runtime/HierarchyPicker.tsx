@@ -575,7 +575,8 @@ const Navigator = (props: HierarchyPickerProps) => {
       )}
       {hasTabs ? (
         <>
-          <div className={cn(bar, "py-2")}>
+          {/* Wraps the search box below the tabs where both do not fit, rather than scroll the tabs. */}
+          <div className={cn(bar, "flex-wrap py-2")}>
             {/* Kumo's Tabs cannot be disabled; `inert` keeps a disabled picker's out of reach. */}
             <div inert={disabled || undefined} className="min-w-0">
               <Tabs
