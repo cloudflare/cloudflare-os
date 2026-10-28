@@ -1,7 +1,8 @@
 // Built-in WebFetch capability for the agent.
 //
-// Provides an HTTP GET against arbitrary public HTTPS URLs. There is intentionally no
-// support for POST/PUT/DELETE/PATCH or for forwarding credentials.
+// Provides an HTTP GET against public HTTPS URLs, or in a workspace that has observed restricted
+// data, against only the hosts an admin trusts (see WebFetchEnv.allowedHosts). There is
+// intentionally no support for POST/PUT/DELETE/PATCH or for forwarding credentials.
 //
 // Document-to-Markdown conversion is delegated to Cloudflare Workers AI's
 // `env.WORKERS_AI.toMarkdown()` utility, which handles HTML, PDF, DOCX, XLSX/XLS, ODT/ODS,
@@ -27,6 +28,12 @@ import type { AiGatewayConfig } from "./ai-gateway";
 export type WebFetchEnv = {
   ai: Ai;
   gateway: AiGatewayConfig | null;
+  /**
+   * The only hosts the fetch may reach, redirects included, or undefined for any public host. Set
+   * in a workspace that has observed restricted data, where URLs with a query string or a
+   * `/cdn-cgi/` path are refused too.
+   */
+  allowedHosts?: ReadonlySet<string>;
 };
 
 export type WebFetchInput = {
@@ -54,16 +61,22 @@ const HARD_MAX_BYTES = 5 * 1024 * 1024;     // 5 MiB after which we always trunc
 const DEFAULT_MAX_BYTES = 1 * 1024 * 1024;  // 1 MiB default cap when caller didn't specify
 const FETCH_TIMEOUT_MS = 30_000;
 const USER_AGENT = "GadgetsWebFetch/1.0";
+// The Fetch standard's limit, which `redirect: "follow"` applies too.
+const MAX_REDIRECTS = 20;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+// A `cdn-cgi` segment anywhere in the decoded path, since an origin may decode the path and resolve
+// `..` before routing it.
+const CDN_CGI_PATH = /(^|[/\\])cdn-cgi([/\\]|$)/i;
 
 /**
- * Validate a URL string for use with webFetch. Throws on bad input. Returns the parsed URL
- * on success.
+ * Validate a URL string for use with webFetch, whether the agent asked for it or a redirect led
+ * to it. Throws on bad input. Returns the parsed URL on success.
  *
  * Note: we do NOT inspect the hostname for "looks-internal" patterns here. That kind of
  * blocklist is fundamentally unsound because a symbolic hostname can resolve to any IP at
  * fetch time. SSRF protection is provided post-DNS-lookup by workerd (see the file header).
  */
-export function validateWebFetchUrl(input: string): URL {
+export function validateWebFetchUrl(input: string, allowedHosts?: ReadonlySet<string>): URL {
   let parsed: URL;
   try {
     parsed = new URL(input);
@@ -82,7 +95,67 @@ export function validateWebFetchUrl(input: string): URL {
     throw new Error("URLs with embedded credentials are not allowed.");
   }
 
+  if (allowedHosts) {
+    if (!allowedHosts.has(parsed.host)) {
+      throw new Error(
+        `This workspace has observed sensitive data, so it may only fetch from ` +
+          `${[...allowedHosts].join(", ")}.`,
+      );
+    }
+    // A query string can make a trusted host act on data the agent chose, as a reflected search
+    // or a `?url=` proxy does, and a cache keyed on it can reveal which URL was fetched.
+    if (parsed.search) {
+      throw new Error(
+        "This workspace has observed sensitive data, so it may not fetch URLs with a query string.",
+      );
+    }
+    // Cloudflare answers /cdn-cgi/ on every zone it proxies, and some of it (Image Transformations,
+    // for one) can fetch another origin named in the path, which trusting the host doesn't cover.
+    if (CDN_CGI_PATH.test(decodeURIComponent(parsed.pathname))) {
+      throw new Error("This workspace has observed sensitive data, so it may not fetch /cdn-cgi/ paths.");
+    }
+  }
+
   return parsed;
+}
+
+// GET `url`, following redirects by hand so that each one passes validateWebFetchUrl. Resolves to
+// the final response and the URL it came from.
+async function fetchFollowingRedirects(
+  url: URL,
+  allowedHosts: ReadonlySet<string> | undefined,
+  signal: AbortSignal,
+): Promise<{ response: Response; url: URL }> {
+  for (let redirects = 0; ; ++redirects) {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        "user-agent": USER_AGENT,
+        "accept": "text/markdown,text/html;q=0.9,text/plain;q=0.9,application/json;q=0.9,application/xhtml+xml;q=0.9,*/*;q=0.8",
+      },
+      signal,
+    });
+    const location = response.headers.get("location");
+    if (!REDIRECT_STATUSES.has(response.status) || location === null) {
+      return { response, url };
+    }
+
+    await response.body?.cancel();
+    if (redirects === MAX_REDIRECTS) {
+      throw new Error(`Gave up after ${MAX_REDIRECTS} redirects.`);
+    }
+    const next = URL.parse(location, url.href);
+    if (next === null) {
+      throw new Error(`The site redirected to an invalid URL: ${location}`);
+    }
+    try {
+      url = validateWebFetchUrl(next.href, allowedHosts);
+    } catch (err) {
+      throw new Error(`The site redirected to ${next.href}, which is not allowed: ` +
+          (err instanceof Error ? err.message : String(err)), { cause: err });
+    }
+  }
 }
 
 // Read up to `maxBytes` from the body of a response. Returns the raw bytes (so callers can
@@ -269,7 +342,7 @@ export async function webFetch(
   env: WebFetchEnv,
   input: WebFetchInput,
 ): Promise<WebFetchResult> {
-  const parsed = validateWebFetchUrl(input.url);
+  const requested = validateWebFetchUrl(input.url, env.allowedHosts);
 
   const requestedMax = input.maxBytes ?? DEFAULT_MAX_BYTES;
   const maxBytes = Math.min(
@@ -281,21 +354,12 @@ export async function webFetch(
   const timeoutId = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS);
 
   let response: Response;
+  let finalUrl: URL;
   try {
-    response = await fetch(parsed.toString(), {
-      method: "GET",
-      redirect: "follow",
-      headers: {
-        "user-agent": USER_AGENT,
-        "accept": "text/markdown,text/html;q=0.9,text/plain;q=0.9,application/json;q=0.9,application/xhtml+xml;q=0.9,*/*;q=0.8",
-      },
-      signal: abortController.signal,
-    });
+    ({ response, url: finalUrl } =
+        await fetchFollowingRedirects(requested, env.allowedHosts, abortController.signal));
   } catch (err) {
-    if (
-      err instanceof Error &&
-      (err.name === "AbortError" || /abort/i.test(err.message))
-    ) {
+    if (abortController.signal.aborted) {
       throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS}ms`, { cause: err });
     }
     throw err;
@@ -303,9 +367,6 @@ export async function webFetch(
     clearTimeout(timeoutId);
   }
 
-  // `response.url` is set by the runtime to the final URL after any redirects. Fall back
-  // to the original URL if it happens to be empty.
-  const finalUrl = response.url ? new URL(response.url) : parsed;
   const contentType = response.headers.get("content-type") ?? "";
 
   // Respect the Content-Signal header (https://contentsignals.org/). If the site

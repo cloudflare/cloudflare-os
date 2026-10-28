@@ -1161,6 +1161,8 @@ export type AdminSettingsView = {
   banner: BannerConfig;
   /** Accent color hex, or "" for the default theme. */
   accentColor: string;
+  /** The hosts `webFetch` may reach in a workspace that has observed restricted data. */
+  restrictedWebFetchHosts: string[];
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1335,6 +1337,14 @@ export interface AdminApi {
 
   /** Replace the agent system-prompt instructions. Pass "" to clear. Rejects over MAX_INSTANCE_INSTRUCTIONS_LENGTH. */
   setInstanceInstructions(text: string): Promise<void>;
+
+  /**
+   * Replace the hosts `webFetch` may reach in a workspace that has observed restricted data. Each
+   * entry is an exact host name, so a subdomain needs its own entry. Entries are trimmed and
+   * lowercased, and duplicates and blank entries are dropped. Rejects an entry that is not an ASCII
+   * host name, such as one with a scheme, port, path or wildcard. Resolves to the list as stored.
+   */
+  setRestrictedWebFetchHosts(hosts: string[]): Promise<string[]>;
 
   /**
    * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.

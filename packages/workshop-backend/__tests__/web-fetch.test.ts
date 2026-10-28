@@ -59,6 +59,47 @@ describe("validateWebFetchUrl", () => {
     );
   });
 
+  describe("with allowedHosts", () => {
+    const allowed = new Set(["docs.example.com"]);
+
+    it("accepts a path on a listed host", () => {
+      expect(validateWebFetchUrl("https://docs.example.com/guide/#intro", allowed).href)
+        .toBe("https://docs.example.com/guide/#intro");
+      expect(() => validateWebFetchUrl("https://DOCS.example.com:443/", allowed)).not.toThrow();
+    });
+
+    it("rejects any other host, subdomains and ports included", () => {
+      for (const url of [
+        "https://example.com/",
+        "https://api.docs.example.com/",
+        "https://docs.example.com.evil.test/",
+        "https://docs.example.com:8443/",
+        "https://docs.example.com./",
+      ]) {
+        expect(() => validateWebFetchUrl(url, allowed), url).toThrow(/may only fetch from docs\.example\.com/);
+      }
+    });
+
+    it("rejects a query string, which can make the host act on data the agent chose", () => {
+      expect(() => validateWebFetchUrl("https://docs.example.com/search?q=secret", allowed))
+        .toThrow(/query string/);
+    });
+
+    it("rejects Cloudflare's /cdn-cgi/ paths, however they are spelled", () => {
+      for (const path of [
+        "/cdn-cgi/image/w=1/https://evil.test/x",
+        "//cdn-cgi/trace",
+        "/%63dn-cgi/trace",
+        "/CDN-CGI/trace",
+        "/docs/..%2fcdn-cgi/trace",
+        "/docs/..%5Ccdn-cgi/trace",
+      ]) {
+        expect(() => validateWebFetchUrl(`https://docs.example.com${path}`, allowed), path).toThrow(/cdn-cgi/);
+      }
+      expect(() => validateWebFetchUrl("https://docs.example.com/cdn-cgi-endpoint/", allowed)).not.toThrow();
+    });
+  });
+
   // Note: there are deliberately no tests asserting that "internal-looking" hostnames are
   // rejected. SSRF protection happens post-DNS-lookup at the workerd layer (via the
   // global_fetch_strictly_public compatibility flag), not via string-matching in this
@@ -269,6 +310,79 @@ describe("webFetch document conversion", () => {
     // Body is decoded as UTF-8 (with replacement chars for invalid sequences); the test
     // only cares that the call didn't go through toMarkdown.
     expect(typeof result.body).toBe("string");
+  });
+});
+
+const redirect = (location: string, status = 302) => () =>
+  new Response(null, { status, headers: { location } });
+const page = (body: string) => () =>
+  new Response(body, { headers: { "content-type": "text/plain" } });
+
+describe("webFetch redirects", () => {
+  let requested: string[];
+
+  beforeEach(() => {
+    requested = [];
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Answers each URL from `routes`, and records the URLs requested.
+  function serve(routes: Record<string, () => Response>) {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = String(input);
+      requested.push(url);
+      const route = routes[url];
+      if (!route) throw new Error(`unexpected fetch of ${url}`);
+      return route();
+    });
+  }
+
+  it("follows relative and absolute redirects and reports the final URL", async () => {
+    serve({
+      "https://example.com/old": redirect("/new", 301),
+      "https://example.com/new": redirect("https://www.example.com/page", 308),
+      "https://www.example.com/page": page("hello"),
+    });
+
+    const result = await webFetch(makeEnv(), { url: "https://example.com/old" });
+    expect(result).toMatchObject({ status: 200, finalUrl: "https://www.example.com/page", body: "hello" });
+    expect(requested).toEqual(["https://example.com/old", "https://example.com/new", "https://www.example.com/page"]);
+  });
+
+  it("refuses a redirect to http: without requesting it", async () => {
+    serve({ "https://example.com/": redirect("http://example.com/") });
+
+    await expect(webFetch(makeEnv(), { url: "https://example.com/" }))
+      .rejects.toThrow(/redirected to http:\/\/example\.com\/, which is not allowed: Only https/);
+    expect(requested).toEqual(["https://example.com/"]);
+  });
+
+  it("refuses a redirect off the allowed hosts without requesting it", async () => {
+    serve({ "https://docs.example.com/": redirect("https://evil.test/?d=secret") });
+    const env = { ...makeEnv(), allowedHosts: new Set(["docs.example.com"]) };
+
+    await expect(webFetch(env, { url: "https://docs.example.com/" }))
+      .rejects.toThrow(/redirected to https:\/\/evil\.test\/\?d=secret, which is not allowed/);
+    expect(requested).toEqual(["https://docs.example.com/"]);
+  });
+
+  it("returns a redirect status without a Location as the response", async () => {
+    serve({ "https://example.com/": () => new Response("moved, somewhere", { status: 302 }) });
+
+    const result = await webFetch(makeEnv(), { url: "https://example.com/", raw: true });
+    expect(result).toMatchObject({ status: 302, finalUrl: "https://example.com/", body: "moved, somewhere" });
+  });
+
+  it("gives up after 20 redirects", async () => {
+    const routes: Record<string, () => Response> = {};
+    for (let i = 0; i <= 20; ++i) routes[`https://example.com/${i}`] = redirect(`/${i + 1}`);
+    serve(routes);
+
+    await expect(webFetch(makeEnv(), { url: "https://example.com/0" })).rejects.toThrow(/after 20 redirects/);
+    expect(requested).toHaveLength(21);
   });
 });
 

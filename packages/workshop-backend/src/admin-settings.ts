@@ -6,7 +6,7 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, defaultOutputFormatId, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, defaultOutputFormatId, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, normalizeAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
@@ -497,6 +497,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       announcement: config.announcement,
       banner: config.banner,
       accentColor: config.accentColor,
+      restrictedWebFetchHosts: config.restrictedWebFetchHosts,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
       gatewayModels: this.#listGatewayModels(config),
@@ -1116,6 +1117,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       throw new Error(`Instructions too long (max ${MAX_INSTANCE_INSTRUCTIONS_LENGTH} characters).`);
     }
     await this.admin.updateAdminConfig({ instanceInstructions: text });
+  }
+
+  async setRestrictedWebFetchHosts(hosts: string[]): Promise<string[]> {
+    let restrictedWebFetchHosts = parseRestrictedWebFetchHosts(hosts);
+    await this.admin.updateAdminConfig({ restrictedWebFetchHosts });
+    return restrictedWebFetchHosts;
   }
 
   setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void> {

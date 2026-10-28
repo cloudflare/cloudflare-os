@@ -564,10 +564,11 @@ export interface AgentHooks {
 
   /**
    * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
-   * to Workers AI. Exposed as a narrow interface (rather than handing over the whole `env`)
-   * so the dependency surface stays explicit.
+   * to Workers AI, and the hosts it may reach in a workspace that has observed restricted data.
+   * Throws if that workspace may reach none. Exposed as a narrow interface (rather than handing
+   * over the whole `env`) so the dependency surface stays explicit.
    */
-  getWebFetchEnv(): WebFetchEnv;
+  getWebFetchEnv(): Promise<WebFetchEnv>;
 
   /**
    * Deployment-wide, admin-authored instructions to append to the agent's system prompt. Returns
@@ -3483,7 +3484,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {url, raw}) => {
         try {
-          let result = await webFetchImpl(hooks.getWebFetchEnv(), {url, raw});
+          let result = await webFetchImpl(await hooks.getWebFetchEnv(), {url, raw});
           // Cut the body, not the formatted result, so the frontmatter's `truncated` stays true
           // to the text and the recorded output is what the model saw. The header counts against
           // the cap too, so the formatted whole fits. Don't end on half of a surrogate pair: a

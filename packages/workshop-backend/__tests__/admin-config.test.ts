@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel } from "@gadgets/workshop-shared/api";
-import { defaultOutputFormatId, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { defaultOutputFormatId, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -118,6 +118,28 @@ describe("format presentation", () => {
     expect(defaultOutputFormatId(long)).toBe(defaultOutputFormatId(long));
     expect(defaultOutputFormatId(long)).toHaveLength(40);
     expect(defaultOutputFormatId(long)).not.toBe(defaultOutputFormatId(long + "other"));
+  });
+});
+
+describe("parseRestrictedWebFetchHosts", () => {
+  it("stores trimmed, lowercase hosts once each, without blanks", () => {
+    expect(parseRestrictedWebFetchHosts([" Docs.Example.com ", "", "docs.example.com", "api.example.com"]))
+      .toEqual(["docs.example.com", "api.example.com"]);
+  });
+
+  it("refuses anything but an exact ASCII host name", () => {
+    for (let entry of [
+      "https://docs.example.com",
+      "docs.example.com/guide",
+      "docs.example.com:443",
+      "*.example.com",
+      "docs.example.com.",
+      "user@docs.example.com",
+      "dоcs.example.com", // Cyrillic о
+      "localhost",
+    ]) {
+      expect(() => parseRestrictedWebFetchHosts(["docs.example.com", entry]), entry).toThrow(/is not a host name/);
+    }
   });
 });
 
