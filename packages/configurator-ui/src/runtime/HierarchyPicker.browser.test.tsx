@@ -682,6 +682,18 @@ describe("loading", () => {
     expect(status.element().textContent).not.toContain("Nothing here.");
   });
 
+  it("keeps a page's notice while later pages that have none load", async () => {
+    const partial = "Search is down, so only recent files are listed.";
+    await render({ loadItems: async ({ cursor }) => cursor
+      ? { items: [q1] }
+      : { items: [budget], nextCursor: "page-2", notice: partial } });
+
+    await userEvent.click(page.getByRole("button", { name: "Load more" }));
+    await expect.element(option("Q1.pdf")).toBeVisible();
+    await expect.element(page.getByText(partial, { exact: true })).toBeVisible();
+    await expect.element(page.getByRole("status")).toHaveTextContent(`2 items. ${partial}`);
+  });
+
   it("loads the next page once the user scrolls near the end, but never on its own", async () => {
     const loadItems = vi.fn(twoPages);
     await render({ loadItems });

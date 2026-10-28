@@ -267,8 +267,9 @@ export type ConfiguratorUIHierarchyPage = {
   /** Present when more nodes follow; passed back as the next request's `cursor`. */
   nextCursor?: string | null;
   /**
-   * Something to tell the user about the listing, such as that it is partial or why it is empty.
-   * Shown above its nodes, or in place of saying it has none. A later page's replaces it.
+   * Something to tell the user about the whole listing, such as that it is partial or why it is
+   * empty, rather than about nodes still to load, which the picker shows itself. Shown above its
+   * nodes, or in place of saying it has none. A later page's replaces it; a page without one keeps it.
    */
   notice?: string;
   /**
