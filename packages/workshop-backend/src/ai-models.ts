@@ -1072,47 +1072,44 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
         { apiKey: config.apiToken, headers: config.extraHeaders });
   }
   const metadata = buildMetadata(initiator, metadataContext);
+  // pi's System One transport POSTs {model, input} as Workers AI's REST API takes them and reads
+  // back the REST envelope, but the gateway's run routes take the bare input and return the bare
+  // result, so this converts both ways; a failure goes back to pi as is, for its retries and
+  // error message. pi requires a key, which goes unsent.
+  const modelRunning = (run: (input: Record<string, unknown>, signal?: AbortSignal | null) =>
+      Promise<Response>) =>
+      modelAt(catalog.baseUrl, {
+        apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+        fetch: async (_url, init) => {
+          const { input } =
+              await new Response(init?.body).json<{ input: Record<string, unknown> }>();
+          const response = await run(input, init?.signal);
+          return response.ok
+              ? Response.json({ success: true, result: await response.json() })
+              : response;
+        },
+      });
   const binding = gwConfig.bindingFor(config.provider);
   if (binding) {
     // The gateway's passthrough refuses /run even with the binding's identity, so binding
-    // requests take the binding's own run(), which reaches the same gateway. pi's System One
-    // transport POSTs {model, input} as Workers AI's REST API takes them and reads back the REST
-    // envelope; run() takes and returns the bare values. pi requires a key, which goes unsent.
-    return modelAt(catalog.baseUrl, {
-      apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
-      fetch: async (_url, init) => {
-        const { model, input } = JSON.parse(init!.body as string);
-        const result = await binding.run(model, input, { gateway: { id: gwConfig.gateway, metadata } });
-        return Response.json({ success: true, result });
-      },
-    });
+    // requests take the binding's own run(), which reaches the same gateway.
+    return modelRunning(async input => Response.json(
+        await binding.run(config.model, input, { gateway: { id: gwConfig.gateway, metadata } })));
   }
-  // The gateway supplies Workers AI's credential only to a request that names the model in the
-  // path (`run/<model>`) and carries no `Authorization`; otherwise it forwards that header to
-  // Workers AI as the credential. pi's transport POSTs {model, input} to `run` and sends its key
-  // as `Authorization`, so this fetch reshapes the request, and pi's key goes unsent. The
-  // response may come back bare or in the REST envelope pi reads.
-  const gatewayRoot =
-      `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}/workers-ai`;
-  return modelAt(catalog.baseUrl, {
-    apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
-    fetch: async (_url, init) => {
-      const { model, input } = JSON.parse(init!.body as string);
-      const response = await fetch(`${gatewayRoot}/run/${model}`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
-          "cf-aig-metadata": JSON.stringify(metadata),
-        },
-        body: JSON.stringify(input),
-        signal: init?.signal,
-      });
-      if (!response.ok) return response;
-      const body = await response.json() as object;
-      return Response.json("result" in body ? body : { success: true, result: body });
+  // Over HTTPS the gateway supplies Workers AI's credential only to a request that names the model
+  // in the path and carries no `Authorization`, which it would otherwise forward to Workers AI as
+  // the credential.
+  return modelRunning((input, signal) => fetch(`https://gateway.ai.cloudflare.com/v1/` +
+      `${gwConfig.accountId}/${gwConfig.gateway}/workers-ai/run/${config.model}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
+      "cf-aig-metadata": JSON.stringify(metadata),
     },
-  });
+    body: JSON.stringify(input),
+    signal,
+  }));
 }
 
 // =======================================================================================
