@@ -31,6 +31,8 @@ Authorization is capability-based: `open()` computes the caller's effective acce
 
 The `UseOverseerInterface` is a workspace shell: opening it verifies nothing (see "Authorization model"), and it lists only the gadgets the collaborator's access includes. Each gadget is obtained separately through `getGadget(id, configureObservers)`, which re-reads the collaborator's access, refuses a gadget it does not include exactly as it refuses one that doesn't exist, verifies the collaborator as an observer of that one gadget, and only then returns a restricted, mainline-only `UseGadgetClientInterface`.
 
+The use-only UI keeps the workspace shell and gadget picker available while admission waits for connected-account choices. It starts a new gadget's UI bundle load only after admission succeeds, so time spent choosing accounts does not consume the bundle timeout. Cancelling or denying admission leaves that gadget retryable without preventing selection of another one; a late response from an abandoned admission cannot replace the current gadget. Reopening an already admitted gadget retains its iframe while the replacement capability is obtained.
+
 ### Adding collaborators
 
 There are two ways to grant someone collaborator access:

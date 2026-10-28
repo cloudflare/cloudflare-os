@@ -32,7 +32,7 @@ import GadgetExportMenu from './GadgetExportMenu'
 // never listed: the restricted overseer's workpiece subscription withholds them.
 type Props = {
   overseer: RpcStub<Overseer>
-  // The selected gadget's client, or null if the workspace has no gadgets.
+  // Null while the selected gadget is being admitted, or while the workspace has no gadgets.
   gadget: RpcStub<GadgetClient> | null
   selectedGadgetId: WorkpieceId | null
   // Why the selected gadget couldn't be opened, such as declining to choose connected accounts;
@@ -171,7 +171,9 @@ export default function GadgetUseView({
           />
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">
-            <p className="text-sm text-kumo-subtle">This workspace has no gadgets yet.</p>
+            <p className="text-sm text-kumo-subtle">
+              {selectedGadgetId === null ? 'This workspace has no gadgets yet.' : 'Loading gadget…'}
+            </p>
           </div>
         )}
       </div>
