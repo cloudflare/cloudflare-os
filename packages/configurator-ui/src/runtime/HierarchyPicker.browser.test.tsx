@@ -123,6 +123,10 @@ const twoPages: LoadItems = async ({ cursor }) =>
 /** The first thirty files on one page. */
 const thirtyFiles: LoadItems = async () => ({ items: FILES.slice(0, 30) });
 
+/** A keydown on the focused element with what userEvent cannot press: AltGr, or an input method's. */
+const keydown = (key: string, init: KeyboardEventInit) => document.activeElement!.dispatchEvent(
+  new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
@@ -903,12 +907,14 @@ describe("search", () => {
     await expect.element(crumb("Reports")).toHaveFocus();
   });
 
-  it("clears the search with Escape and says when nothing matched", async () => {
+  it("clears the search with Escape, unless an input method takes it, and says when nothing matched", async () => {
     await render({ loadItems: source(), searchPlaceholder: "Search Drive" });
     const search = page.getByRole("searchbox", { name: "Search Drive" });
 
     await userEvent.fill(search, "nothing");
     await expect.element(page.getByText('No results for "nothing".')).toBeVisible();
+    keydown("Escape", { isComposing: true });
+    await expect.element(search).toHaveValue("nothing");
     await userEvent.keyboard("{Escape}");
     await expect.element(search).toHaveValue("");
     await expect.element(option("Reports")).toBeVisible();
@@ -997,6 +1003,17 @@ describe("keyboard", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("types ahead with a letter typed with AltGr, but not with a shortcut", async () => {
+    const titles = ["Alpha", "Łódź.pdf", "Zeta"];
+    await render({ loadItems: async () => ({ items: titles.map(title => ({ id: title, title, kind: "leaf" as const })) }) });
+    await userEvent.click(option("Alpha"));
+
+    keydown("z", { ctrlKey: true, altKey: true });
+    await expect.element(option("Alpha")).toHaveFocus();
+    keydown("ł", { ctrlKey: true, altKey: true, modifierAltGraph: true });
+    await expect.element(option("Łódź.pdf")).toHaveFocus();
+  });
+
   it("pages to the last row in view, then a box's height on, and stops at the ends", async () => {
     await render({ loadItems: async () => ({ items: FILES.slice(0, 12) }) });
     await expect.element(file(0)).toBeVisible();
@@ -1027,6 +1044,26 @@ describe("keyboard", () => {
     await userEvent.keyboard("{PageUp}");
     await expect.element(file(20)).toHaveFocus();
     expect(box.scrollTop).toBe(rowHeight * 20);
+  });
+
+  it("pages on from a focused row cut off at the edge it pages past, as a click leaves one", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 30) }) });
+    await expect.element(file(0)).toBeVisible();
+    const rowHeight = (file(0).element() as HTMLElement).offsetHeight;
+    const box = boxHeight(rowHeight * 5);
+    // Rows 1 to 4 in full view; 0 cut off at the top and 5 at the bottom.
+    box.scrollTop = rowHeight / 2;
+    (file(5).element() as HTMLElement).focus({ preventScroll: true });
+
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(file(9)).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 5);
+
+    box.scrollTop = rowHeight * 4.5;
+    (file(4).element() as HTMLElement).focus({ preventScroll: true });
+    await userEvent.keyboard("{PageUp}");
+    await expect.element(file(0)).toHaveFocus();
+    expect(box.scrollTop).toBe(0);
   });
 
   it("scrolls the list a page from the search box and from the page, where / goes to the search box", async () => {
@@ -1209,12 +1246,15 @@ describe("tabs", () => {
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
-  it("strips formatting characters from what a tab shows", async () => {
+  it("strips formatting characters from what a tab shows, and drops a tab it cannot show", async () => {
     const choice = { title: "Every site\u202E", subtitle: "Across the tenant\u202E" };
     await render({ loadItems: tabbed(), tabs: [
       { ...TABS[0]!, title: "Sites\u202E", selectable: true, choice },
       { ...TABS[1]!, unselectableReason: "Choose a file inside.\u202E" },
+      null as never,
     ] });
+
+    expect(page.getByRole("tab").elements()).toHaveLength(2);
 
     await expect.element(option("Every site")).toBeVisible();
     expect(container!.textContent).not.toContain("\u202E");

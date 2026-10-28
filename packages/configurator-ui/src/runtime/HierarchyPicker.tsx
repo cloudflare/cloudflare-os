@@ -47,9 +47,9 @@ const typeAheadMatch = (titles: readonly string[], from: number, typed: string):
     .find(at => titles[at]?.toLocaleLowerCase().startsWith(needle));
 };
 
-/** Whether a key is pressed as part of a shortcut such as Ctrl+/ or copy. */
-const hasModifier = (event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean }) =>
-  event.altKey || event.ctrlKey || event.metaKey;
+/** Whether a key is pressed as part of a shortcut such as Ctrl+/ or copy, not to type with AltGr. */
+const hasModifier = (event: Pick<globalThis.KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "getModifierState">) =>
+  event.metaKey || ((event.altKey || event.ctrlKey) && !event.getModifierState("AltGraph"));
 
 /** Whether `target` takes typed text itself, so "/" and the paging keys are its own. */
 const takesText = (target: EventTarget | null) =>
@@ -70,19 +70,20 @@ const pageHeight = (box: HTMLElement) =>
 
 /**
  * The row PageDown (or PageUp) moves to from `from`, as in a file browser: the last row in full view
- * (the first, going up), or from that row, the last a page further brings into view. With the
- * focused row scrolled out of view, the last (or first) in view, so the list stays where it was
- * scrolled to rather than going back to where focus was left.
+ * (the first, going up), or from that row or one beyond it still partly in view, the last a page
+ * further brings into view. With the focused row scrolled wholly out of view, the last (or first)
+ * in view, so the list stays where it was scrolled to rather than going back to where focus was left.
  */
 const pageTarget = (rows: readonly HTMLElement[], from: number, down: boolean, box: HTMLElement): number => {
   const view = box.getBoundingClientRect();
   const rects = rows.map(row => row.getBoundingClientRect());
   const inView = (rect: DOMRect) => rect.top >= view.top - 1 && rect.bottom <= view.bottom + 1;
+  const partlyInView = (rect: DOMRect) => rect.bottom > view.top + 1 && rect.top < view.bottom - 1;
   const shown = rects.flatMap((rect, index) => inView(rect) ? [index] : []);
   if (shown.length === 0) return from;
   const edge = down ? shown[shown.length - 1] : shown[0];
   const current = rects[from];
-  if (!current || !inView(current) || (down ? edge > from : edge < from)) return edge;
+  if (!current || !partlyInView(current) || (down ? edge > from : edge < from)) return edge;
   let target = down ? from + 1 : from - 1;
   if (down) {
     while (target + 1 < rects.length && rects[target + 1].bottom <= current.top + box.clientHeight + 1) target++;
@@ -109,7 +110,7 @@ const DEFAULT_ICONS = { container: <FolderIcon size={20} />, leaf: <FileIcon siz
  * go of.
  */
 export const HierarchyPicker = (props: HierarchyPickerProps) =>
-  <Navigator key={[props.name, props.root.id, ...props.tabs?.map(({ id }) => id) ?? []].join("\n")} {...props} />;
+  <Navigator key={[props.name, props.root.id, ...props.tabs?.map(tab => tab?.id) ?? []].join("\n")} {...props} />;
 
 const Navigator = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
@@ -467,6 +468,8 @@ const Navigator = (props: HierarchyPickerProps) => {
   };
 
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // An input method's own, as Escape is when it cancels what the user is composing.
+    if (event.nativeEvent.isComposing) return;
     // Without tabs, the breadcrumb comes before the search box, which hid it while focused.
     if (!hasTabs && event.key === "Tab" && event.shiftKey && !text) {
       event.preventDefault();
