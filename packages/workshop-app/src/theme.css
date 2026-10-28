@@ -1,0 +1,29 @@
+/*
+ * The one place this app overrides Kumo's design tokens. Components use semantic tokens only.
+ *
+ * Deliberately unlayered: Kumo defines each token twice, in Tailwind's `theme` layer and again in
+ * `base`, and which of those wins depends on layer order, which is fixed by whichever stylesheet
+ * mentions a layer first (Kumo's, imported before Tailwind's, in dev). Unlayered rules beat every
+ * layer regardless. Because that also beats Kumo's `[data-mode="dark"]` values, each token is a
+ * `light-dark()` pair that repeats Kumo's dark value; `color-scheme` picks the side.
+ */
+:root {
+  /* The app backdrop behind the content card. */
+  --color-kumo-canvas: light-dark(#fafafa, oklch(10% 0 0));
+
+  /* Translucent so edges adapt to the surface beneath. `line` outlines controls (buttons, inputs,
+     popovers); `hairline` is the quieter structure (table dividers, checkbox and switch edges).
+     Kept as two tokens so they can be tuned apart. */
+  --color-kumo-line: light-dark(oklch(0% 0 0 / 0.04), oklch(32% 0 0));
+  --color-kumo-hairline: light-dark(oklch(0% 0 0 / 0.04), oklch(26.9% 0 0));
+
+  /* Translucent, like the borders, so it reads on any surface. */
+  --color-kumo-fill: light-dark(oklch(0% 0 0 / 0.04), oklch(26.9% 0 0));
+
+  /* The primary colour is the logo's orange (#FF5C2E). Kumo ships blue for the fill and hover and a
+     different orange for brand text, so all three are set. Dark darkens the fill slightly, as
+     Kumo's own dark brand does. */
+  --color-kumo-brand: light-dark(#ff5c2e, color-mix(in oklch, #ff5c2e, black 10%));
+  --color-kumo-brand-hover: color-mix(in oklch, #ff5c2e, black 15%);
+  --text-color-kumo-brand: #ff5c2e;
+}
