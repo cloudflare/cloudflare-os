@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "preview": "vite preview",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.14.0",
@@ -18,6 +19,8 @@
     "hash-wasm": "^4.12.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.3.3",
     "vite-tsconfig-paths": "^6.1.1"
   },
@@ -28,6 +31,7 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^5.2.0",
     "typescript": "catalog:",
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

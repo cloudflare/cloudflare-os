@@ -14,11 +14,21 @@ src/
   components/   Kumo wrappers and primitives; no product knowledge, no data
   blocks/       Compositions of components for one purpose (a message, a composer, a list row)
   layouts/      Page structure: shell, sidebar, aside, toolbar pages. Arrange slots, know no content
-  routes/       Route declarations: the only layer that fetches data or touches RPC and auth
+  routes/       Route declarations; they connect the data folders below to the UI layers above
+
+  rpc/          The backend connection and sign-in; `useApi()` beneath `RpcGate`
+  workspaces/   The user's workspace list
+  chat/         A conversation: `ChatSession` (plain class, no React), the mapping from server
+                messages to what is rendered, and `ChatPane`, which wires them to the UI blocks
 ```
 
-Imports point down only: components, then blocks, then layouts, then routes. Lint enforces this
-(`vite.config.ts` at the repo root). Blocks and layouts take plain typed props and callbacks.
+UI imports point down only: components, then blocks, then layouts, then routes. The data folders
+(`rpc/`, `workspaces/`, `chat/`) are the only code that talks to the backend: UI layers cannot import
+them, and they cannot import routes. Lint enforces both (`vite.config.ts` at the repo root). Blocks
+and layouts take plain typed props and callbacks.
+
+Put protocol logic in plain classes and functions with no React (like `ChatSession`), so it can be
+tested without rendering. `pnpm --filter @gadgets/workshop-app test:run` runs the tests.
 
 Build UI by looking at the component gallery (`/gallery`) first: add each new component or block
 there so its states can be reviewed in isolation.

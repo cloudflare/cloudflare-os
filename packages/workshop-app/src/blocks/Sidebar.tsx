@@ -35,7 +35,7 @@ export const Sidebar = ({
       <Button icon={CirclesFourIcon} aria-label="Library" />
       <Button icon={MagnifyingGlassIcon} aria-label="Search" />
     </header>
-    <nav aria-label="Conversations" className="flex min-h-0 flex-1 flex-col overflow-y-auto gap-0.5">
+    <nav aria-label="Conversations" className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
       {conversations.map(({ id, ...conversation }) => (
         <ConversationListItem
           key={id}
