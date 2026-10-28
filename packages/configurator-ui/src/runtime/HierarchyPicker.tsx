@@ -310,15 +310,16 @@ const Navigator = (props: HierarchyPickerProps) => {
   });
 
   // "/" goes to the search box, selecting what it holds, and PageUp/PageDown scroll the list a page,
-  // from anywhere in the picker but a text field (the search box takes the paging keys too), and
-  // with focus on the page, which a click on a label or on the blank part of the list leaves it on.
+  // from anywhere in the picker but a text field (the search box takes the paging keys too, unless an
+  // input method is paging its candidates with them), and with focus on the page, which a click on a
+  // label or on the blank part of the list leaves it on.
   // Rows page by their own handler, and the browser scrolls the box for anything else inside it.
   // Listened for on the document, since focus on the page is outside the picker.
   const onDocumentKeyDown = useEffectEvent((event: globalThis.KeyboardEvent) => {
     const picker = pickerRef.current;
     const box = boxRef.current;
     const { target } = event;
-    if (!picker || !box || disabled || event.defaultPrevented || hasModifier(event)) return;
+    if (!picker || !box || disabled || event.defaultPrevented || event.isComposing || hasModifier(event)) return;
     const onPage = target === document.body;
     if (!onPage && !(target instanceof Node && picker.contains(target))) return;
     const input = picker.querySelector<HTMLInputElement>('input[type="search"]');

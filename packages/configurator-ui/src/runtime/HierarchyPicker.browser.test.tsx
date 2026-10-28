@@ -1066,7 +1066,7 @@ describe("keyboard", () => {
     expect(box.scrollTop).toBe(0);
   });
 
-  it("scrolls the list a page from the search box and from the page, where / goes to the search box", async () => {
+  it("scrolls the list a page from the search box, unless an input method takes the key, and from the page, where / goes to the search box", async () => {
     await render({ loadItems: async () => ({ items: FILES.slice(0, 30) }), searchPlaceholder: "Search Drive" });
     await expect.element(file(0)).toBeVisible();
     const rowHeight = (file(0).element() as HTMLElement).offsetHeight;
@@ -1074,6 +1074,8 @@ describe("keyboard", () => {
     const search = page.getByRole("searchbox", { name: "Search Drive" });
 
     await userEvent.click(search);
+    keydown("PageDown", { isComposing: true });
+    expect(box.scrollTop).toBe(0);
     await userEvent.keyboard("{PageDown}");
     await expect.element(search).toHaveFocus();
     expect(box.scrollTop).toBe(rowHeight * 4);
