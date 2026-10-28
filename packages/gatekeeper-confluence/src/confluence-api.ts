@@ -652,14 +652,13 @@ export class ConfluenceApi {
   // --- spaces ---
 
   listSpaces(params: {
-    type?: string; status?: "current" | "archived"; sort?: string; favoritedBy?: string; includeIcon?: boolean;
+    type?: string; status?: "current" | "archived"; sort?: string; includeIcon?: boolean;
     cursor?: string; limit?: number;
   }): Promise<Paged<SpaceResponse>> {
     return this.#list<SpaceResponse>(`${V2}/spaces`, {
       type: params.type,
       status: params.status,
       sort: params.sort,
-      "favorited-by": params.favoritedBy,
       "include-icon": params.includeIcon ? "true" : undefined,
       cursor: params.cursor,
       limit: params.limit,

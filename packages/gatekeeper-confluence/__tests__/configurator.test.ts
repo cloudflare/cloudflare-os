@@ -4,7 +4,7 @@
 import { matchesResourceUrlPattern } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccessibleResource } from "../src/confluence-api";
-import { ConfluenceConfiguratorUI, displayText, parseHighlighted, type ConfiguratorAccount } from "../src/confluence-configurator";
+import { ConfluenceConfiguratorUI, displayText, searchTitle, type ConfiguratorAccount } from "../src/confluence-configurator";
 import { PATTERNS } from "./frame-host";
 
 const CLOUD = "5c121664-a643-497d-99b3-25e02a81f02f";
@@ -37,7 +37,6 @@ afterEach(() => vi.unstubAllGlobals());
 function ui(account: Partial<ConfiguratorAccount> = {}) {
   return new ConfluenceConfiguratorUI({
     getSites: async () => [SITE],
-    getAccountId: async () => "acct-1",
     getGrantedScopes: async () => ["read:hierarchical-content:confluence"],
     getToken: async () => "token",
     refresh: async () => "token",
@@ -142,10 +141,19 @@ describe("loadItems", () => {
     expect(avatars[`space:${CLOUD}/MFS`]).not.toBe(avatars[`space:${OTHER}/MFS`]);
   });
 
-  it("lists the user's starred spaces", async () => {
-    route(/^\/wiki\/api\/v2\/spaces\?/, { results: [MFS] });
-    await ui().loadItems({ site: `site:${CLOUD}`, section: "starred" });
-    expect(requests[0]!.url.searchParams.get("favorited-by")).toBe("acct-1");
+  it("lists what the user starred, spaces and pages alike, a page at a time", async () => {
+    route(/^\/wiki\/rest\/api\/search\?/, {
+      results: [
+        hit({ id: "524290", type: "page", title: "Nested Test 2", ancestors: [] }),
+        { title: "My first space", entityType: "space", space: { key: "MFS", name: "My first space", type: "global" } },
+      ],
+      _links: { next: "/rest/api/search?cursor=x" },
+      size: 2, start: 0, limit: 2,
+    });
+    const page = await ui().loadItems({ site: `site:${CLOUD}`, section: "starred" });
+    expect(page.items.map(item => [item.kind, item.title])).toEqual([["page", "Nested Test 2"], ["space", "My first space"]]);
+    expect(requests[0]!.url.searchParams.get("cql")).toContain("favourite = currentUser()");
+    expect(page.nextCursor).toBeDefined();
   });
 
   it("lists recently viewed pages with where they live and whether they open, and nothing when Confluence won't say", async () => {
@@ -242,7 +250,7 @@ describe("loadItems", () => {
     expect(requests.some(request => request.url.pathname.endsWith("/direct-children"))).toBe(false);
   });
 
-  it("searches spaces, pages and blog posts, with the matched words marked", async () => {
+  it("searches spaces, pages and blog posts, without Confluence's highlight markers in their titles", async () => {
     route(/^\/wiki\/rest\/api\/search\?/, {
       results: [
         hit({ id: "524289", type: "page", title: "Storage @@@hl@@@arch@@@endhl@@@itecture", ancestors: [] }),
@@ -254,10 +262,10 @@ describe("loadItems", () => {
 
     const page = await ui().loadItems({ site: `site:${CLOUD}`, query: "arch" });
 
-    expect(page.items.map(item => [item.kind, item.title, item.titleMatches, item.path?.map(crumb => crumb.title)])).toEqual([
-      ["page", "Storage architecture", [[8, 12]], ["My first space"]],
-      ["blogpost", "Shipping", [], ["My first space", "Blog"]],
-      ["space", "Archive", [[0, 4]], []],
+    expect(page.items.map(item => [item.kind, item.title, item.path?.map(crumb => crumb.title)])).toEqual([
+      ["page", "Storage architecture", ["My first space"]],
+      ["blogpost", "Shipping", ["My first space", "Blog"]],
+      ["space", "Archive", []],
     ]);
     expect(page.nextCursor).toBe("20");
     expect(requests[0]!.url.searchParams.get("cql")).toBe('type in (space, page, blogpost) AND siteSearch ~ "arch"');
@@ -375,11 +383,9 @@ describe("text from Confluence", () => {
     expect(displayText("x".repeat(500))).toHaveLength(240);
   });
 
-  it("reads highlight markers as ranges", () => {
-    expect(parseHighlighted("@@@hl@@@Arch@@@endhl@@@itecture of @@@hl@@@arch@@@endhl@@@ives")).toEqual({
-      text: "Architecture of archives", matches: [[0, 4], [16, 20]],
-    });
-    expect(parseHighlighted("no marks")).toEqual({ text: "no marks", matches: [] });
+  it("strips highlight markers from a search title", () => {
+    expect(searchTitle("@@@hl@@@Arch@@@endhl@@@itecture of @@@hl@@@arch@@@endhl@@@ives")).toBe("Architecture of archives");
+    expect(searchTitle("no marks")).toBe("no marks");
   });
 });
 

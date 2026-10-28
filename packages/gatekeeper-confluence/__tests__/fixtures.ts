@@ -34,7 +34,6 @@ export const spaceAvatars = (refs: string[]): Record<string, string> =>
   Object.fromEntries(refs.flatMap(ref => (ref in AVATARS ? [[ref, AVATARS[ref]!]] : [])));
 
 export const SPACES: ConfluenceBrowsePage = { items: [MFS, TH, PERSONAL] };
-export const STARRED: ConfluenceBrowsePage = { items: [MFS] };
 export const RECENT: ConfluenceBrowsePage = {
   items: [
     page("491521", "Architecture", { meta: "Oct 24", expandable: true, path: [{ ref: MFS.ref, title: MFS.title, kind: "space" }, { ref: `page:${CLOUD}/458753`, title: "Engineering", kind: "page" }] }),
@@ -42,6 +41,7 @@ export const RECENT: ConfluenceBrowsePage = {
     page("360470", "Shipping the new editor", { ref: `blogpost:${CLOUD}/360470`, kind: "blogpost", meta: "Oct 22", path: [{ ref: MFS.ref, title: MFS.title, kind: "space" }, { ref: `blogs:${CLOUD}/MFS`, title: "Blog", kind: "blogs" }] }),
   ],
 };
+export const STARRED: ConfluenceBrowsePage = { items: [MFS, RECENT.items[0]!] };
 export const MFS_ROOT: ConfluenceBrowsePage = {
   items: [
     page("164185", "My first space", { kind: "overview", subtitle: "Space home" }),
@@ -73,11 +73,11 @@ export const BLOG: ConfluenceBrowsePage = {
 export const SEARCH_ARCH: ConfluenceBrowsePage = {
   items: [
     page("491521", "Architecture", {
-      titleMatches: [[0, 4]], meta: "Oct 24",
+      meta: "Oct 24",
       path: [{ ref: MFS.ref, title: MFS.title, kind: "space" }, { ref: `page:${CLOUD}/458753`, title: "Engineering", kind: "page" }],
     }),
     page("524289", "Storage architecture", {
-      titleMatches: [[8, 12]], meta: "Oct 21",
+      meta: "Oct 21",
       path: [{ ref: MFS.ref, title: MFS.title, kind: "space" }, { ref: `page:${CLOUD}/458753`, title: "Engineering", kind: "page" }, { ref: `page:${CLOUD}/491521`, title: "Architecture", kind: "page" }],
     }),
   ],

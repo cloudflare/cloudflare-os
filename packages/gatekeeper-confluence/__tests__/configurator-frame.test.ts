@@ -3,15 +3,18 @@
 // frame (`build:configurator`, which `test:run` runs first).
 
 import { describe, expect, it, vi } from "vitest";
-import type { ConfluenceBrowseRequest, ConfluenceNode } from "../src/configurator/confluence-configurator-types";
-import { browse, ENGINEERING, MFS, READY, SITE_REF, SPACES, spaceAvatars, STARRED } from "./fixtures";
+import type { ConfluenceBrowseRequest, ConfluenceConfiguratorStatus, ConfluenceNode } from "../src/configurator/confluence-configurator-types";
+import { browse, ENGINEERING, MFS, READY, SEARCH_ARCH, SITE_REF, spaceAvatars } from "./fixtures";
 import { PATTERNS, startFrame, useFrameHost, type Answer } from "./frame-host";
 
 useFrameHost();
 
+const CLOUD = "5c121664-a643-497d-99b3-25e02a81f02f";
+const ENGINEERING_REF = `page:${CLOUD}/458753`;
+
 /** 25 spaces from `from` on: one page of a long list. */
 const many = (from: number): ConfluenceNode[] => Array.from({ length: 25 }, (_, index) => ({
-  ref: `space:5c121664-a643-497d-99b3-25e02a81f02f/S${from + index}`, kind: "space", title: `Space ${from + index}`,
+  ref: `space:${CLOUD}/S${from + index}`, kind: "space", title: `Space ${from + index}`,
   expandable: true, selectable: true,
 }));
 
@@ -24,65 +27,56 @@ async function start(options: { answers?: Record<string, Answer>; initialResourc
     answers: { getStatus: () => READY, loadItems: browse, locate: () => null, spaceAvatars, ...options.answers },
   });
   const frame = hosted.frame;
-  const radio = (name: string) => frame().getByRole("radio", { name, exact: true });
-  const picker = {
+  const option = (title: string) => frame().getByRole("option").filter({ has: frame().getByText(title, { exact: true }) });
+  return {
     ...hosted,
-    radio,
-    /** The listing's rows by name, in order. */
-    rows: () => frame().locator("#cf-list [role=radio]").evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-label"))),
-    /** The breadcrumb, or the search's scope, as shown. */
-    location: async () => (await frame().locator(".browser-location").innerText()).replace(/\s+/g, " ").trim(),
-    summary: async () => (await frame().locator(".browser-summary").innerText()).replace(/\s+/g, " ").trim(),
-    focused: () => frame().evaluate(() => document.activeElement?.getAttribute("data-cf-focus") ?? document.activeElement?.tagName),
+    option,
+    tab: (name: string) => frame().getByRole("tab", { name }),
+    wholeSite: () => frame().getByRole("button", { name: /^All of / }),
+    search: () => frame().getByRole("searchbox"),
+    /** The listing's rows: each one's title, then its second line. */
+    rows: () => frame().getByRole("option").evaluateAll(nodes => nodes.map(node => (node as HTMLElement).innerText.split("\n").slice(0, 2).join(" — "))),
+    titles: () => frame().getByRole("option").evaluateAll(nodes => nodes.map(node => (node as HTMLElement).innerText.split("\n")[0])),
+    /** The breadcrumb, from the open tab down. */
+    location: async () => (await frame().getByRole("navigation", { name: "Location" }).innerText()).replace(/\s+/g, " ").trim(),
     requests: () => hosted.callsOf("loadItems").map(call => call.args[0] as ConfluenceBrowseRequest),
   };
-  return picker;
 }
 
-describe("the start page", () => {
-  it("shows recent pages and every space, leaving out a Starred section that repeats them", async () => {
-    const picker = await start({ answers: { loadItems: (request: ConfluenceBrowseRequest) => request.section === "starred" ? SPACES : browse(request) } });
+describe("the tabs", () => {
+  it("opens on recently viewed pages, saying where each lives, with Starred and Spaces a tab away", async () => {
+    const picker = await start();
     await poll(picker.rows).toEqual([
-      "Architecture", "Q4 planning", "Shipping the new editor",
-      "My first space", "Team Handbook", "Phillip Jones",
+      "Architecture — My first space / Engineering",
+      "Q4 planning — My first space",
+      "Shipping the new editor — My first space / Blog",
     ]);
-    expect(await picker.frame().locator(".browser-section").allInnerTexts()).toEqual(["Recent", "Spaces"]);
-    // Space icons are asked for once the rows show, and drawn when they arrive; a space without one keeps its glyph.
-    await poll(() => picker.radio("My first space").locator(".browser-avatar img").count()).toBe(1);
-    expect(await picker.radio("Phillip Jones").locator(".browser-avatar").count()).toBe(0);
-    expect(picker.callsOf("spaceAvatars").map(call => call.args[0])).toEqual([[MFS.ref, "space:5c121664-a643-497d-99b3-25e02a81f02f/TH", "space:5c121664-a643-497d-99b3-25e02a81f02f/~7120206f"]]);
-    // Recent pages say where they live.
-    await expect.poll(() => picker.radio("Architecture").getAttribute("aria-description")).toContain("In My first space › Engineering");
+    expect(await picker.tab("Recent").getAttribute("aria-selected")).toBe("true");
+
+    await picker.tab("Starred").click();
+    await poll(picker.rows).toEqual(["My first space — MFS", "Architecture — My first space / Engineering"]);
+    await picker.tab("Spaces").click();
+    await poll(picker.titles).toEqual(["My first space", "Team Handbook", "Phillip Jones"]);
+    expect(picker.requests().map(request => request.section)).toEqual(["recent", "starred", "spaces"]);
   });
 
-  it("shows starred spaces when they are a few of many", async () => {
+  it("draws each tab's icon and each space's own icon once it arrives, keeping initials for one without", async () => {
     const picker = await start();
-    await poll(() => picker.frame().locator(".browser-section").allInnerTexts()).toEqual(["Recent", "Starred", "Spaces"]);
-    expect(STARRED.items).toHaveLength(1);
+    await poll(() => picker.tab("Starred").locator("svg").count()).toBe(1);
+    await picker.tab("Spaces").click();
+    await poll(() => picker.option("Team Handbook").locator(".cf-avatar img").count()).toBe(1);
+    expect(await picker.option("My first space").locator(".cf-avatar img").count()).toBe(1);
+    expect(await picker.option("Phillip Jones").locator(".cf-avatar").count()).toBe(0);
+    expect(picker.callsOf("spaceAvatars").flatMap(call => call.args[0] as string[])).toContain(MFS.ref);
   });
 
-  it("chooses a recent page that has no child pages, and opens one that has, where it lives", async () => {
-    const picker = await start();
-    await picker.radio("Q4 planning").click();
-    await poll(picker.summary).toContain("Q4 planning: this page and the pages under it");
-    expect(await picker.radio("Q4 planning").locator(".browser-chevron").count()).toBe(0);
-    expect(await picker.location()).toBe("Slew");
-
-    await picker.radio("Architecture").click();
-    // What was chosen elsewhere is offered in place of the count.
-    await poll(picker.location).toBe("Slew › My first space › Engineering › Architecture Chosen: Q4 planning Show");
-    expect(await picker.rows()).toEqual(["All of Architecture", "Storage architecture", "Networking"]);
+  it("says what an empty tab is for", async () => {
+    const picker = await start({ answers: { loadItems: (request: ConfluenceBrowseRequest) => request.section === "starred" ? { items: [] } : browse(request) } });
+    await picker.tab("Starred").click();
+    await poll(picker.text).toContain("Spaces, pages and blog posts you star in Confluence show here.");
   });
 
-  it("binds the whole site from the row above everything", async () => {
-    const picker = await start();
-    await picker.radio("All of Slew").click();
-    await poll(picker.summary).toContain("All of Slew: every space, page and blog post you can open on Slew");
-    await poll(async () => (await picker.state()).ready).toBe(true);
-    expect(await picker.collected()).toBe(SITE_REF);
-  });
-
-  it("offers to try again when the spaces can't be listed", async () => {
+  it("offers Retry when a tab can't be listed", async () => {
     let failing = true;
     const picker = await start({
       answers: {
@@ -92,74 +86,11 @@ describe("the start page", () => {
         },
       },
     });
+    await picker.tab("Spaces").click();
     await poll(picker.text).toContain("Confluence is down.");
     failing = false;
-    await picker.frame().getByRole("button", { name: "Try again" }).click();
-    await poll(picker.rows).toContain("Team Handbook");
-  });
-});
-
-describe("browsing", () => {
-  it("opens a space at its home page, blog and pages, and chooses it or a page in it", async () => {
-    const picker = await start();
-    await picker.radio("My first space").last().click();
-    await poll(picker.location).toBe("Slew › My first space 8 items");
-    expect(await picker.rows()).toEqual([
-      "All of My first space", "My first space", "Blog", "Engineering", "Onboarding", "Q4 planning",
-      "Retro board", "Launch tracker", "Archive",
-    ]);
-
-    await picker.radio("All of My first space").click();
-    await poll(picker.summary).toContain("My first space: its pages and blog posts, including new ones.");
-    expect(await picker.collected()).toBe(MFS.ref);
-
-    // A row that opens is chosen by its radio, without opening it.
-    await picker.radio("Engineering").locator(".browser-radio-hit").click();
-    await poll(picker.summary).toContain("Engineering: this page and the pages under it");
-    expect(await picker.location()).toBe("Slew › My first space 8 items");
-    expect(await picker.collected()).toBe("page:5c121664-a643-497d-99b3-25e02a81f02f/458753");
-  });
-
-  it("never chooses what can't be connected, and says why", async () => {
-    const picker = await start();
-    await picker.radio("My first space").last().click();
-    await picker.radio("Retro board").click({ force: true });
-    await poll(() => picker.frame().locator("#cf-announcer").innerText()).toContain("Can't choose Retro board. Can't be connected yet.");
-    expect((await picker.state()).ready).not.toBe(true);
-
-    await picker.radio("Blog").click({ force: true });
-    await poll(picker.rows).toEqual(["Shipping the new editor", "Welcome to the team blog"]);
-    expect(await picker.text()).toContain("Choose one post, or the whole space.");
-  });
-
-  it("goes back by breadcrumb, landing on the place it left", async () => {
-    const picker = await start();
-    await picker.radio("My first space").last().click();
-    await picker.radio("Engineering").click();
-    await poll(picker.location).toBe("Slew › My first space › Engineering 3 items");
-    await picker.radio("On-call runbook").focus();
-    await picker.page.keyboard.press("ArrowLeft");
-    await poll(picker.location).toBe("Slew › My first space 8 items");
-    await poll(picker.focused).toBe("row:in:page:5c121664-a643-497d-99b3-25e02a81f02f/458753");
-    await picker.frame().getByRole("button", { name: "Slew", exact: true }).click();
-    await poll(picker.rows).toContain("Team Handbook");
-  });
-
-  it("moves through rows with the keyboard, opening with Right Arrow", async () => {
-    const picker = await start();
-    await poll(picker.rows).toContain("Team Handbook");
-    await picker.frame().locator(".browser-search-input").focus();
-    await picker.page.keyboard.press("ArrowDown");
-    await poll(picker.focused).toBe("row:recent:page:5c121664-a643-497d-99b3-25e02a81f02f/491521");
-    // Typing a title's start jumps to it.
-    await picker.page.keyboard.type("team");
-    await poll(picker.focused).toBe("row:spaces:space:5c121664-a643-497d-99b3-25e02a81f02f/TH");
-    await picker.page.keyboard.press("ArrowUp");
-    await picker.page.keyboard.press("ArrowRight");
-    await poll(picker.location).toBe("Slew › My first space 8 items");
-    await poll(picker.focused).toBe("place:space:5c121664-a643-497d-99b3-25e02a81f02f/MFS");
-    await picker.page.keyboard.press(" ");
-    await poll(picker.summary).toContain("My first space:");
+    await picker.frame().getByRole("button", { name: "Retry" }).click();
+    await poll(picker.titles).toContain("Team Handbook");
   });
 
   it("pages through a long list of spaces", async () => {
@@ -170,58 +101,129 @@ describe("browsing", () => {
           : { items: [] },
       },
     });
-    await poll(async () => (await picker.rows()).length).toBe(25);
-    // Scrolling to the end loads the next page, as the "Show more" button there does.
-    await picker.frame().locator("#cf-list").evaluate(list => { list.scrollTop = list.scrollHeight; });
-    await poll(async () => (await picker.rows()).length).toBe(50);
-    expect(await picker.frame().getByRole("button", { name: "Show more" }).count()).toBe(0);
+    await picker.tab("Spaces").click();
+    await poll(async () => (await picker.titles()).length).toBe(25);
+    // Scrolling to the end loads the next page, as the Load more button there does.
+    await picker.frame().getByRole("listbox").evaluate(list => { list.parentElement!.scrollTop = list.parentElement!.scrollHeight; });
+    await poll(async () => (await picker.titles()).length).toBe(50);
     expect(picker.requests().filter(request => request.section === "spaces").at(-1)).toMatchObject({ cursor: "next" });
   });
 });
 
-describe("search", () => {
-  it("finds pages across the site, and shows a chosen result where it lives", async () => {
+describe("choosing", () => {
+  it("binds the whole site from the card above the tabs", async () => {
     const picker = await start();
-    await picker.frame().locator(".browser-search-input").fill("arch");
-    await poll(picker.rows).toEqual(["Architecture", "Storage architecture"]);
-    expect(await picker.location()).toBe("Results in Slew 2 results");
-    expect(await picker.radio("Storage architecture").locator("mark").innerText()).toBe("arch");
-
-    await picker.radio("Storage architecture").click();
-    await poll(picker.summary).toContain("Storage architecture: this page and the pages under it");
-    await picker.frame().locator(".browser-search-clear").click();
-    await poll(picker.text).toContain("Chosen: Storage architecture");
-    await picker.frame().getByRole("button", { name: "Show Storage architecture" }).click();
-    await poll(picker.location).toBe("Slew › My first space › Engineering › Architecture 2 items");
-    expect(await picker.radio("Storage architecture").getAttribute("aria-checked")).toBe("true");
-    expect(picker.requests().at(-1)).toEqual({ parent: "page:5c121664-a643-497d-99b3-25e02a81f02f/491521" });
+    await picker.wholeSite().click();
+    await poll(picker.text).toContain("All of Slew: every space, page and blog post you can open on Slew");
+    await poll(async () => (await picker.state()).ready).toBe(true);
+    expect(await picker.collected()).toBe(SITE_REF);
   });
 
-  it("says when nothing matched", async () => {
-    const picker = await start({ answers: { loadItems: (request: ConfluenceBrowseRequest) => request.query ? { items: [] } : browse(request) } });
-    await picker.frame().locator(".browser-search-input").fill("zebra");
-    await poll(picker.text).toContain("No results for “zebra”");
+  it("chooses a recent page, and opens one that has child pages", async () => {
+    const picker = await start();
+    await picker.option("Q4 planning").click();
+    await poll(picker.text).toContain("Q4 planning: this page and the pages under it");
+    expect(await picker.collected()).toBe(`page:${CLOUD}/589825`);
+
+    await picker.option("Architecture").click();
+    await poll(picker.location).toContain("Architecture");
+    await poll(picker.titles).toEqual(["All of Architecture", "Storage architecture", "Networking"]);
+  });
+
+  it("opens a space at its home page, blog and pages, and chooses it or a page in it", async () => {
+    const picker = await start();
+    await picker.tab("Spaces").click();
+    await picker.option("My first space").click();
+    await poll(picker.location).toBe("Spaces My first space");
+    expect(await picker.titles()).toEqual([
+      "All of My first space", "My first space", "Blog", "Engineering", "Onboarding", "Q4 planning",
+      "Retro board", "Launch tracker", "Archive",
+    ]);
+
+    await picker.option("All of My first space").click();
+    await poll(picker.text).toContain("My first space: its pages and blog posts, including new ones.");
+    expect(await picker.collected()).toBe(MFS.ref);
+
+    await picker.option("Engineering").click();
+    await picker.option("All of Engineering").click();
+    await poll(picker.text).toContain("Engineering: this page and the pages under it");
+    expect(await picker.collected()).toBe(ENGINEERING_REF);
+  });
+
+  it("never chooses what can't be connected, and says why", async () => {
+    const picker = await start();
+    await picker.tab("Spaces").click();
+    await picker.option("My first space").click();
+    await poll(() => picker.option("Retro board").innerText()).toContain("Can't be connected yet.");
+    expect(await picker.option("Retro board").getAttribute("aria-disabled")).toBe("true");
+
+    await picker.option("Blog").click();
+    await poll(picker.titles).toEqual(["Shipping the new editor", "Welcome to the team blog"]);
+    expect(await picker.text()).toContain("Choose one post, or the whole space.");
+    expect((await picker.state()).ready).not.toBe(true);
+  });
+
+  it("goes back by breadcrumb", async () => {
+    const picker = await start();
+    await picker.tab("Spaces").click();
+    await picker.option("My first space").click();
+    await picker.option("Engineering").click();
+    await poll(picker.location).toBe("Spaces My first space Engineering");
+    await picker.frame().getByRole("button", { name: "My first space", exact: true }).click();
+    await poll(picker.titles).toContain("Onboarding");
+  });
+});
+
+describe("search", () => {
+  it("finds pages across the site, saying where each lives, and chooses one", async () => {
+    const picker = await start();
+    await picker.search().fill("arch");
+    await poll(picker.rows).toEqual([
+      "Architecture — Spaces / My first space / Engineering",
+      "Storage architecture — Spaces / My first space / Engineering / Architecture",
+    ]);
+    expect(picker.requests().at(-1)).toEqual({ site: SITE_REF, query: "arch" });
+
+    await picker.option("Storage architecture").click();
+    await poll(picker.text).toContain("Storage architecture: this page and the pages under it");
+    expect(await picker.collected()).toBe(`page:${CLOUD}/524289`);
+  });
+
+  it("opens a container it found where it lives", async () => {
+    const picker = await start({
+      answers: {
+        loadItems: (request: ConfluenceBrowseRequest) => request.query
+          ? { items: SEARCH_ARCH.items.map(node => node.title === "Architecture" ? { ...node, expandable: true } : node) }
+          : browse(request),
+      },
+    });
+    await picker.search().fill("arch");
+    await poll(picker.titles).toContain("Storage architecture");
+    await picker.option("Architecture").click();
+    await poll(picker.location).toBe("Spaces My first space Engineering Architecture");
+    expect(await picker.tab("Spaces").getAttribute("aria-selected")).toBe("true");
   });
 });
 
 describe("a resource URL that came with the frame", () => {
+  const located: ConfluenceNode = {
+    ...ENGINEERING.items[1]!, path: [{ ref: MFS.ref, title: MFS.title, kind: "space" }, { ref: ENGINEERING_REF, title: "Engineering", kind: "page" }],
+  };
+
   it("opens where the bound page lives, with it chosen", async () => {
-    const located: ConfluenceNode = {
-      ...ENGINEERING.items[1]!, path: [{ ref: MFS.ref, title: MFS.title, kind: "space" }, { ref: "page:5c121664-a643-497d-99b3-25e02a81f02f/458753", title: "Engineering", kind: "page" }],
-    };
     const picker = await start({
       initialResource: "https://slew.atlassian.net/wiki/spaces/MFS/pages/327884",
       answers: { locate: () => located },
     });
-    await poll(picker.location).toBe("Slew › My first space › Engineering 3 items");
-    await poll(() => picker.radio("On-call runbook").getAttribute("aria-checked")).toBe("true");
+    await poll(picker.location).toBe("Spaces My first space Engineering");
+    await poll(() => picker.option("On-call runbook").getAttribute("aria-selected")).toBe("true");
     await poll(async () => (await picker.state()).ready).toBe(true);
   });
 
   it("chooses nothing when the connection can't open it, rather than the whole site", async () => {
     const picker = await start({ initialResource: "https://slew.atlassian.net/wiki/spaces/GONE" });
     await poll(picker.text).toContain("Couldn't find https://slew.atlassian.net/wiki/spaces/GONE");
-    expect(await picker.radio("All of Slew").getAttribute("aria-checked")).toBe("false");
+    expect(await picker.wholeSite().getAttribute("aria-pressed")).toBe("false");
     expect((await picker.state()).ready).not.toBe(true);
   });
 
@@ -235,16 +237,15 @@ describe("a resource URL that came with the frame", () => {
     });
     await poll(picker.text).toContain("Couldn't look up https://slew.atlassian.net/wiki.");
     await picker.frame().getByRole("button", { name: "Try again" }).click();
-    await picker.radio("Q4 planning").click();
-    await poll(picker.summary).toContain("Q4 planning");
+    await picker.option("Q4 planning").click();
+    await poll(picker.text).toContain("Q4 planning: this page");
     retry.resolve({ ref: SITE_REF, kind: "site", title: "Slew", expandable: false, selectable: true, path: [] });
     await picker.page.waitForTimeout(300);
-    expect(await picker.summary()).toContain("Q4 planning");
-    expect(await picker.collected()).toBe("page:5c121664-a643-497d-99b3-25e02a81f02f/589825");
+    expect(await picker.text()).toContain("Q4 planning: this page");
+    expect(await picker.collected()).toBe(`page:${CLOUD}/589825`);
   });
 
   it("tells a failed lookup from a missing page, and tries again on request", async () => {
-    const located: ConfluenceNode = { ...ENGINEERING.items[1]!, path: [{ ref: MFS.ref, title: MFS.title, kind: "space" }, { ref: "page:5c121664-a643-497d-99b3-25e02a81f02f/458753", title: "Engineering", kind: "page" }] };
     let failing = true;
     const picker = await start({
       initialResource: "https://slew.atlassian.net/wiki/spaces/MFS/pages/327884",
@@ -254,8 +255,8 @@ describe("a resource URL that came with the frame", () => {
     expect((await picker.state()).ready).not.toBe(true);
     failing = false;
     await picker.frame().getByRole("button", { name: "Try again" }).click();
-    await poll(picker.location).toBe("Slew › My first space › Engineering 3 items");
-    await poll(() => picker.radio("On-call runbook").getAttribute("aria-checked")).toBe("true");
+    await poll(picker.location).toBe("Spaces My first space Engineering");
+    await poll(() => picker.option("On-call runbook").getAttribute("aria-selected")).toBe("true");
     await poll(async () => (await picker.state()).ready).toBe(true);
   });
 });
@@ -263,23 +264,53 @@ describe("a resource URL that came with the frame", () => {
 describe("a binding that takes only pages", () => {
   it("hides the whole site and lets spaces be opened but not chosen", async () => {
     const picker = await start({ patterns: [PATTERNS.page] });
-    await poll(picker.rows).toContain("Team Handbook");
-    expect(await picker.frame().getByRole("radio", { name: "All of Slew" }).count()).toBe(0);
-    expect(await picker.radio("Team Handbook").getAttribute("aria-disabled")).toBe("true");
-    await picker.radio("My first space").last().click({ force: true });
+    await poll(picker.titles).toContain("Q4 planning");
+    expect(await picker.wholeSite().count()).toBe(0);
+    await picker.tab("Spaces").click();
+    await picker.option("My first space").click();
     await poll(picker.text).toContain("This connection needs a page or blog post.");
-    await picker.radio("Engineering").locator(".browser-radio-hit").click();
+    expect(await picker.titles()).not.toContain("All of My first space");
+    await picker.option("Q4 planning").click();
     await poll(async () => (await picker.state()).ready).toBe(true);
+  });
+});
+
+describe("a connection to two sites", () => {
+  const OTHER = "0d6e5c1a-0000-4000-8000-000000000000";
+  const TWO: ConfluenceConfiguratorStatus = {
+    state: "ready",
+    sites: [...(READY as Extract<ConfluenceConfiguratorStatus, { state: "ready" }>).sites,
+      { cloudId: OTHER, name: "Acme", host: "acme.atlassian.net", ref: `site:${OTHER}` }],
+  };
+
+  it("switches sites above the picker, which starts afresh on the other one", async () => {
+    const picker = await start({ answers: { getStatus: () => TWO } });
+    await poll(() => picker.wholeSite().innerText()).toContain("All of Slew");
+    await picker.option("Q4 planning").click();
+    await poll(picker.text).toContain("Q4 planning: this page");
+
+    await picker.frame().getByRole("radio", { name: /Acme/ }).click();
+    await poll(() => picker.wholeSite().innerText()).toContain("All of Acme");
+    expect(picker.requests().at(-1)).toEqual({ site: `site:${OTHER}`, section: "recent" });
+    expect(await picker.text()).not.toContain("Q4 planning: this page");
+    expect((await picker.state()).ready).not.toBe(true);
+  });
+
+  it("shows no switcher for one site", async () => {
+    const picker = await start();
+    await poll(picker.titles).toContain("Q4 planning");
+    expect(await picker.frame().getByRole("radio").count()).toBe(0);
   });
 });
 
 describe("the frame", () => {
   it("logs nothing to the console on a whole journey", async () => {
     const picker = await start();
-    await picker.radio("My first space").last().click();
-    await picker.radio("Engineering").click();
-    await picker.frame().locator(".browser-search-input").fill("arch");
-    await poll(picker.rows).toContain("Storage architecture");
+    await picker.tab("Spaces").click();
+    await picker.option("My first space").click();
+    await picker.option("Engineering").click();
+    await picker.search().fill("arch");
+    await poll(picker.titles).toContain("Storage architecture");
     await vi.waitFor(() => expect(picker.consoleErrors).toEqual([]));
   });
 });

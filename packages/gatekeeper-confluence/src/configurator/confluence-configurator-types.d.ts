@@ -29,8 +29,6 @@ export type ConfluenceNode = {
   expandable: boolean;
   selectable: boolean;
   unselectableReason?: string;
-  /** Search results: the matched ranges of `title`, as [start, end) offsets. */
-  titleMatches?: [number, number][];
   /** Search results and located nodes: where it lives, below the site, outermost first. */
   path?: ConfluenceCrumb[];
 };
@@ -45,8 +43,8 @@ export type ConfluenceConfiguratorStatus =
   | { state: "unavailable"; message: string };
 
 /**
- * What the browser asks for: a node's children (`parent`), a search of a site (`query`), or a
- * section of a site's start page (`section`). Exactly one of the three is set.
+ * What the picker asks for: a node's children (`parent`), a search of a site (`query`), or one of a
+ * site's tabs (`section`). Exactly one of the three is set.
  */
 export type ConfluenceBrowseRequest = {
   /** A site's ref. Needed with `query` and `section`. */
@@ -71,8 +69,6 @@ export type ConfluenceConfiguratorValues = {
   title?: string | null;
   /** The chosen node's kind, for the summary. */
   kind?: ConfluenceNodeKind | null;
-  /** Where the chosen node lives, as JSON of `ConfluenceCrumb[]`, so the browser can open at it. */
-  path?: string | null;
 };
 
 export interface ConfluenceConfiguratorRpc {

@@ -48,7 +48,6 @@ const ICON_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"
 /** What the configurator needs from the connected account. */
 export type ConfiguratorAccount = {
   getSites(): Promise<AccessibleResource[]>;
-  getAccountId(): Promise<string | null>;
   /** The scopes the grant holds, or null when the grant predates recording them. */
   getGrantedScopes(): Promise<string[] | null>;
   getToken(): Promise<string>;
@@ -88,23 +87,9 @@ export function displayText(value: string | undefined, max = MAX_TEXT_LENGTH): s
   return (value ?? "").replace(INVISIBLE_CONTROLS, "").trim().slice(0, max);
 }
 
-/** A v1 search title without its highlight markers, and the ranges they marked. */
-export function parseHighlighted(raw: string): { text: string; matches: [number, number][] } {
-  let text = "";
-  let open: number | undefined;
-  const matches: [number, number][] = [];
-  for (const part of raw.replace(INVISIBLE_CONTROLS, "").split(/(@@@hl@@@|@@@endhl@@@)/)) {
-    if (part === "@@@hl@@@") open = text.length;
-    else if (part === "@@@endhl@@@") {
-      if (open !== undefined && text.length > open) matches.push([open, text.length]);
-      open = undefined;
-    } else text += part;
-  }
-  const clipped = text.slice(0, MAX_TEXT_LENGTH);
-  return {
-    text: clipped,
-    matches: matches.filter(([start]) => start < clipped.length).map(([start, end]) => [start, Math.min(end, clipped.length)]),
-  };
+/** A v1 search title without the highlight markers Confluence wraps matched words in. */
+export function searchTitle(raw: string): string {
+  return displayText(raw.replaceAll(/@@@(?:end)?hl@@@/g, ""));
 }
 
 /** "Oct 12" this year, "Oct 12, 2024" otherwise. */
@@ -254,11 +239,8 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
     const resource = await this.#site(siteRef.cloudId);
     if (query !== undefined) return await this.#search(resource, query, cursor);
     switch (section) {
-      case "spaces": return await this.#spacesOf(resource, { cursor });
-      case "starred": {
-        const accountId = await this.#account.getAccountId();
-        return accountId ? await this.#spacesOf(resource, { cursor, favoritedBy: accountId }) : { items: [] };
-      }
+      case "spaces": return await this.#spacesOf(resource, cursor);
+      case "starred": return await this.#starred(resource, cursor);
       case "recent": return await this.#recent(resource);
       default: throw new Error("That can't be opened.");
     }
@@ -364,11 +346,8 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
 
   // -- listings ---------------------------------------------------------------------------------
 
-  async #spacesOf(site: AccessibleResource, options: { cursor?: string; favoritedBy?: string }): Promise<ConfluenceBrowsePage> {
-    const page = await this.#api(site).listSpaces({
-      status: "current", sort: "name", includeIcon: true, favoritedBy: options.favoritedBy,
-      cursor: options.cursor, limit: PAGE_SIZE,
-    });
+  async #spacesOf(site: AccessibleResource, cursor: string | undefined): Promise<ConfluenceBrowsePage> {
+    const page = await this.#api(site).listSpaces({ status: "current", sort: "name", includeIcon: true, cursor, limit: PAGE_SIZE });
     // The spaces are kept so `spaceAvatars` finds their icon links without asking again.
     for (const space of page.results) this.#spaces.set(`${site.id}/${space.key}`, Promise.resolve(space));
     return {
@@ -407,11 +386,21 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
     }
   }
 
+  /** What the user starred in Confluence: spaces, pages and blog posts, as its own Starred page lists them. */
+  async #starred(site: AccessibleResource, cursor: string | undefined): Promise<ConfluenceBrowsePage> {
+    const cql = "type in (space, page, blogpost) AND favourite = currentUser()";
+    const hits = await this.#api(site).searchWithContext(cql, { cursor, limit: PAGE_SIZE });
+    return {
+      items: hits.results.flatMap(hit => this.#hitNode(site, hit) ?? []),
+      ...(hits.nextCursor ? { nextCursor: hits.nextCursor } : {}),
+    };
+  }
+
   async #children(ref: Ref, cursor: string | undefined): Promise<ConfluenceBrowsePage> {
     const site = await this.#site(ref.cloudId);
     const api = this.#api(site);
     switch (ref.kind) {
-      case "site": return await this.#spacesOf(site, { cursor });
+      case "site": return await this.#spacesOf(site, cursor);
       case "space": return await this.#spaceRoot(site, ref.key, cursor);
       case "blogs": {
         const space = await this.#space(site, ref.key);
@@ -562,13 +551,12 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
 
   /** A search result as a row: a space, or a page or blog post with the path to it. */
   #hitNode(site: AccessibleResource, hit: SearchHit): ConfluenceNode | undefined {
-    const { text: title, matches } = parseHighlighted(hit.title ?? hit.content?.title ?? "");
+    const title = searchTitle(hit.title ?? hit.content?.title ?? "");
     if (hit.entityType === "space") {
       const key = hit.space?.key;
       if (!key) return undefined;
       return {
         ...spaceNode(site.id, { key, name: title, type: hit.space?.type }),
-        titleMatches: matches,
         path: [],
       };
     }
@@ -595,7 +583,6 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
       ref: `${content.type}:${site.id}/${content.id}`,
       kind: isHome ? "overview" : content.type,
       title: title || "Untitled",
-      titleMatches: matches,
       ...(shortDate(hit.lastModified) ? { meta: shortDate(hit.lastModified) } : {}),
       // Only child pages are counted, so a page whose only children are folders or whiteboards
       // reads as a leaf here, as Confluence's own search shows it; one with no count may open.
@@ -628,7 +615,7 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
     const hit = await api.searchWithContext(`id = ${content.id}`, { limit: 1 })
       .then(page => page.results[0], () => undefined);
     const fromSearch = hit ? this.#hitNode(site, hit) : undefined;
-    if (fromSearch) return { ...fromSearch, title: displayText(content.title) || "Untitled", titleMatches: undefined };
+    if (fromSearch) return { ...fromSearch, title: displayText(content.title) || "Untitled" };
     const key = spaceKeyFromWebui(content._links?.webui);
     if (!key) return null;
     const space = await this.#space(site, key);

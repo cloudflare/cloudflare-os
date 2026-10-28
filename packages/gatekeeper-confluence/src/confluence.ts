@@ -534,7 +534,6 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const account = this.#userAccount();
     const ui = new ConfluenceConfiguratorUI({
       getSites: async () => await account.getSites(),
-      getAccountId: async () => (await account.getIdentity())?.accountId ?? null,
       getGrantedScopes: async () => await account.getGrantedScopes(),
       getToken: async () => await account.getAccessToken(),
       refresh: async () => await account.refreshCredentials(),

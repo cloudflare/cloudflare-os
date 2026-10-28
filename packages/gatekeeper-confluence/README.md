@@ -138,11 +138,12 @@ storage with a short TTL and invalidated on write. This logic lives in `confluen
 
 The three resource types are grouped (`groupedWith`) into one Confluence card, and one configurator
 frame (`src/configurator/confluence-configurator-ui.tsx`, served by `confluence-configurator.ts`)
-chooses among them. It is the SharePoint picker's shape with Confluence's content: the whole site
-above, then a start page of recently viewed pages, starred spaces and every space, which opens into
-a space's home page, blog and page tree, and search across the site (titles, or a pasted link,
-short `/wiki/x/…` links included). Rows use Confluence's own icons; space avatars are fetched after
-the rows show (`spaceAvatars`), so no listing waits on them. The frame
+chooses among them. It is the shared `HierarchyPicker` from `@gadgets/configurator-ui`, with the
+whole site above and three tabs: recently viewed pages, what the user starred (spaces, pages and
+blog posts) and every space. A space
+opens into its home page, blog and page tree; search covers the whole site (titles, or a pasted
+link, short `/wiki/x/…` links included). Rows use Confluence's own icons; space avatars are fetched
+after the rows show (`spaceAvatars`), so no listing waits on them. The frame
 trades refs; `resourceUrlFor` writes the resource URL, always in the page-shaped form for pages and
 blog posts, so the URL patterns and every existing binding are unchanged. Pasting a resource URL, or
 an agent's `requestConnection(resourceUrl)`, opens the picker where it lives; one this connection
