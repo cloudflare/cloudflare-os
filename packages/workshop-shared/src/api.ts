@@ -218,6 +218,90 @@ export interface NotificationSubscriber extends RpcTarget {
   notify(notification: UserNotification): Promise<void>;
 }
 
+/** One user's private per-thread read horizon and locally stored message count. */
+export type ChatReadState = {
+  /** Workspace containing the thread. */
+  workspaceId: string;
+  /** Thread identifier, scoped to the workspace. */
+  chatId: number;
+  /** Number of unread visible text/attachment messages, excluding internal agent activity. */
+  unreadMessageCount: number;
+  /** Last read sequence, inclusive; -1 means nothing has been read. */
+  readThroughSequence: number;
+};
+
+/** Display metadata for a thread's latest visible message, independent of private read horizons. */
+export type ChatTimelineHead = {
+  /** Thread identifier, scoped to the workspace. */
+  chatId: number;
+  /** Current thread title. */
+  chatTitle: string;
+  /** Sequence of the latest visible text/attachment message; -1 if none. */
+  latestSequence: number;
+  /** First nonempty line of the latest visible message, capped at 240 characters; empty for none. Absent on older servers. */
+  latestMessagePreview?: string;
+  /** Time of the latest visible message; absent for empty threads or older servers. */
+  latestActivityAt?: Date;
+};
+
+/** An unread inbox row, served entirely from the user's local thread projection. */
+export type UnreadThread = ChatReadState & ChatTimelineHead;
+
+/** Locally calculated counts for one workspace; omitted from rollups when fully read. */
+export type WorkspaceUnreadSummary = {
+  /** Workspace containing the unread threads. */
+  workspaceId: string;
+  /** Number of threads with unread visible messages. */
+  unreadChatCount: number;
+  /** Total unread visible messages in this workspace. */
+  unreadMessageCount: number;
+};
+
+/** Instance-wide and per-workspace badge totals, without individual thread rows. */
+export type UserUnreadSummary = {
+  /** Number of threads with unread visible messages across all listed workspaces. */
+  unreadChatCount: number;
+  /** Total unread visible messages across all listed workspaces. */
+  unreadMessageCount: number;
+  /** Nonzero workspace totals; an absent workspace has no unread messages. */
+  workspaces: WorkspaceUnreadSummary[];
+};
+
+/** Global totals and only the changed workspace's rollup, keeping live updates bounded. */
+export type UnreadSummaryUpdate = Pick<UserUnreadSummary, "unreadChatCount" | "unreadMessageCount"> & {
+  /** Replace this workspace's counts; zero removes it from the nonzero rollup list. */
+  workspace: WorkspaceUnreadSummary;
+};
+
+/** An observed read boundary for a single-thread or bulk mark-read command. */
+export type ChatReadReceipt = Pick<ChatReadState, "workspaceId" | "chatId"> & {
+  /** Highest observed sequence to mark read; later activity stays unread. */
+  throughSequence: number;
+};
+
+/** The thread rows a live unread subscription needs; no scope exposes all historical threads. */
+export type UnreadStateScope = "summary" | "unread" | {
+  /** Include read and unread thread statuses only for this workspace. */
+  workspaceId: string;
+};
+
+/** Global badge rollups plus only the thread rows requested by a subscription's scope. */
+export type UserUnreadState = UserUnreadSummary & {
+  /** Scoped thread rows: none for summary, unread-only for inbox, or one workspace's statuses. */
+  chats: ChatReadState[];
+};
+
+/** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
+export interface UnreadStateSubscriber extends RpcTarget {
+  /** Receive the scoped initial snapshot, or a replacement after a bulk change. */
+  updated(state: UserUnreadState): Promise<void>;
+  /** Update global/workspace rollups without sending thread rows outside the requested scope. */
+  summaryUpdated(summary: UnreadSummaryUpdate): Promise<void>;
+  /** Replace one in-scope thread (null removes it), together with current badge rollups. */
+  chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
+    summary: UnreadSummaryUpdate): Promise<void>;
+}
+
 /**
  * When listing gatekeeper vendors or connected accounts, you can filter to only vendors/accounts
  * that support certain features. This type specifies the filter.
@@ -534,6 +618,42 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
+
+  /** Fetch unread inbox rows, newest first, including locally copied titles and previews. No workspace reads. */
+  getUnreadThreads(): Promise<UnreadThread[]>;
+
+  /** Fetch tracked thread horizons/counts for one workspace to merge with its thread list. Missing rows are read. */
+  getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]>;
+
+  /** Fetch instance and workspace badge rollups without transferring individual thread rows or querying workspaces. */
+  getUnreadSummary(): Promise<UserUnreadSummary>;
+
+  /** Query a workspace's thread metadata for display or an observed read boundary; null if access is denied. */
+  getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null>;
+
+  /**
+   * Subscribe to badge rollups and explicitly scoped thread rows, never all thread history.
+   * Use summary for global indicators, unread for the inbox, or a workspace ID for its thread list.
+   * Dispose when hidden; re-subscribe after visibility changes or disconnect/reset.
+   * Receiving state never marks messages read or acknowledges alerts.
+   */
+  subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
+
+  /** Advance to the requested boundary without moving an already-later read horizon backward. */
+  markChatRead(receipt: ChatReadReceipt): Promise<void>;
+
+  /**
+   * Mark observed thread boundaries read. A workspace failure does not block healthy workspaces,
+   * but rejects the command to report partial success; retrying the same receipts is safe.
+   */
+  markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
+
+  /**
+   * Set the horizon immediately before an existing item, allowing a rewind.
+   * Return whether a read-state update was published; an already-applied command returns false
+   * without writing. A reset retry can also return false after the original attempt applied it.
+   */
+  markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<boolean>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute

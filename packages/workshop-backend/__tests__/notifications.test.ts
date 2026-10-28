@@ -187,6 +187,61 @@ async function publish(notify?: () => Promise<void>): Promise<string[]> {
 }
 
 describe("UserDurableObject notifications", () => {
+  it("cancels an in-flight push when workspace access is removed", async () => {
+    const fetcher = stubService(), started = Promise.withResolvers<void>();
+    await inUser(async user => {
+      await user.newWorkspace(NOTIFICATION.workspaceId, "Workspace");
+      await user.registerNotificationDevice("a".repeat(64));
+      fetcher.mockClear();
+      fetcher.mockImplementationOnce((_input, init) => new Promise((_resolve, reject) => {
+        const signal = init!.signal!;
+        signal.addEventListener("abort", () => reject(signal.reason), {once: true});
+        started.resolve();
+      }));
+      const result = user.publishNotification(NOTIFICATION).then(() => false, () => true);
+      await started.promise;
+      await user.workspaceRemoved(NOTIFICATION.workspaceId);
+      expect(await result).toBe(true);
+      expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    });
+  });
+
+  it("does not fall back to push after access is removed while awaiting a browser", async () => {
+    vi.useFakeTimers();
+    const fetcher = stubService(), started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    await inUser(async user => {
+      await user.newWorkspace(NOTIFICATION.workspaceId, "Workspace");
+      await user.registerNotificationDevice("a".repeat(64));
+      using callback = new RpcStub(new Subscriber(async () => { started.resolve(); await release.promise; }));
+      using _subscription = await user.subscribeToNotifications(callback);
+      try {
+        const result = user.publishNotification(NOTIFICATION).then(() => false, () => true);
+        await started.promise;
+        await user.workspaceRemoved(NOTIFICATION.workspaceId);
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(await result).toBe(true);
+        expect(pushed(fetcher)).toEqual([]);
+      } finally { release.resolve(); }
+    });
+  });
+
+  it("aborts a stalled push attempt at its remaining retry deadline without dropping the subscription", async () => {
+    const fetcher = stubService();
+    await inUser(async user => {
+      await user.registerNotificationDevice("a".repeat(64));
+      fetcher.mockClear();
+      fetcher.mockImplementationOnce((_input, init) => new Promise((_resolve, reject) => {
+        const signal = init!.signal!;
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener("abort", () => reject(signal.reason), {once: true});
+      }));
+      await expect(user.publishNotification(NOTIFICATION, Date.now() + 100)).rejects.toThrow();
+      expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
+      await user.publishNotification(NOTIFICATION);
+      expect(pushed(fetcher)).toEqual([ONE, ONE]);
+    });
+  });
+
   it("leaves a notification an open tab shows to that tab", async () => {
     expect(await publish(async () => {})).toEqual([]);
   });

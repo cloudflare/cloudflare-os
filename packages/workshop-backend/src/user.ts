@@ -1,4 +1,5 @@
 import { RpcStub } from "capnweb";
+import type { ChatReadReceipt, ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -9,7 +10,9 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
+  type ChatReadCursor,
 } from "./storage-schema/user-storage.js";
+import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
 import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
@@ -31,9 +34,29 @@ const logger = createWorkshopLogger("workshop.user");
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
+const NOTIFICATION_RETRY_LIFETIME_MS = 10 * 60_000;
+const NOTIFICATION_ATTEMPT_TIMEOUT_MS = 15_000;
 
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
 export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
+
+/** Coalesced visible-message progress carried by the workspace's durable handoff. */
+export type ChatMessageProgress = {
+  /** Current inbox metadata. */
+  head: Omit<ChatTimelineHead, "chatId">;
+  /** Source metadata's existing monotonic timestamp, independent of the latest visible message. */
+  headUpdatedAt: Date;
+  /** Latest dense visible position; repeated/older deliveries never increment a count. */
+  latestVisibleSequence: number;
+  /** Author of the latest visible message, when it is a user rather than an agent. */
+  latestMessageAuthorId?: string;
+  /** First new timeline record in this pending batch, for the initial notification boundary. */
+  firstMessageSequence?: number;
+  /** First new visible position in this pending batch, for a missing read cursor. */
+  firstVisibleSequence?: number;
+  /** Eligible alerts from this source batch; never fetched again by the recipient. */
+  notifications: (Pick<UserNotification, "id" | "kind" | "chatTitle"> & {sequence: number})[];
+};
 
 /**
  * How long a user selection ticket (GatekeeperUserSelection) remains
@@ -204,14 +227,60 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
+  #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
+    for (let cursor of this.storage.chatReadCursors.list()) {
+      this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor);
+    }
+    this.storage.chatReadCursors.subscribe({
+      add: cursor => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      update: (_old, cursor) => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      remove: cursor => { this.#readCursors.delete(`${cursor.workspaceId}:${cursor.chatId}`); },
+    });
+    // Only headers/counts are cached. The queue's durable rows remain the source of work.
+    const queued = (workspaceId: string, chatId: number, delta: number) => {
+      let key = `${workspaceId}:${chatId}`;
+      let count = (this.#notificationChats.get(key)?.count ?? 0) + delta;
+      if (count) this.#notificationChats.set(key, {workspaceId, chatId, count});
+      else this.#notificationChats.delete(key);
+    };
+    for (let event of this.storage.notificationOutbox.list()) queued(event.workspaceId, event.chatId, 1);
+    this.storage.notificationOutbox.subscribe({
+      add: event => queued(event.workspaceId, event.chatId, 1),
+      update: () => {},
+      remove: event => queued(event.workspaceId, event.chatId, -1),
+    });
+    for (let listing of this.storage.gadgets.list()) {
+      if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, new AbortController());
+    }
+    this.storage.gadgets.subscribe({
+      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, new AbortController()); },
+      update: (_old, listing) => {
+        if (listing.role === "use") {
+          this.#unreadWorkspaces.get(listing.id)?.abort();
+          this.#unreadWorkspaces.delete(listing.id);
+        } else if (!this.#unreadWorkspaces.has(listing.id)) this.#unreadWorkspaces.set(listing.id, new AbortController());
+      },
+      remove: listing => {
+        this.#unreadWorkspaces.get(listing.id)?.abort();
+        this.#unreadWorkspaces.delete(listing.id);
+      },
+    });
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
+    if (this.#notificationChats.size) {
+      this.ctx.waitUntil((async () => {
+        if (await this.ctx.storage.getAlarm() === null) await this.#armExpirySweep();
+        await this.#deliverNotifications();
+      })().catch(error => {
+        logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
+      }));
+    }
   }
 
   // Mirrors the profile into the deployment-wide user directory. Best-effort
@@ -480,7 +549,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
   }
 
-  /** Subscribe a visible authenticated client to live user notifications. */
+  /** Subscribe an authenticated client, including background listeners, to live notifications. */
   async subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
     subscriber = subscriber.dup();
@@ -505,26 +574,401 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
+  #readCursors = new Map<string, ChatReadCursor>();
+  // Each listing lifetime has an identity so pre-removal work cannot commit after readmission.
+  #unreadWorkspaces = new Map<string, AbortController>();
+  #chatWork = new Map<string, Promise<void>>();
+  #notificationChats = new Map<string, {workspaceId: string; chatId: number; count: number}>();
+
+  #cursor(workspaceId: string, chatId: number): ChatReadCursor {
+    return this.#readCursors.get(`${workspaceId}:${chatId}`) ??
+      {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1};
+  }
+
+  #storeCursor(cursor: ChatReadCursor): boolean {
+    let old = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
+    if (old && old.readThroughSequence === cursor.readThroughSequence &&
+        old.readThroughVisibleSequence === cursor.readThroughVisibleSequence &&
+        old.latestVisibleSequence === cursor.latestVisibleSequence &&
+        old.unreadCount === cursor.unreadCount &&
+        old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
+        old.notifiedEventIds?.join() === cursor.notifiedEventIds?.join() && old.deleted === cursor.deleted &&
+        old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
+        old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
+        old.headUpdatedAt?.getTime() === cursor.headUpdatedAt?.getTime() &&
+        old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime()) return false;
+    this.storage.chatReadCursors.put(cursor);
+    return true;
+  }
+
+  #mergeHead(current: ChatReadCursor, incoming: Pick<ChatReadCursor, "head" | "headUpdatedAt">) {
+    let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
+    let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
+      (incoming.head.latestSequence === current.head.latestSequence &&
+        at !== undefined && (previous === undefined || at > previous)));
+    return newer ? {head: incoming.head, headUpdatedAt: incoming.headUpdatedAt} :
+      {head: current.head, headUpdatedAt: current.headUpdatedAt};
+  }
+
+  #workspace(workspaceId: string) {
+    return this.ctx.exports.OverseerDurableObject.get(
+      this.ctx.exports.OverseerDurableObject.idFromString(workspaceId));
+  }
+
+  #hasWorkspace(workspaceId: string): boolean {
+    return this.#unreadWorkspaces.has(workspaceId);
+  }
+
+  #wasNotified(cursor: ChatReadCursor, event: {sequence: number; id: string}): boolean {
+    return event.sequence < cursor.notifiedThroughSequence ||
+      (event.sequence === cursor.notifiedThroughSequence &&
+        (!cursor.notifiedEventIds || cursor.notifiedEventIds.includes(event.id)));
+  }
+
+  // Read commands and alert delivery share one mutex. Arrivals commit without awaits, so their
+  // counts/queue handoff cannot race another synchronous write or block on a slow alert provider.
+  async #serialize(key: string, operation: () => Promise<void>) {
+    let previous = this.#chatWork.get(key) ?? Promise.resolve();
+    let current = previous.catch(() => {}).then(operation);
+    this.#chatWork.set(key, current);
+    try { await current; }
+    finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
+  }
+
+  #unreadSnapshot(scope: UnreadStateScope, summary = this.#unreadSummary()): UserUnreadState {
+    let chats: ChatReadState[] = [];
+    if (scope !== "summary") {
+      for (let cursor of this.#readCursors.values()) {
+        if (this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted &&
+            (scope === "unread" ? cursor.unreadCount > 0 : cursor.workspaceId === scope.workspaceId)) {
+          chats.push(this.#readState(cursor));
+        }
+      }
+    }
+    return {...summary, chats};
+  }
+
+  #readState(cursor: ChatReadCursor): ChatReadState {
+    return {workspaceId: cursor.workspaceId, chatId: cursor.chatId,
+      readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount};
+  }
+
+  // No source reads during delivery/recovery. Only an explicit read command translates a raw
+  // UI boundary to its persisted visible position, with one indexed source seek.
+  async #processChat(workspaceId: string, chatId: number, options: {
+    horizon?: {through: number; rewind: boolean};
+  } = {}): Promise<boolean> {
+    let admission = this.#unreadWorkspaces.get(workspaceId);
+    let key = `${workspaceId}:${chatId}`;
+    let hadNotifications = this.#notificationChats.has(key);
+    let changed = false;
+    try {
+      await this.#serialize(key, async () => {
+        if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+        let existing = this.#readCursors.get(key);
+        if (existing?.deleted) return;
+        if (options.horizon) {
+          let cursor = this.#cursor(workspaceId, chatId);
+          let through = options.horizon.rewind ? options.horizon.through :
+            Math.max(options.horizon.through, cursor.readThroughSequence);
+          if (existing && through === cursor.readThroughSequence &&
+              cursor.readThroughVisibleSequence !== undefined) return;
+          let state = await this.#workspace(workspaceId).getChatReadPositionForUser(
+            this.ctx.id.toString(), this.storage.profile.get().id, chatId, through);
+          if (this.#unreadWorkspaces.get(workspaceId) !== admission || this.#readCursors.get(key)?.deleted) return;
+          if (state === "denied") throw new Error("Workspace access denied.");
+          if (!state) { this.#forgetChat(workspaceId, chatId); return; }
+          if (through > state.timelineTailSequence) throw new Error("Invalid timeline sequence.");
+          // Arrivals can advance the head and consume the user's own next message during this
+          // await. Preserve both advances unless the command explicitly rewinds the read horizon.
+          let current = this.#cursor(workspaceId, chatId);
+          let readThroughVisibleSequence = state.readThroughVisibleSequence;
+          if (!options.horizon.rewind && current.readThroughSequence > through) {
+            through = current.readThroughSequence;
+            readThroughVisibleSequence = current.readThroughVisibleSequence!;
+          }
+          let latest = Math.max(current.latestVisibleSequence ?? 0, state.latestVisibleSequence);
+          let updated = {...current, ...this.#mergeHead(current, state), readThroughSequence: through,
+            readThroughVisibleSequence, latestVisibleSequence: latest,
+            unreadCount: latest - readThroughVisibleSequence,
+            notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : state.notificationBaseline};
+          this.#storeCursor(updated);
+          // Publish the committed read position before alert delivery can suspend or reset us.
+          if (!existing || current.readThroughSequence !== through || current.unreadCount !== updated.unreadCount) {
+            changed = true;
+            this.#unreadChanged(workspaceId, chatId);
+          }
+        }
+        while (this.#unreadWorkspaces.get(workspaceId) === admission) {
+          let [event] = this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`, limit: 1});
+          if (!event) break;
+          let cursor = this.#readCursors.get(key);
+          if (!cursor || cursor.deleted) return;
+          let expired = false;
+          if (!this.#wasNotified(cursor, event)) {
+            expired = event.expiresAt.getTime() <= Date.now();
+            if (!expired) {
+              let {sequence: _, expiresAt, ...notification} = event;
+              try {
+                await this.publishNotification(notification, expiresAt.getTime());
+              } catch (error) {
+                if (Date.now() < event.expiresAt.getTime()) throw error;
+                expired = true;
+              }
+            }
+          }
+          if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+          let checkpoint = this.#readCursors.get(key);
+          if (!checkpoint || checkpoint.deleted) return;
+          if (expired) logger.warn("notification delivery expired", {
+            event: "notification.delivery.expired", gadgetId: workspaceId, chatId, sequence: event.sequence,
+          });
+          this.ctx.storage.transactionSync(() => {
+            this.storage.notificationOutbox.deleteRecord(event);
+            if (!this.#wasNotified(checkpoint, event)) {
+              this.#storeCursor({...checkpoint, notifiedThroughSequence: event.sequence,
+                notifiedEventIds: [...(event.sequence === checkpoint.notifiedThroughSequence
+                  ? checkpoint.notifiedEventIds ?? [] : []), event.id]});
+            }
+          });
+        }
+      });
+    } finally {
+      if (hadNotifications || this.#notificationChats.has(key)) await this.#armExpirySweep();
+    }
+    return changed;
+  }
+
+  /** Read inbox rows directly from the user's local projection. */
+  async getUnreadThreads(): Promise<UnreadThread[]> {
+    return [...this.#readCursors.values()]
+      .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && cursor.unreadCount > 0)
+      .map(cursor => ({...this.#readState(cursor),
+        chatTitle: cursor.head?.chatTitle ?? `Thread ${cursor.chatId}`,
+        latestSequence: cursor.head?.latestSequence ?? -1,
+        latestMessagePreview: cursor.head?.latestMessagePreview,
+        latestActivityAt: cursor.head?.latestActivityAt}))
+      .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0) ||
+        a.chatTitle.localeCompare(b.chatTitle) || a.workspaceId.localeCompare(b.workspaceId) || a.chatId - b.chatId);
+  }
+
+  /** Only tracked private state for this workspace; its ordinary thread list stays source-owned. */
+  async getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]> {
+    if (!this.#hasWorkspace(workspaceId)) return [];
+    return [...this.#readCursors.values()]
+      .filter(cursor => cursor.workspaceId === workspaceId && !cursor.deleted)
+      .map(cursor => this.#readState(cursor));
+  }
+
+  /** Rollups are calculated from the same hydrated rows as live badge updates. */
+  async getUnreadSummary(): Promise<UserUnreadSummary> {
+    return this.#unreadSummary();
+  }
+
+  #unreadSummary(): UserUnreadSummary {
+    let workspaces = new Map<string, WorkspaceUnreadSummary>();
+    let unreadChatCount = 0, unreadMessageCount = 0;
+    for (let cursor of this.#readCursors.values()) {
+      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted || cursor.unreadCount <= 0) continue;
+      unreadChatCount++;
+      unreadMessageCount += cursor.unreadCount;
+      let summary = workspaces.get(cursor.workspaceId) ??
+        {workspaceId: cursor.workspaceId, unreadChatCount: 0, unreadMessageCount: 0};
+      summary.unreadChatCount++;
+      summary.unreadMessageCount += cursor.unreadCount;
+      workspaces.set(cursor.workspaceId, summary);
+    }
+    return {unreadChatCount, unreadMessageCount, workspaces: [...workspaces.values()]};
+  }
+
+  /** Display metadata follows the workspace's existing authorization and query path. */
+  async getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null> {
+    if (!this.#hasWorkspace(workspaceId)) return null;
+    return this.#workspace(workspaceId).getChatHeadsForUser(
+      this.ctx.id.toString(), this.storage.profile.get().id);
+  }
+
+  async subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    subscriber = subscriber.dup();
+    let token = {};
+    this.#unreadSubscribers.set(token, {scope, subscriber});
+    let unsubscribe = () => {
+      let existing = this.#unreadSubscribers.get(token);
+      if (existing) { this.#unreadSubscribers.delete(token); existing.subscriber[Symbol.dispose](); }
+    };
+    subscriber.onRpcBroken(unsubscribe);
+    this.ctx.waitUntil(subscriber.updated(this.#unreadSnapshot(scope)).catch(unsubscribe));
+    return new RpcStub<{}>({[Symbol.dispose]: unsubscribe});
+  }
+
+  #unreadChanged(workspaceId?: string, chatId?: number): void {
+    let cursor = workspaceId === undefined || chatId === undefined ? undefined :
+      this.#readCursors.get(`${workspaceId}:${chatId}`);
+    let chat = cursor && this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted ? this.#readState(cursor) : null;
+    if (!this.#unreadSubscribers.size) return;
+    let summary = this.#unreadSummary();
+    let change = workspaceId === undefined || chatId === undefined ? undefined : {workspaceId, chatId,
+      summary: {unreadChatCount: summary.unreadChatCount, unreadMessageCount: summary.unreadMessageCount,
+        workspace: summary.workspaces.find(workspace => workspace.workspaceId === workspaceId) ??
+          {workspaceId, unreadChatCount: 0, unreadMessageCount: 0}}};
+    for (let [token, {scope, subscriber}] of this.#unreadSubscribers) {
+      let update: Promise<void>;
+      if (!change) {
+        update = subscriber.updated(this.#unreadSnapshot(scope, summary));
+      } else if (scope === "summary" || (scope !== "unread" && scope.workspaceId !== change.workspaceId)) {
+        update = subscriber.summaryUpdated(change.summary);
+      } else {
+        update = subscriber.chatUpdated(change.workspaceId, change.chatId,
+          scope === "unread" && !chat?.unreadMessageCount ? null : chat, change.summary);
+      }
+      this.ctx.waitUntil(update.catch(() => {
+        this.#unreadSubscribers.delete(token);
+        subscriber[Symbol.dispose]();
+      }));
+    }
+  }
+
+  /** Commit counts and the alert outbox before ACK; delivery never holds up source fanout. */
+  async messageArrived(workspaceId: string, chatId: number, progress: ChatMessageProgress | null): Promise<void> {
+    if (!this.#hasWorkspace(workspaceId)) return;
+    let key = `${workspaceId}:${chatId}`;
+    if (!progress) {
+      let hadNotifications = this.#notificationChats.has(key);
+      this.#forgetChat(workspaceId, chatId);
+      if (hadNotifications) await this.#armExpirySweep();
+      return;
+    }
+    let cursor = this.#cursor(workspaceId, chatId);
+    if (cursor.deleted) return;
+    // Metadata changes don't enroll history. Wait for a new message or an explicit command.
+    if (progress.firstMessageSequence === undefined && !this.#readCursors.has(key)) return;
+    let readThroughVisibleSequence = cursor.readThroughVisibleSequence;
+    if (readThroughVisibleSequence === undefined) {
+      readThroughVisibleSequence = (progress.firstVisibleSequence ?? progress.latestVisibleSequence + 1) - 1;
+      cursor = {...cursor,
+        readThroughSequence: (progress.firstMessageSequence ?? 0) - 1,
+        readThroughVisibleSequence,
+        notifiedThroughSequence: this.#readCursors.has(key) ? cursor.notifiedThroughSequence :
+          (progress.firstMessageSequence ?? 0) - 1};
+    }
+    let latest = Math.max(cursor.latestVisibleSequence ?? 0, progress.latestVisibleSequence);
+    // Consume only a single own message when already caught up. Gaps/coalesced arrivals keep
+    // the ordinary count: their other messages have not been read merely because the user sent.
+    if ((cursor.latestVisibleSequence ?? readThroughVisibleSequence) === readThroughVisibleSequence &&
+        latest === readThroughVisibleSequence + 1 &&
+        progress.latestMessageAuthorId === this.storage.profile.get().id) {
+      readThroughVisibleSequence = latest;
+      cursor = {...cursor, readThroughSequence: progress.head.latestSequence, readThroughVisibleSequence};
+    }
+    cursor = {...cursor, ...this.#mergeHead(cursor, progress), latestVisibleSequence: latest,
+      unreadCount: latest - readThroughVisibleSequence};
+    let changed = this.ctx.storage.transactionSync(() => {
+      let stored = this.#storeCursor(cursor);
+      for (let event of progress.notifications) {
+        let eventKey = `${workspaceId}:${chatKey(chatId, event.sequence)}:${event.id}`;
+        if (!this.#wasNotified(cursor, event) && !this.storage.notificationOutbox.get(eventKey)) {
+          this.storage.notificationOutbox.put({...event, workspaceId, chatId,
+            expiresAt: new Date(Date.now() + NOTIFICATION_RETRY_LIFETIME_MS)});
+        }
+      }
+      return stored;
+    });
+    if (changed) this.#unreadChanged(workspaceId, chatId);
+    if (this.#notificationChats.has(key)) {
+      await this.#armExpirySweep();
+      this.ctx.waitUntil(this.#processChat(workspaceId, chatId).catch(error => {
+        logger.warn("notification delivery deferred", {event: "notification.delivery.deferred", error});
+      }));
+    }
+  }
+
+  /** Advance to the requested boundary; older read requests never move the horizon backward. */
+  async markChatRead(receipt: ChatReadReceipt): Promise<void> {
+    await this.markChatsRead([receipt]);
+  }
+
+  async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
+    let results = await Promise.allSettled(receipts.map(receipt =>
+      this.#setReadHorizon(receipt.workspaceId, receipt.chatId, receipt.throughSequence,
+        false)));
+    for (let result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  async markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<boolean> {
+    return this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, true);
+  }
+
+  async #setReadHorizon(workspaceId: string, chatId: number, through: number,
+      rewind: boolean): Promise<boolean> {
+    if (!Number.isSafeInteger(through) || through < -1) throw new Error("Invalid timeline sequence.");
+    return this.#processChat(workspaceId, chatId, {horizon: {through, rewind}});
+  }
+
+  async #deliverNotifications(): Promise<void> {
+    let results = await Promise.allSettled([...this.#notificationChats.values()]
+      .map(({workspaceId, chatId}) => this.#processChat(workspaceId, chatId)));
+    await this.#armExpirySweep();
+    for (let result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  #forgetChat(workspaceId: string, chatId: number): void {
+    this.ctx.storage.transactionSync(() => {
+      for (let event of Array.from(this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`}))) {
+        this.storage.notificationOutbox.deleteRecord(event);
+      }
+      // A tombstone fences delayed source retries, including after eviction, without a source
+      // existence check. There is no undelete and the workspace never reuses a chat ID.
+      this.#storeCursor({...this.#cursor(workspaceId, chatId), unreadCount: 0, deleted: true});
+    });
+    this.#unreadChanged(workspaceId, chatId);
+  }
+
+  /** Remove the listing and its accepted work before the source is destroyed; no callback read. */
+  async workspaceRemoved(workspaceId: string): Promise<void> {
+    await this.deleteWorkspace(workspaceId);
+    await this.#armExpirySweep();
+  }
+
+  #forgetUnreadWorkspace(workspaceId: string): void {
+    let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
+    this.ctx.storage.transactionSync(() => {
+      if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
+      for (let event of Array.from(this.storage.notificationOutbox.list({prefix: `${workspaceId}:`}))) {
+        this.storage.notificationOutbox.deleteRecord(event);
+      }
+    });
+    if (cursors.length) this.#unreadChanged();
+  }
+
   /**
-   * Offer a notification to visible clients; push it to every registered device unless one
-   * acknowledges within 3s. A finished task in a workspace the user muted goes nowhere.
+   * Offer a notification to visible clients, otherwise use push. The caller advances its
+   * notifiedThroughSequence only once this delivery succeeds or policy intentionally skips it.
    */
-  async publishNotification(notification: UserNotification): Promise<void> {
+  async publishNotification(notification: UserNotification,
+      retryUntil = Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS): Promise<void> {
     let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
     if (notification.kind === "taskCompleted" && mute &&
         ("indefinite" in mute || mute.until.getTime() > Date.now())) {
       return;
     }
+    let attemptUntil = Math.min(retryUntil, Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS);
+    let admission = this.#unreadWorkspaces.get(notification.workspaceId);
+    let signal = AbortSignal.any([AbortSignal.timeout(Math.max(1, attemptUntil - Date.now())),
+      ...(admission ? [admission.signal] : [])]);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let acknowledged = await Promise.race([
       Promise.any([...this.#notificationSubscribers.values()]
           .map(subscriber => subscriber.notify(notification))).then(() => true, () => false),
-      new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 3_000); }),
+      new Promise<boolean>(resolve => {
+        timeout = setTimeout(() => resolve(false), Math.max(1, Math.min(3_000, attemptUntil - Date.now())));
+      }),
     ]).finally(() => clearTimeout(timeout));
     if (acknowledged) return;
+    signal.throwIfAborted();
+    if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
     let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
     let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
-      if (await deliver(this.env, subscriptionId, notification)) return;
+      if (await deliver(this.env, subscriptionId, notification, signal)) return;
       // This subscription is dead; the device gets a new one when its app next opens. Keep one it
       // registered while this delivery was in flight.
       let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();
@@ -571,12 +1015,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Overseer when attempted.
    */
   async recordSharedWorkspaceOpen(
-      workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
+      workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
+      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence" | "readThroughVisibleSequence" | "head" | "headUpdatedAt">[]
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
+    let firstAdmission = !record || record.role !== "build";
     let now = new Date();
     if (record) {
       // Already tracked -- update lastActive and cached fields.
@@ -596,6 +1042,30 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         lastActive: now,
       });
     }
+    if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
+    else {
+      let changed = false;
+      this.ctx.storage.transactionSync(() => {
+        for (let baseline of notificationBaselines) {
+          let cursor = this.#readCursors.get(`${workspaceId}:${baseline.chatId}`);
+          if (cursor?.deleted || (!cursor && !firstAdmission)) continue;
+          let visible = baseline.readThroughVisibleSequence ?? 0;
+          if (!cursor || cursor.readThroughVisibleSequence === undefined) {
+            this.#storeCursor({workspaceId, chatId: baseline.chatId,
+              head: baseline.head, headUpdatedAt: baseline.headUpdatedAt,
+              readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
+              latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
+            changed = true;
+          } else {
+            let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
+            changed = this.#storeCursor({...cursor, ...this.#mergeHead(cursor, baseline), latestVisibleSequence: latest,
+              unreadCount: latest - cursor.readThroughVisibleSequence}) || changed;
+          }
+        }
+      });
+      if (changed) this.#unreadChanged();
+      await this.#armExpirySweep();
+    }
   }
 
   /**
@@ -608,6 +1078,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
+    if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
   }
 
   /**
@@ -620,6 +1091,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (record && record.owner) {
       this.storage.gadgets.delete(workspaceId);
       this.storage.outputs.byWorkspace.delete(workspaceId);
+      this.#forgetUnreadWorkspace(workspaceId);
     }
   }
 
@@ -969,6 +1441,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async deleteWorkspace(id: string): Promise<void> {
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
+    this.#forgetUnreadWorkspace(id);
   }
 
   /**
@@ -2093,8 +2566,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // Arm the alarm for the soonest pending expiry, including device sessions and picker selections.
   async #armExpirySweep(): Promise<void> {
+    let scheduled = await this.ctx.storage.getAlarm();
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
+    if (this.#notificationChats.size) {
+      // Other activity must not postpone an outstanding retry; a fired alarm can schedule anew.
+      consider(Math.min(scheduled ?? Infinity, Date.now() + 30_000));
+    }
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
     for (let pending of this.storage.pendingDeviceHandoffs.list()) {
       consider(pending.expiresAt.getTime());
@@ -2120,7 +2598,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (next === undefined) {
       await this.ctx.storage.deleteAlarm();
     } else {
-      await this.ctx.storage.setAlarm(next);
+      await this.ctx.storage.setAlarm(Math.max(1, next));
     }
   }
 
@@ -2129,6 +2607,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * device handoffs and sessions. Device handoff cleanup also deletes its unactivated session.
    */
   async alarm(): Promise<void> {
+    // A stalled workspace/push service must not prevent unrelated auth expiry cleanup.
+    let deliveries = Promise.allSettled([this.#deliverNotifications()]);
     let now = Date.now();
     let expiredFlows = Array.from(this.storage.pendingConnectFlows.list())
         .filter(flow => flow.expiresAt.getTime() <= now);
@@ -2163,6 +2643,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     await this.#armExpirySweep();
+    for (let result of await deliveries) if (result.status === "rejected") throw result.reason;
   }
 
   async getGatekeeperClassFor(accountId: number, url: string)

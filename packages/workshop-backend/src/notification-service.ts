@@ -79,8 +79,7 @@ export async function registerDevice(
       : { webPush: { endpoint: registration.endpoint,
           keys: { p256dh: registration.keys.p256dh, auth: registration.keys.auth } } };
   // Someone waits on a registration (a browser's sign-out queues behind it), so a stuck service
-  // fails it rather than holding them. Deliveries run in the background, and wait on the service's
-  // own 10s push sends, so they are left unbounded.
+  // fails it rather than holding them. Background delivery gets its attempt budget from the outbox.
   let response = await signedPost(env, "/v1/subscriptions", body, AbortSignal.timeout(15_000));
   if (!response.ok) {
     throw new Error(`Notification registration failed with status ${response.status}.`);
@@ -99,7 +98,8 @@ export async function registerDevice(
  */
 export async function deliver(
     env: Cloudflare.Env, subscriptionId: string,
-    { id, kind, workspaceId, chatId, chatTitle }: UserNotification): Promise<boolean> {
+    { id, kind, workspaceId, chatId, chatTitle }: UserNotification,
+    signal?: AbortSignal): Promise<boolean> {
   let response = await signedPost(env, "/v1/deliveries", {
     type: kind === "taskCompleted" ? "task_completed" : "permission_requested",
     eventId: id,
@@ -107,7 +107,7 @@ export async function deliver(
     threadTitle: threadTitle(chatTitle),
     path: `/workspace/${workspaceId}?chat=${chatId}&showChat=true`,
     subscriptionId,
-  });
+  }, signal);
   if (response.ok) return true;
   // Only the service's verdict on the subscription retires it: a 401 can also mean a bad signature,
   // which must not discard every device's subscription.

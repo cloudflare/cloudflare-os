@@ -7,8 +7,9 @@
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId,
+  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead,
 } from "@gadgets/workshop-shared/api";
+import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
 
@@ -120,6 +121,35 @@ export type GadgetRecord = WorkspaceMetadata & {
   // WorkspaceMetadata).
 };
 
+/** Private per-thread read state and the receipt for completed notification delivery. */
+export type ChatReadCursor = {
+  workspaceId: string;
+  chatId: number;
+  readThroughSequence: number;
+  /** Dense visible position at the read horizon; absent until tracking is initialized. */
+  readThroughVisibleSequence?: number;
+  /** Latest delivered dense visible position, monotonic even when source deliveries repeat. */
+  latestVisibleSequence?: number;
+  unreadCount: number;
+  notifiedThroughSequence: number;
+  /** Delivered IDs at that position. Absent means the entire position was skipped on admission. */
+  notifiedEventIds?: string[];
+  /** Source-owned inbox metadata, copied through the same durable message/title fanout. */
+  head?: Omit<ChatTimelineHead, "chatId">;
+  /** Source metadata's existing lastActive timestamp, ordering renames at the same message position. */
+  headUpdatedAt?: Date;
+  /** Reject delayed pre-deletion handoffs. Chat IDs are never reused. */
+  deleted?: true;
+};
+
+/** An accepted alert awaiting delivery or an intentional policy skip. */
+export type QueuedChatNotification = UserNotification & {
+  /** Original timeline position, independent of the visible-message count. */
+  sequence: number;
+  /** Fixed retry deadline from first acceptance; replays and eviction never extend it. */
+  expiresAt: Date;
+};
+
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
  * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
@@ -157,6 +187,15 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
+      notificationOutbox: collection<QueuedChatNotification>()({
+        primaryKey: event => `${event.workspaceId}:${chatKey(event.chatId, event.sequence)}:${event.id}`,
+      }),
+      chatReadCursors: collection<ChatReadCursor>()({
+        primaryKey: record => `${record.workspaceId}:${record.chatId}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: ChatReadCursor) { return record.workspaceId; },
+        },
+      }),
       aiModels: collection<UserAiModelRecord>()({
         primaryKey: record => record.profile.id,
       }),

@@ -90,7 +90,12 @@ pushes there.
 flowchart LR
   subgraph Install[One customer CFOS installation]
     Agent[Agent turn]
+    Workspace[Workspace Durable Object]
+    Candidates[(chatNotifications: stable event IDs)]
+    SourceDirty[(dirtyChats)]
     User[User Durable Object]
+    Cursor[(chatReadCursors: visible horizons, count, delivery receipt)]
+    Outbox[(notificationOutbox: accepted alert payloads)]
     Browser[Visible browser subscriber]
     Key[Install signing private key]
   end
@@ -108,9 +113,16 @@ flowchart LR
     Worker[Workshop service worker]
   end
 
-  Agent -->|completed or needs permission| User
+  Agent -->|completed or needs permission| Workspace
+  Workspace -->|record eligibility at timeline sequence| Candidates
+  Workspace -->|commit with timeline change| SourceDirty
+  SourceDirty -->|authorized visible head + eligible alerts; retain until ACK| User
+  User -->|commit absolute unread count before ACK| Cursor
+  User -->|same transaction before ACK| Outbox
+  Outbox -->|local drain and retry; no source fetch| User
   User -->|visible client first| Browser
   Browser -->|presentation acknowledged| User
+  User -->|delete alert + advance receipt after delivery or skip| Cursor
   User -->|fallback if no acknowledgement| Delivery
   Key -->|sign request locally| User
   Delivery -->|validate install and subscription| Registry
@@ -121,6 +133,18 @@ flowchart LR
   WebPush --> Worker
 ```
 
+The workspace assigns persisted dense visible positions, so the User DO calculates counts by
+subtraction rather than querying message history. The workspace checks admission before fanout;
+denied fanout attempts skip that recipient, rather than parking work on the User DO. A settled
+partial failure stores only failed recipients on the source dirty row; ACKed and denied users
+are not retried. A crash before that checkpoint can replay the batch, with recipient deduplication
+protecting accepted updates. Handoffs are bounded to two seconds. The all-success path writes no recipient checkpoint. Accepted alerts
+retry from the user's durable queue with the same UUID after eviction or a lost ACK. The retained completed-delivery
+receipt prevents re-enqueueing an already delivered alert on a source retry. Distinct alerts at
+the same timeline position retain independent UUIDs and queue items. Revocation durably retries
+recipient cleanup, which clears queued alerts and cancels in-flight delivery when received. See
+[user-owned unread state](user-unread-state.md) for the handoff and deletion boundaries.
+
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
 subscription id, and same-origin deep-link path cross the central boundary during a send, plus the
 headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
@@ -129,7 +153,11 @@ visible browser tab is offered the notification first, and push is sent to every
 only if no tab acknowledges it within three seconds. A tab subscribes while visible, and again if a
 User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
-app next opens. Any other failure, including `invalid_signature`, keeps it. Only turns a person
+app next opens. Any other failure, including `invalid_signature`, keeps the subscription and
+retries the alert for up to ten minutes from first acceptance. Each attempt has a 15-second
+budget, shortened to the remaining alert lifetime. Expired alerts are logged and discarded;
+their fixed deadlines survive resets and are not extended by repeated source delivery. Later
+alerts remain eligible, while unread counts are unchanged. Only turns a person
 started announce completion; callback turns, such as a schedule, and spawned agents notify only
 when they need the user's permission. A turn resumed by an approval or accepted connection keeps
 its original initiator's model, account and notification recipient, as well as whether it was a
