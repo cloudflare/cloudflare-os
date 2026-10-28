@@ -65,9 +65,7 @@ export type ConfluenceBrowsePage = {
 export type ConfluenceConfiguratorValues = {
   /** What is chosen, as a ref. */
   ref?: string | null;
-  /** The chosen node's title, for the summary. */
-  title?: string | null;
-  /** The chosen node's kind, for the summary. */
+  /** The chosen node's kind, which says whether the Workshop takes it. */
   kind?: ConfluenceNodeKind | null;
 };
 

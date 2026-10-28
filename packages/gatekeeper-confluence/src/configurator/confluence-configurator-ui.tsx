@@ -81,20 +81,6 @@ function refusal(accepted: readonly string[] | undefined, node: Pick<Node, "kind
   return nouns.length > 0 ? `This connection needs ${nouns.join(" or ")}.` : "This can't be connected here.";
 }
 
-/** What a choice covers, in a sentence the summary finishes. Fixed words, matching what each session allows. */
-function covers(kind: Kind, siteName: string): string {
-  switch (kind) {
-    case "site": return `: every space, page and blog post you can open on ${siteName}, including new ones.`;
-    case "space":
-    case "personalSpace": return ": its pages and blog posts, including new ones.";
-    case "overview":
-    case "page":
-    case "liveDoc": return ": this page and the pages under it, including new ones.";
-    case "blogpost": return ": just this blog post.";
-    default: return ".";
-  }
-}
-
 /** The second line of an open container's own row: what choosing it covers. */
 const PLACE_COVERS: Partial<Record<Kind, string>> = {
   space: "Every page and blog post in it, including new ones",
@@ -299,8 +285,8 @@ async function loadNode({ ui, acceptedResourceUrlPatterns: accepted }: Context, 
   return toItem(node, accepted);
 }
 
-const valuesOf = (node: Pick<Node, "ref" | "title" | "kind">): Values => ({ ref: node.ref, title: node.title, kind: node.kind });
-const NOTHING: Values = { ref: null, title: null, kind: null };
+const valuesOf = (node: Pick<Node, "ref" | "kind">): Values => ({ ref: node.ref, kind: node.kind });
+const NOTHING: Values = { ref: null, kind: null };
 
 // -- rendering ----------------------------------------------------------------------------------
 
@@ -334,7 +320,7 @@ function picker(context: Context, sites: Site[]) {
         searchPlaceholder={SEARCH_PLACEHOLDER}
         loadItems={request => loadPage(context, site.ref, request)}
         loadItem={ref => loadNode(context, ref)}
-        onChange={(next, item) => {
+        onChange={next => {
           if (next === null) {
             setValues(NOTHING);
             return;
@@ -344,11 +330,10 @@ function picker(context: Context, sites: Site[]) {
           const nextSite = siteRefOf(next);
           if (nextSite !== site.ref && sites.some(candidate => candidate.ref === nextSite)) openSite = nextSite;
           const kind = next === site.ref ? "site" : nodes.get(next)?.kind;
-          setValues({ ref: next, title: item?.title ?? null, kind: kind ?? null });
+          setValues({ ref: next, kind: kind ?? null });
         }}
       />
     </Field>
-    {summary(values, site, accepted)}
   </Fragment>;
 }
 
@@ -367,17 +352,6 @@ function placeholder({ acceptedResourceUrlPatterns: accepted }: Context) {
       disabled
     />
   </Field>;
-}
-
-/** What the choice grants, or why it can't be connected here. */
-function summary(values: Values, site: Site, accepted: readonly string[] | undefined) {
-  const kind = values.kind;
-  if (!values.ref || !kind) return null;
-  const reason = refusal(accepted, { kind, selectable: PATTERN_OF[kind] !== undefined });
-  return <Notice tone={reason ? "error" : "info"}>
-    <strong>{kind === "site" ? `All of ${values.title ?? site.name}` : values.title ?? "This choice"}</strong>
-    {reason ? `: ${reason}` : `${covers(kind, values.title ?? site.name)} Agents can read it and propose changes, and every change waits for your approval.`}
-  </Notice>;
 }
 
 /** What became of a pre-filled resource URL the picker isn't showing as a choice. */

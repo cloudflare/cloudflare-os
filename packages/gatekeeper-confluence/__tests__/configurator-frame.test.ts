@@ -37,6 +37,9 @@ async function start(options: { answers?: Record<string, Answer>; initialResourc
     /** The listing's rows: each one's title, then its second line. */
     rows: () => frame().getByRole("option").evaluateAll(nodes => nodes.map(node => (node as HTMLElement).innerText.split("\n").slice(0, 2).join(" — "))),
     titles: () => frame().getByRole("option").evaluateAll(nodes => nodes.map(node => (node as HTMLElement).innerText.split("\n")[0])),
+    /** The chosen row's title, or the whole-site card's; empty when nothing is chosen. */
+    chosen: () => frame().locator("[role=option][aria-selected=true], [aria-pressed=true]")
+      .evaluateAll(nodes => nodes.map(node => (node as HTMLElement).innerText.split("\n")[0])),
     /** The breadcrumb, from the open tab down. */
     location: async () => (await frame().getByRole("navigation", { name: "Location" }).innerText()).replace(/\s+/g, " ").trim(),
     requests: () => hosted.callsOf("loadItems").map(call => call.args[0] as ConfluenceBrowseRequest),
@@ -114,7 +117,7 @@ describe("choosing", () => {
   it("binds the whole site from the card above the tabs", async () => {
     const picker = await start();
     await picker.wholeSite().click();
-    await poll(picker.text).toContain("All of Slew: every space, page and blog post you can open on Slew");
+    await poll(picker.chosen).toEqual(["All of Slew"]);
     await poll(async () => (await picker.state()).ready).toBe(true);
     expect(await picker.collected()).toBe(SITE_REF);
   });
@@ -122,7 +125,7 @@ describe("choosing", () => {
   it("chooses a recent page, and opens one that has child pages", async () => {
     const picker = await start();
     await picker.option("Q4 planning").click();
-    await poll(picker.text).toContain("Q4 planning: this page and the pages under it");
+    await poll(picker.chosen).toEqual(["Q4 planning"]);
     expect(await picker.collected()).toBe(`page:${CLOUD}/589825`);
 
     await picker.option("Architecture").click();
@@ -141,12 +144,12 @@ describe("choosing", () => {
     ]);
 
     await picker.option("All of My first space").click();
-    await poll(picker.text).toContain("My first space: its pages and blog posts, including new ones.");
+    await poll(picker.chosen).toEqual(["All of My first space"]);
     expect(await picker.collected()).toBe(MFS.ref);
 
     await picker.option("Engineering").click();
     await picker.option("All of Engineering").click();
-    await poll(picker.text).toContain("Engineering: this page and the pages under it");
+    await poll(picker.chosen).toEqual(["All of Engineering"]);
     expect(await picker.collected()).toBe(ENGINEERING_REF);
   });
 
@@ -185,7 +188,7 @@ describe("search", () => {
     expect(picker.requests().at(-1)).toEqual({ site: SITE_REF, query: "arch" });
 
     await picker.option("Storage architecture").click();
-    await poll(picker.text).toContain("Storage architecture: this page and the pages under it");
+    await poll(picker.chosen).toEqual(["Storage architecture"]);
     expect(await picker.collected()).toBe(`page:${CLOUD}/524289`);
   });
 
@@ -238,10 +241,10 @@ describe("a resource URL that came with the frame", () => {
     await poll(picker.text).toContain("Couldn't look up https://slew.atlassian.net/wiki.");
     await picker.frame().getByRole("button", { name: "Try again" }).click();
     await picker.option("Q4 planning").click();
-    await poll(picker.text).toContain("Q4 planning: this page");
+    await poll(picker.chosen).toEqual(["Q4 planning"]);
     retry.resolve({ ref: SITE_REF, kind: "site", title: "Slew", expandable: false, selectable: true, path: [] });
     await picker.page.waitForTimeout(300);
-    expect(await picker.text()).toContain("Q4 planning: this page");
+    expect(await picker.chosen()).toEqual(["Q4 planning"]);
     expect(await picker.collected()).toBe(`page:${CLOUD}/589825`);
   });
 
@@ -287,12 +290,12 @@ describe("a connection to two sites", () => {
     const picker = await start({ answers: { getStatus: () => TWO } });
     await poll(() => picker.wholeSite().innerText()).toContain("All of Slew");
     await picker.option("Q4 planning").click();
-    await poll(picker.text).toContain("Q4 planning: this page");
+    await poll(picker.chosen).toEqual(["Q4 planning"]);
 
     await picker.frame().getByRole("radio", { name: /Acme/ }).click();
     await poll(() => picker.wholeSite().innerText()).toContain("All of Acme");
     expect(picker.requests().at(-1)).toEqual({ site: `site:${OTHER}`, section: "recent" });
-    expect(await picker.text()).not.toContain("Q4 planning: this page");
+    expect(await picker.chosen()).toEqual([]);
     expect((await picker.state()).ready).not.toBe(true);
   });
 
