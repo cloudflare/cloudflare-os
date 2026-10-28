@@ -10,7 +10,7 @@ import type { ConfiguratorUIHierarchyAncestor, ConfiguratorUIHierarchyItem, Hier
 import { FilterInput } from "./FilterInput.tsx";
 import { Breadcrumb } from "./HierarchyBreadcrumb.tsx";
 import {
-  appendUnique, asContainer, locationIdOf, locationOf, reportLoadFailure, requestPage, rowSubtitle, sanitizeItem,
+  appendUnique, asContainer, locationIdOf, locationOf, reportLoadFailure, requestPage, rowSubtitle, sanitizeItem, sanitizeTab,
   type Location, type Page,
 } from "./hierarchyNodes.ts";
 import { ChoiceBody, PlaceholderRows, Row } from "./HierarchyRow.tsx";
@@ -113,8 +113,7 @@ export const HierarchyPicker = (props: HierarchyPickerProps) =>
 
 const Navigator = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
-  // Unlike a container, a tab is offered as a choice only when it says so.
-  const tabs = props.tabs?.map(tab => ({ ...tab, selectable: tab.selectable === true })) ?? [];
+  const tabs = props.tabs?.flatMap(tab => sanitizeTab(tab) ?? []) ?? [];
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
   // restart a load.

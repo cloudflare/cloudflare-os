@@ -1197,6 +1197,20 @@ describe("tabs", () => {
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
+  it("strips formatting characters from what a tab shows", async () => {
+    const choice = { title: "Every site\u202E", subtitle: "Across the tenant\u202E" };
+    await render({ loadItems: tabbed(), tabs: [
+      { ...TABS[0]!, title: "Sites\u202E", selectable: true, choice },
+      { ...TABS[1]!, unselectableReason: "Choose a file inside.\u202E" },
+    ] });
+
+    await expect.element(option("Every site")).toBeVisible();
+    expect(container!.textContent).not.toContain("\u202E");
+    await userEvent.click(tab("Files"));
+    await expect.element(page.getByText("Choose a file inside.")).toBeVisible();
+    expect(container!.textContent).not.toContain("\u202E");
+  });
+
   it("opens a pre-filled node in the tab its path starts with", async () => {
     const loadItem = vi.fn(async (): Promise<Item | null> => ({ ...notes, path: [{ id: "files", title: "Files" }] }));
     const onChange = await render({ loadItems: tabbed(), loadItem, tabs: TABS, initial: "notes" });

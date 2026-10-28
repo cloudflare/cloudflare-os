@@ -46,6 +46,12 @@ const sanitizeAncestor = (value: unknown): Ancestor | undefined => {
   };
 };
 
+/** A tab as shown. Unlike a container, it is offered as a choice only when it says so. */
+export const sanitizeTab = (value: unknown) => {
+  const tab = sanitizeAncestor(value);
+  return tab && { ...tab, selectable: tab.selectable === true };
+};
+
 /** A path whose every ancestor is valid, or none: a partial path would misstate where a node is. */
 const sanitizePath = (value: unknown): Ancestor[] | undefined => {
   if (!Array.isArray(value)) return undefined;
