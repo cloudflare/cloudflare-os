@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
+import { vitestTask } from '@gadgets/scripts/vitest-task'
 
 const ownDist = { pattern: '!dist/**', base: 'package' } as const
 const viteBuildCommand =
@@ -31,6 +32,8 @@ const runConfig = {
           output: ['dist/**'],
         },
       },
+      // Shared with the other packages: keeps vitest's scratch files out of the cache fingerprint.
+      test: vitestTask(['vitest run'], [ownDist]),
     },
   },
 }

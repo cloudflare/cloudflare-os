@@ -1,5 +1,10 @@
 import { defineConfig } from 'vite-plus'
 
+// workshop-app: the folders that talk to the backend. UI layers must not import them.
+const DATA_LAYERS = ['@/rpc/*', '@/chat/*', '@/workspaces/*']
+const DATA_LAYERS_MESSAGE =
+  'UI layers take plain props and callbacks. Data and RPC code lives in rpc/, chat/ and workspaces/, and routes connect it.'
+
 /**
  * Repo-wide toolchain config. Today this is the lint ruleset, moved here from `.oxlintrc.json` so
  * there is one place to look: `vp lint` reads it, and `vp check` runs lint without the format step
@@ -130,6 +135,7 @@ export default defineConfig({
                   group: ['@/blocks/*', '@/layouts/*', '@/routes/*'],
                   message: 'Components are the lowest layer; they cannot import blocks, layouts or routes.',
                 },
+                { group: DATA_LAYERS, message: DATA_LAYERS_MESSAGE },
               ],
             },
           ],
@@ -147,6 +153,7 @@ export default defineConfig({
                   group: ['@/layouts/*', '@/routes/*'],
                   message: 'Blocks compose components; they cannot import layouts or routes.',
                 },
+                { group: DATA_LAYERS, message: DATA_LAYERS_MESSAGE },
               ],
             },
           ],
@@ -161,7 +168,21 @@ export default defineConfig({
               paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
               patterns: [
                 { group: ['@/routes/*'], message: 'Layouts are composed by routes, not the reverse.' },
+                { group: DATA_LAYERS, message: DATA_LAYERS_MESSAGE },
               ],
+            },
+          ],
+        },
+      },
+      {
+        // The data folders feed the UI through routes; they never import routes themselves.
+        files: ['packages/workshop-app/src/{rpc,chat,workspaces}/**/*.{ts,tsx}'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
+              patterns: [{ group: ['@/routes/*'], message: 'Data code cannot import routes.' }],
             },
           ],
         },
