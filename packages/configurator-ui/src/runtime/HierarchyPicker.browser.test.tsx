@@ -726,7 +726,7 @@ describe("loading", () => {
     }));
     await render({ loadItems });
 
-    await expect.element(option("Budget.xlsx")).toMatchTextContent(/^Budget\.xlsx\s*Confidential\s*2 days ago$/);
+    await expect.element(option("Budget.xlsx")).toHaveAccessibleName(/^Budget\.xlsx\s*Confidential\s*2 days ago$/);
   });
 });
 

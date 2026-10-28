@@ -12,6 +12,28 @@ type ChoiceBodyProps = {
   meta?: string;
 };
 
+const EXTENSION = /\.[^.\s]{1,7}$/u;
+const graphemes = new Intl.Segmenter();
+
+/**
+ * A title whose end stays in view while the rest gives way: an extension and up to 3 characters
+ * before it, counted as the user sees them, so an accent or an emoji is not cut from its letter.
+ * The parts are flex items, which a browser names apart, as "Bud get.xlsx", so assistive technology
+ * gets the title whole.
+ */
+const Title = ({ title }: { title: string }) => {
+  const extension = EXTENSION.exec(title);
+  const start = extension ? [...graphemes.segment(title.slice(0, extension.index))].at(-3)?.index : 0;
+  if (!start) return <span className="truncate">{title}</span>;
+  return (
+    <span className="flex min-w-0">
+      <span aria-hidden="true" className="truncate">{title.slice(0, start)}</span>
+      <span aria-hidden="true" className="shrink-0 whitespace-pre">{title.slice(start)}</span>
+      <span className="sr-only">{title}</span>
+    </span>
+  );
+};
+
 /**
  * What the root's card and every row show: a radio's look (or room for one, so icons line up), an
  * icon and two lines. The look is only a cue; `aria-selected` or `aria-pressed` says it.
@@ -30,7 +52,7 @@ export const ChoiceBody = ({ mark, icon, title, subtitle, badge, meta }: ChoiceB
     </span>
     {/* The title has the first line to itself; the badge, the subtitle and the meta share the second. */}
     <span className="flex min-w-0 flex-1 flex-col">
-      <span className="truncate">{title}</span>
+      <Title title={title} />
       {(badge || subtitle || meta) && (
         <span className="flex min-w-0 items-center gap-2 text-xs text-kumo-subtle">
           {badge && (
