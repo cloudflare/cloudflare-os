@@ -359,8 +359,10 @@ function driveFileNode(
     ...(detail ? { detail } : {}),
   };
   if (mimeType === FOLDER_MIME_TYPE) return { id: `folder:${id}`, kind: "folder", listable, ...shown };
+  let size = file.size === undefined ? NaN : Number(file.size);
   return {
     id: `${editorKind(mimeType) ?? "file"}:${id}`, kind: "file", ...(mimeType ? { mimeType } : {}), ...shown,
+    ...(Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
   };
 }
 

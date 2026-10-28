@@ -26,6 +26,8 @@ export type DriveNode = {
   /** For a file. */
   mimeType?: string;
   modifiedTime?: string;
+  /** For a file Drive reports a size for, in bytes. */
+  size?: number;
   /** Who a search result belongs to, plus an ID tail when names in the page look the same. */
   detail?: string;
   /** For a node looked up rather than listed, when every ancestor up to the account is known. */

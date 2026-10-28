@@ -170,6 +170,20 @@ const modified = (value: string | undefined): string | undefined => {
     : undefined;
 };
 
+const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+/** "1.5 MB", in binary units (1 KB = 1024 bytes), going up a unit once the number would show 1024. */
+const size = (bytes: number | undefined): string | undefined => {
+  if (bytes === undefined) return undefined;
+  let value = bytes;
+  let unit = 0;
+  while (Math.round(value) >= 1024 && unit < SIZE_UNITS.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value < 10 ? Number(value.toFixed(1)) : Math.round(value)} ${SIZE_UNITS[unit]}`;
+};
+
 // A folder or shared drive grant reaches everything in it, checked again on every read.
 const CONTAINER_CHOICE = { subtitle: "All of its contents, including anything added later" };
 
@@ -189,6 +203,7 @@ const toItem = (node: DriveNode, accepted: readonly string[] | undefined): Confi
     kind: container ? "container" : "leaf",
     icon: iconOf(node),
     subtitle: [modified(node.modifiedTime), node.detail].filter(Boolean).join(" · ") || undefined,
+    meta: size(node.size),
     selectable: (container || node.kind === "file") && patternOf(node.id, accepted) !== undefined,
     choice: container ? CONTAINER_CHOICE : undefined,
     path: node.path?.map(ancestor => toAncestor(ancestor, accepted)),

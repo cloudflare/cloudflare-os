@@ -112,7 +112,7 @@ describe("Google resource configurators", () => {
             { id: "locked", name: "Archive", mimeType: FOLDER, capabilities: { canListChildren: false } },
             {
               id: "doc", name: "Notes", mimeType: "application/vnd.google-apps.document",
-              modifiedTime: "2026-10-01T10:00:00Z",
+              modifiedTime: "2026-10-01T10:00:00Z", size: "1536",
             },
             {
               id: "link", name: "Team folder", mimeType: SHORTCUT,
@@ -130,7 +130,7 @@ describe("Google resource configurators", () => {
           { id: "folder:locked", title: "Archive", kind: "folder", listable: false },
           {
             id: "doc:doc", title: "Notes", kind: "file", mimeType: "application/vnd.google-apps.document",
-            modifiedTime: "2026-10-01T10:00:00Z",
+            modifiedTime: "2026-10-01T10:00:00Z", size: 1536,
           },
           { id: "folder:team", title: "Team folder", kind: "folder", listable: true },
         ],

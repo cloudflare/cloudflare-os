@@ -1,5 +1,5 @@
-// The Drive configurator in a stand-in for the sandbox runtime: what it shows when a location needs
-// a grant the account lacks (shared drives), and what it asks Workshop for.
+// The Drive configurator in a stand-in for the sandbox runtime: how it shows a file's size, what it
+// shows when a location needs a grant the account lacks (shared drives), and what it asks Workshop for.
 
 import { expect, it, vi } from "vitest";
 import type { DriveNodePage } from "../src/configurator/drive-configurator-types";
@@ -49,6 +49,34 @@ async function open() {
     allow: () => find("Notice").find(node => node.props.action?.label === "Allow access")?.props.action.onClick(),
   };
 }
+
+it.each([
+  [0, "0 B"],
+  [1023, "1023 B"],
+  [1024, "1 KB"],
+  [1536, "1.5 KB"],
+  [10 * 1024 - 1, "10 KB"],
+  [1024 * 1024 - 1, "1 MB"],
+  [5.25 * 1024 ** 3, "5.3 GB"],
+  [3 * 1024 ** 5, "3072 TB"],
+])("shows a file of %i bytes as %s", async (size, meta) => {
+  const frame = await open();
+  frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [{ id: "file:F1", title: "Q3.pdf", kind: "file", size }] });
+
+  await expect(frame.list("folder:A")).resolves.toMatchObject({ items: [{ meta }] });
+});
+
+it("shows no size for a folder, or for a file Drive gives none", async () => {
+  const frame = await open();
+  frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [
+    { id: "folder:B", title: "Budgets", kind: "folder", listable: true },
+    { id: "doc:D1", title: "Notes", kind: "file" },
+  ] });
+
+  const { items } = await frame.list("folder:A");
+
+  expect(items.map(({ meta }: { meta?: string }) => meta)).toEqual([undefined, undefined]);
+});
 
 it("asks for the grant a location names, then stops once a listing loads", async () => {
   const frame = await open();
