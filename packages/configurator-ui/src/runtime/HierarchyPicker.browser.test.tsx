@@ -116,6 +116,10 @@ const boxHeight = (height: number) => {
   return box;
 };
 
+/** Sixty files over two pages. */
+const twoPages: LoadItems = async ({ cursor }) =>
+  cursor ? { items: FILES.slice(30) } : { items: FILES.slice(0, 30), nextCursor: "page-2" };
+
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
@@ -673,6 +677,35 @@ describe("loading", () => {
     await expect.element(status).toHaveTextContent("Nothing has been shared here yet.");
     await expect.element(page.getByText("Nothing has been shared here yet.").first()).toBeVisible();
     expect(status.element().textContent).not.toContain("Nothing here.");
+  });
+
+  it("loads the next page once the user scrolls near the end, but never on its own", async () => {
+    const loadItems = vi.fn(twoPages);
+    await render({ loadItems });
+    await expect.element(file(0)).toBeVisible();
+    const box = boxHeight(320);
+    await effectsFlushed();
+    expect(loadItems).toHaveBeenCalledTimes(1);
+
+    box.scrollTop = box.scrollHeight;
+    await expect.element(file(59)).toBeInTheDocument();
+    expect(loadItems).toHaveBeenLastCalledWith({ parentId: "drive", query: "", cursor: "page-2" });
+  });
+
+  it("lets Tab pass Load more, though focusing it scrolls the list to its end", async () => {
+    const loadItems = vi.fn(twoPages);
+    await render({ loadItems });
+    await expect.element(file(0)).toBeVisible();
+    boxHeight(320);
+    await userEvent.click(file(0));
+
+    await userEvent.tab();
+    const loadMore = page.getByRole("button", { name: "Load more" });
+    await expect.element(loadMore).toHaveFocus();
+    await effectsFlushed();
+    await effectsFlushed();
+    expect(loadItems).toHaveBeenCalledTimes(1);
+    await expect.element(loadMore).toHaveFocus();
   });
 
   it("moves focus from Retry or Load more to the first row it brings", async () => {

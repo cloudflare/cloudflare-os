@@ -512,8 +512,18 @@ const Navigator = (props: HierarchyPickerProps) => {
           {searchBox}
         </div>
       )}
-      {/* One fixed height, so neither a navigation nor the listing it loads moves the form. */}
-      <div className="h-80 overflow-y-auto p-1">
+      {/* One fixed height, so neither a navigation nor the listing it loads moves the form. Scrolling
+          near the end loads the next page; Load more stays for the keyboard. Only scrolling does, so
+          a short page cannot chain into many, and a page that failed waits for its Retry. Not while
+          focus is on Load more, whose focusing scrolls here: a load would take focus to the rows it
+          brings, so Tab could not pass the list until it had loaded every page. */}
+      <div
+        className="h-80 overflow-y-auto p-1"
+        onScroll={({ currentTarget: box }) => {
+          if (fresh?.moreMessage || footerRef.current?.contains(document.activeElement)) return;
+          if (box.scrollTop + box.clientHeight >= box.scrollHeight - 96) loadMore();
+        }}
+      >
         {notes.map(note => (
           <p key={note} aria-hidden="true" className="flex gap-2 px-2 py-1.5 text-xs text-kumo-subtle">
             <InfoIcon size={14} className="mt-px shrink-0" />
