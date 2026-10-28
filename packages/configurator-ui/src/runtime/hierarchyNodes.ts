@@ -111,8 +111,8 @@ export const appendUnique = (existing: readonly Item[], incoming: readonly Item[
 export const asContainer = ({ id, title, icon, choice }: Ancestor): Item =>
   ({ id, title, icon, choice, kind: "container", selectable: true });
 
-export const asAncestor = ({ id, title, selectable, unselectableReason, icon, choice }: Item): Ancestor =>
-  ({ id, title, selectable, unselectableReason, icon, choice });
+/** The id whose nodes `location` lists: its innermost container's, else its tab's, else the root's. */
+export const locationIdOf = ({ tab, trail }: Location, rootId: string) => trail.at(-1)?.id ?? tab ?? rootId;
 
 /**
  * A row's line: why a leaf cannot be chosen, else its subtitle. Under a search, where it lives comes
@@ -134,9 +134,8 @@ export const locationOf = (item: Item, tabs: readonly Tab[], openTab: string | n
   if (tabs.some(({ id }) => id === item.id)) return { tab: item.id, trail: [], detached: false };
   const tab = tabs.find(({ id }) => id === item.path?.[0]?.id);
   const path = (tab ? item.path?.slice(1) : item.path) ?? [];
-  const trail = item.kind === "container" ? [...path, asAncestor(item)] : path;
-  return tabs.length > 0
-    ? { tab: tab?.id ?? openTab, trail, detached: !tab && trail.length > 0 }
-    : { tab: null, trail, detached: item.kind === "container" && !item.path };
+  const trail = item.kind === "container" ? [...path, item] : path;
+  const anchored = tabs.length > 0 ? tab !== undefined : item.path !== undefined;
+  return { tab: tab?.id ?? openTab, trail, detached: !anchored && trail.length > 0 };
 };
 

@@ -3,6 +3,7 @@ import { cn } from "@cloudflare/kumo/utils";
 import { CaretLeftIcon, CaretRightIcon, DotsThreeIcon } from "@phosphor-icons/react";
 import { useLayoutEffect, useRef, useState, type Ref, type RefObject } from "react";
 import type { ConfiguratorUIHierarchyAncestor } from "../index.ts";
+import { disabledButtonProps } from "./Button.tsx";
 import type { Location } from "./hierarchyNodes.ts";
 
 type BreadcrumbProps = {
@@ -50,21 +51,17 @@ export const Breadcrumb = ({ top, location: { trail, detached }, disabled, navRe
   };
   return (
     <nav ref={navRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center text-xs">
-      {/* `aria-disabled` at the top rather than `disabled`, which would drop the focus of a user who
-          just went up there; out of the tab order there, since it leads nowhere. */}
+      {/* Keeps the focus of a user who just went up to the top, though it leads nowhere there; out of
+          the tab order there. */}
       <Button
         variant="ghost"
         size="xs"
         shape="square"
         aria-label="Up one level"
-        aria-disabled={atTop || undefined}
+        {...disabledButtonProps({ disabled: atTop, onClick: () => onGo(trail.length - 1) })}
         tabIndex={atTop ? -1 : undefined}
-        className={cn(atTop && "cursor-not-allowed opacity-50")}
         disabled={disabled}
         icon={<CaretLeftIcon aria-hidden="true" size={14} />}
-        onClick={() => {
-          if (!atTop) onGo(trail.length - 1);
-        }}
       />
       {crumb(top, 0)}
       {/* The fold stands in for the gap above a detached trail too. */}

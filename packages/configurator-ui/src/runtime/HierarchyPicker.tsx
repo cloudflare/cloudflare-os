@@ -3,12 +3,14 @@ import { Loader } from "@cloudflare/kumo/components/loader";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { cn } from "@cloudflare/kumo/utils";
 import { FileIcon, FolderIcon, InfoIcon } from "@phosphor-icons/react";
-import { isValidElement, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  isValidElement, useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode,
+} from "react";
 import type { ConfiguratorUIHierarchyAncestor, ConfiguratorUIHierarchyItem, HierarchyPickerProps } from "../index.ts";
 import { FilterInput } from "./FilterInput.tsx";
 import { Breadcrumb } from "./HierarchyBreadcrumb.tsx";
 import {
-  appendUnique, asAncestor, asContainer, locationOf, reportLoadFailure, requestPage, rowSubtitle, sanitizeItem,
+  appendUnique, asContainer, locationIdOf, locationOf, reportLoadFailure, requestPage, rowSubtitle, sanitizeItem,
   type Location, type Page,
 } from "./hierarchyNodes.ts";
 import { ChoiceBody, PlaceholderRows, Row } from "./HierarchyRow.tsx";
@@ -45,13 +47,16 @@ const typeAheadMatch = (titles: readonly string[], from: number, typed: string):
     .find(at => titles[at]?.toLocaleLowerCase().startsWith(needle));
 };
 
+/** Whether a key is pressed as part of a shortcut such as Ctrl+/ or copy. */
+const hasModifier = (event: KeyboardEvent) => event.altKey || event.ctrlKey || event.metaKey;
+
 /**
  * "/" goes to the search box, selecting what it holds, from anywhere in the picker but a text field.
- * Not with a modifier, as in shortcuts such as Ctrl+/.
+ * Not with a modifier.
  */
 const onPickerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
   const input = event.currentTarget.querySelector<HTMLInputElement>('input[type="search"]');
-  if (event.key !== "/" || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key !== "/" || hasModifier(event)) return;
   if (!input || event.target instanceof HTMLInputElement) return;
   event.preventDefault();
   input.focus();
@@ -78,7 +83,9 @@ export const HierarchyPicker = (props: HierarchyPickerProps) =>
   <Navigator key={[props.name, props.root.id, ...props.tabs?.map(({ id }) => id) ?? []].join("\n")} {...props} />;
 
 const Navigator = (props: HierarchyPickerProps) => {
-  const { name, value = null, root, tabs = [], icons, searchPlaceholder, disabled = false } = props;
+  const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
+  // Unlike a container, a tab is offered as a choice only when it says so.
+  const tabs = props.tabs?.map(tab => ({ ...tab, selectable: tab.selectable === true })) ?? [];
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
   // restart a load.
@@ -104,7 +111,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   const crumbsRef = useRef<HTMLElement>(null);
   // Rows are memoized, so the handler they share keeps its identity and acts on the latest render.
   const activate = useRef((_id: string) => {});
-  const [activateRow] = useState(() => (id: string) => activate.current(id));
+  const activateRow = useCallback((id: string) => activate.current(id), []);
   // Where focus goes once that location's listing is shown (the row named, or else the first),
   // after the control that had it went away with what it did.
   const focusTarget = useRef<{ location: string; row: string | null } | null>(null);
@@ -125,10 +132,8 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   const prefilling = pendingPrefill !== null;
   const openTab = tabs.find(({ id }) => id === location.tab);
-  // A tab is offered as a choice only when it says so, unlike a container.
-  const current: Ancestor | undefined = location.trail.at(-1)
-    ?? (openTab && { ...openTab, selectable: openTab.selectable === true });
-  const locationId = current?.id ?? root.id;
+  const current: Ancestor | undefined = location.trail.at(-1) ?? openTab;
+  const locationId = locationIdOf(location, root.id);
   const locationTitle = current?.title ?? root.title;
 
   useEffect(() => {
@@ -145,7 +150,7 @@ const Navigator = (props: HierarchyPickerProps) => {
     // can show; a tab is shown on the row its listing starts with, when it is offered as a choice.
     const tab = tabs.find(({ id }) => id === pendingPrefill);
     if (pendingPrefill === root.id || tab) {
-      settle(tab?.selectable === true ? asContainer(tab) : undefined);
+      settle(tab?.selectable ? asContainer(tab) : undefined);
       return;
     }
     let cancelled = false;
@@ -198,7 +203,6 @@ const Navigator = (props: HierarchyPickerProps) => {
   // The open container, offered as a choice of its own. Not under a search, whose results are not
   // its contents.
   const scope = current && current.selectable !== false && !query ? asContainer(current) : null;
-  const scopeTitle = scope && (scope.choice?.title ?? `Everything in ${scope.title}`);
   // Shown above the list: why the open container is not offered there, and what the source notes.
   const notes = [...new Set([!query && current?.selectable === false && current.unselectableReason, fresh?.notice]
     .flatMap(note => note || []))];
@@ -207,7 +211,13 @@ const Navigator = (props: HierarchyPickerProps) => {
   const pinned = status === "ready" && !query && prefilledLeaf
     && !items.some(item => item.id === prefilledLeaf.id) ? prefilledLeaf : null;
   const rows = pinned ? [pinned, ...items] : items;
-  const rowIds = [...scope ? [scope.id] : [], ...rows.map(row => row.id)];
+  // The list's options in order: the open container's own row, then what it holds.
+  const options = scope ? [scope, ...rows] : rows;
+  const rowIds = options.map(({ id }) => id);
+  const titleOf = (item: Item) => item === scope ? item.choice?.title ?? `Everything in ${item.title}` : item.title;
+  // The open container's own row chooses it; a container's row in a listing opens it.
+  const actionOf = (item: Item) =>
+    item.kind === "container" && item !== scope ? "open" : item.selectable ? "choose" : "none";
   const hasTabs = tabs.length > 0;
   // Without tabs, the search box sits compact beside the breadcrumb until used, then takes its place;
   // beside tabs, it has room of its own. Either way the breadcrumb gives way to what a search finds,
@@ -261,8 +271,9 @@ const Navigator = (props: HierarchyPickerProps) => {
   });
 
   useEffect(() => {
+    if (!focusCrumb.current) return;
     const crumb = crumbsRef.current?.querySelector<HTMLElement>('[aria-current="location"]');
-    if (!focusCrumb.current || !crumb) return;
+    if (!crumb) return;
     focusCrumb.current = false;
     crumb.focus();
   });
@@ -286,7 +297,7 @@ const Navigator = (props: HierarchyPickerProps) => {
     setLocation(next);
     clearSearch();
     // The row that started it goes with the listing it was in.
-    focusTarget.current = fromList ? { location: next.trail.at(-1)?.id ?? next.tab ?? root.id, row: null } : null;
+    focusTarget.current = fromList ? { location: locationIdOf(next, root.id), row: null } : null;
   };
 
   /** Opens the tab or root (depth 0) or the trail's container at that depth; the open one stays as it is. */
@@ -298,12 +309,11 @@ const Navigator = (props: HierarchyPickerProps) => {
   const openContainer = (item: Item) => navigate(
     query
       ? locationOf(item, tabs, location.tab)
-      : { ...location, trail: [...location.trail, asAncestor(item)] },
+      : { ...location, trail: [...location.trail, item] },
     true);
   activate.current = id => {
-    const item = rows.find(row => row.id === id);
-    if (scope?.id === id) select(scope);
-    else if (item?.kind === "container") openContainer(item);
+    const item = options.find(option => option.id === id);
+    if (item && actionOf(item) === "open") openContainer(item);
     else if (item) select(item);
   };
 
@@ -339,12 +349,12 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
-    const options = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
-    const index = options.indexOf(event.target as HTMLElement);
-    const focusRow = (target: number) => options[Math.max(0, Math.min(target, options.length - 1))]?.focus();
+    const elements = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
+    const index = elements.indexOf(event.target as HTMLElement);
+    const focusRow = (target: number) => elements[Math.max(0, Math.min(target, elements.length - 1))]?.focus();
     // A page is what the scrolled box shows, less a row, so the row focused stays in view.
     const page = () => Math.max(1,
-      Math.floor((listRef.current?.parentElement?.clientHeight ?? 0) / (options[0]?.offsetHeight || 40)) - 1);
+      Math.floor((listRef.current?.parentElement?.clientHeight ?? 0) / (elements[0]?.offsetHeight || 40)) - 1);
     switch (event.key) {
       case "ArrowDown":
         focusRow(index + 1);
@@ -362,7 +372,7 @@ const Navigator = (props: HierarchyPickerProps) => {
         focusRow(0);
         break;
       case "End":
-        focusRow(options.length - 1);
+        focusRow(elements.length - 1);
         break;
       case "ArrowLeft":
       case "Backspace":
@@ -371,13 +381,12 @@ const Navigator = (props: HierarchyPickerProps) => {
         break;
       default: {
         // A printable key, but not Space, which chooses, "/", which goes to the search box, nor a
-        // shortcut such as copy.
-        if (event.key.length !== 1 || " /".includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+        // shortcut.
+        if (event.key.length !== 1 || " /".includes(event.key) || hasModifier(event)) return;
         const { typed, at } = typeAhead.current;
         const next = (event.timeStamp - at < TYPEAHEAD_MS ? typed : "") + event.key.toLocaleLowerCase();
         typeAhead.current = { typed: next, at: event.timeStamp };
-        const titles = [...scopeTitle ? [scopeTitle] : [], ...rows.map(({ title }) => title)];
-        const match = typeAheadMatch(titles, index, next);
+        const match = typeAheadMatch(options.map(titleOf), index, next);
         if (match !== undefined) focusRow(match);
       }
     }
@@ -560,10 +569,10 @@ const Navigator = (props: HierarchyPickerProps) => {
               <Row
                 key={scope.id}
                 id={scope.id}
-                title={scopeTitle ?? scope.title}
+                title={titleOf(scope)}
                 subtitle={scope.choice?.subtitle}
                 icon={iconFor(scope.icon, "container")}
-                action="choose"
+                action={actionOf(scope)}
                 selected={value === scope.id}
                 disabled={disabled}
                 tabbable={focusId === scope.id}
@@ -582,7 +591,7 @@ const Navigator = (props: HierarchyPickerProps) => {
               badge={item.badge}
               meta={item.meta}
               icon={iconFor(item.icon, item.kind)}
-              action={item.kind === "container" ? "open" : item.selectable ? "choose" : "none"}
+              action={actionOf(item)}
               selected={showsChoice(item)}
               disabled={disabled}
               tabbable={focusId === item.id}
