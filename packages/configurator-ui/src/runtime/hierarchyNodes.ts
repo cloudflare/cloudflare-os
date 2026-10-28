@@ -131,17 +131,20 @@ export const rowSubtitle = (item: Item, searching: boolean): string | undefined 
 };
 
 const EXTENSION = /\.[^.\s]{1,7}$/u;
-const graphemes = new Intl.Segmenter();
+// Missing before Firefox 125, where titles truncate whole rather than fail every configurator.
+const graphemes = typeof Intl.Segmenter === "function" ? new Intl.Segmenter() : undefined;
 
 /**
  * A title split where its end, kept in view as the rest truncates, starts: its extension and up to
  * 3 characters before it, counted as the user sees them, so an accent or an emoji is not cut from
- * its letter. None for a title without an extension or with nothing before that end to give way.
+ * its letter. A space before that end goes with it, since the end of the truncating part drops it.
+ * None for a title without an extension or with nothing before that end to give way.
  */
 export const splitTitle = (title: string): [head: string, tail: string] | undefined => {
   const extension = EXTENSION.exec(title);
-  const start = extension && [...graphemes.segment(title.slice(0, extension.index))].at(-3)?.index;
-  return start ? [title.slice(0, start), title.slice(start)] : undefined;
+  const start = extension && graphemes && [...graphemes.segment(title.slice(0, extension.index))].at(-3)?.index;
+  const head = start ? title.slice(0, start).trimEnd() : "";
+  return head ? [head, title.slice(head.length)] : undefined;
 };
 
 /**
