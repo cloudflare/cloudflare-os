@@ -1257,6 +1257,9 @@ importers:
       '@cloudflare/kumo':
         specifier: ^2.14.0
         version: 2.14.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.7)
+      '@gadgets/workshop-shared':
+        specifier: workspace:*
+        version: link:../workshop-shared
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1266,6 +1269,12 @@ importers:
       '@tanstack/react-router':
         specifier: ^1.170.39
         version: 1.170.39(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      capnweb:
+        specifier: 'catalog:'
+        version: 0.12.0
+      hash-wasm:
+        specifier: ^4.12.0
+        version: 4.12.0
       react:
         specifier: ^19.2.8
         version: 19.2.8

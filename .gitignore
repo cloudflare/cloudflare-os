@@ -48,3 +48,6 @@ wrangler.dev.jsonc
 
 # Design reference screenshots (local only).
 /cfos redesign/
+
+# Local Vite env overrides (dev auto-login etc.).
+.env.local
