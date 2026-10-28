@@ -23,6 +23,15 @@ Imports point down only: components, then blocks, then layouts, then routes. Lin
 Build UI by looking at the component gallery (`/gallery`) first: add each new component or block
 there so its states can be reviewed in isolation.
 
+## Theming
+
+This app restyles Kumo at the token level, in `src/theme.css` only. That is a deliberate departure
+from `workshop-frontend`'s ban on token theming, which predates this rework. Components and blocks
+use Kumo semantic tokens (`bg-kumo-canvas`, `bg-kumo-base`, `ring-kumo-line`) and never colour
+literals. Wrap a Kumo component only for what tokens cannot change, such as sizes and hit targets.
+
+- Page backdrop: `kumo-canvas`. Content card: `kumo-base`.
+
 ## Promoting to `@gadgets/ui`
 
 Components start here. Move one to `packages/ui` once a second frontend (e.g. a gatekeeper app) needs

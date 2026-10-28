@@ -1,35 +1,50 @@
-import type { ComponentProps } from 'react'
-import { Button as KumoButton } from '@cloudflare/kumo'
+import { isValidElement, type ComponentProps, type ElementType, type ReactElement, type ReactNode } from 'react'
+import { Button as BaseButton } from '@cloudflare/kumo/primitives/button'
+import { cn } from '@cloudflare/kumo/utils'
 
-type KumoButtonProps = ComponentProps<typeof KumoButton>
+type BaseButtonProps = Omit<ComponentProps<typeof BaseButton>, 'children' | 'className' | 'aria-label'>
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'chip'
+type ButtonContent =
+  | { children: ReactNode; 'aria-label'?: string }
+  // Without visible text the button needs an accessible name.
+  | { children?: undefined; icon: ElementType | ReactElement; 'aria-label': string }
 
-export type ButtonProps = Omit<KumoButtonProps, 'variant' | 'shape'> & {
-  variant?: ButtonVariant
+export type ButtonProps = BaseButtonProps &
+  ButtonContent & {
+    /** A Phosphor icon component, or an element (e.g. an avatar). Shown before `children`. */
+    icon?: ElementType | ReactElement
+    className?: string
+  }
+
+const renderIcon = (icon: ButtonProps['icon']): ReactNode => {
+  if (!icon) return undefined
+  if (isValidElement(icon)) return icon
+  const Icon = icon
+  return <Icon />
 }
 
-// Every Workshop button is a pill. Kumo's size classes set a rounded-lg that className overrides.
-const PILL = 'rounded-full'
+/**
+ * The one button size: 36px tall and fully rounded. With only an `icon` it is a 36px circle; with
+ * text it stretches and keeps round ends.
+ */
+export const Button = ({ icon, children, className, ...props }: ButtonProps) => {
+  const iconNode = renderIcon(icon)
+  const iconOnly = iconNode !== undefined && children === undefined
 
-const VARIANTS: Record<ButtonVariant, { kumo: KumoButtonProps['variant']; className: string }> = {
-  primary: {
-    kumo: 'secondary',
-    className: 'bg-kumo-contrast !text-kumo-inverse ring-0 not-disabled:hover:bg-kumo-contrast/90',
-  },
-  secondary: { kumo: 'secondary', className: '' },
-  ghost: { kumo: 'ghost', className: '' },
-  chip: { kumo: 'outline', className: '!text-kumo-subtle' },
-}
-
-/** A pill-shaped text button, with an optional leading `icon`. For icon-only actions use `IconButton`. */
-export const Button = ({ variant = 'secondary', className, ...props }: ButtonProps) => {
-  const { kumo, className: variantClassName } = VARIANTS[variant]
   return (
-    <KumoButton
-      variant={kumo}
-      className={[PILL, variantClassName, className].filter(Boolean).join(' ')}
+    <BaseButton
+      type="button"
+      className={cn(
+        'inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full text-base font-medium whitespace-nowrap',
+        'bg-kumo-base text-kumo-default ring-1 ring-kumo-line not-data-disabled:hover:bg-kumo-tint',
+        '[&>svg]:size-[1.125em] [&>svg]:shrink-0',
+        iconOnly ? 'w-9 p-0' : iconNode ? 'pr-4 pl-3' : 'px-4',
+        className,
+      )}
       {...props}
-    />
+    >
+      {iconNode}
+      {children}
+    </BaseButton>
   )
 }
