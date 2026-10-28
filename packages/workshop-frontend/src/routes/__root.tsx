@@ -1,6 +1,6 @@
 import { logRpcFailure } from '../rpcErrors'
 import { useState, useEffect } from 'react'
-import { createRootRoute, Outlet, useRouterState } from '@tanstack/react-router'
+import { createRootRoute, Outlet, useMatch, useRouterState } from '@tanstack/react-router'
 import { TooltipProvider, Toasty } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
@@ -16,6 +16,7 @@ import OnboardingWizard from '../OnboardingWizard'
 import AccountSelectionModal from '../components/billing/AccountSelectionModal'
 import { NotificationBridge } from '../features/notifications/NotificationBridge'
 import { BrowserPushBridge } from '../features/notifications/BrowserPushBridge'
+import { UnreadStateBridge } from '../features/notifications/UnreadStateBridge'
 import {
   DeviceSessionHandoff,
   hasDeviceSessionParameters,
@@ -32,6 +33,7 @@ function RootComponent() {
   const connectionLost = useConnectionLost()
   const { isAuthenticated, authenticatedApi, isLoading, error, logout, login } = useAuth(rpcStub)
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const workspace = useMatch({ from: '/workspace/$id', shouldThrow: false })
 
   // Routes that don't require auth (public routes)
   const isSignup = pathname === '/signup'
@@ -128,14 +130,17 @@ function RootComponent() {
       <FeatureFlagsProvider>
         <TooltipProvider>
           <Toasty>
-            <NotificationBridge authenticatedApi={authenticatedApi} />
-            <BrowserPushBridge />
-            <NativeAppBridge />
-            <PageUpdateNotice />
-            <AuthenticatedShell
-              authenticatedApi={authenticatedApi}
-              isWorkspaceEditor={isWorkspaceEditor}
-            />
+            <UnreadStateBridge authenticatedApi={authenticatedApi}
+              scope={workspace ? {workspaceId: workspace.params.id} : pathname === '/unread' ? 'unread' : 'summary'}>
+              <NotificationBridge authenticatedApi={authenticatedApi} />
+              <BrowserPushBridge />
+              <NativeAppBridge />
+              <PageUpdateNotice />
+              <AuthenticatedShell
+                authenticatedApi={authenticatedApi}
+                isWorkspaceEditor={isWorkspaceEditor}
+              />
+            </UnreadStateBridge>
           </Toasty>
         </TooltipProvider>
       </FeatureFlagsProvider>

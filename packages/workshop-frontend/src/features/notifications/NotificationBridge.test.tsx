@@ -16,6 +16,7 @@ const router = { navigate: vi.fn<(options: object) => void>() };
 
 vi.mock("@cloudflare/kumo", () => ({ useKumoToastManager: () => ({ add: addToast }) }));
 vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
+vi.mock("./UnreadStateBridge", () => ({ UnreadStateBridge: () => null }));
 
 const notification: UserNotification = {
   id: "notification-1",
@@ -81,7 +82,7 @@ describe("NotificationBridge", () => {
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
 
     await act(async () => setVisibility("hidden"));
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(dispose).not.toHaveBeenCalled();
     await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
     expect(addToast).not.toHaveBeenCalled();
   });
@@ -95,7 +96,7 @@ describe("NotificationBridge", () => {
     await act(() => subscribers[1].notify(notification));
     expect(addToast).toHaveBeenCalledTimes(1);
 
-    // Unsubscribing releases it too, whether hidden or unmounted.
+    // A DO reset while hidden also re-subscribes; visibility itself does not churn the listener.
     await act(async () => setVisibility("hidden"));
     await release(1);
     await act(async () => setVisibility("visible"));
@@ -105,7 +106,35 @@ describe("NotificationBridge", () => {
     root = createRoot(container);
   });
 
-  it("does not retry a subscription that failed", async () => {
+  it("subscribes when mounted hidden without treating an unseen toast as delivered", async () => {
+    setVisibility("hidden");
+    await render();
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
+    await act(async () => setVisibility("visible"));
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await act(() => subscribers[0].notify(notification));
+    expect(addToast).toHaveBeenCalledOnce();
+  });
+
+  it("recovers when the subscriber is released before a successful setup ACK", async () => {
+    const ack = Promise.withResolvers<void>();
+    authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(ack.promise, {[Symbol.dispose]: dispose});
+    });
+    await render();
+    await release(0);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await act(async () => ack.resolve());
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
+    await release(0); // A late release from the replaced callback must not replace the new one.
+    await act(() => subscribers[1].notify(notification));
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
+    expect(addToast).toHaveBeenCalledOnce();
+  });
+
+  it("does not immediately retry when a failed subscription releases its arguments", async () => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
       subscribers.push(subscriber);
@@ -115,6 +144,68 @@ describe("NotificationBridge", () => {
     // A failed call releases its arguments as well.
     await release(0);
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries failed setup with capped backoff, then keeps the recovered subscription while hidden", async () => {
+    vi.useFakeTimers();
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    let unavailable = true;
+    authenticatedApi.subscribeToNotifications.mockImplementation(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(unavailable ? Promise.reject(new Error("unavailable")) : Promise.resolve(),
+        {[Symbol.dispose]: dispose});
+    });
+    try {
+      await render();
+      for (const [index, delay] of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000].entries()) {
+        await act(async () => vi.advanceTimersByTime(delay - 1));
+        expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(index + 1);
+        if (index === 6) unavailable = false;
+        await act(async () => vi.advanceTimersByTime(1));
+        expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(index + 2);
+      }
+      await act(() => subscribers.at(-1)!.notify(notification));
+      expect(addToast).toHaveBeenCalledOnce();
+      const calls = authenticatedApi.subscribeToNotifications.mock.calls.length;
+      await act(async () => setVisibility("hidden"));
+      await act(async () => vi.advanceTimersByTime(60_000));
+      await act(async () => setVisibility("visible"));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(calls);
+
+      // A later setup failure starts at the short delay again, not the previous outage's cap.
+      unavailable = true;
+      await release(subscribers.length - 1);
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(calls + 1);
+      unavailable = false;
+      await act(async () => vi.advanceTimersByTime(1_000));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(calls + 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["unmount", "reconnect"])("cancels pending notification recovery on %s", async reason => {
+    vi.useFakeTimers();
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(Promise.reject(new Error("unavailable")), {[Symbol.dispose]: dispose});
+    });
+    try {
+      await render();
+      if (reason === "unmount") {
+        await act(async () => root.unmount());
+        root = createRoot(container);
+      } else {
+        authenticatedApi = {...authenticatedApi};
+        await render();
+      }
+      await release(0);
+      await act(async () => vi.advanceTimersByTime(60_000));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(reason === "unmount" ? 1 : 2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens a notified task in the app", async () => {

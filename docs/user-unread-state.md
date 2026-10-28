@@ -1,7 +1,8 @@
 # User-owned unread state
 
 The workspace owns the timeline and message ordering. Each User DO owns its user's private read
-horizons, unread counts and outbound alert queue. No read receipts are exposed to other users.
+horizons, unread counts and outbound alert queue. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
+for inbox, viewport and native bridge behavior.
 
 ```mermaid
 flowchart LR

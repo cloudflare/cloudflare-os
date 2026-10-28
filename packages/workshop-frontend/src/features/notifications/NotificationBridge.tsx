@@ -113,13 +113,18 @@ export const NotificationBridge = ({
 
   useEffect(() => {
     let subscription: RpcStub<{}> | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 1_000;
 
     let updateSubscription = () => {
-      subscription?.[Symbol.dispose]();
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+      const previous = subscription;
       subscription = undefined;
-      if (document.visibilityState !== "visible") return;
+      previous?.[Symbol.dispose]();
 
       let live = false;
+      let released = false;
       let subscriber = new NotificationSubscriberImpl(notification => {
         let { id, kind, workspaceId, chatId, chatTitle } = notification;
         if (isChatVisible(workspaceId, chatId)) return;
@@ -138,24 +143,32 @@ export const NotificationBridge = ({
           }],
         });
       }, () => {
+        released = true;
         // Released while still ours, after it took: the User DO reset and forgot it. (A failed
         // subscribe releases it too, so `live` keeps that from retrying in a loop.)
         if (live && subscription === nextSubscription) updateSubscription();
       }) as unknown as RpcStub<NotificationSubscriber>;
       let nextSubscription = authenticatedApi.subscribeToNotifications(subscriber);
       subscription = nextSubscription;
-      nextSubscription.then(() => { live = true; }, error => {
+      nextSubscription.then(() => {
+        if (subscription !== nextSubscription) return;
+        live = true;
+        retryDelay = 1_000;
+        if (released) updateSubscription();
+      }, error => {
         if (subscription !== nextSubscription) return;
         logRpcFailure("Notification subscription failed:", error);
+        retryTimer = setTimeout(updateSubscription, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30_000);
       });
     };
 
-    document.addEventListener("visibilitychange", updateSubscription);
     updateSubscription();
     return () => {
-      document.removeEventListener("visibilitychange", updateSubscription);
-      subscription?.[Symbol.dispose]();
+      clearTimeout(retryTimer);
+      const previous = subscription;
       subscription = undefined;
+      previous?.[Symbol.dispose]();
     };
   }, [authenticatedApi, router]);
 

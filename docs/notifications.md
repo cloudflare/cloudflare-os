@@ -96,7 +96,7 @@ flowchart LR
     User[User Durable Object]
     Cursor[(chatReadCursors: visible horizons, count, delivery receipt)]
     Outbox[(notificationOutbox: accepted alert payloads)]
-    Browser[Visible browser subscriber]
+    Browser[Browser subscriber, visible or hidden]
     Key[Install signing private key]
   end
 
@@ -121,7 +121,7 @@ flowchart LR
   User -->|same transaction before ACK| Outbox
   Outbox -->|local drain and retry; no source fetch| User
   User -->|visible client first| Browser
-  Browser -->|presentation acknowledged| User
+  Browser -->|acknowledge only when visible| User
   User -->|delete alert + advance receipt after delivery or skip| Cursor
   User -->|fallback if no acknowledgement| Delivery
   Key -->|sign request locally| User
@@ -150,8 +150,9 @@ subscription id, and same-origin deep-link path cross the central boundary durin
 headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
 signature. Permission details, chat content, gatekeeper grants, and provider credentials do not. A
 visible browser tab is offered the notification first, and push is sent to every registered device
-only if no tab acknowledges it within three seconds. A tab subscribes while visible, and again if a
-User DO reset drops its subscription. When the service answers `device_gone` or
+only if no tab acknowledges it within three seconds. Tabs retain their subscriptions while hidden,
+but hidden clients reject `notify()` without presenting a toast, preserving push as the fallback.
+A tab resubscribes if a User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
 app next opens. Any other failure, including `invalid_signature`, keeps the subscription and
 retries the alert for up to ten minutes from first acceptance. Each attempt has a 15-second
