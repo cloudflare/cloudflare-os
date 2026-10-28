@@ -2,6 +2,7 @@ import { Badge } from "@cloudflare/kumo/components/badge";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import { memo, type KeyboardEvent, type ReactNode } from "react";
+import { splitTitle } from "./hierarchyNodes.ts";
 
 type ChoiceBodyProps = {
   mark: "checked" | "unchecked" | "none";
@@ -12,23 +13,18 @@ type ChoiceBodyProps = {
   meta?: string;
 };
 
-const EXTENSION = /\.[^.\s]{1,7}$/u;
-const graphemes = new Intl.Segmenter();
-
 /**
- * A title whose end stays in view while the rest gives way: an extension and up to 3 characters
- * before it, counted as the user sees them, so an accent or an emoji is not cut from its letter.
- * The parts are flex items, which a browser names apart, as "Bud get.xlsx", so assistive technology
- * gets the title whole.
+ * A title whose end stays in view while the rest gives way. The parts are flex items, which a
+ * browser names apart, as "Bud get.xlsx", so assistive technology gets the title whole.
  */
 const Title = ({ title }: { title: string }) => {
-  const extension = EXTENSION.exec(title);
-  const start = extension ? [...graphemes.segment(title.slice(0, extension.index))].at(-3)?.index : 0;
-  if (!start) return <span className="truncate">{title}</span>;
+  const split = splitTitle(title);
+  if (!split) return <span className="truncate">{title}</span>;
+  const [head, tail] = split;
   return (
     <span className="flex min-w-0">
-      <span aria-hidden="true" className="truncate">{title.slice(0, start)}</span>
-      <span aria-hidden="true" className="shrink-0 whitespace-pre">{title.slice(start)}</span>
+      <span aria-hidden="true" className="truncate">{head}</span>
+      <span aria-hidden="true" className="shrink-0 whitespace-pre">{tail}</span>
       <span className="sr-only">{title}</span>
     </span>
   );

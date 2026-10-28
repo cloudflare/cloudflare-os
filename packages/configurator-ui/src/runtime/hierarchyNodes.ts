@@ -130,6 +130,20 @@ export const rowSubtitle = (item: Item, searching: boolean): string | undefined 
   return [item.path?.map(({ title }) => title).join(" / "), own].filter(Boolean).join(" · ") || undefined;
 };
 
+const EXTENSION = /\.[^.\s]{1,7}$/u;
+const graphemes = new Intl.Segmenter();
+
+/**
+ * A title split where its end, kept in view as the rest truncates, starts: its extension and up to
+ * 3 characters before it, counted as the user sees them, so an accent or an emoji is not cut from
+ * its letter. None for a title without an extension or with nothing before that end to give way.
+ */
+export const splitTitle = (title: string): [head: string, tail: string] | undefined => {
+  const extension = EXTENSION.exec(title);
+  const start = extension && [...graphemes.segment(title.slice(0, extension.index))].at(-3)?.index;
+  return start ? [title.slice(0, start), title.slice(start)] : undefined;
+};
+
 /**
  * Where a node found without browsing to it (a search result, a pre-filled value) lives. Under tabs,
  * its path names its tab first; one that does not is shown in the open tab, behind a gap above
