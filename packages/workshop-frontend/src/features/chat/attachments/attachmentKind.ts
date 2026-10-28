@@ -54,9 +54,12 @@ const MIME_KINDS: [prefixOrExact: string, kind: AttachmentKind][] = [
  */
 export const attachmentKind = (mimeType: string, name?: string): AttachmentKind => {
   const mime = mimeType.toLowerCase();
-  const byMime = MIME_KINDS.find(([prefix]) => mime.startsWith(prefix));
-  if (byMime) return byMime[1];
   const dot = name?.lastIndexOf(".") ?? -1;
-  if (!name || dot < 0) return "file";
-  return EXTENSION_KINDS.get(name.slice(dot + 1).toLowerCase()) ?? "file";
+  const byExtension = name && dot >= 0
+    ? EXTENSION_KINDS.get(name.slice(dot + 1).toLowerCase())
+    : undefined;
+  // Browsers report `.ts` as an MPEG transport stream, which a TypeScript file far more often is not.
+  if (mime === "video/mp2t" && byExtension === "code") return "code";
+  const byMime = MIME_KINDS.find(([prefix]) => mime.startsWith(prefix));
+  return byMime?.[1] ?? byExtension ?? "file";
 };

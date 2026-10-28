@@ -9,9 +9,13 @@ import type { PublicApi, AuthenticatedApi, AiChatAuthorInfo } from '@gadgets/wor
 import { setReportedUserId } from './errorReporting'
 import { useAuth } from './useAuth'
 import { nativeConnectCompletion } from './features/native-app/connectSession'
+import { disconnectNativeNotificationEnrollment } from './features/notifications/nativeNotificationEnrollment'
 
 vi.mock('./errorReporting', () => ({
   setReportedUserId: vi.fn<(reportedUserId: string | undefined) => void>(),
+}))
+vi.mock('./features/notifications/nativeNotificationEnrollment', () => ({
+  disconnectNativeNotificationEnrollment: vi.fn<() => void>(),
 }))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -72,6 +76,7 @@ describe('useAuth error reporting identity', () => {
     containers.length = 0
     localStorage.clear()
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
     vi.clearAllMocks()
   })
 
@@ -147,6 +152,34 @@ describe('useAuth error reporting identity', () => {
 
     act(() => controls.logout())
 
+    expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('disconnects native push enrollment and ends the native session on CFOS logout', async () => {
+    const sessionEnded = vi.fn<() => void>()
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: () => {}, returnToInstalls: () => {}, sessionEnded,
+    })
+    localStorage.setItem('authToken', 'stored-token')
+    const { controls } = await mount(stubPublicApi(person))
+    act(() => controls.logout())
+    expect(disconnectNativeNotificationEnrollment).toHaveBeenCalledOnce()
+    expect(sessionEnded).toHaveBeenCalledOnce()
+  })
+
+  it.each(['disconnect', 'session-ended'] as const)('finishes local logout when the native %s callback throws', async callback => {
+    using _ = vi.spyOn(console, 'error').mockImplementation(() => {})
+    localStorage.setItem('authToken', 'stored-token')
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: () => {}, returnToInstalls: () => {},
+      sessionEnded: () => { if (callback === 'session-ended') throw new Error('native bridge unavailable') },
+    })
+    if (callback === 'disconnect') vi.mocked(disconnectNativeNotificationEnrollment)
+      .mockImplementationOnce(() => { throw new Error('native bridge unavailable') })
+    const { controls } = await mount(stubPublicApi(person))
+    act(() => controls.logout())
+    expect(disconnectNativeNotificationEnrollment).toHaveBeenCalledOnce()
+    expect(localStorage.getItem('authToken')).toBeNull()
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
   })
 

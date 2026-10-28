@@ -108,6 +108,65 @@ export default defineConfig({
         },
       },
       {
+        files: ['packages/workshop-app/**/*.{ts,tsx}'],
+        plugins: ['typescript', 'unicorn', 'oxc', 'import', 'react', 'jsx-a11y'],
+        env: {
+          browser: true,
+          es2024: true,
+        },
+      },
+      {
+        // workshop-app layering: components <- blocks <- layouts <- routes. Imports point down
+        // only. An override replaces the base `no-restricted-imports` entry, so the `typescript`
+        // restriction is repeated.
+        files: ['packages/workshop-app/src/components/**/*.{ts,tsx}'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
+              patterns: [
+                {
+                  group: ['@/blocks/*', '@/layouts/*', '@/routes/*'],
+                  message: 'Components are the lowest layer; they cannot import blocks, layouts or routes.',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        files: ['packages/workshop-app/src/blocks/**/*.{ts,tsx}'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
+              patterns: [
+                {
+                  group: ['@/layouts/*', '@/routes/*'],
+                  message: 'Blocks compose components; they cannot import layouts or routes.',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        files: ['packages/workshop-app/src/layouts/**/*.{ts,tsx}'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
+              patterns: [
+                { group: ['@/routes/*'], message: 'Layouts are composed by routes, not the reverse.' },
+              ],
+            },
+          ],
+        },
+      },
+      {
         // Gatekeeper configurator UIs use a classic JSX runtime with the `h`
         // pragma rather than the automatic react-jsx runtime.
         files: ['packages/gatekeeper-*/**/*.tsx'],

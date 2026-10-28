@@ -471,7 +471,8 @@ html {
 
    Matched on the popup Kumo puts inside, not on `[role="presentation"]` alone, which dialogs also
    use for their backdrop and viewport — raising those would bury a dialog under its own backdrop. */
-[data-base-ui-portal] > [role="presentation"]:has(> .kumo-popover-popup) {
+[data-base-ui-portal] > [role="presentation"]:has(> .kumo-popover-popup),
+[data-base-ui-portal] > [role="presentation"]:has(> .kumo-tooltip-popup [data-share-link-gadgets]) {
   z-index: 1100;
 }
 

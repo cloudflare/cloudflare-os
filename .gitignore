@@ -45,3 +45,6 @@ wrangler.dev.jsonc
 .dev.vars.*
 **/.dev.vars
 **/.dev.vars.*
+
+# Design reference screenshots (local only).
+/cfos redesign/

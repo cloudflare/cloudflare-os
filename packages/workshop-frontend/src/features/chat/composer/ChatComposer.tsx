@@ -84,6 +84,7 @@ export const ChatComposer = ({
   isAgentActive,
   models,
   selectedModel,
+  modelsLoading,
   onModelChange,
   pendingConsoleLogCount = 0,
   consoleLogPreview = "",
@@ -124,6 +125,8 @@ export const ChatComposer = ({
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
   selectedModel: SelectedModel;
+  /** True until `models` and the model a new chat starts on have loaded. */
+  modelsLoading?: boolean;
   onModelChange: (modelId: string | null) => void;
   pendingConsoleLogCount?: number;
   consoleLogPreview?: string;
@@ -990,7 +993,7 @@ export const ChatComposer = ({
                     onClick={onToggleThinkingTraces}
                     className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default"
                   >
-                    <span className="mr-2 inline-flex h-4 w-4 items-center justify-center text-kumo-inactive">
+                    <span className="inline-flex h-4 w-4 items-center justify-center text-kumo-inactive">
                       <Brain size={14} />
                     </span>
                     <span className="flex-1">
@@ -1007,6 +1010,7 @@ export const ChatComposer = ({
               <ComposerModelSelector
                 models={models}
                 selectedModel={selectedModel}
+                loading={modelsLoading}
                 onModelChange={onModelChange}
               />
               {isAgentActive && onStop && (

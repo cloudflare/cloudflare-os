@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { AiChatMessage, BlueprintMerge, FileAtCommit } from '@gadgets/workshop-shared/api'
+import type { AiChatMessage, BlueprintMerge } from '@gadgets/workshop-shared/api'
+import type { CommitFile } from '../code/commitFileStore'
 import type { ChatContentSnapshot } from '../code/otClient'
 import {
   findConflictMarkerLine,
@@ -154,7 +155,7 @@ describe('findUnresolvedConflicts', () => {
   const reads: { commitId: string; paths: readonly string[] }[] = []
   const readFiles = async (commitId: string, paths: readonly string[]) => {
     reads.push({ commitId, paths })
-    return new Map(paths.map((path): [string, FileAtCommit] => {
+    return new Map(paths.map((path): [string, CommitFile] => {
       const text = commitId === 'merge' ? MERGE_FILES[path] : undefined
       return [path, text === undefined ? { kind: 'absent' } : { kind: 'text', text }]
     }))

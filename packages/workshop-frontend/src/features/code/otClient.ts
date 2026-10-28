@@ -108,7 +108,7 @@ export interface ChatOtClientDelegate {
   /**
    * Read the named files at a commit (Overseer.readFilesAtCommit, cacheable by oid): one entry
    * per requested path, `null` for a path absent at the commit. Only ever asked for the paths
-   * an `edit` needs a base for, so an unreadable answer (symlink, binary, oversized) is a
+   * an `edit` needs a base for, so an unreadable answer (symlink, submodule, binary) is a
    * server-invariant violation: throw, and the client reports it through onFatalError.
    */
   fetchFilesAtCommit(commitId: string, paths: readonly string[])

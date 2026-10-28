@@ -3,7 +3,7 @@
 
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { newMessagePortRpcSession, RpcStub, RpcTarget } from 'capnweb'
+import { newMessagePortRpcSession, RpcPromise, RpcStub, RpcTarget } from 'capnweb'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GadgetClient, UiBundle } from '@gadgets/workshop-shared/api'
 
@@ -97,6 +97,16 @@ class TestGadgetTarget extends RpcTarget implements TestGadget {
     for (const subscriber of this.subscribers) subscriber[Symbol.dispose]()
     this.subscribers.clear()
     this.onDispose?.()
+  }
+}
+
+class TestGadgetClientTarget extends RpcTarget {
+  constructor(private value: string) {
+    super()
+  }
+
+  connectToGadget() {
+    return new TestGadgetTarget(this.value)
   }
 }
 
@@ -338,6 +348,59 @@ describe('GadgetUI RPC recovery', () => {
     )
     await connection.promise
     await vi.waitFor(() => expect(disposed).toHaveBeenCalledOnce())
+  })
+
+  it('keeps the iframe for as long as the replacement gadget client is unresolved', async () => {
+    const first = fakeGadget('first', 'document.body.textContent = "first"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={first.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+    const child = connectIframe(iframe)
+    await expect(child.read()).resolves.toBe('first')
+
+    // As during an outage: a client pipelined on a connection that has not been made yet.
+    const connection = deferred<RpcStub<GadgetClient>>()
+    const pending = new RpcPromise<GadgetClient>(connection.promise)
+    vi.useFakeTimers()
+    await act(async () => {
+      root.render(<GadgetUI gadget={pending} height="100px" />)
+    })
+    const read = child.read()
+    await act(async () => vi.advanceTimersByTimeAsync(60_000))
+    vi.useRealTimers()
+    expect(container.querySelector('iframe')).toBe(iframe)
+
+    connection.resolve(
+      new RpcStub(new TestGadgetClientTarget('restored')) as unknown as RpcStub<GadgetClient>,
+    )
+    await expect(read).resolves.toBe('restored')
+    expect(container.querySelector('iframe')).toBe(iframe)
+  })
+
+  it('connects a replacement gadget client after a handshake on a failed one', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failed = fakeGadget(
+      'failed',
+      'document.body.textContent = "bundle"',
+      vi.fn(async () => { throw new Error('workspace failed to reopen') }),
+    )
+    await act(async () => {
+      root.render(<GadgetUI gadget={failed.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    dispatchIframeHandshake(container.querySelector('iframe')!, new MessageChannel().port2)
+    await vi.waitFor(() => expect(container.querySelector('iframe')).toBeNull())
+    consoleError.mockRestore()
+
+    const replacement = fakeGadget('replacement', 'unused')
+    await act(async () => {
+      root.render(<GadgetUI gadget={replacement.stub} height="100px" />)
+    })
+    const child = connectIframe(container.querySelector('iframe')!)
+    await expect(child.read()).resolves.toBe('replacement')
+    expect(replacement.getUiBundle).not.toHaveBeenCalled()
   })
 
   it('ignores a superseded replacement connection', async () => {

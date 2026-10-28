@@ -129,6 +129,23 @@ describe('DurationSetting', () => {
     expect(onSave).not.toHaveBeenCalled()
   })
 
+  it('refuses a number of days outside its range, in days', async () => {
+    const onSave = vi.fn<(days: number) => Promise<boolean>>(async () => true)
+    await act(async () => root.render(
+      <DurationSetting label={LABEL} help="What the days mean." unit="days" min={90} max={3650}
+        value={90} onSave={onSave} />))
+
+    await type(input(), '89')
+
+    expect(container.textContent).toContain('Enter a whole number of days from 90 to 3650')
+    await click(saveButton())
+    expect(onSave).not.toHaveBeenCalled()
+
+    await type(input(), '365')
+    await click(saveButton())
+    expect(onSave).toHaveBeenCalledExactlyOnceWith(365)
+  })
+
   it.each(['1', '60'])('saves %j at the edge of its range', async (minutes) => {
     const onSave = vi.fn<(minutes: number) => Promise<boolean>>(async () => true)
     await act(async () => root.render(

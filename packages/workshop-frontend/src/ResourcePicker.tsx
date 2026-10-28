@@ -86,6 +86,11 @@ const sessionSnapshots = new WeakMap<RpcStub<AuthenticatedApi>, {
   accounts: Map<number, AccountEntry>
 }>()
 
+function accountSupportsResource(account: AccountEntry, resource: SupportedResource): boolean {
+  return account.supportedResources.some(candidate =>
+    candidate.urlPattern === resource.urlPattern && candidate.connectable !== false)
+}
+
 function missingResourceGrants(account: AccountDescription, resource: SupportedResource): string[] {
   if (!resource.grantable) return []
   const granted = account.grantedResourceUrlPatterns
@@ -193,7 +198,7 @@ export default function ResourcePicker({
   const lowerSearch = trimmedSearch.toLowerCase()
 
   const allResourceItems = allVendors.flatMap(v =>
-    v.supportedResources.map(r => ({ resource: r, vendor: v }))
+    v.supportedResources.filter(r => r.connectable !== false).map(r => ({ resource: r, vendor: v }))
   )
 
   // The first placeholder (:name or *) still in the search URL, which blocks choosing an account.
@@ -273,7 +278,8 @@ export default function ResourcePicker({
 
     const httpVendorName = httpItem.vendor.description.displayName
     const httpAccounts = [...allAccounts.entries()]
-      .filter(([_, { vendor: v }]) => v.displayName === httpVendorName)
+      .filter(([_, account]) => account.vendor.displayName === httpVendorName &&
+        accountSupportsResource(account, httpItem.resource))
 
     const hasMatchingAccounts = lowerSearch
       ? httpAccounts.some(([_, { description }]) => {
@@ -306,7 +312,8 @@ export default function ResourcePicker({
       }
 
       let vendorAccounts = [...allAccounts.entries()]
-        .filter(([_, { vendor: v }]) => v.displayName === vendor.description.displayName)
+        .filter(([_, account]) => account.vendor.displayName === vendor.description.displayName &&
+          accountSupportsResource(account, resource))
         .map(([id, data]) => ({ id, ...data }))
 
       if (accountsOnly && lowerSearch) {
@@ -492,7 +499,8 @@ export default function ResourcePicker({
 
             // --- Full match or no-refine prefix: render with accounts ---
             let vendorAccounts = [...allAccounts.entries()]
-              .filter(([_, { vendor: v }]) => v.displayName === vendor.description.displayName)
+              .filter(([_, account]) => account.vendor.displayName === vendor.description.displayName &&
+                accountSupportsResource(account, resource))
               .map(([id, data]) => ({ id, ...data }))
 
             // In accounts-only mode (HTTP alongside specific matches), only show

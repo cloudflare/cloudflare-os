@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Button, Input } from '@cloudflare/kumo'
-import { useFieldErrorAlert } from '../ai-models/useFieldErrorAlert'
+import { useFieldErrorAlert } from '../hooks/useFieldErrorAlert'
 
 // The whole number typed into a field, or null unless it is one from `min` to `max`.
 const parseWholeNumber = (text: string, min: number, max: number): number | null => {
@@ -10,11 +10,11 @@ const parseWholeNumber = (text: string, min: number, max: number): number | null
   return value >= min && value <= max ? value : null
 }
 
-/** A whole number of hours or minutes, saved on its own. */
+/** A whole number of days, hours or minutes, saved on its own. */
 export const DurationSetting = ({ label, help, unit, min, max, value, onSave }: {
   label: string
   help: string
-  unit: 'hours' | 'minutes'
+  unit: 'days' | 'hours' | 'minutes'
   /** The fewest and the most the server accepts. */
   min: number
   max: number
