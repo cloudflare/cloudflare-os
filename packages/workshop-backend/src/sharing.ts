@@ -7,11 +7,9 @@
 // resolved values (or, where laziness matters, a callback) into this module.
 //
 // ACCESS: A collaborator holds "build" access to the whole workspace, or "use" access to some of
-// its gadgets (see CollaboratorAccess). Each permission edge or share link confers at most its
-// own grant -- "build", one gadget, or, for grants made before gadgets were shared individually,
-// every gadget -- intersected with what its sharer (a link's creator) currently holds, and a
-// collaborator holds the union over all their edges. Grants to different gadgets are independent:
-// holding one gadget never supports a grant of another.
+// its gadgets (see CollaboratorAccess). Each permission edge or share link confers its own grant
+// only while its sharer (a link's creator) holds "build". A collaborator holds the union over all
+// their valid edges; "use" access, including legacy access to every gadget, supports no grants.
 //
 // LAZY REVOCATION MODEL: Access is determined by reachability from the owner in the permission
 // graph, recomputed live at every open() (see `getEffectiveAccess`). Revocation is therefore lazy:
@@ -19,8 +17,8 @@
 // only flags the link revoked. Nothing cascades, no records are deleted, and downstream edges are
 // never touched -- users who lose their only path to the owner simply become unreachable and are
 // denied at open() time. Because the graph is never destructively pruned, revocation is reversible:
-// re-adding a removed collaborator restores them and, transitively, everyone they had shared with
-// (unless `ownerInvitesOnly` is set, when only the owner's direct grants count).
+// re-adding a removed collaborator with "build" restores their downstream grants (unless
+// `ownerInvitesOnly` is set, when only the owner's direct grants count).
 // (Records and revoked keys accumulate in storage; a future GC could reclaim long-dead entries.)
 //
 // NOTE: The sensitive-data (`containsRestrictedData`) policy intentionally does NOT live here; the
@@ -447,8 +445,8 @@ export class SharingManager {
    * deleted. The target's record (and crucially, any edges where the target is the *sharer* of
    * access to others) is left intact, and dependents who lose their only path to the owner simply
    * become unreachable -- they are denied at open() time, not pruned here. This makes the removal
-   * trivially reversible: re-adding the target (see addCollaborator) restores the target and,
-   * transitively, everyone they had shared with.
+   * trivially reversible: re-adding the target with "build" (see addCollaborator) restores their
+   * downstream grants. Re-adding only gadget access leaves those grants inactive.
    *
    *   - The owner severs *all* incoming edges to the target (owner-removal means "gone now").
    *   - A non-owner severs only their own `user` edges to the target; if the target retains other
@@ -627,9 +625,8 @@ export class SharingManager {
    * Compute the effective access of every collaborator -- everything reachable from the owner
    * through valid permission edges. A collaborator absent from the returned map has no access.
    *
-   * The owner is the implicit root with "build". Each edge grants what it confers at most (its
-   * role, narrowed to its one gadget if it names one) intersected with its sharer's effective
-   * access, and a collaborator holds the union of what their edges grant:
+   * The owner is the implicit root with "build". Each edge confers its grant only while its
+   * sharer holds "build", and a collaborator holds the union of what their valid edges grant:
    *   - A "user" edge's sharer is the owner or another collaborator.
    *   - A "shareKey" edge's "sharer" is the link's creator, and what it confers is the link's.
    * A grant naming a gadget that can no longer be shared confers nothing (see `gadgetExists`).
@@ -694,7 +691,7 @@ export class SharingManager {
             conferred = ceiling(edge);
           }
           let upstream = source === this.ownerProfileId ? BUILD : eff.get(source);
-          let granted = conferred && upstream && intersectAccess(conferred, upstream);
+          let granted = upstream?.role === "build" ? conferred : undefined;
           if (granted) best = best ? unionAccess(best, granted) : granted;
         }
         if (best && !(known && accessCovers(known, best))) {

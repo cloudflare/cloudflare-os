@@ -5798,8 +5798,8 @@ export type CollaboratorRole = "build" | "use";
 export type CollaboratorGrant = "build" | {gadgetId: WorkpieceId};
 
 /**
- * A collaborator's effective access: the union, over every path of permission edges from the
- * owner, of what each edge grants intersected with what its sharer holds. The owner is the
+ * A collaborator's effective access: the union of their valid grants reachable from the owner.
+ * A grant counts only while its sharer (or share link creator) holds "build"; the owner is the
  * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open, or is
  * "all" for a collaborator granted every gadget before gadgets were shared individually.
  */

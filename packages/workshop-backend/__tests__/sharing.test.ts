@@ -333,18 +333,6 @@ describe("addCollaborator", () => {
     expect(() => mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant: { gadgetId: 2 } }))
         .toThrow("You cannot grant more access than you have.");
     expect(storage.collaborators.get("b")).toBeUndefined();
-
-    let info = mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant: { gadgetId: 1 } });
-    expect(info.access).toEqual(only(1));
-  });
-
-  it("lets a legacy all-gadget holder share any one gadget, but not build", () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
-    expect(() => mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant: "build" }))
-        .toThrow("You cannot grant more access than you have.");
-    mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant: { gadgetId: 3 } });
-    expect(mgr.getEffectiveAccess("b")).toEqual(only(3));
   });
 
   it("adds a second edge from a different sharer but dedups the same grant from one sharer", () => {
@@ -416,32 +404,19 @@ describe("computeEffectiveAccess", () => {
     expect(access.get("b")).toEqual(BUILD);
   });
 
-  it("bounds a grant by the sharer's effective access", () => {
+  it.each([
+    { name: "one gadget", edge: gadgetEdge(OWNER, 1) },
+    { name: "every gadget", edge: userEdge(OWNER, "use") },
+  ])("does not support downstream grants from a holder of $name", ({ edge }) => {
     let { storage, mgr } = makeManager();
-    // Old stored build edges from sharers that now hold less.
-    seedCollaborator(storage, "legacy", [userEdge(OWNER, "use")]);
-    seedCollaborator(storage, "one", [gadgetEdge(OWNER, 1)]);
-    seedCollaborator(storage, "b", [userEdge("legacy", "build")]);
-    seedCollaborator(storage, "c", [userEdge("one", "build")]);
-    expect(mgr.getEffectiveAccess("b")).toEqual(ALL);
-    expect(mgr.getEffectiveAccess("c")).toEqual(only(1));
-  });
-
-  it("never lets a sharer holding one gadget support a grant of another", () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
-    // An old stored edge from a for gadget 2.
-    seedCollaborator(storage, "b", [gadgetEdge("a", 2)]);
-    seedCollaborator(storage, "c", [gadgetEdge("a", 2), gadgetEdge("a", 1)]);
-    expect(mgr.getEffectiveAccess("b")).toBeUndefined();
-    expect(mgr.getEffectiveAccess("c")).toEqual(only(1));
-  });
-
-  it("lets a legacy all-gadget holder support a grant of any one gadget", () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
-    seedCollaborator(storage, "b", [gadgetEdge("a", 2)]);
-    expect(mgr.getEffectiveAccess("b")).toEqual(only(2));
+    seedCollaborator(storage, "a", [edge]);
+    seedCollaborator(storage, "builder", [userEdge("a", "build")]);
+    seedCollaborator(storage, "viewer", [gadgetEdge("a", 1)]);
+    seedLink(storage, "k1", "a", "use", 1);
+    seedCollaborator(storage, "linked", [keyEdge("k1", "use", 1)]);
+    expect(mgr.getEffectiveAccess("builder")).toBeUndefined();
+    expect(mgr.getEffectiveAccess("viewer")).toBeUndefined();
+    expect(mgr.getEffectiveAccess("linked")).toBeUndefined();
   });
 
   it("takes the union across multiple paths", () => {
@@ -481,9 +456,6 @@ describe("computeEffectiveAccess", () => {
       expect(access).toEqual(ALL);
       expect(accessIncludesGadget(access, 42)).toBe(true);
     }
-    // A build edge they hand on is still bounded below build.
-    seedCollaborator(storage, "downstream", [userEdge("linked", "build")]);
-    expect(mgr.getEffectiveAccess("downstream")).toEqual(ALL);
   });
 
   it("grants nothing through a cycle unreachable from the owner", () => {
@@ -494,11 +466,15 @@ describe("computeEffectiveAccess", () => {
     expect(mgr.computeEffectiveAccess().size).toBe(0);
     expect(mgr.listCollaborators()).toEqual([]);
 
-    // Rooting one member of the cycle brings the other in, bounded by that root.
+    // Gadget access cannot activate a cycle of otherwise unsupported grants.
     storage.collaborators.put({ profile: profile("a"), addedBy: [
       ...edgesOf(storage, "a"), gadgetEdge(OWNER, 2)] });
     expect(mgr.getEffectiveAccess("a")).toEqual(only(2));
-    expect(mgr.getEffectiveAccess("b")).toEqual(only(2));
+    expect(mgr.getEffectiveAccess("b")).toBeUndefined();
+
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
+    expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
+    expect(mgr.getEffectiveAccess("b")).toEqual(BUILD);
   });
 
   it("drops a severed user and their sole dependents", () => {
@@ -522,7 +498,7 @@ describe("computeEffectiveAccess", () => {
 
   it("uses the link's grant and creator, not the edge's stamped fields", () => {
     let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "creator", [gadgetEdge(OWNER, 1)]);
+    seedCollaborator(storage, "creator", [userEdge(OWNER, "build")]);
     seedLink(storage, "k1", "creator", "use", 1);
     // A forged edge claiming build through a gadget link grants only what the link does.
     seedCollaborator(storage, "a", [keyEdge("k1", "build")]);
@@ -588,20 +564,31 @@ describe("removeCollaborator", () => {
     expect(mgr.getEffectiveAccess("t")).toBeUndefined();
   });
 
-  it("re-adding a removed intermediary restores their downstream shares (undo)", () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [userEdge(OWNER)]);
-    // a has shared with five users.
-    for (let i = 0; i < 5; i++) seedCollaborator(storage, `d${i}`, [userEdge("a")]);
+  it("restores downstream invitations only when re-added with build access", async () => {
+    let { mgr } = makeManager();
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: "build" });
+    mgr.addCollaborator({ caller: collab("bob"), profile: profile("carol"), grant: "build" });
+    mgr.addCollaborator({ caller: owner, profile: profile("carol"), grant: { gadgetId: 2 } });
+    let { key } = await mgr.createShareLink({ caller: collab("bob"), grant: { gadgetId: 1 } });
+    await mgr.redeemShareKey({ rawKey: key, profileId: "dave", fetchProfile: async () => profile("dave") });
+    expect(mgr.getEffectiveAccess("carol")).toEqual(BUILD);
+    expect(mgr.getEffectiveAccess("dave")).toEqual(only(1));
 
-    mgr.removeCollaborator(owner, "a", []);
-    expect(mgr.getEffectiveAccess("a")).toBeUndefined();
-    for (let i = 0; i < 5; i++) expect(mgr.getEffectiveAccess(`d${i}`)).toBeUndefined();
+    mgr.removeCollaborator(owner, "bob", []);
+    expect(mgr.getEffectiveAccess("bob")).toBeUndefined();
+    expect(mgr.getEffectiveAccess("carol")).toEqual(only(2));
+    expect(mgr.getEffectiveAccess("dave")).toBeUndefined();
 
-    // Undo by re-adding a; the five downstream grants were never deleted.
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
-    expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
-    for (let i = 0; i < 5; i++) expect(mgr.getEffectiveAccess(`d${i}`)).toEqual(BUILD);
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: { gadgetId: 1 } });
+    expect(mgr.getEffectiveAccess("bob")).toEqual(only(1));
+    expect(mgr.getEffectiveAccess("carol")).toEqual(only(2));
+    expect(mgr.getEffectiveAccess("dave")).toBeUndefined();
+    expect(ids(mgr.listCollaborators())).toEqual(["bob", "carol"]);
+
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: "build" });
+    expect(mgr.getEffectiveAccess("bob")).toEqual(BUILD);
+    expect(mgr.getEffectiveAccess("carol")).toEqual(BUILD);
+    expect(mgr.getEffectiveAccess("dave")).toEqual(only(1));
   });
 
   it("re-roots a kept dependent under the caller", () => {
@@ -705,14 +692,11 @@ describe("removeCollaborator", () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
     seedCollaborator(storage, "b", [gadgetEdge(OWNER, 1), gadgetEdge(OWNER, 2), gadgetEdge("a", 1)]);
-    // c holds gadget 1 only through b.
-    seedCollaborator(storage, "c", [gadgetEdge("b", 1)]);
 
     let affected = mgr.removeCollaborator(owner, "b", [], 1);
 
     expect(affected).toEqual([
       expect.objectContaining({ profile: profile("b"), oldAccess: only(1, 2), newAccess: only(2) }),
-      expect.objectContaining({ profile: profile("c"), oldAccess: only(1), newAccess: null }),
     ]);
     // Every edge granting gadget 1 is severed, whoever gave it; the gadget 2 grant survives.
     expect(edgesOf(storage, "b")).toEqual([expect.objectContaining({ sharer: OWNER, gadgetId: 2 })]);
@@ -879,9 +863,6 @@ describe("createShareLink", () => {
     await expect(mgr.createShareLink({ caller: collab("a"), grant: { gadgetId: 2 } }))
         .rejects.toThrow("You cannot grant more access than you have.");
     expect(mgr.listShareLinkRecords()).toEqual([]);
-
-    await mgr.createShareLink({ caller: collab("a"), grant: { gadgetId: 1 } });
-    expect(mgr.listShareLinkRecords()).toHaveLength(1);
   });
 });
 
