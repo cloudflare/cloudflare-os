@@ -48,19 +48,48 @@ const typeAheadMatch = (titles: readonly string[], from: number, typed: string):
 };
 
 /** Whether a key is pressed as part of a shortcut such as Ctrl+/ or copy. */
-const hasModifier = (event: KeyboardEvent) => event.altKey || event.ctrlKey || event.metaKey;
+const hasModifier = (event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean }) =>
+  event.altKey || event.ctrlKey || event.metaKey;
+
+/** Whether `target` takes typed text itself, so "/" and the paging keys are its own. */
+const takesText = (target: EventTarget | null) =>
+  target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ||
+  (target instanceof HTMLElement && target.isContentEditable);
 
 /**
- * "/" goes to the search box, selecting what it holds, from anywhere in the picker but a text field.
- * Not with a modifier.
+ * The picker that keys pressed with focus on the page go to: the frame's first enabled one holding
+ * a match for `selector`. A click on a label, or on the blank part of a list, leaves focus there.
  */
-const onPickerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-  const input = event.currentTarget.querySelector<HTMLInputElement>('input[type="search"]');
-  if (event.key !== "/" || hasModifier(event)) return;
-  if (!input || event.target instanceof HTMLInputElement) return;
-  event.preventDefault();
-  input.focus();
-  input.select();
+const pickerForPage = (selector: string) =>
+  [...document.querySelectorAll('[data-hierarchy-picker]:not([aria-disabled="true"])')]
+    .find(picker => picker.querySelector(selector));
+
+/** A page of the list's box: what it shows, less a row, so the row at its edge stays in view. */
+const pageHeight = (box: HTMLElement) =>
+  Math.max(1, box.clientHeight - (box.querySelector<HTMLElement>('[role="option"]')?.offsetHeight ?? 40));
+
+/**
+ * The row PageDown (or PageUp) moves to from `from`, as in a file browser: the last row in full view
+ * (the first, going up), or from that row, the last a page further brings into view. With the
+ * focused row scrolled out of view, the last (or first) in view, so the list stays where it was
+ * scrolled to rather than going back to where focus was left.
+ */
+const pageTarget = (rows: readonly HTMLElement[], from: number, down: boolean, box: HTMLElement): number => {
+  const view = box.getBoundingClientRect();
+  const rects = rows.map(row => row.getBoundingClientRect());
+  const inView = (rect: DOMRect) => rect.top >= view.top - 1 && rect.bottom <= view.bottom + 1;
+  const shown = rects.flatMap((rect, index) => inView(rect) ? [index] : []);
+  if (shown.length === 0) return from;
+  const edge = down ? shown[shown.length - 1] : shown[0];
+  const current = rects[from];
+  if (!current || !inView(current) || (down ? edge > from : edge < from)) return edge;
+  let target = down ? from + 1 : from - 1;
+  if (down) {
+    while (target + 1 < rects.length && rects[target + 1].bottom <= current.top + box.clientHeight + 1) target++;
+  } else {
+    while (target > 0 && rects[target - 1].top >= current.bottom - box.clientHeight - 1) target--;
+  }
+  return target;
 };
 
 // Shared, so a row drawing a default keeps its props from one render to the next.
@@ -106,6 +135,8 @@ const Navigator = (props: HierarchyPickerProps) => {
   // A pre-filled leaf, which its parent's listing may not show: on a later page, or with no path.
   const [prefilledLeaf, setPrefilledLeaf] = useState<Item | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
   const crumbsRef = useRef<HTMLElement>(null);
@@ -278,6 +309,37 @@ const Navigator = (props: HierarchyPickerProps) => {
     crumb.focus();
   });
 
+  // "/" goes to the search box, selecting what it holds, and PageUp/PageDown scroll the list a page,
+  // from anywhere in the picker but a text field (the search box takes the paging keys too), and
+  // with focus on the page, which a click on a label or on the blank part of the list leaves it on.
+  // Rows page by their own handler, and the browser scrolls the box for anything else inside it.
+  // Listened for on the document, since focus on the page is outside the picker.
+  const onDocumentKeyDown = useEffectEvent((event: globalThis.KeyboardEvent) => {
+    const picker = pickerRef.current;
+    const box = boxRef.current;
+    const { target } = event;
+    if (!picker || !box || disabled || event.defaultPrevented || hasModifier(event)) return;
+    const onPage = target === document.body;
+    if (!onPage && !(target instanceof Node && picker.contains(target))) return;
+    const input = picker.querySelector<HTMLInputElement>('input[type="search"]');
+    if (event.key === "/") {
+      if (!input || takesText(target) || (onPage && pickerForPage('input[type="search"]') !== picker)) return;
+      event.preventDefault();
+      input.focus();
+      input.select();
+    } else if (event.key === "PageDown" || event.key === "PageUp") {
+      if (box.contains(target as Node) || (takesText(target) && target !== input)) return;
+      if (onPage && pickerForPage('[role="listbox"]') !== picker) return;
+      event.preventDefault();
+      box.scrollBy({ top: (event.key === "PageDown" ? 1 : -1) * pageHeight(box) });
+    }
+  });
+  useEffect(() => {
+    const listener = (event: globalThis.KeyboardEvent) => onDocumentKeyDown(event);
+    document.addEventListener("keydown", listener);
+    return () => document.removeEventListener("keydown", listener);
+  }, []);
+
   /** As in a file dialog, a choice lasts while it is in view, and only the root's card always is. */
   const leaveView = () => {
     if (value !== null && !rootChosen) props.onChange(null, null);
@@ -351,10 +413,8 @@ const Navigator = (props: HierarchyPickerProps) => {
     if (disabled) return;
     const elements = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
     const index = elements.indexOf(event.target as HTMLElement);
-    const focusRow = (target: number) => elements[Math.max(0, Math.min(target, elements.length - 1))]?.focus();
-    // A page is what the scrolled box shows, less a row, so the row focused stays in view.
-    const page = () => Math.max(1,
-      Math.floor((listRef.current?.parentElement?.clientHeight ?? 0) / (elements[0]?.offsetHeight || 40)) - 1);
+    const rowAt = (target: number) => elements[Math.max(0, Math.min(target, elements.length - 1))];
+    const focusRow = (target: number) => rowAt(target)?.focus();
     switch (event.key) {
       case "ArrowDown":
         focusRow(index + 1);
@@ -363,11 +423,19 @@ const Navigator = (props: HierarchyPickerProps) => {
         focusRow(index - 1);
         break;
       case "PageDown":
-        focusRow(index + page());
+      case "PageUp": {
+        const box = boxRef.current;
+        const row = box && rowAt(pageTarget(elements, index, event.key === "PageDown", box));
+        if (!row) break;
+        // Shown at the edge it was paged to, as a file browser does, rather than in the middle,
+        // where focusing would scroll it, so the next page goes as far.
+        row.focus({ preventScroll: true });
+        const view = box.getBoundingClientRect();
+        const rect = row.getBoundingClientRect();
+        if (rect.bottom > view.bottom) box.scrollTop += rect.bottom - view.bottom;
+        else if (rect.top < view.top) box.scrollTop -= view.top - rect.top;
         break;
-      case "PageUp":
-        focusRow(index - page());
-        break;
+      }
       case "Home":
         focusRow(0);
         break;
@@ -475,8 +543,9 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   return (
     <div
+      ref={pickerRef}
       data-name={name}
-      onKeyDown={onPickerKeyDown}
+      data-hierarchy-picker=""
       aria-disabled={disabled || undefined}
       className={cn("flex flex-col overflow-hidden rounded-lg border border-kumo-line bg-kumo-base",
         disabled && "opacity-60")}
@@ -540,6 +609,7 @@ const Navigator = (props: HierarchyPickerProps) => {
           focus is on Load more, whose focusing scrolls here: a load would take focus to the rows it
           brings, so Tab could not pass the list until it had loaded every page. */}
       <div
+        ref={boxRef}
         className="h-80 overflow-y-auto p-1"
         onScroll={({ currentTarget: box }) => {
           if (fresh?.moreMessage || footerRef.current?.contains(document.activeElement)) return;

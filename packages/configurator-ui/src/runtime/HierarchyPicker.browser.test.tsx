@@ -120,6 +120,9 @@ const boxHeight = (height: number) => {
 const twoPages: LoadItems = async ({ cursor }) =>
   cursor ? { items: FILES.slice(30) } : { items: FILES.slice(0, 30), nextCursor: "page-2" };
 
+/** The first thirty files on one page. */
+const thirtyFiles: LoadItems = async () => ({ items: FILES.slice(0, 30) });
+
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
@@ -982,7 +985,7 @@ describe("keyboard", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("pages by what the list's box shows, less a row, and stops at the ends", async () => {
+  it("pages to the last row in view, then a box's height on, and stops at the ends", async () => {
     await render({ loadItems: async () => ({ items: FILES.slice(0, 12) }) });
     await expect.element(file(0)).toBeVisible();
     boxHeight((file(0).element() as HTMLElement).offsetHeight * 5);
@@ -996,6 +999,68 @@ describe("keyboard", () => {
     await expect.element(file(7)).toHaveFocus();
     await userEvent.keyboard("{PageUp}{PageUp}");
     await expect.element(file(0)).toHaveFocus();
+  });
+
+  it("pages from the rows in view once the focused row is scrolled away, leaving the list where it is", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 30) }) });
+    await expect.element(file(0)).toBeVisible();
+    const rowHeight = (file(0).element() as HTMLElement).offsetHeight;
+    const box = boxHeight(rowHeight * 5);
+    await userEvent.click(file(0));
+    box.scrollTop = rowHeight * 20;
+
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(file(24)).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 20);
+    await userEvent.keyboard("{PageUp}");
+    await expect.element(file(20)).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 20);
+  });
+
+  it("scrolls the list a page from the search box and from the page, where / goes to the search box", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 30) }), searchPlaceholder: "Search Drive" });
+    await expect.element(file(0)).toBeVisible();
+    const rowHeight = (file(0).element() as HTMLElement).offsetHeight;
+    const box = boxHeight(rowHeight * 5);
+    const search = page.getByRole("searchbox", { name: "Search Drive" });
+
+    await userEvent.click(search);
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(search).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 4);
+    await userEvent.keyboard("{PageUp}");
+    expect(box.scrollTop).toBe(0);
+
+    // Where a click on a label or on the blank part of the list leaves focus.
+    (document.activeElement as HTMLElement).blur();
+    await userEvent.keyboard("{PageDown}");
+    expect(box.scrollTop).toBe(rowHeight * 4);
+    await userEvent.keyboard("/");
+    await expect.element(search).toHaveFocus();
+  });
+
+  it("gives keys pressed with nothing focused to the first picker that is not disabled", async () => {
+    container = document.body.appendChild(document.createElement("div"));
+    root = createRoot(container);
+    await act(() => root!.render(<>
+      <Harness onChange={vi.fn()} loadItems={thirtyFiles} searchPlaceholder="Search first" disabled />
+      <Harness onChange={vi.fn()} loadItems={thirtyFiles} searchPlaceholder="Search second" />
+    </>));
+    const [first, second] = [list().nth(0), list().nth(1)];
+    const row = second.getByRole("option", { name: "File 0", exact: true });
+    await expect.element(row).toBeVisible();
+    const rowHeight = (row.element() as HTMLElement).offsetHeight;
+    const [firstBox, secondBox] = [first, second].map(listbox => {
+      const box = listbox.element().parentElement!;
+      Object.assign(box.style, { height: `${rowHeight * 5}px`, overflowX: "hidden", overflowY: "auto" });
+      return box;
+    });
+
+    await userEvent.keyboard("{PageDown}");
+    expect(secondBox.scrollTop).toBe(rowHeight * 4);
+    expect(firstBox.scrollTop).toBe(0);
+    await userEvent.keyboard("/");
+    await expect.element(page.getByRole("searchbox", { name: "Search second" })).toHaveFocus();
   });
 
   it("moves focus into a container opened by a click or a quick run of keys", async () => {
