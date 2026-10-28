@@ -450,7 +450,7 @@ const Navigator = (props: HierarchyPickerProps) => {
     </div>
   );
 
-  const bar = "flex min-h-11 items-center gap-2 border-b border-kumo-line p-2";
+  const bar = "flex items-center gap-2 border-b border-kumo-line px-2";
 
   return (
     <div
@@ -461,17 +461,18 @@ const Navigator = (props: HierarchyPickerProps) => {
         disabled && "opacity-60")}
     >
       {root.selectable === true && (
-        <div className="border-b border-kumo-line p-2">
+        <div className="border-b border-kumo-line p-1">
           <button
             type="button"
             aria-pressed={rootChosen}
             disabled={disabled}
             onClick={() => select(asContainer(root))}
+            // Without a border, and chosen as a row is, with its radio and icon in line with the rows'.
             className={cn(
-              "flex w-full items-center gap-3 rounded-lg border p-3 text-left text-sm outline-none",
+              "flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm outline-none",
               "focus-visible:ring-2 focus-visible:ring-kumo-focus",
-              rootChosen ? "border-kumo-brand bg-kumo-tint text-kumo-strong" : "border-kumo-hairline",
-              !disabled && "cursor-pointer hover:bg-kumo-tint",
+              rootChosen && "bg-kumo-tint text-kumo-strong",
+              !disabled && "group/choice cursor-pointer hover:bg-kumo-tint",
             )}
           >
             <ChoiceBody
@@ -485,7 +486,7 @@ const Navigator = (props: HierarchyPickerProps) => {
       )}
       {hasTabs ? (
         <>
-          <div className={bar}>
+          <div className={cn(bar, "py-2")}>
             {/* Kumo's Tabs cannot be disabled; `inert` keeps a disabled picker's out of reach. */}
             <div inert={disabled || undefined} className="min-w-0">
               <Tabs
@@ -499,15 +500,15 @@ const Navigator = (props: HierarchyPickerProps) => {
             {searchBox}
           </div>
           {/* Kept while searching, so the list does not move. */}
-          <div className={bar}>
+          <div className={cn(bar, "min-h-8")}>
             {text === "" ? breadcrumb : (
-              <span aria-hidden="true" className="min-w-0 flex-1 px-1 text-sm text-kumo-subtle">Search results</span>
+              <span aria-hidden="true" className="min-w-0 flex-1 px-1 text-xs text-kumo-subtle">Search results</span>
             )}
             {shownCount}
           </div>
         </>
       ) : (
-        <div className={bar}>
+        <div className={cn(bar, "min-h-10 py-1.5")}>
           {!searchOpen && <>{breadcrumb}{shownCount}</>}
           {searchBox}
         </div>

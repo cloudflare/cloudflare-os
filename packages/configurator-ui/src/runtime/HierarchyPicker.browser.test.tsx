@@ -763,7 +763,7 @@ describe("loading", () => {
     expect(list().element().textContent).not.toContain("\u202E");
   });
 
-  it("shows a node's badge and meta on the line under its title, stripped of formatting characters", async () => {
+  it("shows a node's badge after its title and its meta after its subtitle, stripped of formatting characters", async () => {
     const loadItems = vi.fn<LoadItems>(async () => ({
       items: [{ ...budget, badge: "Confidential", meta: "2 days ago\u202E" }],
     }));

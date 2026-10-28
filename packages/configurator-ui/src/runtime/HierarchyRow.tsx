@@ -36,30 +36,44 @@ const Title = ({ title }: { title: string }) => {
 
 /**
  * What the root's card and every row show: a radio's look (or room for one, so icons line up), an
- * icon and two lines. The look is only a cue; `aria-selected` or `aria-pressed` says it.
+ * icon on a raised tile and two lines. The look is only a cue; `aria-selected` or `aria-pressed`
+ * says it. An unchosen ring strengthens while the nearest `group/choice` ancestor is hovered.
  */
 export const ChoiceBody = ({ mark, icon, title, subtitle, badge, meta }: ChoiceBodyProps) => (
   <>
+    {/* A ring, and a dot inside it when chosen, in Kumo's contrast colour as its own Radio is:
+        near-black in light mode, white in dark. The dot is the radio's own fill showing through an
+        inset ring of the background, so it stays centred however the browser rounds the border
+        (1.5px draws as 1px at 1x); a 3px gap keeps its edges on whole pixels at 1x and 2x. Unchosen,
+        the ring is Kumo's interactive border and takes the subtle text colour while its row is
+        hovered, which shows against a hovered row in dark mode as the inactive colour does not. */}
     <span
-      className={cn("flex size-4 shrink-0 items-center justify-center rounded-full",
-        mark === "checked" && "bg-kumo-brand ring ring-kumo-brand",
-        mark === "unchecked" && "bg-kumo-base ring ring-kumo-line")}
+      className={cn("size-4 shrink-0 rounded-full",
+        mark !== "none" && "border-[1.5px]",
+        mark === "checked" && "border-kumo-contrast bg-kumo-contrast inset-ring-3 inset-ring-kumo-base",
+        mark === "unchecked" && "border-kumo-interact bg-kumo-base group-hover/choice:border-(color:--text-color-kumo-subtle)")}
+    />
+    {/* A raised tile without a border: a translucent fill of the icon's grey, which shows on a hovered
+        or chosen row as on a plain one, and Kumo's smallest shadow. */}
+    <span
+      aria-hidden="true"
+      className={cn("flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md",
+        "bg-current/10 text-kumo-subtle shadow-xs [&>svg]:size-4.5")}
     >
-      {mark === "checked" && <span className="size-2 rounded-full bg-kumo-base" />}
-    </span>
-    <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center overflow-hidden text-kumo-subtle [&>svg]:size-5">
       {icon}
     </span>
-    {/* The title has the first line to itself; the badge, the subtitle and the meta share the second. */}
+    {/* The badge ends the title's line and the meta the next, so they line up down the list. */}
     <span className="flex min-w-0 flex-1 flex-col">
-      <Title title={title} />
-      {(badge || subtitle || meta) && (
+      <span className="flex min-w-0 items-center gap-2">
+        <Title title={title} />
+        {badge && (
+          <Badge variant="secondary" className="ml-auto min-w-0 max-w-1/3 py-0">
+            <span className="truncate">{badge}</span>
+          </Badge>
+        )}
+      </span>
+      {(subtitle || meta) && (
         <span className="flex min-w-0 items-center gap-2 text-xs text-kumo-subtle">
-          {badge && (
-            <Badge variant="secondary" className="min-w-0 max-w-1/2 py-0">
-              <span className="truncate">{badge}</span>
-            </Badge>
-          )}
           <span className="min-w-0 flex-1 truncate">{subtitle}</span>
           {meta && <span className="max-w-1/3 shrink-0 truncate tabular-nums">{meta}</span>}
         </span>
@@ -100,7 +114,7 @@ export const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate,
       className={cn(
         "flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm outline-none",
         "focus-visible:ring-2 focus-visible:ring-kumo-focus",
-        inert ? "cursor-default" : "cursor-pointer hover:bg-kumo-tint",
+        inert ? "cursor-default" : "group/choice cursor-pointer hover:bg-kumo-tint",
         action === "none" && "text-kumo-inactive",
         selected && "bg-kumo-tint text-kumo-strong",
       )}
@@ -125,7 +139,7 @@ export const PlaceholderRows = () => (
     {PLACEHOLDER_WIDTHS.map(([title, subtitle]) => (
       <div key={title + subtitle} className="flex min-h-10 items-center gap-3 px-2 py-1.5">
         <span className="size-4 shrink-0" />
-        <span className="size-5 shrink-0 animate-pulse rounded bg-kumo-fill" />
+        <span className="size-7 shrink-0 animate-pulse rounded-md bg-kumo-fill" />
         <span className="flex flex-1 flex-col gap-1.5">
           <span className={cn("h-3 animate-pulse rounded bg-kumo-fill", title)} />
           <span className={cn("h-2.5 animate-pulse rounded bg-kumo-fill", subtitle)} />

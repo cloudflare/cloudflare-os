@@ -193,7 +193,7 @@ export type ConfiguratorUIHierarchyItem = {
    */
   icon?: string;
   subtitle?: string;
-  /** A short label under the title, before the subtitle, such as a classification or a state. */
+  /** A short label at the end of the title's line, such as a classification or a state. */
   badge?: string;
   /** A short detail at the end of the line under the title, such as when the node changed or its size. */
   meta?: string;

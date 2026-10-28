@@ -18,7 +18,7 @@ type BreadcrumbProps = {
 /** A trail longer than this folds all but its last two containers behind a button. */
 const FOLD_AFTER = 3;
 
-const separator = <CaretRightIcon aria-hidden="true" size={12} className="shrink-0 text-kumo-subtle" />;
+const separator = <CaretRightIcon aria-hidden="true" size={10} className="shrink-0 text-kumo-inactive" />;
 
 /** Where the picker is, from the tab or root down, each step a button that goes back there. */
 export const Breadcrumb = ({ top, location: { trail, detached }, disabled, navRef, onGo }: BreadcrumbProps) => {
@@ -39,7 +39,7 @@ export const Breadcrumb = ({ top, location: { trail, detached }, disabled, navRe
         ref={ref}
         variant="ghost"
         size="xs"
-        className={cn("max-w-48 truncate", isCurrent && "text-kumo-strong")}
+        className={cn("max-w-48 truncate px-1", isCurrent && "font-medium text-kumo-strong")}
         aria-current={isCurrent ? "location" : undefined}
         disabled={disabled}
         onClick={() => onGo(depth)}
@@ -49,7 +49,7 @@ export const Breadcrumb = ({ top, location: { trail, detached }, disabled, navRe
     );
   };
   return (
-    <nav ref={navRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 text-sm">
+    <nav ref={navRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center text-xs">
       {/* `aria-disabled` at the top rather than `disabled`, which would drop the focus of a user who
           just went up there; out of the tab order there, since it leads nowhere. */}
       <Button
