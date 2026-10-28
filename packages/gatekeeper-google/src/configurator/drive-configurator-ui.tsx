@@ -197,18 +197,18 @@ const toAncestor = (
   ({ id, title, selectable: listable === true && patternOf(id, accepted) !== undefined, choice: CONTAINER_CHOICE });
 
 /**
- * Docs, Sheets and Slides files a listing or lookup showed to be native. Choosing one connects it as
- * it is without asking Drive again, since `inspectFile` decides from that same type.
+ * Docs, Sheets and Slides files the latest listing or lookup of each showed to be native. Choosing
+ * one connects it as it is without asking Drive again, since `inspectFile` decides from that same type.
  */
 const natives = new Set<string>();
 
 /**
- * A folder whose children this account cannot list cannot be opened or bound, only seen. Notes a
- * native Docs, Sheets or Slides file in {@link natives}.
+ * A folder whose children this account cannot list cannot be opened or bound, only seen. Records in
+ * {@link natives} whether a Docs, Sheets or Slides file is native.
  */
 const toItem = (node: DriveNode, accepted: readonly string[] | undefined): ConfiguratorUIHierarchyItem => {
   const editor = editorOf(node.id);
-  if (editor && node.mimeType === EDITORS[editor].mimeType) natives.add(node.id);
+  if (editor) natives[node.mimeType === EDITORS[editor].mimeType ? "add" : "delete"](node.id);
   const container = node.kind !== "file" && (node.kind !== "folder" || node.listable === true);
   return {
     id: node.id,

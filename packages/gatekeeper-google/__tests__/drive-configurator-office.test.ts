@@ -518,13 +518,18 @@ describe("the Drive picker's Office flow", () => {
     expect(frame.ready()).toBe(true);
   });
 
+  const NATIVE = "application/vnd.google-apps.spreadsheet";
+  const OFFICE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   it.each([
-    ["connects a listed native file without asking Drive", "application/vnd.google-apps.spreadsheet", true],
-    ["still checks a listed Office file", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", false],
-  ])("%s", async (_, mimeType, native) => {
+    ["connects a listed native file without asking Drive", [NATIVE], true],
+    ["still checks a listed Office file", [OFFICE], false],
+    ["checks a file again once a later listing shows it is no longer native", [NATIVE, OFFICE], false],
+  ])("%s", async (_, mimeTypes, native) => {
     const frame = await open();
-    frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [{ id: "sheets:file-1", title: "Budget", kind: "file", mimeType }] });
-    await frame.list("folder:A");
+    for (const mimeType of mimeTypes) {
+      frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [{ id: "sheets:file-1", title: "Budget", kind: "file", mimeType }] });
+      await frame.list("folder:A");
+    }
 
     frame.choose("sheets:file-1");
 
