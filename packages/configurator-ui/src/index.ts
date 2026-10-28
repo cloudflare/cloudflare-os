@@ -121,6 +121,11 @@ export type RadioCardsProps = {
   value?: string | null;
   options: Array<{ value: string; title: string; description: string }>;
   onChange(value: string): void;
+  /**
+   * One bordered list of single-line rows, each its radio, its title and then its description, for
+   * a list of like options such as the sites of one account. Cards stacked apart otherwise.
+   */
+  compact?: boolean;
 };
 
 /** Props of {@link CheckboxList}. */
@@ -364,7 +369,7 @@ export function TextInput(_props: TextInputProps): unknown {
   throw new Error("TextInput is provided by the configurator UI sandbox runtime.");
 }
 
-/** Card-style single-select component provided by the sandbox runtime. */
+/** Single-select cards, or a compact list of rows, provided by the sandbox runtime. */
 export function RadioCards(_props: RadioCardsProps): unknown {
   throw new Error("RadioCards is provided by the configurator UI sandbox runtime.");
 }

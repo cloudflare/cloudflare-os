@@ -313,6 +313,7 @@ function picker(context: Context, sites: Site[]) {
   return <Fragment>
     {sites.length > 1 ? <Field label="Site">
       <RadioCards
+        compact
         value={site.ref}
         options={sites.map(candidate => ({ value: candidate.ref, title: candidate.name, description: candidate.host }))}
         onChange={next => {
