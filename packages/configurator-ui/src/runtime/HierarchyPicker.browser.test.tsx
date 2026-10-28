@@ -865,6 +865,26 @@ describe("search", () => {
     await expect.element(search).toHaveValue("");
     await expect.element(option("Reports")).toBeVisible();
   });
+
+  it("jumps to the search box with / from anywhere in the picker, selecting what it holds, but types / in it", async () => {
+    await render({ loadItems: source({ q: [q1] }), searchPlaceholder: "Search Drive" });
+    const search = page.getByRole("searchbox", { name: "Search Drive" });
+    await userEvent.fill(search, "q");
+    await expect.element(option("Q1.pdf")).toBeVisible();
+
+    await userEvent.click(option("Q1.pdf"));
+    await userEvent.keyboard("/");
+    await expect.element(search).toHaveFocus();
+    await userEvent.keyboard("a/b");
+    await expect.element(search).toHaveValue("a/b");
+
+    await userEvent.click(allOf());
+    await userEvent.keyboard("/");
+    await expect.element(search).toHaveFocus();
+    await expect.element(search).toHaveValue("a/b");
+    const input = search.element() as HTMLInputElement;
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 3]);
+  });
 });
 
 describe("keyboard", () => {

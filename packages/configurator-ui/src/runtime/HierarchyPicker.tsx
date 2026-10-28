@@ -46,6 +46,19 @@ const typeAheadMatch = (titles: readonly string[], from: number, typed: string):
 };
 
 /**
+ * "/" goes to the search box, selecting what it holds, from anywhere in the picker but a text field.
+ * Not with a modifier, as in shortcuts such as Ctrl+/.
+ */
+const onPickerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+  const input = event.currentTarget.querySelector<HTMLInputElement>('input[type="search"]');
+  if (event.key !== "/" || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!input || event.target instanceof HTMLInputElement) return;
+  event.preventDefault();
+  input.focus();
+  input.select();
+};
+
+/**
  * Drill-down navigator choosing one node of a hierarchy: the root, a container or a leaf. Renders
  * inline rather than in a popup, which the frame would clip. The root is chosen from its card, an
  * open container from the row its listing starts with and a leaf from its own row. As in a file
@@ -345,8 +358,9 @@ const Navigator = (props: HierarchyPickerProps) => {
         goTo(location.trail.length - 1, true);
         break;
       default: {
-        // A printable key, but not Space, which chooses, nor a shortcut such as copy.
-        if (event.key.length !== 1 || event.key === " " || event.altKey || event.ctrlKey || event.metaKey) return;
+        // A printable key, but not Space, which chooses, "/", which goes to the search box, nor a
+        // shortcut such as copy.
+        if (event.key.length !== 1 || " /".includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
         const { typed, at } = typeAhead.current;
         const next = (event.timeStamp - at < TYPEAHEAD_MS ? typed : "") + event.key.toLocaleLowerCase();
         typeAhead.current = { typed: next, at: event.timeStamp };
@@ -441,6 +455,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   return (
     <div
       data-name={name}
+      onKeyDown={onPickerKeyDown}
       aria-disabled={disabled || undefined}
       className={cn("flex flex-col overflow-hidden rounded-lg border border-kumo-line bg-kumo-base",
         disabled && "opacity-60")}
