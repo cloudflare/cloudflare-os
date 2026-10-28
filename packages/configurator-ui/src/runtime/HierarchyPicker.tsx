@@ -58,6 +58,9 @@ const onPickerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
   input.select();
 };
 
+// Shared, so a row drawing a default keeps its props from one render to the next.
+const DEFAULT_ICONS = { container: <FolderIcon size={20} />, leaf: <FileIcon size={20} /> };
+
 /**
  * Drill-down navigator choosing one node of a hierarchy: the root, a container or a leaf. Renders
  * inline rather than in a popup, which the frame would clip. The root is chosen from its card, an
@@ -99,6 +102,9 @@ const Navigator = (props: HierarchyPickerProps) => {
   const listRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
   const crumbsRef = useRef<HTMLElement>(null);
+  // Rows are memoized, so the handler they share keeps its identity and acts on the latest render.
+  const activate = useRef((_id: string) => {});
+  const [activateRow] = useState(() => (id: string) => activate.current(id));
   // Where focus goes once that location's listing is shown (the row named, or else the first),
   // after the control that had it went away with what it did.
   const focusTarget = useRef<{ location: string; row: string | null } | null>(null);
@@ -294,6 +300,12 @@ const Navigator = (props: HierarchyPickerProps) => {
       ? locationOf(item, tabs, location.tab)
       : { ...location, trail: [...location.trail, asAncestor(item)] },
     true);
+  activate.current = id => {
+    const item = rows.find(row => row.id === id);
+    if (scope?.id === id) select(scope);
+    else if (item?.kind === "container") openContainer(item);
+    else if (item) select(item);
+  };
 
   const retry = () => {
     focusTarget.current = { location: locationId, row: null };
@@ -395,7 +407,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   const iconFor = (icon: string | undefined, kind: Item["kind"]): ReactNode => {
     const custom = icon && icons && Object.hasOwn(icons, icon) ? icons[icon] : undefined;
     if (isValidElement(custom)) return custom;
-    return kind === "container" ? <FolderIcon size={20} /> : <FileIcon size={20} />;
+    return DEFAULT_ICONS[kind];
   };
 
   const count = `${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`;
@@ -547,6 +559,7 @@ const Navigator = (props: HierarchyPickerProps) => {
             <>
               <Row
                 key={scope.id}
+                id={scope.id}
                 title={scopeTitle ?? scope.title}
                 subtitle={scope.choice?.subtitle}
                 icon={iconFor(scope.icon, "container")}
@@ -554,8 +567,8 @@ const Navigator = (props: HierarchyPickerProps) => {
                 selected={value === scope.id}
                 disabled={disabled}
                 tabbable={focusId === scope.id}
-                onFocus={() => setActiveId(scope.id)}
-                onActivate={() => select(scope)}
+                onFocus={setActiveId}
+                onActivate={activateRow}
               />
               <div aria-hidden="true" className="mx-2 my-1 border-t border-kumo-line" />
             </>
@@ -563,6 +576,7 @@ const Navigator = (props: HierarchyPickerProps) => {
           {rows.map(item => (
             <Row
               key={item.id}
+              id={item.id}
               title={item.title}
               subtitle={rowSubtitle(item, query !== "")}
               badge={item.badge}
@@ -572,8 +586,8 @@ const Navigator = (props: HierarchyPickerProps) => {
               selected={showsChoice(item)}
               disabled={disabled}
               tabbable={focusId === item.id}
-              onFocus={() => setActiveId(item.id)}
-              onActivate={() => item.kind === "container" ? openContainer(item) : select(item)}
+              onFocus={setActiveId}
+              onActivate={activateRow}
             />
           ))}
         </div>

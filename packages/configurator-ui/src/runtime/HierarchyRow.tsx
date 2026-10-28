@@ -1,7 +1,7 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretRightIcon } from "@phosphor-icons/react";
-import type { KeyboardEvent, ReactNode } from "react";
+import { memo, type KeyboardEvent, type ReactNode } from "react";
 
 type ChoiceBodyProps = {
   mark: "checked" | "unchecked" | "none";
@@ -83,24 +83,30 @@ export const ChoiceBody = ({ mark, icon, title, subtitle, badge, meta }: ChoiceB
 );
 
 type RowProps = Omit<ChoiceBodyProps, "mark"> & {
+  id: string;
   /** What activating the row does; `none` for a node that can be neither chosen nor opened. */
   action: "choose" | "open" | "none";
   selected: boolean;
   disabled: boolean;
   /** Whether the list's single tab stop is on this row. */
   tabbable: boolean;
-  onFocus(): void;
-  onActivate(): void;
+  onFocus(id: string): void;
+  onActivate(id: string): void;
 };
 
-/** One option of the list. Moving between rows is the list's job; activating one is the row's. */
-export const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate, ...body }: RowProps) => {
+/**
+ * One option of the list. Moving between rows is the list's job; activating one is the row's.
+ * Memoized, since every move of focus and every key typed in the search box redraws the picker, and
+ * a long listing redrawn whole lags behind the keys: the list passes handlers that keep their
+ * identity and take the row's id, and an icon element that does too.
+ */
+export const Row = memo(function Row({ id, action, selected, disabled, tabbable, onFocus, onActivate, ...body }: RowProps) {
   const inert = disabled || action === "none";
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const activates = event.key === "Enter" || event.key === " " || (event.key === "ArrowRight" && action === "open");
     if (inert || !activates) return;
     event.preventDefault();
-    onActivate();
+    onActivate(id);
   };
   return (
     <div
@@ -108,11 +114,13 @@ export const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate,
       aria-selected={selected}
       aria-disabled={inert || undefined}
       tabIndex={!disabled && tabbable ? 0 : -1}
-      onFocus={onFocus}
-      onClick={inert ? undefined : onActivate}
+      onFocus={() => onFocus(id)}
+      onClick={inert ? undefined : () => onActivate(id)}
       onKeyDown={onKeyDown}
       className={cn(
-        "flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm outline-none",
+        // Each row a layout and paint boundary, so moving focus down a long listing repaints the rows
+        // it changed rather than every row.
+        "flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm outline-none contain-content",
         "focus-visible:ring-2 focus-visible:ring-kumo-focus",
         inert ? "cursor-default" : "group/choice cursor-pointer hover:bg-kumo-tint",
         action === "none" && "text-kumo-inactive",
@@ -126,7 +134,7 @@ export const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate,
       </span>
     </div>
   );
-};
+});
 
 // Varied, as names are; fixed, so they do not flicker from one render to the next.
 const PLACEHOLDER_WIDTHS = [
