@@ -43,6 +43,7 @@ async function open(accepted?: string[]) {
   let values: Values = { ...spec.initial };
   const ui = {
     inspectFile: vi.fn(async (_kind: string, _fileId: string): Promise<unknown> => ({ type: "native" })),
+    listDriveNodes: vi.fn(async (_parentId: string): Promise<unknown> => ({ nodes: [] })),
     getDriveNode: vi.fn(async (_id: string): Promise<unknown> => null),
     hasConversionAccess: vi.fn(async () => false),
     convertFile: vi.fn(async (_kind: string, _fileId: string, _opts?: { reuse?: string }): Promise<unknown> =>
@@ -70,6 +71,7 @@ async function open(accepted?: string[]) {
     url: () => spec.resourceUrl({ values, acceptedResourceUrlPatterns: accepted }),
     choose: (target: string | null) => find("HierarchyPicker")[0].props.onChange(target),
     loadItem: (id: string) => find("HierarchyPicker")[0].props.loadItem(id),
+    list: (parentId: string) => find("HierarchyPicker")[0].props.loadItems({ parentId, query: "", cursor: null }),
     notices: () => find("Notice").map(node => ({ tone: node.props.tone, text: text(node) })),
     action: () => find("Notice").map(node => node.props.action).find(Boolean),
     button: (label: string | RegExp) => find("Button").find(node =>
@@ -488,7 +490,46 @@ describe("the Drive picker's Office flow", () => {
     frame.choose("sheets:source-1");
 
     expect(frame.ready()).toBe(false);
+  });
+
+  it("says it is checking a file only once the check is slow", async () => {
+    const frame = await open();
+    let answer!: (inspection: unknown) => void;
+    frame.ui.inspectFile.mockReturnValueOnce(new Promise(resolve => { answer = resolve; }));
+
+    frame.choose("sheets:source-1");
+    expect(frame.notices()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(frame.notices()).toEqual([{ tone: undefined, text: "Checking the file…" }]);
+
+    answer({ type: "native" });
+    await settle();
+    expect(frame.notices()).toEqual([]);
+  });
+
+  it("never says it is checking a file once a quick check has settled", async () => {
+    const frame = await open();
+
+    frame.choose("sheets:native-1");
+    await settle();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(frame.notices()).toEqual([]);
+    expect(frame.ready()).toBe(true);
+  });
+
+  it.each([
+    ["connects a listed native file without asking Drive", "application/vnd.google-apps.spreadsheet", true],
+    ["still checks a listed Office file", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", false],
+  ])("%s", async (_, mimeType, native) => {
+    const frame = await open();
+    frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [{ id: "sheets:file-1", title: "Budget", kind: "file", mimeType }] });
+    await frame.list("folder:A");
+
+    frame.choose("sheets:file-1");
+
+    expect(frame.ready()).toBe(native);
+    expect(frame.ui.inspectFile).toHaveBeenCalledTimes(native ? 0 : 1);
   });
 
   it("drops an inspection that a newer choice overtook", async () => {
