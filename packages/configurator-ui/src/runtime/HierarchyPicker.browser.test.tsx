@@ -105,6 +105,16 @@ const crumb = (name: string) => page.getByRole("navigation", { name: "Location" 
 const crumbs = () => page.getByRole("navigation", { name: "Location" });
 const allOf = (title = "My Drive") => page.getByRole("button", { name: `All of ${title}`, exact: false });
 const tab = (name: string) => page.getByRole("tab", { name });
+const file = (index: number) => page.getByRole("option", { name: `File ${index}`, exact: true });
+
+const FILES = Array.from({ length: 60 }, (_, index): Item => ({ id: `file-${index}`, title: `File ${index}`, kind: "leaf" }));
+
+/** Gives the list's box the fixed height it has in the frame, whose stylesheet the suite runs without. */
+const boxHeight = (height: number) => {
+  const box = list().element().parentElement!;
+  Object.assign(box.style, { height: `${height}px`, overflowX: "hidden", overflowY: "auto" });
+  return box;
+};
 
 afterEach(() => {
   act(() => root?.unmount());
@@ -898,6 +908,41 @@ describe("keyboard", () => {
     await expect.element(list()).toHaveAccessibleName("My Drive");
     await expect.element(option("Reports")).toHaveFocus();
     expect(onChange).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["b", "Beta.pdf"],
+    ["bbb", "Bravo"],
+    ["bbbb", "Beta.pdf"],
+    ["bu", "Budget.xlsx"],
+    ["x", "Alpha"],
+  ])("moves from the first row with %s to %s by type-ahead", async (keys, target) => {
+    const titles = ["Alpha", "Beta.pdf", "Budget.xlsx", "Bravo"];
+    const onChange = await render({
+      loadItems: async () => ({ items: titles.map(title => ({ id: title, title, kind: "leaf" as const })) }),
+    });
+    await userEvent.click(option("Alpha"));
+    onChange.mockClear();
+
+    await userEvent.keyboard(keys);
+    await expect.element(page.getByRole("option", { name: target })).toHaveFocus();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("pages by what the list's box shows, less a row, and stops at the ends", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 12) }) });
+    await expect.element(file(0)).toBeVisible();
+    boxHeight((file(0).element() as HTMLElement).offsetHeight * 5);
+    await userEvent.click(file(0));
+
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(file(4)).toHaveFocus();
+    await userEvent.keyboard("{PageDown}{PageDown}");
+    await expect.element(file(11)).toHaveFocus();
+    await userEvent.keyboard("{PageUp}");
+    await expect.element(file(7)).toHaveFocus();
+    await userEvent.keyboard("{PageUp}{PageUp}");
+    await expect.element(file(0)).toHaveFocus();
   });
 
   it("moves focus into a container opened by a click or a quick run of keys", async () => {

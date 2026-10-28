@@ -29,6 +29,22 @@ type Listing = Page & {
   moreMessage?: string;
 };
 
+/** How long a pause in typing starts a new type-ahead. */
+const TYPEAHEAD_MS = 700;
+
+/**
+ * The row type-ahead moves to from `from`: the next one starting with a letter pressed again and
+ * again, else the first from `from` on starting with what was typed. Wraps around.
+ */
+const typeAheadMatch = (titles: readonly string[], from: number, typed: string): number | undefined => {
+  const [first = ""] = typed;
+  const repeated = [...typed].every(letter => letter === first);
+  const needle = repeated ? first : typed;
+  const start = repeated ? from + 1 : Math.max(0, from);
+  return Array.from(titles, (_, step) => (start + step) % titles.length)
+    .find(at => titles[at]?.toLocaleLowerCase().startsWith(needle));
+};
+
 /**
  * Drill-down navigator choosing one node of a hierarchy: the root, a container or a leaf. Renders
  * inline rather than in a popup, which the frame would clip. The root is chosen from its card, an
@@ -77,6 +93,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   const focusCrumb = useRef(false);
   // Bumped whenever the listing a response would update is replaced, so a late page is dropped.
   const generation = useRef(0);
+  const typeAhead = useRef({ typed: "", at: 0 });
 
   const forgetPrefill = () => {
     setPendingPrefill(null);
@@ -162,6 +179,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   // The open container, offered as a choice of its own. Not under a search, whose results are not
   // its contents.
   const scope = current && current.selectable !== false && !query ? asContainer(current) : null;
+  const scopeTitle = scope && (scope.choice?.title ?? `Everything in ${scope.title}`);
   // Shown above the list: why the open container is not offered there, and what the source notes.
   const notes = [...new Set([!query && current?.selectable === false && current.unselectableReason, fresh?.notice]
     .flatMap(note => note || []))];
@@ -245,6 +263,7 @@ const Navigator = (props: HierarchyPickerProps) => {
     if (disabled) return;
     leaveView();
     forgetPrefill();
+    typeAhead.current = { typed: "", at: 0 };
     setLocation(next);
     clearSearch();
     // The row that started it goes with the listing it was in.
@@ -295,9 +314,12 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
-    const rows = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
-    const index = rows.indexOf(event.target as HTMLElement);
-    const focusRow = (target: number) => rows[Math.max(0, Math.min(target, rows.length - 1))]?.focus();
+    const options = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
+    const index = options.indexOf(event.target as HTMLElement);
+    const focusRow = (target: number) => options[Math.max(0, Math.min(target, options.length - 1))]?.focus();
+    // A page is what the scrolled box shows, less a row, so the row focused stays in view.
+    const page = () => Math.max(1,
+      Math.floor((listRef.current?.parentElement?.clientHeight ?? 0) / (options[0]?.offsetHeight || 40)) - 1);
     switch (event.key) {
       case "ArrowDown":
         focusRow(index + 1);
@@ -305,19 +327,33 @@ const Navigator = (props: HierarchyPickerProps) => {
       case "ArrowUp":
         focusRow(index - 1);
         break;
+      case "PageDown":
+        focusRow(index + page());
+        break;
+      case "PageUp":
+        focusRow(index - page());
+        break;
       case "Home":
         focusRow(0);
         break;
       case "End":
-        focusRow(rows.length - 1);
+        focusRow(options.length - 1);
         break;
       case "ArrowLeft":
       case "Backspace":
         if (location.trail.length === 0) return;
         goTo(location.trail.length - 1, true);
         break;
-      default:
-        return;
+      default: {
+        // A printable key, but not Space, which chooses, nor a shortcut such as copy.
+        if (event.key.length !== 1 || event.key === " " || event.altKey || event.ctrlKey || event.metaKey) return;
+        const { typed, at } = typeAhead.current;
+        const next = (event.timeStamp - at < TYPEAHEAD_MS ? typed : "") + event.key.toLocaleLowerCase();
+        typeAhead.current = { typed: next, at: event.timeStamp };
+        const titles = [...scopeTitle ? [scopeTitle] : [], ...rows.map(({ title }) => title)];
+        const match = typeAheadMatch(titles, index, next);
+        if (match !== undefined) focusRow(match);
+      }
     }
     event.preventDefault();
   };
@@ -485,7 +521,7 @@ const Navigator = (props: HierarchyPickerProps) => {
             <>
               <Row
                 key={scope.id}
-                title={scope.choice?.title ?? `Everything in ${scope.title}`}
+                title={scopeTitle ?? scope.title}
                 subtitle={scope.choice?.subtitle}
                 icon={iconFor(scope.icon, "container")}
                 action="choose"
