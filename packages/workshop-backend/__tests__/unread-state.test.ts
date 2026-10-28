@@ -234,11 +234,14 @@ describe("local counts and explicit read boundaries", () => {
       using source = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser");
       await instance.getUnreadSummary(); await instance.getUnreadSummary();
       await instance.markChatRead(receipt(fixture, 12));
-      await instance.markChatUnread(fixture.workspaceId, 1, 13);
+      expect(await instance.markChatUnread(fixture.workspaceId, 1, 13)).toBe(false);
       expect(put).not.toHaveBeenCalled(); expect(source).not.toHaveBeenCalled();
       await expect(instance.markChatRead(receipt(fixture, 13))).rejects.toThrow("Invalid timeline sequence");
     });
     expect(await cursor(fixture)).toMatchObject({readThroughSequence: 12, unreadCount: 0});
+    expect(await fixture.user.markChatUnread(fixture.workspaceId, 1, 1)).toBe(true);
+    expect(await fixture.user.markChatUnread(fixture.workspaceId, 1, 1)).toBe(false);
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 1});
   });
 
   it("applies read/unread in processing order across eviction, without tokens", async () => {

@@ -142,12 +142,13 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await owner.markChatsRead([receipt(initial)]);
   expect(await owner.getUnreadSummary()).toMatchObject({ unreadChatCount: 1, unreadMessageCount: 1 });
   await owner.markChatRead(receipt(next));
-  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence);
+  expect(await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence)).toBe(true);
   await owner.markChatRead(receipt(next)); // A later-processed read clears the manual unread.
   await waitFor("the later read clearing both devices", async () =>
     first.state?.unreadMessageCount === 0 && second.state?.unreadMessageCount === 0 ? true : null,
   );
-  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence);
+  expect(await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence)).toBe(true);
+  expect(await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence)).toBe(false);
   await waitFor("the manual unread boundary on both devices", async () =>
     first.state?.chats[0]?.readThroughSequence === initial.latestSequence - 1 &&
     second.state?.chats[0]?.readThroughSequence === initial.latestSequence - 1 ? true : null,

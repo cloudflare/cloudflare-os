@@ -671,9 +671,10 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Set the horizon immediately before an existing item, allowing a rewind.
-   * Repeating an already-applied command performs no write.
+   * Return whether a read-state update was published; an already-applied command returns false
+   * without writing. A reset retry can also return false after the original attempt applied it.
    */
-  markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<void>;
+  markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<boolean>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute

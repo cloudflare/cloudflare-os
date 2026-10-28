@@ -729,10 +729,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // UI boundary to its persisted visible position, with one indexed source seek.
   async #processChat(workspaceId: string, chatId: number, options: {
     horizon?: {through: number; rewind: boolean};
-  } = {}): Promise<void> {
+  } = {}): Promise<boolean> {
     let admission = this.#unreadWorkspaces.get(workspaceId);
     let key = `${workspaceId}:${chatId}`;
     let hadNotifications = this.#notificationChats.has(key);
+    let changed = false;
     try {
       await this.#serialize(key, async () => {
         if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
@@ -766,6 +767,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           this.#storeCursor(updated);
           // Publish the committed read position before alert delivery can suspend or reset us.
           if (!existing || current.readThroughSequence !== through || current.unreadCount !== updated.unreadCount) {
+            changed = true;
             this.#unreadChanged(workspaceId, chatId);
           }
         }
@@ -806,6 +808,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     } finally {
       if (hadNotifications || this.#notificationChats.has(key)) await this.#armExpirySweep();
     }
+    return changed;
   }
 
   /** Read inbox rows directly from the user's local projection. */
@@ -963,14 +966,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     for (let result of results) if (result.status === "rejected") throw result.reason;
   }
 
-  async markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<void> {
-    await this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, true);
+  async markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<boolean> {
+    return this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, true);
   }
 
   async #setReadHorizon(workspaceId: string, chatId: number, through: number,
-      rewind: boolean): Promise<void> {
+      rewind: boolean): Promise<boolean> {
     if (!Number.isSafeInteger(through) || through < -1) throw new Error("Invalid timeline sequence.");
-    await this.#processChat(workspaceId, chatId, {horizon: {through, rewind}});
+    return this.#processChat(workspaceId, chatId, {horizon: {through, rewind}});
   }
 
   async #deliverNotifications(): Promise<void> {
