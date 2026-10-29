@@ -1,0 +1,79 @@
+packages/gatekeeper-google/README.md
+  s_7801bbf134048b::t_88d2cca6dd5845 85,624,627-628,634
+  s_7801bbf134048b::t_d209325dce038e 626
+  s_7801bbf134048b::t_414508e817ed49 625
+packages/gatekeeper-google/src/drive-types.d.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 129-139,176-181,212-217
+  s_7801bbf134048b::t_8445868b00e3b1 218
+packages/gatekeeper-google/src/office-conversion.ts
+  s_7801bbf134048b::t_96f8a7fc1ed3f8 6-7
+packages/gatekeeper-google/src/google-configurators.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 37-39,42,65-70,443-453,457-460,463-468,492-495,498-503
+packages/gatekeeper-google/__tests__/workerd/native-sessions.test.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 9-10,12,25-58,78-79,87-90,93,97-100,183-185,192-194,197-198,223-225,235-236,357-459,641-645,697,706,921-973
+  s_7801bbf134048b::t_610a1b95a7fffa 974
+packages/gatekeeper-google/src/drive-api.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 3,15-21,29-35,453-462,683-698
+  s_7801bbf134048b::t_afb101880e8199 699-700
+packages/gatekeeper-google/src/observability.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 9-10,15-16,21-24
+packages/gatekeeper-google/src/configurator/drive-folder-configurator-ui.tsx
+  s_7801bbf134048b::t_88d2cca6dd5845 1-4,6,9-123,132-147,149
+packages/gatekeeper-google/__tests__/resources.test.ts
+  s_7801bbf134048b::t_f0af7ed5a353c6 10,882-888
+  s_7801bbf134048b::t_88d2cca6dd5845 7-8,843-881,889-924
+  s_7801bbf134048b::t_0da1a46316e077 925
+packages/gatekeeper-google/__tests__/types.test.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 303-334
+packages/gatekeeper-google/src/resources.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 136-137,149,159,163,169,321-323,340-350,354
+  s_7801bbf134048b::t_d8012fed675903 395-402
+  s_7801bbf134048b::t_c2c3487090711e 403-404
+packages/gatekeeper-google/src/configurator/drive-file-configurator-types.d.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 7-8
+packages/gatekeeper-google/src/configurator/drive-account-configurator-types.d.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 3-6
+packages/gatekeeper-google/src/configurator/drive-file-configurator-ui.tsx
+  s_7801bbf134048b::t_88d2cca6dd5845 1-122,132-147,149
+packages/gatekeeper-google/src/configurator/drive-account-configurator-ui.tsx
+  s_7801bbf134048b::t_88d2cca6dd5845 1-122,131-150,152
+packages/gatekeeper-google/__tests__/office-conversion.test.ts
+  s_7801bbf134048b::t_83a26fb5d00732 3
+  s_7801bbf134048b::t_96f8a7fc1ed3f8 6
+packages/gatekeeper-google/src/configurator/drive-folder-configurator-types.d.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 9-10
+packages/gatekeeper-google/__tests__/drive-api.test.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 4-6,1226-1346
+packages/gatekeeper-google/__tests__/configurator-pdf-flow.test.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 69-70
+  s_7801bbf134048b::t_1fdeea8198a151 1-68,71-346
+packages/gatekeeper-google/src/drive-pdf.ts
+  s_7801bbf134048b::t_ee1f6db5fa697b 1-44,46-79
+  s_7801bbf134048b::t_92fc267c95c34a 45
+packages/gatekeeper-google/src/google.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 40-41,50,113,904-907,909,979,986,993,3016,3025,3042-3045,3051,3196-3201,3211-3212,3227,3241,3277-3278,3301-3319
+  s_7801bbf134048b::t_d857b4a8a11ce1 112,910-911
+  s_7801bbf134048b::t_cc8f98bc1ed17b 3320-3321
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 18-20,33-35,72,108,202,385-386,395-403,710-728,730-739,748-769
+  s_7801bbf134048b::t_d857b4a8a11ce1 729,740-747
+packages/gatekeeper-google/__tests__/drive-pdf.test.ts
+  s_7801bbf134048b::t_539b48aee92c8d 1-34,36-161,163-199
+  s_7801bbf134048b::t_88d2cca6dd5845 35,162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "65d1e3a7abb1b32f513cbd288319faaa24cb1667",
+  "prompts": {},
+  "sessions": {
+    "s_7801bbf134048b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e69110af-6dc8-4306-90ae-798ba71a1a4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

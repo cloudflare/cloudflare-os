@@ -1,0 +1,26 @@
+packages/workshop-frontend/src/main.tsx
+  s_c5f7f46f37b64a::t_d8ac6d1c0acc7c 194-197,240,256-257
+packages/workshop-frontend/src/features/stale-session/useStaleBackendReconnect.test.tsx
+  s_c5f7f46f37b64a::t_618c8f69d6ba3d 32-33,37-38,42,88,130,141
+packages/workshop-frontend/src/features/stale-session/useStaleBackendReconnect.ts
+  s_c5f7f46f37b64a::t_d8ac6d1c0acc7c 8-10,18-19,24,30
+  s_c5f7f46f37b64a::t_80dcf9bab10f41 25,31
+docs/connect-handoff.md
+  s_c5f7f46f37b64a::t_618c8f69d6ba3d 287-288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5bb826351f7e5cabf50e2fffb5f99e7e7d20aaca",
+  "prompts": {},
+  "sessions": {
+    "s_c5f7f46f37b64a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af85bbd4-1c2a-4560-b9a2-08288fc06dba",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

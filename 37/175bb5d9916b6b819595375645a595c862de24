@@ -1,0 +1,31 @@
+packages/gatekeeper-context/app/skills/README.md
+  s_01a419c1d1869c::t_90b0fcbbf88219 29-31
+packages/gatekeeper-context/app/skills/SkillsNavigatorTree.test.tsx
+  s_d0f890640bc2ec::t_53f12645def3fc 420
+packages/gatekeeper-context/app/skills/SkillsNavigatorTree.tsx
+  s_d0f890640bc2ec::t_a9f482ef953f1f 129-131,155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "37175bb5d9916b6b819595375645a595c862de24",
+  "prompts": {},
+  "sessions": {
+    "s_01a419c1d1869c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6ffb023-2e7d-4151-9156-65c62a82612f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_d0f890640bc2ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9c1a4d8-208c-4dfa-91a7-e9412e935dbd",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,115 @@
+AGENTS.md
+  s_c5f8d284ae2719::t_51e6ea75a8d61b 23,86,92
+REVIEW.md
+  s_c5f8d284ae2719::t_b34b5ce4169665 107-112,219-221
+docs/testing.md
+  s_c5f8d284ae2719::t_ab1e8703ac4b99 8-9,11-12
+package.json
+  s_c5f8d284ae2719::t_8b8091dd706b6b 19
+packages/api-cli/README.md
+  s_c5f8d284ae2719::t_8883fbcf45fa7d 1-284
+packages/api-cli/generated/agent-types.ts
+  s_c5f8d284ae2719::t_c9ae9e06088df3 1-8978
+packages/api-cli/generated/commands.ts
+  s_c5f8d284ae2719::t_9c4ebd8413456a 1-3989
+packages/api-cli/generator/__fixtures__/generated/commands.ts
+  s_c5f8d284ae2719::t_126e7f791339b0 1-217
+packages/api-cli/generator/__fixtures__/generated/schema.json
+  s_c5f8d284ae2719::t_50b104db5604bf 1-571
+packages/api-cli/generator/__fixtures__/src/table.ts
+  s_c5f8d284ae2719::t_f8857de8d61b8f 1-4
+packages/api-cli/generator/emit.test.ts
+  s_c5f8d284ae2719::t_8278c6c1e0a209 1-403
+packages/api-cli/generator/emit.ts
+  s_c5f8d284ae2719::t_d73ed3be1ab86b 1-535
+packages/api-cli/generator/generate.test.ts
+  s_c5f8d284ae2719::t_b627401c5abbdb 1-42
+packages/api-cli/package.json
+  s_c5f8d284ae2719::t_2fc68d8023cad0 1-20
+packages/api-cli/src/api.test.ts
+  s_c5f8d284ae2719::t_e2c2222d357a1f 1-591
+packages/api-cli/src/api.ts
+  s_c5f8d284ae2719::t_39e2a1f78855ba 1-214
+packages/api-cli/src/callbacks.test.ts
+  s_c5f8d284ae2719::t_99ce50e4e446b8 1-158
+packages/api-cli/src/callbacks.ts
+  s_c5f8d284ae2719::t_bd0c9347617703 1-100
+packages/api-cli/src/codec.test.ts
+  s_c5f8d284ae2719::t_96e85141e9ca1e 1-241
+packages/api-cli/src/codec.ts
+  s_c5f8d284ae2719::t_1da6b259f6c43d 1-376
+packages/api-cli/src/create-account.test.ts
+  s_c5f8d284ae2719::t_55ec1e6ab9a83e 1-67
+packages/api-cli/src/create-account.ts
+  s_c5f8d284ae2719::t_e37b30ee0c6573 1-154
+packages/api-cli/src/main.test.ts
+  s_c5f8d284ae2719::t_5247bed22ea79a 1-124
+packages/api-cli/src/main.ts
+  s_c5f8d284ae2719::t_99111392c90b84 1-101
+packages/api-cli/src/output.ts
+  s_c5f8d284ae2719::t_929a8e1627234a 1-28
+packages/api-cli/src/paths.ts
+  s_c5f8d284ae2719::t_0e7e39e1d8aa88 1-40
+packages/api-cli/src/run.test.ts
+  s_c5f8d284ae2719::t_08ba7b21138d51 1-328
+packages/api-cli/src/run.ts
+  s_c5f8d284ae2719::t_0cfbc1a43210ac 1-1108
+packages/api-cli/src/session.test.ts
+  s_c5f8d284ae2719::t_c4147a737d558a 1-249
+packages/api-cli/src/session.ts
+  s_c5f8d284ae2719::t_18cec39c7084ff 1-334
+packages/api-cli/src/table.ts
+  s_c5f8d284ae2719::t_8989281daf4263 1-165
+packages/api-cli/src/test-server.ts
+  s_c5f8d284ae2719::t_ddd6e9b47f913a 1-350
+packages/api-cli/src/type-text.ts
+  s_c5f8d284ae2719::t_27dcfe6cb6619b 1-75
+packages/api-cli/src/types.test.ts
+  s_c5f8d284ae2719::t_f81123cec86a12 1-61
+packages/api-cli/src/types.ts
+  s_c5f8d284ae2719::t_219a7ef5861408 1-34
+packages/api-cli/tsconfig.json
+  s_c5f8d284ae2719::t_95ac6c9e032ced 1-22
+packages/api-cli/vite.config.ts
+  s_c5f8d284ae2719::t_14f7df146c00ef 1-34
+packages/api-schema/README.md
+  s_c5f8d284ae2719::t_42985079502aae 50-53,57,83-87,120-121
+packages/api-schema/scripts/generate.ts
+  s_c5f8d284ae2719::t_ad78a9961393cd 6-11,20,22-24,76,78,88,94,96-104,109-110,114-116,118-120,122
+packages/integration-tests/README.md
+  s_c5f8d284ae2719::t_4ffffd1882e488 21-23
+packages/integration-tests/__tests__/cli-admins-only.test.ts
+  s_c5f8d284ae2719::t_997ec4c4a6b2a3 1-102
+packages/integration-tests/src/harness.ts
+  s_c5f8d284ae2719::t_5ed4b80d4bd694 135-140
+packages/workshop-backend/__tests__/cli-admins-only.test.ts
+  s_c5f8d284ae2719::t_a3c2c668e85927 1-151
+packages/workshop-backend/src/env.d.ts
+  s_c5f8d284ae2719::t_8d68ba90ad71c4 24-27
+packages/workshop-backend/src/server.ts
+  s_c5f8d284ae2719::t_716a1a43276ddc 96-101,727-728,733-742,745,801,817,862,891,899,1039-1044,1046
+pnpm-lock.yaml
+  s_c5f8d284ae2719::t_6fa742c210255b 85-106
+scripts/run-dev-server.ts
+  s_c5f8d284ae2719::t_07640de4baa3dc 568-569
+scripts/vitest-task.test.ts
+  s_c5f8d284ae2719::t_ba14f9916736a9 23
+vite.config.ts
+  s_c5f8d284ae2719::t_3afae29c961333 179-181,188-191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c8d3f88c9412926b4a4886117fbd9bbd4004fc4b",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

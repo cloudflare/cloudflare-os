@@ -1,0 +1,63 @@
+packages/mcp-shared/AGENTS.md
+  s_de99741aed62b7::t_243e65ed012a85 1-13
+packages/workshop-backend/AGENTS.md
+  s_de99741aed62b7::t_782544d2334e52 1-90
+packages/gatekeeper-x/AGENTS.md
+  s_de99741aed62b7::t_69230398af7fe7 1-25
+packages/gatekeeper-context/AGENTS.md
+  s_de99741aed62b7::t_ca1b53b1dde0af 1-48
+AGENTS.md
+  s_de99741aed62b7::t_8dbd39ac8b6ac3 8-23,25-32,34-37,39-42,44,46-48,58-86
+  s_de99741aed62b7::t_cca293a18a4ce7 33
+packages/gatekeeper-cloudflare/AGENTS.md
+  s_de99741aed62b7::t_75925485ac51f0 1-54
+packages/configurator-ui/AGENTS.md
+  s_de99741aed62b7::t_73ae5ba50cbb14 1-15
+packages/gatekeeper-websearch/AGENTS.md
+  s_de99741aed62b7::t_e23761ea9f3c8a 1-15
+packages/error-reporting/AGENTS.md
+  s_de99741aed62b7::t_5278a48895d13e 1-23
+packages/observability/AGENTS.md
+  s_de99741aed62b7::t_77ff900af03750 1-44
+scripts/release/AGENTS.md
+  s_de99741aed62b7::t_8da3d7c4ae75be 1-35
+REVIEW.md
+  s_de99741aed62b7::t_4af6ad3c46c23f 4-7,40,44-45,73-75,109,135-137
+.github/workflows/bonk-pr.yml
+  s_de99741aed62b7::t_a7041ca6be7018 153-166
+  s_de99741aed62b7::t_550a4b800bd7fd 189
+.github/workflows/ci.yml
+  s_9c38884292589b::t_bcc567707f03c8 43,116
+.github/workflows/github-contract.yml
+  s_9c38884292589b::t_ba4704b807f724 60
+.github/workflows/preview.yml
+  s_9c38884292589b::t_ce70a3dd698585 99,231,276
+.github/workflows/workshop-evals-pr.yml
+  s_9c38884292589b::t_ca191d85b78f62 126,169,299,427
+.github/workflows/workshop-evals.yml
+  s_9c38884292589b::t_3867781c477806 36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bc3b35dc549edfb88a7ca26d63034ae66648bea6",
+  "prompts": {},
+  "sessions": {
+    "s_9c38884292589b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "850b1650-2f84-40a4-8672-951f32ff4cad",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_de99741aed62b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc739a26-6e13-4c5e-8812-47b2715c7971",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
