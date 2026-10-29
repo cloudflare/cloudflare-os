@@ -312,6 +312,20 @@ describe("a connection to two sites", () => {
     expect((await picker.state()).ready).not.toBe(true);
   });
 
+  it("chooses a space pasted from the other site, switching there and opening it where it lives", async () => {
+    const platform: ConfluenceNode = { ref: `space:${OTHER}/PLAT`, kind: "space", title: "Platform", expandable: true, selectable: true, path: [] };
+    const picker = await start({
+      answers: { getStatus: () => TWO, loadItems: (request: ConfluenceBrowseRequest) => request.query ? { items: [platform] } : browse(request) },
+    });
+    await picker.search().fill("https://acme.atlassian.net/wiki/spaces/PLAT");
+    await picker.option("Platform").click();
+
+    await poll(() => picker.wholeSite().innerText()).toContain("All of Acme");
+    await poll(picker.location).toBe("Spaces Platform");
+    await expect.poll(() => picker.frame().locator("[role=option][aria-selected=true]").innerText()).toContain("All of Platform");
+    expect(await picker.collected()).toBe(platform.ref);
+  });
+
   it("shows no switcher for one site", async () => {
     const picker = await start();
     await poll(picker.titles).toContain("Q4 planning");

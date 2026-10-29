@@ -279,7 +279,12 @@ async function loadPage({ ui, acceptedResourceUrlPatterns: accepted }: Context, 
   }
   requestAvatars(ui, page.items.flatMap(node => [node, ...node.path ?? []]));
   return {
-    items: page.items.map(node => toItem(node, accepted, section === "recent" || section === "starred")),
+    items: page.items.map(node => {
+      const item = toItem(node, accepted, section === "recent" || section === "starred");
+      // A pasted link may name another of the connection's sites. Opened here, it would list under
+      // this site; chosen, the picker switches to that site and opens it there.
+      return query && siteRefOf(node.ref) !== site ? { ...item, kind: "leaf" as const, choice: undefined } : item;
+    }),
     nextCursor: page.nextCursor ?? null,
     notice: page.notice ?? (page.items.length === 0 && !cursor && section ? EMPTY_TAB[section] : undefined),
   };
