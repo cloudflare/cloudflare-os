@@ -53,6 +53,7 @@ export const RestrictedWebFetchHostsCard = ({ admin, hosts, onSaved }: {
         autoComplete="off"
         value={draft ?? hosts}
         onValueChange={setDraft}
+        disabled={saving}
       />
 
       <div className="flex items-center justify-end gap-2 mt-3">
