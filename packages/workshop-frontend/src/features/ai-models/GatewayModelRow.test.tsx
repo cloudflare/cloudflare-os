@@ -486,7 +486,7 @@ describe('GatewayModelRow', () => {
       expect(describedBy(field())).toContain('providers that are on (Anthropic, OpenAI)')
       expect(document.querySelector('a[href$="/auto-router/#models"]')).not.toBeNull()
       await show({ model: AUTO, poolProviders: [] })
-      expect(describedBy(field())).toContain('No provider is on for Auto Router to pick from')
+      expect(describedBy(field())).toContain('No provider is on for Auto to pick from')
     })
 
     it('saves the names typed, trimmed and once each, beside the model’s other settings',

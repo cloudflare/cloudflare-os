@@ -274,7 +274,7 @@ describe("getModel AI Gateway routing", () => {
       // every candidate has, and the catalog's limits are the smallest a candidate may have.
       expect(handle.model).toMatchObject({
         api: "openai-completions", id: "cloudflare/auto", baseUrl: COMPAT, reasoning: false,
-        input: ["text", "image"], contextWindow: 200000, maxTokens: 32768,
+        input: ["text", "image"], contextWindow: 128000, maxTokens: 32768,
       });
       expect(gatewayReasoningLevels("cloudflare-auto-router", "cloudflare/auto")).toEqual([]);
 

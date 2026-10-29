@@ -537,6 +537,27 @@ describe("AdminSettings gateway model settings", () => {
     expect(await settings()).toStrictEqual({});
   });
 
+  it("keeps a stored name whose provider was turned off, so other settings still save",
+      async () => {
+    const AUTO = "cloudflare/auto";
+    const { inDo, settings } = adminSettings(
+        { ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,cloudflare-auto-router" });
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
+    const listed = ["anthropic/*", "openai/*"];
+    await inDo(admin => admin.setGatewayModelSettings(AUTO, { allowedModels: listed }));
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", false));
+
+    // The UI sends the whole of the settings on each change, the stored list included.
+    await inDo(admin => admin.setGatewayModelSettings(
+        AUTO, { allowedModels: listed, compactionInputBudget: 50000 }));
+    expect(await settings())
+        .toStrictEqual({ [AUTO]: { allowedModels: listed, compactionInputBudget: 50000 } });
+    // A new name of the provider that is off is still refused.
+    await expect(inDo(admin => admin.setGatewayModelSettings(
+        AUTO, { allowedModels: [...listed, "openai/gpt-6-luna"] })))
+        .rejects.toThrow('"openai/gpt-6-luna" names a provider this deployment hasn\'t turned on');
+  });
+
   it("replaces a model's settings whole, and forgets them once empty", async () => {
     const { inDo, settings, mirror } = adminSettings();
     await inDo(admin => admin.setGatewayModelSettings(

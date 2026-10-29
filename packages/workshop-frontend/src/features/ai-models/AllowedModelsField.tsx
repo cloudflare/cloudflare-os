@@ -76,24 +76,22 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, busy, 
       <p id={facts} className="text-sm leading-snug text-kumo-subtle">
         {providers.length > 0 ? (
           <>
-            Left blank, Auto Router picks among every model of the providers that are on
-            ({providers.map((provider) => PROVIDER_LABELS[provider]).join(', ')}) in{' '}
+            Left blank, Auto picks from every model of the providers that are on (
+            {providers.map((provider) => PROVIDER_LABELS[provider]).join(', ')}) in{' '}
             <a href={POOL_DOCS} target="_blank" rel="noreferrer" className="underline">
               Cloudflare’s model pool
             </a>
             .
           </>
         ) : (
-          <>No provider is on for Auto Router to pick from: turn one on above.</>
+          <>No provider is on for Auto to pick from: turn one on above.</>
         )}{' '}
-        To choose the models yourself, list them separated by commas as the gateway names them,
-        which can differ from the provider’s own IDs:{' '}
-        <span className="font-mono">anthropic/claude-sonnet-5.5</span> is one model,{' '}
-        <span className="font-mono">anthropic/*</span> every Anthropic model and{' '}
-        <span className="font-mono">@cf/*/*</span> every Workers AI model. Only models of the
-        providers that are on are accepted; disabling a model above doesn’t take it out of the
-        pool, listing does. After saving, press Test: a name the gateway doesn’t recognise makes
-        every request fail, and Test shows that error.
+        To narrow it, list models by their gateway names, separated by commas:{' '}
+        <span className="font-mono">anthropic/claude-sonnet-5.5</span>,{' '}
+        <span className="font-mono">anthropic/*</span> or{' '}
+        <span className="font-mono">@cf/*/*</span>. Disabling a model above doesn’t take it out
+        of the pool; listing does. After saving, press Test: a name the gateway doesn’t know
+        fails every request.
       </p>
       {alert.alert}
       <div className="flex gap-2">

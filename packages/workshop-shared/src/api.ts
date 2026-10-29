@@ -2123,12 +2123,13 @@ const SUGGESTED_MODEL_CATALOG = {
   // First so that, when its provider is on, Auto leads the model pickers and is the model a new
   // user or chat gets by default.
   "cloudflare-auto-router": {
-    // The router answers with whichever model it picks, so the window is the smallest a model in
-    // its pool is likely to have (Claude Haiku's 200K), and the output limit is reserved as
-    // Workers AI reserves one, in case a Workers AI model is picked.
+    // The router answers with whichever model it picks, so the window is the smallest documented
+    // in its pool (https://developers.cloudflare.com/ai-gateway/features/auto-router/#models:
+    // Workers AI's gpt-oss-20b, 128K), and the output limit is reserved as Workers AI reserves
+    // one, in case a Workers AI model is picked.
     [AUTO_ROUTER_MODEL_ID]: {
       name: "Auto", description: "Best model for each request",
-      contextWindow: 200000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
   },
   "cloudflare": {

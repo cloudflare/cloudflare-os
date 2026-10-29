@@ -704,8 +704,12 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
               "provider/model, like anthropic/claude-sonnet-5.5, or a provider's every model, " +
               "like anthropic/*.");
         }
-        // The list narrows the pool; it must not reach a provider the Models tab doesn't show.
-        let foreign = allowed.find(name => !models.enablesProviderOf(name.trim()));
+        // The list narrows the pool; it must not reach a provider the Models tab doesn't show. A
+        // stored name whose provider was turned off since stays, as the pool leaves it out, so
+        // that the model's other settings can still be saved.
+        let stored = config.modelSettings[modelId]?.allowedModels ?? [];
+        let foreign = allowed.find(name =>
+            !models.enablesProviderOf(name.trim()) && !stored.includes(name.trim()));
         if (foreign !== undefined) {
           let prefixes = models.addableProviders
               .flatMap(provider => AUTO_ROUTER_PROVIDER_NAMES[provider]?.prefix ?? []);
