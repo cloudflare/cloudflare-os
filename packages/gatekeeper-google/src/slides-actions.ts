@@ -50,12 +50,15 @@ export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 // Unless the deployment makes every change such a kind (`slidesActionsFor`), so building a deck
 // need not ask once per call. Each kind still admits no more than its label says: any other batch
 // is "content and theme", but one that makes Google download a picture is apart from it, since the
-// URL itself carries data out of the workspace. Adding, copying and reordering slides share a kind;
-// deleting one is its own.
+// URL itself carries data out of the workspace. That kind admits whatever else its batch holds too,
+// so its label says so: a batch is approved whole, and a picture must not carry along changes the
+// user left to approve. Adding, copying and reordering slides share a kind; deleting one is its own.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
 const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and arrangement" };
 const CHANGE_SLIDES: ActionKind = { tag: "changeSlides", label: "Slide content and theme changes" };
-const SLIDE_WEB_PICTURES: ActionKind = { tag: "slideWebPictures", label: "Slide pictures from web links" };
+const CHANGE_SLIDES_WITH_PICTURES: ActionKind = {
+  tag: "changeSlidesWithPictures", label: "Slide changes, including pictures from web links",
+};
 const ADD_SLIDES: ActionKind = { tag: "addSlides", label: "Adding, copying and reordering slides" };
 const DELETE_SLIDES: ActionKind = { tag: "deleteSlides", label: "Deleting slides" };
 const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
@@ -720,7 +723,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>(DEFINITIO
 const ALL_AUTO_APPROVABLE = defineActions<SlidesHost, SlidesActions>({
   ...DEFINITIONS,
   updateSlides: designBatch(CHANGE_SLIDES),
-  pictureSlides: designBatch(SLIDE_WEB_PICTURES),
+  pictureSlides: designBatch(CHANGE_SLIDES_WITH_PICTURES),
   duplicateSlide: { ...DEFINITIONS.duplicateSlide, kind: ADD_SLIDES, autoApprovable: true },
   moveSlides: { ...DEFINITIONS.moveSlides, kind: ADD_SLIDES, autoApprovable: true },
   createSlide: { ...DEFINITIONS.createSlide, kind: ADD_SLIDES, autoApprovable: true },

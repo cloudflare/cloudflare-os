@@ -433,7 +433,7 @@ with their master and background, but not their elements; each slide reports its
 and a background of its own. The Slides API cannot change which layout an existing slide is made
 from.
 
-A batch is queued as one of three action kinds, which share everything but which ones a user may
+By default, a batch is queued as one of three action kinds, which share everything but which ones a user may
 let apply without asking: "Slide text edits" (only text edits), "Slide formatting and arrangement"
 (only formatting text, setting no link or font, since Google keeps their whole strings; formatting
 paragraphs and shapes; moving or stacking elements; and setting slides' backgrounds to a colour,
@@ -443,9 +443,10 @@ they change slides the user is not looking at, or make Google fetch a URL.
 
 A deployment that sets `GOOGLE_SLIDES_ALL_AUTO_APPROVABLE=true` makes every Slides change such a
 kind, so building or exporting a deck need not ask once per call. The batches above that wait
-become "Slide pictures from web links" when they insert or replace an image or set a picture
-background, since Google downloads the URL and the URL itself can carry data out of the workspace,
-and "Slide content and theme changes" otherwise. `createSlide()`, `duplicateSlide()` and
+become "Slide changes, including pictures from web links" when they insert or replace an image or
+set a picture background, since Google downloads the URL and the URL itself can carry data out of
+the workspace, and "Slide content and theme changes" otherwise. A batch is approved whole, so the
+picture kind admits whatever else its batch holds, and its label says so. `createSlide()`, `duplicateSlide()` and
 `moveSlides()` become "Adding, copying and reordering slides", and `deleteSlide()` "Deleting
 slides". Off by default. It is read at each change and never stored, so clearing it stops changes
 queued from then on from being auto-approvable, and setting it auto-applies nothing by itself: a

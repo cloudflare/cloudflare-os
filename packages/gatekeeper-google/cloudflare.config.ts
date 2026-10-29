@@ -3,6 +3,11 @@ import {
   type DurableObjectMigration,
 } from "@gadgets/scripts/worker-config";
 
+// Deployment-configured vars, unset in the committed config (locally, via the root `.dev.vars`):
+//
+//   GOOGLE_SLIDES_ALL_AUTO_APPROVABLE
+//     "true" to make every Google Slides change a kind users may "Always approve", not only text
+//     edits, formatting and skipping slides. Off by default; see the README's "Google Slides edits".
 export default defineGadgetsWorker({
   name: "gatekeeper-google",
   entrypoint: ".wrangler/validate/src/google.ts",

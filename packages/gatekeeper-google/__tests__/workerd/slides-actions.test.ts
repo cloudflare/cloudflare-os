@@ -1590,7 +1590,7 @@ describe("Google Slides with every change auto-approvable", () => {
       { tag: "editSlidesText", label: "Slide text edits" },
       { tag: "formatSlides", label: "Slide formatting and arrangement" },
       { tag: "changeSlides", label: "Slide content and theme changes" },
-      { tag: "slideWebPictures", label: "Slide pictures from web links" },
+      { tag: "changeSlidesWithPictures", label: "Slide changes, including pictures from web links" },
       { tag: "addSlides", label: "Adding, copying and reordering slides" },
       { tag: "deleteSlides", label: "Deleting slides" },
       { tag: "skipSlides", label: "Skipping slides" },
@@ -1599,10 +1599,14 @@ describe("Google Slides with every change auto-approvable", () => {
       .toBe("editSlidesText");
     expect(kindOf(await slides.queued("updateSlides", [SHAPE]))).toBe("changeSlides");
     // Google downloads the URL, which can carry data out, so a batch with one is its own kind.
-    expect(kindOf(await slides.queued("updateSlides", [PICTURE]))).toBe("slideWebPictures");
+    expect(kindOf(await slides.queued("updateSlides", [PICTURE]))).toBe("changeSlidesWithPictures");
+    // Approved whole, so the kind a picture makes a batch says it admits the rest of it too.
+    expect(kindOf(await slides.queued("updateSlides", [
+      PICTURE, { op: "deleteElement", slideId: "s2", elementId: "b2" },
+    ]))).toBe("changeSlidesWithPictures");
     expect(kindOf(await slides.queued("updateSlides", [
       { op: "setBackground", slideId: "s1", background: { imageUrl: "https://example.com/b.png" } },
-    ]))).toBe("slideWebPictures");
+    ]))).toBe("changeSlidesWithPictures");
     expect(kindOf(await slides.queued("updateSlides", [
       { op: "setBackground", layoutId: "layout-title", background: "#ff0000" },
     ]))).toBe("changeSlides");
