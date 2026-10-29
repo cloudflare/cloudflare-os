@@ -8,6 +8,7 @@ import {SignJWT, exportJWK, generateKeyPair} from "jose";
 import {afterEach, beforeAll, beforeEach, expect, it, vi} from "vitest";
 import type {GoogleChatGatekeeperImplProps} from "../../src/chat";
 import type {ChatMessageRaw} from "../../src/chat-api";
+import type {ChatSubscribeOptions} from "../../src/chat-types";
 import type {TestHooks} from "./worker";
 
 const testEnv = env as unknown as {
@@ -157,7 +158,7 @@ function chatMessage(sender: string, thread = THREAD): ChatMessageRaw {
 }
 
 /** One person's Chat connection, its hook subscribed through the restored facet and enabled. */
-async function connect(subject: string, binding: {threadId?: string} = {}) {
+async function connect(subject: string, binding: {threadId?: string} = {}, options?: ChatSubscribeOptions) {
   const name = `chat-hooks-${crypto.randomUUID()}`;
   const userObject = testEnv.UserAccount.get(testEnv.UserAccount.idFromName(name));
   await runInDurableObject(userObject, (_instance: unknown, state: DurableObjectState) => {
@@ -170,7 +171,7 @@ async function connect(subject: string, binding: {threadId?: string} = {}) {
   };
   const hooks = testEnv.TestHooks.get(testEnv.TestHooks.idFromName(name));
   const facet = {facetName: `chat-${name}`, id: testEnv.GoogleChatGatekeeperImpl.idFromName(name).toString(), props};
-  await hooks.chatSubscribe(facet);
+  await hooks.chatSubscribe(facet, options);
   return {hooks, ...facet};
 }
 
@@ -209,7 +210,7 @@ const deliver = () => vi.waitFor(() => runInDurableObject(driver(), (_instance: 
   if (due.length > 0) throw new Error(`${due.length} deliveries due`);
 }));
 
-it("delivers each new message once, and the hook's reply applies as an action", async () => {
+it("delivers each new message from someone else once, and the hook's reply applies as an action", async () => {
   const google = mockGoogle();
   const ada = await connect("ada");
   await ada.hooks.chatEnableHook();
@@ -217,8 +218,8 @@ it("delivers each new message once, and the hook's reply applies as an action", 
 
   const fromBob = chatMessage("bob");
   google.messages.set(fromBob.name!, fromBob);
-  // Pub/Sub may push the same message twice.
-  expect(await push("ada", [fromBob])).toBe(204);
+  // Ada's own post is never echoed back to her, and Pub/Sub may push the same message twice.
+  expect(await push("ada", [fromBob, chatMessage("ada")])).toBe(204);
   expect(await push("ada", [fromBob])).toBe(204);
   await deliver();
 
@@ -234,30 +235,34 @@ it("delivers each new message once, and the hook's reply applies as an action", 
   expect((await ada.hooks.readHook()).received).toHaveLength(1);
 });
 
-it("delivers the account's own posts in Google Chat, but never what it posts through a connection", async () => {
+it("delivers the account's Google Chat posts only to hooks that ask, never what it posts through a connection", async () => {
   const google = mockGoogle();
-  const ada = await connect("ada");
-  await ada.hooks.chatEnableHook();
-  await ada.hooks.setHookBehavior({reply: "On it."});
+  // Two of Ada's hooks in the space, sharing her subscription: only one asks for her own posts.
+  const own = await connect("ada", {}, {includeOwnMessages: true});
+  const others = await connect("ada");
+  await own.hooks.chatEnableHook();
+  await others.hooks.chatEnableHook();
+  await own.hooks.setHookBehavior({reply: "On it."});
 
   // As when Ada addresses her own gadget in the space.
   const written = chatMessage("ada");
   google.messages.set(written.name!, written);
   await push("ada", [written]);
   await deliver();
-  const {received, submissions} = await ada.hooks.readHook();
+  const {received, submissions} = await own.hooks.readHook();
   expect(received.map(info => info.id)).toEqual([written.name]);
 
   // Google reports the hook's applied reply, posted as Ada, to her subscription as it does any new
   // message. Bob's post through his own connection is named the same way, but is not hers.
-  await ada.hooks.chatApplyAction(ada.facetName, ada.id, ada.props, submissions[0].actionId);
+  await own.hooks.chatApplyAction(own.facetName, own.id, own.props, submissions[0].actionId);
   const reply = google.messages.get(`${SPACE}/messages/posted`)!;
   const bobs = {...chatMessage("bob"), clientAssignedMessageId: `client-${crypto.randomUUID()}`};
   google.messages.set(bobs.name!, bobs);
   await push("ada", [reply, bobs]);
   await deliver();
 
-  expect((await ada.hooks.readHook()).received.map(info => info.id)).toEqual([written.name, bobs.name]);
+  expect((await own.hooks.readHook()).received.map(info => info.id)).toEqual([written.name, bobs.name]);
+  expect((await others.hooks.readHook()).received.map(info => info.id)).toEqual([bobs.name]);
 });
 
 it("lets a hook answer through the conversation it watches, where messages have no threads", async () => {

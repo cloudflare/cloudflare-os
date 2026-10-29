@@ -49,6 +49,8 @@ export type ChatHookProps = ChatHookParams & {
   /** `users/{id}`: the Google account the facet has pinned. */
   authority: string;
   userObjectId: string;
+  /** Also deliver what the account writes in Google Chat (see `ChatSubscribeOptions`). */
+  includeOwnMessages?: boolean;
   delivery: RpcStub<ChatHookDelivery>;
 };
 
@@ -160,10 +162,12 @@ export class ChatHookDriver extends DurableObject<Env> {
       for (const message of messages) {
         // Omit app-private messages as every other Chat read does.
         if (!message.name || message.privateMessageViewer) continue;
-        // Never deliver what the account posts through a connection, such as hooks' replies: every
-        // send gives its message a client-assigned name (see clientMessageId() in chat.ts) and
-        // nothing written in Google Chat has one, so what the user writes there is still delivered.
-        if (message.sender?.name === authority && message.clientAssignedMessageId !== undefined) continue;
+        // Deliver the account's own messages only to hooks that ask for them, and even then never
+        // what it posts through a connection, such as hooks' replies: every send gives its message
+        // a client-assigned name (see clientMessageId() in chat.ts), and nothing written in Google
+        // Chat has one.
+        if (message.sender?.name === authority &&
+            (!registration.includeOwnMessages || message.clientAssignedMessageId !== undefined)) continue;
         if (registration.threadName !== undefined && message.thread?.name !== registration.threadName) continue;
         this.#queue.enqueue(regKey.slice("reg:".length), message.name, message, now);
       }
