@@ -1,0 +1,27 @@
+packages/gatekeeper-google/src/google.ts
+  s_5ea74d9d4aa12b::t_907a675ed29f68 1415-1416,1445-1446
+packages/workshop-shared/src/gatekeeper.ts
+  s_5ea74d9d4aa12b::t_abd31cd537728d 631-641
+packages/workshop-backend/src/overseer.ts
+  s_5ea74d9d4aa12b::t_498ad370037087 274-282,412-417,1190-1241,1523-1532,3919,3921-3923,3949-3981,5036-5040
+packages/workshop-frontend/src/Activity.tsx
+  s_5ea74d9d4aa12b::t_29ca147fd1fcff 71-86,152-157,201,212,263-271
+packages/workshop-shared/src/api.ts
+  s_5ea74d9d4aa12b::t_56a2569a745ce6 711-719
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "92ebdb11ef63ce33d2f47e8858841dd2f7848795",
+  "prompts": {},
+  "sessions": {
+    "s_5ea74d9d4aa12b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "327d3793-ea88-4e2c-9cfd-a93e08e8f1de",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

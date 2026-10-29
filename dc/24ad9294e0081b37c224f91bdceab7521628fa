@@ -1,0 +1,24 @@
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_4932c18ec77eef::t_cc64c349c18393 250-251,253-290
+  s_4932c18ec77eef::t_08b8cf754d0513 252
+packages/workshop-backend/src/ai-models.ts
+  s_4932c18ec77eef::t_2a4eb862db85f5 266-271
+  s_4932c18ec77eef::t_4f73dcf65e19ed 249-250,276,281
+  s_4932c18ec77eef::t_cc64c349c18393 251-265,272-275,277-280,282-306,382-386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dc24ad9294e0081b37c224f91bdceab7521628fa",
+  "prompts": {},
+  "sessions": {
+    "s_4932c18ec77eef": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_009f29c3dffeqlbbYWfd3zF5Km",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

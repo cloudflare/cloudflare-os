@@ -1,0 +1,33 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_decf32f82e3fdd::t_c14153ba5fd4e0 246
+docs/sharing.md
+  s_decf32f82e3fdd::t_a07eb32d7fb53f 155,159,163-165,184-191,193-194
+plans/restricted-data-sharing.md
+  s_da90dfe36d2b89::t_5f343fd9227f55 43-47,49-52,56-59,89,91-103,106-108,191-193,200-202,208,231-235,237,275-277,282-286
+docs/observers.md
+  s_decf32f82e3fdd::t_b81ccfaa50dce7 37-42,100-101,294,298-301,324-351,453-483,485,492-493,497-499,512-519
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8fcdc1993a37ae09b4f95a8fa6ef02557b2213b6",
+  "prompts": {},
+  "sessions": {
+    "s_da90dfe36d2b89": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fba5662f1ffe6K9f2We93QUW3j",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_decf32f82e3fdd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b780c1e-7859-4160-98cc-d323b530cad2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

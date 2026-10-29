@@ -1,0 +1,35 @@
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_18215e41479440::t_dcc9cf1cb1097e 603-611
+AGENTS.md
+  s_18215e41479440::t_e6fd6fdf2b06c1 60
+packages/gatekeeper-mcp/README.md
+  s_18215e41479440::t_ad0627dcb33fd0 222
+scripts/gatekeeper-configurator-vite-config.ts
+  s_18215e41479440::t_fc2c2123172d09 16-28,58-64
+packages/gatekeeper-confluence/README.md
+  s_18215e41479440::t_7feed700910ee4 154
+.agents/skills/write-gatekeeper/SKILL.md
+  s_18215e41479440::t_0e88fbbf8fe8bc 122-128
+packages/gatekeeper-mcp-portal/README.md
+  s_18215e41479440::t_3dabae88c1837d 197
+packages/gatekeeper-slack/README.md
+  s_18215e41479440::t_38ac5c288e5f2d 67
+packages/gatekeeper-notion/README.md
+  s_18215e41479440::t_9a372027663d3e 57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c6e9a5223ecc549e249d7e9e9eb49baf878a2d3e",
+  "prompts": {},
+  "sessions": {
+    "s_18215e41479440": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17289fb1-9f5b-4701-8148-444900569a1e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

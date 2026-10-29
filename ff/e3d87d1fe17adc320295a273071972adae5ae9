@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_526789b8d80518::t_7c08927c4f2525 36-51,148,230-276,424-428,436,465-469,482
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_526789b8d80518::t_301311078bb1a1 63-64,66,203-217,230-238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ffe3d87d1fe17adc320295a273071972adae5ae9",
+  "prompts": {},
+  "sessions": {
+    "s_526789b8d80518": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0c46227-4545-472d-9adb-3f12047aa84d",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

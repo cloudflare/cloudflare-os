@@ -1,0 +1,34 @@
+packages/workshop-backend/src/ai-models.ts
+  s_ce6b95284c6a0e::t_cc4546e22a4492 213-216
+packages/workshop-frontend/src/components/PreApprovalDialog.tsx
+  s_ce6b95284c6a0e::t_f2244fc6b7f6f1 3-4
+packages/workshop-backend/src/overseer.ts
+  s_ce6b95284c6a0e::t_c042b87dec7ba0 3
+  s_ce6b95284c6a0e::t_edae16b9e2fe2d 4315
+  s_ce6b95284c6a0e::t_bc1d23cc927203 4321-4323
+  s_ce6b95284c6a0e::t_bd0841164e1ddd 5388
+  s_ce6b95284c6a0e::t_33fbe44b74ad10 4310-4313,4318
+  s_ce6b95284c6a0e::t_11e4624a95b10d 4309,4316,4319-4320,4324-4331
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_ce6b95284c6a0e::t_c820476ae37da1 1463-1466
+  s_ce6b95284c6a0e::t_d037b0047d64d0 1961
+  s_ce6b95284c6a0e::t_bec99502145e42 2479
+packages/workshop-shared/src/api.ts
+  s_ce6b95284c6a0e::t_270483842022f3 927-928
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "ce45546af0e47b2cfbb13c7a36eba49e7f72d5a7",
+  "prompts": {},
+  "sessions": {
+    "s_ce6b95284c6a0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0afebb1-8396-4b25-b5c0-72b3256a95e6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

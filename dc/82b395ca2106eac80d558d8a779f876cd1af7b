@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/restricted-writes-to-self.test.ts
+  s_e76afbbdc88896::t_9f80f186cb6f24 5-6,132-165
+packages/workshop-backend/src/overseer.ts
+  s_e76afbbdc88896::t_82ec9bad24dc00 4853-4867,4890-4891
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dc82b395ca2106eac80d558d8a779f876cd1af7b",
+  "prompts": {},
+  "sessions": {
+    "s_e76afbbdc88896": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27e5b167-6a90-4bca-9f66-0a020d76005f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

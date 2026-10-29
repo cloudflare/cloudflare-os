@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a726de9bb45000::t_d20d1d7336c6aa 562,588,614,778-781,783-785,788,829,906,912,915,1072
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ce7f0d10e8bf4bb2edffcd6dc1ad4fd559d4acc0",
+  "prompts": {},
+  "sessions": {
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

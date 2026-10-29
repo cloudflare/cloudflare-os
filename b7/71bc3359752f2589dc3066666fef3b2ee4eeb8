@@ -1,0 +1,19 @@
+scripts/env-passthrough.test.js
+  s_18215e41479440::t_af23358cad324c 65-75,146-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b771bc3359752f2589dc3066666fef3b2ee4eeb8",
+  "prompts": {},
+  "sessions": {
+    "s_18215e41479440": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17289fb1-9f5b-4701-8148-444900569a1e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

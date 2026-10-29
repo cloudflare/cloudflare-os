@@ -1,0 +1,23 @@
+AGENTS.md
+  s_04bfec13ba0561::t_73bafb38d7038c 57
+scripts/release/manifest-lib.test.ts
+  s_04bfec13ba0561::t_16776269d52658 18,308-327,343
+scripts/release/manifest-lib.ts
+  s_04bfec13ba0561::t_ad2a070a42e8c9 115-116,250-254
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7a8cfe9ee6e688f212b5ed0546fb305e8771bcf0",
+  "prompts": {},
+  "sessions": {
+    "s_04bfec13ba0561": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6300c1da-fbac-40ad-9b7c-be3104f16453",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

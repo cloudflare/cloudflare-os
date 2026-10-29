@@ -1,0 +1,29 @@
+packages/gatekeeper-google/__tests__/gmail-api.test.ts
+  s_f5d4fa896fc128::t_a08b90a8f321c1 7-8,50-60,62-93
+packages/gatekeeper-google/src/google-api.ts
+  s_f5d4fa896fc128::t_10a205278d6e0e 667-683,706-711,930-935
+packages/gatekeeper-google/src/gmail.ts
+  s_f5d4fa896fc128::t_a48bed3d81a23f 3423-3424,3521-3523
+  s_f5d4fa896fc128::t_d93f0aa67936f5 17-18,987-1025,1031-1064,1067-1068,1071-1092,2839-2840,3003,3005-3006,3011-3025,3027,3030-3032
+  s_f5d4fa896fc128::t_e0b802f8327d08 3010
+  s_f5d4fa896fc128::t_4a157bc46fc5f6 3422
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_f5d4fa896fc128::t_44dc13a1644a82 1253-1333,1337-1360
+  s_f5d4fa896fc128::t_1d05e0fb1049ae 1334-1336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "80419f969d3275aa40578415a2ff6ea366a43ffe",
+  "prompts": {},
+  "sessions": {
+    "s_f5d4fa896fc128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41e3e171-c705-490f-8506-a539c1a11e55",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

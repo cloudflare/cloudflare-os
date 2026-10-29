@@ -1,0 +1,29 @@
+AGENTS.md
+  s_bad780062ecbda::t_458b6df6ff045d 69
+pnpm-workspace.yaml
+  s_fa07440e282490::t_fb74267a7b008e 14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b938d39b65cb0c6f799500426bf5f118465abd40",
+  "prompts": {},
+  "sessions": {
+    "s_bad780062ecbda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8e7bc46-3331-45f4-875d-bd740694c143",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

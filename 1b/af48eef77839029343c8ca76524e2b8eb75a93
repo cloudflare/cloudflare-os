@@ -1,0 +1,67 @@
+packages/workshop-backend/src/deployment-config.ts
+  s_541af6f33f7bfd::t_2a7210734cd2dc 54
+packages/workshop-shared/src/api.ts
+  s_541af6f33f7bfd::t_422132c0a56b44 659-661
+packages/workshop-backend/__tests__/site-logo.test.ts
+  s_541af6f33f7bfd::t_422132c0a56b44 36
+  s_541af6f33f7bfd::t_2a7210734cd2dc 37-38,52
+  s_541af6f33f7bfd::t_facdbd23134cd5 3-8
+packages/workshop-frontend/src/siteLogoUtils.ts
+  s_541af6f33f7bfd::t_1a46670b5ee228 192-197
+  s_541af6f33f7bfd::t_8fd21db92faa98 8-9,20-33,36-86,94-105,163
+  s_541af6f33f7bfd::t_05f59c3e85d5c8 34-35,87-93,173
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_541af6f33f7bfd::t_2a7210734cd2dc 5-7,10-12
+packages/workshop-frontend/src/LoginPage.tsx
+  s_541af6f33f7bfd::t_636adbd524f4e7 62-74
+  s_541af6f33f7bfd::t_ca592c4f22fde6 8,26
+packages/workshop-frontend/src/AdminPage.tsx
+  s_541af6f33f7bfd::t_1a46670b5ee228 8,316
+  s_541af6f33f7bfd::t_ca592c4f22fde6 10,35
+packages/workshop-frontend/src/components/SiteLogo.test.tsx
+  s_541af6f33f7bfd::t_d9a024928042d2 71-85
+packages/workshop-frontend/src/main.tsx
+  s_541af6f33f7bfd::t_ca592c4f22fde6 7,130,142,152,168-173
+  s_541af6f33f7bfd::t_1a46670b5ee228 15,144-151
+packages/workshop-frontend/src/siteLogoUtils.test.ts
+  s_541af6f33f7bfd::t_1a46670b5ee228 5-10,182-187
+  s_541af6f33f7bfd::t_8fd21db92faa98 30-38,77,85,105-108
+  s_541af6f33f7bfd::t_05f59c3e85d5c8 138-139
+  s_541af6f33f7bfd::t_10699eda40fc39 29
+  s_541af6f33f7bfd::t_0f34f1414bafed 4,39-59,109-131,188
+  s_541af6f33f7bfd::t_49e3beeb9d3721 132
+  s_541af6f33f7bfd::t_827f9d35160f08 189
+packages/workshop-backend/src/admin-config.ts
+  s_541af6f33f7bfd::t_2a7210734cd2dc 22-23,45,79
+packages/workshop-backend/src/site-logo.ts
+  s_541af6f33f7bfd::t_2a7210734cd2dc 32,51
+  s_541af6f33f7bfd::t_422132c0a56b44 30-31,33,36
+packages/workshop-frontend/src/SignupPage.tsx
+  s_541af6f33f7bfd::t_636adbd524f4e7 81-93,98
+  s_541af6f33f7bfd::t_ca592c4f22fde6 6,8,12,20,22,80,94-97,99-107
+  s_541af6f33f7bfd::t_560af2a535612d 108
+packages/workshop-frontend/src/ServerConfigContext.tsx
+  s_541af6f33f7bfd::t_ca592c4f22fde6 7,14-16
+  s_541af6f33f7bfd::t_211f21db84ce1d 17-18
+packages/workshop-backend/src/admin-settings.ts
+  s_541af6f33f7bfd::t_422132c0a56b44 212-218,223,243
+  s_541af6f33f7bfd::t_d34ae403445547 205,233,247
+  s_541af6f33f7bfd::t_2a7210734cd2dc 48-49,186,211,219-222,224-232,234-242,244-246
+  s_541af6f33f7bfd::t_facdbd23134cd5 50,206-210,248-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1baf48eef77839029343c8ca76524e2b8eb75a93",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

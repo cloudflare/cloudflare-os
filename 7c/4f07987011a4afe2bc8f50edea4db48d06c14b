@@ -1,0 +1,58 @@
+packages/workshop-backend/src/env.d.ts
+  s_16a3a163f9f88e::t_981d57f39e26ad 19
+README.md
+  s_16a3a163f9f88e::t_e91904a18423a6 97,104-108
+  s_16a3a163f9f88e::t_981d57f39e26ad 96,98
+packages/workshop-backend/vitest.config.ts
+  s_16a3a163f9f88e::t_15c44ce1d4cc55 13,17,20
+  s_16a3a163f9f88e::t_e91904a18423a6 6-8
+  s_16a3a163f9f88e::t_cb4a82531bc388 18-19
+  s_16a3a163f9f88e::t_53f77c26f3aeae 3,11
+packages/workshop-backend/__tests__/ai-gateway-cost.test.ts
+  s_16a3a163f9f88e::t_9e30bf52c8aad5 19-22,64-65
+  s_16a3a163f9f88e::t_f63cc080291089 5
+  s_16a3a163f9f88e::t_15c44ce1d4cc55 2-3,6,8-12,25-34,36-43,46-51,53-57,59-60,62
+  s_16a3a163f9f88e::t_6598c5d09a6394 61
+  s_16a3a163f9f88e::t_31474e7c5eee1d 1,4,7,13-18,23-24,35,44-45,52,58,63,66
+docs/ai-gateway-billing.md
+  s_16a3a163f9f88e::t_e91904a18423a6 17-20,62,70-73
+  s_16a3a163f9f88e::t_981d57f39e26ad 61,63
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_16a3a163f9f88e::t_e91904a18423a6 191,231,235-238,275-276
+  s_16a3a163f9f88e::t_6b920b7a71cf31 186-190,192-195,259-274
+  s_9c097d1c254ef1::t_ed92b2600bb8fb 277
+packages/workshop-backend/src/ai-gateway.ts
+  s_16a3a163f9f88e::t_981d57f39e26ad 25-31,143-144,151-158
+packages/workshop-backend/__tests__/web-fetch.test.ts
+  s_16a3a163f9f88e::t_6b920b7a71cf31 150
+  s_16a3a163f9f88e::t_e91904a18423a6 135
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_16a3a163f9f88e::t_a250e7f0aca3fd 73-86,94
+  s_9c097d1c254ef1::t_21ca6c41b0fc15 113-114
+run-dev-server.js
+  s_9c097d1c254ef1::t_080d54c44ce645 208
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7c4f07987011a4afe2bc8f50edea4db48d06c14b",
+  "prompts": {},
+  "sessions": {
+    "s_16a3a163f9f88e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2c0bb8ffeWRj78Ro5gwWR55",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_9c097d1c254ef1": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_075decda9ffezY28pMsU9HenIq",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

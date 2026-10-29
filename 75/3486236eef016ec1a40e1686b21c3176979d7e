@@ -1,0 +1,65 @@
+packages/workshop-frontend/src/slash-commands.test.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-79
+packages/workshop-frontend/src/routes/index.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 14,86,94-96,103-104
+packages/workshop-shared/src/slash-commands.ts
+  s_f74e55bad93be8::t_0dde982038ea22 1-36
+  s_f74e55bad93be8::t_f944c257d7cfef 37-38
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f74e55bad93be8::t_058f7a2215feca 67-68,73,90,1443,1485-1486,1508,1521,1733-1748,1750,1758,1768,1771-1849,1855,1859,2340,2405,2425-2453,2480-2484,2521-2546,3361,4329,4332,4340-4342,4352,4368,4371,4374-4376,5547,6309,6427
+packages/workshop-shared/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 16-19
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_0dde982038ea22 20,194-196,677-680,744-757
+  s_f74e55bad93be8::t_b89c375b25cd3f 758-759
+packages/workshop-frontend/src/slash-commands.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-52
+packages/workshop-backend/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 28
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_f74e55bad93be8::t_021a1262ae4025 253-255,258-260
+  s_f74e55bad93be8::t_4a9a8df967f60f 5-252,261,282
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,256-257,265-278
+  s_f74e55bad93be8::t_4457eda5e73885 283
+  s_f74e55bad93be8::t_ed8ad4acd2e30a 2-4
+  s_f74e55bad93be8::t_8555d0017276c3 262-264,279-281
+packages/workshop-backend/src/slash-commands.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-372
+pnpm-lock.yaml
+  s_f74e55bad93be8::t_8531f1dc6e8247 455-457,556-558,3095-3098,6283-6284
+packages/workshop-backend/src/timeout.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-22
+packages/workshop-frontend/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 9,39-40
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 941
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_1d8258ed0b3ad9 1094-1097,1102-1103,1105-1106,1113-1114,1116-1117
+  s_f74e55bad93be8::t_402eb715fab803 1655-1657
+  s_f74e55bad93be8::t_1dc6f9f988d226 1625-1654
+packages/workshop-backend/__tests__/timeout.test.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-41
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-410
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_f5d864c1baf77a 3804-3805
+  s_f74e55bad93be8::t_5dc35722351f29 3806
+  s_f74e55bad93be8::t_54b7ef5cc72c61 3
+  s_f74e55bad93be8::t_684976258b3358 5-8,26-30,649-654,884-900,1472-1504,1516-1526,1528,1534,2408,2442-2446,2555-2557,2581,2591,2596,2602,2605,2608,2681-2684,3194-3197,3731,3733,3735,4291,4293,4928,4946-4951,5063-5066,5266-5286,5288-5289,5292-5293,5348-5349,5352-5355,5357,6042,6048-6049,6051-6052,6143,6208-6219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "753486236eef016ec1a40e1686b21c3176979d7e",
+  "prompts": {},
+  "sessions": {
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": null
+    }
+  }
+}

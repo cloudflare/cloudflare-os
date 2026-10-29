@@ -1,0 +1,26 @@
+packages/workshop-frontend/src/BlueprintsPage.test.tsx
+  s_1da8b1c2e6d0c9::t_2e6ed099548446 1-65
+packages/workshop-frontend/src/routes/-explore.test.tsx
+  s_1da8b1c2e6d0c9::t_2e6ed099548446 1-169
+packages/workshop-frontend/src/BlueprintsPage.tsx
+  s_1da8b1c2e6d0c9::t_2e6ed099548446 18-22,83-99,119
+packages/workshop-frontend/src/routes/explore.tsx
+  s_1da8b1c2e6d0c9::t_cd9cc414194bc3 1-2,4-5,9-18,20-25,27-29,36-58,60-63,65
+  s_1da8b1c2e6d0c9::t_2e6ed099548446 6,30-32,34-35,64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e9fbff68ef117b83dc40d17dd782157e742a6342",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

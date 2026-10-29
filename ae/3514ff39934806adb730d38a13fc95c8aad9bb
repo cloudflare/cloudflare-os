@@ -1,0 +1,86 @@
+packages/workshop-backend/src/agent-skills.ts
+  s_f74e55bad93be8::t_14c45d03d84fb5 48,57-58,100
+  s_f74e55bad93be8::t_9fd665b9e92700 1-47,49-56,59-99,101-280
+packages/workshop-backend/src/agent-catalog.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 3,16-29,31,33-41,43-44,46-47,57,60-64,66,69-73,80,104-106
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_f74e55bad93be8::t_4334600056f95d 3227-3228
+  s_f74e55bad93be8::t_9fd665b9e92700 43,52,2948-2949,2989-2991,3030-3037,3185-3190,3224-3226
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 4,30-32,424-428,437,522-527,1605-1622,1662,2647-2648,2691,3119-3145,3149,3188,3272-3275,4027,4038-4040,5336-5337,5342,5344-5345,5350,5358,5360,5387,5422,5424,5445
+  s_f74e55bad93be8::t_c5af4ca7feba8c 5347-5348
+  s_f74e55bad93be8::t_cc75443ae714e5 3
+  s_f74e55bad93be8::t_684976258b3358 5338-5340
+packages/gatekeeper-context/src/context-collection.ts
+  s_f74e55bad93be8::t_35188b5df8656a 538-540,542-552,554,571-574
+  s_f74e55bad93be8::t_4e7396e10dce77 8-9,11
+  s_f74e55bad93be8::t_9fd665b9e92700 16-19,65-69,76,90-95,112,181,192-271,313,322,337-350,355,357-358,374,377-378,381-382,399,441-449,452-453
+  s_f74e55bad93be8::t_185908d1626c46 334
+packages/gatekeeper-context/src/context-types.ts
+  s_f74e55bad93be8::t_b500e9988f4afb 67-80
+  s_f74e55bad93be8::t_9fd665b9e92700 145-172,189-193,203,304
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_f74e55bad93be8::t_2826550356be57 9-11,47,51,56-57,62,289,293,300-301,306
+  s_f74e55bad93be8::t_0ec2514b6d6ce9 45
+  s_f74e55bad93be8::t_9fd665b9e92700 5,8,18,22-26,42-44,46,48-50,52-55,58-61,63-68,229-249,257,265-270,282-288,290-292,294-299,302-305,307-311,319-328,333-334
+  s_f74e55bad93be8::t_cdc1cb8b516eba 16,331
+packages/workshop-backend/__tests__/agent-skills.test.ts
+  s_f74e55bad93be8::t_c3689fb1c1e47a 6,8,13-16,50,67-80
+  s_2fe24136c207c6::t_e274a1ff981131 184
+  s_f74e55bad93be8::t_9fd665b9e92700 1-5,7,9-12,17-49,51-66,81-183,197-319
+  s_f74e55bad93be8::t_42af9d273f3896 185-196
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1328-1342,1363-1365,1570-1571
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 3-4,39-52,61-70,112-113,115,122-125,127,129-130,135,137-141,143,146-147,151-154,156,158-159,163,166,169-173,175-196
+packages/gatekeeper-context/package.json
+  s_f74e55bad93be8::t_9fd665b9e92700 22-23
+  s_f74e55bad93be8::t_b087d0971c8724 21
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f74e55bad93be8::t_26f5bf93432a1c 2447
+  s_f74e55bad93be8::t_079a507f6dcd78 2454
+  s_f74e55bad93be8::t_9fd665b9e92700 466-471,2431-2442,2449,5845-5854,5856-5861
+  s_f74e55bad93be8::t_c344e24cd398a0 5855
+  s_f74e55bad93be8::t_093405ba75c6e3 5862
+packages/gatekeeper-context/src/agent-skill.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1-6,8-140
+  s_f74e55bad93be8::t_b500e9988f4afb 7
+packages/gatekeeper-context/src/library-read.ts
+  s_f74e55bad93be8::t_cdc1cb8b516eba 8,68
+  s_f74e55bad93be8::t_9fd665b9e92700 7,9,11,20,39,45,47,149-152,155-158,160-170,173-174,176-190,194-199
+  s_f74e55bad93be8::t_b500e9988f4afb 12
+  s_f74e55bad93be8::t_20aaa8ad9e5f24 175
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 81-82,109-129,131-133,135-136,138-139,142-144,147-164,961-962
+  s_f74e55bad93be8::t_cc75443ae714e5 960
+packages/workshop-backend/src/agent.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1,11-16,31,95-98,827-832,901-902,965-968,1080,1326,1719,1726-1743,1745-1746,1748,1826-1834,1855-1865,1867-1871,1873,1875-1877
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1-208
+pnpm-lock.yaml
+  s_f74e55bad93be8::t_6d819681a490b8 81,103-108,148,160,187,190,193,196,340,415,421,473,479,500,530,543,552,558,561,3657-3661,4054,4061,4877,4882,4922,4935,5026,5034,5055,5061,5063,5069,6706,6712,6727,6730,6734,6739,6744,6758,6760,6764,6782-6783,6802,6805,6822,6903-6904
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ae3514ff39934806adb730d38a13fc95c8aad9bb",
+  "prompts": {},
+  "sessions": {
+    "s_2fe24136c207c6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_097d294b8ffeFJdEbz07iVJa3p",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": null
+    }
+  }
+}

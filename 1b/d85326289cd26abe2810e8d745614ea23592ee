@@ -1,0 +1,33 @@
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/editor-harness.ts
+  s_d78fe856f76a3c::t_830dcfd4a59ff6 19-21,28,34-37,56
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/editor.test.ts
+  s_d78fe856f76a3c::t_06e07b443e07c9 608
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/links.test.ts
+  s_d78fe856f76a3c::t_a3f18b5a507f69 1-179
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/read-only.test.ts
+  s_d78fe856f76a3c::t_aee0e0059a53be 85,87-88
+packages/workshop-backend/format-blueprints/workspace-pages/files/README.md
+  s_d78fe856f76a3c::t_3f99406e8c098a 275-287,373-375,412-413
+packages/workshop-backend/format-blueprints/workspace-pages/files/client.ts
+  s_d78fe856f76a3c::t_29006774571d86 24,115,184-189,197,274,279,301,309,424,440,501
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/editor.ts
+  s_d78fe856f76a3c::t_7a91760f1b0e8a 80-81,129,664,666,668-673,888-895,906-918,1493-1497,1502-1524
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/link-popover.ts
+  s_d78fe856f76a3c::t_bc4772733c0017 1-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1bd85326289cd26abe2810e8d745614ea23592ee",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

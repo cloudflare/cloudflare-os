@@ -1,0 +1,21 @@
+.github/workflows/release-trigger.yml
+  s_d5a5c2310a35ff::t_f49b67c03b6e45 1-166
+scripts/release/build-release.mjs
+  s_d5a5c2310a35ff::t_0ed7c10ef6d03c 96-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "db66f6f40e9116506270aa3e9a63a7e9d135bec4",
+  "prompts": {},
+  "sessions": {
+    "s_d5a5c2310a35ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2811bfc5-5e06-4bfd-b283-0eb104af8476",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

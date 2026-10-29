@@ -1,0 +1,23 @@
+.github/workflows/bonk-pr.yml
+  s_a4719ccda0435e::t_823e4ed97c4559 159-163
+.github/workflows/bonk.yml
+  s_a4719ccda0435e::t_1c13919b3471d1 60-64
+.github/workflows/workshop-evals-pr.yml
+  s_a4719ccda0435e::t_1294a4e04f7b9b 446-450
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "758647618654a3889c0d5e65d52ff092c5e34cc4",
+  "prompts": {},
+  "sessions": {
+    "s_a4719ccda0435e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "403a253c-2eda-40ef-9183-923692a029f0",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

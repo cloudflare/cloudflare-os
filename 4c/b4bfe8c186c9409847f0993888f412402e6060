@@ -1,0 +1,65 @@
+AGENTS.md
+  s_bad780062ecbda::t_458b6df6ff045d 69
+packages/gatekeeper-cloudflare/package.json
+  s_bad780062ecbda::t_136cc1071b4243 16
+packages/gatekeeper-confluence/package.json
+  s_bad780062ecbda::t_c6c5a8003dfd4f 18
+packages/gatekeeper-context/package.json
+  s_bad780062ecbda::t_effeb703975932 22
+packages/gatekeeper-email/package.json
+  s_bad780062ecbda::t_e8511d05c067dd 18
+packages/gatekeeper-github/package.json
+  s_bad780062ecbda::t_fc8cc7e05d8030 19
+packages/gatekeeper-google/package.json
+  s_bad780062ecbda::t_335c799acae0f1 18
+packages/gatekeeper-homeassistant/package.json
+  s_bad780062ecbda::t_40a1d391f9cf16 17
+packages/gatekeeper-linear/package.json
+  s_bad780062ecbda::t_5c91dd5d6df8db 18
+packages/gatekeeper-mcp-portal/package.json
+  s_bad780062ecbda::t_b2bc1e787739f4 20
+packages/gatekeeper-mcp/package.json
+  s_bad780062ecbda::t_4e9e72cf00240d 20
+packages/gatekeeper-notion/package.json
+  s_bad780062ecbda::t_4cded1eda9f9d4 18
+packages/gatekeeper-scheduler/package.json
+  s_bad780062ecbda::t_238e912e4e7caa 21
+packages/gatekeeper-slack/package.json
+  s_bad780062ecbda::t_865227534f939c 17
+packages/gatekeeper-spotify/package.json
+  s_bad780062ecbda::t_2284b5f9109fb4 17
+packages/gatekeeper-supabase/package.json
+  s_bad780062ecbda::t_169aa39cbc043c 18
+packages/gatekeeper-zoominfo/package.json
+  s_bad780062ecbda::t_a805881168f079 17
+packages/workshop-backend/package.json
+  s_bad780062ecbda::t_d1109afbee7de6 27
+pnpm-lock.yaml
+  s_fa07440e282490::t_7050e04fb724e0 102-103,124-125,158-159,276-277,304-305,332-333,360-361,385-386,413-414,444-445,469-470,497-498,576-577,598-599,623-624,645-646,768-769,3103-3104,6949
+pnpm-workspace.yaml
+  s_fa07440e282490::t_fb74267a7b008e 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4cb4bfe8c186c9409847f0993888f412402e6060",
+  "prompts": {},
+  "sessions": {
+    "s_bad780062ecbda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8e7bc46-3331-45f4-875d-bd740694c143",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

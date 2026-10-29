@@ -1,0 +1,45 @@
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_ddf1c0d43c1994 79-110
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_17774dff98e895 1175-1176,1184,1410-1422,1881,1885,1889
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 1912
+  s_1dfdf61332f5c7::t_c25f8f223a6bc5 1886-1888
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_8eb329c7f0761c 241
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 240
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_a10e53ad0f90ff 3511,3521
+  s_1dfdf61332f5c7::t_bd914bce41fe8c 3,14
+  s_1dfdf61332f5c7::t_a2039ece597d00 812
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 128-133,136-139,3019-3020,3514,3523
+  s_1dfdf61332f5c7::t_3ad6a3e067bab4 7445
+  s_1dfdf61332f5c7::t_db9ea584a741d7 7740-7741,7820
+  s_1dfdf61332f5c7::t_0d098b16177c59 816-817
+  s_1dfdf61332f5c7::t_03a6adb0968e42 3504-3505,3513,3516,3532
+  s_1dfdf61332f5c7::t_cf8c6a38ac4a87 813-815
+  s_1dfdf61332f5c7::t_89f157e8e8ad1a 3489-3503,3519-3520,3525-3531
+  s_1dfdf61332f5c7::t_65d122bce18dc5 3508-3510
+  s_1dfdf61332f5c7::t_7dd6b2172ca03c 126-127,134-135
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 11,3506-3507,3512,3515,3517-3518,3522,3524
+  s_1dfdf61332f5c7::t_3231c4c5759a72 7442-7444,7446-7448,8306-8308
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 3075-3077
+  s_1dfdf61332f5c7::t_d519bec36cd85c 3533-3534
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_307482e965ac20 4395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "94d806d1a52b93b68cd2f2cc68b8e08fd3f38c41",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

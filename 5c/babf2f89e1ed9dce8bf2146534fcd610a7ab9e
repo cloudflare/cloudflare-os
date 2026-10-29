@@ -1,0 +1,21 @@
+packages/typed-storage/__tests__/index.test.ts
+  s_b831f88f249552::t_1245760d86ac26 2-3,141-246
+packages/typed-storage/src/index.ts
+  s_b831f88f249552::t_1b872b8e3b3f67 175,186-191,198-225,243-244,720-721,724-727,730,732,741,747,761
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5cbabf2f89e1ed9dce8bf2146534fcd610a7ab9e",
+  "prompts": {},
+  "sessions": {
+    "s_b831f88f249552": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "010fdb2a-8792-46e0-84cc-2e828765473b",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

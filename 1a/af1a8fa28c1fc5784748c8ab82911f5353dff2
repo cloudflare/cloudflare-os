@@ -1,0 +1,19 @@
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_3dacb3241b0d1d::t_98732cfb619e53 122-125,155,163,165-167,170,186,193-194,198-199,202,207,210,214,497-500,569-570,588,660-661
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1aaf1a8fa28c1fc5784748c8ab82911f5353dff2",
+  "prompts": {},
+  "sessions": {
+    "s_3dacb3241b0d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6d45d09-7703-4cdc-ad53-ddc1f9ca4ec6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

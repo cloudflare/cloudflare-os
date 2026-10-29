@@ -1,0 +1,27 @@
+packages/workshop-backend/src/custom-model.ts
+  s_1c28d19ad743d0::t_3ab6c5ea1fecb2 68-69,71
+  s_1c28d19ad743d0::t_b5d27db0c248c7 20-27,31
+  s_1c28d19ad743d0::t_cd773d39e381b4 1,4-6
+packages/workshop-backend/src/user.ts
+  s_1c28d19ad743d0::t_50eefdf3ae365f 487-488,491
+  s_1c28d19ad743d0::t_d6afa01e6a5445 490
+  s_1c28d19ad743d0::t_f6ae13c4dd578c 439-443
+AGENTS.md
+  s_1c28d19ad743d0::t_f6e51808f2128d 33-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "8dc26ba30a0c7266534a4f1244cdf3195952b7fd",
+  "prompts": {},
+  "sessions": {
+    "s_1c28d19ad743d0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe75c0fd-6b65-4f3d-8809-6f39a25ddea2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

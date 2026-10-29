@@ -1,0 +1,111 @@
+packages/workshop-frontend/src/GadgetCodeInterface.tsx
+  s_e3eb00eefefcec::t_2af1474c593fcf 147,537,591-593
+  s_e3eb00eefefcec::t_810475cad5d228 602-603,634,636-637,645,659,661-662
+  s_e3eb00eefefcec::t_80ee94e13d67e1 150,152,154-156
+  s_e3eb00eefefcec::t_8bfdf04e580512 148,151,153,569,573,590,630,635,638,660
+  s_e3eb00eefefcec::t_1c524ac8d102ab 149
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_e3eb00eefefcec::t_38f67cdb79a99d 151,581
+  s_e3eb00eefefcec::t_c5a9b15b49f9e2 640
+  s_e3eb00eefefcec::t_707b764055490a 1055
+  s_e3eb00eefefcec::t_47d7cdc65649dc 39,141-150,152,175,621
+  s_e3eb00eefefcec::t_c182f174f8c50e 176-177
+  s_e3eb00eefefcec::t_b7f1224443183f 616-620,622-623,647,655-663,1054
+packages/workshop-frontend/src/test/testUtils.ts
+  s_e3eb00eefefcec::t_5352c792abac00 1-45
+packages/workshop-frontend/src/GadgetUI.test.tsx
+  s_e3eb00eefefcec::t_d4119e5b298f01 69,71-73,85-88,98,110-111,117,210-211,250-251,253-264,266-279,281-292,294-297
+  s_e3eb00eefefcec::t_a78a81078e4ed4 54,56-61,93,105,118-132,134-146
+  s_e3eb00eefefcec::t_d73fbd8d27d659 84,109,112
+  s_e3eb00eefefcec::t_cee4031e97404c 21-23,28-32,34,40-43,51-53,70,114,116,161-164,171-173
+  s_e3eb00eefefcec::t_85035052588c3c 148-159,165-170,298
+  s_e3eb00eefefcec::t_2b6d9d7a4fff83 299-315,317-332
+  s_e3eb00eefefcec::t_6b38525c5a7de8 49-50,178-196,198-209
+  s_e3eb00eefefcec::t_00eeb8adc61e2a 89-91,101-103,108,113
+  s_e3eb00eefefcec::t_b518a2a529001f 1-6,8,17,33,35-39,44,62-68,74-83,92,94-96,99-100,104,106-107,147,333
+  s_e3eb00eefefcec::t_869eb61bd16955 7,9-16,45-48,97,115,133,160,176,197,265,293,316
+  s_e3eb00eefefcec::t_0c013cd31de523 18-20,24-27,252,280
+  s_e3eb00eefefcec::t_cb89d43930cf22 55
+  s_e3eb00eefefcec::t_7d6b0828669133 174-175,177
+  s_e3eb00eefefcec::t_6e9fa7aeb47d6f 212-249
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e3eb00eefefcec::t_c182f174f8c50e 3974-3986,4038,4236-4242,4244-4247,4249-4257
+  s_e3eb00eefefcec::t_f6835a425073d6 3993-3996,4019,4037,4219-4220
+  s_e3eb00eefefcec::t_2747734fa1b909 4259
+  s_e3eb00eefefcec::t_8bfdf04e580512 4216-4218
+  s_e3eb00eefefcec::t_810475cad5d228 3991-3992,3997-4000,4002,4018,4036,4049,4072,4079,4134,4221,4231-4232,4269-4271
+packages/workshop-frontend/src/GadgetCodeInterface.test.tsx
+  s_e3eb00eefefcec::t_d5365bbf54ccc8 6,10,52-71,195-209,211-226
+  s_e3eb00eefefcec::t_16a3eb4e02edcd 144
+  s_e3eb00eefefcec::t_f910e974f6c1b0 33-35,44-47
+  s_e3eb00eefefcec::t_9c182580ee0a11 161-194,227-228
+  s_e3eb00eefefcec::t_152a5061c919c5 9,16-17,22-27,42,48,78,118-143,145-159
+  s_e3eb00eefefcec::t_8343d5c499f497 75,86,210
+  s_e3eb00eefefcec::t_c78c6b2f2f52a1 7,11,13-14
+  s_e3eb00eefefcec::t_14b602ed3ef4f9 1-5,8,12,15,18-21,28-32,36-41,43,49-51,72-74,76-77,79-85,87-117,160,229
+packages/workshop-frontend/src/ChatInterface.test.tsx
+  s_e3eb00eefefcec::t_8a45637b71c70f 6,14,76-80,85-90,92-98,281-284,291-292,299,301-305,308-310,313-314,322-323
+  s_e3eb00eefefcec::t_02b20f200a8987 55,99-123,146,162,182-185,188,216,220,240,270,300
+  s_e3eb00eefefcec::t_f910e974f6c1b0 68
+  s_e3eb00eefefcec::t_52489d80e7514a 19
+  s_e3eb00eefefcec::t_fbdc135073b8c6 60,67,229-239,241-269,271-280
+  s_e3eb00eefefcec::t_9f4737fe6b384e 81-84,91,285-290,312,324
+  s_e3eb00eefefcec::t_14b602ed3ef4f9 8-13,57-59,61,69-72,174-181,186-187,189-199
+  s_e3eb00eefefcec::t_c78c6b2f2f52a1 7,15,17-18
+  s_e3eb00eefefcec::t_8343d5c499f497 127,138,293-298,306-307,311,315-321
+  s_e3eb00eefefcec::t_b67535c6030059 156-161,163-173,200
+  s_e3eb00eefefcec::t_1a3e44e9183a50 1-5,16,20-54,56,62-66,73-75,124-126,128-137,139-145,147-155,326
+  s_e3eb00eefefcec::t_44d82536520cf7 201-215,217-219,221-228,325
+packages/workshop-frontend/src/useGadgetConnection.ts
+  s_e3eb00eefefcec::t_cb89d43930cf22 21-22,26,82,96,144,221
+  s_e3eb00eefefcec::t_c182f174f8c50e 38-63,231-233,237,240
+  s_e3eb00eefefcec::t_47d7cdc65649dc 1-20,23-25,27-37,64-69,72-81,83-95,97-143,145-220,222-230,235-236,238-239,241-253,255-259,264-270,272-273
+  s_e3eb00eefefcec::t_053fde1f510385 70-71,234,254
+  s_e3eb00eefefcec::t_38f67cdb79a99d 260-263,271
+packages/workshop-frontend/src/useGadgetConnection.test.tsx
+  s_e3eb00eefefcec::t_ab09a007ef7e04 1-124,126-147,149-166,168-191,193-208,210-232,234-256,258-281,283-306,308-322,324-352,354-367,369-371,373-377
+  s_e3eb00eefefcec::t_0cff47f7340fad 125,148,167,192,209,233,257,282,307,323,353,368,372
+packages/workshop-frontend/src/GadgetEditor.test.tsx
+  s_e3eb00eefefcec::t_0dc51ff7878f77 1-17,19-21,25-27,31-112,116-126
+  s_e3eb00eefefcec::t_bfef86c68948d2 113-115
+  s_e3eb00eefefcec::t_475956b86028f5 18,22-24,28-30
+packages/workshop-frontend/src/test/inMemoryRpc.ts
+  s_e3eb00eefefcec::t_e4b3b81cca69aa 1-18
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_e3eb00eefefcec::t_57ec93b8661b01 39
+  s_e3eb00eefefcec::t_ddce0aeff6c8af 38,40
+  s_e3eb00eefefcec::t_8343d5c499f497 13
+  s_e3eb00eefefcec::t_e4b3b81cca69aa 1-6,8,10,14-37,41-65,67-91
+  s_e3eb00eefefcec::t_a1f3684f9c7c0a 7,9,11-12,66
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_e3eb00eefefcec::t_8bfdf04e580512 266,270
+  s_e3eb00eefefcec::t_2747734fa1b909 320,374,388-396
+  s_e3eb00eefefcec::t_2af1474c593fcf 162,166-167
+  s_e3eb00eefefcec::t_995631347319da 169
+  s_e3eb00eefefcec::t_1dd4c0eed62d14 229
+  s_e3eb00eefefcec::t_45cf68b29def85 247,258,268
+  s_e3eb00eefefcec::t_c5a9b15b49f9e2 144-154,251,265
+  s_e3eb00eefefcec::t_2b6d9d7a4fff83 135,246,255-256
+  s_e3eb00eefefcec::t_c182f174f8c50e 155-159,164,174,217,289
+  s_e3eb00eefefcec::t_78fe9234e4c5d2 160-161,163,165,168
+  s_e3eb00eefefcec::t_98fa8fb008521f 197-198,205,215,221,226
+  s_e3eb00eefefcec::t_b7f1224443183f 218,248,254,263,267
+  s_e3eb00eefefcec::t_f210601d6b189c 269
+  s_e3eb00eefefcec::t_092aedbd5cf451 233-234,257,259-260,286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a0410d4e5c716906b45eda7ef5b25ca1267a3352",
+  "prompts": {},
+  "sessions": {
+    "s_e3eb00eefefcec": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b1b405dffeCnKNg5y1Hwfsr2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

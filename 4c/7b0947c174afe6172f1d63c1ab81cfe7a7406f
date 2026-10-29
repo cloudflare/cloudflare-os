@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/Activity.test.tsx
+  s_74eb0b1cbb84f7::t_94cecb376984dc 4,7-8,11,91-124
+packages/workshop-frontend/src/Activity.tsx
+  s_74eb0b1cbb84f7::t_38cad9179d840c 25,208-212
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_74eb0b1cbb84f7::t_2914a58d0803c6 4453-4457
+packages/workshop-frontend/src/Connections.tsx
+  s_74eb0b1cbb84f7::t_abbf09c8dba9bc 25,100-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4c7b0947c174afe6172f1d63c1ab81cfe7a7406f",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

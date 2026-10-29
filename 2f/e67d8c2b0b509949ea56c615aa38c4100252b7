@@ -1,0 +1,25 @@
+package.json
+  s_f52c829e67c65f::t_9cdf181badb07c 28
+pnpm-lock.yaml
+  s_f52c829e67c65f::t_26bf3197698ebb 46-48
+scripts/build-gatekeeper-configurator.test.ts
+  s_f52c829e67c65f::t_90b9578b57f14c 4,11-12,18-29,34,38,42,57,70-107,185-186,194,361-391
+scripts/build-gatekeeper-configurator.ts
+  s_f52c829e67c65f::t_1f139e29615e17 211,651,654-658,666-672
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2fe67d8c2b0b509949ea56c615aa38c4100252b7",
+  "prompts": {},
+  "sessions": {
+    "s_f52c829e67c65f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbbebbe30ffepFODEx3lndBmbN",
+        "model": "@cf/moonshotai/kimi-k2.6"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

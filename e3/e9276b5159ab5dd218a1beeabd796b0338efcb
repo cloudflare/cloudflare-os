@@ -1,0 +1,51 @@
+packages/gatekeeper-x/__tests__/configurator-url.test.ts
+  s_6e159c0858b8f9::t_7338093ee4c05a 1-160
+packages/gatekeeper-x/__tests__/env.d.ts
+  s_6e159c0858b8f9::t_7af5091360ab13 1-18
+packages/gatekeeper-x/__tests__/fake-kv.ts
+  s_6e159c0858b8f9::t_60c6eac326651d 1-26
+packages/gatekeeper-x/__tests__/workerd/account.test.ts
+  s_6e159c0858b8f9::t_5d64f0040629a0 1-216
+packages/gatekeeper-x/__tests__/workerd/actions.test.ts
+  s_6e159c0858b8f9::t_269c616fa7016a 1-268
+packages/gatekeeper-x/__tests__/workerd/fake-x.ts
+  s_6e159c0858b8f9::t_4eb9fbd5be0be1 1-418
+packages/gatekeeper-x/__tests__/workerd/observers.test.ts
+  s_6e159c0858b8f9::t_50c61712f9043b 1-92
+packages/gatekeeper-x/__tests__/workerd/reads.test.ts
+  s_6e159c0858b8f9::t_96378ceb764afa 1-212
+packages/gatekeeper-x/__tests__/workerd/resources.test.ts
+  s_6e159c0858b8f9::t_0c47a4104c5e76 1-161
+packages/gatekeeper-x/__tests__/workerd/worker.ts
+  s_6e159c0858b8f9::t_f08a13b1c0e477 1-226
+packages/gatekeeper-x/__tests__/x-actions.test.ts
+  s_6e159c0858b8f9::t_e8439598647356 1-185
+packages/gatekeeper-x/__tests__/x-api.test.ts
+  s_6e159c0858b8f9::t_bf8a30cd2eee8c 1-136
+packages/gatekeeper-x/__tests__/x-env.test.ts
+  s_6e159c0858b8f9::t_e9328697a304fc 1-72
+packages/gatekeeper-x/__tests__/x-normalize.test.ts
+  s_6e159c0858b8f9::t_5098fc05ea7ae1 1-165
+packages/gatekeeper-x/__tests__/x-simulation.test.ts
+  s_6e159c0858b8f9::t_04ca611bcd113c 1-149
+packages/gatekeeper-x/__tests__/x-text.test.ts
+  s_6e159c0858b8f9::t_7b064660248062 1-58
+packages/gatekeeper-x/__tests__/x-urls.test.ts
+  s_6e159c0858b8f9::t_ce01b254993743 1-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e3e9276b5159ab5dd218a1beeabd796b0338efcb",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

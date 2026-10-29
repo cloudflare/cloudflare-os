@@ -1,0 +1,40 @@
+packages/workshop-backend/src/overseer.ts
+  s_a726de9bb45000::t_81bfa307479021 8569,8572,8574
+  s_a726de9bb45000::t_d97bbc791c90a1 7890-7893,7909-7919,7935-7940,7942-7953
+packages/workshop-backend/__tests__/observer-serialization.test.ts
+  s_a726de9bb45000::t_4579a4e29e8332 1-101,152-183
+packages/gatekeeper-google/package.json
+  s_4c4437c01da8c5::t_f144a5f446a5b1 23
+packages/gatekeeper-google/vite.config.ts
+  s_4c4437c01da8c5::t_54ce80fc994bc6 3
+packages/gatekeeper-google/vitest.config.ts
+  s_4c4437c01da8c5::t_8a31b1ad9b0dc3 1-8
+pnpm-lock.yaml
+  s_4c4437c01da8c5::t_1090bad043af3c 371-373
+plans/restricted-data-sharing.md
+  s_a726de9bb45000::t_7cdc7b3a4ee8c7 1-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3e48350ff4036560fea2ff2a2fe76c193dd248d9",
+  "prompts": {},
+  "sessions": {
+    "s_4c4437c01da8c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "635d6ba7-0072-4d35-9467-ff060ac90333",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4e98291cc0ab6aee00cae8bc343baf8e2d9956f",
+  "prompts": {},
+  "sessions": {
+    "s_3164a040f402c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52538c21-bcf9-4d71-9396-3c198fdfd111",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_cd3ff01868230d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33b7ebb8-f5f9-43e6-ad4a-4c81c0fa192f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

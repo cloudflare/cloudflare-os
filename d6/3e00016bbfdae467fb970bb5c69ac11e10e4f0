@@ -1,0 +1,26 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_c85b5e8e7db407::t_a7e4fbd7575b69 3197,3959-3962,4157
+  s_c85b5e8e7db407::t_5960d01228ac22 3840,3842-3844,3847
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_c85b5e8e7db407::t_88b3c892a11157 1038
+  s_c85b5e8e7db407::t_052b00b0a591b7 490,493
+  s_c85b5e8e7db407::t_190683d2ffca9b 451-453,455,466,472-473,483-485,488,494
+  s_c85b5e8e7db407::t_a7e4fbd7575b69 292-295,332-334
+  s_c85b5e8e7db407::t_5960d01228ac22 449-450,454,457,460-464,469-471,476-481,487,491-492,500,509
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d63e00016bbfdae467fb970bb5c69ac11e10e4f0",
+  "prompts": {},
+  "sessions": {
+    "s_c85b5e8e7db407": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_091cd4e3effeCPcEBiDsHXaRWk",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

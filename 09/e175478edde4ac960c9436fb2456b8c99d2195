@@ -1,0 +1,49 @@
+packages/gatekeeper-google/README.md
+  s_f8f4e8eafb49cb::t_6c83a04be03375 436-437
+  s_010272bf0842e6::t_bda9496a98f133 438
+packages/gatekeeper-google/src/sheets-simulation.ts
+  s_f8f4e8eafb49cb::t_8de6a5fc2c2eb5 449-467
+  s_010272bf0842e6::t_89bd6d6a314e53 468-472
+packages/gatekeeper-google/__tests__/workerd/sheets-actions.test.ts
+  s_f8f4e8eafb49cb::t_950d3cba6db384 1148-1159
+  s_010272bf0842e6::t_d778e9b562c8f5 1160-1167
+packages/gatekeeper-google/src/sheets.ts
+  s_f8f4e8eafb49cb::t_8de6a5fc2c2eb5 527-529
+  s_010272bf0842e6::t_e7a04efa0aad4c 457,534
+  s_010272bf0842e6::t_cff59fa93f768e 34-35
+  s_010272bf0842e6::t_97d5be68717d9f 458-460
+  s_f8f4e8eafb49cb::t_2a4a172b898cfc 33
+  s_f8f4e8eafb49cb::t_1db6a72fffaad7 530-533
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_010272bf0842e6::t_8963fa0345b410 151
+  s_f8f4e8eafb49cb::t_18e68795565b85 149-150
+packages/gatekeeper-google/__tests__/sheets-simulation.test.ts
+  s_010272bf0842e6::t_513e6495f9295d 8
+  s_f8f4e8eafb49cb::t_90dcd2e9aa5667 300
+  s_f8f4e8eafb49cb::t_950d3cba6db384 288-298
+  s_f8f4e8eafb49cb::t_7b1d6d1b5fce56 299
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "09e175478edde4ac960c9436fb2456b8c99d2195",
+  "prompts": {},
+  "sessions": {
+    "s_010272bf0842e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f8f4e8eafb49cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "96d8cda6-efce-42a7-8834-fd3434ebce3b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}

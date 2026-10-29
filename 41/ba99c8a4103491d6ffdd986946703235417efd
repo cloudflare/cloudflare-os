@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/workshop-sharing.test.ts
+  s_d78fe856f76a3c::t_226016b0699923 186-242
+packages/integration-tests/__tests__/workshop-wiki.test.ts
+  s_d78fe856f76a3c::t_8e08ae4fd3d2f7 1-262
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "41ba99c8a4103491d6ffdd986946703235417efd",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

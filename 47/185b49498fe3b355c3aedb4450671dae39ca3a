@@ -1,0 +1,20 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_6caf5be9d3471a 5472,5474,5476
+  s_e25e29d8ebebad::t_2ff8beaf679c6e 5465-5468,5471,5473,5475,5477-5479
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "47185b49498fe3b355c3aedb4450671dae39ca3a",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

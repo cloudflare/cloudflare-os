@@ -1,0 +1,247 @@
+packages/gatekeeper-email/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/gatekeeper-slack/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_017f2cc25a2960::t_6ae763783fa321 6,70
+packages/mcp-shared/src/portal.ts
+  s_017f2cc25a2960::t_6ae763783fa321 96-138,144-147
+packages/gatekeeper-supabase/src/supabase.ts
+  s_017f2cc25a2960::t_6ae763783fa321 5,185
+packages/gatekeeper-github/__tests__/github-api.test.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-103
+scripts/release/manifest-lib.mjs
+  s_017f2cc25a2960::t_6ae763783fa321 55-68,222-225,232-233
+packages/gatekeeper-confluence/src/confluence-markdown.ts
+  s_017f2cc25a2960::t_6ae763783fa321 124-126,133
+packages/gatekeeper-zoominfo/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/backend-utils/src/tracing.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-46
+packages/gatekeeper-mcp/src/mcp.ts
+  s_017f2cc25a2960::t_6ae763783fa321 13,88
+packages/workshop-frontend/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 38
+packages/gatekeeper-context/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 29,35-36,44,56-57
+packages/gatekeeper-context/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2,11514,12028,12096,12516,12951
+packages/gatekeeper-spotify/src/spotify.ts
+  s_017f2cc25a2960::t_6ae763783fa321 5,185
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,34,187-188,198-199,207-208,211,220
+packages/gatekeeper-email/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 24
+packages/gatekeeper-linear/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/gatekeeper-spotify/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 22
+packages/gatekeeper-supabase/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 23
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,24,27,486,491,494,516,520-521,532-533,536,539-540,542,551
+.github/workflows/ci.yml
+  s_017f2cc25a2960::t_6ae763783fa321 1-63
+packages/gatekeeper-cloudflare/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_017f2cc25a2960::t_6ae763783fa321 5,208
+packages/gatekeeper-email/src/email.ts
+  s_017f2cc25a2960::t_6ae763783fa321 18,68
+packages/workshop-backend/wrangler.jsonc
+  s_017f2cc25a2960::t_6ae763783fa321 97-100
+packages/gatekeeper-cloudflare/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 21
+packages/workshop-frontend/src/useAuth.ts
+  s_017f2cc25a2960::t_6ae763783fa321 97-101,115,124
+packages/gatekeeper-zoominfo/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 22
+packages/workshop-frontend/src/Connections.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 73-74
+packages/mcp-shared/src/http.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1,22
+packages/gatekeeper-notion/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/gatekeeper-google/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 25
+packages/workshop-frontend/src/rpcErrors.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-108
+packages/gatekeeper-mcp-portal/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2,425,427-428,484-487,517,521,533,618,3500,3506-3774,9050,9054,10030-10033,10131,10133,10186-10187,10232-10240,10698-11004,11006-11008,11010,11012-11025,11027,11029-11041,11043,11045-11057,11059,11061-11073,11075,11077-11089,11091,11093-11105,11107-11142,11182-11183,11221-11231,11252-11267,11269-11272,11274-11282,11284-11286,11288-11291,11293-11294,11296-11309,11311,11313,11315,11317-11367,11396-11543,11976-12001,12022-12025,12028,12096,12213-12219,12240-12273,12279,12510,12516-12528,12951,13101-13105,13109,13113,13117-13124,13130-13131,13137,13139,13145-13166,13169-13172,14063,14082,14439-14535,14637-14643,14677,14679
+packages/workshop-backend/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 20,34,38
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_017f2cc25a2960::t_6ae763783fa321 82-84
+packages/workshop-shared/src/api.ts
+  s_017f2cc25a2960::t_6ae763783fa321 254-269,280,283,286,289,291-295,297-313
+packages/mcp-shared/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-14697
+packages/gatekeeper-slack/src/slack.ts
+  s_017f2cc25a2960::t_6ae763783fa321 8,60-62,66
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,1795,1841-1842,1856-1859,2298,2477,2479-2485,3080-3087,5251-5254,5405-5407,5428-5430,7617
+packages/workshop-shared/src/gatekeeper.ts
+  s_017f2cc25a2960::t_6ae763783fa321 225-231,255
+pnpm-workspace.yaml
+  s_017f2cc25a2960::t_6ae763783fa321 5-7
+.github/workflows/cla.yml
+  s_017f2cc25a2960::t_6ae763783fa321 1-30
+packages/workshop-backend/src/ai-models.ts
+  s_017f2cc25a2960::t_6ae763783fa321 15,560-561
+packages/gatekeeper-github/src/types.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 56-57
+packages/gatekeeper-mcp-portal/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 25-26
+packages/gatekeeper-slack/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 22
+packages/workshop-backend/__tests__/mock-storage.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-2
+packages/workshop-frontend/src/routes/index.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,61,68-73,124-125,131-133
+packages/workshop-backend/src/observability.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2,18,42-44
+packages/backend-utils/vitest.config.ts
+  s_017f2cc25a2960::t_6ae763783fa321 9-11,15-17,19-26
+packages/gatekeeper-notion/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 23-24
+packages/gatekeeper-mcp/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 25-26
+packages/workshop-backend/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2-3,9,11531,12045,12113,12533,12968
+packages/workshop-frontend/src/accountsSubscriber.test.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-52
+packages/router/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 16,19-20
+scripts/release-manifest.test.js
+  s_017f2cc25a2960::t_6ae763783fa321 160-176
+packages/gatekeeper-github/src/github.ts
+  s_017f2cc25a2960::t_6ae763783fa321 5,33,115-119,365,2561-2570,2573-2574,2582,2586-2589,2592-2593,2596
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,93,100
+packages/gatekeeper-linear/src/linear.ts
+  s_017f2cc25a2960::t_6ae763783fa321 5,180
+packages/gatekeeper-mcp/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2,425,427-428,484-487,517,521,533,618,3500,3506-3774,9050,9054,10030-10033,10131,10133,10186-10187,10232-10240,10698-11004,11006-11008,11010,11012-11025,11027,11029-11041,11043,11045-11057,11059,11061-11073,11075,11077-11089,11091,11093-11105,11107-11142,11182-11183,11221-11231,11252-11267,11269-11272,11274-11282,11284-11286,11288-11291,11293-11294,11296-11309,11311,11313,11315,11317-11367,11396-11543,11976-12001,12022-12025,12028,12096,12213-12219,12240-12273,12279,12510,12516-12528,12951,13101-13105,13109,13113,13117-13124,13130-13131,13137,13139,13145-13166,13169-13172,14063,14082,14439-14535,14637-14643,14677,14679
+.github/workflows/bonk-pr.yml
+  s_017f2cc25a2960::t_6ae763783fa321 1-39
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_017f2cc25a2960::t_6ae763783fa321 13,103
+packages/workshop-frontend/src/rpcErrors.test.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-160
+package.json
+  s_017f2cc25a2960::t_6ae763783fa321 2,6,17-18,26
+packages/gatekeeper-homeassistant/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11526,12040,12108,12528,12963
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,4-6,23,125-127,161-162,172-173,177-178,180,189
+packages/workshop-backend/src/server.ts
+  s_017f2cc25a2960::t_6ae763783fa321 4,238,667,683,849-850
+packages/gatekeeper-google/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2-3,11533,12047,12115,12535,12970
+packages/gatekeeper-github/storage-schema.md
+  s_017f2cc25a2960::t_6ae763783fa321 128
+packages/gatekeeper-mcp/src/env.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-16
+packages/gatekeeper-linear/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 23
+packages/mcp-shared/tsconfig.json
+  s_017f2cc25a2960::t_6ae763783fa321 8
+packages/workshop-frontend/src/useVendorBranding.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1,54
+packages/gatekeeper-spotify/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/gatekeeper-scheduler/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 27,33,35,44-45
+packages/gatekeeper-mcp-portal/src/env.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-21
+packages/router/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,439-440,496-499,529,533,629,3305-3326,3340,3511,3517-3562,11193-11194,11232-11242,11263-11319,11525,12039,12107,12224-12230,12251-12284,12290,12527,12962,13112-13116,13124,13150,13156-13165,13181-13183,14074,14093,14648-14654,14688,14690
+packages/typed-storage/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 21-22
+packages/gatekeeper-github/src/github-search.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-40
+packages/workshop-backend/src/user.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2,304
+scripts/testdata/golden-manifest.json
+  s_017f2cc25a2960::t_6ae763783fa321 191,193,702,704,1118-1121
+packages/gatekeeper-github/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 12,24-25
+.github/workflows/bonk.yml
+  s_017f2cc25a2960::t_6ae763783fa321 1-40
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_017f2cc25a2960::t_6ae763783fa321 5,108,322
+packages/gatekeeper-zoominfo/src/zoominfo-api.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2,40,233
+packages/workshop-frontend/src/ObserverConfigModal.test.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 6,11,14,54-62,70,73-77,81-93,97,102-106,108-113,124,129-135,143-144,168-228
+packages/workshop-backend/src/env.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 12-14
+packages/workshop-shared/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 40
+scripts/generate-worker-types.mjs
+  s_017f2cc25a2960::t_6ae763783fa321 1-177
+packages/gatekeeper-homeassistant/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 22
+packages/gatekeeper-github/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 2-3,11533,12047,12115,12535,12970
+packages/gatekeeper-github/src/github-api.ts
+  s_017f2cc25a2960::t_6ae763783fa321 597
+packages/gatekeeper-google/src/google.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,102-105,164
+packages/workshop-frontend/src/components/ConnectionChips.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 8,27-28,33,35-37,40-41
+packages/gatekeeper-notion/src/notion.ts
+  s_017f2cc25a2960::t_6ae763783fa321 19,126,208
+packages/backend-utils/__tests__/tracing.test.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-49
+packages/backend-utils/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 15-18,35-36
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 4,7,11-16,19,36,46-70,90-92,96,107-108,111,116,123-124,131,134-135,138,144-145,156,165-166,211-212,215-219,243-264,269-278,316-317,320-321,378,407-426,432-433
+packages/gatekeeper-scheduler/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,532,11197-11198,11267-11323,12228-12234,12255-12288,12294,13116-13120,13128,13154,13160-13169,13185-13187,14097,14652-14658,14692,14694
+packages/gatekeeper-slack/src/slack-api.ts
+  s_017f2cc25a2960::t_6ae763783fa321 649-650,665
+packages/gatekeeper-confluence/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 24-25
+packages/workshop-backend/src/overseer.ts
+  s_017f2cc25a2960::t_6ae763783fa321 40,937,1379,1459-1462,2031-2047,3908-3909,7362,7389-7392,8446,8516-8519
+packages/workshop-frontend/src/accountsSubscriber.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-54
+packages/mcp-shared/tsconfig.test.json
+  s_017f2cc25a2960::t_6ae763783fa321 4-8
+packages/gatekeeper-supabase/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/workshop-frontend/src/routes/__root.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,158
+packages/mcp-shared/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 45,47
+README.md
+  s_017f2cc25a2960::t_6ae763783fa321 240-248
+packages/gatekeeper-confluence/worker-configuration.d.ts
+  s_017f2cc25a2960::t_6ae763783fa321 3,11533,12047,12115,12535,12970
+packages/gatekeeper-github/vitest.config.ts
+  s_017f2cc25a2960::t_6ae763783fa321 1-8
+packages/configurator-ui/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 21
+packages/integration-tests/package.json
+  s_017f2cc25a2960::t_6ae763783fa321 23,26-27
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_017f2cc25a2960::t_6ae763783fa321 1,14,21,37,411-412,416-417,421-422,432
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a8ca4e78d49be43f1535aa4f2bea90bd434f03ca",
+  "prompts": {},
+  "sessions": {
+    "s_017f2cc25a2960": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0146c6b70ffefJEVz2tYFR3V1O",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+packages/gatekeeper-google/src/auth-retry.ts
+  s_8603a85a18fd29::t_b124020386d35f 15-18
+  s_8603a85a18fd29::t_67f70bb10848ae 53-54,57
+packages/gatekeeper-google/src/google-api.ts
+  s_8603a85a18fd29::t_33298321549d05 972-974
+  s_8603a85a18fd29::t_8e1db66ac0e6fa 533-534
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5101650ba8b881e819ebe7ea29e6d81373be33ec",
+  "prompts": {},
+  "sessions": {
+    "s_8603a85a18fd29": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0ba62b52-1ae8-47b3-84b9-414f117b4250",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

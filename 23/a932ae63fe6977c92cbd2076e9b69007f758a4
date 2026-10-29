@@ -1,0 +1,29 @@
+scripts/contribution-policy.js
+  s_41ce97281be1d0::t_6bdcec47398651 1-2,4-66,68-70,74-76,78-82,89-117,119-120,140-153
+  s_41ce97281be1d0::t_d9744882b7baa7 3,77,121-139
+  s_41ce97281be1d0::t_b33048b73459b2 67,71-73,83-88,118
+scripts/contribution-policy.test.js
+  s_41ce97281be1d0::t_4b39e8380afb3b 2,10-14,46-54,65-80,203-215,226-227,232,242-244
+  s_41ce97281be1d0::t_9212cc54e2d766 1,3-9,15-45,81-202,216-225,233,235-241,245-249
+  s_41ce97281be1d0::t_d9744882b7baa7 228-231,234
+  s_41ce97281be1d0::t_f3956a2fb199e2 55-64
+.github/workflows/contribution-policy.yml
+  s_41ce97281be1d0::t_ea2c7e00f311c3 1-4,6-10,12-21,23-24,26-37
+  s_41ce97281be1d0::t_b33048b73459b2 5,11,22,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "23a932ae63fe6977c92cbd2076e9b69007f758a4",
+  "prompts": {},
+  "sessions": {
+    "s_41ce97281be1d0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00f0bafc9ffeBd7DM3rbvoCjjj",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

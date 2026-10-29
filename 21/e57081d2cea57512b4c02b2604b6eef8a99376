@@ -1,0 +1,21 @@
+packages/workshop-backend/src/overseer.ts
+  s_16a3a163f9f88e::t_c1f13d71578dca 3287-3288
+packages/workshop-backend/vitest.config.ts
+  s_16a3a163f9f88e::t_c1f13d71578dca 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "21e57081d2cea57512b4c02b2604b6eef8a99376",
+  "prompts": {},
+  "sessions": {
+    "s_16a3a163f9f88e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2c0bb8ffeWRj78Ro5gwWR55",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

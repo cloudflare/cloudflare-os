@@ -1,0 +1,23 @@
+.github/workflows/publish-release.yml
+  s_94443ff088a044::t_3ae6d518663759 9-15
+.gitlab-ci.yml
+  s_94443ff088a044::t_b3586f626c9d35 134-142
+  s_94443ff088a044::t_9ade249bf12352 116-123
+  s_94443ff088a044::t_427ab0dc0298bd 81-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "66d653b0889ed000259dd96e88e37f3e2cba686f",
+  "prompts": {},
+  "sessions": {
+    "s_94443ff088a044": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f02db907-e567-4ddf-b77d-06f1097908b9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

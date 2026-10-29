@@ -1,0 +1,144 @@
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_821114639ecbff::t_5add8a1cd68e76 24,33,43,59,66,75,80,87,94,96-109
+  s_821114639ecbff::t_5c8bca1380e273 21-23
+  s_821114639ecbff::t_141c13078e3432 25-27,30-32
+  s_821114639ecbff::t_b7b7a9c418fbfd 34-36,40-42
+  s_821114639ecbff::t_e31a5a3b5d693f 44-46,56-58
+  s_821114639ecbff::t_4f98c907f63f81 60-65
+  s_821114639ecbff::t_046b0aa0e4afd3 67-69,72-74
+  s_821114639ecbff::t_d563563fd50581 76-79
+  s_821114639ecbff::t_5b9de3c9223fce 81-86
+  s_821114639ecbff::t_0990fe915b2de5 88-93
+  s_821114639ecbff::t_d67a36f24decd1 95
+  s_821114639ecbff::t_7eadf1242ae81f 110-111
+  s_821114639ecbff::t_a381275692b04a 3,17-20,28-29,37-39,47-55,70-71
+packages/workshop-backend/src/ai-gateway.ts
+  s_821114639ecbff::t_113134878347ed 22
+  s_8ebea081b6fc96::t_3abb5f28e7db1c 31
+  s_821114639ecbff::t_05d66616f294f2 42-43
+  s_8ebea081b6fc96::t_178a11f05e2f93 14,39,44,60-74
+  s_821114639ecbff::t_2127f61c312c46 49-53
+  s_821114639ecbff::t_e399d7212708f4 27-28
+  s_821114639ecbff::t_edf97c01b79ca8 40-41
+  s_8ebea081b6fc96::t_b77c1fbdf0a560 32-34,36-38
+  s_821114639ecbff::t_218215972db249 15-21,35
+run-dev-server.js
+  s_160cf45cf1fd3b::t_822a7d2a3248bf 244
+  s_821114639ecbff::t_654d1149a92017 245
+  s_821114639ecbff::t_51646d63e1669a 248-249,252
+  s_821114639ecbff::t_c561ef060d9da5 246-247
+docs/public-server.md
+  s_821114639ecbff::t_85bf5b6f509d64 46,53-69
+  s_821114639ecbff::t_0bfd6192cdd345 45
+  s_821114639ecbff::t_3be9d866bd8ee3 43,72-75
+packages/workshop-backend/src/env.d.ts
+  s_821114639ecbff::t_3ae9d7e779ce6b 17-21,26
+  s_821114639ecbff::t_95f66841eb1dd1 25
+  s_821114639ecbff::t_670fa3e3041a6d 27-29
+  s_821114639ecbff::t_a6e092f877e2bd 30-32
+scripts/release/manifest-lib.mjs
+  s_821114639ecbff::t_c4ac6b47ef72f6 189
+  s_821114639ecbff::t_f010fac55996d6 193
+  s_821114639ecbff::t_4c139051b85f6f 190-192
+  s_821114639ecbff::t_279deb51ac9d86 194
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_821114639ecbff::t_e429fc17f90930 145,316,374-379,425
+  s_821114639ecbff::t_60712732ce4e16 351-360
+  s_545d31f8a624f2::t_6aaafaf38dd67e 142-144,146-150,266-315,317-350,361-373,380-424,426-428
+packages/workshop-backend/src/ai-models.ts
+  s_8ebea081b6fc96::t_cde5b6d8b53e9e 10
+  s_8ebea081b6fc96::t_aaecb4fff287e2 264-266
+  s_821114639ecbff::t_6ef419e3cfa8a1 443-444
+  s_8ebea081b6fc96::t_e80ae07cfe821f 314
+  s_821114639ecbff::t_172ab4496b7874 435
+  s_8ebea081b6fc96::t_bf09c7f55c7017 4-5,8-9
+  s_8ebea081b6fc96::t_27eaa9b23bbb7b 421,426-427,437-438,465-471,476-477,495-497
+  s_821114639ecbff::t_e4565cee8431a1 417-420
+  s_8ebea081b6fc96::t_eef950ab8f1e89 436
+  s_821114639ecbff::t_07b43a1ca0bdef 433-434
+packages/workshop-backend/src/ai-gateway-binding-fetch.ts
+  s_c639c7e7c11b31::t_7f72164f3baff3 117
+  s_8ebea081b6fc96::t_cdea6d88ea38d8 102-103,105-107,111,122,125
+  s_c639c7e7c11b31::t_66af38767a40f8 88-89,92-93
+  s_c639c7e7c11b31::t_cb1380d485399b 46-48
+  s_821114639ecbff::t_446c6eb4adc97a 108,114-115
+  s_8ebea081b6fc96::t_aa931432758690 84
+  s_c639c7e7c11b31::t_90a3595f5f017e 70-74
+  s_8ebea081b6fc96::t_83273966ebd661 141-142,146-148,162-163,168-169,172-180
+  s_c639c7e7c11b31::t_0fc2c605f4b0f4 149-151
+  s_8ebea081b6fc96::t_832324d04b523a 63-65
+  s_c639c7e7c11b31::t_ee30167ae30806 3-5
+  s_c639c7e7c11b31::t_18376342fc8ce3 10-15
+  h_b6783f91d645b1 17
+  s_821114639ecbff::t_cda23377ad0db8 78-82,90-91,94
+  s_c639c7e7c11b31::t_217f124142e8ca 55
+  s_c639c7e7c11b31::t_427da1d6eff4d8 155-157
+  s_c639c7e7c11b31::t_e94ea1b94109ba 129-131
+  s_8ebea081b6fc96::t_2a33dc922bd379 1-2,6-9,16,18-45,49-54,56-62,66-69,75-77,83,85-87,95-96,109-110,112-113,116,118-121,123-124,126-128,132-133,135-140,143-145,152-154,158-161,164-167,170-171
+  s_8ebea081b6fc96::t_162ccbafefce1d 134
+  s_c639c7e7c11b31::t_141f4bca1a3842 97-101,104
+  s_8ebea081b6fc96::t_2ca59c1800404a 181-183
+  s_821114639ecbff::t_5d577cd3889464 184-197
+docs/ai-gateway-billing.md
+  s_160cf45cf1fd3b::t_3a9bb2a1a9dae4 67
+  s_821114639ecbff::t_9ea4210665d169 60,74-79
+  s_160cf45cf1fd3b::t_c5906ba8475b4f 57,59
+  s_821114639ecbff::t_ed2ae62c44ae01 69
+  s_821114639ecbff::t_9647010feda7ef 70-73
+  s_821114639ecbff::t_93c32d9fa0aa33 68
+packages/workshop-backend/__tests__/ai-gateway-binding-fetch.test.ts
+  s_821114639ecbff::t_f8830cdd6793d8 1-275
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3eed12022727a6c45ebfa3cbb1a352f4b0d7c197",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_160cf45cf1fd3b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d7188ae-b772-4d99-8636-c004862f914e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_545d31f8a624f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fcb7a332-b2eb-4d1e-b95d-1877ab8765ea",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_821114639ecbff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "147b2439-e6fc-4ad6-a597-a927ab277c1a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8ebea081b6fc96": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c47020f8-5568-403c-a52e-0b5e39196040",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c639c7e7c11b31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15446a1d-daf3-4b88-a432-61390a827dd6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

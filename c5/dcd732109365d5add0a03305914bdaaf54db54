@@ -1,0 +1,23 @@
+packages/gatekeeper-google/__tests__/sheets-formula.test.ts
+  s_4910db625c7d84::t_18e152dfa3925b 42-43,278-283,375-381
+packages/gatekeeper-google/src/sheets-formula.ts
+  s_4910db625c7d84::t_97fc9061db879e 69-70,73,375-415,421-425,436
+packages/gatekeeper-google/README.md
+  s_4910db625c7d84::t_c0859620cc713a 408-411
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c5dcd732109365d5add0a03305914bdaaf54db54",
+  "prompts": {},
+  "sessions": {
+    "s_4910db625c7d84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aa771adb-677b-4241-a634-0f0a0facb9c0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

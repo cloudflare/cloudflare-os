@@ -1,0 +1,67 @@
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 483
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 34-35,50
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_0bec8918f4ed3a 805
+  s_1dfdf61332f5c7::t_c25f8f223a6bc5 1934-1936
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 1959-1960
+  s_1dfdf61332f5c7::t_8b44c2ce212faf 1451-1455,1457
+  s_1dfdf61332f5c7::t_f77200c0e067db 1458-1459,1463-1465,1467-1470
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 793-799,801-804,806,809-813,816-821,824,1975-1980
+  s_1dfdf61332f5c7::t_17774dff98e895 1210-1211,1219,1445-1450,1456,1460-1462,1466,1929,1933
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_307482e965ac20 4395
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_a2039ece597d00 825
+  s_1dfdf61332f5c7::t_3ad6a3e067bab4 7518
+  s_1dfdf61332f5c7::t_d519bec36cd85c 3535-3536
+  s_1dfdf61332f5c7::t_db9ea584a741d7 7812-7813,7892
+  s_1dfdf61332f5c7::t_117cab1d9042fd 3,155-159,821-824,7512-7514
+  s_1dfdf61332f5c7::t_cf8c6a38ac4a87 826
+  s_1dfdf61332f5c7::t_03a6adb0968e42 3518-3519,3534
+  s_1dfdf61332f5c7::t_a10e53ad0f90ff 3524
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 3031-3032
+  s_1dfdf61332f5c7::t_0d098b16177c59 827-828
+  s_1dfdf61332f5c7::t_3231c4c5759a72 7515-7517,7519-7520,8378-8380
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 3520-3521,3525
+  s_1dfdf61332f5c7::t_89f157e8e8ad1a 3503-3517,3522-3523,3526-3533
+  s_1dfdf61332f5c7::t_bd914bce41fe8c 14
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 3087-3091
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 240
+  s_1dfdf61332f5c7::t_8eb329c7f0761c 241
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_ddf1c0d43c1994 79-113
+  s_1dfdf61332f5c7::t_8da07d761c45c4 1,114,933,2759
+  s_1dfdf61332f5c7::t_37ebc596e1fe7e 116,118-119,122,127-129
+  s_1dfdf61332f5c7::t_19e13b0bbee09e 120-121
+  s_1dfdf61332f5c7::t_bbc06a0e01b8a2 115,117,126
+  s_1dfdf61332f5c7::t_af93147a70c332 2758
+  s_1dfdf61332f5c7::t_6138d01bb19bc3 123-125
+  s_1dfdf61332f5c7::t_d5c3a87d7024f0 919-923
+  s_1dfdf61332f5c7::t_ab17cea714edc7 932
+AGENTS.md
+  s_1dfdf61332f5c7::t_4dd2b3cc59065f 52-56
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 40,54,57
+packages/workshop-backend/src/ai-models.ts
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 15-16,40-53
+  s_1dfdf61332f5c7::t_d4f81714fef8aa 54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9f56e02648300ec05582797aa5c56abd901c6a54",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

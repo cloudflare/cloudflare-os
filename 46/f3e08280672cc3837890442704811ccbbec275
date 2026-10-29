@@ -1,0 +1,33 @@
+AGENTS.md
+  s_5c41473b1bde3f::t_f81ca5a018dfea 63,71
+package.json
+  s_5c41473b1bde3f::t_27475715da267e 10,26
+pnpm-lock.yaml
+  s_5c41473b1bde3f::t_9f938ead0c047c 40-42
+scripts/env-passthrough.test.ts
+  s_1126f02afc6a84::t_583faddde8ae64 215-218
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "46f3e08280672cc3837890442704811ccbbec275",
+  "prompts": {},
+  "sessions": {
+    "s_1126f02afc6a84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e928766-5ef4-473b-b234-de77bafaba13",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_5c41473b1bde3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43656ea4-7343-48df-8911-e44f8bee03cb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

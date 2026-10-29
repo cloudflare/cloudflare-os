@@ -1,0 +1,22 @@
+packages/gatekeeper-github/src/github.ts
+  s_f5d4fa896fc128::t_1f60327b881e4a 339-345
+  s_f5d4fa896fc128::t_11ab4913b34074 390-392,394-395
+  s_f5d4fa896fc128::t_ac189e43e75690 3839-3840
+  s_f5d4fa896fc128::t_77c4b609a37e84 393
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2be5038ad6c841301b37ab9cf62a95e14b1afb49",
+  "prompts": {},
+  "sessions": {
+    "s_f5d4fa896fc128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41e3e171-c705-490f-8506-a539c1a11e55",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

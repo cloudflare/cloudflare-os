@@ -1,0 +1,25 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_c2ca47a7bbff41::t_96dd0f56b152b8 552-560
+packages/workshop-shared/src/api.ts
+  s_c2ca47a7bbff41::t_3f8b60d57f69a9 1209-1211
+docs/public-server.md
+  s_c2ca47a7bbff41::t_3f8b60d57f69a9 213-217
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_c2ca47a7bbff41::t_ebdcf72f6b9db7 167-196,558-559,562-564
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "77647013a4272d5da2c8089c49e444ebad45ffaf",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+.npmrc
+  s_cf15469d2f69ec::t_f1796db0e9a5a5 1-3
+.github/workflows/ci.yml
+  s_cf15469d2f69ec::t_dd414e36aae773 28-32,35-37,58-62,65-67
+.github/workflows/preview.yml
+  s_cf15469d2f69ec::t_1878e25b442524 23-24,83-87,90-92,201-205,208-210,242-246,249-251
+scripts/registry-policy.test.ts
+  s_cf15469d2f69ec::t_0716dfd2900797 1-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c73f6416e60838c77c8420b9e0686e415168264c",
+  "prompts": {},
+  "sessions": {
+    "s_cf15469d2f69ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7391dd3-f2ad-41c6-8fa0-bece3956fa6b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

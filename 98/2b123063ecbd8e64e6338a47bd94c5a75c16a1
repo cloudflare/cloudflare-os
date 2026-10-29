@@ -1,0 +1,52 @@
+packages/workshop-frontend/src/features/ai-models/AddGatewayModelForm.tsx
+  s_544ac41f1d93fd::t_c517b9794fec62 51-53,61-65,102,145,171-173,185
+  s_544ac41f1d93fd::t_418fbe220bbe1e 156-157,161
+  s_544ac41f1d93fd::t_f4fdeddef54d87 2,6,9-13,20,25-36,96-101,103,129,141-144,155,158-160,162-170,174-184,186-220
+  s_544ac41f1d93fd::t_f6db5b6d2616f8 104
+docs/public-server.md
+  s_544ac41f1d93fd::t_2da4633bc2612a 105-110,116-119,157-159
+  s_544ac41f1d93fd::t_c517b9794fec62 111-115
+packages/workshop-frontend/src/features/ai-models/modelsDev.ts
+  s_544ac41f1d93fd::t_c77a5ebc7afb92 77-79
+  s_544ac41f1d93fd::t_c517b9794fec62 1,47-48,76,80-81
+  s_544ac41f1d93fd::t_1c6aab8061deb7 2-18,22-34,36-46,49-75,82-101
+  s_544ac41f1d93fd::t_26060db057fb9b 35
+  s_544ac41f1d93fd::t_67c8f0c961e5df 21
+  s_544ac41f1d93fd::t_69542e88413ca7 19
+  s_544ac41f1d93fd::t_ea74fa46dca6be 20
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_544ac41f1d93fd::t_66693cd0591c7b 6,21,40,101-126,137-141,182-201,218-228,239-249,317-334
+packages/workshop-frontend/src/features/ai-models/modelsDev.test.ts
+  s_544ac41f1d93fd::t_77a19d54ec0a33 401-407,425
+  s_544ac41f1d93fd::t_c07fbba51424a6 1-143,145-149,151-160,162-219,224-252,258-266,271-332,334-336,338-343,359-396,430-444,447-521
+  s_544ac41f1d93fd::t_4ae2a25037b7cc 144,150,333,337,445-446
+  s_544ac41f1d93fd::t_c517b9794fec62 253-257,344-358
+  s_544ac41f1d93fd::t_33136b61b0f956 397-400,408-420,422-424,426-429
+  s_544ac41f1d93fd::t_285d105891aa90 161,220-223,267-270,421
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_544ac41f1d93fd::t_1761f8de752492 764,766
+  s_544ac41f1d93fd::t_1692b08abfcf46 20,46-94,151-152,159-160,165-166,176-184,200-205,223,233,237,242-244,247-250,590-732,734-740,757-763,765,767-775,778-781,783-785,800-894,950-1004,1012-1028,1030-1036,1041-1056
+  s_544ac41f1d93fd::t_aa9b75512791ae 168,171
+  s_544ac41f1d93fd::t_418fbe220bbe1e 1029,1037-1040
+  s_544ac41f1d93fd::t_30b054f450f9de 1005-1011
+  s_544ac41f1d93fd::t_5d4fe7248e68db 185-194,895-910,935-949
+  s_544ac41f1d93fd::t_dd927379a0d9b0 733,741-756,782,786-799,911-934
+  s_544ac41f1d93fd::t_994ada1385ffc0 195-199,776-777
+  s_544ac41f1d93fd::t_917fef9f71cb67 167,1057-1058
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "982b123063ecbd8e64e6338a47bd94c5a75c16a1",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

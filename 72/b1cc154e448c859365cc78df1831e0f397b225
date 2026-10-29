@@ -1,0 +1,24 @@
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_ed51fb1a36fc51 1-383
+  s_1dfdf61332f5c7::t_43c629b40ed0dc 384-415
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_991f1d1db66efe 1-314
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_1f2eba725ea3c6 5,12-17,946-947,961,983,1144-1146,1176-1195,1203-1207,1209-1211,1213-1215,1217-1224,1229,1260-1264,1266,1389,1626,1827-1834,2053-2130,2132-2133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "72b1cc154e448c859365cc78df1831e0f397b225",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

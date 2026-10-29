@@ -1,0 +1,31 @@
+packages/workshop-backend/src/overseer.ts
+  s_851dd2aa785588::t_003afa0e9bde20 33,2566,2580-2583,2600,3138-3139,3215-3216,7383-7394,8303-8306
+packages/workshop-backend/__tests__/chat-attachment-validation.test.ts
+  s_851dd2aa785588::t_003afa0e9bde20 1-112
+packages/workshop-backend/src/chat-attachment-validation.ts
+  s_851dd2aa785588::t_003afa0e9bde20 1-2,4,6,8-19,30-36,40-57,59,78-79
+packages/workshop-backend/package.json
+  s_851dd2aa785588::t_003afa0e9bde20 21
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_851dd2aa785588::t_003afa0e9bde20 1722
+packages/workshop-shared/src/api.ts
+  s_851dd2aa785588::t_003afa0e9bde20 1256-1257,1260
+pnpm-lock.yaml
+  s_851dd2aa785588::t_72c71e53b2a6b4 974,980,986,992,998,1004
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1642c373e12ac342b6c65706fa2c1fc152d27f4",
+  "prompts": {},
+  "sessions": {
+    "s_851dd2aa785588": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0514ff91dffe7QuCQy7ut88FTy",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,49 @@
+scripts/kill-process-tree.ts
+  s_88b8a9a74cf74a::t_6e31eff04c899e 102-104,106-113,122-123,131,135,137-140
+scripts/relay-termination.test.ts
+  s_88b8a9a74cf74a::t_e5ae04d3ed5054 1-179
+scripts/run-local.ts
+  s_b21f811357f49a::t_17d27396cafdc6 20,60-64
+scripts/vp-concurrency.test.ts
+  s_88b8a9a74cf74a::t_cb5cdc22ea04ac 2-5,7-8,40-148,152,162-171
+scripts/vp-concurrency.ts
+  s_b21f811357f49a::t_d9d73c2ffbae0f 14,20-25,34,36,51-57,66-175,185-187,190,201
+scripts/vp-run.ts
+  s_b21f811357f49a::t_d3bf16cb8360ee 17,26
+scripts/relay-termination.ts
+  s_c3997878b766c7::t_51ebb4003cc595 1-85
+AGENTS.md
+  s_b21f811357f49a::t_baef8f0d88ad0d 69,73,75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fa4a1f98073759501632619b29196c8cff16a83e",
+  "prompts": {},
+  "sessions": {
+    "s_88b8a9a74cf74a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f97904938ffe6gX0UsOHu0lyzT",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b21f811357f49a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "669436b5-28e4-459a-9c63-e82a9009fbd7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c3997878b766c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ac4af775-610f-43cb-8de8-1f269068ad7b",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

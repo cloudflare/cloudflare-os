@@ -1,0 +1,48 @@
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_ed170a38871b81 2827,2829-2830
+  s_1dfdf61332f5c7::t_ccdc9a9d6203cb 17-18
+  s_1dfdf61332f5c7::t_94839baceca769 2691-2693
+  s_1dfdf61332f5c7::t_07edb17bc16cc0 2321-2323
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 11,15-16,19,626-629,2180-2183,2186-2187,2238-2241,2412-2428,2431-2434,2439-2447,2449,2461-2462,2671-2690,2694-2736,2823-2826,2828,2831-2833,2840-2842,2846,2875-2883,2890-2899,3382-3387,6221-6223,6270
+  s_1dfdf61332f5c7::t_0bf0954895b640 2448,2450-2459
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_6913684decf7f1 34-35
+  s_1dfdf61332f5c7::t_1c78620a0d09d9 50
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 12,720-721,725,814,825-830,838-844,847-850,854,887-901,1023,1184
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 6,62-67
+  s_1dfdf61332f5c7::t_b7b3e36f8b0054 5
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_fa5330f3a6437e 483
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 1-173
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_8a8378cba77c18 705-718,722,724,726-727,730-734,737-742,745
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 1328-1332,1663-1664,1668-1669
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_0dfd81e47fced8 43-44
+  s_1dfdf61332f5c7::t_5a80fbfd08910c 61
+  s_1dfdf61332f5c7::t_5bebcf0af4e8f9 1-2
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 3-12,17-42,45-60,66-218
+  s_1dfdf61332f5c7::t_338fe0f49de76d 13-16
+  s_1dfdf61332f5c7::t_2404ba4d7d5fa8 62-65
+packages/workshop-backend/src/slash-commands.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 5,42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8c3a08ab908902f67bd0864e9551092ea38fd89b",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -1,0 +1,25 @@
+docs/observers.md
+  s_728ec74dbb9f2b::t_ed584a250ae331 242-249,297-308,359-368,379-388,408-412,420-421,518-521,577-579
+docs/sharing.md
+  s_728ec74dbb9f2b::t_2dc21b6515da6b 46,154,162,166
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_728ec74dbb9f2b::t_a3b10e2fd1d585 1-10,74-75,90-91
+plans/restricted-data-sharing.md
+  s_728ec74dbb9f2b::t_f6f0e35b49d2a8 135-136,141-144,161-167,203-208,232-238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e5f64a7b29af78f11dcf1cfcd58d14c434b6c893",
+  "prompts": {},
+  "sessions": {
+    "s_728ec74dbb9f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b00f69f3-fd58-4fa1-95b6-300fba719c7a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

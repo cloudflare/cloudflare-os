@@ -1,0 +1,25 @@
+docs/spaces.md
+  s_dd2417a6d5bd82::t_94fac2ce28af63 28-29,85,95,133-134,174-177
+  s_dd2417a6d5bd82::t_e3fdc102b36557 129-132,135-141
+  s_dd2417a6d5bd82::t_61396bdea5b78d 168
+  s_dd2417a6d5bd82::t_fc50ae3e8c9248 5
+  s_dd2417a6d5bd82::t_44bb4b4f6924c0 173
+  s_dd2417a6d5bd82::t_60d456892421bd 158-159
+  s_dd2417a6d5bd82::t_24cf9e44d764a3 83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "77e4f33e91d4f3d47fa1f5ee16131a717e1cd601",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

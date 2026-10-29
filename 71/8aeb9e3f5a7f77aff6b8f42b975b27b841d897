@@ -1,0 +1,24 @@
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_e259f2380cb0a8::t_2546ef9b4e66f0 111
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_e259f2380cb0a8::t_32c8d8974d5e67 478-480,483
+  s_e259f2380cb0a8::t_2546ef9b4e66f0 422,424,454
+packages/workshop-shared/src/api.ts
+  s_e259f2380cb0a8::t_2546ef9b4e66f0 1402,1411-1414
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "718aeb9e3f5a7f77aff6b8f42b975b27b841d897",
+  "prompts": {},
+  "sessions": {
+    "s_e259f2380cb0a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2360c005-6db4-412b-be00-5e18fb49a0fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

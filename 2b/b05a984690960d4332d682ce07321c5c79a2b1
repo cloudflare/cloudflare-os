@@ -1,0 +1,23 @@
+packages/workshop-backend/src/agent-catalog.ts
+  s_8d0860843c0baa::t_71a9ed769ba718 12-15,57-58,62-63,67-69,77
+packages/workshop-backend/src/overseer.ts
+  s_8d0860843c0baa::t_b713c7c4ded5bd 4873-4875,4884-4886
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_8d0860843c0baa::t_29e8ee3e657203 132-151,153,158,166-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2bb05a984690960d4332d682ce07321c5c79a2b1",
+  "prompts": {},
+  "sessions": {
+    "s_8d0860843c0baa": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ffe85d935ffeYh8qWwFq0Rv3J8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

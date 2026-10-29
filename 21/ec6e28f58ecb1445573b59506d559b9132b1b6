@@ -1,0 +1,62 @@
+packages/workshop-backend/__tests__/test-worker.ts
+  s_3fd32ba9d290d1::t_274d3baeac8128 56-59
+  s_3fd32ba9d290d1::t_4e98300f3f8ec2 51-55,60-65
+packages/workshop-backend/__tests__/connect-handoff.test.ts
+  s_3fd32ba9d290d1::t_9eca30e2224e81 302,306,310,313,319,324,329-330,333,340,345,349,352,354,359-360,364,378-379,387-420
+  s_3fd32ba9d290d1::t_3052d0651b2b20 299-301
+  s_3fd32ba9d290d1::t_05d484b7440c3f 303-305
+  s_3fd32ba9d290d1::t_9a3e616744750d 307-309
+  s_3fd32ba9d290d1::t_684020a0ee778a 311-312
+  s_3fd32ba9d290d1::t_6726559ec8d5d5 314-318
+  s_3fd32ba9d290d1::t_81bc058d368842 320-323
+  s_3fd32ba9d290d1::t_bb2a6173af8dc2 325-328
+  s_3fd32ba9d290d1::t_3067822bc3d5e1 331-332
+  s_3fd32ba9d290d1::t_3db8aab3cdeeff 334-339
+  s_3fd32ba9d290d1::t_2ac06ab671c962 341-344
+  s_3fd32ba9d290d1::t_30f72cd48a0fd9 346-348
+  s_3fd32ba9d290d1::t_b67fa7b9c20b6c 350-351
+  s_3fd32ba9d290d1::t_acd7ad92ab129a 353
+  s_3fd32ba9d290d1::t_2826ae5ff787b4 355-358
+  s_3fd32ba9d290d1::t_6d23e92dbfc4fb 361-363
+  s_3fd32ba9d290d1::t_7f251fa5c3684a 365-367,375-377
+  s_3fd32ba9d290d1::t_e079a8b8bf69c3 380
+  s_3fd32ba9d290d1::t_aa55f7644f9055 6-8,20-22,27-28,63-66,68,79-84,86-87,94,97-103,109,112,115,117,121,123-124,132,140,142-150,152,159,162,165,172,192,194,202,219,221,243,247,264,267,273,276,291,368-374,434
+packages/workshop-backend/src/server.ts
+  s_3fd32ba9d290d1::t_d55991bc0df017 12
+  s_3fd32ba9d290d1::t_81bffc8ff0d5db 695-698
+  s_3fd32ba9d290d1::t_dc6476e9bf45ff 11
+  s_3fd32ba9d290d1::t_3b6278ae3c2139 692-694
+  s_3fd32ba9d290d1::t_1bc31b4d9ae07c 699
+  s_3fd32ba9d290d1::t_dcc5565acb3636 4,318,322-323,326-327,349,628-629,636-637,658-659,668-673,675-676,690-691
+packages/workshop-backend/__tests__/pending-login.test.ts
+  s_3fd32ba9d290d1::t_4c26d6f2798ae1 39-46
+  s_3fd32ba9d290d1::t_841d9db5ece93a 8-10
+  s_3fd32ba9d290d1::t_289f7102eb5d31 47-49
+  s_3fd32ba9d290d1::t_dc44ce638dd74c 50-51,53-63,70-79,81-85,93-94,96-98,105-123,133-135,139-140,146,148-149,152-162,165-166,168-176,179-181,184-193,196,203-205,210,214,219,224-237
+packages/workshop-backend/src/auth/login-flow.ts
+  s_3fd32ba9d290d1::t_0619922f8bcd55 8-13,16-21,24-25,43,49-55,71-72,78,80-82,90,92,95-98,111-112,123-140,142-151,161,186
+packages/workshop-backend/src/connect-handoff.ts
+  s_3fd32ba9d290d1::t_edaf8c55fbbd9c 2-6,16-27,38,50-57
+packages/workshop-backend/src/user.ts
+  s_3fd32ba9d290d1::t_5dc17d460ac124 2,15,52-60,201-203,1170,1191,1195,1400-1401,1404-1406,1573,1576-1577,1714-1730,1760-1766,1768-1770,1772,1776-1783,1840-1841,1843,1852,1861-1864,1867-1869
+packages/workshop-shared/src/api.ts
+  s_3fd32ba9d290d1::t_2bba019ecbe253 35-50,57-64,80-84,87,89-100,561-566,575,578-587,589,593-595,597,725-728,730
+packages/workshop-shared/src/gatekeeper.ts
+  s_3fd32ba9d290d1::t_2f73791026a767 450-458
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "21ec6e28f58ecb1445573b59506d559b9132b1b6",
+  "prompts": {},
+  "sessions": {
+    "s_3fd32ba9d290d1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54cfef4d-a815-4b29-b293-946cabbd7fae",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

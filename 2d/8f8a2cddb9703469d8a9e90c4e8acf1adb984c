@@ -1,0 +1,53 @@
+.gitignore
+  s_1d5f75e292d550::t_65b07c6f624765 34-36
+scripts/preview/preview.ts
+  s_1d5f75e292d550::t_2df40f713fa51f 1-768
+scripts/env-passthrough.test.js
+  s_1d5f75e292d550::t_3b1d3d3549bffe 58,61-67
+package.json
+  s_1d5f75e292d550::t_d6858dce4425fe 10-14,21-22,26
+CONTRIBUTING.md
+  s_1d5f75e292d550::t_493abf7bf73550 12-23
+scripts/preview/staging-config.ts
+  s_1d5f75e292d550::t_6cadaf629ac24c 1-732
+scripts/preview/staging-config.test.ts
+  s_1d5f75e292d550::t_d5bfbda6207dfc 1-378
+vite.config.ts
+  s_1d5f75e292d550::t_10ef707b074a2d 140-151
+.github/workflows/ci.yml
+  s_1d5f75e292d550::t_46fc91edb594e0 16-18,44-45
+  s_185e87316faf2d::t_40e44a6832c6a6 46
+.github/workflows/preview.yml
+  s_1d5f75e292d550::t_5bb546bded8056 1-233
+  s_1d5f75e292d550::t_efc709cdc61910 234
+pnpm-lock.yaml
+  s_1d5f75e292d550::t_e25ac0516dec32 40-42
+scripts/tsconfig.json
+  s_1d5f75e292d550::t_34c83596ea9ec2 1-23
+packages/workshop-backend/src/env.d.ts
+  s_185e87316faf2d::t_1ec3733f188960 9-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2d8f8a2cddb9703469d8a9e90c4e8acf1adb984c",
+  "prompts": {},
+  "sessions": {
+    "s_185e87316faf2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "330f5cb1-3722-472d-a41e-5ffd2708deab",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_1d5f75e292d550": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "593d0c7e-f3ae-46bc-a60a-71ade259200a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

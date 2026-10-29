@@ -1,0 +1,29 @@
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_39145c66fb0551 244-247,282,296,440-443,460,462-464,476,485-489
+  s_e25e29d8ebebad::t_0b479d6a04a606 551-552,567,572-578,581-582,584,586-591
+  s_e25e29d8ebebad::t_edfc4dc00b09fd 18,376-378,392-396
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_f9e1cb5303da5d 76,338-352
+  s_e25e29d8ebebad::t_f2d2f579b1cadb 320-337
+  s_e25e29d8ebebad::t_8f5fb23c2ea1fd 26-29,59-75
+  s_e25e29d8ebebad::t_dc095b0a4cc3b3 77
+packages/mcp-shared/src/fetch.ts
+  s_e25e29d8ebebad::t_edfc4dc00b09fd 15-16,25-26,130-132,134
+  s_e25e29d8ebebad::t_bdce9af7a15107 133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5f4883b0dab96d24aa01d503b3ef7f23a10d71ac",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

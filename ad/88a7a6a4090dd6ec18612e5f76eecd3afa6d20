@@ -1,0 +1,36 @@
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_b9d78ba39005bb::t_9cd7f5d60d7ccd 18,24-25,148-161
+  s_b9d78ba39005bb::t_460493ee5a952f 46-51
+  s_b9d78ba39005bb::t_f50797505c7987 162-163
+packages/workshop-backend/__tests__/overseer-new-chat.integration.test.ts
+  s_b9d78ba39005bb::t_3ddb21c0973456 53-77,213-246
+packages/workshop-backend/__tests__/overseer-integration-worker.ts
+  s_b9d78ba39005bb::t_4add5f2564b191 52
+docs/skills.md
+  s_b9d78ba39005bb::t_9cd7f5d60d7ccd 27-30
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_b9d78ba39005bb::t_4add5f2564b191 47-49,59-60,294,298-299,306-320
+packages/workshop-backend/src/overseer.ts
+  s_b9d78ba39005bb::t_e21e1bcad8b9ee 129-134,594-596,2285-2305,2342
+  s_b9d78ba39005bb::t_4add5f2564b191 3127-3128
+packages/workshop-shared/src/gatekeeper.ts
+  s_b9d78ba39005bb::t_4add5f2564b191 809-811
+packages/workshop-backend/src/slash-commands.ts
+  s_b9d78ba39005bb::t_4add5f2564b191 29,43-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ad88a7a6a4090dd6ec18612e5f76eecd3afa6d20",
+  "prompts": {},
+  "sessions": {
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+docs/observers.md
+  s_25c73b55bb6f5d::t_3e3082cb4ce397 440-444
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_25c73b55bb6f5d::t_ce21e5f11df408 345-366
+packages/workshop-backend/src/overseer.ts
+  s_25c73b55bb6f5d::t_1d8faefd5da385 9731-9732,9742-9751
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4f704da13924486a97fe89b57d8caeb864ba314b",
+  "prompts": {},
+  "sessions": {
+    "s_25c73b55bb6f5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2101343c-de6f-4ba0-a197-cc0763b856b5",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

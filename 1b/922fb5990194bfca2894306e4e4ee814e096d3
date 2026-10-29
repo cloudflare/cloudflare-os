@@ -1,0 +1,43 @@
+packages/gatekeeper-google/src/docs-api.ts
+  s_cd3ff01868230d::t_976bb0ee3c54fb 6-7
+  s_cd3ff01868230d::t_647d5dd9c35fb0 92,96-100
+  s_cd3ff01868230d::t_6f1f0d2d488540 153,162
+  s_cd3ff01868230d::t_28742098729613 118,120-121
+packages/gatekeeper-google/src/google.ts
+  s_cd3ff01868230d::t_6330829f9e1e8f 2084,2118
+  s_cd3ff01868230d::t_f728ab3d5642e2 605,616-617,619-620
+  s_cd3ff01868230d::t_f91180d9088502 2045-2050,2054,2063
+packages/gatekeeper-google/src/auth-retry.ts
+  s_cd3ff01868230d::t_bc015bbbe0e6ce 1-14,22-29,34-41,53-55,58-63,65-80,86,114-116,118,136,138-139
+  s_3164a040f402c3::t_22fec07e7861e0 15-21,30-33,42-52,56-57,81-85,87-113,117,119-135,137
+  s_3164a040f402c3::t_8abb0b72ee1a62 64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1b922fb5990194bfca2894306e4e4ee814e096d3",
+  "prompts": {},
+  "humans": {
+    "h_766a26d8f6ed11": {
+      "author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  },
+  "sessions": {
+    "s_3164a040f402c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52538c21-bcf9-4d71-9396-3c198fdfd111",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_cd3ff01868230d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33b7ebb8-f5f9-43e6-ad4a-4c81c0fa192f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

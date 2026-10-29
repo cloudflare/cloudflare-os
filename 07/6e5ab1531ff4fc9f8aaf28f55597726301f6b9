@@ -1,0 +1,67 @@
+packages/workshop-ios/src/ui/Fab.tsx
+  s_05e5fdfde14468::t_af49ae7abc4799 1-54
+packages/workshop-ios/src/theme.ts
+  s_05e5fdfde14468::t_c579712b4eb021 69-72,74-80
+packages/workshop-ios/App.tsx
+  s_05e5fdfde14468::t_b65f7fa71bdafd 148-157
+  s_05e5fdfde14468::t_492cba68104604 19-20
+packages/workshop-ios/src/screens/ThreadsScreen.tsx
+  s_05e5fdfde14468::t_c579712b4eb021 274
+  s_05e5fdfde14468::t_5a1443edfc945d 19,239-241
+packages/workshop-ios/src/ui/Markdown.tsx
+  s_05e5fdfde14468::t_c579712b4eb021 71,89,254,269
+packages/workshop-ios/src/hooks.ts
+  s_05e5fdfde14468::t_db3e658e16ff3c 3-7
+  s_05e5fdfde14468::t_6079bd3fe1577a 63-89
+  s_05e5fdfde14468::t_dc5856ddfa3d6a 62
+packages/workshop-ios/src/outputs.ts
+  s_05e5fdfde14468::t_fce72fd5b7c1ab 1-83
+packages/workshop-ios/src/screens/OutputsScreen.tsx
+  s_05e5fdfde14468::t_9ab505bb60fe00 1-243
+packages/workshop-ios/src/screens/GatekeeperScreen.tsx
+  s_05e5fdfde14468::t_544101848cb755 1-177
+packages/workshop-ios/src/ui/AppDrawer.tsx
+  s_05e5fdfde14468::t_40819bc4c19114 1-113
+packages/workshop-ios/src/outputs.test.ts
+  s_05e5fdfde14468::t_5964c3cbe0c794 1-100
+packages/workshop-ios/src/ui/ChatRows.tsx
+  s_05e5fdfde14468::t_d1aefcd5ef8741 765-767
+  s_05e5fdfde14468::t_c579712b4eb021 679
+packages/workshop-ios/src/gatekeeper-sections.ts
+  s_05e5fdfde14468::t_68b7fc29e330ac 1-57,63-113
+  s_05e5fdfde14468::t_17283227be9fdc 58-62
+packages/workshop-ios/TODO.md
+  s_05e5fdfde14468::t_949f07503bc5ee 1-80
+packages/workshop-ios/src/model-selection.ts
+  s_05e5fdfde14468::t_d1aefcd5ef8741 77-90
+packages/workshop-ios/src/navigation.ts
+  s_05e5fdfde14468::t_4d8316be3d0376 14-22
+packages/workshop-ios/src/screens/WorkspacesScreen.tsx
+  s_05e5fdfde14468::t_c579712b4eb021 292,316,328
+  s_05e5fdfde14468::t_0da75869996985 237-240,265
+  s_05e5fdfde14468::t_d1486f539e1f2e 19-20,69,147-152,157-158,160-161,163-164,249-258
+packages/workshop-ios/src/screens/ChatScreen.tsx
+  s_05e5fdfde14468::t_c579712b4eb021 638
+  s_05e5fdfde14468::t_d1aefcd5ef8741 31,398,620
+packages/workshop-ios/src/model-selection.test.ts
+  s_05e5fdfde14468::t_d1aefcd5ef8741 3-8,123-143
+  s_05e5fdfde14468::t_1fe8da24021c29 144
+packages/workshop-ios/src/ui/Drawer.tsx
+  s_05e5fdfde14468::t_7038b08969f86d 1-174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "076e5ab1531ff4fc9f8aaf28f55597726301f6b9",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

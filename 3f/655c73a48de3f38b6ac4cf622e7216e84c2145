@@ -1,0 +1,23 @@
+docs/observers.md
+  s_4b32d41ad4fea8::t_7a3eb81021ed4f 503-508,515-518
+packages/workshop-backend/__tests__/restricted-producer-removal.test.ts
+  s_4b32d41ad4fea8::t_96d38894cdd068 244-319
+packages/workshop-backend/src/overseer.ts
+  s_4b32d41ad4fea8::t_b33e751c329f11 4633-4643,4647-4648,4654-4672
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3f655c73a48de3f38b6ac4cf622e7216e84c2145",
+  "prompts": {},
+  "sessions": {
+    "s_4b32d41ad4fea8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f0ea7e7-15f3-469c-9793-845de800d631",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

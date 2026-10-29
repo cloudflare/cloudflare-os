@@ -1,0 +1,46 @@
+packages/workshop-backend/src/overseer.ts
+  s_1da8b1c2e6d0c9::t_72aa5ab7fc334f 10243-10246
+  s_1da8b1c2e6d0c9::t_9a6fde08bc3c48 9425-9428
+  s_1da8b1c2e6d0c9::t_9991d54b7e43ad 3,27-28,4599-4600,4779-4782,8545-8553,8555-8562,8578-8581,8584-8627,8629,8652-8657,8684-8699,8701-8703,8706-8707,9000-9001,9004,9182-9187,9190-9191,10232-10236,10241-10242,10247-10249
+packages/workshop-backend/__tests__/spaces-visibility.test.ts
+  s_1da8b1c2e6d0c9::t_27e8fb2d75735a 1-95,99-191,194-197,200-288,318-366,369-448,476,524-525,531,536-620
+  s_1da8b1c2e6d0c9::t_d856a526a2f421 96-98,192-193,198-199,289-317,367-368,449-475,477-523,530,532-534
+  s_1da8b1c2e6d0c9::t_b0643d8ac2410d 526-529,535
+packages/workshop-backend/src/storage-schema/space-storage.ts
+  s_1da8b1c2e6d0c9::t_d856a526a2f421 21-24,28-34
+  s_1da8b1c2e6d0c9::t_bf61ee3c369974 99-100
+packages/workshop-backend/src/user.ts
+  s_1da8b1c2e6d0c9::t_d856a526a2f421 1226-1238
+  s_1da8b1c2e6d0c9::t_a64a9711f32474 21,1173-1176,1182,1186,1192,1194,1239-1240
+packages/workshop-backend/src/spaces.ts
+  s_1da8b1c2e6d0c9::t_3805c4392753c1 294-295,302,304,436
+  s_1da8b1c2e6d0c9::t_c35e6783dc62bb 38-41,61-63,348-351,359,362,378,384-387,422-435,437-438,477-478,502-506,509-511,518,523-530,568-569,592-593,601,633-641,687-696,836,845-847,865-869,872-876
+packages/workshop-backend/__tests__/spaces-published.test.ts
+  s_1da8b1c2e6d0c9::t_d856a526a2f421 5-7,12-14,45,251,269-270,273,280-281,285-286,288,385,406-408,419,421-427,429-453,455-456,458-467,542-544,553-554,584-585,590,600-601
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_1da8b1c2e6d0c9::t_9d5d1e838a0280 31-33
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_1da8b1c2e6d0c9::t_3897b509d7d4dc 17-21
+packages/workshop-backend/__tests__/spaces-tree.test.ts
+  s_1da8b1c2e6d0c9::t_bf3d1cac460cdb 378
+packages/workshop-backend/__tests__/spaces-workspaces.test.ts
+  s_1da8b1c2e6d0c9::t_83793704ccb19d 79,221
+packages/workshop-backend/src/server.ts
+  s_1da8b1c2e6d0c9::t_c04b981395451a 326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4fd95d9cc4b074a9eccc8a7ae539ebd425387fb6",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+pnpm-lock.yaml
+  s_67a08e5b747f23::t_55d7529475d2cb 813
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2da10013e2145e7ecd9a1620351d2b3da8220a77",
+  "prompts": {},
+  "sessions": {
+    "s_67a08e5b747f23": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b2ee697-1270-4fe1-ae61-feb70c890fc1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

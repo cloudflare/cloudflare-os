@@ -1,0 +1,29 @@
+packages/workshop-backend/__tests__/revocation-restart-window.test.ts
+  s_728ec74dbb9f2b::t_fbd9929123e841 1-179
+packages/workshop-backend/src/overseer.ts
+  s_7c8bb677a661d4::t_b65fe92ea8167e 4398-4409,4580-4583,4737-4739,5166-5172,8051-8062,8070-8073
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d363bd72c1855dd4c04b8c0f8ae4e01f1111a34d",
+  "prompts": {},
+  "sessions": {
+    "s_728ec74dbb9f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b00f69f3-fd58-4fa1-95b6-300fba719c7a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_7c8bb677a661d4": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fc18be014fferp9zRwtyafNPaL",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

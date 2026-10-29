@@ -1,0 +1,26 @@
+packages/workshop-backend/src/overseer.ts
+  s_78a1a7c3756c1d::t_56a66f59d58410 4503,4542,5320,5386,5470,5487,5492
+  s_78a1a7c3756c1d::t_e2c391c7317546 2019,2025,2081,2088,5296,5303
+  s_78a1a7c3756c1d::t_f2e91d2cda4bf4 2003-2018,2020-2024,2026-2080,2082-2087,2089-2125
+  s_78a1a7c3756c1d::t_e6d79fc31255a5 2126,3728-3740,3772
+  s_78a1a7c3756c1d::t_29ae9bdcc742c1 14
+  s_78a1a7c3756c1d::t_8d2c460a5cab58 2127
+packages/workshop-backend/src/user.ts
+  s_78a1a7c3756c1d::t_29ae9bdcc742c1 63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c18ea3feda851f0045ea754fabf9aef219f2449b",
+  "prompts": {},
+  "sessions": {
+    "s_78a1a7c3756c1d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_093df5611ffeQY5XXuyr5ugGaQ",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,69 @@
+packages/gatekeeper-google/README.md
+  s_26cbe985980ef3::t_18cda0b78f9aa6 84,308-339,342-343,388-389,491-492,619
+packages/gatekeeper-google/__tests__/configurator-url.test.ts
+  s_26cbe985980ef3::t_abdb85b4cdc4ca 17,19-20,34-35,40-41,286-327
+packages/gatekeeper-google/__tests__/drive-api.test.ts
+  s_26cbe985980ef3::t_9f68b53e81d7ef 4-5,63-66,940-1224
+packages/gatekeeper-google/__tests__/native-api.test.ts
+  s_26cbe985980ef3::t_b8781629b7722f 4-5,371,377,381,385,390,393,402
+packages/gatekeeper-google/__tests__/resources.test.ts
+  s_26cbe985980ef3::t_9d5a35f48a10d4 7,9-10,733-813
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_26cbe985980ef3::t_d3ed7bb72493a4 1-2,5-7,9-10,13-17,24-27,164-592
+packages/gatekeeper-google/__tests__/workerd/google-doc-actions.test.ts
+  s_26cbe985980ef3::t_37c8d4b7df87d2 5,86-89,124-127,261-264,302-306,2189-2250
+packages/gatekeeper-google/__tests__/workerd/sheets-session.test.ts
+  s_26cbe985980ef3::t_cff74a1a9e268a 1,13,167-170,587-664
+packages/gatekeeper-google/__tests__/workerd/slides-session.test.ts
+  s_26cbe985980ef3::t_a189ecfdd65884 1,9,87-90,269-345
+packages/gatekeeper-google/src/configurator/google-doc-configurator-types.d.ts
+  s_26cbe985980ef3::t_60b739d9bf799b 2,11-16
+packages/gatekeeper-google/src/configurator/google-doc-configurator-ui.tsx
+  s_26cbe985980ef3::t_e1b49be4fb336e 1-232,238-249,253-254,257-260,262,264-269,272,275
+packages/gatekeeper-google/src/configurator/google-sheets-configurator-types.d.ts
+  s_26cbe985980ef3::t_465a7b9fa6cf19 2,11-16
+packages/gatekeeper-google/src/configurator/google-sheets-configurator-ui.tsx
+  s_26cbe985980ef3::t_09b92403873c6f 1-4,6,9-233,238-249,253-254,257-260,262,264-269,272,275
+packages/gatekeeper-google/src/configurator/google-slides-configurator-types.d.ts
+  s_26cbe985980ef3::t_43b050f1bb1b88 2,11-16
+packages/gatekeeper-google/src/configurator/google-slides-configurator-ui.tsx
+  s_26cbe985980ef3::t_35d467dafd9578 1-4,6,9-233,238-249,253-254,257-260,262,264-269,272,275
+packages/gatekeeper-google/src/drive-api.ts
+  s_26cbe985980ef3::t_6232589e2e7069 5-7,93-144,296-299,377-465,499-503,533-536,669-808
+packages/gatekeeper-google/src/google-configurators.ts
+  s_26cbe985980ef3::t_2f8ac9203c2866 17-20,37,54-59,139-142,146,149,152-155,164-167,274,277,281-296,303,306,310-325,332,335,339-354
+packages/gatekeeper-google/src/google.ts
+  s_26cbe985980ef3::t_dc3106ff49534d 111-112,114-116,798-800,899-902,928,935,942,1906-1910,2034-2036
+packages/gatekeeper-google/src/observability.ts
+  s_26cbe985980ef3::t_1f75022d224b0e 6-7,11
+packages/gatekeeper-google/src/resources.ts
+  s_26cbe985980ef3::t_1917e3f9ff3ae6 314-344,353-359,366,374,379-380,408-409,440-441,443
+packages/gatekeeper-google/src/sheets-api.ts
+  s_26cbe985980ef3::t_49b85462c89a58 6
+packages/gatekeeper-google/src/sheets.ts
+  s_26cbe985980ef3::t_bf262b44f0c0a7 16,23,192-193
+packages/gatekeeper-google/src/slides.ts
+  s_26cbe985980ef3::t_1232f354f835df 12,16,103,128-132
+packages/gatekeeper-google/__tests__/configurator-office-flow.test.ts
+  s_26cbe985980ef3::t_bb88e685826e37 1-608
+packages/gatekeeper-google/__tests__/office-conversion.test.ts
+  s_26cbe985980ef3::t_fe2605e043e40b 1-502
+packages/gatekeeper-google/src/office-conversion.ts
+  s_26cbe985980ef3::t_109f1b3e9e875d 1-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1be7b7300618ab9903192994fcd5c8a1c28474c9",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

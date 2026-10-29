@@ -1,0 +1,49 @@
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_d16787129ca3ae::t_0120ff567ecb24 141-184
+packages/workshop-shared/src/api.ts
+  s_d16787129ca3ae::t_f19787003e1f48 1405-1407
+  s_d16787129ca3ae::t_57816e0bd510b7 1403-1404,1408-1425,1513-1530,1538,1540-1541
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_d16787129ca3ae::t_aefabfe46f9630 113-127
+packages/workshop-backend/src/agent-compaction.ts
+  s_d16787129ca3ae::t_ef2f27769faa26 1-4,26-28,35-36,38-39
+packages/workshop-backend/src/ai-models.ts
+  s_d16787129ca3ae::t_82ec49ead397d7 7-8,11-12,15-16,24-27,139-146,148-161,164-172,180,186,200,207-209,225,291-294,302-316,322-344,348-350,352-354,356,386,396,437,532,627
+  s_d16787129ca3ae::t_e252d9d723af16 824-826
+  s_d16787129ca3ae::t_7719d823bcb3bd 384-385,387
+  s_d16787129ca3ae::t_861db24af2801b 345-347,351
+  s_d16787129ca3ae::t_aa6c564a59302e 317
+  s_d16787129ca3ae::t_65282993b00a16 243-244,430-432
+  s_d16787129ca3ae::t_5f74d84b6f1e66 533
+  s_d16787129ca3ae::t_56018ba8ea073b 162-163,173-179
+  s_d16787129ca3ae::t_7cd1d72a8773fe 318-321
+  s_d16787129ca3ae::t_aee99494cb199a 438-439
+  s_d16787129ca3ae::t_3cb527a8445b81 628
+  s_d16787129ca3ae::t_bcc22bc69cfdb4 355,357
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_d16787129ca3ae::t_6d8e376751d22e 683-689,691-699,702-703,705-706,708,711-712,715,717-720,747,755,758-759,1063-1064
+  s_d16787129ca3ae::t_a43069d9391bc6 839,845-848,880-894,1010-1043,1102-1118
+  s_d16787129ca3ae::t_ae8dc75e07f801 897-898
+  s_d16787129ca3ae::t_7aeea511417bb4 8-10,690,700-701,704,707,709-710,713-714,716,721-738,743-746,748-752,754,756-757,761-767,769-808,810-838,840-844,849-879,895-896,899-929,931-972,974-1009,1044-1062,1119
+  s_d16787129ca3ae::t_12afb9af408d22 760,768,973
+  s_d16787129ca3ae::t_4a8a91f3b525c4 739-742,753,809,930
+  s_d16787129ca3ae::t_a235d39b9ccdd2 1120
+packages/workshop-backend/src/user.ts
+  s_d16787129ca3ae::t_38e1ede5a4b524 733-736,738
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d37e6ef75c2a74fe1bcf79397043220559e96d82",
+  "prompts": {},
+  "sessions": {
+    "s_d16787129ca3ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d53efdfd-725e-49f2-bc5f-96438ab0f01c",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

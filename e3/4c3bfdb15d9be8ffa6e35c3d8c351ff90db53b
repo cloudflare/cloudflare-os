@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_3dacb3241b0d1d::t_2630f985fec5a1 82-84,86-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e34c3bfdb15d9be8ffa6e35c3d8c351ff90db53b",
+  "prompts": {},
+  "sessions": {
+    "s_3dacb3241b0d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6d45d09-7703-4cdc-ad53-ddc1f9ca4ec6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,46 @@
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_2b1daa517ff985::t_0dcb9e81909646 17-19
+  s_2b1daa517ff985::t_59e395dd68bcb0 274-302
+  s_2b1daa517ff985::t_5dc313c4320c47 1
+packages/workshop-backend/__tests__/do-retry.test.ts
+  s_2b1daa517ff985::t_ddeb9ade1d1109 41-73
+  s_2b1daa517ff985::t_22e94edf766da7 105-115
+  s_2b1daa517ff985::t_4e6516a98910c5 2-4
+packages/workshop-backend/src/do-retry.ts
+  s_2b1daa517ff985::t_3280888c246dbe 23-48,55-59,67
+packages/workshop-backend/src/overseer.ts
+  s_2b1daa517ff985::t_3fe08600e82ebc 7573
+  s_2b1daa517ff985::t_7b4d78d1637913 7174-7202
+  s_2b1daa517ff985::t_c761cb60eb71da 7517
+  s_2b1daa517ff985::t_044f37f10f9e36 53-60
+  s_2b1daa517ff985::t_e2b38023276636 7881
+  s_2b1daa517ff985::t_963c8b91bcd081 8236,8245
+  s_2b1daa517ff985::t_cfb7e52b8b5dd7 8262
+  s_2b1daa517ff985::t_3f424323e5b8b4 7315
+  s_2b1daa517ff985::t_d0f5a257b0d978 25
+  s_2b1daa517ff985::t_ffde5f6f429f82 8012
+  s_2b1daa517ff985::t_161751499bc779 8528
+packages/workshop-backend/vitest.integration.config.ts
+  s_2b1daa517ff985::t_8e61c1f85a2977 40-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cba72f6521d3df91561ed19b22c1b5851f4f998e",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_2b1daa517ff985": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d57b2c27-7ea2-4449-b5b3-221f43f6819f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

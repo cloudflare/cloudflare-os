@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_e3c1456410672e::t_1768fee236efe2 18,68,82
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_e3c1456410672e::t_dc8b2d96936880 20,86,101,220,275,521,573-574,695,744
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e310d299666103589518e999184b163f8ede0cee",
+  "prompts": {},
+  "sessions": {
+    "s_e3c1456410672e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19fc7fdd-8235-4154-b783-6863ad5cfced",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

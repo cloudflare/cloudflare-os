@@ -1,0 +1,34 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7ebc2a75b360ad::t_e490913ab4fa1f 1190-1201,1203-1208
+  s_7ebc2a75b360ad::t_7da0a146dcb351 1217,1220-1221,1225,1231-1234
+  s_7ebc2a75b360ad::t_d6253d0171f0d1 995-1000,1005,1013,1018-1020,1022-1027
+  s_7ebc2a75b360ad::t_d5c90ce9bce39b 1279,1281
+  s_7ebc2a75b360ad::t_898c35a85e014a 1126
+  s_7ebc2a75b360ad::t_45383f6bdae7b5 1070-1071
+  s_7ebc2a75b360ad::t_c3015c39103059 1139,1146,1152-1165,1169
+  s_7ebc2a75b360ad::t_814b01cff2a207 89
+  s_7ebc2a75b360ad::t_17e7fa2a2c819e 1247,1255,1261-1278,1280,1282-1283
+  s_7ebc2a75b360ad::t_aa3ea9db61a6f6 78,80-83,86-88,90-91
+  s_7ebc2a75b360ad::t_9fc5bd44e52a48 1229-1230,1235
+  s_7ebc2a75b360ad::t_663752b5ecdbb8 1103-1120
+  s_7ebc2a75b360ad::t_327f8beaef0846 3978-3985
+  s_7ebc2a75b360ad::t_27b629aed62afe 6092-6093,6095-6096
+  s_7ebc2a75b360ad::t_5915190cc20596 983-994
+  s_7ebc2a75b360ad::t_13c5027b323205 1284-1286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e659a595db2011672581231645165508125d6db0",
+  "prompts": {},
+  "sessions": {
+    "s_7ebc2a75b360ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bee6e659-c28d-4b19-a30d-b44498ed993d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

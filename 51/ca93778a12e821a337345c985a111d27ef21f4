@@ -1,0 +1,56 @@
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_5e69d4e2f100ec 483
+packages/workshop-backend/src/admin-config.ts
+  s_1dfdf61332f5c7::t_4a148950e04689 38-43
+  s_1dfdf61332f5c7::t_f94394a38988db 56
+  s_1dfdf61332f5c7::t_768b3db9de0d80 93-94
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_1dfdf61332f5c7::t_7c46d8a66657d3 40,54,57
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_aa351cfc5c3b41 1471-1473
+  s_1dfdf61332f5c7::t_a21771c852f484 1456-1458
+  s_1dfdf61332f5c7::t_90f121767a60a9 1453-1455
+  s_1dfdf61332f5c7::t_01fbcb454a54fd 791-796
+  s_1dfdf61332f5c7::t_4babee30a84cea 1450-1452
+  s_1dfdf61332f5c7::t_a1f9de303dd7f5 1459-1461
+  s_1dfdf61332f5c7::t_eab412198fc0a0 1462-1470,1474
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_8b9dc591c3b142 34-35,50
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_0834ac3421c26b 127-128,130-133
+  s_1dfdf61332f5c7::t_def1cacffb7e5f 106,110,120-126
+  s_766ca11e0f4218::t_9d0dcfcb585656 1,79-101,129,134-138,928-932,941-942,2772-2773
+  s_1dfdf61332f5c7::t_76d68a662e35eb 2013-2017
+  s_1dfdf61332f5c7::t_1bf992464df0d5 102-105,107-109,111-119
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_1c0ab8c7ca6c5b 240-241
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_2d8eab3e58cf57 4396
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_def1cacffb7e5f 3504,3506-3507,3509-3522,3526,3528-3529,3533,3535-3536,3541,3543-3544,8390
+  s_766ca11e0f4218::t_783c19ff701e30 3,14,155-159,821-828,3031-3032,3087-3091,3503,3505,3508,3523-3525,3527,3530-3532,3534,3537-3540,3542,3545,7522-7530,7822-7823,7902,8388-8389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "51ca93778a12e821a337345c985a111d27ef21f4",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    },
+    "s_766ca11e0f4218": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04c79522affexRvcH9LnAxEnvg",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

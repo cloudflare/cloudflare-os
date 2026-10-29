@@ -1,0 +1,30 @@
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_fb1ead9db1e9e5 131
+  s_1dfdf61332f5c7::t_eefb9e06758744 5,12-17,939-940,954,976,1137-1139,1169-1188,1196-1200,1202-1204,1206-1208,1210-1217,1222,1253-1257,1259,1382,1619,1820-1827,2046-2122,2124-2125
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_2172806ca88a8b 1-413
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_ce203cbafd31cf 1-312
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_4ace8a5b2d9209 16,3027-3060,3063,3095-3097,3291-3294,3314,3513-3516,3521-3533,3539-3540,3545-3549,3554-3564,3570-3590,3692-3693,3696-3710,4393-4402,4587-4592,7597-7599,7601-7603,7606,7609-7616,7980,8012-8016
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_2ca53014d2c7fe 1-94
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_783115beae9d8f 62,3243-3247,3255-3265,3424-3426,3431-3433,3451-3452,3463,3490,3554,3575-3577,3687-3723,3859-3862,3864-3865,4013-4014,4019,4117-4122,4192-4200,4210,4321-4326,4476-4477,4493,4496,4499-4500,4535-4555,5988-6025,6593,6615-6620,6745-6748,6765
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ee308f7779ef76c07275ef4fa41ed92c35c592ba",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

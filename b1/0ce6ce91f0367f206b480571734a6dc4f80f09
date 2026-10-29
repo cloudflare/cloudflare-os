@@ -1,0 +1,88 @@
+packages/gatekeeper-email/src/email.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 450
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_77fa7c8bd47def::t_dad457305f98b6 28-37,78,81,88-92,145
+  s_77fa7c8bd47def::t_fb69e2dfaf5446 73-77,79-80,82-87,93-98,139,153-164,166-169,172,174-187
+packages/gatekeeper-kit/src/connect-pages.ts
+  s_77fa7c8bd47def::t_26032156074586 140-155,186-187,190-192,197,199-200
+packages/workshop-frontend/src/connectHandoff.ts
+  s_77fa7c8bd47def::t_9bf3f1e9c7e54c 2-5,33-35,37,46-66,69,71-72,77-87,98,100,104-107,109-111,116-119
+  s_77fa7c8bd47def::t_dad457305f98b6 112-115
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 460-461,463,483-485,687-688
+packages/workshop-backend/src/user.ts
+  s_77fa7c8bd47def::t_95c94807273ee4 47-49,1706-1712,1716-1719,1729,1735-1742,1750-1763,1771-1789,1804,1821,1907-1908
+packages/gatekeeper-notion/src/notion.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 389-390,405-407,575-576
+packages/workshop-backend/__tests__/pending-login.test.ts
+  s_77fa7c8bd47def::t_a6d8bdf88e2b01 74-88
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 273
+packages/mcp-shared/src/user.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 18-19,68-70
+packages/workshop-frontend/src/ObserverConfigModal.test.tsx
+  s_77fa7c8bd47def::t_72112bdbbb34e0 122-128,201,212-213,221,238-239,248,264-265
+packages/gatekeeper-kit/__tests__/credential-stage.test.ts
+  s_77fa7c8bd47def::t_26032156074586 4,20,22,24,26-44,50,52,56,58,60-62,68,70-71,75-76,78-94
+packages/gatekeeper-linear/src/linear.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 584-585,602-604,807-808
+packages/gatekeeper-spotify/src/spotify.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 575-576,593-595,761-762
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 485,505-511,513,518-551
+  s_77fa7c8bd47def::t_10943d3793352f 552
+packages/gatekeeper-google/src/google.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 507-508,517,522-523,544-545,547-548,871,873
+packages/mcp-shared/__tests__/user.test.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 29
+packages/workshop-backend/__tests__/test-worker.ts
+  s_77fa7c8bd47def::t_a6d8bdf88e2b01 22-23,25-26,40,43-44
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_77fa7c8bd47def::t_9bf3f1e9c7e54c 72-75
+AGENTS.md
+  s_77fa7c8bd47def::t_d865dc21b3bc2a 25
+packages/workshop-backend/src/connect-handoff.ts
+  s_77fa7c8bd47def::t_95c94807273ee4 2-6,9-11
+packages/workshop-backend/__tests__/connect-handoff.test.ts
+  s_77fa7c8bd47def::t_a6d8bdf88e2b01 27-28,49-50,54-55,131,143-145,154-177,187,195-197,213,248
+packages/workshop-backend/src/auth/login-flow.ts
+  s_77fa7c8bd47def::t_95c94807273ee4 40-41,65-67,78,179
+  s_77fa7c8bd47def::t_de479b09dfdea2 39,42,64
+packages/gatekeeper-confluence/src/confluence.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 329-330,345-347,517-518
+packages/gatekeeper-kit/__tests__/connect-pages.test.ts
+  s_77fa7c8bd47def::t_99aad153ff9e71 51,53-56,58,62-63,67-81,108,113-114
+packages/gatekeeper-kit/src/credential-stage.ts
+  s_77fa7c8bd47def::t_603209522d7f26 18,103-105
+  s_77fa7c8bd47def::t_ea342ada659ea2 11-15,24-27,35,39-40,48-62,67-69,72,74-76,80-84,87-88,92,97-100,106,109-118
+packages/workshop-shared/src/gatekeeper.ts
+  s_77fa7c8bd47def::t_3541eecc3ad88f 447-450,455-456,460-466,480,484,496-498,582-589,591,671-674,686,689-695,697,717-718
+packages/gatekeeper-github/src/github.ts
+  s_77fa7c8bd47def::t_720cfc2871e39c 1308-1311,1337-1338,1340,1525,1527
+packages/gatekeeper-supabase/src/supabase.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 445-446,465-467,673-674
+packages/gatekeeper-slack/src/slack.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 406-412,414,418-420,440-441,443,654-655
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 461-462,479-481,616-617
+packages/mcp-shared/src/account.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 20,456-460,529-537,653,660-662,664-666,705-706,709-711,713-715
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 308-309,328-330,489-490
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b10ce6ce91f0367f206b480571734a6dc4f80f09",
+  "prompts": {},
+  "sessions": {
+    "s_77fa7c8bd47def": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "781841ab-ed59-4d5b-8a61-8e585560247f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

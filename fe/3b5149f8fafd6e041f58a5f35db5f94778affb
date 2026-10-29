@@ -1,0 +1,30 @@
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_cd499ea12d2b3c::t_24d22dc5fd7309 326-328
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 21-22,71-72,303-306
+packages/workshop-backend/src/agent.ts
+  s_cd499ea12d2b3c::t_b5749e549824ca 96,1088,1726,1734,1736
+packages/gatekeeper-context/src/library-read.ts
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 8
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 170,174
+packages/workshop-backend/src/overseer.ts
+  s_cd499ea12d2b3c::t_b5749e549824ca 14,45,90,3072,3169,3198
+packages/gatekeeper-context/src/agent-skill.ts
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fe3b5149f8fafd6e041f58a5f35db5f94778affb",
+  "prompts": {},
+  "sessions": {
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

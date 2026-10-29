@@ -1,0 +1,22 @@
+packages/mcp-shared/src/account.ts
+  s_3ca7dcdfd43170::t_93a73bfbbf20a7 791-800,804-814
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_3ca7dcdfd43170::t_59c308499aaffa 17
+  s_3ca7dcdfd43170::t_c32fe026d898fc 885-928
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "49547b875ca90f9df6f8fd73f11d1bddd59238cf",
+  "prompts": {},
+  "sessions": {
+    "s_3ca7dcdfd43170": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "025ba785-ecf3-4814-b092-053b914bc1da",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

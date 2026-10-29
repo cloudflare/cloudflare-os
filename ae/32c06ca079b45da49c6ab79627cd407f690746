@@ -1,0 +1,28 @@
+packages/integration-tests/src/harness.ts
+  s_4c4222726010fb::t_96c7ffd686a008 32-50
+  s_4c4222726010fb::t_b5ae7ccb0089fc 97
+  s_4c4222726010fb::t_5e844cc919f251 13
+  s_4c4222726010fb::t_53fd9ab3e78d25 77-78
+  s_4c4222726010fb::t_444417f6505cc6 135
+  s_4c4222726010fb::t_502d56c8c1a336 71-76
+packages/integration-tests/package.json
+  s_4c4222726010fb::t_0375ad92e935ff 19-20
+pnpm-lock.yaml
+  s_4c4222726010fb::t_f0d39c3bef73d5 496-498,985,1005,1011,1017,1023,1029,1035,1038
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ae32c06ca079b45da49c6ab79627cd407f690746",
+  "prompts": {},
+  "sessions": {
+    "s_4c4222726010fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5865b5c-4e69-4687-9ed8-7dba84b5c46d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

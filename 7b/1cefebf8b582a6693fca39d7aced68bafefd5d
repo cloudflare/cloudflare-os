@@ -1,0 +1,24 @@
+packages/observability/src/metrics.ts
+  s_1eb750210ff0d3::t_4daf1df9aac29d 67
+  s_1eb750210ff0d3::t_49c340564b577a 12,37,50-51,54-55,97
+packages/observability/src/metrics-schema.ts
+  s_1eb750210ff0d3::t_e5621e3c9ae9c1 29-30,33,51,62-64,66,72-79
+packages/observability/__tests__/metrics.test.ts
+  s_1eb750210ff0d3::t_e5451ee16b0088 8,22,41,47,51,53,63,66,73,79-80,82-83,87-93,97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7b1cefebf8b582a6693fca39d7aced68bafefd5d",
+  "prompts": {},
+  "sessions": {
+    "s_1eb750210ff0d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2837f7d-18a0-4d38-abd2-24948712cc40",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

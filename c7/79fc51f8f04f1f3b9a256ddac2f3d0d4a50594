@@ -1,0 +1,60 @@
+packages/workshop-backend/src/user.ts
+  s_78a1a7c3756c1d::t_37b1ed9f71a9ee 639-648,686-689
+  s_78a1a7c3756c1d::t_a38a1805670209 690
+packages/workshop-shared/package.json
+  s_78a1a7c3756c1d::t_37b1ed9f71a9ee 23-26
+packages/workshop-backend/src/external-message-gateway.ts
+  s_78a1a7c3756c1d::t_37b1ed9f71a9ee 1-39
+packages/workshop-backend/src/overseer.ts
+  s_78a1a7c3756c1d::t_3b9e47998adf95 398,433,627,630,636,640,961
+  s_78a1a7c3756c1d::t_37b1ed9f71a9ee 30,32,393-397,399-432,434-449,465,548-551,628-629,631-635,637-639,641-649,928-930,938-960,963-976,1357,2213,2299-2300,2302-2303,2305,2330,2334-2343,2347-2349,2383,2404,2408-2410,2412-2414,2418-2420,2430,2655-2656,2669-2670,2888,4437-4447,4454-4471,4473,4475,4477-4491,4495-4499,4502-4503,4505-4510,4512-4524,6111-6114
+  s_78a1a7c3756c1d::t_ecdfbd087c2f6c 4501,4511
+  s_78a1a7c3756c1d::t_edb7cab26b0fd7 1015,1061,2351,2422,2887
+  s_78a1a7c3756c1d::t_3c450ac34b759c 4448-4453
+  s_78a1a7c3756c1d::t_df094083f98fa2 4492
+  s_78a1a7c3756c1d::t_f82462a712b683 4427-4435,4472,4474,4476,4493-4494,4500,4504
+  s_78a1a7c3756c1d::t_85c51ed9da7de1 2432-2576
+  s_78a1a7c3756c1d::t_7c5ac87fd7b4e7 29
+  s_78a1a7c3756c1d::t_8a5ba05b0fedca 962
+  s_78a1a7c3756c1d::t_29f97f090d9024 2350
+  s_78a1a7c3756c1d::t_a43e78695d8369 2378
+  s_78a1a7c3756c1d::t_2b496adc4497ea 2380-2381
+  s_78a1a7c3756c1d::t_7300d5b2274c6b 2421
+  s_78a1a7c3756c1d::t_45c96212abf6e2 2431
+  s_78a1a7c3756c1d::t_de3c79d6212cbb 4436
+  s_d62853a085272a::t_11328694d674b0 2304,2328,2331-2333,2382,2402,2405-2407,2411
+  s_d62853a085272a::t_7728fa440ffa8e 2247,2261,2264,2273,2279,2282,2290
+  s_d62853a085272a::t_2c058918b9128d 2577-2578,4279
+packages/workshop-shared/src/external-message-gateway.ts
+  s_78a1a7c3756c1d::t_b542d26e83178e 17
+  s_78a1a7c3756c1d::t_53d51130184ac3 19,21,23,25,27,29,31
+  s_78a1a7c3756c1d::t_37b1ed9f71a9ee 1-16,18,20,22,24,26,28,30,33-49
+  s_78a1a7c3756c1d::t_6fb0727904c229 32
+packages/workshop-backend/src/server.ts
+  s_78a1a7c3756c1d::t_37b1ed9f71a9ee 22,48-49
+  s_78a1a7c3756c1d::t_434ca6a10a70a0 50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c779fc51f8f04f1f3b9a256ddac2f3d0d4a50594",
+  "prompts": {},
+  "sessions": {
+    "s_78a1a7c3756c1d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_093df5611ffeQY5XXuyr5ugGaQ",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_d62853a085272a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07f3a23baffeycd8CGIsH1bEDM",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

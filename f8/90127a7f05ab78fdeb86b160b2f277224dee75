@@ -1,0 +1,26 @@
+packages/workshop-ios/src/screens/ThreadsScreen.tsx
+  s_05e5fdfde14468::t_89170eeb136939 7,20,161,195-223,307-328
+packages/workshop-ios/src/screens/GadgetScreen.tsx
+  s_05e5fdfde14468::t_8c0a49a982e681 160
+  s_05e5fdfde14468::t_589eda0f2ba3ef 57-60,91-120,152-159,161-174
+packages/workshop-ios/src/workspace-session.ts
+  s_05e5fdfde14468::t_f7768c061262df 1,14-40,72-83
+  s_05e5fdfde14468::t_520ee95113f189 8,58-59,84-93,135-146,169
+  s_05e5fdfde14468::t_3796118eb7b02f 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f890127a7f05ab78fdeb86b160b2f277224dee75",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

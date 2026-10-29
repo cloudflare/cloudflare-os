@@ -1,0 +1,20 @@
+AGENTS.md
+  s_8020c00abab0eb::t_bdc4b63bc6160f 33
+  s_8020c00abab0eb::t_3b42d02ffca315 42-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cd9e02f76a2fdf4534fe84f84b8b4407a1b8df8c",
+  "prompts": {},
+  "sessions": {
+    "s_8020c00abab0eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9e9ee91-0307-41bc-9530-0bb117fda2d8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

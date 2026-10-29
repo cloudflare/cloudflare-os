@@ -1,0 +1,24 @@
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_a2be82fbf0de71::t_f3ee7511682407 307-320,322,494,496
+  s_a2be82fbf0de71::t_596f485f462e41 323-336,338-349,351-364,368-379,381,383-391,393-399,401-422,424-442,444-474,476-493
+packages/workshop-frontend/src/Connections.tsx
+  s_a2be82fbf0de71::t_f05c7260f85b65 560-561,579,596
+packages/workshop-frontend/src/components/billing/AccountSelectionModal.tsx
+  s_a2be82fbf0de71::t_f05c7260f85b65 73-78,83,85,103,105-115,117-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "93459f75d098633eaa6e2988a0c6378784d0b145",
+  "prompts": {},
+  "sessions": {
+    "s_a2be82fbf0de71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "535a77d8-18ac-4afa-8fce-44ce57a0f6b8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

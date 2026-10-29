@@ -1,0 +1,19 @@
+package.json
+  s_7727453cc7f579::t_1e6e7df598e1cb 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "456d53f9a34a71846f593de4350dab55b008fa18",
+  "prompts": {},
+  "sessions": {
+    "s_7727453cc7f579": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c0925e8-b509-43e0-93a3-8e4889914940",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

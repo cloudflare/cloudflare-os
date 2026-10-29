@@ -1,0 +1,45 @@
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_664125cd80dfd6::t_30666870660e22 3,34-40,128-131,157-164,168-170
+  s_664125cd80dfd6::t_f2345c850154f1 165-167
+  s_664125cd80dfd6::t_834bd66ec57e79 171
+packages/workshop-frontend/src/features/deployment-updates/updateStatusFixture.ts
+  s_664125cd80dfd6::t_30666870660e22 19-20
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_664125cd80dfd6::t_9e42b1d3cdc435 105,107-108,250
+  s_664125cd80dfd6::t_186132a37a12cf 106,109,229-234,238-239,245-249,251-256,258-266,272,274-275,278-279
+  s_664125cd80dfd6::t_816bcb0f5d25e1 257,267-271
+  s_664125cd80dfd6::t_14061e123e6998 273
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 26,235-236
+  s_99c5462c433ffc::t_9a8dea5b3dc989 237-238
+packages/gatekeeper-websearch/src/worker.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 21,195-197
+  s_99c5462c433ffc::t_3b7a96e26b9729 198-199
+packages/gatekeeper-x/src/x.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 27,289-290
+  s_99c5462c433ffc::t_8b6672099bbcaa 291-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "baae89774d4483aea660e1a0a56d1ca2aae1bfbd",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_e3eb00eefefcec::t_9a0c92a585ff90 249,251,255
+  s_e3eb00eefefcec::t_31c99e62c40ff6 135,178-179,186,196,200,205,212-213,225-227,240-246,252-254,271-272
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_e3eb00eefefcec::t_9a0c92a585ff90 54,57-59,107,119,135,137,145,168,178,184
+  s_e3eb00eefefcec::t_31c99e62c40ff6 34,41-44,47-53,56,60-67,131-134,136,138-144,146-167,169-177,179-183,185-191,195
+  s_16a3a163f9f88e::t_5ad26d1587e3a4 192-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2de2038a07ba7792bc98ce24417b21fb97788ab4",
+  "prompts": {},
+  "sessions": {
+    "s_16a3a163f9f88e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2c0bb8ffeWRj78Ro5gwWR55",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_e3eb00eefefcec": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b1b405dffeCnKNg5y1Hwfsr2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

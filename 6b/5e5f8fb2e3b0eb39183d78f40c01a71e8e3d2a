@@ -1,0 +1,21 @@
+packages/workshop-shared/src/gatekeeper.ts
+  s_3dacb3241b0d1d::t_7909c911a81bd0 1076-1079,1083-1089
+.agents/skills/write-gatekeeper/SKILL.md
+  s_3dacb3241b0d1d::t_1f03595cd25d9e 246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6b5e5f8fb2e3b0eb39183d78f40c01a71e8e3d2a",
+  "prompts": {},
+  "sessions": {
+    "s_3dacb3241b0d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6d45d09-7703-4cdc-ad53-ddc1f9ca4ec6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

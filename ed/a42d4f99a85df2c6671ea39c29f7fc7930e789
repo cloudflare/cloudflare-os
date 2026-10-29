@@ -1,0 +1,31 @@
+packages/gatekeeper-google/README.md
+  s_74eb0b1cbb84f7::t_b554f7b78817e1 186-189
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_74eb0b1cbb84f7::t_d25edd204026d6 82,343-365
+packages/gatekeeper-google/__tests__/workerd/gmail-hooks.test.ts
+  s_74eb0b1cbb84f7::t_99af391391c974 112,266-276,452-493
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_74eb0b1cbb84f7::t_98a13fb63b546f 223-230,240-244,651,656
+packages/gatekeeper-google/src/chat-hooks.ts
+  s_74eb0b1cbb84f7::t_f5ee5a5f17755e 105-106,122-133,239,243-246
+packages/gatekeeper-google/src/gmail-hooks.ts
+  s_74eb0b1cbb84f7::t_2e894e371c05c1 150-151,173-179,363,367-370
+packages/gatekeeper-google/src/google.ts
+  s_74eb0b1cbb84f7::t_820a54132e0f3c 433-438,723,735,740-765
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eda42d4f99a85df2c6671ea39c29f7fc7930e789",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

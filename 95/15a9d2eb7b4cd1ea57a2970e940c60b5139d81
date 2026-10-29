@@ -1,0 +1,49 @@
+docs/observers.md
+  s_dd2417a6d5bd82::t_716f7f23036631 132-134
+  s_dd2417a6d5bd82::t_f62e48126fca0b 555-558
+  s_dd2417a6d5bd82::t_71a9b7897f2cc1 541-543
+  s_dd2417a6d5bd82::t_4083b549ee68d1 645-646
+  s_dd2417a6d5bd82::t_8247efccfebcf9 638-640
+  s_dd2417a6d5bd82::t_59c289327c7aa3 627-630
+  s_dd2417a6d5bd82::t_3369e3ce2dfbf0 144-147
+  s_dd2417a6d5bd82::t_88ea99b0f45938 92,94-97
+docs/spaces.md
+  s_dd2417a6d5bd82::t_e8369394c2d88a 179
+  s_dd2417a6d5bd82::t_bb56f89d1a8940 5,28-29,31,37,44,48,50,53-57,59,61,63,91,96,98,114,152-155,157-161,167,169,178,190,192,196-197,200,202
+  s_dd2417a6d5bd82::t_b6d1c91607b479 60
+  s_dd2417a6d5bd82::t_c20a36240ce63e 193-195
+  s_dd2417a6d5bd82::t_843f9b86111a45 58,62,120,191
+  s_dd2417a6d5bd82::t_e1653668874a71 3,156
+  s_dd2417a6d5bd82::t_7c46bf5d62437b 198-199
+docs/sharing.md
+  s_dd2417a6d5bd82::t_3d043a6f33d480 196
+  s_dd2417a6d5bd82::t_1459d207d15f73 73
+  s_dd2417a6d5bd82::t_e9cfb3c8826a9e 102
+  s_dd2417a6d5bd82::t_5092118dbe69e3 8,26,30,54,87,92,151,153,159,170,178,190-191,193,195,197,199,201,203,205-207,222
+  s_dd2417a6d5bd82::t_ac6d8283495a5a 182
+  s_dd2417a6d5bd82::t_afbab2f731ffcd 198
+  s_dd2417a6d5bd82::t_8a70277ba755aa 202
+  s_dd2417a6d5bd82::t_b6d1c91607b479 192
+  s_dd2417a6d5bd82::t_18da10cb2856a0 200
+  s_dd2417a6d5bd82::t_86e5d710ae9c39 50
+  s_dd2417a6d5bd82::t_843f9b86111a45 163,204
+  s_dd2417a6d5bd82::t_9f28542c5caacd 194
+  s_dd2417a6d5bd82::t_77f280805a97b0 223-224
+  s_dd2417a6d5bd82::t_cb555fec9fe8da 186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9515a9d2eb7b4cd1ea57a2970e940c60b5139d81",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

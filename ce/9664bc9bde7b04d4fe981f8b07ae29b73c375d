@@ -1,0 +1,43 @@
+scripts/release/testdata/golden-manifest.json
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 1136-1141
+packages/workshop-backend/src/space-directory.ts
+  s_1da8b1c2e6d0c9::t_377023a460a7fa 1-90
+packages/workshop-backend/worker-configuration.d.ts
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 2,14
+packages/workshop-backend/cloudflare.config.ts
+  s_1da8b1c2e6d0c9::t_9263bcaef8a6c5 79-80
+packages/workshop-backend/src/spaces.ts
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 4-7,36-38,52,64-65,82,84-88,188-194,262-270,272,401,426,489,492-522,654,750-761,807-809,818,871,879,902,912,919,941-943,948,960-989,992-998
+packages/workshop-backend/__tests__/spaces-tree.test.ts
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 617-619,633-634
+packages/workshop-backend/__tests__/space-directory.test.ts
+  s_1da8b1c2e6d0c9::t_91ebc291cb24fc 328-330,393-407
+  s_1da8b1c2e6d0c9::t_4af9e442008d31 1-178,193-321,332-333,335-392,408-590
+  s_1da8b1c2e6d0c9::t_78087a22b55f31 179-192
+  s_1da8b1c2e6d0c9::t_8c0b9b58549881 322-327,331,334
+packages/workshop-backend/vitest.config.ts
+  s_1da8b1c2e6d0c9::t_0f8c713b1fa134 99
+packages/workshop-backend/src/server.ts
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 4,27,68-70,188-191
+  s_1da8b1c2e6d0c9::t_082f4fc7a61c61 192
+packages/workshop-backend/src/storage-schema/space-storage.ts
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 43-51,59-61,63-64,140,146-150,153-154,156-164
+packages/workshop-backend/wrangler.jsonc
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 82-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ce9664bc9bde7b04d4fe981f8b07ae29b73c375d",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

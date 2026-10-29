@@ -1,0 +1,24 @@
+packages/workshop-frontend/src/components/chat/useAttachmentBytes.ts
+  s_7ebc2a75b360ad::t_2c522d1da9a7a4 1-166
+packages/workshop-frontend/src/components/chat/attachment-preview.ts
+  s_7ebc2a75b360ad::t_f8b2374ae8d696 1-50,56,66-121
+  s_7ebc2a75b360ad::t_b842fc99083dd6 51-55,57-65
+packages/workshop-frontend/src/components/chat/attachment-preview.test.ts
+  s_7ebc2a75b360ad::t_026c81ed91b725 1-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d79424460c1cb84b110330fbcbf483799c80fe4f",
+  "prompts": {},
+  "sessions": {
+    "s_7ebc2a75b360ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bee6e659-c28d-4b19-a30d-b44498ed993d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+plans/decision-models.md
+  s_a99c541db57824::t_c1855f9fa38d37 89-96,253-263,270-274,277-278,403-404,425-429,439-441,476-478
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7774d5951706ab0025cccf0b06c0d955b6737cd3",
+  "prompts": {},
+  "sessions": {
+    "s_a99c541db57824": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f1a7bd2-214d-43d8-8ae3-c57f5748209a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+packages/workshop-shared/src/external-message-gateway.ts
+  s_d62853a085272a::t_ae267f905cd80e 2,16-35,74-122,124-128
+  s_d62853a085272a::t_8e9718f775b7de 123
+packages/workshop-backend/src/overseer.ts
+  s_d62853a085272a::t_8e9718f775b7de 5-11,29-41,630-634,709-711,723-739,864,870-997,1001-1049,2292-2300,2564-2567,2569-2583,2585-2591,2593-2615,2617-2620,3763-3773,4484-4502,4505,4516-4519,4521-4543,5549-5557,5664-5672,5763-5769,5783-5789,6197-6201
+  s_d62853a085272a::t_465e02aa6657e4 2291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a80b73ab1f61ed586c8c1105add4620424cb80b0",
+  "prompts": {},
+  "sessions": {
+    "s_d62853a085272a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07f3a23baffeycd8CGIsH1bEDM",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

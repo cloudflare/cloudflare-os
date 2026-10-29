@@ -1,0 +1,39 @@
+docs/observers.md
+  s_7fb837265947ac::t_736ca1b322d7a7 37-41,673-674,781-784
+packages/workshop-shared/src/api.ts
+  s_7fb837265947ac::t_736ca1b322d7a7 1341-1342
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_7fb837265947ac::t_736ca1b322d7a7 127
+  s_7fb837265947ac::t_e6fc2ca0c3424a 1-126,128-150
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_7fb837265947ac::t_736ca1b322d7a7 8-9,220-221,239-265
+packages/workshop-shared/src/gatekeeper.ts
+  s_7fb837265947ac::t_736ca1b322d7a7 1201-1204,1207-1209,1260-1263
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_7fb837265947ac::t_e6fc2ca0c3424a 2,6,284-348,351-353
+  s_7fb837265947ac::t_736ca1b322d7a7 349-350
+packages/workshop-backend/src/auto-approval.ts
+  s_7fb837265947ac::t_e6fc2ca0c3424a 6,8,18-35,78-79,89-90
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_7fb837265947ac::t_e6fc2ca0c3424a 304-308,312,337,345-346,364-365,395
+packages/workshop-backend/__tests__/restricted-actions.test.ts
+  s_7fb837265947ac::t_7282c261ea6b27 1-4,19,39-58,75-123
+packages/workshop-backend/src/overseer.ts
+  s_7fb837265947ac::t_4a667200ccf958 52,1157-1159,5831-5833
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a0c56678d82ef920a02e71fd73af686d52ff766d",
+  "prompts": {},
+  "sessions": {
+    "s_7fb837265947ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e87a5291-c3bd-4e4b-b82b-245e159a74a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

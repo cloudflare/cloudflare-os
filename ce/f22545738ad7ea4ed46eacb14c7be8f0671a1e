@@ -1,0 +1,27 @@
+packages/workshop-backend/__tests__/git-codec.test.ts
+  s_5651d7166bfd76::t_eb764748fc3f88 284,287,292-293
+  s_5651d7166bfd76::t_346bf3543a5b1e 252,254,258-260,266-268,270,274-280,285-286,288-291
+packages/workshop-backend/src/git-codec.ts
+  s_5651d7166bfd76::t_2ae0db092fa881 476-480,482-483,515
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cef22545738ad7ea4ed46eacb14c7be8f0671a1e",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_5651d7166bfd76": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adf2bca7-d838-413b-817e-c5b33a2b4284",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

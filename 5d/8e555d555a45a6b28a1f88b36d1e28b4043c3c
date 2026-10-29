@@ -1,0 +1,23 @@
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_10a46ead5b1afa::t_4dc4ec1d61aca0 93
+packages/workshop-backend/__tests__/restricted-producer-removal.test.ts
+  s_10a46ead5b1afa::t_48372b5caadd9d 93,107-109,124,139,151,165-213
+packages/workshop-backend/src/overseer.ts
+  s_10a46ead5b1afa::t_eb0ed053d84c77 4672-4675,6394,6399-6401,6410,8571-8575,11760-11766
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5d8e555d555a45a6b28a1f88b36d1e28b4043c3c",
+  "prompts": {},
+  "sessions": {
+    "s_10a46ead5b1afa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fdedd0f-322e-477a-a5eb-8ee1caa99628",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

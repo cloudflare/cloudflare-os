@@ -1,0 +1,43 @@
+packages/workshop-backend/__tests__/setup-token.test.ts
+  s_e093185f63dbaf::t_f74d3ac463f7c7 1-68
+packages/workshop-backend/src/auth/setup-token.ts
+  s_e093185f63dbaf::t_376122df531e2e 1-69
+packages/workshop-backend/src/deployment-config.ts
+  s_e093185f63dbaf::t_9e8f4da4c51db8 57
+packages/workshop-backend/src/env.d.ts
+  s_e093185f63dbaf::t_fa7b1d9e11f798 12-22
+packages/workshop-backend/src/server.ts
+  s_e093185f63dbaf::t_9ecdfcac729f40 8,84,86-88,681-682,692-703
+packages/workshop-backend/src/user.ts
+  s_e093185f63dbaf::t_331c2e92eb05fb 116-117
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_e093185f63dbaf::t_f5912b7c275065 34,68-70,581-603
+packages/workshop-frontend/src/SignupPage.test.tsx
+  s_e093185f63dbaf::t_501a80f393ef00 1-133
+packages/workshop-frontend/src/SignupPage.tsx
+  s_e093185f63dbaf::t_ba90aa00293bc6 14-19,22,27-29,32,37,39,41-42,76,137,139-140,149
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_e093185f63dbaf::t_a52b19cd017871 26,446-448,869-874
+packages/workshop-frontend/src/routes/signup.tsx
+  s_e093185f63dbaf::t_9c4386f59235a1 7-11,14-18,23-28,33
+packages/workshop-shared/src/api.ts
+  s_e093185f63dbaf::t_10444631c139e4 100-106,108-109,738-742
+run-dev-server.js
+  s_e093185f63dbaf::t_030cc66e756e29 206-208
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "abf99c06d33b9d34dda12ac84c22a20decbfad00",
+  "prompts": {},
+  "sessions": {
+    "s_e093185f63dbaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "342b8d87-036d-4006-82c3-8c496f8c7509",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

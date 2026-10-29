@@ -1,0 +1,42 @@
+packages/workshop-backend/vitest.integration.config.ts
+  s_097fdaa44b0b3f::t_7542f00af87f7f 1-4,10-25,32-33
+  s_097fdaa44b0b3f::t_65708eb709af5d 5-9,29-30
+  s_097fdaa44b0b3f::t_734a8926312007 26-28,31
+packages/workshop-backend/package.json
+  s_097fdaa44b0b3f::t_7542f00af87f7f 12-13
+docs/sharing.md
+  s_097fdaa44b0b3f::t_f95144e936dac0 50,147,153
+packages/workshop-backend/src/overseer.ts
+  s_097fdaa44b0b3f::t_550d7de4528ed8 3,5847,5853-5855,5899-5900,5918-5920,5922-5924
+packages/workshop-shared/src/api.ts
+  s_097fdaa44b0b3f::t_8b90838ebe689b 251-283,370-371
+packages/workshop-backend/src/server.ts
+  s_097fdaa44b0b3f::t_550d7de4528ed8 4,202-208,234-241
+docs/observers.md
+  s_097fdaa44b0b3f::t_f95144e936dac0 228-232
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_097fdaa44b0b3f::t_7542f00af87f7f 1-6,8-25,27-67,75-104,106-130,132-134
+  s_097fdaa44b0b3f::t_31774af25b0a3f 68,70-71,73-74,105,131
+  s_097fdaa44b0b3f::t_81ff88eb4044ff 26
+  s_097fdaa44b0b3f::t_ce86ba0eb86232 7,69
+  s_097fdaa44b0b3f::t_a0737cfa48c475 72
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_097fdaa44b0b3f::t_7542f00af87f7f 22
+  s_097fdaa44b0b3f::t_675acbcf33e994 1-21,23-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7b3176e28e6e2937d9623cb475dad125688c22ad",
+  "prompts": {},
+  "sessions": {
+    "s_097fdaa44b0b3f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b969153ffe8nZ1Gt6EsvqsKy",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

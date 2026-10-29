@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_9071d5837f88a2 3146-3147,3151-3160,3297,3303-3320,3324-3329,3360-3362,3364-3376,3524-3525,6388-6404,6407-6454,6475
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_23e2e8b7995c67 98-105,107-110,112-113,116-117,119-121,123-124,127-130,132-133,135-139,142-143,146-148,150-157,160-161,163-166,168-170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e906c56cf144489ee665867911bb4790177ba23e",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

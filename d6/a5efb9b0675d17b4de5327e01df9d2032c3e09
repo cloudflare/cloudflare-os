@@ -1,0 +1,32 @@
+packages/workshop-backend/src/env.d.ts
+  s_4fc0fbfe60c7c8::t_fbd267a8cd240d 12-15
+packages/workshop-frontend/src/AuthContext.tsx
+  s_4fc0fbfe60c7c8::t_f9d4044f27fcd8 61-82
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_4fc0fbfe60c7c8::t_c23fa70d321e47 4
+  s_4fc0fbfe60c7c8::t_5a23dd161f7ea2 73-75
+  s_4fc0fbfe60c7c8::t_f28246065b13ad 34
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_4fc0fbfe60c7c8::t_6b74db09edd97f 446-448
+  s_4fc0fbfe60c7c8::t_6ee4272cbfe941 15
+packages/workshop-shared/src/api.ts
+  s_4fc0fbfe60c7c8::t_dd1dce3cbafbfa 564-569
+packages/workshop-backend/src/server.ts
+  s_4fc0fbfe60c7c8::t_c7cbee6faf8e5d 589-595
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d6a5efb9b0675d17b4de5327e01df9d2032c3e09",
+  "prompts": {},
+  "sessions": {
+    "s_4fc0fbfe60c7c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a376f53-62f4-4e5b-9d74-7b855f22f3ce",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

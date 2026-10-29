@@ -1,0 +1,35 @@
+.github/workflows/README.md
+  s_d5a5c2310a35ff::t_d21a12e58887a7 1-64
+.github/workflows/preview.yml
+  s_d5a5c2310a35ff::t_59151d71c12ec0 1-203
+.gitignore
+  s_d5a5c2310a35ff::t_616633ef63b036 34-36
+CONTRIBUTING.md
+  s_d5a5c2310a35ff::t_2e93bd06a3d212 12-23
+package.json
+  s_d5a5c2310a35ff::t_8324683abe23f2 11-14
+scripts/preview.test.js
+  s_d5a5c2310a35ff::t_4f0fd4b2c3e067 1-158
+scripts/preview/preview.mjs
+  s_d5a5c2310a35ff::t_5c9563079e9350 1-511
+scripts/env-passthrough.test.js
+  s_d5a5c2310a35ff::t_492a15a5997908 58-66,69-73
+scripts/preview/staging-config.mjs
+  s_d5a5c2310a35ff::t_4eb52472660f8b 1-331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "011fc6190078cf9c4567c0daf485f9ca6d7793f4",
+  "prompts": {},
+  "sessions": {
+    "s_d5a5c2310a35ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2811bfc5-5e06-4bfd-b283-0eb104af8476",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

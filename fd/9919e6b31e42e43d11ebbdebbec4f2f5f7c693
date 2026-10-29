@@ -1,0 +1,35 @@
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_097fdaa44b0b3f::t_e445ec93180e8c 1-197
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_097fdaa44b0b3f::t_62a98ac8631326 1051,1093,1109,1132
+  s_097fdaa44b0b3f::t_c9fc7847ce7df4 50-51,336-364
+  s_097fdaa44b0b3f::t_097366a1619590 1061-1062,1088-1092,1094-1098,1102-1104,1106-1107,1125
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_097fdaa44b0b3f::t_a16d454d182c2c 2,53,55-58,73-74
+  s_097fdaa44b0b3f::t_8b90838ebe689b 1,3-52,54,59-72,76-98
+  s_097fdaa44b0b3f::t_6760ef063c046c 75
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_097fdaa44b0b3f::t_675acbcf33e994 1-35,38-51,53,57,59-66,68,72-75,77,81-93
+  s_097fdaa44b0b3f::t_a16d454d182c2c 56
+  s_097fdaa44b0b3f::t_1503f8ca4891a5 36-37,52,54-55,58,67,69-71,76,78-80
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_097fdaa44b0b3f::t_af3e321bb2e579 84,89
+  s_097fdaa44b0b3f::t_d68721cee02292 1-44,65-79,81-83,85-88,90-114,121-123,125-131,133-135,137-143
+  s_097fdaa44b0b3f::t_81ff88eb4044ff 45-64,80,115-120,124,132,136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fd9919e6b31e42e43d11ebbdebbec4f2f5f7c693",
+  "prompts": {},
+  "sessions": {
+    "s_097fdaa44b0b3f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b969153ffe8nZ1Gt6EsvqsKy",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

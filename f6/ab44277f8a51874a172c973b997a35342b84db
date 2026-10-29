@@ -1,0 +1,19 @@
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_6d79354b9d5d8c::t_c10ce0c3efafce 397-400,403-404,411,413-416,420,425-426,434-435,443-445,470,472-477,480-481,485
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f6ab44277f8a51874a172c973b997a35342b84db",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

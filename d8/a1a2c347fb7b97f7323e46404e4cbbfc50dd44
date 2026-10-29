@@ -1,0 +1,47 @@
+packages/gatekeeper-google/src/configurator/drive-account-configurator-ui.tsx
+  s_7801bbf134048b::t_54b201e9d6e09a 1-2,11-26,28
+packages/gatekeeper-google/src/google.ts
+  s_7801bbf134048b::t_b8434555f483f5 112-113,904,906-907,975,982,989,3012,3021,3195,3197-3198
+packages/gatekeeper-google/src/google-configurators.ts
+  s_7801bbf134048b::t_54b201e9d6e09a 433,437,463
+packages/gatekeeper-google/src/configurator/drive-file-configurator-ui.tsx
+  s_7801bbf134048b::t_54b201e9d6e09a 1-2,12-23,25
+packages/gatekeeper-google/src/drive-types.d.ts
+  s_7801bbf134048b::t_0be2dd83cd73bc 178-179,213-214
+packages/gatekeeper-google/__tests__/resources.test.ts
+  s_7801bbf134048b::t_76a013ff8c4039 7,10,846,848,852-853,855-857,861-865,867-869
+  s_7801bbf134048b::t_6e9cf021d48c20 158-159,162,168,174,213,334,340,786-787,791
+packages/gatekeeper-google/__tests__/workerd/native-sessions.test.ts
+  s_7801bbf134048b::t_de0a939ae934b9 30-31,416
+packages/gatekeeper-google/src/configurator/drive-account-configurator-types.d.ts
+  s_7801bbf134048b::t_54b201e9d6e09a 3
+packages/gatekeeper-google/__tests__/oauth-flow.test.ts
+  s_7801bbf134048b::t_1db3e71ab633c0 72
+packages/gatekeeper-google/__tests__/types.test.ts
+  s_7801bbf134048b::t_0be2dd83cd73bc 315-316,320-321
+packages/gatekeeper-google/src/configurator/drive-folder-configurator-ui.tsx
+  s_7801bbf134048b::t_54b201e9d6e09a 1,3,14-25,27
+packages/gatekeeper-google/README.md
+  s_7801bbf134048b::t_97f281104e01b2 83-84,620,626,634
+packages/gatekeeper-google/src/resources.ts
+  s_7801bbf134048b::t_afb1ddf7cc0625 324-326
+  s_7801bbf134048b::t_d214c88af209c2 149,159,169,264-265,274-275,284-285
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_7801bbf134048b::t_54b201e9d6e09a 18-19,68,104,198,381-385,394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d8a1a2c347fb7b97f7323e46404e4cbbfc50dd44",
+  "prompts": {},
+  "sessions": {
+    "s_7801bbf134048b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e69110af-6dc8-4306-90ae-798ba71a1a4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

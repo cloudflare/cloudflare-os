@@ -1,0 +1,29 @@
+packages/gadget-libraries/page/__tests__/blocks.test.ts
+  s_f74476d0cbb433::t_5676ff4310c68c 218-219
+packages/gadget-libraries/page/__tests__/colors.test.ts
+  s_f74476d0cbb433::t_f5db3c3b8b31a2 97-100,127-132
+packages/gadget-libraries/page/__tests__/paste.test.ts
+  s_f74476d0cbb433::t_df0a4a8507f062 227-232
+packages/gadget-libraries/page/src/blocks.ts
+  s_f74476d0cbb433::t_fbaf92e1356ba6 865-868,956,974,990,1032-1040,1076-1084
+packages/gadget-libraries/page/src/colors.ts
+  s_f74476d0cbb433::t_c2b7b39bc6840b 200-201,211,216-220,227-228
+packages/gadget-libraries/page/src/paste.ts
+  s_f74476d0cbb433::t_18c218262085bf 111-112,114,291-295,327,329,347-351,368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "243703d0a0e69323c40cbc05670a2c2dbc8d3c81",
+  "prompts": {},
+  "sessions": {
+    "s_f74476d0cbb433": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbbaec07-89a3-4c4a-84e7-31df83ae61b4",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

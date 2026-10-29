@@ -1,0 +1,31 @@
+packages/workshop-backend/__tests__/observer-exclude-scope.test.ts
+  s_78c8248792847b::t_6a6021683b7de9 172-265
+packages/workshop-backend/__tests__/observer-verification-failure.test.ts
+  s_78c8248792847b::t_e1d00c77aaf786 133-139,141-150,153,161-162,164,172
+packages/workshop-backend/__tests__/overseer-hooks.test.ts
+  s_78c8248792847b::t_be95a3097a2a76 111,115-121,127,133-134
+packages/workshop-backend/src/observability.ts
+  s_78c8248792847b::t_9f3af9458d5d71 20
+packages/workshop-backend/src/overseer.ts
+  s_78c8248792847b::t_d01e9e71b84879 2270-2271,2346-2361,3840-3842,4485-4503,4781-4784,5220-5230,5233-5241,5243,5245-5247,5249,5251,5285-5300,5461-5464,6901-6905,6908,6974-6975,6977,8067-8073,8079,8082-8085,8088,8096,8104-8105,8107,8122-8152,8160-8161,8388-8392,8852-8863,8897,9561-9581,9663,9667,9672,9685,10041-10042,10375,10379,10528,10530-10531,10580,10584,10761-10762,10920-10924,10929-10935,10947,10952-10953,11090-11105,11148,11152,11157,11165,11233,11237,11279,11281,11439-11441
+docs/observers.md
+  s_78c8248792847b::t_289a9744ac99ce 72-75,257,359-364,372-377,379,386,394-407,417-431,471-477,487-493,511-517,595-600
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_78c8248792847b::t_c792e333ac77c3 12,208-225,234,263-264,336-377,384,387-390,394,399,405,407,494-772
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3e949a2d1beec249dc288b7d18584b50292ac590",
+  "prompts": {},
+  "sessions": {
+    "s_78c8248792847b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "faaa8ef6-21cb-4383-9dc3-309be02f5d61",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

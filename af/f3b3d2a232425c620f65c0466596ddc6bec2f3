@@ -1,0 +1,23 @@
+packages/gatekeeper-confluence/__tests__/self-hosted-api.test.ts
+  s_47c456ca6ea293::t_472da3facc3043 196-212,293-319
+packages/gatekeeper-confluence/src/confluence.ts
+  s_47c456ca6ea293::t_475b96b5e8ec04 926-932,982,1036,1092
+packages/gatekeeper-confluence/src/self-hosted-api.ts
+  s_47c456ca6ea293::t_6aac58e3409d73 17-18,150-153,226-240,303,732-737,739
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "aff3b3d2a232425c620f65c0466596ddc6bec2f3",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+packages/workshop-backend/__tests__/fixtures.ts
+  s_d1bbaf80186abb::t_e836dcbc402efc 93
+packages/workshop-backend/src/overseer.ts
+  s_d1bbaf80186abb::t_803ccc490ec1e1 6195,6275
+  s_d1bbaf80186abb::t_58dd848a9c30d0 56
+  s_d1bbaf80186abb::t_464faf3c973893 964-967
+  s_d1bbaf80186abb::t_c851543e9d1d47 6354-6356
+  s_d1bbaf80186abb::t_3d51b17c6550ab 6380-6384,6392,6395-6407
+  s_d1bbaf80186abb::t_d2ddab7e0c5c65 6393
+  s_d1bbaf80186abb::t_1226011ffe4715 6385
+  s_d1bbaf80186abb::t_886ebc9128df09 6386-6391
+  s_d1bbaf80186abb::t_5c35714bbae19c 6394
+  s_d1bbaf80186abb::t_977ab873652d0d 7634,8892
+  s_d1bbaf80186abb::t_2fec71092c2b23 10294-10295
+  s_d1bbaf80186abb::t_9c73dd020f5f95 10815-10816,12399-12400
+  s_d1bbaf80186abb::t_52269c964a545b 10820-10821,12404-12405,12680-12681,12948-12949
+docs/sharing.md
+  s_d1bbaf80186abb::t_0e5e0d10c57972 188
+  s_d1bbaf80186abb::t_886ebc9128df09 187
+packages/workshop-backend/src/do-retry.ts
+  s_d1bbaf80186abb::t_c3c7efe0d4bec1 83
+  s_d1bbaf80186abb::t_29936f130fd0f2 33-38,43-44,47-48,54-55,57-58
+  s_d1bbaf80186abb::t_e836dcbc402efc 39-42,45-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d6772516939a6bdbce1cc7efb93b3005b7de3b39",
+  "prompts": {},
+  "sessions": {
+    "s_d1bbaf80186abb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc76a637-aa82-4154-bd22-48bced9fd203",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

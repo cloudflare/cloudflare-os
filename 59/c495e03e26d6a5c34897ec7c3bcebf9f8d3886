@@ -1,0 +1,19 @@
+docs/testing-strategy.md
+  s_23124d99541bb8::t_3bbdae69c278ff 1-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "59c495e03e26d6a5c34897ec7c3bcebf9f8d3886",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

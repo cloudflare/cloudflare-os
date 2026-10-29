@@ -1,0 +1,19 @@
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_e259f2380cb0a8::t_32c8d8974d5e67 478-480,483,491
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b82a18c301fc75681421842570d728a841c07686",
+  "prompts": {},
+  "sessions": {
+    "s_e259f2380cb0a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2360c005-6db4-412b-be00-5e18fb49a0fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

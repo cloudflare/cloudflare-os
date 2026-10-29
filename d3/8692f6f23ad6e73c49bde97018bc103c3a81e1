@@ -1,0 +1,50 @@
+packages/gatekeeper-gitlab/__tests__/fixtures/gitlab-docs.ts
+  s_b235d7e85db519::t_fae063c4e05b6b 143
+packages/gatekeeper-gitlab/src/gitlab-api.ts
+  s_b235d7e85db519::t_b9891360257982 87
+packages/gatekeeper-gitlab/src/types.d.ts
+  s_b235d7e85db519::t_96ad077a6b1f9f 337-338,467
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_b235d7e85db519::t_f59b59ff95dc25 23,2659
+  s_b235d7e85db519::t_e9182cb638af98 83,86,89,114,617,888,890,947-948,953,956,1347
+packages/gatekeeper-gitlab/__tests__/gitlab-env.test.ts
+  s_b235d7e85db519::t_cff97daf28f0d7 32-53
+packages/gatekeeper-gitlab/__tests__/gitlab-normalize.test.ts
+  s_b235d7e85db519::t_b64d5ce4056418 8,10,12,15,164-224
+packages/gatekeeper-gitlab/__tests__/workerd/reads.test.ts
+  s_b235d7e85db519::t_4bf1c45c4feafe 132-137,200-203,208-216
+packages/gatekeeper-gitlab/__tests__/workerd/resources.test.ts
+  s_b235d7e85db519::t_f03263cf9b88ef 93,147-157
+packages/gatekeeper-gitlab/src/gitlab-env.ts
+  s_b235d7e85db519::t_a9658dcb2a3aa9 44-70,73,91
+packages/gatekeeper-gitlab/src/gitlab-normalize.ts
+  s_b235d7e85db519::t_4a7578589f197a 36,228,398-414,430-437,613-617,619,625,627-632
+packages/gatekeeper-gitlab/src/gitlab-sessions.ts
+  s_b235d7e85db519::t_5b2076f2d0ad71 46-57,144,152,161,176,187,198,266,373,499
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_b235d7e85db519::t_1cbf9b1f143a7f 832-835,838-839,841-843
+packages/gatekeeper-gitlab/__tests__/workerd/session-git.test.ts
+  s_b235d7e85db519::t_1868b0ab1ef075 80-98
+plans/gitlab-gatekeeper.md
+  s_b235d7e85db519::t_42be4a20b7151c 135-143,269-272,357-361,669-677,720-722,1105-1111
+packages/gatekeeper-gitlab/README.md
+  s_b235d7e85db519::t_1e7be18f1548df 95-99
+AGENTS.md
+  s_b235d7e85db519::t_c026c8d878219c 39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d38692f6f23ad6e73c49bde97018bc103c3a81e1",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

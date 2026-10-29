@@ -1,0 +1,397 @@
+packages/workshop-backend/src/ai-gateway.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 12,21-31,44-45,60,96-167
+packages/workshop-frontend/src/components/Avatar.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 6-13,24-26,38
+packages/gatekeeper-mcp/src/connect-form.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-45
+packages/gatekeeper-scheduler/__tests__/schedule-driver.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-1182
+packages/gatekeeper-scheduler/__tests__/scheduler-scope.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-57
+packages/mcp-shared/src/client.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-461
+packages/gatekeeper-mcp/src/configurator/server-configurator-ui.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-83
+packages/workshop-frontend/src/gatekeeperAppNavigation.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-32
+packages/gatekeeper-mcp-portal/tsconfig.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-24
+packages/gatekeeper-scheduler/src/scheduler.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-430
+packages/gatekeeper-scheduler/tsconfig.vite.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-7
+packages/workshop-backend/vitest.config.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 3,6-8,11,13,17-19
+packages/gatekeeper-scheduler/package.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-47
+packages/gatekeeper-mcp/README.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-226
+packages/gatekeeper-mcp-portal/__tests__/configurator-ui.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-167
+packages/gatekeeper-mcp/src/mcp.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-513
+packages/gatekeeper-scheduler/src/driver-state.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-244
+packages/mcp-shared/src/oauth.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-65
+packages/workshop-frontend/src/components/chat/slash-command-input.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 2,7-8,10,12,16-30,34-35,42-55
+  s_097fdaa44b0b3f::t_160575525a8411 56
+packages/workshop-frontend/src/SandboxedGatekeeperApp.test.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-137
+packages/gatekeeper-scheduler/build-app.mjs
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-12
+packages/mcp-shared/src/scope.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-161
+packages/gatekeeper-mcp/src/text-modules.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-9
+packages/workshop-backend/src/env.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 12-13,16-19
+packages/gatekeeper-scheduler/src/schedule-types.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-54
+packages/gatekeeper-mcp/wrangler.jsonc
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-40
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-253
+AGENTS.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 27-29,32
+packages/gatekeeper-scheduler/vite.config.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-68
+packages/mcp-shared/__tests__/facet.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-65
+packages/gatekeeper-mcp-portal/src/portal-logo.svg
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1
+packages/mcp-shared/README.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-131
+packages/mcp-shared/src/session.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-196
+packages/workshop-backend/__tests__/web-fetch.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 8,15,31,106,112-156
+  s_097fdaa44b0b3f::t_ba12274468b657 157
+packages/gatekeeper-scheduler/app/main.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-57
+packages/gatekeeper-scheduler/app/styles.css
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-79
+packages/gatekeeper-notion/src/notion-logo.svg
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1
+packages/gatekeeper-scheduler/app/error-reporting.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-46
+packages/gatekeeper-scheduler/app/format.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-74
+packages/mcp-shared/__tests__/scope.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-266
+packages/gatekeeper-mcp/__tests__/resources.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-18
+packages/mcp-shared/__tests__/session.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-27
+packages/gatekeeper-scheduler/src/observability.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-19
+packages/workshop-backend/src/user.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 483
+packages/gatekeeper-scheduler/app/index.html
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-38
+packages/workshop-frontend/src/VendorCard.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 30
+packages/gatekeeper-mcp/__tests__/configurator-ui.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-129
+packages/mcp-shared/__tests__/portal.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-211
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-116
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-157
+packages/gatekeeper-mcp-portal/worker-configuration.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-13695
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 14-15,29-35,44,47,50,52-53,58,64,152-185,190-192,196-201,204,228-260
+  s_097fdaa44b0b3f::t_1d65c6e221a153 261
+packages/mcp-shared/src/util.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-83
+packages/mcp-shared/__tests__/tools.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-275
+packages/gatekeeper-scheduler/src/management.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-153
+packages/gatekeeper-mcp/tsconfig.test.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-6
+packages/mcp-shared/src/base-types.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-83
+packages/gatekeeper-mcp/src/server-id.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-16
+packages/mcp-shared/src/portal.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-167
+packages/gatekeeper-scheduler/app/SchedulerPage.test.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-293
+packages/gatekeeper-scheduler/wrangler.jsonc
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-25
+packages/mcp-shared/src/schema-to-ts.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-407
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-157
+packages/workshop-backend/src/sharing.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 11-12,26,76-84,89,93,95-96,100-110,115-123,147-148,150,153-154,159-166,185-186,192,198-208,213,215,219,232,383-391,393-402,404,410-411,413,419-438,442-454,457,465-467,469-470,473-477,480,484-489,493-496,500-504,526,530,534-543,571-572,636
+packages/workshop-frontend/src/components/chat/composer-tokens.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-60
+packages/workshop-frontend/src/ShareModal.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 11,26,225,232,234,239,245-250,253-258,269,273,278,301,304-305,319,324-332,343-345,355,369,372,375,405-408,410-411,416-419,424-460,497,500-501,504-506,509-513,515-516,518,523-524,528-530,532-533,537,542,546,548,550,669,680,694,698,704,707-708,801,810-812,814,823-824,826-827,832,843-845,852,858-865,868,877,895
+packages/gatekeeper-scheduler/app/format.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-150
+packages/workshop-frontend/src/routes/index.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 21,23-30,36-39,51-56,190-191
+packages/mcp-shared/__tests__/fetch.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-176
+packages/workshop-frontend/src/components/pickerRows.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-27
+packages/mcp-shared/src/action-store.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-225
+packages/gatekeeper-scheduler/src/management-types.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-23
+README.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 51-53,93,95-101,104-115
+  s_097fdaa44b0b3f::t_620eacee49539e 116
+packages/workshop-backend/src/agent-compaction.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-315
+packages/mcp-shared/tsconfig.test.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-6
+packages/workshop-backend/__tests__/chat-attachment-validation.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-111
+packages/mcp-shared/src/types.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-72
+packages/gatekeeper-scheduler/app/ErrorBoundary.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-33
+packages/gatekeeper-scheduler/app/theme.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-6
+packages/workshop-frontend/src/components/chat/ComposerMirror.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-87
+packages/gatekeeper-mcp/src/configurator/server-configurator-types.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-27
+packages/gatekeeper-scheduler/app/SchedulerPage.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-428
+docs/sharing.md
+  s_097fdaa44b0b3f::t_5d423c40cce1f5 155
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 38,42-43,63,67,71,73,75,77,88,94,96,105,111,113,121,127-128,166-168
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 9-10,13,15,26,52,58,61,66-70,76-77,84,86-98,102,106,111,121-123,127-129,132-133,136-137,140,142,158,172,177,179,202-207,214,218,223,232,234,239,242,245-260,262-270,273-279,292
+  s_097fdaa44b0b3f::t_e8cb59579e0163 8
+packages/gatekeeper-scheduler/tsconfig.app.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-18
+packages/workshop-backend/src/web-fetch.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 174-175,180-181
+packages/workshop-frontend/src/ResourcePicker.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 8-11,52-54,62-75,85,95-98,100-101,137,161-162,178,357-364,366-371,469-471,473,480,493,495-498,501,527-531,537,555,562-570,574,578,580,582,584,587,589,591-592,594,613,617,622-630,632
+packages/mcp-shared/src/endpoint.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-92
+packages/workshop-frontend/src/components/ComingSoonPreview.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 5
+packages/workshop-frontend/src/homePrompt.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-15
+docs/ai-gateway-billing.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 16-20,55,57-63,66-73
+  s_097fdaa44b0b3f::t_0a0d5865a94cc4 74
+packages/mcp-shared/__tests__/endpoint.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-54
+packages/gatekeeper-mcp-portal/package.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-28
+packages/gatekeeper-mcp-portal/src/text-modules.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-9
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-520
+packages/mcp-shared/src/sharing-policy.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-15
+packages/mcp-shared/src/tools.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-247
+packages/workshop-frontend/src/Activity.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 16,306,358,441,444
+packages/gatekeeper-scheduler/README.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-208
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-361
+packages/mcp-shared/src/connection.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-110
+packages/workshop-frontend/src/components/chat/slash-command-catalog.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-60
+packages/workshop-frontend/src/styles.css
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 421-432
+packages/mcp-shared/src/html.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-83
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-53
+packages/mcp-shared/__tests__/oauth-discovery.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-91
+packages/gatekeeper-mcp/package.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-28
+packages/gatekeeper-mcp/worker-configuration.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-13690
+packages/gatekeeper-mcp/src/resources.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-20
+packages/gatekeeper-scheduler/src/types.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-324
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-451
+packages/mcp-shared/__tests__/sharing-policy.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-14
+packages/workshop-frontend/src/CapsuleOverlay.module.css
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-2,6-8,12,15
+packages/workshop-frontend/src/homePromptFlow.test.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-76
+packages/mcp-shared/src/fetch.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-174
+scripts/build-gatekeeper-configurator.test.js
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 50-62,146-154,165-224
+  s_097fdaa44b0b3f::t_bba64181bb220e 225
+packages/gatekeeper-scheduler/__tests__/worker.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-135
+scripts/build-gatekeeper-configurator.mjs
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 98,107-116,125,180-187,190-191,232-235,237-243,252-268,324-485,508,584,638,645,651,667-669,725,740,760,780-790,794-796,829,834,909-934
+packages/gatekeeper-scheduler/vitest.app.config.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-10
+packages/workshop-backend/__tests__/ai-gateway-cost.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-66
+packages/workshop-backend/src/chat-attachment-validation.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-88
+packages/workshop-frontend/src/components/chat/ComposerMirror.module.css
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-68
+packages/gatekeeper-mcp/src/mcp-logo.svg
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1
+packages/workshop-frontend/src/components/chat/slash-command-input.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 5,8-10,43-61,75,84-91
+  s_097fdaa44b0b3f::t_cfb73377caedd6 92
+packages/workshop-backend/src/ai-models.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 16,37-53,55-66,68-72,79-86,90-99,106,109,163-165,168-179,183,185,193-197,207,210,213-214,216-217,219-220,227,271,304-306
+packages/gatekeeper-mcp-portal/tsconfig.test.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-6
+packages/mcp-shared/__tests__/base-types.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-14
+packages/mcp-shared/src/log.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-27
+packages/mcp-shared/vitest.config.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-15
+packages/mcp-shared/src/oauth-callback.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-45
+packages/workshop-frontend/src/CapsuleOverlay.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1,21-23,29-32,35-38,59-60,67
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-312
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-616
+packages/workshop-frontend/src/components/GatekeeperIcon.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 5,13-20,30
+packages/workshop-frontend/src/gatekeeperAppNavigation.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-48
+run-dev-server.js
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 168-182,195-203,232
+packages/mcp-shared/src/catalog.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-101
+packages/mcp-shared/tsconfig.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-21
+packages/gatekeeper-scheduler/src/schedule-driver.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-743
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 40,54,57
+packages/workshop-frontend/src/homePrompt.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-8
+packages/gatekeeper-scheduler/worker-configuration.d.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-14636
+packages/gatekeeper-scheduler/src/worker.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-9
+packages/gatekeeper-mcp/tsconfig.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-24
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-225
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-141
+packages/workshop-backend/src/overseer.ts
+  s_097fdaa44b0b3f::t_5d423c40cce1f5 3
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 12-24,26,43-47,171-175,790-797,859-860,862-867,1583-1586,1593,2593,2607-2610,2627,2949,3004-3037,3040,3072-3079,3187-3188,3264-3265,3275-3278,3298,3496-3581,3673-3678,3686-3687,3690-3704,4387-4396,4581-4586,4910-4912,4968-4970,4998-4999,5054-5057,5065-5066,5068-5076,5079,5090,5097,7077,7209-7213,7557-7568,7604-7623,7987,8019-8023,8246,8248,8251,8253,8263,8265-8266,8274,8277-8288,8294,8296,8319,8329,8331,8496-8498,8514-8517,8555-8556,8559-8562,8565
+packages/mcp-shared/__tests__/session-methods-e2e.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-50
+packages/workshop-frontend/src/SandboxedGatekeeperApp.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 4,10-15,33-37,41-47,82-84,93-100,113-115,122-140,218-219,259-287,312-319,351-352
+packages/configurator-ui/package.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 16-17,20-21
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-429
+packages/gatekeeper-scheduler/__tests__/management.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-119
+packages/mcp-shared/src/account.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-849
+packages/mcp-shared/__tests__/stubs/cloudflare-workers.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-19
+packages/mcp-shared/__tests__/credential-rejection.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-81
+packages/mcp-shared/package.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-47
+packages/mcp-shared/src/session-methods.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-83
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 9,11,18,65,75,82-94,110,206-208,298-324,327-336,934-943,945-988,990-993,1011,1682-1693,1708-1719,1729,1763,1775-1778,1792,1797-1798,1800-1801,1804-1834,1837-1844,1881,1997-2097,2101-2102,2107,2134-2139,2162,2203,2252,2273-2274,2276,2279-2289,2295-2296,2325,2382,2384-2385,2387,2390-2395,2398-2399,2407-2412,2419-2421,2465-2474,2554,2592,2595-2608,2610-2612,2645-2662,2776,2778-2781,2787-2788,2792,2794,2798-2803,2813,2822-2842,2895-2921,2934,2948,3146-3150,3275-3342,3351,3354-3356,3360-3371,3396,3400-3405,3544-3547,3550,3593-3597,3605-3619,3778-3780,3785-3787,3805-3806,3817,3844,3908,3929-3930,3944-3949,3961,4047-4089,4225-4228,4230-4232,4258-4259,4380-4381,4386,4406-4413,4421-4423,4426-4437,4451,4456-4458,4510-4515,4585-4604,4614,4725-4735,4885,4901,4904,4907-4908,4943-4971,5185-5214,5437-5446,6104,6111,6175,6428-6433,6436-6468,6592-6599,6627-6636,6822,7021,7043-7048,7171-7177,7179-7190,7192,7194-7195,7197-7213,7215,7217,7220,7222
+packages/workshop-frontend/src/useVendorBranding.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-60
+packages/gatekeeper-scheduler/src/index.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-2
+packages/gatekeeper-scheduler/__tests__/driver-state.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-183
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 260-265
+docs/observers.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 354-355
+packages/gatekeeper-mcp-portal/wrangler.jsonc
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-63
+packages/gatekeeper-scheduler/__tests__/scheduler-core.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-443
+packages/gatekeeper-mcp/__tests__/server-id.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-42
+packages/workshop-backend/src/agent.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1,5,12-18,86-138,234,928-930,939-943,957,979,1140-1142,1172-1191,1199-1203,1205-1207,1209-1211,1213-1220,1225,1256-1260,1262,1385,1622,1823-1829,2048-2128,2130-2131,2869,2884-2885
+packages/workshop-frontend/src/components/chat/composer-tokens.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-72
+packages/gatekeeper-scheduler/vitest.config.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-34
+packages/workshop-frontend/src/Connections.tsx
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 15,45,293-297,400
+packages/configurator-ui/src/index.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 110-141
+packages/gatekeeper-scheduler/tsconfig.json
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-16
+packages/mcp-shared/__tests__/session-methods.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-108
+packages/mcp-shared/src/facet.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-187
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 18-23,51-62,104-105,108,125,141,155,170,286,288,291,433-434,436,440,442-443,448,450,452,455,457,465,467-468,470,479,481-482,486,489,491,494-495,498,501,506-603,623-624,626,628,632-633,635-637,640,642-643
+packages/gatekeeper-mcp-portal/README.md
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-201
+packages/workshop-frontend/src/ChatInterface.module.css
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 157-158,163-172,174-177
+packages/workshop-shared/src/api.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 828-838,840-846,849-853,856-861,864,1248-1249,1257,1302-1303,1306,1434-1445,1447-1449,1451-1452,1454,1456,1458-1462,1464,1467,1488-1489,1494-1518,1570-1573,1971-1975,1984,1988-1991,2014-2015,2030-2040,2577-2580,2607-2610,2615
+packages/gatekeeper-scheduler/src/scheduler-core.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-505
+packages/gatekeeper-scheduler/.gitignore
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1
+packages/workshop-backend/__tests__/overseer-hooks.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 10,19,90-96,157
+packages/gatekeeper-scheduler/__tests__/scheduler.test.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-254
+packages/mcp-shared/src/connect-nonce.ts
+  s_097fdaa44b0b3f::t_ae94c5896d95c3 1-41
+packages/gatekeeper-scheduler/src/types.txt
+  s_097fdaa44b0b3f::t_152e1a3618b8f6 1
+pnpm-lock.yaml
+  s_097fdaa44b0b3f::t_4323a8ea4ef897 44,50,57-59,68,115,200,212,215,233,236,372-433,454,459-540,632-653,658,664,694,722,728,773,776,782,795,804,807,816,1073,1088,1092,1101,1108,1114,1120,1126,1132,1138,1755-1762,2585-2588,2760-2763,2964-2966,3389-3392,3418-3421,3563-3570,3642-3650,3984-3988,4189,4196,4277,4282,4286,4290,4315,4317,4322,4324-4325,4327,4348,4350,4353,4355,4370,4378,4442,4449,4868,4975-4988,5323,5327,5336,5338,5342-5343,5360,5366,5445,5447-5449,5548,5565,5597,5599,5601,5729-5734,5772,5775-5776,5909-5912,5954,5957,5963,5965,5994,5998-5999,6043,6052-6054,6077,6080,6084,6087,6132-6133,6160,6166-6167,6293,6300,6318,6322,6328,6331,6336,6341,6346,6350,6355,6357,6359-6362,6367,6373,6378,6386,6395,6401,6608,6611,6782-6783,6798-6799,6831,6837,6841,6873,6876,6878,6884,6887,6981,7040-7045,7117-7125,7269,7272,7297,7299,7323,7334,7346,7351,7366,7391,7429-7432
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0f99998577dea74f83e6cb6f3704aedc5fff0b51",
+  "prompts": {},
+  "sessions": {
+    "s_097fdaa44b0b3f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b969153ffe8nZ1Gt6EsvqsKy",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

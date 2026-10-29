@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/keyless-commit-gate.test.ts
+  s_10119d79ce25ce::t_c9caa0f15ea3d8 49,71-74,77-78,80,88,90,92,128,146-149
+packages/workshop-backend/src/overseer.ts
+  s_10119d79ce25ce::t_0c14819c849f35 8258-8263
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4db373a1e8c0a914b02f63f1c47fb85de11a4037",
+  "prompts": {},
+  "sessions": {
+    "s_10119d79ce25ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7ffcf86-d294-461d-8053-5c315e5d336c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+scripts/env-passthrough.test.ts
+  s_664125cd80dfd6::t_2b3c203c229242 84-85
+  s_664125cd80dfd6::t_ad1678885c1793 94-95
+AGENTS.md
+  s_664125cd80dfd6::t_0c4e86340644c0 72
+  s_664125cd80dfd6::t_93eb24bfff7340 85
+scripts/release/manifest-lib.ts
+  s_664125cd80dfd6::t_b98e606f20de1b 471-472
+scripts/run-dev-server.ts
+  s_664125cd80dfd6::t_3e83616b56606b 83-85,87-88,90-95
+  s_664125cd80dfd6::t_0c436c7ec9ffa9 86,89,554-556
+  s_664125cd80dfd6::t_cb091c44c075cf 557
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8d1bb3254270974f06ff2d2e8fe3a9ed68fb865f",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

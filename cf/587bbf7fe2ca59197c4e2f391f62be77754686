@@ -1,0 +1,21 @@
+packages/workshop-backend/src/overseer.ts
+  s_8037eb60c4df8b::t_2ec728071afdb6 2221-2228,2235
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_8037eb60c4df8b::t_0c6281ff336441 17,181-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cf587bbf7fe2ca59197c4e2f391f62be77754686",
+  "prompts": {},
+  "sessions": {
+    "s_8037eb60c4df8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bbe8c583-eff7-4186-b6df-cf4fc16fa195",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

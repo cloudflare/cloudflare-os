@@ -1,0 +1,21 @@
+scripts/oxlint-plugin.mjs
+  s_957b1e84b891f0::t_ab417712adc294 1-172
+scripts/oxlint-plugin.test.js
+  s_957b1e84b891f0::t_29fe4cf9a9127f 1-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f7b28e5bb295a5e201ef443d04090ad5c22fcbc1",
+  "prompts": {},
+  "sessions": {
+    "s_957b1e84b891f0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0044ffadfffeKs31F1Kn3C0pP0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

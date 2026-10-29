@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/restricted-data.test.ts
+  s_713362881198d7::t_4bb15b3676f46b 1-39
+packages/workshop-backend/src/overseer.ts
+  s_713362881198d7::t_59d912a126f580 1102-1117,3046-3050,3057-3058,9842-9846
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "08643022536bf480f327fab1389c8a1e9348769e",
+  "prompts": {},
+  "sessions": {
+    "s_713362881198d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f58b6235-da14-4af2-afe2-4bfa43ca0fc6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

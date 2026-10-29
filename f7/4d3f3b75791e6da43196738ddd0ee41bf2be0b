@@ -1,0 +1,43 @@
+packages/bundled-blueprints/README.md
+  s_c98a968d9791dd::t_327dd4bcaea6b5 63-64
+packages/bundled-blueprints/blueprints/workspace-sheets/files/server.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 257
+packages/bundled-blueprints/libraries/sync/src/subscribers.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 78-79
+packages/bundled-blueprints/blueprints/workspace-docs/files/client.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 1233-1234
+packages/bundled-blueprints/blueprints/workspace-sheets/files/lib/zip.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 164-166
+packages/bundled-blueprints/libraries/ui/src/images.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 43
+packages/bundled-blueprints/libraries/sync/__tests__/presence.test.ts
+  s_c98a968d9791dd::t_c5fff9735fa210 40-50
+packages/bundled-blueprints/libraries/README.md
+  s_c98a968d9791dd::t_327dd4bcaea6b5 33
+packages/bundled-blueprints/blueprints/workspace-sheets/files/client.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 1305-1306
+packages/bundled-blueprints/libraries/sync/README.md
+  s_c98a968d9791dd::t_327dd4bcaea6b5 4-9,24-25,65,67-73
+packages/bundled-blueprints/libraries/ui/client.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 8-9
+packages/bundled-blueprints/libraries/ui/README.md
+  s_c98a968d9791dd::t_327dd4bcaea6b5 3-7,37-50
+packages/bundled-blueprints/libraries/ui/src/icons.ts
+  s_c98a968d9791dd::t_327dd4bcaea6b5 2-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f74d3f3b75791e6da43196738ddd0ee41bf2be0b",
+  "prompts": {},
+  "sessions": {
+    "s_c98a968d9791dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6cc4e73b-3307-4e86-b24d-b45122beb798",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

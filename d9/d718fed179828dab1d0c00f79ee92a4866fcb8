@@ -1,0 +1,19 @@
+scripts/with-timeout.test.ts
+  s_b798fec5f54ba9::t_aafe920c32729b 82-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d9d718fed179828dab1d0c00f79ee92a4866fcb8",
+  "prompts": {},
+  "sessions": {
+    "s_b798fec5f54ba9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b5e0e07-127e-495e-b129-11889ae53556",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

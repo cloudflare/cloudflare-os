@@ -1,0 +1,33 @@
+packages/gatekeeper-mcp-portal/__tests__/account-revision.test.ts
+  s_e25e29d8ebebad::t_17348dd9e23732 54-93
+  s_e25e29d8ebebad::t_a63a60406f4f62 94-131
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_d1b951d466ce32 410,412
+  s_e25e29d8ebebad::t_fa35a86d80a549 411
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_e25e29d8ebebad::t_19dd7adbe589ad 139
+packages/gatekeeper-mcp-portal/vitest.config.ts
+  s_e25e29d8ebebad::t_17348dd9e23732 8-9
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_e25e29d8ebebad::t_17348dd9e23732 184-186
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_e25e29d8ebebad::t_17348dd9e23732 41-44,280-299,301-303
+  s_e25e29d8ebebad::t_b081b26ce0ee99 300
+  s_e25e29d8ebebad::t_b4cfd1dfccb291 304-305
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "79bf391544d99848b98724c85efccf4c40a3c671",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

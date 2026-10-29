@@ -1,0 +1,53 @@
+packages/gatekeeper-google/__tests__/slides-live-theme.json
+  s_c64553d463df78::t_e853f36ec88778 1-421
+  s_c64553d463df78::t_73b8f9fb226213 1-421
+packages/gatekeeper-google/__tests__/slides-fixture.ts
+  s_c64553d463df78::t_e853f36ec88778 9-13,17-18,20,70-73,78,82,95-153,164
+  s_c64553d463df78::t_3f2a8b8c2ade93 167,170-171,176
+  s_c64553d463df78::t_73b8f9fb226213 9-13,17-18,20,70-73,78,82,95-141,145-149,151-153,164
+packages/gatekeeper-google/src/slides-read-types.d.ts
+  s_c64553d463df78::t_e853f36ec88778 17-18,21-22,45-46,59-60,107-132,404-405
+  s_c64553d463df78::t_73b8f9fb226213 17-18,21-22,59-60,107-132,404-405
+packages/gatekeeper-google/src/slides-fields.ts
+  s_c64553d463df78::t_368a435681c35f 8-13,16-17,24,26-27,31-33,36,43
+packages/gatekeeper-google/src/slides-api.ts
+  s_c64553d463df78::t_e853f36ec88778 182-214,216-217,221,241-242,328,338
+  s_c64553d463df78::t_d5f460cafafc69 215
+  s_c64553d463df78::t_73b8f9fb226213 182-214,216-217,221,225,241-242,328,338
+packages/gatekeeper-google/__tests__/slides-model.test.ts
+  s_c64553d463df78::t_e853f36ec88778 2-8,10-12,15-23,46-48,50-51,363-365,367-372,390-533,538
+  s_c64553d463df78::t_842f6e3bc8a43a 534-537
+  s_c64553d463df78::t_73b8f9fb226213 2-7,10-12,15-21,46-48,50-51,363-365,368,370-371,390-416,418-419,421-435,437-537
+  s_c64553d463df78::t_f009374b8b45a3 538
+packages/gatekeeper-google/src/slides-format.ts
+  s_c64553d463df78::t_e853f36ec88778 3-4,203-210,212-217,220-232,345-372
+  s_c64553d463df78::t_ba4dc893de5b01 8-10,14-15
+  s_c64553d463df78::t_dd3b5c54e1cfc8 373
+  s_c64553d463df78::t_73b8f9fb226213 3-4,203-210,212-217,220-232,345-372
+  s_c64553d463df78::t_2329a865d39627 373
+packages/gatekeeper-google/src/slides-model.ts
+  s_c64553d463df78::t_e853f36ec88778 2-3,11,13,234-243,274,280,282,289-299,309-315,317,325
+  s_c64553d463df78::t_99a7f376785f23 12,19-20,23-24,300-306,327
+  s_c64553d463df78::t_73b8f9fb226213 2-3,11,13,18,21,234-243,274,280,282,289-299,307-315,317,325
+packages/gatekeeper-google/__tests__/workerd/slides-session.test.ts
+  s_c64553d463df78::t_0d4cdec778e809 177-206
+  s_c64553d463df78::t_73b8f9fb226213 177-206
+packages/gatekeeper-google/src/blank-presentation.json
+  s_c64553d463df78::t_e02aec666489fe 52-56,62-196,228-232,256-260,291-295,319-323,340-344,361-495,504-508,516-520,528-532,540-544,552-556,731-735
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9060d7057128a401e3e81b3bb223b7e99e615faf",
+  "prompts": {},
+  "sessions": {
+    "s_c64553d463df78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "190b76b5-6004-4f84-b206-24043da8572a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+scripts/release-manifest.test.js
+  s_26c0be70719a03::t_675e2bed466c07 110
+scripts/release/manifest-lib.mjs
+  s_26c0be70719a03::t_6dbe7ac72326e0 163-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "437daec96660719cb236e88324326bb256e8e5c5",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

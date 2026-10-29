@@ -1,0 +1,115 @@
+scripts/kill-process-tree.test.ts
+  s_1d5f75e292d550::t_fb75b4178defab 4,6,12,16,27-28,33-37,44
+scripts/gatekeeper-configurator-vite-config.ts
+  s_1d5f75e292d550::t_75ba067cb7cadf 48,50,54,67
+scripts/release/hash-lib.ts
+  s_1d5f75e292d550::t_7514a9c80671ac 15-45,50,65-68,71,81-85,89-90,113-115,126-127,143,147,150,152
+scripts/deploy-scripts.test.ts
+  s_1d5f75e292d550::t_5ff3ad2bf041ac 29,56
+scripts/release/manifest-lib.test.ts
+  s_1d5f75e292d550::t_9e760a8d68022d 7,14,17,19,24,67,72,113,118,126-127,143
+vite.config.ts
+  s_1d5f75e292d550::t_752c5851fdcdc7 141-142
+  s_1d5f75e292d550::t_10ef707b074a2d 140
+packages/gatekeeper-supabase/README.md
+  s_1d5f75e292d550::t_538da08b6f4e43 36
+packages/configurator-ui/src/index.ts
+  s_1d5f75e292d550::t_2e724d80fef06a 170
+packages/workshop-backend/wrangler.jsonc
+  s_1d5f75e292d550::t_9239f6be04f987 42
+scripts/generate-worker-types.ts
+  s_1d5f75e292d550::t_fea53064c7ff85 37,39,54,63,70,78,94,101,114,173
+scripts/run-local.ts
+  s_1d5f75e292d550::t_ffb51d7faf38e2 9-10,153
+  s_1d5f75e292d550::t_6c42ff19a7cf5e 24,33,35,39,51,58,65,77-78,89,105,124
+scripts/env-passthrough.test.ts
+  s_1d5f75e292d550::t_2b3d3b34afcab2 32-43,67-69,104-105,124-126,146-147,150-151,163,207
+scripts/release/promote-release.test.ts
+  s_1d5f75e292d550::t_0e813336f2b040 1,7
+scripts/clean-error-reporting-artifacts.ts
+  s_1d5f75e292d550::t_788aac6a21af16 18-19,23
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_1d5f75e292d550::t_768d6ed4988e86 608
+docs/public-server.md
+  s_1d5f75e292d550::t_edf6d62372b177 16
+docs/oauth-signin.md
+  s_1d5f75e292d550::t_0613adea3eaf50 71
+scripts/dev-server-config.ts
+  s_1d5f75e292d550::t_323b690231e333 1-5,12,32-40
+packages/gatekeeper-zoominfo/README.md
+  s_1d5f75e292d550::t_a800f95e8d1a67 50
+scripts/preview/staging-config.ts
+  s_1d5f75e292d550::t_cd5104f7a7fa3d 8,30-33,161,309,331,356
+packages/gatekeeper-scheduler/vite.config.ts
+  s_1d5f75e292d550::t_1c55eaf311724a 20
+scripts/build-gatekeeper-configurator.test.ts
+  s_1d5f75e292d550::t_638a483b43ddd8 8,11,15-18,22-26,45,53,59-66,79-111,143,150,156,323,347,350,404-405,417,441
+packages/gatekeeper-cloudflare/README.md
+  s_1d5f75e292d550::t_449894fdd3ede3 56
+.agents/skills/write-gatekeeper/SKILL.md
+  s_1d5f75e292d550::t_4de17a2bef8bc7 121-122
+scripts/build-gatekeeper-configurator.ts
+  s_1d5f75e292d550::t_f74e8d95cab004 26-31,35,39,45-46,48,54,64,70,957,961,970-971,977,1041,1062
+scripts/preview/staging-config.test.ts
+  s_1d5f75e292d550::t_5a12fa8832ddb3 5,10
+.gitignore
+  s_1d5f75e292d550::t_8f81b5a2185603 24
+package.json
+  s_1d5f75e292d550::t_5721127169a099 9-10,16,23
+scripts/contribution-policy.test.ts
+  s_1d5f75e292d550::t_f286ef3a92741e 8-13,25-36,144,147-148,191,200,205,223,240,249,263,279,292,308,313-325,327-332
+packages/gatekeeper-slack/README.md
+  s_1d5f75e292d550::t_01c1e631b7dfda 15
+scripts/contribution-policy.ts
+  s_1d5f75e292d550::t_5fdf1adb68a9dc 1-78,106-107,109,138-139,141-145,206,214-217,236
+AGENTS.md
+  s_1d5f75e292d550::t_84d040ff9ae313 22,44-46,48-51,55,59,67,75,78,83
+scripts/release/build-release.ts
+  s_1d5f75e292d550::t_2b4b2ba067ac45 7,13,15,22-23,26-27,33-35,37-38,41-42,45,50,55,62,69,71-72,82,113
+packages/gatekeeper-confluence/README.md
+  s_1d5f75e292d550::t_e55197b1a056c8 83
+packages/gatekeeper-notion/README.md
+  s_1d5f75e292d550::t_fcfc3f0c33e2ac 10
+scripts/release/hash-lib.test.ts
+  s_1d5f75e292d550::t_6948e0029c1d52 10,12
+docs/ai-gateway-billing.md
+  s_1d5f75e292d550::t_e64425d8acdae4 49
+scripts/kill-process-tree.ts
+  s_1d5f75e292d550::t_d565abb2dada43 19-20,23,36,43-44,55,60,65-68,76
+pnpm-workspace.yaml
+  s_1d5f75e292d550::t_b07b23be365623 12
+wrangler.jsonc
+  s_1d5f75e292d550::t_c350b333f34567 10
+.github/workflows/contribution-policy.yml
+  s_1d5f75e292d550::t_096a5ac28d9cca 34
+scripts/release/manifest-lib.ts
+  s_1d5f75e292d550::t_77994c4cabfac2 22,24,27-231,276-277,291,304-306,309-310,313,316,323,331-333,345-346,378,394,396,408,466-467,471-472,484-492,497
+scripts/release/promote-release.ts
+  s_1d5f75e292d550::t_60707e1109865c 5,24,31,38,48,54-55,57,60-61,66-71,98
+packages/integration-tests/src/harness.ts
+  s_1d5f75e292d550::t_fc43851ae6c330 29,67,87
+scripts/dev-server-config.test.ts
+  s_1d5f75e292d550::t_6096ad2d3c28e5 7
+packages/gatekeeper-context/vite.config.ts
+  s_1d5f75e292d550::t_d3817275a37781 19
+scripts/run-dev-server.ts
+  s_1d5f75e292d550::t_61e6845c9aade5 17,23-25,27-28,32-39,42,69-70,75,82,112-113,115,118-119,138,149,154,166,170-171,182,184,193,219,225,233-234,280,291,301,322,342,359,366,387,422,440,508,559
+scripts/release/upload-release.ts
+  s_1d5f75e292d550::t_a83278be5f9d09 3,11,16,21,25,31-33,35-36,39-40,53,55-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a64a7e52946aea53562b16ebd655a02799819c8e",
+  "prompts": {},
+  "sessions": {
+    "s_1d5f75e292d550": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "593d0c7e-f3ae-46bc-a60a-71ade259200a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

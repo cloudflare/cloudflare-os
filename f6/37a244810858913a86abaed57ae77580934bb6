@@ -1,0 +1,29 @@
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_f5d864c1baf77a 3542-3543
+  s_f74e55bad93be8::t_5dc35722351f29 3544
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_0dde982038ea22 20,194-196,619-622,686-699
+  s_f74e55bad93be8::t_b89c375b25cd3f 700-701
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_1dc6f9f988d226 1586-1615
+  s_f74e55bad93be8::t_402eb715fab803 1616-1618
+packages/workshop-shared/src/slash-commands.ts
+  s_f74e55bad93be8::t_0dde982038ea22 1-36
+  s_f74e55bad93be8::t_f944c257d7cfef 37-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f637a244810858913a86abaed57ae77580934bb6",
+  "prompts": {},
+  "sessions": {
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

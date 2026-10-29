@@ -1,0 +1,21 @@
+scripts/testdata/golden-manifest.json
+  s_429543313b7f12::t_19729c305c5acd 203
+scripts/release/manifest-lib.mjs
+  s_429543313b7f12::t_06ab12f9e74d4d 49-53,202-203
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2b1dc9eade779afbd2fe127db13e11ecbf85637e",
+  "prompts": {},
+  "sessions": {
+    "s_429543313b7f12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be510a44-592c-4191-9f3c-34bd897844f3",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_b9d78ba39005bb::t_b96fa5725d5946 166,172
+  s_b9d78ba39005bb::t_5fa447a79703c1 249,253-257,260-268,275-281,285-288
+  s_b9d78ba39005bb::t_71dd64483900bd 133-141
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_b9d78ba39005bb::t_e756d01f9d3f2f 43
+packages/gatekeeper-context/src/agent-skill.ts
+  s_b9d78ba39005bb::t_1e3b8401cb5023 6,67-90,159
+  s_b9d78ba39005bb::t_6b5f112eec8bbc 41
+  s_b9d78ba39005bb::t_71dd64483900bd 3-5,155-158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "03561c8c79938e33bef0015492d495ab507917cc",
+  "prompts": {},
+  "sessions": {
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

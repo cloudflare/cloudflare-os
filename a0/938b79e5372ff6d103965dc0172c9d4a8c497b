@@ -1,0 +1,31 @@
+docs/observers.md
+  s_10119d79ce25ce::t_ca87d0bfb7e65a 350-355,373-377
+packages/workshop-backend/src/overseer.ts
+  s_13584eaeb6c52b::t_f267192fcaa42a 4533-4541,4955-4961,7812-7822,7825,7830-7833
+packages/workshop-backend/__tests__/revocation-restart-window.test.ts
+  s_10119d79ce25ce::t_e2f356b8007dda 1-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a0938b79e5372ff6d103965dc0172c9d4a8c497b",
+  "prompts": {},
+  "sessions": {
+    "s_10119d79ce25ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7ffcf86-d294-461d-8053-5c315e5d336c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_13584eaeb6c52b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7cbf511c-e64e-4cea-a8d2-50f893b88e8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

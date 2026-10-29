@@ -1,0 +1,31 @@
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_c6057c10ed1db5::t_38ae14e8224daa 211,214
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_c6057c10ed1db5::t_b46de0cadf9bd4 5-6,8-9,252-261,460
+packages/workshop-frontend/src/ThemeContext.tsx
+  s_c6057c10ed1db5::t_ebc97f753a5d15 63-67
+packages/workshop-frontend/src/features/diagrams/mermaidRenderer.test.ts
+  s_c6057c10ed1db5::t_3956aded28e272 16
+packages/workshop-frontend/src/features/wiki/pageHostNavigation.test.ts
+  s_c6057c10ed1db5::t_9551eefd027e5a 34
+packages/workshop-frontend/src/gadgetHostServices.test.ts
+  s_c6057c10ed1db5::t_4815602dc40754 2,4,17,28-30,34-80
+packages/workshop-frontend/src/gadgetHostServices.ts
+  s_c6057c10ed1db5::t_e842d63ea49a47 12-16,19,21,52-53,56-57,63-64,77,87,146-177,181-182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2cb4bf4c1adc260d18178d15366de359b2b0ba8e",
+  "prompts": {},
+  "sessions": {
+    "s_c6057c10ed1db5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f727234-2a81-45e1-9b19-084244971b57",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

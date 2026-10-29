@@ -1,0 +1,19 @@
+packages/workshop-shared/src/api.ts
+  s_e5ac85fca2ef43::t_625507ab2300d2 705-710,712-713,716-720,723-728,731,1644,1673
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "57e3a4aa7f158e7296be6341da04e0471c74cd56",
+  "prompts": {},
+  "sessions": {
+    "s_e5ac85fca2ef43": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0520ee52affeJH69RpWzRRdY52",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

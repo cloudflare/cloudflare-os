@@ -1,0 +1,36 @@
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_7fb837265947ac::t_bae6270d894a8a 15-16,67
+  s_7fb837265947ac::t_6660beb0e9fb0a 7-9,62,68,84-87,93,171,174-177
+  s_7fb837265947ac::t_3da5edb8f89b95 49,92,153-170,172-173,178-206
+  s_7fb837265947ac::t_07070ca515b8fd 207
+packages/workshop-frontend/src/ActivityNotifications.tsx
+  s_7fb837265947ac::t_7238688bf6c324 8,21-23,31,84,106
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7fb837265947ac::t_7238688bf6c324 4967-4968,5028-5029
+  s_7fb837265947ac::t_a65dfd3aa580cd 100
+packages/workshop-frontend/src/ActivityNotifications.test.tsx
+  s_7fb837265947ac::t_3da5edb8f89b95 1-63
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_7fb837265947ac::t_7238688bf6c324 1481-1485
+packages/workshop-frontend/src/components/RestrictedApprovalNotice.tsx
+  s_7fb837265947ac::t_7238688bf6c324 1-10,16-30
+  s_7fb837265947ac::t_26d761c5371fa3 11-15
+packages/workshop-frontend/src/Activity.tsx
+  s_7fb837265947ac::t_7238688bf6c324 22,256,622,631-633,684-685,687
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "38a9c8bda5c38d786e71582656e898e6b37ad0ff",
+  "prompts": {},
+  "sessions": {
+    "s_7fb837265947ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e87a5291-c3bd-4e4b-b82b-245e159a74a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

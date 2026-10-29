@@ -1,0 +1,140 @@
+packages/gatekeeper-supabase/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 21-22
+packages/workshop-frontend/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 39-41
+.github/workflows/ci.yml
+  s_6b06793b4e8acf::t_2b08632b70d06f 16-18,20-21,45
+  s_6b06793b4e8acf::t_51c0d9e8031364 20-21,37,42
+  s_6b06793b4e8acf::t_c66c1e2303112c 16-18,29,43-44,43-45
+  s_6b06793b4e8acf::t_86e8cc7aa5e852 19
+packages/router/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 15,17-19
+packages/gatekeeper-notion/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 21-23
+packages/gatekeeper-mcp/tsconfig.json
+  s_6b06793b4e8acf::t_2b08632b70d06f 18-19,21
+  s_6b06793b4e8acf::t_58d041e2f37366 18-21,20
+packages/backend-utils/tsconfig.json
+  s_6b06793b4e8acf::t_fedd384c7373ef 8
+  s_6b06793b4e8acf::t_2b08632b70d06f 10-11,13
+  s_6b06793b4e8acf::t_e242b5c99fa8e6 10-13,12
+packages/gatekeeper-cloudflare/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 19-20
+packages/gatekeeper-spotify/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 20-21
+AGENTS.md
+  s_6b06793b4e8acf::t_5e67da87e1b86f 65
+  s_6b06793b4e8acf::t_ac3b2c8c457645 17
+  s_6b06793b4e8acf::t_816db72e15bab3 59,62
+  s_6b06793b4e8acf::t_7ab8b68d8d279f 56
+packages/gatekeeper-confluence/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 22-24
+packages/gatekeeper-scheduler/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 26,39-40,43-44
+packages/gatekeeper-google/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 23-24
+packages/configurator-ui/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 17-18
+packages/workshop-shared/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 45
+packages/workshop-backend/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 33,35-37
+packages/gatekeeper-mcp-portal/tsconfig.json
+  s_6b06793b4e8acf::t_2b08632b70d06f 18-19,21
+  s_6b06793b4e8acf::t_ed14b2c3bc2ace 18-21,20
+packages/typed-storage/package.json
+  s_6b06793b4e8acf::t_922b877d192727 16
+  s_6b06793b4e8acf::t_bb8d81d71d527f 21,23
+packages/gatekeeper-scheduler/tsconfig.json
+  s_6b06793b4e8acf::t_fedd384c7373ef 8
+packages/integration-tests/package.json
+  s_6b06793b4e8acf::t_ee74331a2f7f55 12,14
+  s_6b06793b4e8acf::t_bb8d81d71d527f 25-27
+package.json
+  s_6b06793b4e8acf::t_8887e0c5c6bde5 16,24-26
+pnpm-workspace.yaml
+  s_6b06793b4e8acf::t_07ec9d4f240c5f 9,15-17
+  s_6b06793b4e8acf::t_01762670a33565 4-8,10-12
+packages/gatekeeper-linear/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 21-22
+packages/workshop-shared/tsconfig.json
+  s_6b06793b4e8acf::t_fedd384c7373ef 4
+packages/error-reporting/package.json
+  s_6b06793b4e8acf::t_fedd384c7373ef 13
+  s_6b06793b4e8acf::t_bb8d81d71d527f 17-18
+pnpm-lock.yaml
+  s_42bb2f13792a5a::t_281d4ee2cc90b7 7-21,41,47,57,63,69,72,78,81,100,103,125,128,131,237,249,252,277,280,302,305,308,336,339,358,361,383,386,411,414,417,442,445,448,467,470,473,501,540,552,555,574,577,596,599,621,624,643,646,671,674,677,696,699,705,711,714,717,723,729,772,778,781,784,863,869,882
+packages/gatekeeper-slack/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 20-21
+packages/mcp-shared/tsconfig.test.json
+  s_6b06793b4e8acf::t_2b08632b70d06f 2
+  s_6b06793b4e8acf::t_d3460704b2144d 1,1-2
+packages/gatekeeper-homeassistant/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 20-21
+packages/gatekeeper-github/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 22-24
+packages/configurator-ui/tsconfig.json
+  s_6b06793b4e8acf::t_fedd384c7373ef 5
+packages/gatekeeper-mcp/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 23-25
+.gitlab-ci.yml
+  s_6b06793b4e8acf::t_9212455e2b15b8 15-18,27,30,32-35,40-45,48-51
+packages/gatekeeper-mcp-portal/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 23-25
+packages/mcp-shared/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 34,45-46
+packages/gatekeeper-zoominfo/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 20-21
+packages/gatekeeper-context/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 52-53,56-57
+  s_6b06793b4e8acf::t_fedd384c7373ef 13
+.oxlintrc.json
+  s_6b06793b4e8acf::t_fba09759e477f0 9-13
+packages/workshop-backend/scripts/build-format-blueprints.mjs
+  s_6b06793b4e8acf::t_19d1276cd0c060 153-162,164-171
+.gitignore
+  s_6b06793b4e8acf::t_850596bafee7be 8
+  s_6b06793b4e8acf::t_fc20c499addcc9 3-4
+packages/backend-utils/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 34,36
+packages/gatekeeper-email/package.json
+  s_6b06793b4e8acf::t_bb8d81d71d527f 22-23
+packages/gatekeeper-scheduler/vitest.config.ts
+  s_6b06793b4e8acf::t_64bed9fdbab018 33-34
+packages/router/vitest.config.ts
+  s_6b06793b4e8acf::t_baaf9344877959 18-20
+test-setup/assert-workerd.ts
+  s_6b06793b4e8acf::t_bf4016f4bbc6cf 1-17
+packages/workshop-backend/vitest.config.ts
+  s_6b06793b4e8acf::t_044577a8c54555 25-26
+packages/workshop-backend/vitest.integration.config.ts
+  s_6b06793b4e8acf::t_e46c1f59754730 26-27
+packages/backend-utils/vitest.config.ts
+  s_6b06793b4e8acf::t_715ebdaa068621 53-55
+packages/typed-storage/vitest.config.ts
+  s_6b06793b4e8acf::t_1cc2f6b8bfc840 18-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "13604371ba18405f41cd43f92dfe6ae6b29c1d3b",
+  "prompts": {},
+  "sessions": {
+    "s_42bb2f13792a5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "92ed027d-ca69-464c-8efc-12770ff04026",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6b06793b4e8acf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6f167f9-9137-46f3-884c-130e77ad244b",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}

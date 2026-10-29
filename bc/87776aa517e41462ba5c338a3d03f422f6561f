@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_a676e8860d1ca3::t_05d97d190eb8d8 13,78,85,100-101,276
+packages/workshop-backend/src/overseer.ts
+  s_a676e8860d1ca3::t_05d97d190eb8d8 3,298,5899-5900,6025,8545,8907
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a676e8860d1ca3::t_05d97d190eb8d8 15,224-225,233,289-290,311
+packages/workshop-shared/src/api.ts
+  s_a676e8860d1ca3::t_05d97d190eb8d8 206-211,1601
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bc87776aa517e41462ba5c338a3d03f422f6561f",
+  "prompts": {},
+  "sessions": {
+    "s_a676e8860d1ca3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0369a8e51ffenkdNC7esrlYmyW",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+packages/workshop-frontend/src/GadgetCodeInterface.tsx
+  s_cd499ea12d2b3c::t_ee45b919b8abcf 180-181,256-258,260
+  s_cd499ea12d2b3c::t_1bed30fc5e8204 182,246-250,252,804-807
+  s_cd499ea12d2b3c::t_96c12fde19c8c5 675,803,808-826,828-835
+  s_cd499ea12d2b3c::t_5788ce361b753c 259,801-802,827,836
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e093e205d8d87e845cb3b3a6fc0ec3edde15620e",
+  "prompts": {},
+  "sessions": {
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

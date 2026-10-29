@@ -1,0 +1,46 @@
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_5c54ad404754bd::t_3c95ee5c7f801d 292-293
+.agents/skills/write-gatekeeper/SKILL.md
+  s_5c54ad404754bd::t_970731299221e7 242
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_5c54ad404754bd::t_e6eba836aa1855 403,405-407
+packages/gatekeeper-email/src/email.ts
+  s_5c54ad404754bd::t_bb9fb864efe78d 470,472-474
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_5c54ad404754bd::t_47eaf8e31be98b 701,703-705
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_5c54ad404754bd::t_6d00394ca54e87 353-356
+packages/gatekeeper-mcp/src/mcp.ts
+  s_5c54ad404754bd::t_02bc8d9d602869 316-318
+packages/gatekeeper-scheduler/__tests__/verifier.test.ts
+  s_5c54ad404754bd::t_15d46b49585773 1-15
+packages/gatekeeper-scheduler/__tests__/worker.ts
+  s_5c54ad404754bd::t_8174f69ce5cc42 7-8
+packages/gatekeeper-scheduler/src/scheduler.ts
+  s_5c54ad404754bd::t_c4922f7d389509 388-391
+packages/gatekeeper-spotify/src/spotify.ts
+  s_5c54ad404754bd::t_93c532ba91965c 743,745-747
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_5c54ad404754bd::t_31d81487d66dac 591,593-595
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6b45833735a198f12511f38aa915d932058230f1",
+  "prompts": {},
+  "humans": {
+    "h_766a26d8f6ed11": {
+      "author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  },
+  "sessions": {
+    "s_5c54ad404754bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aee1032b-62ef-4b2b-a29a-f7191b6b6427",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

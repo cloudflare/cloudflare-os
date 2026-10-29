@@ -1,0 +1,32 @@
+packages/workshop-backend/src/auth/login-flow.ts
+  s_3ca7dcdfd43170::t_10384489a9e7bc 17-18,45-47,52-58,68-73,76-80,91-92,112-115,124
+packages/workshop-backend/src/server.ts
+  s_3ca7dcdfd43170::t_10384489a9e7bc 668-670
+packages/workshop-shared/src/gatekeeper.ts
+  s_3ca7dcdfd43170::t_318a3ec82e9c23 455-460,472-474
+  s_3ca7dcdfd43170::t_4a7a84c3ddd0e3 454
+packages/workshop-backend/__tests__/pending-login.test.ts
+  s_3ca7dcdfd43170::t_87e916b0aab854 4-6,77-108
+  s_3ca7dcdfd43170::t_aef726b8beb872 109
+packages/workshop-backend/src/user.ts
+  s_3ca7dcdfd43170::t_10384489a9e7bc 1776-1778
+packages/workshop-shared/src/api.ts
+  s_3ca7dcdfd43170::t_318a3ec82e9c23 44-46,72-73,537-539,553-555,564-565,697
+  s_3ca7dcdfd43170::t_09b0709e702525 67-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cfe74391adbd211a8558124eb843eee2934f93b7",
+  "prompts": {},
+  "sessions": {
+    "s_3ca7dcdfd43170": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "025ba785-ecf3-4814-b092-053b914bc1da",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

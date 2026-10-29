@@ -1,0 +1,21 @@
+docs/observers.md
+  s_8037eb60c4df8b::t_e96ddabb841322 496-501
+packages/workshop-backend/src/overseer.ts
+  s_8037eb60c4df8b::t_93928f1c2a46bc 5039-5047,5052-5066
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b9338b255242f673ffc42c013514bcd30c64ee09",
+  "prompts": {},
+  "sessions": {
+    "s_8037eb60c4df8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bbe8c583-eff7-4186-b6df-cf4fc16fa195",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

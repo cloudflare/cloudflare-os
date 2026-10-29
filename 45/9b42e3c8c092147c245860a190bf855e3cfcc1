@@ -1,0 +1,24 @@
+packages/integration-tests/__tests__/workshop-space-roles.test.ts
+  s_dd2417a6d5bd82::t_b3fac8fa1de3cc 9-12,17-18,24,84-93,171,185,206-211,232,242,253
+  s_dd2417a6d5bd82::t_9929b6174ad5e2 73-78
+  s_dd2417a6d5bd82::t_6f4ed67906d89c 13-14
+  s_dd2417a6d5bd82::t_ee31f7789b8b78 1-8,15-16,19-23,25-72,79-83,94-170,172-184,186-205,212-217,219-231,233-241,243-244,246-252,254-258
+  s_dd2417a6d5bd82::t_37a08a79fb142a 245
+  s_dd2417a6d5bd82::t_3b0931ac731557 218
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "459b42e3c8c092147c245860a190bf855e3cfcc1",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+docs/skills.md
+  s_b9d78ba39005bb::t_e2907f1bb97a93 1-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bc7c51430812df266936a8326740729939b4540c",
+  "prompts": {},
+  "sessions": {
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

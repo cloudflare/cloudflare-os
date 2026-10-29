@@ -1,0 +1,19 @@
+docs/spaces.md
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 3,37,44,46-48,178,204-216,235,260,269,277
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0bf2f41fdefc889ef883885d691dd9e88f287a13",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a676e8860d1ca3::t_69db92eebeb8ed 436-438
+packages/workshop-shared/src/api.ts
+  s_a676e8860d1ca3::t_1e507ad2a4d99c 1600-1604
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "abe17969eee96ea33e0bb69c098d4e0166260222",
+  "prompts": {},
+  "sessions": {
+    "s_a676e8860d1ca3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0369a8e51ffenkdNC7esrlYmyW",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

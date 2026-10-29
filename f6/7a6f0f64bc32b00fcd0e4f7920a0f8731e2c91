@@ -1,0 +1,35 @@
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_4a30a440cc2138::t_30e3ec155405bb 16
+packages/workshop-frontend/src/features/wiki/PageView.test.tsx
+  s_4a30a440cc2138::t_be49c69d60b471 263,266-273,274-291
+packages/workshop-frontend/src/features/wiki/PageView.tsx
+  s_4a30a440cc2138::t_6638bea0e2fae7 24,181-188
+packages/workshop-frontend/src/features/wiki/SpaceHome.test.tsx
+  s_4a30a440cc2138::t_1b70bfd89fba24 1-19,22-29,30-46
+packages/workshop-frontend/src/features/wiki/SpaceHome.tsx
+  s_4a30a440cc2138::t_c43a31b9f4bc56 8,87,89-99
+packages/workshop-frontend/src/utils/formatTimestamp.ts
+  s_4a30a440cc2138::t_73449cb2172c9d 30-45
+packages/workshop-backend/__tests__/spaces.test.ts
+  s_4a30a440cc2138::t_0327a5d80cd5b1 36-37,39-40,205-223
+packages/workshop-backend/src/overseer.ts
+  s_4a30a440cc2138::t_e8cb7f884e2b3b 10089-10090,11063-11069,11239-11245,11257
+packages/workshop-backend/src/spaces.ts
+  s_4a30a440cc2138::t_d363e061e67a96 65-69,276-277,313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f67a6f0f64bc32b00fcd0e4f7920a0f8731e2c91",
+  "prompts": {},
+  "sessions": {
+    "s_4a30a440cc2138": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8775eb53-edf4-4778-8216-f263267a5316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

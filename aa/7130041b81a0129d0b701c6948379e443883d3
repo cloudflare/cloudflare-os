@@ -1,0 +1,35 @@
+docs/observers.md
+  s_10a2c94691622e::t_6479052cdcd4b1 33-35,97,231-233,407-409,480-482
+docs/sharing.md
+  s_10a2c94691622e::t_bdb44f6f18becd 159
+packages/gatekeeper-google/src/google.ts
+  s_10a2c94691622e::t_e20d1621637a03 1966-1968,3628,3660,3672,3693,3703,3729,3738,3775
+packages/gatekeeper-mcp/README.md
+  s_10a2c94691622e::t_025786700e0bbe 174-175,203-205
+packages/workshop-backend/src/overseer.ts
+  s_10a2c94691622e::t_0618aa1b3bdae4 814-819,2750,6603-6604,7351,7370,7392,7394,7402,7408,8804-8805
+packages/workshop-backend/src/sharing.ts
+  s_10a2c94691622e::t_6db1dc344908b6 18,164,292-293
+packages/workshop-frontend/src/ShareModal.tsx
+  s_10a2c94691622e::t_e6b1d6580ab602 374,561,587,613,777,823,829,836,913,919,922,934,1079
+packages/workshop-shared/src/api.ts
+  s_10a2c94691622e::t_307e053713d1fe 1250-1252,1254
+packages/workshop-shared/src/gatekeeper.ts
+  s_10a2c94691622e::t_c97893b29ca2fa 1083
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "aa7130041b81a0129d0b701c6948379e443883d3",
+  "prompts": {},
+  "sessions": {
+    "s_10a2c94691622e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b88e8fcc-ef8d-4563-88ac-f35859cbca49",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

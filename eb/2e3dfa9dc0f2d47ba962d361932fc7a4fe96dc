@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/workshop-blueprints.test.ts
+  s_63b0fe54e7628b::t_5497e4de2fdcbd 68,81-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eb2e3dfa9dc0f2d47ba962d361932fc7a4fe96dc",
+  "prompts": {},
+  "sessions": {
+    "s_63b0fe54e7628b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f668d1c-c56c-4f30-91cc-4fbd3f633870",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

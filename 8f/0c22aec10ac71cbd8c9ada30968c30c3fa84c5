@@ -1,0 +1,26 @@
+README.md
+  s_948f8451b21fd5::t_ef51534f39f78c 102
+packages/workshop-backend/src/ai-models.ts
+  s_948f8451b21fd5::t_ef51534f39f78c 40,62,64,66,68
+packages/workshop-backend/src/overseer.ts
+  s_948f8451b21fd5::t_c7dfd7262f238d 4224-4232,4245,4263,4282,4993-4994,5072,5075,5078
+  s_948f8451b21fd5::t_a395c118daf3e1 4273
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_948f8451b21fd5::t_ef51534f39f78c 120,141,164,235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8f0c22aec10ac71cbd8c9ada30968c30c3fa84c5",
+  "prompts": {},
+  "sessions": {
+    "s_948f8451b21fd5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_09e09537cffe9hdXl7dQ0W4BKS",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

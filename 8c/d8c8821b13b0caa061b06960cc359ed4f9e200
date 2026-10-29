@@ -1,0 +1,23 @@
+.github/workflows/ci.yml
+  s_6b06793b4e8acf::t_224679c08bb142 13
+test-setup/assert-workerd.ts
+  s_6b06793b4e8acf::t_69ab383999038b 7
+pnpm-workspace.yaml
+  s_6b06793b4e8acf::t_8f6fb88e0032a7 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8cd8c8821b13b0caa061b06960cc359ed4f9e200",
+  "prompts": {},
+  "sessions": {
+    "s_6b06793b4e8acf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6f167f9-9137-46f3-884c-130e77ad244b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+packages/workshop-shared/src/gatekeeper.ts
+  s_e25e29d8ebebad::t_d969e2ca36a3f8 700-701,706
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_7e21183abc8013 78-98
+  s_e25e29d8ebebad::t_2178eaa15bb1dc 215,227
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_a97cd5d95b3772 56-62
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_a97cd5d95b3772 179,185-190,223
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_0fb95e2f92da5f 442-443
+  s_e25e29d8ebebad::t_d969e2ca36a3f8 445,648,2499-2500,2502,7717
+packages/workshop-frontend/src/Activity.tsx
+  s_e25e29d8ebebad::t_82b80102c032a0 102-103
+  s_e25e29d8ebebad::t_3a3161c9c8f6f8 101
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_82b80102c032a0 6458,6471-6474,6625-6627
+packages/workshop-shared/src/api.ts
+  s_e25e29d8ebebad::t_d969e2ca36a3f8 1224-1225,1254-1257
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_b642f552f4700b 390-392
+  s_e25e29d8ebebad::t_2178eaa15bb1dc 47,56,348,350
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_a97cd5d95b3772 320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ead479b86c8211e0d323012e8341bce5ecdc7193",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+packages/workshop-shared/src/api.ts
+  s_c31bf147d9a35f::t_e6f4c26b94c2b3 2516-2522
+packages/workshop-backend/__tests__/reject-action.test.ts
+  s_c31bf147d9a35f::t_10deecafabbcd2 1-129
+packages/workshop-backend/src/overseer.ts
+  s_c31bf147d9a35f::t_e6f4c26b94c2b3 541
+  s_c31bf147d9a35f::t_36596f5f9da142 4956-5009,11759-11760
+packages/workshop-shared/src/gatekeeper.ts
+  s_c31bf147d9a35f::t_e2dfa0b00452d3 1135-1137
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_c31bf147d9a35f::t_e6f4c26b94c2b3 430-431
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e3e38e2baf7c3d14b51641a261312eb87659c93b",
+  "prompts": {},
+  "sessions": {
+    "s_c31bf147d9a35f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de85876d-a552-46dc-8098-f2602de083b7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

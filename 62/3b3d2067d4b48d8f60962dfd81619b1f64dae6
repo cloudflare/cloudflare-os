@@ -1,0 +1,67 @@
+packages/backend-utils/__tests__/authz.test.ts
+  s_410d84684ab8ba::t_bd35843c1a21a1 1-32
+packages/workshop-shared/src/api.ts
+  s_410d84684ab8ba::t_4c5b91a565e52a 426-450
+  s_410d84684ab8ba::t_6ea1d2dbd1312a 411-414
+docs/blueprints.md
+  s_410d84684ab8ba::t_5d9d19e077f2d1 103-104,108-109
+  s_410d84684ab8ba::t_078443c681e625 105-107
+packages/workshop-backend/src/server.ts
+  s_410d84684ab8ba::t_1bdd5a4a8a6828 5,7
+  s_410d84684ab8ba::t_8112773d34875a 79-83,85-92
+  s_410d84684ab8ba::t_79a4ee455c065c 475-479,482-484,489-490,498
+  s_410d84684ab8ba::t_8953a2b5d5b34b 494-497
+  s_410d84684ab8ba::t_3500b7b71f5b57 4,9
+packages/backend-utils/src/authz.ts
+  s_410d84684ab8ba::t_90740989c784c4 1-72
+AGENTS.md
+  s_410d84684ab8ba::t_770883a97ce81d 36-38
+  s_410d84684ab8ba::t_e302030cc21780 34-35
+packages/workshop-backend/__tests__/admin-authz.test.ts
+  s_410d84684ab8ba::t_f50867a346fa11 94-100,105-112
+  s_410d84684ab8ba::t_8bf3ab21b2dbf6 2,72,76,78,80-81,85-87,89-90,102,104,117,124-126,189,193,202,209-212
+  s_410d84684ab8ba::t_4e9a4a7daecdf7 30-31
+  s_410d84684ab8ba::t_5920880bf31ef8 1,3-29,32-71,73-75,77,79,82-84,88,91-93,101,103,113-116,118-123,127-188,190-192,194-201,203-208,213-215
+packages/workshop-backend/src/env.d.ts
+  s_410d84684ab8ba::t_19e551e1f41aa5 49
+  s_410d84684ab8ba::t_53f2fcaf4ec0d7 42-48
+packages/backend-utils/package.json
+  s_410d84684ab8ba::t_cece67b9dd8f56 19-21
+  s_410d84684ab8ba::t_713293c2f77978 18
+packages/workshop-shared/src/gatekeeper.ts
+  s_410d84684ab8ba::t_cf4271b47bb683 71-77
+packages/workshop-frontend/src/AuthContext.tsx
+  s_410d84684ab8ba::t_f628c7c4bdff69 3-6,13-21
+  s_410d84684ab8ba::t_f030d95b879f7b 35
+  s_410d84684ab8ba::t_6cdce5ea34cae0 47-48,53-54,56-57
+packages/workshop-frontend/src/AdminPage.tsx
+  s_410d84684ab8ba::t_fdb829d36aff58 316-352,361-374
+  s_410d84684ab8ba::t_cfcb656938bf46 742-744
+  s_410d84684ab8ba::t_f590d90571f585 4
+  s_410d84684ab8ba::t_e6b1e0518406e8 133
+  s_410d84684ab8ba::t_f8a8f9158ec511 30-33
+  s_410d84684ab8ba::t_57ce6bfd88aaaa 97-98,100
+  s_410d84684ab8ba::t_786b3a39c37f31 375-377
+packages/workshop-backend/src/admin-authz.ts
+  s_410d84684ab8ba::t_b1f29529ad98b8 3-5,7-9,14,24
+  s_410d84684ab8ba::t_85679bf0702356 1-2,6,10-13,15-23,25-49,52-57,60-61,64,66-71,75,80-110,112-114,116-121,124-125,131-132,134-139,141-153
+  s_410d84684ab8ba::t_25eac74bb14612 50-51,58-59,62-63,65,72-74,76-79
+  s_410d84684ab8ba::t_510f94a29fa6d3 111
+  s_410d84684ab8ba::t_bc37e7490ee865 115,122-123,126-130,133,140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "623b3d2067d4b48d8f60962dfd81619b1f64dae6",
+  "prompts": {},
+  "sessions": {
+    "s_410d84684ab8ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8908277b-01d5-41d7-9035-c059aec82597",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

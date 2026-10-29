@@ -1,0 +1,166 @@
+packages/gatekeeper-unifi/src/account.ts
+  s_fba82f39300110::t_92604c7ca38e1f 1-464
+packages/gatekeeper-unifi/src/actions.ts
+  s_fba82f39300110::t_7fd4e6015a9fe7 1-417
+packages/gatekeeper-unifi/src/api.ts
+  s_fba82f39300110::t_ae399df9e9ace0 1-335
+packages/gatekeeper-unifi/src/configurator/unifi-configurator-types.d.ts
+  s_6e159c0858b8f9::t_ae163f5d211a38 1-47
+packages/gatekeeper-unifi/src/configurator/unifi-site-configurator-ui.tsx
+  s_fba82f39300110::t_0a3e4465abeb0d 1-71
+packages/gatekeeper-unifi/src/connect-form.ts
+  s_74eb0b1cbb84f7::t_9c650ca29dc0e4 1-220
+packages/gatekeeper-unifi/src/consoles.ts
+  s_fba82f39300110::t_451685f0459d21 1-165
+packages/gatekeeper-unifi/src/egress.ts
+  s_74eb0b1cbb84f7::t_24e246ea3d445f 1-151
+packages/gatekeeper-unifi/src/env.ts
+  s_fba82f39300110::t_a28fa09bec8682 1-35
+packages/gatekeeper-unifi/src/errors.ts
+  s_74eb0b1cbb84f7::t_a35119d0a97654 1-171
+packages/gatekeeper-unifi/src/gatekeeper.ts
+  s_fba82f39300110::t_03019ad4ec226d 1-162
+packages/gatekeeper-unifi/src/network-session.ts
+  s_fba82f39300110::t_bb694c1a922b9e 1-398
+packages/gatekeeper-unifi/src/network-types.d.ts
+  s_74eb0b1cbb84f7::t_1e230cade9c485 1-467
+packages/gatekeeper-unifi/src/network-types.txt
+  s_fba82f39300110::t_0b0e44769fb1ba 1
+packages/gatekeeper-unifi/src/parse.ts
+  s_fba82f39300110::t_a6c752573592a0 1-602
+packages/gatekeeper-unifi/src/pickers.ts
+  s_58819f73dfb5a6::t_08762470e158ed 1-138
+packages/gatekeeper-unifi/src/protect-types.txt
+  s_fba82f39300110::t_bdcf516a7b0a1e 1
+packages/gatekeeper-unifi/src/resources.ts
+  s_fba82f39300110::t_01ff72ed35d4b1 1-253
+packages/gatekeeper-unifi/src/simulation.ts
+  s_fba82f39300110::t_6002fd31ba40d8 1-197
+packages/gatekeeper-unifi/src/transport.ts
+  s_fba82f39300110::t_45d630b702827b 1-208
+packages/gatekeeper-unifi/src/user.ts
+  s_6e159c0858b8f9::t_0da46e02f41bba 1-112
+packages/gatekeeper-unifi/src/vendor.ts
+  s_6e159c0858b8f9::t_642b75401b8f59 1-50
+packages/gatekeeper-unifi/src/verifier.ts
+  s_fba82f39300110::t_e34ecca7e7ec69 1-32
+packages/gatekeeper-unifi/tsconfig.json
+  s_74eb0b1cbb84f7::t_73e38e842f562d 1-18
+packages/gatekeeper-unifi/worker-configuration.d.ts
+  s_fba82f39300110::t_9517408f4aa07e 1-16196
+packages/gatekeeper-unifi/wrangler.jsonc
+  s_fba82f39300110::t_1c3894d5189e00 1-41
+pnpm-lock.yaml
+  s_fba82f39300110::t_8978020129d4ba 886-908,910-920,922-925,1733
+  s_1c739fc8ddc413::t_638783405219e2 909,921
+scripts/release/manifest-lib.ts
+  s_fba82f39300110::t_d3a79457cbe742 269,305
+scripts/release/testdata/fixture-bundles/gatekeeper-unifi/unifi.js
+  s_fba82f39300110::t_576bb7bb4b7154 1
+scripts/release/testdata/golden-manifest.json
+  s_fba82f39300110::t_55612a2217dae6 1021-1062
+.gitattributes
+  s_fba82f39300110::t_b102c1096a47c7 8-10
+packages/gatekeeper-unifi/__tests__/api.test.ts
+  s_fba82f39300110::t_2c0f426b1b6fdf 1-128
+packages/gatekeeper-unifi/__tests__/configurator-fields.test.ts
+  s_74eb0b1cbb84f7::t_d4503526ec3a63 1-106
+packages/gatekeeper-unifi/__tests__/configurator-url.test.ts
+  s_74eb0b1cbb84f7::t_16e869647dba75 1-95
+packages/gatekeeper-unifi/__tests__/consoles.test.ts
+  s_74eb0b1cbb84f7::t_2e0dffbcf62b75 1-78
+packages/gatekeeper-unifi/__tests__/env.d.ts
+  s_fba82f39300110::t_f455987beb71d0 1-13
+packages/gatekeeper-unifi/__tests__/fake-unifi.ts
+  s_fba82f39300110::t_2b591c73a5c477 1-666
+packages/gatekeeper-unifi/__tests__/openapi-contract.test.ts
+  s_fba82f39300110::t_1f8b9cb8527c5b 1-177
+packages/gatekeeper-unifi/__tests__/openapi/network.json
+  s_fba82f39300110::t_2193bff79506d9 1-4426
+packages/gatekeeper-unifi/__tests__/openapi/protect.json
+  s_fba82f39300110::t_7b1f08111e83ea 1-2561
+packages/gatekeeper-unifi/__tests__/openapi/site-manager.json
+  s_fba82f39300110::t_2638a49fa4a1e8 1-454
+packages/gatekeeper-unifi/__tests__/parse.test.ts
+  s_fba82f39300110::t_2ae54898d3e341 1-207
+packages/gatekeeper-unifi/__tests__/resources.test.ts
+  s_6e159c0858b8f9::t_42c2cf40142ae7 1-101
+packages/gatekeeper-unifi/__tests__/schema-check.ts
+  s_74eb0b1cbb84f7::t_974ce9635553df 1-165
+packages/gatekeeper-unifi/__tests__/simulation.test.ts
+  s_fba82f39300110::t_7ef9d1339b27b5 1-141
+packages/gatekeeper-unifi/__tests__/types.test.ts
+  s_fba82f39300110::t_75f1c8c79c81d6 1-34
+packages/gatekeeper-unifi/__tests__/worker.ts
+  s_fba82f39300110::t_e28ebfbf5b5aa0 1-233
+packages/gatekeeper-unifi/__tests__/workerd/account.test.ts
+  s_58819f73dfb5a6::t_f74e6930c43be7 1-309
+packages/gatekeeper-unifi/__tests__/workerd/connect.test.ts
+  s_6e159c0858b8f9::t_eb3e03cfa1f953 1-238
+packages/gatekeeper-unifi/__tests__/workerd/helpers.ts
+  s_fba82f39300110::t_2dc8589b8d09c9 1-138
+packages/gatekeeper-unifi/__tests__/workerd/network.test.ts
+  s_fba82f39300110::t_a38926491bf954 1-314
+packages/gatekeeper-unifi/__tests__/workerd/protect.test.ts
+  s_fba82f39300110::t_37648bb601ab53 1-272
+packages/gatekeeper-unifi/scripts/vendor-openapi.ts
+  s_fba82f39300110::t_8f71ccdddd693b 1-116
+packages/gatekeeper-unifi/vitest.worker.config.ts
+  s_fba82f39300110::t_3fe0e288309e6c 1-40
+AGENTS.md
+  s_fba82f39300110::t_33c98c4d27f7a0 44-45
+README.md
+  s_fba82f39300110::t_b3c985ad1f3ea0 216
+docs/observers.md
+  s_fba82f39300110::t_69e645deaef0cc 853
+packages/gatekeeper-unifi/README.md
+  s_fba82f39300110::t_6be4af5c096e72 1-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0cd94248b99b4831b0b865caeb954ea03a87905a",
+  "prompts": {},
+  "sessions": {
+    "s_1c739fc8ddc413": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ece2cd6e8ffeLBkS7H0B2h5p4m",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_58819f73dfb5a6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed869cedaffeaNXQbjGyMXeIZR",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_fba82f39300110": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed494dbb5ffe7yraFc7prc1KQi",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

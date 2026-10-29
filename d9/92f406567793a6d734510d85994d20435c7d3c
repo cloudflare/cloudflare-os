@@ -1,0 +1,19 @@
+packages/workshop-backend/__tests__/observer-exclude-scope.test.ts
+  s_b21f811357f49a::t_8d9d96f0fde5b4 146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d992f406567793a6d734510d85994d20435c7d3c",
+  "prompts": {},
+  "sessions": {
+    "s_b21f811357f49a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "669436b5-28e4-459a-9c63-e82a9009fbd7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

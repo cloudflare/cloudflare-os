@@ -1,0 +1,48 @@
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_3acff7ccfb55eb::t_65627963381d5c 751-766
+  s_3acff7ccfb55eb::t_10fe66e0fadb37 9-11,646-649,675-678,692
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_3acff7ccfb55eb::t_8f6ece65e340e7 28-30
+packages/workshop-shared/src/api.ts
+  s_3acff7ccfb55eb::t_3d8e2a8eaeeb9e 532
+  s_3acff7ccfb55eb::t_9b8c35d648a977 360-362
+  s_3acff7ccfb55eb::t_bc9690beeac45d 350
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_3acff7ccfb55eb::t_ad610146d7de90 1,9-10,25-30,45-46
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_3acff7ccfb55eb::t_ad610146d7de90 146,150,159-160
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_3acff7ccfb55eb::t_8f6ece65e340e7 12-16
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_3acff7ccfb55eb::t_369b3b68e315ce 19-20,292-295
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_3acff7ccfb55eb::t_ad610146d7de90 141,152
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_3acff7ccfb55eb::t_f540126b064c13 861-863,887
+packages/workshop-frontend/src/ShareModal.tsx
+  s_3acff7ccfb55eb::t_f540126b064c13 970-973
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_3acff7ccfb55eb::t_ad610146d7de90 8-11,38,78-87,104-106
+packages/workshop-backend/src/sharing.ts
+  s_3acff7ccfb55eb::t_57cc2b584f683b 169-172,174-175
+  s_3acff7ccfb55eb::t_612035898addc8 262,264
+  s_3acff7ccfb55eb::t_5314c221273f14 23-24
+docs/sharing.md
+  s_3acff7ccfb55eb::t_2eb49d524e1dcb 160,163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "34c480c67259cf14d65e936482c1513a1e39e8a8",
+  "prompts": {},
+  "sessions": {
+    "s_3acff7ccfb55eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9af700bf-e91f-44e9-a0d9-7513f76bfeb4",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

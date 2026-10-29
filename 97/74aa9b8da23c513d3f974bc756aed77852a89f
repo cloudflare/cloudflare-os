@@ -1,0 +1,19 @@
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_5d50c46ade9e81::t_4db29e4e4fc2a6 717,726
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9774aa9b8da23c513d3f974bc756aed77852a89f",
+  "prompts": {},
+  "sessions": {
+    "s_5d50c46ade9e81": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6f3b5d5-36a9-4b6c-8291-a745ad6fef2a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

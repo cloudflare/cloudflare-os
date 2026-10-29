@@ -1,0 +1,28 @@
+packages/bundled-blueprints/src/generate.ts
+  s_1da8b1c2e6d0c9::t_f6e8ae61c7f5b8 175
+  s_1da8b1c2e6d0c9::t_4e4b829b37b5a1 190-193
+packages/bundled-blueprints/__tests__/manifest.test.ts
+  s_1da8b1c2e6d0c9::t_1c2b98a1ed1586 53-58
+  s_1da8b1c2e6d0c9::t_43d305521f98ed 66-73,75-76,78-83,85
+  s_1da8b1c2e6d0c9::t_83319884091bfd 1-52,59-65,74,77,84,86-97
+packages/bundled-blueprints/src/manifest.ts
+  s_1da8b1c2e6d0c9::t_7d026c47cd715f 12-15,23-27,82,101-103,137
+packages/bundled-blueprints/README.md
+  s_1da8b1c2e6d0c9::t_1cdac6a6f7cfd7 32-34,164-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1e848d85a70f36e6476d27bf9e47c062b1f16753",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+AGENTS.md
+  s_544ac41f1d93fd::t_c04b2e0f5a7240 71
+docs/public-server.md
+  s_544ac41f1d93fd::t_8f0f668b1c9271 105-108
+  s_544ac41f1d93fd::t_c04b2e0f5a7240 79-83,99-103,115-117
+  s_544ac41f1d93fd::t_4fc0a6597e56d4 110
+  s_544ac41f1d93fd::t_4b182187e6fbcc 66-78,84-98,104,109,111-113,118-122,125
+  s_544ac41f1d93fd::t_9654d676371bfb 114
+  s_544ac41f1d93fd::t_957bb4f45600f2 123-124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cca485ffefce5d4a752fa9cb43f534fde2690878",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

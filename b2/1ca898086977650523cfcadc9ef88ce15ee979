@@ -1,0 +1,37 @@
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_5ea74d9d4aa12b::t_fd75300763e8f0 33-38
+  s_5ea74d9d4aa12b::t_46dbff711992ce 321-326,340-342
+  s_5ea74d9d4aa12b::t_4d0bea8ca314b3 374
+  s_5ea74d9d4aa12b::t_aea6b17c0ba8b4 286
+  s_5ea74d9d4aa12b::t_5ff9a003f2e596 227-231,235-237,239-243
+  s_5ea74d9d4aa12b::t_f1f0e5bace1ff4 283-285,287-296
+  s_5ea74d9d4aa12b::t_39e9e9834dc36f 151-153,160-163,166,168-169
+  s_5ea74d9d4aa12b::t_232cf36628fd96 311,315
+  s_5ea74d9d4aa12b::t_a144294215221a 260
+  s_5ea74d9d4aa12b::t_d0f5178ebc2c39 297
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_5ea74d9d4aa12b::t_26441f7f775ddf 677
+  s_5ea74d9d4aa12b::t_3d624212b4150f 160-163
+  s_5ea74d9d4aa12b::t_4d27eb219b750d 747-758
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b21ca898086977650523cfcadc9ef88ce15ee979",
+  "prompts": {},
+  "humans": {
+    "h_766a26d8f6ed11": {
+      "author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  },
+  "sessions": {
+    "s_5ea74d9d4aa12b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "327d3793-ea88-4e2c-9cfd-a93e08e8f1de",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

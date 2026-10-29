@@ -1,0 +1,21 @@
+AGENTS.md
+  s_04bfec13ba0561::t_bfa459cee53f35 70
+packages/workshop-backend/vite.config.ts
+  s_04bfec13ba0561::t_ffaef74336b106 4,66-73,75-76,80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9186ee39deefa96b30b71a72cbc3c18140c9d2f5",
+  "prompts": {},
+  "sessions": {
+    "s_04bfec13ba0561": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6300c1da-fbac-40ad-9b7c-be3104f16453",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

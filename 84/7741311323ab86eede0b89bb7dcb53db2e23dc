@@ -1,0 +1,27 @@
+docs/observers.md
+  s_248914e60c0a2d::t_bedfa574faa18a 327-329,331,353-368,472-474
+docs/revocable-sessions-dev.md
+  s_248914e60c0a2d::t_a4cc09d473cabb 1-43
+packages/workshop-backend/__tests__/fixtures.ts
+  s_248914e60c0a2d::t_e0ef74bd69213a 89-90
+packages/workshop-backend/src/overseer.ts
+  s_248914e60c0a2d::t_42d0d76d1d53b2 1422-1428,5155-5159,5183-5242,5244-5248,5260,8395-8399,8401-8405,8754-8755,8758,8760,9472-9478,9697-9698,10825-10827,10829,10847-10848,10850,10972-10975
+packages/workshop-backend/wrangler.jsonc
+  s_248914e60c0a2d::t_3cf6fd260b7f66 27-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "847741311323ab86eede0b89bb7dcb53db2e23dc",
+  "prompts": {},
+  "sessions": {
+    "s_248914e60c0a2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_248914e60c0a2d",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

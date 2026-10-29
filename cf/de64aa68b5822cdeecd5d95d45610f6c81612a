@@ -1,0 +1,23 @@
+packages/gatekeeper-google/src/sheets-plan.ts
+  s_0c68076cfec9c1::t_747846d187bb68 271-277,308-317
+packages/gatekeeper-google/__tests__/sheets-format.test.ts
+  s_0c68076cfec9c1::t_747846d187bb68 149,154,161
+packages/gatekeeper-google/src/sheets-simulation.ts
+  s_0c68076cfec9c1::t_b78eac324a729c 462
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cfde64aa68b5822cdeecd5d95d45610f6c81612a",
+  "prompts": {},
+  "sessions": {
+    "s_0c68076cfec9c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84984110-a45c-49f6-ab14-a52150ec2200",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

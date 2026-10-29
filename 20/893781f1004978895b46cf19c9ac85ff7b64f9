@@ -1,0 +1,25 @@
+packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
+  s_820408bdddf78b::t_f885bda886a163 1713-1731
+packages/gatekeeper-google/src/chat-state.ts
+  s_820408bdddf78b::t_1738ab6646a134 16,44-45
+packages/gatekeeper-google/src/chat-types.d.ts
+  s_820408bdddf78b::t_3dfd4386499b40 369-375
+packages/gatekeeper-google/src/chat.ts
+  s_820408bdddf78b::t_7f353107667bf5 685-690,694-696,725-728,736-740,745-747,767
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "20893781f1004978895b46cf19c9ac85ff7b64f9",
+  "prompts": {},
+  "sessions": {
+    "s_820408bdddf78b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ec9fc278dffeJQdzGPS6VDrvCE",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

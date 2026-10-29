@@ -1,0 +1,25 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_b831f88f249552::t_a7a18fa3a3ae43 246
+docs/sharing.md
+  s_b831f88f249552::t_387b541a515628 36,46-47,102,104,113-115,153-154,159,161,163-165,176-194
+docs/observers.md
+  s_b831f88f249552::t_f8ac0362d156bf 33-44,63,75-76,97-100,102-109,142-143,175,205,235-237,241-247,270,291-301,324,340,343,346,350-353,360,376,411-412,418-419,421,457-516,520-526,534-557,572-574,621-623,628-631,640-642,670-671,703-715
+plans/restricted-data-sharing.md
+  s_b831f88f249552::t_ee6d49f2ab0377 1-306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f700992453c2db82c88e5c620f2521d1811a25d0",
+  "prompts": {},
+  "sessions": {
+    "s_b831f88f249552": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "010fdb2a-8792-46e0-84cc-2e828765473b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

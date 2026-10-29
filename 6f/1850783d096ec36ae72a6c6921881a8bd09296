@@ -1,0 +1,100 @@
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_7cb2e13456d040::t_100ef147386c27 234-239,241,243,246-254
+  s_7cb2e13456d040::t_f2872b8aa7b9ba 232-233
+  s_7cb2e13456d040::t_5be4ce7f8037f9 255-257
+  s_9b25c8a777939e::t_c7e3f3e22f2745 258,273,300-306,310,316,328-331,334-335,342-343,376-379
+packages/workshop-backend/src/ai-gateway.ts
+  s_7545e34ff06026::t_4810fa4cd91780 12-16,20-28
+packages/workshop-backend/src/ai-gateway-binding-fetch.ts
+  s_c639c7e7c11b31::t_90a3595f5f017e 65
+  s_8ebea081b6fc96::t_2a33dc922bd379 37,45-47,52-57,59,71
+  s_7cb2e13456d040::t_7f90a1e1fe217a 1,3-22
+  s_c639c7e7c11b31::t_141f4bca1a3842 80
+  s_8ebea081b6fc96::t_83dc178aaca26a 34-36
+  s_c639c7e7c11b31::t_fcfbdc23627bca 64
+  s_c639c7e7c11b31::t_fa90c2eaaa449d 66-68
+  s_c639c7e7c11b31::t_2d65451d43735b 77-79
+  s_c639c7e7c11b31::t_e9097aac9f942a 81-83
+  s_9b25c8a777939e::t_ad5ff3bb0d7fb1 31-33,84,87,89-91,94-96,98-99,102
+packages/workshop-backend/__tests__/ai-gateway-binding-fetch.test.ts
+  s_8f3094573d27f9::t_d0c3ec91cbe1b6 8,11,13-16,18-31,35-36,52-55,57,60-61,64,66,69-70,72,76-83,86-96,99-100,103-104,106-109,112-113,116,118-119,121-125,143,146,148,151,155,157-158,161,223,226,256,264
+  s_8f3094573d27f9::t_8616a4308764a3 141-142
+  s_8f3094573d27f9::t_e68d73900e21f3 144-145
+  s_8f3094573d27f9::t_092994676a84c7 147
+  s_8f3094573d27f9::t_7a4e071483d40b 149-150
+  s_8f3094573d27f9::t_cc5fac8baab68c 152-154
+  s_8f3094573d27f9::t_b9c17fc6784cc7 156
+  s_8f3094573d27f9::t_7108d3f6ad5907 159-160
+  s_8f3094573d27f9::t_3972caa27b2b90 224-225
+  s_8f3094573d27f9::t_b0313a2b5414d3 257
+  s_9b25c8a777939e::t_c0a94939c4823e 127-128,132,165,175-177,182,194-196,200,217-218,221,232,235-236,243,247,250-251
+packages/workshop-backend/src/ai-models.ts
+  s_821114639ecbff::t_e4565cee8431a1 428-430
+  s_7cb2e13456d040::t_f64ef04c2c7a07 9,481-482
+  s_821114639ecbff::t_15ac355397ffed 431
+  s_7cb2e13456d040::t_0a762aeba5ab04 483
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6f1850783d096ec36ae72a6c6921881a8bd09296",
+  "prompts": {},
+  "sessions": {
+    "s_7545e34ff06026": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0ac89dbf-363a-47fd-9b6b-5c69d6bb50b6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_7cb2e13456d040": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ebfd974-e57c-46ad-aea5-f64db9f3a4aa",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_821114639ecbff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "147b2439-e6fc-4ad6-a597-a927ab277c1a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8ebea081b6fc96": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c47020f8-5568-403c-a52e-0b5e39196040",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8f3094573d27f9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0769358-a83f-43de-8b63-bd73fa173cd9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_9b25c8a777939e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c99f8f34-98b3-4aa2-a640-3147c30b6651",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c639c7e7c11b31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15446a1d-daf3-4b88-a432-61390a827dd6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

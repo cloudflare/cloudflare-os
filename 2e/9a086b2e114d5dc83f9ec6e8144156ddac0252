@@ -1,0 +1,44 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 6437-6438
+  s_e25e29d8ebebad::t_89acc7ae9b1ea2 5884,6451-6454,6605-6607
+packages/workshop-frontend/src/Activity.tsx
+  s_e25e29d8ebebad::t_7b15617098dd0a 136,158-160,335
+  s_e25e29d8ebebad::t_0f4ee1fe892117 333-334,336,363
+  s_e25e29d8ebebad::t_a43654ef9718f0 624-626
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 99-101
+  s_e25e29d8ebebad::t_556a81d9ea1c7b 627-628
+packages/workshop-frontend/src/useResolveAction.ts
+  s_e25e29d8ebebad::t_9c086947d4badc 1,4
+packages/workshop-frontend/src/Activity.test.tsx
+  s_e25e29d8ebebad::t_1570dc619370d5 85-97
+  s_e25e29d8ebebad::t_a3d5fac2b2810c 1-12
+  s_e25e29d8ebebad::t_8e4397191a7dcb 74-76
+  s_e25e29d8ebebad::t_03af81361b5deb 62,67,81
+  s_e25e29d8ebebad::t_97d5f35015e1e9 77-79
+  s_e25e29d8ebebad::t_604fb5c330e4f0 80,82
+  s_e25e29d8ebebad::t_9caded2761218f 134
+  s_e25e29d8ebebad::t_28675921bddc1c 64-66
+  s_e25e29d8ebebad::t_7b15617098dd0a 100,110-111,119-120,124-132
+  s_e25e29d8ebebad::t_34c9eed64389a4 13-15
+  s_e25e29d8ebebad::t_b94ba4b6035316 68-69
+  s_e25e29d8ebebad::t_0f4ee1fe892117 16-39,63,83-84,98-99,101-109,112-118,121-123,133
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 73
+  s_e25e29d8ebebad::t_7e87ffb8479f97 70-72
+  s_e25e29d8ebebad::t_17c3008e65dbe0 40-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2e9a086b2e114d5dc83f9ec6e8144156ddac0252",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

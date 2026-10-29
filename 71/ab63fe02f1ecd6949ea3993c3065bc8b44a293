@@ -1,0 +1,39 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_fe30841bd8390c::t_603ffbec215a1f 55,57,624-629,711-716,750-754,792-797,826-828,854-856,4103-4104,4114-4121
+packages/workshop-frontend/src/GadgetCodeInterface.tsx
+  s_fe30841bd8390c::t_354cd69dd23bb1 19-20,69-71,179,850-852,1082,1090
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_fe30841bd8390c::t_1de64514e1d098 66,1215-1221,1797,1873,1875
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_fe30841bd8390c::t_9813d647411bbb 4,22-35,513-685
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_fe30841bd8390c::t_f597d91761ce92 5,105-193,201,382-384
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_fe30841bd8390c::t_6477c43c4e09db 171,194-198,206,211,426-455
+packages/workshop-frontend/src/ShareModal.tsx
+  s_fe30841bd8390c::t_8fa53ba5ab6003 4,38-43,385-407,416,1105-1108
+packages/workshop-frontend/src/features/frame/EscapeFrameDialog.tsx
+  s_fe30841bd8390c::t_4334eed994fc8e 1-115
+packages/workshop-frontend/src/features/frame/FrameLockBanner.tsx
+  s_fe30841bd8390c::t_96796727ca0960 1-19
+packages/workshop-frontend/src/features/frame/frameLock.test.tsx
+  s_fe30841bd8390c::t_6cf549b3cd8e6d 1-247
+packages/workshop-frontend/src/features/frame/useFrameLock.tsx
+  s_fe30841bd8390c::t_0df5ccf75f67a9 1-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "71ab63fe02f1ecd6949ea3993c3065bc8b44a293",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

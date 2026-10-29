@@ -1,0 +1,42 @@
+packages/workshop-frontend/src/adminTab.ts
+  s_664125cd80dfd6::t_85aa72a72bd325 4,7
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.tsx
+  s_664125cd80dfd6::t_44acb0765947ed 1-2,3-4,7-8,11-12,15-16,23,25-26,28,30-33,37-54,56-57,59-64,67-79,81-101
+packages/workshop-frontend/src/AdminPage.tsx
+  s_664125cd80dfd6::t_85aa72a72bd325 95-96,480-490
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_664125cd80dfd6::t_1bb575b90312eb 41-45,106-109
+  s_664125cd80dfd6::t_58f6f99855e5aa 4,6-7,12-13,15-16,19-20,24,48-52,69-73,76-80,88-92,94-102,104-105,110-113,127,149-153,157-171,174-175,177-186,202-203,207,212-214,216-217,220,225-228
+  s_664125cd80dfd6::t_389df30547727c 22-23,204-206,218-219
+  s_664125cd80dfd6::t_bcac6b73bb4f99 1-2,54-67,74-75,81-87,93,103
+  s_664125cd80dfd6::t_d388a45896e61f 46,68
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.test.tsx
+  s_664125cd80dfd6::t_94281315d984ac 1-7,9-45,47-53,56-118,144-237
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.test.tsx
+  s_664125cd80dfd6::t_579a607ea595d4 107,121-141
+  s_664125cd80dfd6::t_a4102fce21f7e4 142
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_664125cd80dfd6::t_bca86bc1697165 80-88,464,466,468,471-475,477-478,481-482,484-493,497-498,502-506,508,510-514,518,521-524,526-530,532-549,551
+  s_664125cd80dfd6::t_0a509740128c01 267-310,358-359
+  s_664125cd80dfd6::t_ebf63777d80548 65-66,68-79,89
+  s_664125cd80dfd6::t_acec013e8ac475 6-7,9,13-23,32-42,44-46,63,95-106,119-150,155,161-162,165-167,169-173,175-179,181-187,189-190,192-236,238-239,241-246,248-252,255-265,312-357,360-363,366-418,422-423,425-427,429-430,432-433,435-436,438-444,445-448,462-463,465,467,469-470,476,479-480,483,494-496,499,507,509,515-517,519-520,525,531,552
+  s_664125cd80dfd6::t_54fe0c17aa366f 64,90,266
+packages/workshop-frontend/src/features/deployment-updates/updateStatusFixture.ts
+  s_664125cd80dfd6::t_85aa72a72bd325 15,17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3cd077095d8994d56f7cd15cf8c9bca9bac518f8",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

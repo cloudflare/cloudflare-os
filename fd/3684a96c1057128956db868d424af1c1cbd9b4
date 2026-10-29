@@ -1,0 +1,19 @@
+scripts/env-passthrough.test.js
+  s_ff04413590c58d::t_d7775dc5055d59 1-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fd3684a96c1057128956db868d424af1c1cbd9b4",
+  "prompts": {},
+  "sessions": {
+    "s_ff04413590c58d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_ff04413590c58d",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+packages/integration-tests/fixtures/gatekeeper-test/src/env.d.ts
+  s_1d151c0c396075::t_0e5092524c88cd 15-25
+packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc
+  s_1d151c0c396075::t_b25eec8b67b3a7 15-40
+packages/integration-tests/src/harness.ts
+  s_1d151c0c396075::t_4b67ecd8c7e2c9 79-84
+packages/integration-tests/src/rpc-client.ts
+  s_1d151c0c396075::t_5446dc4e609204 80-87,149-150,153-154
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_1d151c0c396075::t_eb9b1b1e8c38d0 1-177
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_1d151c0c396075::t_381537c663efcf 23,29-31,223-260,293-301,358-365,367,405-436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6779242ca79bed438fdaa9d7df7c1a7019b3de80",
+  "prompts": {},
+  "sessions": {
+    "s_1d151c0c396075": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fcb946ad-1cf8-4256-9c3f-681c5dab2be4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

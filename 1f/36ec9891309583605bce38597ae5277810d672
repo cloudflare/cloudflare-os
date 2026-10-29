@@ -1,0 +1,33 @@
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 6,63-68
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 1-135
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 12,720-721,725,814,825-830,838,841-843,847-850,857,890-904,1026,1187
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 11,15-20,627-630,2181-2188,2191-2192,2243-2246,2416-2437,2440-2443,2448-2456,2458,2470-2471,2680-2750,2837-2847,2854-2856,2860,2889-2898,2905-2914,3397-3402,6236-6238,6285
+  s_1dfdf61332f5c7::t_07edb17bc16cc0 2325-2327
+  s_1dfdf61332f5c7::t_0bf0954895b640 2457,2459-2468
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 1-234
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 1314-1318,1649-1652,1656-1657
+packages/workshop-backend/src/slash-commands.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 6,19-25,51,58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1f36ec9891309583605bce38597ae5277810d672",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

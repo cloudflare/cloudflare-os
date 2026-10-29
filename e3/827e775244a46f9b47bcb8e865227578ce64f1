@@ -1,0 +1,19 @@
+packages/workshop-evals/README.md
+  s_23124d99541bb8::t_1a7f2403d8f643 188-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e3827e775244a46f9b47bcb8e865227578ce64f1",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

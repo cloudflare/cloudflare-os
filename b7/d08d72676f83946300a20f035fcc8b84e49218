@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/keyless-commit-gate.test.ts
+  s_e3c1456410672e::t_a196147e42500b 4-10,142-143,182,203-204
+packages/workshop-backend/__tests__/verification-scope.test.ts
+  s_e3c1456410672e::t_1516b1464d8188 2-7,12-14,116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b7d08d72676f83946300a20f035fcc8b84e49218",
+  "prompts": {},
+  "sessions": {
+    "s_e3c1456410672e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19fc7fdd-8235-4154-b783-6863ad5cfced",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

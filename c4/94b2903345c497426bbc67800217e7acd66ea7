@@ -1,0 +1,114 @@
+packages/workshop-frontend/index.html
+  s_e25e29d8ebebad::t_dbe7e48eb5e811 5
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_e25e29d8ebebad::t_bed1ea81225c7a 1007,1079,1138,1157
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_e25e29d8ebebad::t_b57ecbb556d31b 316
+packages/workshop-frontend/src/components/billing/AccountSelectionModal.tsx
+  s_e25e29d8ebebad::t_dc6757293dd995 73
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_e25e29d8ebebad::t_13a0b5bc370b35 3,13,60,537,564-568,1277,1299,1332-1339,1342,1350,1364,1374,1379,1386,1397-1406,1411,1418,1468-1591,1599,1610,1672,1684,1692,1766,1768-1789,1802,1810,1818,1838,1850,1867,1877-1890
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_e25e29d8ebebad::t_65dd0ae590f14e 109
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_e25e29d8ebebad::t_10cb97f91823da 60
+packages/workshop-frontend/src/components/DeleteConfirmationDialog.tsx
+  s_e25e29d8ebebad::t_e47077c4f84699 37
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_e25e29d8ebebad::t_059f6b29dd31bb 179-190
+packages/workshop-frontend/src/components/AppShell/SidebarItem.tsx
+  s_e25e29d8ebebad::t_535de46c004a90 51
+packages/workshop-frontend/src/LoginPage.tsx
+  s_e25e29d8ebebad::t_a54a9192db2ccc 66,76,89,101,118,129
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_e25e29d8ebebad::t_b0f8f83512d87b 329-332,341,346,792
+packages/workshop-frontend/src/components/ConnectConnectorModal.tsx
+  s_e25e29d8ebebad::t_8ef972d40d92b5 207
+packages/workshop-frontend/src/ProtectedRoute.tsx
+  s_e25e29d8ebebad::t_9b9e0c87dcdb94 29,49,78,101
+packages/workshop-frontend/src/Connections.tsx
+  s_e25e29d8ebebad::t_7a63a6fa15994f 558
+packages/workshop-frontend/src/components/AppShell/AppShell.tsx
+  s_e25e29d8ebebad::t_023a2587923ff3 1,35-36,50-73,75-78,110,124-131,138-142,149,152,162
+packages/workshop-frontend/src/routes/context.tsx
+  s_e25e29d8ebebad::t_2a6f8f3362accc 64-65
+packages/workshop-frontend/src/FileSidebar.tsx
+  s_e25e29d8ebebad::t_e685bff3f67129 21-22,46-47,121,126-145,197,340,384,414
+packages/workshop-frontend/src/FrontendErrorBoundary.tsx
+  s_e25e29d8ebebad::t_9caef516e05b54 26
+packages/workshop-frontend/src/routes/workspaces.tsx
+  s_e25e29d8ebebad::t_39f617e734c45b 17-18,28
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_e25e29d8ebebad::t_900fff808fe7d6 319,330,336,349,367,389,398,470,477,561,581,645,651
+  s_e25e29d8ebebad::t_6f2cf48b62c5a9 318
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_9a3351efd45c08 1353,1368,1766,3191,3450,3491,3531,3545,3589,3606,6803,6907,7019,7027,7168,7263,7312,7371
+packages/workshop-frontend/src/SignupPage.tsx
+  s_e25e29d8ebebad::t_0c129f338c51b1 85,95,110,125,154,166,178
+packages/workshop-frontend/src/components/AutoApproveConfirmDialog.tsx
+  s_e25e29d8ebebad::t_d04895f1ea614d 36
+packages/workshop-frontend/src/components/chat/ConnectionConfigModal.tsx
+  s_e25e29d8ebebad::t_3b4ba6f1924132 42
+packages/workshop-frontend/src/BlueprintModal.tsx
+  s_e25e29d8ebebad::t_6012f49ddf2e47 282-283,310,312-313,421,453,455
+packages/workshop-frontend/src/GadgetUseView.tsx
+  s_e25e29d8ebebad::t_f556e925a753e2 58,88,116-122,127-146,153
+packages/workshop-frontend/src/components/billing/OutOfCreditsModal.tsx
+  s_e25e29d8ebebad::t_f0b539e91e2a29 92
+packages/workshop-frontend/src/styles.css
+  s_e25e29d8ebebad::t_cf5053c7bba040 219-231,234,240-284
+packages/workshop-frontend/src/components/AnnouncementBanner.tsx
+  s_e25e29d8ebebad::t_cf978151cc6bbc 68
+packages/workshop-frontend/src/components/AppShell/Sidebar.tsx
+  s_e25e29d8ebebad::t_b3b65b39fa3040 56-57
+packages/workshop-frontend/src/components/UserMenu.tsx
+  s_e25e29d8ebebad::t_8fc23ad360766e 22
+packages/workshop-frontend/src/ConnectAccountModal.tsx
+  s_e25e29d8ebebad::t_0a8de232912c5a 79
+packages/workshop-frontend/src/ShareModal.tsx
+  s_e25e29d8ebebad::t_9d5750fbbcd4ff 752
+packages/workshop-frontend/src/GadgetCodeInterface.tsx
+  s_e25e29d8ebebad::t_33faf5cea8fd4e 3,160-161,163-164,191-237,913-979,985,989-990
+packages/workshop-frontend/src/components/BlueprintList.tsx
+  s_e25e29d8ebebad::t_019a2586359cb4 262,275
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_e25e29d8ebebad::t_d3a5771fb196c9 236
+packages/workshop-frontend/src/SettingsPage.tsx
+  s_e25e29d8ebebad::t_a707f390d9b001 21,249-250,275
+packages/workshop-frontend/src/BlueprintsPage.tsx
+  s_e25e29d8ebebad::t_d2a227624d0343 79-80,96,106
+packages/workshop-frontend/src/GatekeeperAppPage.tsx
+  s_e25e29d8ebebad::t_c7d225035ac180 62,64
+packages/workshop-frontend/src/routes/outputs.tsx
+  s_e25e29d8ebebad::t_5364b179ede8c6 341,576-577,608,620,627,635,666
+packages/workshop-frontend/src/routes/blueprints.tsx
+  s_e25e29d8ebebad::t_d42ae63a63726c 17,19
+packages/workshop-frontend/src/routes/__root.tsx
+  s_e25e29d8ebebad::t_48ab32f7b44585 56,66,81,99-104,160,179
+packages/workshop-frontend/src/SandboxedGatekeeperApp.tsx
+  s_e25e29d8ebebad::t_42e89db006ad74 61-66
+packages/workshop-frontend/src/CodeDiffEditor.tsx
+  s_e25e29d8ebebad::t_5c02f29d149725 78,122-125,369,377-378,398,422
+packages/workshop-frontend/src/routes/providers.tsx
+  s_e25e29d8ebebad::t_3c33dfc00ea09d 216-217,224
+packages/workshop-frontend/src/main.tsx
+  s_e25e29d8ebebad::t_3f0dd6e75843f2 132-154,193-198
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_e25e29d8ebebad::t_dc4f058e35a5f2 718-719
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c494b2903345c497426bbc67800217e7acd66ea7",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

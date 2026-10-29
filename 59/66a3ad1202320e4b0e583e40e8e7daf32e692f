@@ -1,0 +1,19 @@
+packages/typed-storage/vite.config.ts
+  s_f0b7db9c8060c8::t_11d67cb45fd53a 3,5-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5966a3ad1202320e4b0e583e40e8e7daf32e692f",
+  "prompts": {},
+  "sessions": {
+    "s_f0b7db9c8060c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3d90149-7790-4227-8b92-f4199d8ba399",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

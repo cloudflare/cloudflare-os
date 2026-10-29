@@ -1,0 +1,31 @@
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_e3eb00eefefcec::t_d5c6fd43f13202 10-19,52-61,78,86,92-93,96-99,103,105,110
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_e3eb00eefefcec::t_b370924cce2e76 195,202,220-225,256-262,293,347
+  s_e3eb00eefefcec::t_d5c6fd43f13202 143-144
+  s_e3eb00eefefcec::t_9f8b8b84d297d7 219
+  s_e3eb00eefefcec::t_246fc66a047eb2 226
+  s_e3eb00eefefcec::t_3c06b7a809f962 255
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e3eb00eefefcec::t_241b4d62a952cb 3421,3576-3578,4014-4019,4021-4027,4197-4199,4212-4213,4217,4219-4220,4222-4240,4249-4255,4258-4261
+packages/workshop-frontend/src/GadgetCodeInterface.tsx
+  s_e3eb00eefefcec::t_4a6dd426b3cf91 192-194,614,618,638-643
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_e3eb00eefefcec::t_b04c1b5a2730b6 19-20,24-26,101,154-155,157-159,162-178,189-190,567-666,695,746,753-760,768-773
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fbf1e10d5d68e9cbe839abf5942871ab81a1286c",
+  "prompts": {},
+  "sessions": {
+    "s_e3eb00eefefcec": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b1b405dffeCnKNg5y1Hwfsr2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

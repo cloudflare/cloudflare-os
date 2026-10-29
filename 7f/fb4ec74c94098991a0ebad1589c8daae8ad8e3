@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/workshop-space-directory.test.ts
+  s_1da8b1c2e6d0c9::t_332eef5c75c2a0 1-12,16-148,152-160,162-170,172-194,197-215
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 13-15,150-151,161,171,196
+  s_1da8b1c2e6d0c9::t_a8e6464e40af29 149,195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7ffb4ec74c94098991a0ebad1589c8daae8ad8e3",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

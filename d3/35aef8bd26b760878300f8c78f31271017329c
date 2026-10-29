@@ -1,0 +1,35 @@
+AGENTS.md
+  s_b8c46f0245b1b4::t_ba46381273bcf7 65-66
+packages/integration-tests/__tests__/worker-inputs.test.ts
+  s_b8c46f0245b1b4::t_47456d69df1546 1-69
+packages/integration-tests/src/global-setup.ts
+  s_b8c46f0245b1b4::t_3f15812ac61069 7,12-19,31-38,40-70
+packages/integration-tests/src/worker-inputs.ts
+  s_b8c46f0245b1b4::t_2ea95aeababa50 1-110
+packages/integration-tests/vite.config.ts
+  s_b8c46f0245b1b4::t_f5734976d30f5b 1-5,10-24,26-29
+packages/integration-tests/vitest.config.ts
+  s_b8c46f0245b1b4::t_7b445ee928c785 2,8,15-17
+packages/workshop-backend/vite.config.ts
+  s_b8c46f0245b1b4::t_cff0b2e42af6ff 29-49,55-56
+scripts/env-passthrough.test.ts
+  s_b8c46f0245b1b4::t_19aa00ec242a9c 26-30,42-43,59-61,64,106
+scripts/vitest-task-vite-config.ts
+  s_b8c46f0245b1b4::t_b7245e841ea258 42-43,64-66,68,71-98,146-160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d335aef8bd26b760878300f8c78f31271017329c",
+  "prompts": {},
+  "sessions": {
+    "s_b8c46f0245b1b4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f5fd5787-c4ea-445f-a41d-3ec290f8da26",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

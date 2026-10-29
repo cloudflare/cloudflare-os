@@ -1,0 +1,44 @@
+packages/workshop-backend/format-blueprints/workspace-sheets/files/lib/formula.ts
+  s_a640e72b36f6d8::t_41319ff4d5eb48 161-170
+packages/workshop-backend/format-blueprints/workspace-sheets/__tests__/formula.test.ts
+  s_a640e72b36f6d8::t_26e53ed0d741b2 3,59-65
+  s_a640e72b36f6d8::t_599d4448d40708 66-67
+packages/workshop-backend/package.json
+  s_a640e72b36f6d8::t_1abcd4b86a44fd 36
+packages/workshop-backend/vite.config.ts
+  s_a640e72b36f6d8::t_1abcd4b86a44fd 70-73,80
+packages/workshop-backend/__tests__/format-blueprint-files.test.ts
+  s_a640e72b36f6d8::t_06e48c6b6f7083 417-448
+packages/workshop-backend/format-blueprints/workspace-sheets/files/client.ts
+  s_a640e72b36f6d8::t_7d14c8e981e20e 1203-1207,1231-1240,1249-1260,1262-1272,1283-1291
+  s_a640e72b36f6d8::t_41319ff4d5eb48 930-931
+  s_a640e72b36f6d8::t_b90712821faa04 38
+  s_a640e72b36f6d8::t_26e53ed0d741b2 48
+packages/gadget-libraries/sync/__tests__/subscribers.test.ts
+  s_a640e72b36f6d8::t_6c695eb77b800c 130,146-148,154,160-183
+packages/workshop-backend/tsconfig.blueprints-server.json
+  s_a640e72b36f6d8::t_1abcd4b86a44fd 4-14,24-25,27,29-32,34,37,39-43,45-46
+packages/workshop-backend/scripts/format-blueprint-files.ts
+  s_a640e72b36f6d8::t_cb601edb4cdc86 318-319,323-325,328-330,332-333,344-353,385-387,441-443,477-480,501-504,507-511,514-516,539-541
+  s_a640e72b36f6d8::t_06e48c6b6f7083 320-322
+packages/gadget-libraries/sync/src/subscribers.ts
+  s_a640e72b36f6d8::t_26e53ed0d741b2 79-82,94-95,98-101
+pnpm-lock.yaml
+  s_a640e72b36f6d8::t_aa2db5210fd7ca 972-974
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2edb64f42a3bdf98be731622a66ac4c8c5184fd4",
+  "prompts": {},
+  "sessions": {
+    "s_a640e72b36f6d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "537f9b15-2069-4a19-b899-146ed10343d1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+packages/workshop-backend/__tests__/provisioning.test.ts
+  s_e1dd627472f56c::t_04e8035c3f248f 1-151
+packages/workshop-backend/src/admin-settings.ts
+  s_e1dd627472f56c::t_0b47694073cafb 1,563-572,579-580,582-589
+packages/workshop-backend/src/observability.ts
+  s_e1dd627472f56c::t_4471de787c7d52 8,31-32,37
+packages/workshop-backend/src/server.ts
+  s_e1dd627472f56c::t_7f29b64e8d3b2f 4,7,19,103-126,719-790,949-952
+packages/workshop-backend/src/user.ts
+  s_e1dd627472f56c::t_1dd19a4e948c6f 195-197,344,348-380,406-417,441,473
+packages/workshop-backend/vitest.config.ts
+  s_e1dd627472f56c::t_5b8b8c58d39fdc 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d3aa1145f379be4dbade1bfdd3bcf03df4d75b1b",
+  "prompts": {},
+  "sessions": {
+    "s_e1dd627472f56c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a708a8fa-f215-459a-b93e-8c454b24072f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

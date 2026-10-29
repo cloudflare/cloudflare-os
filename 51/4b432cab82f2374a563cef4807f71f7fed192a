@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/reject-action.test.ts
+  s_c31bf147d9a35f::t_3b2076fb032866 113-134
+packages/workshop-backend/src/overseer.ts
+  s_c31bf147d9a35f::t_d89a374b46aeb7 4981-4982
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "514b432cab82f2374a563cef4807f71f7fed192a",
+  "prompts": {},
+  "sessions": {
+    "s_c31bf147d9a35f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de85876d-a552-46dc-8098-f2602de083b7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

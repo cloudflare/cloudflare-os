@@ -1,0 +1,28 @@
+packages/workshop-frontend/package.json
+  s_8b26763c39f445::t_78f55155502815 26
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_8b26763c39f445::t_9e9b71b519e94a 49
+  s_8b26763c39f445::t_8d455d243808a4 5909
+  s_8b26763c39f445::t_ef242ee058c27f 857-862
+  s_8b26763c39f445::t_47a72d6ad6b80a 5872
+  s_8b26763c39f445::t_17834a0077c959 839-841,843
+  s_8b26763c39f445::t_6021dd83f5ee82 5927
+pnpm-lock.yaml
+  s_8b26763c39f445::t_82492878cbfe91 580-582,952,958,964,970,976,982,3023-3025,3344-3346,6225-6229,6692-6697
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "729a7ef74b13bb369ba8149b23be3e4efc7e4004",
+  "prompts": {},
+  "sessions": {
+    "s_8b26763c39f445": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b693301ffeNhUjdslZ6iv1O5",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

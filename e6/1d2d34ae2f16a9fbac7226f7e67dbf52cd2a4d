@@ -1,0 +1,229 @@
+packages/api-schema/src/subset.ts
+  s_c5f8d284ae2719::t_4c57c7857ec81e 1-118
+packages/integration-tests/__tests__/instance-admin-gateway.test.ts
+  s_c5f8d284ae2719::t_09f53b1b6de9b3 1-226
+  s_c5f8d284ae2719::t_9ce77f91745bba 227
+docs/admin-access.md
+  s_c5f8d284ae2719::t_4b6926712afcdd 400-401
+  s_c5f8d284ae2719::t_8261499c53b908 442-506,510-542,546-555,557-609,611-620,622-627,629-633,635-729,748
+  s_c5f8d284ae2719::t_e6cc372a3f26f6 314-319
+  s_c5f8d284ae2719::t_a1b2d6e145ab15 5-9
+  s_c5f8d284ae2719::t_5fe986246a7666 21-27,31-36
+  s_c5f8d284ae2719::t_5961ce41ab488a 47-57
+  s_c5f8d284ae2719::t_aef8cb81b32fee 507-509,543-545,556,610,621,628,634,730-731,747,749,757-758
+docs/observers.md
+  s_c5f8d284ae2719::t_31c74cf0f61f86 122-137
+packages/workshop-backend/__tests__/provisioning-policy.test.ts
+  s_c5f8d284ae2719::t_ba70b8823b3d58 1-73
+packages/gatekeeper-instanceadmin/vite.config.ts
+  s_c5f8d284ae2719::t_7200a123cca2d4 1-25
+packages/workshop-shared/src/instance-admin.ts
+  s_c5f8d284ae2719::t_f609522e3e191f 1-93
+packages/integration-tests/__tests__/instance-admin-gatekeeper.test.ts
+  s_c5f8d284ae2719::t_7e0e17aba4e2ba 1-7,10-31,35-90,92-246,248-366,368-418,421,424-456,458-475,477-519,523-544,546-553,555-613,619-654,657-660,662-674,677-682
+  s_c5f8d284ae2719::t_24647400b3da8e 8-9,32-34,91,247,367,419-420,422-423,457,476,520-522,545,554,614-618,655-656,661,675-676
+packages/workshop-backend/__tests__/admin-agent-access.test.ts
+  s_c5f8d284ae2719::t_169bfb477d0485 1-156
+  s_c5f8d284ae2719::t_028d123f004d7b 157
+packages/workshop-backend/__tests__/instance-admin-provisioning.test.ts
+  s_c5f8d284ae2719::t_df543750621f72 1-331
+  s_c5f8d284ae2719::t_0f8d348d9ac25a 332-344
+packages/api-schema/src/check.ts
+  s_c5f8d284ae2719::t_aa8a161a7435e9 1-128,134-178,182,184-195,200,207,212,214-241,245-271,273-288
+  s_c5f8d284ae2719::t_97f75b4044da71 129-133,179-181,183,196-199,201-206,208-211,213,242-244,272
+packages/gatekeeper-instanceadmin/cloudflare.config.ts
+  s_c5f8d284ae2719::t_418f31822c24df 1-22
+  s_c5f8d284ae2719::t_72db3a35b05f3b 23-24
+packages/workshop-shared/src/gatekeeper.ts
+  s_c5f8d284ae2719::t_305c18175d07bf 1536-1565
+packages/gatekeeper-instanceadmin/package.json
+  s_c5f8d284ae2719::t_8f771bdce9187e 1-24
+packages/gatekeeper-instanceadmin/__tests__/worker.ts
+  s_c5f8d284ae2719::t_ac51ceb89490df 1-71
+packages/gatekeeper-instanceadmin/__tests__/workerd/session.test.ts
+  s_c5f8d284ae2719::t_33d29d84f1002c 1-136,141-175
+  s_c5f8d284ae2719::t_720d5ec9c190b0 137-140,176-193
+docs/sharing.md
+  s_c5f8d284ae2719::t_bb0e28f3c815e8 159-160
+  s_c5f8d284ae2719::t_02b3a78adeea21 179-190
+packages/workshop-backend/__tests__/instance-admin-turns.test.ts
+  s_c5f8d284ae2719::t_070604122221cf 1-286,288
+  s_c5f8d284ae2719::t_90cc06520a4a56 287,289
+packages/gatekeeper-instanceadmin/__tests__/surface.test.ts
+  s_c5f8d284ae2719::t_194e2493678469 1-124,130,138-139
+  s_c5f8d284ae2719::t_79f9a6e1322804 125-129,131-137,140-141
+packages/gatekeeper-instanceadmin/src/session.ts
+  s_c5f8d284ae2719::t_90e3bbf5446135 1-83
+  s_c5f8d284ae2719::t_816961a90fbfdd 84-90
+docs/public-server.md
+  s_c5f8d284ae2719::t_e24417c38f8715 98-104
+packages/workshop-backend/src/instance-admin.ts
+  s_c5f8d284ae2719::t_a7623d5cdda3d0 1-119,127-143,146-150,159-168,171,178-183,186-265,269-367,369-553
+  s_c5f8d284ae2719::t_c5ea3a883b5360 154-155
+  s_c5f8d284ae2719::t_3d90ba52df4fda 120-126,144-145,151-153,156-158,169-170,172-177,184-185,266-268,368,554-565
+packages/api-schema/__tests__/subset.test.ts
+  s_c5f8d284ae2719::t_cb289c1b2616e5 1-139,145-146
+  s_c5f8d284ae2719::t_5ed898801c9eed 140-144,147-148
+packages/gatekeeper-instanceadmin/src/surface.ts
+  s_c5f8d284ae2719::t_ef4cb190912587 1-177
+  s_c5f8d284ae2719::t_4795c21ed06ef9 178-181
+packages/gatekeeper-instanceadmin/vitest.worker.config.ts
+  s_c5f8d284ae2719::t_30b3b6932f014c 1-36
+packages/workshop-backend/__tests__/instance-admin-grants.test.ts
+  s_c5f8d284ae2719::t_1538a0d2993ade 1-210,212,214-362,367-397,399-515,517-518,520-698,700,702-839,841-843,845-853,855-868,873-918,921-1017,1026,1028-1030,1034-1278,1280-1349,1355-1360,1362-1372,1383,1391-1392,1395-1456
+  s_c5f8d284ae2719::t_01680fc760dd65 211,213,363-366,398,516,519,699,701,840,844,854,869-872,919-920,1018-1025,1027,1031-1033,1279,1350-1354,1361,1373-1382,1384-1390,1393-1394
+packages/workshop-backend/__tests__/instance-admin.test.ts
+  s_c5f8d284ae2719::t_087e88556c6671 1-502,506-507
+  s_c5f8d284ae2719::t_99608dae6a4493 503-505,508-559
+packages/api-schema/__tests__/check.test.ts
+  s_c5f8d284ae2719::t_26e7af7eee6215 1-242
+  s_c5f8d284ae2719::t_4c8018d7b3e978 243-244
+packages/gatekeeper-instanceadmin/tsconfig.json
+  s_c5f8d284ae2719::t_cae0534a63cfca 1-15
+packages/gatekeeper-instanceadmin/src/worker.ts
+  s_c5f8d284ae2719::t_45520be08c388f 1-235
+  s_c5f8d284ae2719::t_a8e8c1d320a3d5 236
+packages/gatekeeper-kit/src/action-description.ts
+  s_c5f8d284ae2719::t_4110deb0191da7 16
+  s_c5f8d284ae2719::t_f8ba9317592749 44-51
+  s_c5f8d284ae2719::t_89f35de3219fda 102,104
+packages/gatekeeper-instanceadmin/vitest.config.ts
+  s_c5f8d284ae2719::t_8585c00cfc05eb 1-10
+docs/integration-testing.md
+  s_c5f8d284ae2719::t_062f486ad877f7 95-125
+  s_c5f8d284ae2719::t_c08bd97dd34a5e 126
+REVIEW.md
+  s_c5f8d284ae2719::t_dcb4350db4617e 122-134
+  s_c5f8d284ae2719::t_7e7544373f3b1d 142-144
+  s_c5f8d284ae2719::t_c56bf3beda1b80 66-106
+  s_c5f8d284ae2719::t_ed33d3bb531d03 37-39
+packages/integration-tests/src/harness.ts
+  s_c5f8d284ae2719::t_208eee2ba44b95 80-96
+packages/integration-tests/__tests__/instance-admin-demotion.test.ts
+  s_c5f8d284ae2719::t_f601b140b43f5c 1-179
+  s_c5f8d284ae2719::t_0f949c212e26ac 180-197
+packages/gatekeeper-instanceadmin/README.md
+  s_c5f8d284ae2719::t_ce5434a32a9b8c 1-201
+packages/integration-tests/README.md
+  s_c5f8d284ae2719::t_7a5fc14057fc2b 83-106
+AGENTS.md
+  s_c5f8d284ae2719::t_4242669c30b25d 31,40,79,81,85,90,120
+packages/api-schema/README.md
+  s_c5f8d284ae2719::t_df98480a072cde 33-41,50-53,57,60-63,73,105-113,117-119
+packages/api-schema/__tests__/__fixtures__/api.ts
+  s_c5f8d284ae2719::t_a0f0f327ad740a 6-8,124-137
+packages/api-schema/__tests__/__fixtures__/schema.json
+  s_c5f8d284ae2719::t_425f392d6823ac 468-494
+packages/api-schema/__tests__/dts.test.ts
+  s_c5f8d284ae2719::t_76f1bf1b188dc2 753-755,762,771-774,786-787,790,793-795
+packages/api-schema/__tests__/extract.test.ts
+  s_c5f8d284ae2719::t_58e9f7928597ac 130,151-155,264-283
+packages/api-schema/__tests__/tools.test.ts
+  s_c5f8d284ae2719::t_43ed7afe756372 185,191-192,196-199,388-389,395-396
+packages/api-schema/generated/admin-api.agent.d.ts
+  s_c5f8d284ae2719::t_73435a6f085d63 1-1617
+packages/api-schema/generated/admin-api.fragments.json
+  s_c5f8d284ae2719::t_020662f1d53a3e 1-4
+packages/api-schema/generated/admin-api.schema.json
+  s_c5f8d284ae2719::t_a2a9ee61fc84e3 1-7790
+packages/api-schema/generated/workshop-api.agent.d.ts
+  s_c5f8d284ae2719::t_8d7cf5f20c6a67 104-105,433-439,450,524,534,546,552,562,571,577,583,586-589,594,597-600,608,618,630,644,647-651,661,668,671-675,681,687,696,703,711,718,729,735,751,765,780,786,1718-1727,1959,1970,1985,2024-2025,2069-2074,2147,2202,2211,3117,3132
+packages/api-schema/generated/workshop-api.fragments.json
+  s_c5f8d284ae2719::t_9f82bb0fd27a38 3-4,6,14
+packages/api-schema/generated/workshop-api.schema.json
+  s_c5f8d284ae2719::t_b59f8af23e0490 59,64,78-79,262,275-276,280,293-294,298,311-312,316,329-330,334,347-348,352,379-380,384,397-398,402,424-425,429,450-451,455,501-502,506,522-523,527,562-563,567,602-603,607,629-630,634,656-657,661,674-675,679,692-693,697,726-727,731,744-745,749,779-780,784,797-798,802,815-816,820,833-834,838,851-852,856,869-870,874,887-888,892,905-906,910,924-925,929,944-945,949,967-968,972,994-995,1650,4806-4813,6135-6146,6193,6300-6311,6460-6472,6835-6856,7409-7420,7736-7739,7792-7807,12439-12454,12560-12575
+packages/api-schema/generated/workshop-api.tools.json
+  s_c5f8d284ae2719::t_441718c90b0ea4 10,93-94,1202-1204,1210-1216,1280-1282,1353-1371,1464-1466,1488-1489,1696,1712-1713,1719,1735-1736,1742,1758-1759,1765,1781-1782,1788,1804-1805,1811,1831-1832,1838,1854-1855,1861,1893-1894,1900,1920-1921,1927,1968-1969,1975,1994-1995,2001,2025-2026,2032,2056-2057,2063,2105-2106,2112,2143-2144,2150,2166-2167,2173,2189-2190,2196,2220-2221,2227,2243-2244,2250,2296-2297,2303,2319-2320,2326,2342-2343,2349,2365-2366,2372,2388-2389,2395,2411-2412,2418,2434-2435,2441,2457-2458,2464,2524-2525,2531,2602-2603,2609,2797-2798,2804,2911-2912,2952-2957,6034-6036,6079-6097,6101-6102,7869,7884,7889,9111-9116,18102-18107,21690-21705
+packages/api-schema/package.json
+  s_c5f8d284ae2719::t_a4c81e9a033d03 11-12
+packages/api-schema/scripts/generate.ts
+  s_c5f8d284ae2719::t_ae2c463be5a939 4-8,24,48-52,54-70,80-83,88-89,93,95-97
+packages/api-schema/src/emit/dts.ts
+  s_c5f8d284ae2719::t_7a48d188b655b7 67-68,427-431
+packages/api-schema/src/emit/tools.ts
+  s_c5f8d284ae2719::t_6fb0448411723b 67-68,168
+packages/api-schema/src/extract.ts
+  s_c5f8d284ae2719::t_13064b138bd253 8-10,287,295
+packages/api-schema/src/schema.ts
+  s_c5f8d284ae2719::t_7c2939859267d5 77-83
+packages/gatekeeper-instanceadmin/__tests__/env.d.ts
+  s_c5f8d284ae2719::t_8ce6ec87c693e5 1-20
+packages/gatekeeper-instanceadmin/worker-configuration.d.ts
+  s_c5f8d284ae2719::t_4f1902a379acee 1-16189
+packages/gatekeeper-instanceadmin/wrangler.jsonc
+  s_c5f8d284ae2719::t_aedc0671063105 1-29
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_c5f8d284ae2719::t_a92fc7fe1b291c 103
+packages/integration-tests/package.json
+  s_c5f8d284ae2719::t_74b4433d3a0240 15
+packages/integration-tests/src/agent-session.ts
+  s_c5f8d284ae2719::t_022f9cfa9a6604 35-40,107-110,507-514,1065
+packages/integration-tests/src/global-setup.ts
+  s_c5f8d284ae2719::t_605fb6f83922ed 14
+packages/integration-tests/vite.config.ts
+  s_c5f8d284ae2719::t_1695605bebe71f 20,61
+packages/workshop-backend/__tests__/admin-access.test.ts
+  s_c5f8d284ae2719::t_111d751ad1a07c 12,190-232
+packages/workshop-backend/__tests__/admin-api-impl.test.ts
+  s_c5f8d284ae2719::t_4f40eadf562372 8,74-75,81,84-88,172,190-204,263,272-288,315-328,350,353-368,425-426,430-431
+packages/workshop-backend/__tests__/admin-audit.test.ts
+  s_c5f8d284ae2719::t_85cf03ac3ff7d4 152-197
+packages/workshop-backend/__tests__/admin-settings-audit.test.ts
+  s_c5f8d284ae2719::t_c36e9f0eed498b 308-381
+packages/workshop-backend/__tests__/admin-workspace-view.test.ts
+  s_c5f8d284ae2719::t_527d76050bc8c0 47-49,212-215,251-260,335,351-359
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_c5f8d284ae2719::t_3f9033eeca1eb7 3,28,31,829-1058
+packages/workshop-backend/__tests__/test-worker.ts
+  s_c5f8d284ae2719::t_fdc99a8f993d8c 99-100,115,119-129
+packages/workshop-backend/src/admin-access.ts
+  s_c5f8d284ae2719::t_3c73d28192c365 16-19,143-149,164-165,188-215
+packages/workshop-backend/src/admin-audit.ts
+  s_c5f8d284ae2719::t_4e4efa68123ff8 4,19-21,116-118,128-130,150-154
+packages/workshop-backend/src/admin-settings.ts
+  s_c5f8d284ae2719::t_7434628a22ed83 16,22,1053-1054,1064,1152-1157,1164-1165,1168-1175,1177-1178,1180-1185,1194-1201,1416,1429,1469,1471
+packages/workshop-backend/src/overseer.ts
+  s_c5f8d284ae2719::t_c6d0b93d46cbce 6-9,11-15,36,70-73,75-81,85,290-382,1100,1884-1886,2754-2755,2794-2801,5087-5089,5136,5147-5156,5218-5219,5222,5244,5343-5344,5361-5364,5372,5374,5401-5402,5418-5430,6080,6096,6100-6110,6634-6637,6639-6640,6643-6647,6652-7205,7696-7698,7820,8534-8537,8549-8550,8556-8557,8577-8578,8582-8584,9831-9842,9905-9907,9934-9935,9988-9989,10018-10019,10026-10027,10056-10065,10584-10585,10587-10588,10992-10995,11364,11434-11440,11532-11561,11670,11820,11822-11827,11833,12261-12262,12289-12297,12323-12336,12343-12344,12352-12353,12653-12661,12828-12834,12886-12891,13868,13968-14054,14149,14190,14199
+packages/workshop-backend/src/provisioning-policy.ts
+  s_c5f8d284ae2719::t_99cf5f027a7b3f 11-14,19,24-31,33-35,38-46
+packages/workshop-backend/src/server.ts
+  s_c5f8d284ae2719::t_85fc631b538407 671-676,679
+packages/workshop-backend/src/sharing.ts
+  s_c5f8d284ae2719::t_86c99437e87e08 20-25,107-119,129-132,137-161,216-217,240-241,265,269-270,272,283,314,327-328,360,373,475,484,504,507,528-533,614-615,622,768
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_c5f8d284ae2719::t_1670fc8dd5701e 25,430-436,468-490,1307-1315,1596-1601
+packages/workshop-backend/src/user.ts
+  s_c5f8d284ae2719::t_8360f61d391663 4-7,25-26,86-97,1428-1429,1436,1448-1449,1465-1467,1525,1553-1558,1569-1570,1578-1579,1583-1607,1741,1744,2280,2317
+packages/workshop-shared/package.json
+  s_c5f8d284ae2719::t_204336413ad599 22-25
+packages/workshop-shared/src/api.ts
+  s_c5f8d284ae2719::t_0d66581248d870 982-983,1353-1355,1357-1365,1370-1389,1552-1555,1571-1614,1653-1655,1657,1659-1660,1769-1770,1793-1794,1870-1876,1882-1886,1892,1899,1903-1904,1906-1908,1911-1915,1922,1932,1939,1946,1953,1963-1966,1979,1990,1997,2001-2004,2019,2031,2044,2056,2068,2081,2088,2103,2118,2135,2151,2173,2183,2192,2200,2270,2281,2289,3080-3088,3722-3732
+plans/capnweb-api-schema.md
+  s_c5f8d284ae2719::t_a34a2f5a3f64cc 53-66,131,169,174-175,178-181,207-208,242-246,331-340,411-419,438-441
+pnpm-lock.yaml
+  s_c5f8d284ae2719::t_52a74de5d4284b 629-659
+scripts/release/manifest-lib.test.ts
+  s_c5f8d284ae2719::t_6a96331b66108b 180-187,275-285
+scripts/release/manifest-lib.ts
+  s_c5f8d284ae2719::t_820ff75c0c0b8f 275,288-292,298-301,311,315,377-383,400-405
+scripts/release/testdata/fixture-bundles/gatekeeper-instanceadmin/instanceadmin.js
+  s_c5f8d284ae2719::t_0b3233be18620b 1
+scripts/release/testdata/golden-manifest.json
+  s_c5f8d284ae2719::t_8e186a8ef0692b 569-609
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e61d2d34ae2f16a9fbac7226f7e67dbf52cd2a4d",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

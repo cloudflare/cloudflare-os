@@ -1,0 +1,23 @@
+scripts/testdata/fixture-bundles/gatekeeper-mcp-portal/mcp-portal.js
+  s_a0ffe549371531::t_fd3c6295f9de73 1
+scripts/testdata/fixture-bundles/gatekeeper-scheduler/scheduler.js
+  s_a0ffe549371531::t_6f27552046ade7 1
+scripts/testdata/fixture-bundles/gatekeeper-mcp/mcp.js
+  s_a0ffe549371531::t_62259cdd7fa70e 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d8c2d2bcafb3f7fe48e992e2f749a57d6460ba45",
+  "prompts": {},
+  "sessions": {
+    "s_a0ffe549371531": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "db72e27a-43cf-412a-82ac-e65386c90f87",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

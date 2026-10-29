@@ -1,0 +1,19 @@
+packages/gatekeeper-scheduler/app/format.ts
+  s_0c2ab7edd98432::t_dfa7116bea50d3 28-30,32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "62cb3c6d1fb30392ef8ad2b6c2a942a3807c144d",
+  "prompts": {},
+  "sessions": {
+    "s_0c2ab7edd98432": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a56be55-d294-47df-b436-2527e0afbfa4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

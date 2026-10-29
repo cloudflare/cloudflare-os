@@ -1,0 +1,49 @@
+packages/workshop-backend/src/storage-schema/space-storage.ts
+  s_dd2417a6d5bd82::t_90ea75056c7686 12-18,35-39,41,43-44,46
+  s_dd2417a6d5bd82::t_2435b10186d868 42,45
+packages/workshop-backend/src/spaces.ts
+  s_dd2417a6d5bd82::t_08df9fa477b563 31,33-35,46-49,58-59,61,114-119,121,237,245-246,249-250,253-254,259-262,270,274-296,299-303,306,308,310-313,328-337,418-427,485-491
+  s_dd2417a6d5bd82::t_2b54632dd21511 307
+  s_dd2417a6d5bd82::t_0edd722bd6395d 29,122-124,238-239,252,297-298,309,314-316,320-322,327
+  s_dd2417a6d5bd82::t_797cdb974131d1 304-305
+  s_dd2417a6d5bd82::t_7968d06b0dc4f7 13-14
+  s_dd2417a6d5bd82::t_0fa66246546f96 36
+  s_dd2417a6d5bd82::t_8e219defecc983 240,251,317-319,323-326
+  s_dd2417a6d5bd82::t_8ee33a65f01892 492
+packages/workshop-backend/__tests__/spaces-workspaces.test.ts
+  s_dd2417a6d5bd82::t_36ae4184019acf 152-154
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_dd2417a6d5bd82::t_6171e9c98994b8 1015-1027
+  s_dd2417a6d5bd82::t_1a36b5767d148f 1066
+packages/workshop-backend/__tests__/spaces.test.ts
+  s_dd2417a6d5bd82::t_0f64ad2c48a29c 3-4,307-308,399-400,445-446
+packages/workshop-backend/__tests__/spaces-slugs.test.ts
+  s_dd2417a6d5bd82::t_bec3825bbee04f 64-65
+  s_dd2417a6d5bd82::t_0f64ad2c48a29c 271-273
+  s_dd2417a6d5bd82::t_8d87fe00f25743 1-7,11-52,56,58,60-63,71-109,129-169,172,174-270,274-303
+  s_dd2417a6d5bd82::t_5a09d2d4c576a4 9-10,66-70
+  s_dd2417a6d5bd82::t_eddb0312fb6f48 8,53-55,57,59,112-115,117-128,170-171,173
+  s_dd2417a6d5bd82::t_4735d0e495dda4 110-111,116
+packages/workshop-backend/src/overseer.ts
+  s_dd2417a6d5bd82::t_d3749e9a5bcd4a 16
+  s_dd2417a6d5bd82::t_ba0fded0246145 7421
+packages/workshop-backend/src/server.ts
+  s_dd2417a6d5bd82::t_2090cf50c7e535 27
+  s_dd2417a6d5bd82::t_0edd722bd6395d 346
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4709482095b775c89974aa7d3dbaade4124cdf81",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

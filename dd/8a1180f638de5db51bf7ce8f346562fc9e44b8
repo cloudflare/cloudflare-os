@@ -1,0 +1,49 @@
+packages/workshop-backend/src/ai-gateway.ts
+  s_948f8451b21fd5::t_67bb104b96c952 101,103-113,118,145
+  s_948f8451b21fd5::t_d30396bc3b1b9c 116
+  s_948f8451b21fd5::t_cd8ca474ec90a7 91-97,117,120,123-124,126
+  s_948f8451b21fd5::t_38348f889e981b 98-100,102,130-133
+  s_948f8451b21fd5::t_0c6ddf0a1d5320 90,114-115,119,121-122,125,127-129,134-144,146
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_948f8451b21fd5::t_5169c38ed1645f 434-439
+docs/ai-gateway-billing.md
+  s_948f8451b21fd5::t_33c6817a8cf289 63-66
+packages/workshop-backend/src/agent.ts
+  s_948f8451b21fd5::t_f49e821ed6ea75 11,97,709-710,2009
+packages/workshop-backend/src/overseer.ts
+  s_948f8451b21fd5::t_50e10bc17f270c 2139-2159,2170,2946-2947,2976,2987-2988
+  s_948f8451b21fd5::t_67bb104b96c952 10,12-15
+  s_948f8451b21fd5::t_efbad7f612bafa 2990,3002,3013,3020
+  s_948f8451b21fd5::t_38348f889e981b 11
+  s_948f8451b21fd5::t_5169c38ed1645f 4257,4275,4293,5004,5085,5088,5138
+  s_948f8451b21fd5::t_5546b7024c0f05 2978-2979,2991-2999
+packages/workshop-backend/src/server.ts
+  s_948f8451b21fd5::t_5169c38ed1645f 247
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_948f8451b21fd5::t_38348f889e981b 4,60,77-78
+  s_948f8451b21fd5::t_99e524515c1910 1,7-26,32-47,49-57,61-62,68,70,72,79-80
+  s_948f8451b21fd5::t_67bb104b96c952 2-3,5-6,58-59,73-76
+  s_948f8451b21fd5::t_cd8ca474ec90a7 27-31,48,63-67,69,71
+dev.vars.example
+  s_948f8451b21fd5::t_33c6817a8cf289 21-22
+README.md
+  s_948f8451b21fd5::t_33c6817a8cf289 99-101
+packages/workshop-backend/src/env.d.ts
+  s_948f8451b21fd5::t_33c6817a8cf289 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dd8a1180f638de5db51bf7ce8f346562fc9e44b8",
+  "prompts": {},
+  "sessions": {
+    "s_948f8451b21fd5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_09e09537cffe9hdXl7dQ0W4BKS",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

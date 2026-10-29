@@ -1,0 +1,19 @@
+packages/gatekeeper-homeassistant/src/approvals.ts
+  s_2d1ae144546e14::t_0b382c0c36e490 150-151,226-252,263-264,285,287
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "951e5b18e1b1ba775df00a7569e0d61742e9e381",
+  "prompts": {},
+  "sessions": {
+    "s_2d1ae144546e14": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cd809748-14fd-4762-8298-cc33631a1092",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

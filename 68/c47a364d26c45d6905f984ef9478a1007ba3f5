@@ -1,0 +1,172 @@
+packages/gatekeeper-mcp/vite.config.ts
+  s_0a06850b893bc7::t_bade7ed26f170f 1-3
+packages/gatekeeper-linear/package.json
+  s_0a06850b893bc7::t_8c4bb18bbde50c 8-9
+packages/gatekeeper-mcp/package.json
+  s_0a06850b893bc7::t_d8c9d47adb28e9 8-9
+.github/workflows/ci.yml
+  s_7727453cc7f579::t_9c02e5a4ab9390 45-48
+pnpm-lock.yaml
+  s_8a20e3764578b6::t_858cf25b49a23f 29,60,116,144,574,596,618,643,665,696,739,806,1151,1166,1170,1174,1183,1190,1196,1202,1208,1214,1220
+  s_8a20e3764578b6::t_4ea28ffb810562 257-259,268,296,324,355,377,402,433,464,489,563-564
+  s_8a20e3764578b6::t_3e2aa3a4a1345b 565
+packages/gatekeeper-spotify/vite.config.ts
+  s_0a06850b893bc7::t_b19023f504126b 1-3
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_0a06850b893bc7::t_6eecfbaa19fca8 595-596,604-614
+scripts/build-gatekeeper-configurator.mjs
+  s_8a20e3764578b6::t_362f4381ee91ed 13,15-16
+packages/gatekeeper-scheduler/package.json
+  s_8a20e3764578b6::t_e1c1e9c2ded073 8,11,41
+packages/gatekeeper-supabase/package.json
+  s_0a06850b893bc7::t_275a8fda0fe8b2 8-9
+packages/gatekeeper-zoominfo/package.json
+  s_0a06850b893bc7::t_207b356169c851 8-9
+packages/gatekeeper-google/package.json
+  s_0a06850b893bc7::t_28001701176b9e 8-9
+packages/gatekeeper-context/vite.app.config.ts
+  s_edad149ae182a8::t_de99bb34c888db 54
+  s_8a20e3764578b6::t_c95fe2326e676d 1-53,55-102
+packages/gatekeeper-slack/package.json
+  s_0a06850b893bc7::t_0ff1fefabcec0e 8-9
+AGENTS.md
+  s_8a20e3764578b6::t_f859be83a454ab 60-65
+  s_6e01b44d9df42b::t_fa1771a0955564 58-59
+packages/gatekeeper-slack/vite.config.ts
+  s_0a06850b893bc7::t_76cb9822819def 1-3
+run-dev-server.js
+  s_0a06850b893bc7::t_16151c327d7685 556
+  s_8a20e3764578b6::t_f99adf367f180e 366-368,370-372
+  s_0a06850b893bc7::t_579e127240780f 580-582
+  s_8a20e3764578b6::t_cd275e236f45e8 381-382
+  s_0a06850b893bc7::t_f7ba1a0e6ae24a 560-562
+  s_0a06850b893bc7::t_1d40366eb4c147 554-555
+  s_0a06850b893bc7::t_3e3c37de2088a4 369,563-579
+  s_8a20e3764578b6::t_3ad54fdf93c6bb 14-19,24,97-101,103,105-125,137-279,281-286,291,296-301,303-307,316-360,362-363,365,373,380,383
+  s_8a20e3764578b6::t_09e2a739f1d380 364
+  s_8a20e3764578b6::t_1381f40971a085 379
+  s_0a06850b893bc7::t_2481ed9064765e 557-559
+  s_8a20e3764578b6::t_683b4ef88d604b 361,378
+  s_8a20e3764578b6::t_7d2cb9c7a3c6fb 384
+  s_8a20e3764578b6::t_68838bf8be10ba 374-377
+  s_0a06850b893bc7::t_09a1e8e8b8231c 441,527
+packages/gatekeeper-linear/vite.config.ts
+  s_0a06850b893bc7::t_811b79bfed0da0 1-3
+packages/gatekeeper-google/vite.config.ts
+  s_0a06850b893bc7::t_588bd2ab40dca2 1-3
+packages/gatekeeper-context/vite.config.ts
+  s_8a20e3764578b6::t_d98cbd48f97cd3 1,7-40,42-60,63
+  s_edad149ae182a8::t_bfe94ba055c564 3-6
+packages/gatekeeper-context/package.json
+  s_8a20e3764578b6::t_14ff24512b724d 8,11,54
+packages/gatekeeper-email/vite.config.ts
+  s_0a06850b893bc7::t_6944f8e7b86314 1-3
+packages/gatekeeper-homeassistant/package.json
+  s_0a06850b893bc7::t_6537e6ceed3dfc 8-9
+scripts/kill-process-tree.js
+  s_6e01b44d9df42b::t_263d436da116ba 1-84
+packages/gatekeeper-zoominfo/vite.config.ts
+  s_0a06850b893bc7::t_d768d1478c11bf 1-3
+.agents/skills/write-gatekeeper/SKILL.md
+  s_0a06850b893bc7::t_1bf8c5025c0e6e 122-125
+scripts/gatekeeper-configurator-vite-config.js
+  s_0a06850b893bc7::t_2151a174709a26 1-43
+packages/gatekeeper-email/package.json
+  s_0a06850b893bc7::t_1868c1037a8f2c 8-9
+packages/gatekeeper-github/vite.config.ts
+  s_0a06850b893bc7::t_b675c3fffd9506 1-3
+scripts/clean-error-reporting-artifacts.mjs
+  s_0a06850b893bc7::t_64a4d0b1ba4d8f 1-32
+packages/gatekeeper-notion/package.json
+  s_0a06850b893bc7::t_cc28244a04089a 8-9
+packages/gatekeeper-scheduler/vite.app.config.ts
+  s_8a20e3764578b6::t_c8a9cd97b0899a 1-75
+packages/gatekeeper-scheduler/vite.config.ts
+  s_edad149ae182a8::t_5f33ad7e097dcc 3-6
+  s_8a20e3764578b6::t_41d434319998ae 1,7-60,63
+packages/gatekeeper-scheduler/build-app.mjs
+  s_8a20e3764578b6::t_62c2288ebad32b 7-9,13-20
+packages/gatekeeper-context/build-app.mjs
+  s_8a20e3764578b6::t_48a52ff917f11c 9-11,20-27
+scripts/build-gatekeeper-configurator.test.js
+  s_6e01b44d9df42b::t_f9ce1d49860e23 17-18,20-22,26-29,37,83-88,94-95,175-198
+packages/gatekeeper-mcp-portal/vite.config.ts
+  s_0a06850b893bc7::t_f99ef426d4d374 1-3
+packages/gatekeeper-github/package.json
+  s_0a06850b893bc7::t_aa2e244a54b1d5 8-9
+packages/gatekeeper-confluence/vite.config.ts
+  s_0a06850b893bc7::t_727fad097fc315 1-3
+packages/gatekeeper-supabase/vite.config.ts
+  s_0a06850b893bc7::t_3507d5f06dc7bb 1-3
+packages/gatekeeper-notion/vite.config.ts
+  s_0a06850b893bc7::t_aa377f8a5300b4 1-3
+packages/gatekeeper-spotify/package.json
+  s_0a06850b893bc7::t_e86736d9c30d2f 8-9
+packages/gatekeeper-homeassistant/vite.config.ts
+  s_0a06850b893bc7::t_773e8ae6e3ee5f 1-3
+packages/gatekeeper-context/tsconfig.vite.json
+  s_8a20e3764578b6::t_4f099c9729631a 6
+packages/gatekeeper-mcp-portal/package.json
+  s_0a06850b893bc7::t_8862dcd9eacb6e 8-9
+packages/gatekeeper-context/__tests__/vite-config.test.ts
+  s_8a20e3764578b6::t_5e0017892ebeec 12
+packages/gatekeeper-scheduler/tsconfig.vite.json
+  s_8a20e3764578b6::t_25741809390f74 6
+packages/gatekeeper-confluence/package.json
+  s_0a06850b893bc7::t_8d10d88ae100d9 8-9
+scripts/kill-process-tree.test.js
+  s_7727453cc7f579::t_b9a2da68171162 88-117
+  s_0a06850b893bc7::t_d9c4a97ece0887 85-87
+  s_0a06850b893bc7::t_3f12c953fafa2a 77-84
+  s_6e01b44d9df42b::t_f10f2db5f29fe4 1-76,118
+  s_6e01b44d9df42b::t_205167b0d8a4b8 119-121
+  s_7727453cc7f579::t_5ecdca2aed92be 122-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "68c47a364d26c45d6905f984ef9478a1007ba3f5",
+  "prompts": {},
+  "sessions": {
+    "s_0a06850b893bc7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0c459a0b-1139-4b21-86dc-097a3c131b87",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6e01b44d9df42b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a63e5b1-7c40-4c34-b295-0fae5c659cea",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_7727453cc7f579": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c0925e8-b509-43e0-93a3-8e4889914940",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8a20e3764578b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "834fbca9-b49b-4d95-ba7f-d50127acef2f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_edad149ae182a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6422549d-f284-4db8-b46a-91da03ee65f8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

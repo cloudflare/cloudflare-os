@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.ts
+  s_99c5462c433ffc::t_c3f6d9c7458041 13-16,40,44,55
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.test.tsx
+  s_99c5462c433ffc::t_038e155bb04aa7 182-197
+packages/workshop-frontend/src/features/deployment-updates/latestReads.ts
+  s_99c5462c433ffc::t_efcf01a5fa2af0 1-8,12-13,16,18-29,31-32,34-41,43-44
+packages/workshop-frontend/src/features/deployment-updates/latestReads.test.ts
+  s_99c5462c433ffc::t_cb8b55698d8a1f 85-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0b81d2a163f4069ceed6f5c92eb2f5d3ebfba72b",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

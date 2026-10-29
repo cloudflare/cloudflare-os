@@ -1,0 +1,23 @@
+docs/observers.md
+  s_10119d79ce25ce::t_29877edc26081c 438-440
+packages/workshop-backend/__tests__/external-message-staleness.test.ts
+  s_10119d79ce25ce::t_7c5400819be982 3-5,132-152
+packages/workshop-backend/src/overseer.ts
+  s_10119d79ce25ce::t_7965684620cb4c 7986-7988,8079-8093,8155-8160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ddbbbb57eca56ad3cecfee30443714a17e589435",
+  "prompts": {},
+  "sessions": {
+    "s_10119d79ce25ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7ffcf86-d294-461d-8053-5c315e5d336c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

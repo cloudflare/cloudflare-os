@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_097fdaa44b0b3f::t_021eef22ed11d1 86-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "09290062dc2691ed659e9e80cb4084543dbfc8d6",
+  "prompts": {},
+  "sessions": {
+    "s_097fdaa44b0b3f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b969153ffe8nZ1Gt6EsvqsKy",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

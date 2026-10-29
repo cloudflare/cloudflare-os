@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/external-message-staleness.test.ts
+  s_728ec74dbb9f2b::t_f27e6aabdd04c7 1-247
+packages/workshop-backend/src/overseer.ts
+  s_728ec74dbb9f2b::t_19c16fb2512440 769-774,5471-5475,5554-5562,8055-8081,8112,8201-8203,9030-9041,9048,9056-9069,9112,9115-9140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6f41433ecdac64aaaea9c07d2f8b2e3a0bd2effe",
+  "prompts": {},
+  "sessions": {
+    "s_728ec74dbb9f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b00f69f3-fd58-4fa1-95b6-300fba719c7a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

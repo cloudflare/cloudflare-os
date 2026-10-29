@@ -1,0 +1,44 @@
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_4ace8a5b2d9209 16,3027-3060,3063,3095-3097,3291-3294,3314,3513-3516,3521-3533,3539-3540,3545-3549,3554-3564,3570-3590,3692-3693,3696-3710,4393-4402,4587-4592,7597-7599,7601-7603,7606,7609-7616,7980,8012-8016
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_1dfdf61332f5c7::t_50f474cc3b6f03 27-33,44,49,59,182-215
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_e281b491831f24 4339-4342
+  s_1dfdf61332f5c7::t_783115beae9d8f 62,1853,3030,3063-3068,3252-3256,3264-3274,3433-3435,3440-3442,3460-3461,3472,3499,3563,3584-3585,3695-3717,3723-3736,3872-3875,3877-3878,4026-4027,4032,4130-4135,4205-4213,4223,4334-4338,4344,4494,4513,4516-4517,4552-4572,6005-6030,6598,6620-6625,6750-6753,6770
+  s_1dfdf61332f5c7::t_9b40a6958fabbf 3718-3722
+  s_1dfdf61332f5c7::t_0fcfc0ab8a6814 4343
+  s_1dfdf61332f5c7::t_ba9d8b4c2b3d73 4510
+  s_1dfdf61332f5c7::t_8e3e75e8268048 2560-2562
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_d8d921f23e0203 55,63-66,82-87,93,138,140,156,170,175,177
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_d669a68d695040 118-126,130-131
+  s_1dfdf61332f5c7::t_6abd1df98a044c 127-129
+  s_1dfdf61332f5c7::t_2172806ca88a8b 1-117,132-427
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_eefb9e06758744 5,12-17,939-940,954,976,1137-1139,1169-1188,1196-1200,1202-1204,1206-1208,1210-1217,1222,1253-1257,1259,1382,1619,1820-1827,2046-2121,2126,2128-2129
+  s_1dfdf61332f5c7::t_fb1ead9db1e9e5 131
+  s_1dfdf61332f5c7::t_0fcfc0ab8a6814 2122
+  s_1dfdf61332f5c7::t_5d39046e61e5da 2123-2125
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_2ca53014d2c7fe 1-117
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_d94722c8fcb394 197-199
+  s_1dfdf61332f5c7::t_ce203cbafd31cf 1-196,200-314
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "68094e9ab9c0c280835c766629ff52a577d2edfa",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

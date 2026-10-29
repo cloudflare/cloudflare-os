@@ -1,0 +1,29 @@
+packages/workshop-backend/__tests__/external-message-staleness.test.ts
+  s_e4a07c842a0049::t_1df2176ba77b32 1-225
+packages/workshop-backend/src/overseer.ts
+  s_cebfe242feefb3::t_34dd2bbafd8fd7 764-773,5220-5224,5303-5311,7736-7761,8548-8560,8573,8581-8594,8637,8640-8665
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "83c9f18eb15e91ac577195badf4f7cd800100bf1",
+  "prompts": {},
+  "sessions": {
+    "s_cebfe242feefb3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6d3cee10-7837-4969-a1b7-aa43190b3982",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e4a07c842a0049": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "867f9afc-e6e4-4a5f-8368-e4b81506d57e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

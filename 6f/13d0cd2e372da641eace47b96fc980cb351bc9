@@ -1,0 +1,74 @@
+packages/workshop-backend/scripts/build-browser-runtime.ts
+  s_9ad235c3bd773e::t_25293d05708bcd 6
+  s_9ad235c3bd773e::t_7866167d5b4e2c 42
+scripts/oxlint-plugin.test.ts
+  s_9ad235c3bd773e::t_ba6b995614d68b 5
+  s_9ad235c3bd773e::t_6e5094522ead31 2,14-20
+  s_9ad235c3bd773e::t_34bfe8f69740dd 21
+packages/gatekeeper-context/vite.app.config.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 12,42
+scripts/vitest-task-vite-config.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 8-9,184
+packages/gatekeeper-cloudflare/__tests__/configurator-url.test.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 3
+scripts/package.json
+  s_9ad235c3bd773e::t_ba6b995614d68b 40
+  s_9ad235c3bd773e::t_8627f44a7feeeb 49
+scripts/kill-process-tree.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 11
+packages/gatekeeper-scheduler/build-app.ts
+  s_9ad235c3bd773e::t_48404ddf3e801d 17
+  s_9ad235c3bd773e::t_9c609033b27e19 1-16,18-30
+scripts/oxlint-plugin.ts
+  s_9ad235c3bd773e::t_ba6b995614d68b 1-169
+vite.config.ts
+  s_9ad235c3bd773e::t_abc465ad9a6015 20
+  s_9ad235c3bd773e::t_ba6b995614d68b 143
+packages/gatekeeper-cloudflare/__tests__/configurator-fields.test.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 2
+packages/gatekeeper-context/build-app.ts
+  s_9ad235c3bd773e::t_9c609033b27e19 1-23,25-37
+  s_9ad235c3bd773e::t_8b5e980bce1f83 24
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 152
+scripts/env-passthrough.test.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 32
+AGENTS.md
+  s_9ad235c3bd773e::t_15fe735f2d9d59 34,43,101,103
+scripts/preview/preview.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 217
+scripts/tsconfig.json
+  s_9ad235c3bd773e::t_915ff6aa6d2734 18,20,22-26
+scripts/run-dev-server.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 166,366,373,377
+scripts/deploy-scripts.test.ts
+  s_9ad235c3bd773e::t_15fe735f2d9d59 56
+packages/gatekeeper-context/vite.config.ts
+  s_9ad235c3bd773e::t_25303ede5e6b85 31,55
+packages/gatekeeper-scheduler/vite.config.ts
+  s_9ad235c3bd773e::t_c9c623c88254d8 32,56
+packages/workshop-backend/package.json
+  s_9ad235c3bd773e::t_02566623d94d80 9,11-13
+packages/workshop-backend/scripts/build-bundled-blueprints.ts
+  s_9ad235c3bd773e::t_f047e0b3f77b4e 35
+packages/workshop-backend/vite.config.ts
+  s_9ad235c3bd773e::t_4ea34a5a8dfbbe 31
+pnpm-lock.yaml
+  s_9ad235c3bd773e::t_453b8c10338fd3 1281-1283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6f13d0cd2e372da641eace47b96fc980cb351bc9",
+  "prompts": {},
+  "sessions": {
+    "s_9ad235c3bd773e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19c364f2-d5a9-425f-9cfb-1af8cab5f29b",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

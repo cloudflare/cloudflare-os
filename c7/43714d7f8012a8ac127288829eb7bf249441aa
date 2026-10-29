@@ -1,0 +1,57 @@
+packages/configurator-ui/src/index.ts
+  s_26cbe985980ef3::t_e592e9c8cf23b0 25-32,167-187
+packages/gatekeeper-cloudflare/__tests__/configurator-fields.test.ts
+  s_26cbe985980ef3::t_b786bd65a0e79c 54
+packages/gatekeeper-slack/src/configurator/conversation-configurator-ui.test.ts
+  s_26cbe985980ef3::t_de16a8fb8da283 40
+packages/workshop-shared/src/gatekeeper.ts
+  s_26cbe985980ef3::t_a351142f02b2f9 423-432
+scripts/build-gatekeeper-configurator.test.ts
+  s_26cbe985980ef3::t_3c586c347adced 36-81,87-88,124-130,133,152,173-178,185,190,272-275,284-285,524-747
+scripts/build-gatekeeper-configurator.ts
+  s_26cbe985980ef3::t_a9c5d61a56afd9 111-117,137-144,153-154,198-199,201-217,252-255,645,651,654,675-696,705-706,718,722,732-733,735,748-772,883,1059-1067
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_26cbe985980ef3::t_dca0563cb62994 12-13,23,34-35,37-40,57-61,79-80,82-84,97-101,273,602-648,650-664,666-702
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_26cbe985980ef3::t_991ae0db7fbc1b 27,1569-1571,1608,1669,1672,1675,1714,1720,1726
+packages/workshop-frontend/src/GatekeeperModal.test.tsx
+  s_26cbe985980ef3::t_4c0f4e371ba1cc 8-12,17-23,28-30,33-34,44,49,52,57,60-66,96-97,101-127,132-133,136-139,143-144,156-162,166-171,227-397
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_26cbe985980ef3::t_df1a1f01e760db 27,76-80,192,233-237,363,537-545,551,600-604,606,638,854,875-878
+packages/workshop-frontend/src/ResourceConfiguratorHost.tsx
+  s_26cbe985980ef3::t_ec5305e5762dca 13,25-26,42
+packages/workshop-frontend/src/SandboxedResourceConfigurator.test.tsx
+  s_26cbe985980ef3::t_341829536b87a6 1-108
+packages/workshop-frontend/src/SandboxedResourceConfigurator.tsx
+  s_26cbe985980ef3::t_3e247355bf18aa 24,32,65-77,85,93-97,130-131,252
+packages/workshop-frontend/src/components/CreationAccountModal.test.tsx
+  s_26cbe985980ef3::t_303e01310eefbd 9,23-26,29-34,50,55,57-61,111-113,126-130,147,156,315-359
+packages/workshop-frontend/src/components/CreationAccountModal.tsx
+  s_26cbe985980ef3::t_dc9ba83cbef327 11,81-87,227-230
+packages/workshop-frontend/src/requestAccountResources.ts
+  s_26cbe985980ef3::t_2d5d908a7bb7e6 1-23
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.test.tsx
+  s_26cbe985980ef3::t_cb4a64c5a13936 7,10-16,18-19,23-30,36,47-54,74-85,95,97,412-523
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.tsx
+  s_26cbe985980ef3::t_ddf4f5f23b3233 219-221,251,277-293,379-386,755-756,1034-1037
+packages/workshop-frontend/src/features/chat/composer/useComposerResources.test.tsx
+  s_26cbe985980ef3::t_6b15e4a7507ab4 36-41,64-80,102,144,178,198,212,248,277,368-534
+packages/workshop-frontend/src/features/chat/composer/useComposerResources.ts
+  s_26cbe985980ef3::t_ed7b518199c3dc 6,11,30-50,65-69,89-100,140-142,145,152,199-226,230-231,234,237,247-250,252,267,301-302,306-307,311,314,320,322-333,336,343,354-355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c743714d7f8012a8ac127288829eb7bf249441aa",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

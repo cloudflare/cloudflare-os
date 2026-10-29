@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/verification-scope.test.ts
+  s_76184b90d4f6b2::t_c309850e55dd17 1-156
+packages/workshop-backend/src/overseer.ts
+  s_76184b90d4f6b2::t_9db53d321a3606 1711-1714,7926-7972,8081,8086-8088,8100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b818eb13dc69188b637fa2f110831fc70207cd60",
+  "prompts": {},
+  "sessions": {
+    "s_76184b90d4f6b2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c6efae7-9c7e-4942-8058-f1dc47671e61",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

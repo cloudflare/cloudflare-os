@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/features/admin-audit/AdminAuditPanel.test.tsx
+  s_c5f8d284ae2719::t_128704b0fdaed9 75-77,95,97,136-144,218-235,380-500
+packages/workshop-frontend/src/features/admin-audit/AdminAuditPanel.tsx
+  s_c5f8d284ae2719::t_0a6d6fa9590954 2,75-82,141,149,175-183,191-193,251-253,255-261,263,275-279,298-299,306,316,319,328,330-332,334-335,338-341,425-433
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "31cdcd172886d8200bc298679a62e3b535ffcdcc",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

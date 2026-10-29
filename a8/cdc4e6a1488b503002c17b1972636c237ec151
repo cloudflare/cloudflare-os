@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/git-migration.test.ts
+  s_67a08e5b747f23::t_11f5ef746346f3 3-4,6-8,29-31,110-112,329-332
+packages/workshop-backend/__tests__/legacy-workspace.ts
+  s_67a08e5b747f23::t_d496bd1f52fa93 1-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a8cdc4e6a1488b503002c17b1972636c237ec151",
+  "prompts": {},
+  "sessions": {
+    "s_67a08e5b747f23": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b2ee697-1270-4fe1-ae61-feb70c890fc1",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

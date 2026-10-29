@@ -1,0 +1,42 @@
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 220-227
+packages/workshop-shared/src/api.ts
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 1018-1023,1205-1208,1213-1214,1245-1262,1450-1470,1493-1500,1516-1546
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 8,26-29,32,35,38,40,43,48
+packages/workshop-backend/src/admin-settings.ts
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 1,11-13,23-38,436-448,470,476-509,519,523-534,538,546-554,829-836
+  s_c2ca47a7bbff41::t_2dd789851111c0 9
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_c2ca47a7bbff41::t_8fd655e7a64557 3
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 218-297
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_c2ca47a7bbff41::t_2dd789851111c0 14,75-85,138-139
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 6-8,13-17,80-86,94-102,105,157,159,211,266-326
+packages/workshop-backend/src/admin-config.ts
+  s_c2ca47a7bbff41::t_8fd655e7a64557 12
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 202,212-213,223-230,237-250,290-296,320-321
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 11,160-161,163-166,341-432
+packages/workshop-backend/src/ai-gateway.ts
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 3,32-46,145,160-161,164-165,168,174-177,210-211,216-217,221-224
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_c2ca47a7bbff41::t_9a1c0829750cc7 49-51,354-359,361-411,437-663,666,677-681
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4bd2a253d23acdf7d7328fc5c94b1cfd29281e19",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

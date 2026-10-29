@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_a726de9bb45000::t_476022519b0d4a 161-168
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_a726de9bb45000::t_c9702f9c2abce3 322-363
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d7a8c494e1ab6bdd8627ed0a3cf6d6a643f10446",
+  "prompts": {},
+  "sessions": {
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a726de9bb45000::t_d20d1d7336c6aa 562,588,614,778-781,783-785,788,829,906,912,915,1072
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_07366955d0afe3::t_eb8471930539cb 11,19-20,54,105,107,114,119,123,157,164-167,177,187,197,299-348
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_0c215fe09756a4::t_0e37baa934169d 394-396
+packages/workshop-backend/src/overseer.ts
+  s_10a46ead5b1afa::t_eb0ed053d84c77 4695-4698,6349,6354-6356,6365,11402-11404,11406-11407
+docs/observers.md
+  s_cf9cda7e93fb6f::t_947419dd15d69f 373
+docs/sharing.md
+  s_cf9cda7e93fb6f::t_626a7b9916f1cd 162
+packages/workshop-backend/__tests__/restricted-producer-removal.test.ts
+  s_10a46ead5b1afa::t_48372b5caadd9d 93,107-109,124,139,151,165-213
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_a726de9bb45000::t_215bf3d24f0a81 74-75,113-244
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_a726de9bb45000::t_c813a0d622fff4 21-56,89-100,141-153,194-201,221-222
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "104be7cf557f657d47fdf3f06d3d74503a27dfb1",
+  "prompts": {},
+  "sessions": {
+    "s_07366955d0afe3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd854532-358f-4c8d-b789-6b2ed4ff47ce",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_0c215fe09756a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a233bfee-b26a-4d80-ab61-4ef85f896aa0",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_10a46ead5b1afa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fdedd0f-322e-477a-a5eb-8ee1caa99628",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_cf9cda7e93fb6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbd45cc1-bb9f-4ad8-bd45-3d8db79f288c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

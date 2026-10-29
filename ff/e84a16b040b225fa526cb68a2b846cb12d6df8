@@ -1,0 +1,22 @@
+packages/workshop-backend/src/server.ts
+  s_99c5462c433ffc::t_a5851e08dd0e52 44-49,904-905,911,918-920,923-925
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_99c5462c433ffc::t_1e87a1bbe30ee0 1089-1091,1094-1112,1115-1116,1119,1125-1140
+  s_99c5462c433ffc::t_8ec2ac8aaa0948 1141-1142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ffe84a16b040b225fa526cb68a2b846cb12d6df8",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

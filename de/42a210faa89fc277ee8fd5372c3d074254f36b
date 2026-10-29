@@ -1,0 +1,33 @@
+packages/workshop-backend/__tests__/restricted-actions.test.ts
+  s_6d79354b9d5d8c::t_0d155a8951774e 59,63-64,126-171
+  s_6d79354b9d5d8c::t_1d1d576013adae 172
+packages/workshop-shared/src/gatekeeper.ts
+  s_6d79354b9d5d8c::t_0d155a8951774e 1210-1212
+packages/workshop-backend/src/overseer.ts
+  s_6d79354b9d5d8c::t_0d155a8951774e 5956-5970
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_6d79354b9d5d8c::t_0d155a8951774e 9-10,244-248
+  s_6d79354b9d5d8c::t_ce6c003728066d 249
+packages/workshop-backend/__tests__/git-push-actions.test.ts
+  s_6d79354b9d5d8c::t_0d155a8951774e 154-167
+docs/observers.md
+  s_6d79354b9d5d8c::t_0d155a8951774e 39-41,681-682
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_6d79354b9d5d8c::t_0d155a8951774e 314-315,341-342,349
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "de42a210faa89fc277ee8fd5372c3d074254f36b",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

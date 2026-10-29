@@ -1,0 +1,61 @@
+packages/gatekeeper-homeassistant/vite.config.ts
+  s_494faef1c0ee9f::t_76e8f5f7448b8e 2-3
+packages/gatekeeper-email/vite.config.ts
+  s_494faef1c0ee9f::t_f633365c5e4d19 2-3
+scripts/build-format-blueprints.test.ts
+  s_c786d95dd1561d::t_331ecb579eba01 51-74,90,118-123,146-147,157-162,281,321-322,335-340
+packages/gatekeeper-supabase/vite.config.ts
+  s_494faef1c0ee9f::t_85fd7318d6a108 2-3
+packages/workshop-backend/scripts/build-format-blueprints.ts
+  s_494faef1c0ee9f::t_4513dc89af64d2 12-16,43,200-220
+packages/gatekeeper-confluence/vite.config.ts
+  s_494faef1c0ee9f::t_9f10dc774f633a 1-3
+packages/gatekeeper-linear/vite.config.ts
+  s_494faef1c0ee9f::t_accdcbb58d560a 2-3
+scripts/vite.config.ts
+  s_e6b77d1560e9c9::t_3fb2957e25c631 36-56
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_494faef1c0ee9f::t_10573f44fce9ef 599-601,606-611,629-631,635
+packages/gatekeeper-spotify/vite.config.ts
+  s_494faef1c0ee9f::t_77c4e65afd12ee 2-3
+packages/gatekeeper-zoominfo/vite.config.ts
+  s_494faef1c0ee9f::t_05b146d3a93bed 2-3
+packages/gatekeeper-slack/vite.config.ts
+  s_494faef1c0ee9f::t_37626cfa949f97 2-3
+scripts/build-gatekeeper-configurator.test.ts
+  s_494faef1c0ee9f::t_85722978b6fc24 519-522,559,561,567-587
+packages/workshop-backend/scripts/import-format-blueprint.ts
+  s_494faef1c0ee9f::t_549fb8ff4d71cb 115-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8efb74edf006c22ee1c31273703ca4182568461e",
+  "prompts": {},
+  "sessions": {
+    "s_494faef1c0ee9f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8b64a32d-8f92-4557-bb9c-d981ff1f8582",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_c786d95dd1561d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f9b4e18f3ffe8imBVjv87S100v",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_e6b77d1560e9c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20feb1ca-ab1e-4605-9930-479ebf8406e8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

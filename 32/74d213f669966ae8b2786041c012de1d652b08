@@ -1,0 +1,59 @@
+packages/gatekeeper-scheduler/tsconfig.vite.json
+  s_8a20e3764578b6::t_25741809390f74 6
+packages/gatekeeper-context/__tests__/vite-config.test.ts
+  s_8a20e3764578b6::t_5e0017892ebeec 12
+run-dev-server.js
+  s_8a20e3764578b6::t_f26fc5699e2368 512
+  s_8a20e3764578b6::t_3ad54fdf93c6bb 14-19,96-100,102,104-124,136-140,145,150-153,156-158,162-163,166-253,259-318,375,461,488-511
+packages/gatekeeper-context/vite.config.ts
+  s_edad149ae182a8::t_bfe94ba055c564 3-6
+  s_8a20e3764578b6::t_d98cbd48f97cd3 1,7-31,33-50,53
+packages/gatekeeper-context/build-app.mjs
+  s_8a20e3764578b6::t_48a52ff917f11c 9-11,20-27
+packages/gatekeeper-context/tsconfig.vite.json
+  s_8a20e3764578b6::t_4f099c9729631a 6
+packages/gatekeeper-scheduler/vite.app.config.ts
+  s_8a20e3764578b6::t_c8a9cd97b0899a 1-75
+packages/gatekeeper-context/vite.app.config.ts
+  s_8a20e3764578b6::t_c95fe2326e676d 1-53,55-102
+  s_edad149ae182a8::t_de99bb34c888db 54
+packages/gatekeeper-scheduler/build-app.mjs
+  s_8a20e3764578b6::t_62c2288ebad32b 7-9,13-20
+packages/gatekeeper-context/package.json
+  s_8a20e3764578b6::t_14ff24512b724d 8,11,54
+pnpm-lock.yaml
+  s_8a20e3764578b6::t_4ea28ffb810562 257-259,268,296,324,355,377,402,433,464,489,563-564
+  s_8a20e3764578b6::t_2fa8b4ca7d4dce 565
+  s_8a20e3764578b6::t_e5e02e09c60d6e 29,60,116,144,574,596,618,643,665,696,739,806,1142,1157,1161,1165,1174,1181,1187,1193,1199,1205,1211
+packages/gatekeeper-scheduler/package.json
+  s_8a20e3764578b6::t_e1c1e9c2ded073 8,11,41
+AGENTS.md
+  s_8a20e3764578b6::t_f859be83a454ab 58-65
+packages/gatekeeper-scheduler/vite.config.ts
+  s_edad149ae182a8::t_5f33ad7e097dcc 3-6
+  s_8a20e3764578b6::t_41d434319998ae 1,7-50,53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3274d213f669966ae8b2786041c012de1d652b08",
+  "prompts": {},
+  "sessions": {
+    "s_8a20e3764578b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "834fbca9-b49b-4d95-ba7f-d50127acef2f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_edad149ae182a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6422549d-f284-4db8-b46a-91da03ee65f8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

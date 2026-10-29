@@ -1,0 +1,43 @@
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_32c823f4dff3af::t_482f8ea21f6ea5 2-3,8-9,12-81,85,88-111,139-166
+  s_6ead73f1fe411f::t_f588e7d02ba4d8 1,4-7,10-11,112-138
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_32c823f4dff3af::t_8e5f56254a4832 195-196,207-219
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_32c823f4dff3af::t_41136c64e593b3 282-286,297-298,327,367-372,378
+  s_6ead73f1fe411f::t_ac576f92539a2e 277,287
+packages/workshop-frontend/src/Activity.tsx
+  s_6ead73f1fe411f::t_9a86a341331384 3,615,658-671,697,733-745
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_6ead73f1fe411f::t_32205ec1c1e0d6 285-298,358-368
+packages/workshop-backend/src/auto-approval.ts
+  s_6ead73f1fe411f::t_316b2c7ee9aad5 33-34,44-46,92
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_6ead73f1fe411f::t_37a2b8c92c29bf 52,6873-6889,6904-6907,6986,7047
+packages/workshop-shared/src/gatekeeper.ts
+  s_6ead73f1fe411f::t_9c37d713a36def 1194-1204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "453e6552b65c26f1af9308b2739317de96d982f6",
+  "prompts": {},
+  "sessions": {
+    "s_32c823f4dff3af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "869a6cf0-ea09-42de-9a46-62150b9378ba",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6ead73f1fe411f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5901087-90ca-4fd3-bc77-c9470ef64d64",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

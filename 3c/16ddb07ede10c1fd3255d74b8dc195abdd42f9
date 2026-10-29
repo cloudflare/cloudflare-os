@@ -1,0 +1,26 @@
+packages/gadget-libraries/sync/__tests__/presence.test.ts
+  s_bf4b4a77da7371::t_dea3e83ab87fb2 107-116
+packages/gadget-libraries/sync/src/collaborator.ts
+  s_bf4b4a77da7371::t_dea3e83ab87fb2 24-33,59,62-64
+  s_bf4b4a77da7371::t_e1ddd8ce99409f 65
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_bf4b4a77da7371::t_dea3e83ab87fb2 276-279,305-310
+packages/workshop-backend/scripts/bundled-gadget-libraries.ts
+  s_bf4b4a77da7371::t_dea3e83ab87fb2 7-9,13,26-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3c16ddb07ede10c1fd3255d74b8dc195abdd42f9",
+  "prompts": {},
+  "sessions": {
+    "s_bf4b4a77da7371": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8bb09b2-0331-4c12-b961-f37d8c0d84a5",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_447791f85abae0::t_3dbd9e685414d8 270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "43e9f1806b54bee72aaa87e72bf84638a3f0235b",
+  "prompts": {},
+  "sessions": {
+    "s_447791f85abae0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87f2bcb7-f5c3-4ce1-8051-74c720eea006",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

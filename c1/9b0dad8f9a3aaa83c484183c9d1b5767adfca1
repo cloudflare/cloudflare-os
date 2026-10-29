@@ -1,0 +1,30 @@
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.test.tsx
+  s_8e0eeb70e2ec33::t_b30a9bbb8e8d0b 250,279,284,320,340,657
+packages/workshop-frontend/src/features/ai-models/modelForm.ts
+  s_8e0eeb70e2ec33::t_b30a9bbb8e8d0b 30
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_8e0eeb70e2ec33::t_b30a9bbb8e8d0b 103-106
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_8e0eeb70e2ec33::t_b30a9bbb8e8d0b 699-702,716,726,869
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c19b0dad8f9a3aaa83c484183c9d1b5767adfca1",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_8e0eeb70e2ec33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e72398df-6e5b-4013-bfd3-21041051ac38",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

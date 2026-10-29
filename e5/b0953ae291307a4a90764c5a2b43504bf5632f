@@ -1,0 +1,112 @@
+packages/workshop-frontend/vite.config.ts
+  s_7ecdf35be8ace6::t_2f26a8d12ce813 6,13-20
+packages/workshop-backend/package.json
+  s_7ecdf35be8ace6::t_3ab2772feb671b 13
+packages/mcp-shared/package.json
+  s_7ecdf35be8ace6::t_967b1a8deab8f2 36
+packages/gatekeeper-scheduler/README.md
+  s_7ecdf35be8ace6::t_66d8e1e2370da3 179
+packages/gatekeeper-scheduler/package.json
+  s_7ecdf35be8ace6::t_4fad17f258c7b8 12-13
+packages/gatekeeper-mcp-portal/package.json
+  s_7ecdf35be8ace6::t_489b4582cdc11e 11
+packages/integration-tests/package.json
+  s_7ecdf35be8ace6::t_64abd8b8e23e1e 13
+packages/gatekeeper-scheduler/vite.config.ts
+  s_7ecdf35be8ace6::t_b11eb8353839c2 2,11-14
+packages/integration-tests/README.md
+  s_7ecdf35be8ace6::t_3fee3b08ca3f9e 7
+packages/gatekeeper-github/package.json
+  s_7ecdf35be8ace6::t_fa0d2033216807 10-11
+packages/gatekeeper-mcp/vite.config.ts
+  s_7ecdf35be8ace6::t_477a9e789ff51b 1-3
+packages/mcp-shared/vite.config.ts
+  s_7ecdf35be8ace6::t_8af9955ec6327d 1-5
+packages/gatekeeper-github/vite.config.ts
+  s_7ecdf35be8ace6::t_366b60a75bc99d 1-3
+packages/integration-tests/vite.config.ts
+  s_7ecdf35be8ace6::t_9c29985b3e85f8 1-5
+packages/gatekeeper-mcp-portal/README.md
+  s_7ecdf35be8ace6::t_d9c0ccccbb66cc 198
+packages/gatekeeper-confluence/README.md
+  s_7ecdf35be8ace6::t_b2dc26988057b2 155
+packages/mcp-shared/README.md
+  s_7ecdf35be8ace6::t_c84d31c1666509 132
+packages/gatekeeper-context/vite.config.ts
+  s_7ecdf35be8ace6::t_33780e7044e6e7 2,11-13
+packages/gatekeeper-confluence/package.json
+  s_7ecdf35be8ace6::t_ced1e1bcdc5ea6 10-11
+packages/error-reporting/vite.config.ts
+  s_7ecdf35be8ace6::t_c6f6eb5b994cfc 1-5
+packages/gatekeeper-confluence/vite.config.ts
+  s_7ecdf35be8ace6::t_998a1c8acbff20 1-3
+packages/typed-storage/vite.config.ts
+  s_7ecdf35be8ace6::t_a553e4df610095 1-5
+packages/workshop-frontend/package.json
+  s_7ecdf35be8ace6::t_634cd53bd6c527 7,9-10
+packages/configurator-ui/package.json
+  s_7ecdf35be8ace6::t_150986c4f436d1 14
+.agents/skills/write-gatekeeper/SKILL.md
+  s_7ecdf35be8ace6::t_83c91a01fb47b2 124
+packages/gatekeeper-mcp/README.md
+  s_7ecdf35be8ace6::t_7f13cec2cfecd1 223
+packages/backend-utils/vite.config.ts
+  s_7ecdf35be8ace6::t_b49974bd918b1b 1-5
+packages/router/vite.config.ts
+  s_7ecdf35be8ace6::t_21e90097a65b95 1-5
+scripts/gatekeeper-configurator-vite-config.ts
+  s_7ecdf35be8ace6::t_67c531c7b31022 1-61
+packages/backend-utils/package.json
+  s_7ecdf35be8ace6::t_b3583478bd8299 27
+packages/gatekeeper-context/package.json
+  s_7ecdf35be8ace6::t_4c8b7e5891bb0c 13
+packages/gatekeeper-mcp-portal/vite.config.ts
+  s_7ecdf35be8ace6::t_624e116fc9985c 1-3
+packages/error-reporting/package.json
+  s_7ecdf35be8ace6::t_adc61e04aa1dcf 14
+packages/gatekeeper-notion/vite.config.ts
+  s_7ecdf35be8ace6::t_c565ef439f554b 1-3
+packages/gatekeeper-notion/README.md
+  s_7ecdf35be8ace6::t_8c9162d9fc7837 58
+packages/configurator-ui/vite.config.ts
+  s_7ecdf35be8ace6::t_1956a435b0bad4 1-5
+packages/gatekeeper-mcp/package.json
+  s_7ecdf35be8ace6::t_cb296f2322005d 11
+packages/workshop-frontend/tsconfig.json
+  s_7ecdf35be8ace6::t_89c479ae76fc82 23
+AGENTS.md
+  s_7ecdf35be8ace6::t_0f7aaa37d65852 55-61
+package.json
+  s_7ecdf35be8ace6::t_7d5c8a825deed2 10
+packages/typed-storage/package.json
+  s_7ecdf35be8ace6::t_dde97a2c909859 17
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_7ecdf35be8ace6::t_508860f4f753ea 613-616
+packages/workshop-backend/vite.config.ts
+  s_7ecdf35be8ace6::t_b89822e735d471 1-15
+scripts/vitest-task-vite-config.ts
+  s_7ecdf35be8ace6::t_b3fad7e6350238 1-130
+packages/router/package.json
+  s_7ecdf35be8ace6::t_da21e4867402b8 11
+packages/workshop-frontend/tsconfig.vite.json
+  s_7ecdf35be8ace6::t_31fedbf2d3de91 6-13
+  s_7ecdf35be8ace6::t_5e3e948035e7f0 14
+packages/gatekeeper-notion/package.json
+  s_7ecdf35be8ace6::t_de16a2c7663e53 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e5b0953ae291307a4a90764c5a2b43504bf5632f",
+  "prompts": {},
+  "sessions": {
+    "s_7ecdf35be8ace6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27608ee6-54c4-462c-a8e5-704af2061989",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

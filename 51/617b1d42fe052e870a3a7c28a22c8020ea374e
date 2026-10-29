@@ -1,0 +1,44 @@
+packages/workshop-backend/src/custom-model.ts
+  s_1c28d19ad743d0::t_3c9f8e732c04db 4-28,30-33,35-36,38-39,41,43,45-46,48-51,53-60
+  s_1c28d19ad743d0::t_17efdc8bf61fc5 1-3,29,34,37,40,42,44,47,52,61
+packages/workshop-backend/src/ai-models.ts
+  s_1c28d19ad743d0::t_b26372620f9313 49-55
+  s_1c28d19ad743d0::t_ae1773d3d58b7e 160,170,175,177-181,189
+run-dev-server.js
+  s_1c28d19ad743d0::t_0bb20a1a192188 45-56
+  s_1c28d19ad743d0::t_540e8bd87aa8b6 210-211
+  s_1c28d19ad743d0::t_0741702fdf01be 16
+.gitignore
+  s_1c28d19ad743d0::t_533f728a7a1d92 24-27
+packages/workshop-backend/src/user.ts
+  s_1c28d19ad743d0::t_b3cacb41fc4638 609-611
+  s_1c28d19ad743d0::t_ad4002a7bfe640 580,586-587
+  s_1c28d19ad743d0::t_e55f9562f2d30e 588
+  s_1c28d19ad743d0::t_03863dfcc890bf 405-407,412-413,418,420,424,426
+  s_1c28d19ad743d0::t_15bcda305a45bb 444-446
+  s_1c28d19ad743d0::t_102e2957de3136 447-449
+  s_1c28d19ad743d0::t_26afd12985d142 404,408-411
+  s_1c28d19ad743d0::t_435b6013776a2f 8
+packages/workshop-backend/src/env.d.ts
+  s_1c28d19ad743d0::t_af518d2d1a6581 27
+  s_1c28d19ad743d0::t_d7b85754ad294e 21-26
+packages/workshop-shared/src/api.ts
+  s_1c28d19ad743d0::t_7ca5f084bfcc6e 586-587,589
+  s_1c28d19ad743d0::t_f11c7a838f4635 588
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "51617b1d42fe052e870a3a7c28a22c8020ea374e",
+  "prompts": {},
+  "sessions": {
+    "s_1c28d19ad743d0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe75c0fd-6b65-4f3d-8809-6f39a25ddea2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

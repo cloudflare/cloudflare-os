@@ -1,0 +1,26 @@
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 26,235-236
+  s_99c5462c433ffc::t_9a8dea5b3dc989 237-238
+packages/gatekeeper-websearch/src/worker.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 21,195-197
+  s_99c5462c433ffc::t_3b7a96e26b9729 198-199
+packages/gatekeeper-x/src/x.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 27,289-290
+  s_99c5462c433ffc::t_8b6672099bbcaa 291-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ef7bb95f8d35e17e3382473449a2e1bd141250c0",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

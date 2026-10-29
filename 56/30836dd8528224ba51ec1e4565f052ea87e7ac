@@ -1,0 +1,25 @@
+scripts/with-timeout.test.ts
+  s_b798fec5f54ba9::t_32df941cdee24f 1-157
+scripts/with-timeout.ts
+  s_b798fec5f54ba9::t_a135deac5e2391 1-223
+scripts/kill-process-tree.ts
+  s_b798fec5f54ba9::t_513b0119d6c95d 43
+scripts/vitest-task-vite-config.ts
+  s_b798fec5f54ba9::t_09ca7ef2ac23a6 75-102,110-113,121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5630836dd8528224ba51ec1e4565f052ea87e7ac",
+  "prompts": {},
+  "sessions": {
+    "s_b798fec5f54ba9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b5e0e07-127e-495e-b129-11889ae53556",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

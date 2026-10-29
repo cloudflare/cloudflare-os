@@ -1,0 +1,23 @@
+packages/workshop-backend/src/ai-gateway.ts
+  s_948f8451b21fd5::t_7c6a7a7afb8df6 103
+packages/workshop-backend/src/ai-models.ts
+  s_948f8451b21fd5::t_7c6a7a7afb8df6 49,55
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_948f8451b21fd5::t_7c6a7a7afb8df6 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a8da0b573dffd8d0d238a6d4d53665a7d8665c2a",
+  "prompts": {},
+  "sessions": {
+    "s_948f8451b21fd5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_09e09537cffe9hdXl7dQ0W4BKS",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

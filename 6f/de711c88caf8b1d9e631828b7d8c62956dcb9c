@@ -1,0 +1,19 @@
+.gitlab-ci.yml
+  s_94443ff088a044::t_7b678702531bff 99,102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6fde711c88caf8b1d9e631828b7d8c62956dcb9c",
+  "prompts": {},
+  "sessions": {
+    "s_94443ff088a044": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f02db907-e567-4ddf-b77d-06f1097908b9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+docs/integration-testing.md
+  s_6fddc057f470d7::t_df1234c7e264aa 1-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "597febc4137c0885115fa470fd2dae1dec794797",
+  "prompts": {},
+  "sessions": {
+    "s_6fddc057f470d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "955b59e3-d3bd-41b7-baf9-03f6f8a6070a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

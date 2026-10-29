@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_e3eb00eefefcec::t_b099515b57e2ad 144-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "27c9a34dc9eb8096ec4c27bc9abf20c5b9bee0b9",
+  "prompts": {},
+  "sessions": {
+    "s_e3eb00eefefcec": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b1b405dffeCnKNg5y1Hwfsr2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

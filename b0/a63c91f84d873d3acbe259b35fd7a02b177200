@@ -1,0 +1,35 @@
+packages/workshop-backend/__tests__/gatekeeper-vendors.test.ts
+  s_26c0be70719a03::t_58430d2d1f5f79 1-110
+packages/workshop-backend/src/admin-settings.ts
+  s_26c0be70719a03::t_a7537dbf7bef97 11,45-48,178-182,193,211-212,214-221,240-241,245,309-312,317,346
+packages/workshop-backend/src/auth/auth-vendors.ts
+  s_26c0be70719a03::t_c1b75eb0e42067 13-17,24-56
+packages/workshop-backend/src/server.ts
+  s_26c0be70719a03::t_48ab87e6b7d11b 9,264-269,271,275-276,284,288-289,295-296,523,536,556-557
+packages/workshop-backend/src/user.ts
+  s_26c0be70719a03::t_499fc191001ece 14,238-243,902-906,919,953-958,1016,1018,1035-1036,1038,1051-1053,1057,1063-1065,1111,1113-1114,1117,1125,1146-1148,1188-1194,1196-1197,1199-1201,1205-1208,1215-1230,1256,1268-1270
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_26c0be70719a03::t_f252be97113f63 35,143-156,158-165,167-176,178-193,195,197-211,213-214,228-229,232,237,262,265-311
+packages/workshop-frontend/src/main.tsx
+  s_26c0be70719a03::t_8f2708c8b474ed 69-73,76-87,107,128-163,166
+packages/workshop-frontend/src/routes/-gatekeepers.test.tsx
+  s_26c0be70719a03::t_99473ecfed06fc 1-197
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_26c0be70719a03::t_ad96eee511b474 2,27,442-444,481-534,551-559,561-562,614,618-669
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b0a63c91f84d873d3acbe259b35fd7a02b177200",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

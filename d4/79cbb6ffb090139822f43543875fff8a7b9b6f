@@ -1,0 +1,33 @@
+packages/bundled-blueprints/__tests__/files.test.ts
+  s_682f5a2da1f715::t_53a0d1319c61a1 442,446,448-450,499-500,509-510,555-575
+  s_682f5a2da1f715::t_0f6bc1a7bb899b 576
+packages/bundled-blueprints/src/scan.ts
+  s_682f5a2da1f715::t_f80d24798c875b 1-61
+packages/bundled-blueprints/README.md
+  s_682f5a2da1f715::t_aa4086311242d0 86-88
+packages/bundled-blueprints/__tests__/scan.test.ts
+  s_682f5a2da1f715::t_53a0d1319c61a1 1-54
+packages/bundled-blueprints/package.json
+  s_682f5a2da1f715::t_d3462133d0d7fc 26
+packages/bundled-blueprints/src/files.ts
+  s_682f5a2da1f715::t_2e0c41051581cd 16,285,332-337,348-349,353-357,371-376,456,466-471,512-513,591-596,599-601,604,614-615,617-622,626,632
+  s_682f5a2da1f715::t_aa4086311242d0 271-272
+pnpm-lock.yaml
+  s_682f5a2da1f715::t_d45cde1bbef08e 110-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d479cbb6ffb090139822f43543875fff8a7b9b6f",
+  "prompts": {},
+  "sessions": {
+    "s_682f5a2da1f715": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72013731-32b1-4208-82f3-549ecb0b981e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

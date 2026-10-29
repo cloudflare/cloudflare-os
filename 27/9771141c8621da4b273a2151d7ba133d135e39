@@ -1,0 +1,103 @@
+.github/workflows/workshop-evals.yml
+  s_23124d99541bb8::t_b6ba3964c37d83 1-157
+AGENTS.md
+  s_23124d99541bb8::t_e079895c094f53 64,142-143
+docs/ai-gateway-billing.md
+  s_23124d99541bb8::t_c6e4e2d7de83ea 16-19,57,60-62,65-69
+docs/integration-testing.md
+  s_23124d99541bb8::t_15b0666bbd515f 5-36,41-48
+docs/public-server.md
+  s_23124d99541bb8::t_20ed3a166d4b9f 43,46-48,51-56,59-61
+docs/testing-strategy.md
+  s_23124d99541bb8::t_f348c4c3d014ae 1-170
+packages/integration-tests/README.md
+  s_23124d99541bb8::t_46b3924f8abae9 10-13
+packages/integration-tests/__tests__/gadget-durability.test.ts
+  s_23124d99541bb8::t_0522ffb2c97f56 124-127
+packages/workshop-evals/README.md
+  s_23124d99541bb8::t_f0dafd296a4252 1-204
+packages/workshop-evals/evals/frontier.eval.ts
+  s_23124d99541bb8::t_853adbaebc9bd4 1-4
+packages/workshop-evals/evals/required.eval.ts
+  s_23124d99541bb8::t_8d602f448e508f 1-4
+packages/workshop-evals/package.json
+  s_23124d99541bb8::t_fd6b37cffe6c7b 1-30
+packages/workshop-evals/src/artifacts.ts
+  s_23124d99541bb8::t_5b93dd0a918ea9 1-40
+packages/workshop-evals/src/gateway-logs.test.ts
+  s_23124d99541bb8::t_5e76f33c179598 1-182
+packages/workshop-evals/src/gateway-logs.ts
+  s_23124d99541bb8::t_2e70adeea47622 1-237
+packages/workshop-evals/src/harness.ts
+  s_23124d99541bb8::t_9c2509256421b7 1-189
+packages/workshop-evals/src/scorer.test.ts
+  s_23124d99541bb8::t_f8f80b6530c88e 1-115
+packages/workshop-evals/src/scorer.ts
+  s_23124d99541bb8::t_f14994a2781c54 1-45
+packages/workshop-evals/src/statistics.test.ts
+  s_23124d99541bb8::t_6749acc9ac92dd 1-71
+packages/workshop-evals/src/statistics.ts
+  s_23124d99541bb8::t_b2b7411766433a 1-92
+packages/workshop-evals/src/suite.test.ts
+  s_23124d99541bb8::t_ca193cabd859a5 1-78
+packages/workshop-evals/src/suite.ts
+  s_23124d99541bb8::t_3a30c19939bb17 1-119
+packages/workshop-evals/src/summary.test.ts
+  s_23124d99541bb8::t_da4cf15fb04560 1-224
+packages/workshop-evals/src/summary.ts
+  s_23124d99541bb8::t_4f98c969270199 1-301
+packages/workshop-evals/src/task.ts
+  s_23124d99541bb8::t_cff9e3dcef9c65 1-200
+packages/workshop-evals/src/timeouts.ts
+  s_23124d99541bb8::t_1391c9e5c678ac 1-19
+packages/workshop-evals/src/transcript.test.ts
+  s_23124d99541bb8::t_034fa7b90004b2 1-86
+packages/workshop-evals/src/transcript.ts
+  s_23124d99541bb8::t_ae593b09cd6a62 1-85
+packages/workshop-evals/src/verifier.test.ts
+  s_23124d99541bb8::t_3a1ee7acbba35f 1-103
+packages/workshop-evals/src/verifier.ts
+  s_23124d99541bb8::t_777e9b99a383e2 1-152
+packages/workshop-evals/tasks/appointment-desk.task.ts
+  s_23124d99541bb8::t_ba2fdec484bf41 1-164
+packages/workshop-evals/tasks/index.ts
+  s_766ca11e0f4218::t_87e0b205b130b6 1-17
+packages/workshop-evals/tasks/registry.test.ts
+  s_23124d99541bb8::t_7da1e429f5d5c4 1-27
+packages/workshop-evals/tasks/stock-ledger.task.ts
+  s_23124d99541bb8::t_4dc1b8263ef3dc 1-211
+packages/workshop-evals/tsconfig.json
+  s_23124d99541bb8::t_995489c8ed187e 1-19
+packages/workshop-evals/vite.config.ts
+  s_23124d99541bb8::t_bf213ca46ee0cf 1-3
+packages/workshop-evals/vitest.config.ts
+  s_23124d99541bb8::t_3418960e3c0478 1-8
+packages/workshop-evals/vitest.eval.config.ts
+  s_23124d99541bb8::t_6174562a81503b 1-19
+pnpm-lock.yaml
+  s_23124d99541bb8::t_5c426a8def2108 832-868,2721-2726,4831-4844,6688-6695,9028-9036
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "279771141c8621da4b273a2151d7ba133d135e39",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_766ca11e0f4218": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04c79522affexRvcH9LnAxEnvg",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

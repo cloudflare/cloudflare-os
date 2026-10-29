@@ -1,0 +1,42 @@
+packages/workshop-frontend/src/features/frame/EscapeFrameDialog.tsx
+  s_f26907ac192965::t_f5a9e120a4774a 11,34,60,85-86
+packages/workshop-frontend/src/ShareModal.tsx
+  s_f26907ac192965::t_16bcacdd87a155 398-399
+  s_f26907ac192965::t_5b66e0bc407ce6 385,397
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_f26907ac192965::t_16bcacdd87a155 1221,1876
+  s_f26907ac192965::t_ddaf7a56911316 1216-1217,1222
+packages/workshop-frontend/src/features/frame/useFrameLock.tsx
+  s_f26907ac192965::t_ddaf7a56911316 35-38
+  s_f26907ac192965::t_16bcacdd87a155 3,8-11,21-26,28,33-34,40,43-44,48-51,54,63
+packages/workshop-frontend/src/features/frame/frameLock.test.tsx
+  s_f26907ac192965::t_bb75165523fd4e 8,57-61,64-65,68,70,76,78,87,186,202,213-216
+  s_f26907ac192965::t_ddaf7a56911316 221-225
+  s_f26907ac192965::t_4a31a679c58f55 217-220,226-234,238,267-268,276
+packages/workshop-frontend/src/GadgetCodeInterface.tsx
+  s_f26907ac192965::t_f5a9e120a4774a 69
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f26907ac192965::t_bb75165523fd4e 4112-4114
+  s_f26907ac192965::t_16bcacdd87a155 4126-4127
+packages/workshop-frontend/src/features/frame/FrameLockBanner.tsx
+  s_f26907ac192965::t_16bcacdd87a155 12-13
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_f26907ac192965::t_16bcacdd87a155 427,429
+  s_f26907ac192965::t_bb75165523fd4e 428,455
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "42868e7ae40fe61c136701f4f7236971f26178ce",
+  "prompts": {},
+  "sessions": {
+    "s_f26907ac192965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "991e3e14-e334-4041-8756-261ee6241c79",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

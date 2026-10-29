@@ -1,0 +1,31 @@
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_6ead73f1fe411f::t_f588e7d02ba4d8 1,4-7,10-11,110-136
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_6ead73f1fe411f::t_ac576f92539a2e 260,270
+packages/workshop-frontend/src/Activity.tsx
+  s_6ead73f1fe411f::t_9a86a341331384 3,223-226,511,554-567,593,629-641
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_6ead73f1fe411f::t_32205ec1c1e0d6 36,51,222-235,295-305
+packages/workshop-backend/src/auto-approval.ts
+  s_6ead73f1fe411f::t_316b2c7ee9aad5 32-33,43-45,91
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_6ead73f1fe411f::t_37a2b8c92c29bf 49,6800-6816,6831-6834,6913,6974
+packages/workshop-shared/src/gatekeeper.ts
+  s_6ead73f1fe411f::t_9c37d713a36def 1187-1197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ae5a8fc7fdd8d31afb22ea7432c86dc603c6d1c5",
+  "prompts": {},
+  "sessions": {
+    "s_6ead73f1fe411f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5901087-90ca-4fd3-bc77-c9470ef64d64",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

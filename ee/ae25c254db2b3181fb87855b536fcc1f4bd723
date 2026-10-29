@@ -1,0 +1,23 @@
+packages/integration-tests/README.md
+  s_23124d99541bb8::t_f63b55867f756d 31-32
+packages/integration-tests/__tests__/network-interceptor.test.ts
+  s_23124d99541bb8::t_b093af1549dcdb 124-152
+packages/integration-tests/src/network-interceptor.ts
+  s_23124d99541bb8::t_763fb13af77c81 21-34,37,41,43,59-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eeae25c254db2b3181fb87855b536fcc1f4bd723",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/observer-serialization.test.ts
+  s_10119d79ce25ce::t_cea9bf353dbe60 227-230,234-268,361,367,380-386
+packages/workshop-backend/src/overseer.ts
+  s_10119d79ce25ce::t_beee68f255c607 8181-8196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "546a96432e1a2650aac81ceda79ad7eca34b345f",
+  "prompts": {},
+  "sessions": {
+    "s_10119d79ce25ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7ffcf86-d294-461d-8053-5c315e5d336c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

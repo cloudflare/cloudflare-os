@@ -1,0 +1,21 @@
+docs/observers.md
+  s_ecfb0993480272::t_1fa5877845e134 428-431,448-458
+docs/sharing.md
+  s_ecfb0993480272::t_f8d19dc10de77a 46-47,104-105,107-108,114-116,154-155,164-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6c3043a1858f532ed5bc8e75e7b835919a49392c",
+  "prompts": {},
+  "sessions": {
+    "s_ecfb0993480272": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "725d63fa-44bb-462e-9ef9-b3bfc203749a",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

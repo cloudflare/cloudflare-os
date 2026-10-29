@@ -1,0 +1,47 @@
+packages/integration-tests/README.md
+  s_6fddc057f470d7::t_2c43972798e5c9 1-108
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_6fddc057f470d7::t_4d95d9842c2759 1-311
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_6fddc057f470d7::t_f99a3f9355b04a 1-310
+packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc
+  s_6fddc057f470d7::t_95f19d7017a074 1-22
+packages/integration-tests/package.json
+  s_6fddc057f470d7::t_8347a9c4a6b615 1-28
+packages/integration-tests/src/harness.ts
+  s_6fddc057f470d7::t_5714b6f551e6c2 1-139
+packages/integration-tests/src/network-interceptor.ts
+  s_6fddc057f470d7::t_396c9865e53763 1-90
+packages/integration-tests/src/rpc-client.ts
+  s_6fddc057f470d7::t_e2d3c999a53a1b 1-163
+packages/integration-tests/tsconfig.json
+  s_6fddc057f470d7::t_6bd05b15d94c76 1-18
+packages/integration-tests/vitest.config.ts
+  s_6fddc057f470d7::t_ee144a8a39c3f2 1-13
+pnpm-lock.yaml
+  s_904c9329f41667::t_b06ae9413504f4 34,87,115,236,264,289,320,342,367,392,414,436,461,483-511,581,590,982,1034-1036,1108-1109,3196-3200,3439-3440,3880-3889,4348-4362,4380-4381,4503,4767,6560-6571,6859,6886,7323-7356
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7340f6f8d0b9e183ec117765bbc51393be127c3d",
+  "prompts": {},
+  "sessions": {
+    "s_6fddc057f470d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "955b59e3-d3bd-41b7-baf9-03f6f8a6070a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_904c9329f41667": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81616b16-b138-4c03-b26d-b20cb93edf39",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

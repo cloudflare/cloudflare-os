@@ -1,0 +1,27 @@
+packages/workshop-backend/__tests__/gatekeeper-vendors.test.ts
+  s_26c0be70719a03::t_256ad5ad18e06f 1-110
+packages/workshop-backend/src/admin-settings.ts
+  s_26c0be70719a03::t_2442c32989888f 11,45-48,178-182,193,211-212,214-221,240-241,245,309-312,317,346
+packages/workshop-backend/src/auth/auth-vendors.ts
+  s_26c0be70719a03::t_8d55932b53c91c 13-17,24-56
+packages/workshop-backend/src/server.ts
+  s_26c0be70719a03::t_1f48a196d63ff3 9,264-269,271,275-276,284,288-289,295-296,523,536,556-557
+packages/workshop-backend/src/user.ts
+  s_26c0be70719a03::t_df5cdbdec516d8 15,239-244,920-924,937,971-976,1034,1036,1053-1054,1056,1069-1071,1075,1081-1083,1129,1131-1132,1135,1143,1164-1166,1206-1212,1214-1215,1217-1219,1223-1226,1233-1248,1274,1286-1288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f319274d04b9a7b9723a45d42b7e7e3e13304cf9",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,54 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_307482e965ac20 4395
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_89f157e8e8ad1a 3495-3509,3514-3515,3518-3525
+  s_1dfdf61332f5c7::t_a10e53ad0f90ff 3516
+  s_1dfdf61332f5c7::t_a2039ece597d00 818
+  s_1dfdf61332f5c7::t_3231c4c5759a72 7497-7499,7501-7502,8360-8362
+  s_1dfdf61332f5c7::t_bd914bce41fe8c 14
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 3079-3083
+  s_1dfdf61332f5c7::t_cf8c6a38ac4a87 819
+  s_1dfdf61332f5c7::t_3ad6a3e067bab4 7500
+  s_1dfdf61332f5c7::t_db9ea584a741d7 7794-7795,7874
+  s_1dfdf61332f5c7::t_03a6adb0968e42 3510-3511,3526
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 3512-3513,3517
+  s_1dfdf61332f5c7::t_117cab1d9042fd 3,154-158,814-817,7494-7496
+  s_1dfdf61332f5c7::t_0d098b16177c59 820-821
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 3023-3024
+  s_1dfdf61332f5c7::t_d519bec36cd85c 3527-3528
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_c25f8f223a6bc5 1929-1931
+  s_1dfdf61332f5c7::t_8b44c2ce212faf 1446-1450,1452
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 1954-1955
+  s_1dfdf61332f5c7::t_17774dff98e895 1205-1206,1214,1440-1445,1451,1455-1457,1461,1924,1928
+  s_1dfdf61332f5c7::t_f77200c0e067db 1453-1454,1458-1460,1462-1465
+AGENTS.md
+  s_1dfdf61332f5c7::t_4dd2b3cc59065f 52-56
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_ddf1c0d43c1994 79-113
+  s_1dfdf61332f5c7::t_bbc06a0e01b8a2 115,117,120,123
+  s_1dfdf61332f5c7::t_af93147a70c332 2755
+  s_1dfdf61332f5c7::t_37ebc596e1fe7e 116,118-119,121-122,124-126
+  s_1dfdf61332f5c7::t_d5c3a87d7024f0 916-920
+  s_1dfdf61332f5c7::t_8da07d761c45c4 1,114,930,2756
+  s_1dfdf61332f5c7::t_ab17cea714edc7 929
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_8eb329c7f0761c 241
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3f9ca2ebfbe71644f32b7947cad7b7c67a08971e",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

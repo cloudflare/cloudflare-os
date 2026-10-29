@@ -1,0 +1,37 @@
+STORYBOARD.md
+  s_58819f73dfb5a6::t_fd2fef297f1dae 68-82
+storyboard/build-doc.py
+  s_58819f73dfb5a6::t_bc82005e9ed1c6 1-258
+storyboard/diagram.svg
+  s_58819f73dfb5a6::t_3027b4ee4fa0e4 1-49
+storyboard/doc.md
+  s_58819f73dfb5a6::t_c1bf124e462a45 1-461
+storyboard/out/.gitignore
+  s_58819f73dfb5a6::t_46c72630a42447 1-2
+storyboard/tools/diagram.mjs
+  s_6e159c0858b8f9::t_9ba61c1c050bc8 1-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "033f7bb3439e0cd81a98d40dc867aeac767cd814",
+  "prompts": {},
+  "sessions": {
+    "s_58819f73dfb5a6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed869cedaffeaNXQbjGyMXeIZR",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

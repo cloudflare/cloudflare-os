@@ -1,0 +1,35 @@
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_e25e29d8ebebad::t_8528c55b3a1136 8,12-15,354-381
+  s_e25e29d8ebebad::t_971d8e464d89dd 183,217
+  s_e25e29d8ebebad::t_0c4fb8b9778aee 382
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_0848483a006e1d 5-11,336-338
+  s_e25e29d8ebebad::t_49b424dba5fc43 332-335
+packages/workshop-backend/src/auto-approval.ts
+  s_e25e29d8ebebad::t_0848483a006e1d 8-11,29,42-57,77,85-86,90,111,120
+packages/workshop-shared/src/gatekeeper.ts
+  s_e25e29d8ebebad::t_49b424dba5fc43 26-38,50-51,70-71
+  s_e25e29d8ebebad::t_0848483a006e1d 52,54-69
+  s_e25e29d8ebebad::t_27fa7939b06fa2 53
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_8528c55b3a1136 11-15,113-118,344-358
+  s_e25e29d8ebebad::t_917de0877d3dc3 359-360
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_0848483a006e1d 4,38,2666,2668,2672-2673,2675,2681,2683,7855
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "314d1713ee09270bcce9005d9819cdae684dde1c",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

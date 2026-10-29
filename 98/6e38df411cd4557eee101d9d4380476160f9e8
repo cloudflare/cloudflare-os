@@ -1,0 +1,71 @@
+packages/gatekeeper-kit/vite.config.ts
+  s_f2e1c566676ee8::t_8494f091eb487a 10
+package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 23
+packages/error-reporting/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 12
+packages/typed-storage/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 14
+packages/configurator-ui/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 12
+packages/gatekeeper-context/package.json
+  s_f2e1c566676ee8::t_617e1f2539df24 9-10
+packages/router/package.json
+  s_f2e1c566676ee8::t_617e1f2539df24 9
+packages/mcp-shared/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 28
+scripts/tsc.ts
+  s_f2e1c566676ee8::t_c611d3a9632922 18-19,21,41,43,55-58,60,63,66
+  s_f2e1c566676ee8::t_0eb5b9e681a321 1-17,20,22-40,42,44-54,59,61-62,64-65,67-99
+scripts/gatekeeper-configurator-vite-config.ts
+  s_f2e1c566676ee8::t_617e1f2539df24 75
+packages/bundled-blueprints/vite.config.ts
+  s_f2e1c566676ee8::t_617e1f2539df24 25-29
+scripts/env-passthrough.test.ts
+  s_f2e1c566676ee8::t_f547ae1dc38d47 89-90
+scripts/tsc.test.ts
+  s_f2e1c566676ee8::t_2d75b87d065fc9 21-25,27-28
+  s_f2e1c566676ee8::t_83f2e13dddf1d8 1-20,26,29-62
+packages/gatekeeper-google/vite.config.ts
+  s_f2e1c566676ee8::t_8494f091eb487a 13
+packages/integration-tests/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 14
+packages/ui/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 17
+packages/workshop-evals/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 7
+  s_f2e1c566676ee8::t_651e42561e85a6 22
+packages/backend-utils/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 25
+packages/typed-storage/vite.config.ts
+  s_f2e1c566676ee8::t_8494f091eb487a 23
+packages/workshop-shared/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 40-41
+  s_f2e1c566676ee8::t_651e42561e85a6 51
+scripts/package.json
+  s_f2e1c566676ee8::t_8494f091eb487a 9-10
+packages/workshop-frontend/vite.config.ts
+  s_f2e1c566676ee8::t_617e1f2539df24 53
+packages/workshop-backend/vite.config.ts
+  s_f2e1c566676ee8::t_617e1f2539df24 71-72
+packages/gatekeeper-scheduler/package.json
+  s_f2e1c566676ee8::t_998e289d2e86f3 9-10
+pnpm-lock.yaml
+  s_f2e1c566676ee8::t_ad6ea84e2c8e4a 1101-1103,1265-1267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "986e38df411cd4557eee101d9d4380476160f9e8",
+  "prompts": {},
+  "sessions": {
+    "s_f2e1c566676ee8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f02df61-70e4-4c07-82ce-ce6b75cdc85b",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

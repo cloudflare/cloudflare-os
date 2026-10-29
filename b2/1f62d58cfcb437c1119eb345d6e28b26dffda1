@@ -1,0 +1,27 @@
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_26c0be70719a03::t_0e50af08371f90 34,68-70,581-609
+packages/workshop-frontend/src/SignupPage.test.tsx
+  s_26c0be70719a03::t_a9a3d3406f3ac8 1-133
+packages/workshop-frontend/src/SignupPage.tsx
+  s_26c0be70719a03::t_68f55153062987 14-19,22,27-29,32,37,39,41-42,76,137,139-140,149
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_26c0be70719a03::t_56889d6f4eb517 26,446-448,869-880
+packages/workshop-frontend/src/routes/signup.tsx
+  s_26c0be70719a03::t_d8a91f3648c498 7-11,14-18,23-28,33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b21f62d58cfcb437c1119eb345d6e28b26dffda1",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

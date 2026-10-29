@@ -1,0 +1,21 @@
+pnpm-lock.yaml
+  s_6c72a337bb5382::t_b4990dcffcc564 783-784,786-787,839,1413-1414,1417-1418,1422-1425,4229-4230,5697,5699-5700,5713,5717,5722,5733-5734,8290
+packages/workshop-backend/package.json
+  s_6c72a337bb5382::t_1ef7779bf64937 18-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "42a1fba63c01308594fe68d56c42f6ce48476965",
+  "prompts": {},
+  "sessions": {
+    "s_6c72a337bb5382": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ca0cc40-c6a0-4f08-82c4-a88b457ab9fb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

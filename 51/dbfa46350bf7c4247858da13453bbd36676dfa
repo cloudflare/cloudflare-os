@@ -1,0 +1,29 @@
+packages/workshop-ios/AGENTS.md
+  s_4932c18ec77eef::t_a7e45085be690c 35,46
+packages/workshop-ios/ios/Gadgets/Info.plist
+  s_4932c18ec77eef::t_a7e45085be690c 17,20
+packages/workshop-ios/src/access-auth.ts
+  s_4932c18ec77eef::t_a7e45085be690c 16-17
+packages/workshop-ios/src/access-registration.test.ts
+  s_4932c18ec77eef::t_a7e45085be690c 9
+packages/workshop-ios/src/credential.ts
+  s_4932c18ec77eef::t_a7e45085be690c 11
+packages/workshop-ios/ios/Gadgets.xcodeproj/project.pbxproj
+  s_4932c18ec77eef::t_a7e45085be690c 284,314
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "51dbfa46350bf7c4247858da13453bbd36676dfa",
+  "prompts": {},
+  "sessions": {
+    "s_4932c18ec77eef": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_009f29c3dffeqlbbYWfd3zF5Km",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

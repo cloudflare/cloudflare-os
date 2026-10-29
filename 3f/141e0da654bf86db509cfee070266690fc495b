@@ -1,0 +1,37 @@
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.test.tsx
+  s_d16787129ca3ae::t_b1bd876887b21a 1-665
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_d16787129ca3ae::t_b1bd876887b21a 7-8,12,16-17,24,31-62,74,82-124,143-152,176,190-197,229,237,271-276,301,304,322-324,327,362-363
+AGENTS.md
+  s_d16787129ca3ae::t_b1bd876887b21a 71
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_d16787129ca3ae::t_b1bd876887b21a 1-11,28-33,36-52,54-61,64-65,68-156,158,160-288
+docs/public-server.md
+  s_d16787129ca3ae::t_b1bd876887b21a 87-122,132-151
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_d16787129ca3ae::t_b1bd876887b21a 26,59-79,219-229,232-234,245-264,304-305,309,321,427-784,1012-1153
+  s_d16787129ca3ae::t_9a03005f2a8886 1154
+packages/workshop-frontend/src/features/ai-models/useFieldErrorAlert.tsx
+  s_d16787129ca3ae::t_b1bd876887b21a 1-30
+packages/workshop-frontend/src/features/ai-models/AddGatewayModelForm.tsx
+  s_d16787129ca3ae::t_b1bd876887b21a 7,10-13,25-27,30-31,54,58,69-70,97,104,112,124,148,260-280,282
+packages/workshop-frontend/src/features/ai-models/modelForm.ts
+  s_d16787129ca3ae::t_b1bd876887b21a 1,12-20
+  s_d16787129ca3ae::t_983432b620b04c 21-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3f141e0da654bf86db509cfee070266690fc495b",
+  "prompts": {},
+  "sessions": {
+    "s_d16787129ca3ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d53efdfd-725e-49f2-bc5f-96438ab0f01c",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

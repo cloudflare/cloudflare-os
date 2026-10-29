@@ -1,0 +1,55 @@
+packages/gatekeeper-github/README.md
+  s_74eb0b1cbb84f7::t_d8d1f4b4d1e16c 88-116
+packages/gatekeeper-github/__tests__/env.d.ts
+  s_74eb0b1cbb84f7::t_35ba3489e2a997 8,17
+packages/gatekeeper-github/__tests__/git-commits.test.ts
+  s_74eb0b1cbb84f7::t_99f3dff36343e6 31
+packages/gatekeeper-github/__tests__/github-env.test.ts
+  s_74eb0b1cbb84f7::t_6c88874a9cfa8d 1-24
+packages/gatekeeper-github/__tests__/workerd/hooks.test.ts
+  s_74eb0b1cbb84f7::t_381baa3a97d795 1-690
+packages/gatekeeper-github/__tests__/workerd/worker.ts
+  s_74eb0b1cbb84f7::t_30742e2daac633 11,13-14,17,25-26,32,34,40-43,228-234,495-711,713-731
+packages/gatekeeper-github/cloudflare.config.ts
+  s_74eb0b1cbb84f7::t_e8b89eab5a98b8 16
+packages/gatekeeper-github/src/github-api.ts
+  s_74eb0b1cbb84f7::t_ad1d69e41b2ec4 21,44-45,164-180,645-686
+packages/gatekeeper-github/src/github-env.ts
+  s_74eb0b1cbb84f7::t_7d35dcf39fab84 10-15,28-41
+packages/gatekeeper-github/src/github-hooks.ts
+  s_74eb0b1cbb84f7::t_a78e9992c543c3 1-566
+packages/gatekeeper-github/src/github.ts
+  s_74eb0b1cbb84f7::t_2fe23a2305aebf 1,18,25,50,53-57,103-105,120,131-132,147-148,990-1038,1264-1267,1680-1683,3306,3647,3658,3669,3717-3934,5793-5796,5895-5899,6005-6020
+packages/gatekeeper-github/src/types.d.ts
+  s_74eb0b1cbb84f7::t_23c26877e90fde 1-2,150-200,239-244,305-311,655-656,732-851
+packages/gatekeeper-github/storage-schema.md
+  s_74eb0b1cbb84f7::t_5e901af8ae0d4b 182-197
+packages/gatekeeper-github/vitest.worker.config.ts
+  s_74eb0b1cbb84f7::t_01b587623e552c 27-31,35
+packages/gatekeeper-github/worker-configuration.d.ts
+  s_74eb0b1cbb84f7::t_e4b82590a929c6 2,9,14488-14491
+packages/gatekeeper-github/wrangler.jsonc
+  s_74eb0b1cbb84f7::t_b02bdc05ac5d36 39-44
+scripts/generate-worker-types.ts
+  s_74eb0b1cbb84f7::t_fd783cf138f209 9-10,110
+scripts/release/testdata/golden-manifest.json
+  s_74eb0b1cbb84f7::t_41a885fe74c109 294-299
+scripts/run-dev-server.ts
+  s_74eb0b1cbb84f7::t_d15950d9403791 500-501
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cc8fb86947bcd91205a08d121bc7b7498ea129b6",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

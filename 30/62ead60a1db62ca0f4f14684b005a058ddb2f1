@@ -1,0 +1,39 @@
+scripts/env-passthrough.test.ts
+  s_10a2c94691622e::t_d315a414505e29 170-171,174
+scripts/run-dev-server.ts
+  s_10a2c94691622e::t_23019f43005b19 15,23,26,273-276,554,556
+scripts/bin-entry.test.ts
+  s_10a2c94691622e::t_ffabfb144c5e88 1-65
+packages/gatekeeper-scheduler/build-app.mjs
+  s_10a2c94691622e::t_b865cc495dcbcb 4-5,13-19,21-22
+scripts/pnpm-command.ts
+  s_10a2c94691622e::t_5f3a78580c261c 1-39
+scripts/generate-worker-types.ts
+  s_10a2c94691622e::t_43ed8b6f55bf67 21-22,127,131-136,138-139,142-146
+.gitattributes
+  s_10a2c94691622e::t_a0fff204b0730b 1-7
+packages/gatekeeper-context/build-app.mjs
+  s_10a2c94691622e::t_421d8953d61864 6-7,20-26,28-29
+scripts/bin-entry.ts
+  s_10a2c94691622e::t_f050e9b11ca1e2 1-28
+scripts/run-local.ts
+  s_10a2c94691622e::t_36d115a43ab315 25,125-128,132,139-140
+scripts/pnpm-command.test.ts
+  s_10a2c94691622e::t_b4504a1b561db6 1-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3062ead60a1db62ca0f4f14684b005a058ddb2f1",
+  "prompts": {},
+  "sessions": {
+    "s_10a2c94691622e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b88e8fcc-ef8d-4563-88ac-f35859cbca49",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

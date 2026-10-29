@@ -1,0 +1,55 @@
+packages/gatekeeper-google/package.json
+  s_4c4437c01da8c5::t_f144a5f446a5b1 9,23
+packages/gatekeeper-google/src/bigquery-api.ts
+  s_4c4437c01da8c5::t_106b2fd1773c9d 33-44,354,370,433,446
+packages/gatekeeper-google/src/configurator/bigquery-configurator-types.d.ts
+  s_4c4437c01da8c5::t_7dfd143e8b44a7 14-23,26-27
+packages/gatekeeper-google/src/configurator/bigquery-public-configurator-ui.tsx
+  s_4c4437c01da8c5::t_5ad63dc2d5de00 1-113
+packages/gatekeeper-google/src/google-configurators.ts
+  s_4c4437c01da8c5::t_3e3c397ec521e4 4,182-199
+packages/gatekeeper-google/tsconfig.json
+  s_4c4437c01da8c5::t_14543e3a5e899a 16
+packages/gatekeeper-google/vite.config.ts
+  s_4c4437c01da8c5::t_54ce80fc994bc6 2-4
+packages/gatekeeper-google/vitest.config.ts
+  s_4c4437c01da8c5::t_8a31b1ad9b0dc3 1-8
+packages/gatekeeper-google/wrangler.jsonc
+  s_4c4437c01da8c5::t_cb0f270ad1f092 31-38
+pnpm-lock.yaml
+  s_4c4437c01da8c5::t_1090bad043af3c 371-373
+scripts/preview/staging-config.test.ts
+  s_4c4437c01da8c5::t_170145707cf262 411-421
+scripts/release/testdata/golden-manifest.json
+  s_4c4437c01da8c5::t_42ff353352d7f0 411-412
+scripts/run-dev-server.ts
+  s_4c4437c01da8c5::t_c01d94b9adb887 433-446,462-463
+packages/gatekeeper-google/README.md
+  s_4c4437c01da8c5::t_e63a3c4bd7c5d6 82-131,187
+packages/gatekeeper-google/__tests__/bigquery-resource.test.ts
+  s_4c4437c01da8c5::t_606e5d5b75cca5 1-215
+packages/gatekeeper-google/src/bigquery-resource.ts
+  s_4c4437c01da8c5::t_5ae3c03321f4c7 1-239
+packages/gatekeeper-google/src/bigquery-types.d.ts
+  s_4c4437c01da8c5::t_4750f866dfa92e 130-137
+packages/gatekeeper-google/src/google.ts
+  s_4c4437c01da8c5::t_8396022b327291 17-21,48,112-114,265,271-279,281-282,287,330-340,345-362,523,882,945-953,957-961,965,1012-1023,3312-3322,3325-3329,3346-3350,3352-3356,3358-3372,3386-3401,3406-3407,3410,3465-3470,3537-3538,3541-3543,3552-3553,3556,3563,3567,3598-3609,3611,3614-3618,3697,3723,3728,3744,3760,3767,3772,3778,3783,3790,3800,3806,3816,3818,3825,3834,3844,3859,3862-3863,3870
+scripts/preview/staging-config.ts
+  s_4c4437c01da8c5::t_6747c02cc6c22a 336-349,360
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a2c035d06fbbda79de0d5944902604d98857a553",
+  "prompts": {},
+  "sessions": {
+    "s_4c4437c01da8c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "635d6ba7-0072-4d35-9467-ff060ac90333",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

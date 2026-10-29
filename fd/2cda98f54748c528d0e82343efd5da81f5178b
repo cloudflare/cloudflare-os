@@ -1,0 +1,49 @@
+docs/observers.md
+  s_728ec74dbb9f2b::t_ed584a250ae331 242-249,297-308,359-368,379-388,408-412,420-421,518-521,577-579
+docs/sharing.md
+  s_728ec74dbb9f2b::t_2dc21b6515da6b 46,154,162,166
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_728ec74dbb9f2b::t_a3b10e2fd1d585 1-2
+  s_e3c1456410672e::t_12dca98a0bfec6 3-10,74-75,90-91
+plans/restricted-data-sharing.md
+  s_728ec74dbb9f2b::t_f6f0e35b49d2a8 135-136,141-142,160-161,166
+packages/workshop-backend/__tests__/observer-serialization.test.ts
+  s_e3c1456410672e::t_a091dc7b301496 89-90
+  s_e3c1456410672e::t_221b72ba131254 332-334,357-359
+packages/workshop-backend/__tests__/keyless-commit-gate.test.ts
+  s_e3c1456410672e::t_a196147e42500b 4-10,142-143,182,203-204
+packages/workshop-backend/__tests__/verification-scope.test.ts
+  s_e3c1456410672e::t_1516b1464d8188 2-7,12-14,116
+  s_e3c1456410672e::t_9c64bd69ed2bdc 214-217
+packages/workshop-backend/src/overseer.ts
+  s_e3c1456410672e::t_ffca73abb5356c 8570-8576
+  s_e3c1456410672e::t_6bacdef4e5d576 8198-8203
+packages/workshop-backend/__tests__/revocation-restart-window.test.ts
+  s_e3c1456410672e::t_c1089a67c07f08 106-108,129-130,155
+packages/workshop-backend/__tests__/external-message-staleness.test.ts
+  s_e3c1456410672e::t_837e02f4908df2 193-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fd2cda98f54748c528d0e82343efd5da81f5178b",
+  "prompts": {},
+  "sessions": {
+    "s_728ec74dbb9f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b00f69f3-fd58-4fa1-95b6-300fba719c7a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e3c1456410672e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19fc7fdd-8235-4154-b783-6863ad5cfced",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

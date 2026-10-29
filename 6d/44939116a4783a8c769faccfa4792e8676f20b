@@ -1,0 +1,23 @@
+docs/observers.md
+  s_3dacb3241b0d1d::t_e085784be54e02 510-512
+docs/sharing.md
+  s_3dacb3241b0d1d::t_6541460df382c5 46,113,153,159,182-190
+plans/restricted-data-sharing.md
+  s_3dacb3241b0d1d::t_208d2a5c790b57 54-61,103,105-110,112-115,119-122,128-131,135-137,154-155,191-192,195,208,224-230,239,241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6d44939116a4783a8c769faccfa4792e8676f20b",
+  "prompts": {},
+  "sessions": {
+    "s_3dacb3241b0d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6d45d09-7703-4cdc-ad53-ddc1f9ca4ec6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

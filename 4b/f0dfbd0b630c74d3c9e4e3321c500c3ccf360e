@@ -1,0 +1,33 @@
+packages/workshop-backend/__tests__/default-models.test.ts
+  s_e8a0e17f05e067::t_cc3484ba739b30 2,4-10,12-30,33-52,54-55,57-58,63-64,68-72
+packages/workshop-backend/src/default-models.ts
+  s_e8a0e17f05e067::t_7d2ecb45f68597 1,5-19,26-31,33-35,38,40
+packages/workshop-backend/src/env.d.ts
+  s_e8a0e17f05e067::t_29fc9f045bb45d 19-20,23-30
+packages/workshop-backend/src/server.ts
+  s_e8a0e17f05e067::t_67c5db45103fbc 20,180-182
+packages/workshop-backend/src/user.ts
+  s_e8a0e17f05e067::t_69c683d3ae5ca9 315-317,324
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_e8a0e17f05e067::t_43c2ded70c642b 122,125,129-130,132-133,390-398,638-645
+packages/workshop-shared/src/api.ts
+  s_e8a0e17f05e067::t_8d3261002143f3 780-791,798-801
+run-dev-server.js
+  s_e8a0e17f05e067::t_e388b3dd9be8a0 219-226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4bf0dfbd0b630c74d3c9e4e3321c500c3ccf360e",
+  "prompts": {},
+  "sessions": {
+    "s_e8a0e17f05e067": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07bca65c-daa7-40c8-bb21-bd3172d38225",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

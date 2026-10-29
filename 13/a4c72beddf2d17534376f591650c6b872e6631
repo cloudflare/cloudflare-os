@@ -1,0 +1,31 @@
+packages/gatekeeper-kit/src/actions.ts
+  s_a63bb41e94b8ab::t_da53cd3392de66 104,710
+packages/workshop-backend/__tests__/fixtures.ts
+  s_a63bb41e94b8ab::t_da53cd3392de66 43-44
+packages/workshop-frontend/src/Activity.tsx
+  s_a63bb41e94b8ab::t_da53cd3392de66 1,3,242,673-674
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_a63bb41e94b8ab::t_da53cd3392de66 1-10
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_a63bb41e94b8ab::t_da53cd3392de66 312,337
+packages/workshop-backend/src/auto-approval.ts
+  s_a63bb41e94b8ab::t_da53cd3392de66 24-29,81-82
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_a63bb41e94b8ab::t_da53cd3392de66 4887
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "13a4c72beddf2d17534376f591650c6b872e6631",
+  "prompts": {},
+  "sessions": {
+    "s_a63bb41e94b8ab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "702ee2a7-08fa-4979-ae93-635d76f20dad",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

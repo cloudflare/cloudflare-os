@@ -1,0 +1,59 @@
+scripts/env-passthrough.test.js
+  s_18215e41479440::t_af23358cad324c 65-75,79,84,86-87,111-113,117-121,156-167
+packages/workshop-backend/vite.config.ts
+  s_f3a3dd1ae3894d::t_a5daba15e48140 16-18,20-24,37-41
+packages/workshop-frontend/vite.config.ts
+  s_e229b2f6b428d9::t_d9f7f2e78309ea 18-22,24-27
+scripts/build-gatekeeper-configurator.test.js
+  s_2468f0ce250808::t_59f3505ec85cfc 3,300-357
+scripts/deploy-scripts.test.js
+  s_2468f0ce250808::t_dd79af6b8d0bc1 27-30
+scripts/release/build-release.mjs
+  s_2468f0ce250808::t_d7372c0607daef 76-78
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_f3a3dd1ae3894d::t_91d6e2ea953f98 604-607
+packages/workshop-backend/format-blueprints/README.md
+  s_f3a3dd1ae3894d::t_f3a1b03bc4d841 93
+AGENTS.md
+  s_18215e41479440::t_2329600ec81261 54,59-61,64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "310f88c1884b03204448ad16a2ebfb97a66b141e",
+  "prompts": {},
+  "sessions": {
+    "s_18215e41479440": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17289fb1-9f5b-4701-8148-444900569a1e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_2468f0ce250808": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ffe1af759ffep104mLydbCruTy",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e229b2f6b428d9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ffe1a8b26ffeGJ4PKVI35eizxG",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f3a3dd1ae3894d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbdd4246-043b-4b58-b789-54d5368846cf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

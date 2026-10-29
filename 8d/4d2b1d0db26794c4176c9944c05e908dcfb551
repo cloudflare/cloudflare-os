@@ -1,0 +1,23 @@
+docs/observers.md
+  s_e3c1456410672e::t_c3f9162bf44751 242,294,345,374,382,537,688-712
+docs/sharing.md
+  s_e3c1456410672e::t_7aa8be12b0f72e 46,154,162,166,177-189
+plans/restricted-data-sharing.md
+  s_e3c1456410672e::t_ca44acc5ab87a9 188-191,206-209,219,223-242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8d4d2b1d0db26794c4176c9944c05e908dcfb551",
+  "prompts": {},
+  "sessions": {
+    "s_e3c1456410672e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19fc7fdd-8235-4154-b783-6863ad5cfced",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

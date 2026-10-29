@@ -1,0 +1,55 @@
+packages/workshop-backend/src/chat-attachment-validation.ts
+  s_851dd2aa785588::t_f918d508719510 47
+  s_851dd2aa785588::t_7a2ffe4b50e1b8 4,34,36-37,57
+  s_851dd2aa785588::t_fa5bd3d72a25ca 8,12-13,15-17,40-43,45
+  s_851dd2aa785588::t_86cdbd8f5f1749 6-7,9,59,79
+  s_851dd2aa785588::t_7221ab8f1e2366 1-3,5,10,22-33,35,38-39,44,46,48-55,58,60-78,80
+  s_851dd2aa785588::t_1d3736934668e2 14
+  s_851dd2aa785588::t_4e93a439968790 19-21,56
+  s_851dd2aa785588::t_76df7ff2173ec9 11
+  s_851dd2aa785588::t_6df7b5ee9008f9 18
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_851dd2aa785588::t_d48d5b66e9fe64 1722
+packages/workshop-shared/src/api.ts
+  s_851dd2aa785588::t_d48d5b66e9fe64 1256,1260
+  s_851dd2aa785588::t_f35e898ffeaf72 1257
+packages/workshop-backend/package.json
+  s_851dd2aa785588::t_726fb3f1b2f4b8 21
+pnpm-lock.yaml
+  s_851dd2aa785588::t_bf9e3a9d109bbe 974,980,986,992,998,1004
+packages/workshop-backend/src/overseer.ts
+  s_851dd2aa785588::t_f35e898ffeaf72 7383-7384,7386,7391-7392,7394
+  s_851dd2aa785588::t_7a2ffe4b50e1b8 2600
+  s_851dd2aa785588::t_d48d5b66e9fe64 7385,7387-7390,7393,8305
+  s_6fb98f8d2116ac::t_205db9fb50ddfc 2581-2582
+  s_851dd2aa785588::t_54c24fbc853446 2566
+  s_851dd2aa785588::t_5721c9dabf2eaf 36
+  s_851dd2aa785588::t_df58ea8cd77e82 32-35
+  s_851dd2aa785588::t_8ac512ff992a28 2580,3138-3139,3215-3216
+  s_6fb98f8d2116ac::t_944dadc7b391e1 2583
+  s_851dd2aa785588::t_d3e65dda4f8d4c 8303-8304,8306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "50326648ab091a06ec13354a64c1308ee270adf7",
+  "prompts": {},
+  "sessions": {
+    "s_6fb98f8d2116ac": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_056dc267affewyJze3UofJp2hb",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    },
+    "s_851dd2aa785588": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0514ff91dffe7QuCQy7ut88FTy",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    }
+  }
+}

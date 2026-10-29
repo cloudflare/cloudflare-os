@@ -1,0 +1,35 @@
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_214786d5287c9a 153
+  s_1dfdf61332f5c7::t_af0889d82c6a71 85-88,90
+  s_1dfdf61332f5c7::t_1d319306eef10a 167
+  s_1dfdf61332f5c7::t_8b13da0e54bfe3 60-62
+  s_1dfdf61332f5c7::t_38c4d226ae5297 52
+  s_1dfdf61332f5c7::t_fdc6df648fdc34 135,137
+  s_1dfdf61332f5c7::t_c48eafcba65803 172,174
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_1dfdf61332f5c7::t_1ccd474d3b1605 37,42,49
+  s_1dfdf61332f5c7::t_682a19981552c0 175-208
+  s_1dfdf61332f5c7::t_fb3efd2bcad33d 209-210
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_59a8946a7759d9 1-54
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_2f765d0d0fe8a9 1801
+  s_1dfdf61332f5c7::t_937a5c2c4018e3 6046-6051
+  s_1dfdf61332f5c7::t_f498035bc5c4d3 3196-3204,3211-3215,3381-3385,3401,3412,3439,3505-3506,3527-3529,3787-3817,3826-3829,3831-3832,3982-3983,4082,4161-4162,4273-4278,4460-4463,4468,4470-4473,5034-5036,5912-5922,5952,6016,6052,6179,6228,6472,6493-6501,6627,6644
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "51dd07abd44f792a342505a577dd5557a40009d4",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -1,0 +1,29 @@
+packages/workshop-frontend/src/ChatInterface.attachments.test.tsx
+  s_7ebc2a75b360ad::t_8f83108ffeaf11 1-31,33-111,114-144,146-158,161,163-168,171-173,175-222
+  s_7ebc2a75b360ad::t_6837fa5b37a8eb 32,112-113,145,162,174
+  s_7ebc2a75b360ad::t_ed8e25a5ee1be6 159-160,169-170
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7ebc2a75b360ad::t_4b3a33f2c9785e 1061
+  s_7ebc2a75b360ad::t_000afc5f803852 924-925
+  s_7ebc2a75b360ad::t_c697c358f0bf3e 2822-2826
+  s_7ebc2a75b360ad::t_e852a0b2410a55 1116
+  s_7ebc2a75b360ad::t_0b0665c7318075 1092-1110
+packages/workshop-frontend/src/components/chat/attachment-preview.test.ts
+  s_7ebc2a75b360ad::t_b1f0edd2e575ae 60-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "98c2ab51d981b159af363df74b3ea24a9a51af14",
+  "prompts": {},
+  "sessions": {
+    "s_7ebc2a75b360ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bee6e659-c28d-4b19-a30d-b44498ed993d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

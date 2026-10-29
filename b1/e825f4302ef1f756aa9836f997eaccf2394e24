@@ -1,0 +1,47 @@
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_b831f88f249552::t_34207cec145acc 1-205
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_b831f88f249552::t_db55f8aaa629cb 175-183,284,308,340,377,398
+packages/integration-tests/fixtures/gatekeeper-test/src/env.d.ts
+  s_b831f88f249552::t_1a3ce8a54bca74 15-25
+packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc
+  s_b831f88f249552::t_3a068bd8833e69 15-40
+packages/integration-tests/src/harness.ts
+  s_b831f88f249552::t_1989c3f5ba23b2 79-84
+packages/integration-tests/src/rpc-client.ts
+  s_b831f88f249552::t_7bedb22b527403 82-89
+packages/workshop-backend/__tests__/fixtures.ts
+  s_e81f0a03c32749::t_58f51d25d67f1b 89-93
+packages/workshop-backend/src/sharing.ts
+  s_e81f0a03c32749::t_34772ca8ba0cfd 28-33
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_b831f88f249552::t_1b681028d7a641 1-181
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_b831f88f249552::t_e00ae3821c5792 23,29-31,249-286,319-327,387-394,396,449-480
+packages/workshop-backend/src/overseer.ts
+  s_b831f88f249552::t_ea62df0464de90 45-46,7945-7968,8524-8532,8537-8538,8615-8621,8629-8640
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b1e825f4302ef1f756aa9836f997eaccf2394e24",
+  "prompts": {},
+  "sessions": {
+    "s_b831f88f249552": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "010fdb2a-8792-46e0-84cc-2e828765473b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e81f0a03c32749": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbfe1852-ce78-49f0-b2c4-56b6a13eab96",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

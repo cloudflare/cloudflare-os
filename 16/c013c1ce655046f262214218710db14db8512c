@@ -1,0 +1,46 @@
+packages/workshop-backend/__tests__/web-fetch.test.ts
+  s_821114639ecbff::t_65fb5c176015ab 137,148-149,154
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_821114639ecbff::t_65fb5c176015ab 96-103
+docs/public-server.md
+  s_821114639ecbff::t_65fb5c176015ab 46,59-62
+packages/workshop-backend/src/ai-models.ts
+  s_821114639ecbff::t_65fb5c176015ab 457-459
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_821114639ecbff::t_65fb5c176015ab 207-208,221-228,316,319,321,324
+docs/ai-gateway-billing.md
+  s_821114639ecbff::t_65fb5c176015ab 16-18,59,70-71
+run-dev-server.js
+  s_821114639ecbff::t_65fb5c176015ab 489-490,492
+packages/workshop-backend/src/ai-gateway.ts
+  s_821114639ecbff::t_65fb5c176015ab 12-15,48-49
+packages/workshop-backend/src/web-fetch.ts
+  s_821114639ecbff::t_65fb5c176015ab 180-182,187-188
+packages/workshop-backend/src/env.d.ts
+  s_821114639ecbff::t_65fb5c176015ab 17-20
+  s_821114639ecbff::t_95bc888821d7e7 21
+  s_821114639ecbff::t_8e6c25bcbd89a9 26
+scripts/release/manifest-lib.mjs
+  s_821114639ecbff::t_65fb5c176015ab 195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "16c013c1ce655046f262214218710db14db8512c",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_821114639ecbff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "147b2439-e6fc-4ad6-a597-a927ab277c1a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

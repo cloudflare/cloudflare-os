@@ -1,0 +1,39 @@
+.github/workflows/workshop-evals.yml
+  s_23124d99541bb8::t_a17ef95bb89b7f 50-54
+packages/integration-tests/src/agent-session.ts
+  s_23124d99541bb8::t_559cd4a59c37c8 4,12,276-368
+packages/workshop-evals/README.md
+  s_23124d99541bb8::t_7e0f176f7b0ea6 43-47,105-109,134-140,161-162,174-195
+packages/workshop-evals/src/harness.ts
+  s_23124d99541bb8::t_0bf4337adaefd0 104-107
+packages/workshop-evals/src/scorer.test.ts
+  s_23124d99541bb8::t_323912f4892548 85-90,93-101,104,106
+packages/workshop-evals/src/scorer.ts
+  s_23124d99541bb8::t_25d70c6662bfb5 17-25,29,31
+packages/workshop-evals/src/verifier.test.ts
+  s_23124d99541bb8::t_8871dd2b2a3c81 8
+packages/workshop-evals/src/verifier.ts
+  s_23124d99541bb8::t_c08ae5ac094d9c 22,120-135
+packages/workshop-evals/tasks/index.ts
+  s_23124d99541bb8::t_4b88587c77e06d 6,8,23,25
+packages/workshop-evals/tasks/project-doc.task.ts
+  s_23124d99541bb8::t_e78e7c71cf8d9c 1-122
+packages/workshop-evals/tasks/stock-ledger.task.ts
+  s_23124d99541bb8::t_adfdf895d605cf 1-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "94f3909f5443fabe452fd965ed62a469d714bba1",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

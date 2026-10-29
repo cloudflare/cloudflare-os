@@ -1,0 +1,33 @@
+docs/integration-testing.md
+  s_a24f8b33d2ec7b::t_de62d834b072ed 5,7-39,44-51
+packages/integration-tests/README.md
+  s_23124d99541bb8::t_330f0861281f2a 10-17
+packages/integration-tests/__tests__/gadget-durability.test.ts
+  s_23124d99541bb8::t_b47ac020cfed46 6-12
+packages/workshop-evals/README.md
+  s_23124d99541bb8::t_4869aca8ad9bc3 35-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5383705ac97422c7ed8a151b3001bd4ee0278b49",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_a24f8b33d2ec7b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0557e411bffe1uab6RIcL1yfCq",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

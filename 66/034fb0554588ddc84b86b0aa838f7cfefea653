@@ -1,0 +1,31 @@
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.ts
+  s_99c5462c433ffc::t_f6635582a09274 6,35
+packages/workshop-frontend/src/features/deployment-updates/probeRouterTag.ts
+  s_99c5462c433ffc::t_1cb4c2c5e99a13 1-23
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.test.tsx
+  s_99c5462c433ffc::t_e394e0fcead9a4 13,18,100-109
+  s_99c5462c433ffc::t_840cc110ba1a1d 110-111
+packages/workshop-frontend/src/features/deployment-updates/probeRouterTag.test.ts
+  s_99c5462c433ffc::t_50a73e16804317 1-31
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_99c5462c433ffc::t_f6635582a09274 10,115
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_99c5462c433ffc::t_e394e0fcead9a4 13,15,18-19,312-321
+  s_99c5462c433ffc::t_ab27e417df1287 322-323
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "66034fb0554588ddc84b86b0aa838f7cfefea653",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

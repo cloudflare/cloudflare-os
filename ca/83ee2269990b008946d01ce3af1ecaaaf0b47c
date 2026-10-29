@@ -1,0 +1,21 @@
+packages/gatekeeper-mcp-portal/__tests__/stubs/configurator-html.ts
+  s_e25e29d8ebebad::t_87aba04cdd0522 1
+packages/gatekeeper-mcp-portal/vitest.config.ts
+  s_e25e29d8ebebad::t_87aba04cdd0522 13-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ca83ee2269990b008946d01ce3af1ecaaaf0b47c",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

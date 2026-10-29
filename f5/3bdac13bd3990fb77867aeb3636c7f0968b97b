@@ -1,0 +1,19 @@
+docs/observers.md
+  s_e39f3856b111b5::t_fad0b8278f4bb3 463-474
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f53bdac13bd3990fb77867aeb3636c7f0968b97b",
+  "prompts": {},
+  "sessions": {
+    "s_e39f3856b111b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9e161aca-79f5-4828-be95-9b2de8aa8d9c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

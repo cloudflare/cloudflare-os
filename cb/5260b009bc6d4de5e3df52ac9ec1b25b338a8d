@@ -1,0 +1,19 @@
+packages/workshop-backend/__tests__/observer-serialization.test.ts
+  s_100137393753ba::t_1b19600b452848 102-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cb5260b009bc6d4de5e3df52ac9ec1b25b338a8d",
+  "prompts": {},
+  "sessions": {
+    "s_100137393753ba": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fcbe90949ffeaUxjMjD1zXyf0Y",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

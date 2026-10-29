@@ -1,0 +1,40 @@
+packages/integration-tests/src/harness.ts
+  s_4c4222726010fb::t_6e9b990ea1294d 5-6
+packages/integration-tests/README.md
+  s_4c4222726010fb::t_0c75b2310e25b5 12-13
+  s_4c4222726010fb::t_90a467f37889ca 68-70
+  s_4c4222726010fb::t_1be9fd33fcf6a9 34
+  s_4c4222726010fb::t_02b0a0da996799 86
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_4c4222726010fb::t_ee45bd75ae9c79 1
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_4c4222726010fb::t_b4bb02c8335c62 13
+.oxlintrc.json
+  s_4c4222726010fb::t_55c7e7c9238abe 109-113
+docs/integration-testing.md
+  s_4c4222726010fb::t_05ee53abefc66a 196,199-200
+  s_4c4222726010fb::t_30d03f6199a43d 6,8,10-11,13,15-18
+  s_4c4222726010fb::t_a478dc89e51145 103
+  s_4c4222726010fb::t_3ce3b975ab53b9 213,222,225-227,235-238
+  s_4c4222726010fb::t_40e8d9771a75d1 159-162
+  s_4c4222726010fb::t_31db24acab72c0 174-176
+  s_4c4222726010fb::t_0ea190e9e144f3 242-243
+packages/integration-tests/src/rpc-client.ts
+  s_4c4222726010fb::t_2ef61b6c58603b 58-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "41ff5452532c83aebc496715f308360e45521fbf",
+  "prompts": {},
+  "sessions": {
+    "s_4c4222726010fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5865b5c-4e69-4687-9ed8-7dba84b5c46d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

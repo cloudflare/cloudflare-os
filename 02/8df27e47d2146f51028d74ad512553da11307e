@@ -1,0 +1,299 @@
+packages/workshop-shared/src/gatekeeper.ts
+  s_decf32f82e3fdd::t_5eba4fe172510e 1075-1080,1084-1089
+  s_728ec74dbb9f2b::t_626566e1a4834b 1094
+  s_728ec74dbb9f2b::t_a72274d6194ef9 1073-1074
+  s_e3c1456410672e::t_25ce62b4e21482 1081-1082,1090-1092
+packages/workshop-backend/__tests__/observer-coverage-scrub.test.ts
+  s_decf32f82e3fdd::t_029661192666bb 3-5,8-9,22-30,54-55,60,86-92,95,106,133-134,152,177,187
+  s_728ec74dbb9f2b::t_0ae14dc40b2387 1-2,6-7,10-21,31-53,56-59,61-85,93-94,96-105,107-132,135-137,208-210
+packages/workshop-backend/__tests__/observer-scope-prune.test.ts
+  s_decf32f82e3fdd::t_2bf2194cffcd15 2-5,8-9,122,129-130,140-143,148-149,151-169
+  s_728ec74dbb9f2b::t_4a15964fc7cc2f 1,6-7,10-121,123-128,131-139,144-147,150,170-172
+  s_13584eaeb6c52b::t_d8ec77b9a5aff5 1,6-7,10-120,172
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_decf32f82e3fdd::t_00d3b3ce2c86e2 1-210
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_decf32f82e3fdd::t_545d537a79b235 4-13,75,120-121,178-179,192-249
+  s_728ec74dbb9f2b::t_81b4d7947d7007 14-60,70-74,76-83,86-90,93-94,98-101,108-114,173-177,180-186,188-191,250
+  s_e3c1456410672e::t_7c6f04783de8d0 187
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_decf32f82e3fdd::t_64a9a21139b457 175-183,284,308,340,377,398
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_decf32f82e3fdd::t_1abbab2a0f9167 1-6,9-11,21-22,67,86-130,134,153-155,159-160,164,166-176,178
+  s_728ec74dbb9f2b::t_f0670ab047ce82 7-8,12-18,20,23-66,68-69,71-83,85,131-133,135-152,156-158,161-162,163,165,177,179,180-182
+  s_e3c1456410672e::t_1768fee236efe2 19,70,84
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_decf32f82e3fdd::t_39f6717c5dfa33 3-9,108,114-117,130-131,133-136,144-192,217-218,241,244,246-259,273-274,280-282,287,289-303,350,357,369-387,391,418-420,423,542,550-551,553,556-557,561-562,564-567,569,609-629
+  s_728ec74dbb9f2b::t_55cca1e530ddfa 1-2,10-16,18-21,23-87,89-102,104-107,109-113,118-129,132,137-143,193-216,219-240,242-243,245,260-272,275-279,283-286,288,304-349,351-354,356,358-368,388-390,392-404,408-417,424-438,441-450,451-541,543-549,552,554-555,558-560,563,568,570-596,598-608,630-632
+  s_e3c1456410672e::t_dc8b2d96936880 22,88,103,355,597
+  s_0c215fe09756a4::t_0e37baa934169d 451-453
+packages/workshop-backend/src/overseer.ts
+  s_decf32f82e3fdd::t_825d0d638e9d59 2238-2239,2250-2257,3687-3692,3698,3717,3809-3812,4402-4409,4516,4518-4521,4527,4643-4649,4653-4654,4657-4660,4662-4671,4694-4695,5012,5139-5146,5151-5153,5156-5160,5165,5168-5193,8104-8108,8142-8144,8235-8240,8246-8249,8268-8269,8320-8329,9614,10744-10745,10764-10765
+  s_728ec74dbb9f2b::t_792bff2ad9ac7c 1033,1036,9423,9442,9464,9466,9474,9480
+  s_728ec74dbb9f2b::t_e51652b22d683f 45,399-401,403-405,1034-1035,1037-1039,1410-1421,4510-4513,4515,4517,4522,4524-4525,4650-4652,4655,4656,4661,4672-4673,4673,4675,4677-4693,4687-4688,4690,4696-4712,4714-4723,4722,4724-4737,4728,4730-4732,4734,4737,4770,6382,6387-6389,6398-6409,7967-7981,7987,8063-8066,8068-8073,8074-8075,8077-8078,8079,8081-8082,8090,8310,8631-8635,8643-8646,8650,8651-8653,8726-8732,8734-8738,8741-8743,10690-10692,10714-10719,10774-10777,10781-10787,11448-11452,11448-11451,11454,11454-11456,11459-11465
+  s_e3c1456410672e::t_59ff29f84a79e2 1407-1409,4700,4769,4771,8092-8093,10690-10692,11452
+  s_e3c1456410672e::t_7fcbb90a5bf086 4661,4672,4677-4686,4689,4691-4693,4696-4699,4701-4712,4714-4721,4723,4724-4727,4729,4733,4735-4736,8310,11455-11456,11459-11465
+  s_d8ceb61b85a9aa::t_09b933e75457e0 8141,8241-8245,8241-8245,8250,8250,8258-8263
+  s_728ec74dbb9f2b::t_5b05e51afa304b 8099-8100,8103,8110-8123
+  s_1d151c0c396075::t_086d2eac3b8560 45,8068-8073,8074-8075,8077,8079,8081-8082,8726-8732,8734-8745
+  s_a726de9bb45000::t_d97bbc791c90a1 8082,8118,8120
+  s_6f89b2f4ac3a92::t_3497746ef86d44 8082
+  s_cebfe242feefb3::t_96aa9a68e2ffe1 8078
+  s_10119d79ce25ce::t_7965684620cb4c 8141,8241-8245,8250
+  s_10119d79ce25ce::t_9af0b14b509cd3 8258-8263
+  s_10119d79ce25ce::t_1692bd1ddca8a0 8099-8100,8102-8103,8109-8120,8123
+  s_10119d79ce25ce::t_7e544633bacf57 4510-4511
+  s_10119d79ce25ce::t_e972940a27ebf1 8651-8652
+  s_f5c5b42b5139c4::t_6327aedbd221b7 4513
+  s_a726de9bb45000::t_81bfa307479021 8735,8738,8745
+  s_10a46ead5b1afa::t_eb0ed053d84c77 4697-4700,6382,6387-6389,6398,11454-11456,11458-11459
+.agents/skills/write-gatekeeper/SKILL.md
+  s_decf32f82e3fdd::t_c14153ba5fd4e0 246
+docs/sharing.md
+  s_decf32f82e3fdd::t_a07eb32d7fb53f 155,159,163-165,184-191,193-194
+  s_d8ceb61b85a9aa::t_386b994d5c4f26 36,47,102,104,114-115,154,160,162
+  s_e3c1456410672e::t_7aa8be12b0f72e 161,176-178
+  s_cf9cda7e93fb6f::t_626a7b9916f1cd 162
+plans/restricted-data-sharing.md
+  s_da90dfe36d2b89::t_5f343fd9227f55 43-47,49-52,56-59,89,91-103,106-108,191-193,200-202,208,231-235,237,275-277,282-286
+  s_d8ceb61b85a9aa::t_0379abb6639e9d 1-42,48,60-88,90,104-105,109,111,118,123-125,130-134,139,140-141,145-153,154-160,163-187,194-197,203,209-214,216,218-220,242-243,247-274,278-281,287-292,293-295
+  s_e3c1456410672e::t_ca44acc5ab87a9 207,217,222,228-230,241
+  s_a726de9bb45000::t_7cdc7b3a4ee8c7 1-9,18-42,48,60-88,90,104-105,109,111,118,123-125,130-134,131-134,139,140-141,145-153,154-160,163-167,180-185,196-197,220,242-243,247-253,268-274,291-292,293-295
+docs/observers.md
+  s_decf32f82e3fdd::t_b81ccfaa50dce7 37-42,100-101,294,298-301,324-351,453-483,485,492-493,497-499,512-519
+  s_d8ceb61b85a9aa::t_196fd98e910190 33-36,44,63,75-76,97-99,102-109,142-143,175,205,235-237,241-245,247,291-293,295-296,357,373,408,415-416,452,484,486-491,494-496,500-509,527,565-567,614-616,621-624,633-635,663-664
+  s_e3c1456410672e::t_c3f9162bf44751 246,380,409,417,696-700
+  s_10119d79ce25ce::t_29877edc26081c 565
+  s_10119d79ce25ce::t_ca87d0bfb7e65a 408
+  s_69f861d485ff0a::t_af19ff28976947 291-293
+  s_07366955d0afe3::t_8fcd0a19f2a797 415-416
+  s_cf9cda7e93fb6f::t_947419dd15d69f 408
+packages/gatekeeper-google/src/google.ts
+  s_728ec74dbb9f2b::t_c6dc710c27f0ca 1738,3399,3431,3443,3464,3474,3500,3509,3546
+packages/gatekeeper-mcp/README.md
+  s_728ec74dbb9f2b::t_b45d7e064c3b1f 180-181,209-212
+packages/workshop-frontend/src/ShareModal.tsx
+  s_728ec74dbb9f2b::t_0d286c768a34df 375
+  s_a726de9bb45000::t_d20d1d7336c6aa 562,588,614,778-781,783-785,788,829,906,912,915,1072
+packages/workshop-shared/src/api.ts
+  s_728ec74dbb9f2b::t_37c6a6ac4174a9 1266
+  s_728ec74dbb9f2b::t_b1130d86b4341f 1261-1264
+packages/workshop-backend/src/sharing.ts
+  s_728ec74dbb9f2b::t_f5d226325640a3 18-22,28,30-31,200,214,236,244,258,286-287,430-435,437-439,448,460-465,480
+  s_1d151c0c396075::t_3d4950be41daff 28,30-31
+packages/workshop-backend/__tests__/restricted-data.test.ts
+  s_728ec74dbb9f2b::t_1371013b0cf5c7 1,3-39
+  s_e3c1456410672e::t_57a34030cdbd10 2
+packages/workshop-backend/__tests__/restricted-producer-removal.test.ts
+  s_728ec74dbb9f2b::t_62753106ad52a1 1-7,10-32,34-218,221-350,352-367
+  s_e3c1456410672e::t_bea68fa24a2f37 8-9,33,219-220,351
+  s_10a46ead5b1afa::t_48372b5caadd9d 93,107-109,124,139,151,165-213
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_728ec74dbb9f2b::t_670d6abc6eb01f 159,161-162,164,171-182,185,187-188,189-192,195-197,200-201,203-206,208-209,211-213,215,216,217,529-548,610-626
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_728ec74dbb9f2b::t_5688bc120acb74 1-205
+  s_1d151c0c396075::t_eb9b1b1e8c38d0 1-18,21-23,28-83,95-157,169-196,200-205
+  s_2c78d1406172aa::t_3c2f7cb423a829 19-20,24-27,84-94,158-168
+  s_10119d79ce25ce::t_cef752d920fb3f 197-199
+packages/integration-tests/fixtures/gatekeeper-test/src/env.d.ts
+  s_728ec74dbb9f2b::t_4a711a36eb4f26 15-25
+  s_1d151c0c396075::t_0e5092524c88cd 15-25
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_728ec74dbb9f2b::t_01bbb9851f4b80 23,29-31,74,83,249-253,256-288,321-329,389-396,398,415,417,423-425,430,451-482
+  s_1d151c0c396075::t_381537c663efcf 23,29-31,249-252,256-266,268-270,272-288,321-329,389-396,398,451-482
+packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc
+  s_728ec74dbb9f2b::t_eaef33fe739252 15-40
+  s_1d151c0c396075::t_b25eec8b67b3a7 15-40
+packages/integration-tests/src/harness.ts
+  s_728ec74dbb9f2b::t_a16b6ac5d5e42f 79-84
+  s_1d151c0c396075::t_4b67ecd8c7e2c9 79-84
+packages/integration-tests/src/rpc-client.ts
+  s_728ec74dbb9f2b::t_52354a2160a1f6 82-89
+  s_1d151c0c396075::t_5446dc4e609204 82-89
+packages/gatekeeper-google/package.json
+  s_4c4437c01da8c5::t_f144a5f446a5b1 24
+packages/gatekeeper-google/vite.config.ts
+  s_4c4437c01da8c5::t_54ce80fc994bc6 3
+packages/gatekeeper-google/vitest.config.ts
+  s_4c4437c01da8c5::t_8a31b1ad9b0dc3 1-8
+pnpm-lock.yaml
+  s_4c4437c01da8c5::t_1090bad043af3c 374-376
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_07366955d0afe3::t_eb8471930539cb 11,19-20,54,105,107,114,119,123,157,164-167,177,187,197,299-348
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "028df27e47d2146f51028d74ad512553da11307e",
+  "prompts": {},
+  "sessions": {
+    "s_07366955d0afe3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd854532-358f-4c8d-b789-6b2ed4ff47ce",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_0c215fe09756a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a233bfee-b26a-4d80-ab61-4ef85f896aa0",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_100137393753ba": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fcbe90949ffeaUxjMjD1zXyf0Y",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_10119d79ce25ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7ffcf86-d294-461d-8053-5c315e5d336c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_10a46ead5b1afa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fdedd0f-322e-477a-a5eb-8ee1caa99628",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_13584eaeb6c52b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7cbf511c-e64e-4cea-a8d2-50f893b88e8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_1d151c0c396075": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fcb946ad-1cf8-4256-9c3f-681c5dab2be4",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_2c78d1406172aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23b79576-f9ce-40fb-894d-ef02547eea7f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_4c4437c01da8c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "635d6ba7-0072-4d35-9467-ff060ac90333",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_69f861d485ff0a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3dd71245-4b5b-4518-9b9d-cdfaf26758e2",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6f89b2f4ac3a92": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bac66a40-cd69-470a-ab91-5e2425762fb9",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_728ec74dbb9f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b00f69f3-fd58-4fa1-95b6-300fba719c7a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_cebfe242feefb3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6d3cee10-7837-4969-a1b7-aa43190b3982",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_cf9cda7e93fb6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbd45cc1-bb9f-4ad8-bd45-3d8db79f288c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d8ceb61b85a9aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a4c66b08-0974-4063-af54-4fb2e92c6224",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_da90dfe36d2b89": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fba5662f1ffe6K9f2We93QUW3j",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_decf32f82e3fdd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b780c1e-7859-4160-98cc-d323b530cad2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e3c1456410672e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19fc7fdd-8235-4154-b783-6863ad5cfced",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e4a07c842a0049": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "867f9afc-e6e4-4a5f-8368-e4b81506d57e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f5c5b42b5139c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bdecb7-a7a7-43a8-a475-f77b511eef67",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

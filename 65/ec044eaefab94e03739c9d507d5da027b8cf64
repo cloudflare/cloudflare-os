@@ -1,0 +1,46 @@
+packages/workshop-backend/package.json
+  s_851dd2aa785588::t_7d156404809ca1 29,37
+packages/workshop-backend/src/overseer.ts
+  s_851dd2aa785588::t_f35e898ffeaf72 7383-7384,7386,7391-7392,7394
+  s_6fb98f8d2116ac::t_205db9fb50ddfc 2581-2582
+  s_851dd2aa785588::t_7a2ffe4b50e1b8 2600
+  s_851dd2aa785588::t_df58ea8cd77e82 32-35
+  s_851dd2aa785588::t_54c24fbc853446 2566
+  s_851dd2aa785588::t_8ac512ff992a28 2580,3138-3139,3215-3216
+  s_6fb98f8d2116ac::t_944dadc7b391e1 2583
+  s_851dd2aa785588::t_d3e65dda4f8d4c 8303-8304,8306
+  s_851dd2aa785588::t_d48d5b66e9fe64 7385,7387-7390,7393,8305
+  s_851dd2aa785588::t_5721c9dabf2eaf 36
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_851dd2aa785588::t_d48d5b66e9fe64 1722
+packages/workshop-backend/src/chat-attachment-validation.ts
+  s_851dd2aa785588::t_7221ab8f1e2366 1-4,6-59,61,66-91,93-115
+  s_851dd2aa785588::t_7a2ffe4b50e1b8 5,60,62-65,92
+packages/workshop-shared/src/api.ts
+  s_851dd2aa785588::t_f35e898ffeaf72 1257
+  s_851dd2aa785588::t_d48d5b66e9fe64 1256,1260
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "65ec044eaefab94e03739c9d507d5da027b8cf64",
+  "prompts": {},
+  "sessions": {
+    "s_6fb98f8d2116ac": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_056dc267affewyJze3UofJp2hb",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    },
+    "s_851dd2aa785588": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0514ff91dffe7QuCQy7ut88FTy",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

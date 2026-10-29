@@ -1,0 +1,19 @@
+.gitlab-ci.yml
+  s_7c948f6e11c023::t_fe15a267099b36 59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7adec5ae8b19dc27c67e972bccaae4f2f6f1e76a",
+  "prompts": {},
+  "sessions": {
+    "s_7c948f6e11c023": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04601ad32ffe20xL6jB7x9PsTy",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

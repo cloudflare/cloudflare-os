@@ -1,0 +1,25 @@
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_728ec74dbb9f2b::t_89b7333bd68f10 527,541-542,566,571,573-578
+packages/workshop-backend/__tests__/keyless-commit-gate.test.ts
+  s_728ec74dbb9f2b::t_fd32b72f72b30e 1-3,11-140,141,144-181,183-202,205-216
+packages/workshop-backend/__tests__/verification-scope.test.ts
+  s_728ec74dbb9f2b::t_51f5dcb31e4dfe 9-10,16,118-119,134,169-222
+packages/workshop-backend/src/overseer.ts
+  s_728ec74dbb9f2b::t_26084faf5b2d1a 8062-8063,8065-8068,8081-8099,8101-8108,8110-8114,8120-8142,8145-8149,8185-8193,8199-8200,8207,8220-8221,8247-8253,8429-8440,8444-8447,8809-8817
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "313d68abc1de5dd8f950fb74f0404b9dead44e60",
+  "prompts": {},
+  "sessions": {
+    "s_728ec74dbb9f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b00f69f3-fd58-4fa1-95b6-300fba719c7a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

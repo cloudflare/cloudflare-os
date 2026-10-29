@@ -1,0 +1,19 @@
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_d69c8504d205ce 352-354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ce7c8d107fd2db80ef7a39e44f29275a30ee7634",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

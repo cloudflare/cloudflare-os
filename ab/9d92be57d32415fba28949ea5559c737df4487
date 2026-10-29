@@ -1,0 +1,19 @@
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_c1f77da9d711a8::t_b686a4d5d8cb2a 257-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ab9d92be57d32415fba28949ea5559c737df4487",
+  "prompts": {},
+  "sessions": {
+    "s_c1f77da9d711a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d22a408f-2bdf-4942-8452-61d98facc2d1",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

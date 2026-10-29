@@ -1,0 +1,45 @@
+packages/gatekeeper-google/src/sheets-plan.ts
+  s_4910db625c7d84::t_b98b65b70583c1 27,355-358,362,376,378,413,416,421,431,434,448,469-476,482
+packages/gatekeeper-google/__tests__/workerd/sheets-actions.test.ts
+  s_4910db625c7d84::t_4e1c027f2f46d6 1168
+  s_4910db625c7d84::t_7c62c99e85bd74 1192-1194,1215,1235,1283,1321,1354,1371,1414,1457-1468,1528,1551,1560,1586,1598,1609,1623,1637,1665-1666,1674
+  s_4910db625c7d84::t_53dd118d40eb2c 1239,1456,1503
+  s_4910db625c7d84::t_e18344fbc75784 1366,1373,1376,1382-1383
+packages/gatekeeper-google/src/sheets.ts
+  s_4910db625c7d84::t_6c8a24db3b9060 528,571,590
+packages/gatekeeper-google/__tests__/sheets-input.test.ts
+  s_4910db625c7d84::t_b559c274c6272c 150
+  s_4910db625c7d84::t_f6c3acad4f029e 51,116-123,125-132,139-140,144-147,149,151-153,159,169,171,174,177,179,181,183,185,190
+packages/gatekeeper-google/src/sheets-input.ts
+  s_4910db625c7d84::t_5f96062ebfa70b 8,31-32,37-41,54-61,142-144,146,152,154,167,170,198,200,204,210,212,239
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_4910db625c7d84::t_32de689b412c28 136-137
+  s_4910db625c7d84::t_7c604a9c076ccb 20-22
+  s_4910db625c7d84::t_ee6bac944fe2ff 135,138,148-153,165-167
+  s_4910db625c7d84::t_7d6f35ce44ded4 55,63,79,85,95,105,118
+packages/gatekeeper-google/__tests__/sheets-plan.test.ts
+  s_4910db625c7d84::t_6b872a1aa391a3 287,344-346,351,354,525,528,531,670
+  s_4910db625c7d84::t_dcdb260bfb1b7a 37,158-165,196,198,208-209,218,228,230,233,240,255-257,272-273,275,277-278,285,288,290,292,294,299,301-302,305,312,315,317,325,327,329,331,333,466,472,476,481-482,489,491-492,495-496,502,504-505,507-508,543,551,556,570,595,607,613-614,616,620,624-625,631-634,649-650,652,671,710,718,732-733,740,757,768,776,793,827,846-849
+  s_4910db625c7d84::t_1ef2a9b0823c05 157,207,246-253,258-267
+  s_4910db625c7d84::t_6073e2de581ddf 279,696
+packages/gatekeeper-google/__tests__/types.test.ts
+  s_4910db625c7d84::t_451c7ef743089d 200-201,203-209,212-214
+packages/gatekeeper-google/README.md
+  s_4910db625c7d84::t_7f567b7d3336c7 392-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7a9cadaa233e55c4b497a122ffa6de75d3339891",
+  "prompts": {},
+  "sessions": {
+    "s_4910db625c7d84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aa771adb-677b-4241-a634-0f0a0facb9c0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

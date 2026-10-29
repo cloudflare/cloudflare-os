@@ -1,0 +1,33 @@
+packages/gatekeeper-x/__tests__/workerd/reads.test.ts
+  s_6e159c0858b8f9::t_82f70572af076d 335-342
+packages/gatekeeper-x/__tests__/x-actions.test.ts
+  s_6e159c0858b8f9::t_5e9d886efc705e 182,184-186
+packages/gatekeeper-x/__tests__/x-simulation.test.ts
+  s_6e159c0858b8f9::t_9455ba025832c7 146-147
+packages/gatekeeper-x/__tests__/x-text.test.ts
+  s_6e159c0858b8f9::t_5f627433118da8 2,75-85
+packages/gatekeeper-x/src/x-actions.ts
+  s_6e159c0858b8f9::t_fefeaafd4daf78 34-35,207-208,243
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_db5a14afea196a 35,1010
+packages/gatekeeper-x/src/x-simulation.ts
+  s_6e159c0858b8f9::t_275dad75df3f6f 12,315,321
+packages/gatekeeper-x/src/x-text.ts
+  s_6e159c0858b8f9::t_b3a08408af7e24 106-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "edbaa3b0737d03476efb090df7f658bf56b4f707",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

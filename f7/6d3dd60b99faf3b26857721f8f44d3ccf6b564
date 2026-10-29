@@ -1,0 +1,33 @@
+packages/gadget-libraries/page/__tests__/comment-mentions.test.ts
+  s_c6057c10ed1db5::t_747343a5b438ff 1-48
+packages/gadget-libraries/page/__tests__/comments.test.ts
+  s_c6057c10ed1db5::t_317677f2cc8b62 40,153,368-456
+packages/gadget-libraries/page/__tests__/mention-picker.test.ts
+  s_c6057c10ed1db5::t_635e1ff45e6788 1-99
+packages/gadget-libraries/page/client.ts
+  s_c6057c10ed1db5::t_00fc91961dfca3 248-255
+packages/gadget-libraries/page/src/comment-mentions.ts
+  s_c6057c10ed1db5::t_fe7d45e9973ef0 1-55
+packages/gadget-libraries/page/src/comments.ts
+  s_c6057c10ed1db5::t_007f1d35833285 29-34,48,50,83-84,87-91,128-129,134-135,329,349,359-420,423-424
+packages/gadget-libraries/page/src/mention-picker.ts
+  s_c6057c10ed1db5::t_3338be2fd57b06 1-162
+packages/gadget-libraries/page/src/styles.ts
+  s_c6057c10ed1db5::t_efd8ad9f3c502c 169-170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f76d3dd60b99faf3b26857721f8f44d3ccf6b564",
+  "prompts": {},
+  "sessions": {
+    "s_c6057c10ed1db5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f727234-2a81-45e1-9b19-084244971b57",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

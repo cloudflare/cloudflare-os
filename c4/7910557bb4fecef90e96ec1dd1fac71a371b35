@@ -1,0 +1,66 @@
+packages/workshop-backend/src/sharing.ts
+  s_9bf74c11bd609e::t_a4de0520bbd5b9 261-262
+  s_9bf74c11bd609e::t_22e032e505a918 144
+  s_9bf74c11bd609e::t_c55b8037de04f9 18-22
+docs/sharing.md
+  s_9bf74c11bd609e::t_dd432cb3d74f0c 159
+packages/gatekeeper-mcp/README.md
+  s_9bf74c11bd609e::t_00d0945964cb60 174-175
+  s_9bf74c11bd609e::t_0e03a749f4197e 203-206
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_9bf74c11bd609e::t_b8f47cff2a3b9f 1-208,210-254
+  s_9bf74c11bd609e::t_e40c0d4bb24c97 209
+packages/gatekeeper-google/src/google.ts
+  s_9bf74c11bd609e::t_9eb947050b8a05 1955-1957
+  s_9bf74c11bd609e::t_78ae17838cc926 3612,3644,3656,3677,3687,3713,3722,3759
+packages/workshop-frontend/src/ShareModal.tsx
+  s_9bf74c11bd609e::t_7b6c7cc9a9737e 1070
+  s_9bf74c11bd609e::t_f92650d430bba9 828
+  s_9bf74c11bd609e::t_1e70babe170734 561
+  s_9bf74c11bd609e::t_f4816b904c4982 587
+  s_9bf74c11bd609e::t_282e56324a7638 905,911,914
+  s_9bf74c11bd609e::t_915179d687783f 374
+  s_9bf74c11bd609e::t_ceebbd3b1c02de 613
+  s_9bf74c11bd609e::t_16fcf50f8c2a5f 777-780,782-784,787
+packages/workshop-backend/src/overseer.ts
+  s_9bf74c11bd609e::t_2334a2068370f6 6487-6489
+  s_9bf74c11bd609e::t_4920d5bd6f1a2e 2662-2663
+  s_9bf74c11bd609e::t_c5cd71cda03b80 7216
+  s_9bf74c11bd609e::t_99caa8831c692b 2783-2821
+  s_9bf74c11bd609e::t_58d850f3a5a02e 7238,7240,7248,7254
+  s_9bf74c11bd609e::t_a4811af226d256 8650-8654
+  s_9bf74c11bd609e::t_e95935afa4ce32 726-732
+  s_9bf74c11bd609e::t_43b8757b1c60e9 7197
+packages/workshop-shared/src/api.ts
+  s_9bf74c11bd609e::t_70f4e93cc7f9be 1045-1049
+docs/observers.md
+  s_9bf74c11bd609e::t_c1ffd59c020a20 488-491
+  s_9bf74c11bd609e::t_9df891a65b595b 33-45
+  s_9bf74c11bd609e::t_60ce6149096ad4 101
+  s_9bf74c11bd609e::t_21094272ea4db9 235-237
+  s_9bf74c11bd609e::t_c60bb64e6530e3 411-417
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_9bf74c11bd609e::t_fa651578b84969 23
+  s_9bf74c11bd609e::t_21d62753b85be0 214-248
+  s_9bf74c11bd609e::t_1cbc281afead59 281-289
+packages/workshop-shared/src/gatekeeper.ts
+  s_9bf74c11bd609e::t_dadd0787220d04 932-946
+.agents/skills/write-gatekeeper/SKILL.md
+  s_9bf74c11bd609e::t_d074710e74be63 239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c47910557bb4fecef90e96ec1dd1fac71a371b35",
+  "prompts": {},
+  "sessions": {
+    "s_9bf74c11bd609e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8fd70c9d-60ef-43a4-b7de-13457ccc64ce",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

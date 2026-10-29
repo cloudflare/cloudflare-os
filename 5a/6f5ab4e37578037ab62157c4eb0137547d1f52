@@ -1,0 +1,26 @@
+packages/gatekeeper-linear/src/linear.ts
+  s_5ea74d9d4aa12b::t_5108e9a2c72e72 849-850,852-855,859-872,882-885,902-905,915-918
+packages/gatekeeper-supabase/src/supabase.ts
+  s_5ea74d9d4aa12b::t_37baa207ff2c98 705-706,708-711,715-728,738-741,751-754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5a6f5ab4e37578037ab62157c4eb0137547d1f52",
+  "prompts": {},
+  "humans": {
+    "h_766a26d8f6ed11": {
+      "author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  },
+  "sessions": {
+    "s_5ea74d9d4aa12b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "327d3793-ea88-4e2c-9cfd-a93e08e8f1de",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

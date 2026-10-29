@@ -1,0 +1,23 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7fb837265947ac::t_e6fc2ca0c3424a 2425-2427,2633,4333-4337,4936-4937,4939
+packages/workshop-frontend/src/Activity.tsx
+  s_7fb837265947ac::t_e6fc2ca0c3424a 30-33,160,178-182,239-240,439-445,474,478,591-598,604-605
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_7fb837265947ac::t_ab5217834be2bc 1742,1906
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "945b3ec4b78f351701a742c434b02c578ef7dafc",
+  "prompts": {},
+  "sessions": {
+    "s_7fb837265947ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e87a5291-c3bd-4e4b-b82b-245e159a74a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

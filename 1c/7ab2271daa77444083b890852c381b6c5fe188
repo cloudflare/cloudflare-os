@@ -1,0 +1,25 @@
+packages/workshop-backend/src/overseer.ts
+  s_526789b8d80518::t_47061991af1132 6274-6285
+docs/observers.md
+  s_526789b8d80518::t_cb1f946d7dbc0e 494-498
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_526789b8d80518::t_fd301496756d97 658-710
+packages/workshop-backend/__tests__/restricted-producer-removal.test.ts
+  s_526789b8d80518::t_188f4ad5ce7e0d 168-243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1c7ab2271daa77444083b890852c381b6c5fe188",
+  "prompts": {},
+  "sessions": {
+    "s_526789b8d80518": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0c46227-4545-472d-9adb-3f12047aa84d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

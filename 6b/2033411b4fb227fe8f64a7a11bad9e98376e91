@@ -1,0 +1,48 @@
+plans/gitlab-gatekeeper.md
+  s_b235d7e85db519::t_5e9f1409cdf3f4 183-194,217-227,543-545,559-560,568-570,648-660,676-685,1020-1037
+  s_b235d7e85db519::t_de3b15d3b1ec52 661-675
+packages/gatekeeper-gitlab/__tests__/gitlab-api.test.ts
+  s_b235d7e85db519::t_c3b67fd07498b2 329-339,344-350
+packages/gatekeeper-gitlab/src/gitlab-api.ts
+  s_b235d7e85db519::t_ad0629885792ae 1008-1013,1016-1030,1032-1042,1124-1151
+  s_b235d7e85db519::t_e69f3f091c3ee4 38-48,657-673
+packages/gatekeeper-gitlab/src/types.d.ts
+  s_b235d7e85db519::t_d4fe6b0509037b 698-700
+packages/gatekeeper-gitlab/__tests__/workerd/account.test.ts
+  s_b235d7e85db519::t_1ae770c03ed6d4 123-150,152-157
+packages/gatekeeper-gitlab/__tests__/workerd/resources.test.ts
+  s_b235d7e85db519::t_f6f02acc683d0b 4,23-24,42-54,63,65,134
+  s_b235d7e85db519::t_e3ff182df392af 85-89,91-96,98-117,121-126,129-131,135,138-149,151-156,160,164,166-169
+packages/gatekeeper-gitlab/src/gitlab-env.ts
+  s_b235d7e85db519::t_3b2f2f43f5c589 71-75,85,90
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_b235d7e85db519::t_15d2b61bae3668 794,798-803,846-847,850-851
+  s_b235d7e85db519::t_44cc8f852cdfde 192-196,1817-1822,1846-1851,1853-1855,1862-1868,1967,2021-2023,2031,2048-2049,2157-2162,2182-2193,2195-2198,2222-2223,2259-2276,2320-2322,2328-2330
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_b235d7e85db519::t_77dfa7d2dc220a 240-242,375-382,384-407,410-412,562-563,568-587,740,742-746,752-754,768-771
+  s_b235d7e85db519::t_ebcad20a5ca76f 747-751,775-777,779-782,793-797,799
+packages/gatekeeper-gitlab/__tests__/workerd/actions.test.ts
+  s_b235d7e85db519::t_6efb4ac7c48f0a 151,153,155-156,158-205,560-643,673-675,680,683-684,687-690
+packages/gatekeeper-gitlab/src/gitlab-action-types.ts
+  s_b235d7e85db519::t_7ea55ab5bf11e2 126-132
+packages/gatekeeper-gitlab/__tests__/workerd/push.test.ts
+  s_b235d7e85db519::t_f259a1abe6d74e 334-339
+.agents/skills/write-gatekeeper/SKILL.md
+  s_b235d7e85db519::t_a12aeabf5d19cb 341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6b2033411b4fb227fe8f64a7a11bad9e98376e91",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

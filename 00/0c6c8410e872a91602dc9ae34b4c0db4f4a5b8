@@ -1,0 +1,24 @@
+.github/workflows/publish-release.yml
+  s_a0ffe549371531::t_e67987ac5f274c 8-13
+.gitlab-ci.yml
+  s_a0ffe549371531::t_23244c9dc3902e 7
+  s_a0ffe549371531::t_0c79c77c15564e 52-114
+scripts/release/build-release.mjs
+  s_a0ffe549371531::t_4bc381de6c01b2 49-50,54-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "000c6c8410e872a91602dc9ae34b4c0db4f4a5b8",
+  "prompts": {},
+  "sessions": {
+    "s_a0ffe549371531": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "db72e27a-43cf-412a-82ac-e65386c90f87",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}

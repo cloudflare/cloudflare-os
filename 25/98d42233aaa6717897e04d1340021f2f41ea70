@@ -1,0 +1,37 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_728ec74dbb9f2b::t_573ef3edcc7033 246
+docs/observers.md
+  s_728ec74dbb9f2b::t_6e6118076a49ad 33-34,96,230,405,477-478
+docs/sharing.md
+  s_728ec74dbb9f2b::t_2870f2dd5070ae 159
+packages/gatekeeper-google/src/google.ts
+  s_728ec74dbb9f2b::t_c6dc710c27f0ca 1738,3399,3431,3443,3464,3474,3500,3509,3546
+packages/gatekeeper-mcp/README.md
+  s_728ec74dbb9f2b::t_b45d7e064c3b1f 180-181,209-212
+packages/workshop-backend/src/sharing.ts
+  s_728ec74dbb9f2b::t_e09f2a816d034d 18,164,292
+packages/workshop-frontend/src/ShareModal.tsx
+  s_728ec74dbb9f2b::t_0d286c768a34df 375,562,588,614,778,824,830,837,914,920,923,935,1081
+packages/workshop-shared/src/api.ts
+  s_728ec74dbb9f2b::t_37c6a6ac4174a9 1264
+packages/workshop-shared/src/gatekeeper.ts
+  s_728ec74dbb9f2b::t_626566e1a4834b 1087
+packages/workshop-backend/src/overseer.ts
+  s_728ec74dbb9f2b::t_792bff2ad9ac7c 1028-1033,4451,9123,9142,9164,9166,9174,9180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2598d42233aaa6717897e04d1340021f2f41ea70",
+  "prompts": {},
+  "sessions": {
+    "s_728ec74dbb9f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b00f69f3-fd58-4fa1-95b6-300fba719c7a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

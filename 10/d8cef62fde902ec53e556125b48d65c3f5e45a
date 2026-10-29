@@ -1,0 +1,48 @@
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_2ca53014d2c7fe 1-117
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_d8d921f23e0203 55,63-66,82-87,93,138,140,156,170,175,177
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_2172806ca88a8b 1-117,132-427
+  s_1dfdf61332f5c7::t_d669a68d695040 118-126,130-131
+  s_1dfdf61332f5c7::t_6abd1df98a044c 127-129
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_d94722c8fcb394 197-199
+  s_1dfdf61332f5c7::t_ce203cbafd31cf 1-17,20-27,29,34-196,200-314
+  s_1dfdf61332f5c7::t_0d9ea314d62e77 18-19,28,30-33
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_4ace8a5b2d9209 16,3027-3060,3063,3095-3096,3296-3299,3319,3518-3521,3526-3538,3544-3545,3550-3554,3559-3569,3575-3595,3697-3698,3701-3715,4398-4407,4592-4597,7602-7604,7606-7608,7611,7614-7621,7985,8017-8021
+  s_1dfdf61332f5c7::t_ff4a7c37240d4b 3097-3098,3100-3101
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_1dfdf61332f5c7::t_50f474cc3b6f03 27-33,44,49,59,182-215
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_0fcfc0ab8a6814 2122
+  s_1dfdf61332f5c7::t_fb1ead9db1e9e5 131
+  s_1dfdf61332f5c7::t_eefb9e06758744 5,12-17,939-940,954,976,1137-1139,1169-1188,1196-1200,1202-1204,1206-1208,1210-1217,1222,1253-1257,1259,1382,1619,1820-1827,2046-2121,2126,2128-2129
+  s_1dfdf61332f5c7::t_5d39046e61e5da 2123-2125
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_8e3e75e8268048 2560-2562
+  s_1dfdf61332f5c7::t_68a1e0ba52e33a 3712-3713
+  s_1dfdf61332f5c7::t_0fcfc0ab8a6814 4353
+  s_1dfdf61332f5c7::t_783a7f975bd748 3706-3711,3714-3715
+  s_1dfdf61332f5c7::t_ba9d8b4c2b3d73 4520
+  s_1dfdf61332f5c7::t_e281b491831f24 4349-4352
+  s_1dfdf61332f5c7::t_9b40a6958fabbf 3728-3732
+  s_1dfdf61332f5c7::t_783115beae9d8f 62,1853,3030,3063-3068,3252-3256,3264-3274,3433-3435,3440-3442,3460-3461,3472,3499,3563,3584-3585,3695-3705,3716-3727,3733-3746,3882-3885,3887-3888,4036-4037,4042,4140-4145,4215-4223,4233,4344-4348,4354,4504,4523,4526-4527,4562-4582,6015-6040,6608,6630-6635,6760-6763,6780
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "10d8cef62fde902ec53e556125b48d65c3f5e45a",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

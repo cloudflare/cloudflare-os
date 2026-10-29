@@ -1,0 +1,21 @@
+.github/workflows/bonk-pr.yml
+  s_f5c5b42b5139c4::t_e5f0f1a51a226d 20-25,31
+.github/workflows/bonk.yml
+  s_f5c5b42b5139c4::t_d559fa6e4596a7 12-19,23-24,36-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5d79eeec7355f11d53166efe209303ee4e9e0b27",
+  "prompts": {},
+  "sessions": {
+    "s_f5c5b42b5139c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bdecb7-a7a7-43a8-a475-f77b511eef67",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

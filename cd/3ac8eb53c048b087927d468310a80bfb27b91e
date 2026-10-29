@@ -1,0 +1,20 @@
+packages/workshop-frontend/src/routes/providers.tsx
+  s_f18ed49093aba3::t_3348634d8ebecc 181-182
+  s_f18ed49093aba3::t_56a96d90ad31d6 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cd3ac8eb53c048b087927d468310a80bfb27b91e",
+  "prompts": {},
+  "sessions": {
+    "s_f18ed49093aba3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "64175d87-67f9-4da9-8473-62dd12583e4b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

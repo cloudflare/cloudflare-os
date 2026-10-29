@@ -1,0 +1,27 @@
+packages/workshop-frontend/src/retainedShareKeys.ts
+  s_a726de9bb45000::t_5aaac372ef16be 1-74
+packages/workshop-frontend/src/useAuth.test.tsx
+  s_a726de9bb45000::t_fb26da955ed96f 72,152-169
+packages/workshop-frontend/src/useAuth.ts
+  s_a726de9bb45000::t_c24c9b54beb3ea 5,128-130
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_a726de9bb45000::t_09c6418e396f3c 36-38,40-49,139,161-162,189,210-212,239,263-321
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_a726de9bb45000::t_7726ec34a998bb 14-18,62-74,114-117,123-135,141-159,206-208
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e0701921563da45b18dd12f8c126cb217fe02521",
+  "prompts": {},
+  "sessions": {
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

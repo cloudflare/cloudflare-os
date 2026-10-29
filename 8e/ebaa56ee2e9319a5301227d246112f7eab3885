@@ -1,0 +1,38 @@
+packages/workshop-frontend/src/features/chat/composer/useComposerResources.test.tsx
+  s_7cdedd112f1b38::t_095964ab626a98 104,185,220,414,424,432
+  s_7cdedd112f1b38::t_9ab36a7b1121d6 182,404-405,410,415,420,425,430,433
+  s_26cbe985980ef3::t_6b15e4a7507ab4 36-41,64-80,146,200,234,270,299,390-403,406-409,411-413,416-419,421-423,426-429,431,434-559
+packages/workshop-frontend/src/features/chat/composer/useComposerResources.ts
+  s_26cbe985980ef3::t_ed7b518199c3dc 11,30-50,65-68,89-100,140-142,145,152,199-226,230-231,234,247-250,252,301-302,306-307,311,314,320,322-333,336,343,354-355
+  s_7cdedd112f1b38::t_095964ab626a98 69,237,267
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.tsx
+  s_26cbe985980ef3::t_ddf4f5f23b3233 219-221,251,278,281-294,380-387,756-757,1035-1038
+  s_7cdedd112f1b38::t_095964ab626a98 277,279-280
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.test.tsx
+  s_7cdedd112f1b38::t_5d081d5430fad6 12,465-470
+  s_26cbe985980ef3::t_cb4a64c5a13936 7,10-11,13-17,19-20,24-31,37,48-55,75-86,96,98,413-464,471-529
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8eebaa56ee2e9319a5301227d246112f7eab3885",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    },
+    "s_7cdedd112f1b38": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27f17d9c-43ca-4326-b441-0137032e92d2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

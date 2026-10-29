@@ -1,0 +1,23 @@
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_32c823f4dff3af::t_482f8ea21f6ea5 1-136
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_32c823f4dff3af::t_8e5f56254a4832 6-8,139-140,151-163
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_32c823f4dff3af::t_41136c64e593b3 238-239,260,265-269,279-280,309,347-352,358
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "14b1fb6940e670d39fef94e6670201c09301d0b2",
+  "prompts": {},
+  "sessions": {
+    "s_32c823f4dff3af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "869a6cf0-ea09-42de-9a46-62150b9378ba",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,79 @@
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_3402201043bce4::t_f2610efa56fd1a 7,9-10,55-56,158-159,162,272-276,280,297-309,311,313,325-339,489-491
+  s_3402201043bce4::t_cbef2d662bf469 492
+packages/gatekeeper-google/tsconfig.json
+  s_3402201043bce4::t_23bfac184fa566 5
+packages/gatekeeper-spotify/package.json
+  s_3402201043bce4::t_37172909ab40cf 13
+packages/gatekeeper-cloudflare/package.json
+  s_3402201043bce4::t_2cc89c82474971 15
+packages/gatekeeper-github/src/github.ts
+  s_3402201043bce4::t_76e2be4f55de7b 8,24-25,1181-1182,1188,1279-1283,1286,1304-1310,1312-1314,1317,1328,1333-1344,1524-1527
+  s_3402201043bce4::t_7f66593401f32c 1528
+pnpm-lock.yaml
+  s_3402201043bce4::t_4845d617066723 118-120,322-324,356-358,442-444,501-503,597-599,716-718,744-746,775-777,803-805,868-870
+packages/gatekeeper-email/src/email.ts
+  s_3402201043bce4::t_8617b764badcd3 19,21,169-170,175,301-305,308,314,320,326,450-452
+  s_3402201043bce4::t_8d4b8ad435a8f8 453-454
+packages/gatekeeper-notion/src/notion.ts
+  s_3402201043bce4::t_440ccdfc62480b 22,34-35,267-268,273,332-333,360-364,368,384-390,392,395,402-410,575-577
+  s_3402201043bce4::t_06b7f265c725a6 578
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_3402201043bce4::t_62aedf96c74cc7 8,19-20,335,392,455-460,462,467-468,471,479-488,686-688
+  s_3402201043bce4::t_80a72d32206c2b 689
+packages/gatekeeper-supabase/package.json
+  s_3402201043bce4::t_2ee37103ec6237 14
+packages/gatekeeper-slack/src/slack.ts
+  s_3402201043bce4::t_a025803419e551 8,10-11,13-14,260-261,265,344-345,380-384,388,406,408-413,415-416,419,421,425,438-457,655-657
+  s_3402201043bce4::t_896924a9a33558 658
+packages/gatekeeper-slack/tsconfig.json
+  s_3402201043bce4::t_81b5bded41da08 5
+packages/gatekeeper-github/package.json
+  s_3402201043bce4::t_9c6f8b5f54c3ac 15
+packages/gatekeeper-supabase/src/supabase.ts
+  s_3402201043bce4::t_c2718f53e35bd4 7,18-19,27,320-321,325,415-419,423,440-446,448-449,452,462-471,673-675
+  s_3402201043bce4::t_9aea94fcf858fb 676
+packages/gatekeeper-notion/package.json
+  s_3402201043bce4::t_5bbe3f5dd45de9 14
+packages/gatekeeper-zoominfo/package.json
+  s_3402201043bce4::t_e81e0d4b3b5523 13
+packages/gatekeeper-spotify/src/spotify.ts
+  s_3402201043bce4::t_b9a72c9b109fa2 8,20-21,80-90,449-450,454,540-544,548,563-568,570-576,578,581,590-606,761-763
+  s_3402201043bce4::t_85c1bbebffdac0 764
+packages/gatekeeper-linear/src/linear.ts
+  s_3402201043bce4::t_5c1f05c714e011 16,20-21,459-460,464,551-555,559,579-585,587-588,591,599-608,807-809
+  s_3402201043bce4::t_7f551b08656b6f 810
+packages/gatekeeper-email/package.json
+  s_3402201043bce4::t_24b912bc2b4174 14
+packages/gatekeeper-homeassistant/package.json
+  s_3402201043bce4::t_e68b83b0b2ee23 13
+packages/gatekeeper-confluence/src/confluence.ts
+  s_3402201043bce4::t_2b8e1c8d87cd7b 22,35-36,224-226,303-307,311,324,326-330,332-333,336,342-351,517-518
+  s_3402201043bce4::t_a0b1b33e5558a6 519-520
+packages/gatekeeper-google/src/google.ts
+  s_3402201043bce4::t_749d18fe28f6cc 3-5,293-294,299,390-397,464-468,470,496-507,518,520,524,538-552,867-870
+  s_3402201043bce4::t_e0080be32de749 871
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_3402201043bce4::t_15573a52c68efc 7,19-20,108-116,312-313,317,414-418,422,425,448-454,456-462,464,467,476-493,616-618
+  s_3402201043bce4::t_e9687681afa36e 619
+packages/gatekeeper-slack/package.json
+  s_3402201043bce4::t_d95831f42ee0f5 13
+packages/gatekeeper-linear/package.json
+  s_3402201043bce4::t_308205b220b9b0 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "63ddd96801341350adc750ccac3d311451c952da",
+  "prompts": {},
+  "sessions": {
+    "s_3402201043bce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a32aae8a-81f3-4288-a8db-4d09adf37f7c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

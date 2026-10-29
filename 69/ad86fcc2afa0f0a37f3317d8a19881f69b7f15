@@ -1,0 +1,28 @@
+packages/gatekeeper-google/src/slides-types.d.ts
+  s_05cdbcec96f16f::t_5e482d3a54929c 253-254
+packages/gatekeeper-google/src/docs-types.d.ts
+  s_05cdbcec96f16f::t_5e482d3a54929c 8-9
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_05cdbcec96f16f::t_5e482d3a54929c 181-182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "69ad86fcc2afa0f0a37f3317d8a19881f69b7f15",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_05cdbcec96f16f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2293583-4ce7-43c7-8705-b6fb3a100ac2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,53 @@
+packages/gatekeeper-context/src/library-read.ts
+  s_265cfc1bf8929d::t_368ad4b004634c 44
+  s_265cfc1bf8929d::t_78b307360fa418 7-9,12,38,46,67
+pnpm-lock.yaml
+  s_265cfc1bf8929d::t_5922176e94aa08 81,103-108,148,160,187,190,193,196,340,415,421,473,479,500,530,543,552,561,564,3799-3803,4204,4211,5047,5052,5092,5105,5196,5204,5225,5231,5233,5239,6966,6972,6987,6990,6994,6999,7004,7018,7020,7024,7042-7043,7063,7066,7083,7186-7187
+packages/gatekeeper-context/src/context-types.ts
+  s_265cfc1bf8929d::t_368ad4b004634c 67,72,162
+  s_265cfc1bf8929d::t_78b307360fa418 68-71,73-80,163-164,174,275
+packages/gatekeeper-context/src/context-collection.ts
+  s_265cfc1bf8929d::t_78b307360fa418 8-9,187-188,194-195,258,308,310,324,329-330,332
+  s_265cfc1bf8929d::t_2ad2bcd513c0b5 16,184,189-193,304,325
+  s_265cfc1bf8929d::t_368ad4b004634c 26-27,85,172,196,205,211,218,224,243,355,421
+  s_265cfc1bf8929d::t_897bdcbe2a7b57 86,197-204,227-228,230-232,234-236,238,240-242,244-257
+  s_265cfc1bf8929d::t_2ea82237d3ed9f 185-186
+  s_265cfc1bf8929d::t_e88becf2c5e23e 225,239
+  s_265cfc1bf8929d::t_1a8bfec0f5a3c9 349,351,353-354,357-362,373,376-380,416-417,419-420,422-431,433,435-438
+  s_265cfc1bf8929d::t_9355bfe16a925b 219
+  s_265cfc1bf8929d::t_0fba52feb6f04a 259
+  s_265cfc1bf8929d::t_e34dda12d48372 28,103,173,206-210,212-217,220-223,226,229,233,237,356,374,418,432,518,520,530,539,548
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_265cfc1bf8929d::t_b0d2edce8e1da8 193-234
+  s_265cfc1bf8929d::t_78b307360fa418 1-2,4-114,123-192,235-243
+  s_265cfc1bf8929d::t_2ad2bcd513c0b5 3,115-122
+packages/gatekeeper-context/src/agent-skill.ts
+  s_265cfc1bf8929d::t_78b307360fa418 1-8,10-14,16-20,22-39,41-42,48-51,58-75,77-107,109-120
+  s_265cfc1bf8929d::t_2ea82237d3ed9f 43-47,52-57
+  s_265cfc1bf8929d::t_368ad4b004634c 9,15,21,40,76,108
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_265cfc1bf8929d::t_368ad4b004634c 1723
+  s_265cfc1bf8929d::t_78b307360fa418 1725,1950,2946,2986,3025-3030,3178-3180
+packages/gatekeeper-context/package.json
+  s_265cfc1bf8929d::t_78b307360fa418 21-23
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_265cfc1bf8929d::t_78b307360fa418 5,14,20-24,40-68,227-236,238-243,251,259,273-306,314-326,328-332,334-335
+  s_265cfc1bf8929d::t_368ad4b004634c 72-73,81,260
+  s_265cfc1bf8929d::t_2ea82237d3ed9f 237,261,265,268
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a72c1881d3a06cdb98a3dff08eb76a4e3407f1f0",
+  "prompts": {},
+  "sessions": {
+    "s_265cfc1bf8929d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7238-7c21-74c2-a011-8304ebf1a852",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

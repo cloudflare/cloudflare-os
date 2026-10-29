@@ -1,0 +1,69 @@
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_544ac41f1d93fd::t_3ea7a222839b2d 683-685,687-688,691,703-704,709,712-713,720-721,725,730,732,734-745,747-756,759-763,767-768
+  s_544ac41f1d93fd::t_2147c349d22876 726,731,733,746,757-758,764
+  s_544ac41f1d93fd::t_76ec5623266246 727-729,765-766
+  s_544ac41f1d93fd::t_f03427db1b4f05 769
+packages/workshop-backend/src/ai-models.ts
+  s_544ac41f1d93fd::t_46c7a2bf7f76af 713-714
+  s_544ac41f1d93fd::t_b70ab80c6ae62f 719
+  s_544ac41f1d93fd::t_f74322b8036579 718
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_544ac41f1d93fd::t_5e1f6122006c77 160-161,163,228-245,435-448
+packages/workshop-shared/src/api.ts
+  s_544ac41f1d93fd::t_8c0f4debd5a4d6 480-482
+  s_544ac41f1d93fd::t_60f2eb02ea4fc0 1358-1362
+  s_544ac41f1d93fd::t_a3f65a2228fc15 1019-1020,1207-1209,1212-1222,1363
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_544ac41f1d93fd::t_bea2980dc6ccf6 76-78,127,137,197-223
+  s_544ac41f1d93fd::t_d88f061e341341 81
+  s_544ac41f1d93fd::t_8c0f4debd5a4d6 226
+packages/workshop-backend/src/ai-gateway.ts
+  s_544ac41f1d93fd::t_1b0baf9ac32db9 148
+  s_544ac41f1d93fd::t_8c0f4debd5a4d6 224-226
+  s_544ac41f1d93fd::t_a3f65a2228fc15 136-140,146,217-218,220-222
+  s_544ac41f1d93fd::t_bb2f63d8c7d1c3 219,223
+  s_544ac41f1d93fd::t_d04e7c985ef03a 227-228
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_544ac41f1d93fd::t_2147c349d22876 269-280,283-294,297-307,311,314-323,326-359,362-376
+  s_544ac41f1d93fd::t_3df5b615d961f1 136-138
+  s_544ac41f1d93fd::t_76ec5623266246 281-282,295-296,308-310,312-313,324-325,360-361
+packages/workshop-backend/src/user.ts
+  s_544ac41f1d93fd::t_bb2f63d8c7d1c3 671-672,703,705,922
+  s_544ac41f1d93fd::t_46c7a2bf7f76af 918-919
+  s_544ac41f1d93fd::t_a44cb2345ada8c 685
+  s_544ac41f1d93fd::t_6f22106d3fedfc 673
+  s_544ac41f1d93fd::t_9c21e0763f132b 704
+  s_544ac41f1d93fd::t_d09cbfa48d59bb 877-880,923
+packages/workshop-backend/src/admin-settings.ts
+  s_544ac41f1d93fd::t_bb2f63d8c7d1c3 450-452,454,513-514,517-518,770-773
+  s_544ac41f1d93fd::t_f132468fcaf9d1 453,515-516
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_544ac41f1d93fd::t_5e1f6122006c77 223-234
+packages/workshop-backend/src/server.ts
+  s_544ac41f1d93fd::t_bb2f63d8c7d1c3 243
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_544ac41f1d93fd::t_5e1f6122006c77 268,270-298,352,354
+  s_544ac41f1d93fd::t_3df5b615d961f1 263-267,269
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_544ac41f1d93fd::t_f1ca691a109ced 41
+  s_544ac41f1d93fd::t_576a541bebfe89 380,388
+packages/workshop-backend/src/admin-config.ts
+  s_544ac41f1d93fd::t_a3f65a2228fc15 74-80,121
+  s_544ac41f1d93fd::t_f1d8dcd9a00722 397-399
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "766ac9c23ad96331bc1fe8a53853101b48f614c7",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

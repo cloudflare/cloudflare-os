@@ -1,0 +1,26 @@
+packages/workshop-ios/ios/Gadgets/Images.xcassets/AppIcon.appiconset/Contents.json
+  s_05e5fdfde14468::t_68d604240928e4 52-99
+  s_05e5fdfde14468::t_756efef6207976 4,10,16,22,28,34,40,46,100
+packages/workshop-ios/scripts/build-app-icon.swift
+  s_05e5fdfde14468::t_68d604240928e4 89-111,113-114,116,123
+  s_05e5fdfde14468::t_756efef6207976 1-9,11,14-19,22,24-28,35-39,44-49,52-53,63,66-67,69,72,74,87-88,112,115,117-122,124-133
+  s_05e5fdfde14468::t_feb590d11424ca 29-34,40-43
+  s_05e5fdfde14468::t_1b467977290ade 10,12-13,20-21,23,50-51,54-60,64-65,68,70-71,73,75-86
+  s_05e5fdfde14468::t_d2f82da085d2a1 61-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "705526375d80e701f2adc6390ac064c1201a4017",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

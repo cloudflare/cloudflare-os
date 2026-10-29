@@ -1,0 +1,80 @@
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_e25e29d8ebebad::t_fdf28b82ea6d8f 11,134-135,139,144,147-148
+  s_e25e29d8ebebad::t_51e11cbff5db75 9,95-97,131-133,136-138,140-141,143,145-146,149,151-154
+  s_e25e29d8ebebad::t_1b1659c150e1f8 92-93
+  s_e25e29d8ebebad::t_a6a1e9a9d88db9 129-130
+  s_e25e29d8ebebad::t_7bccdd8df28393 98-105,110-112
+  s_e25e29d8ebebad::t_517226aeffffe2 150
+  s_e25e29d8ebebad::t_4d8705bc6c3f48 12,15,109,113-128
+  s_e25e29d8ebebad::t_d25d66ab35369a 16,142
+  s_e25e29d8ebebad::t_070f00c7d09b5f 106-108
+packages/mcp-shared/__tests__/scope.test.ts
+  s_e25e29d8ebebad::t_3ff90b37371e49 222-230
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_e25e29d8ebebad::t_3543d4825e6d9d 30-32,34-35
+  s_e25e29d8ebebad::t_0ef6cefbae7c50 37
+  s_e25e29d8ebebad::t_cfbcabd18277cd 9,46,58,60
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_b6f83fb7452057 246,396
+  s_e25e29d8ebebad::t_e72df43c861276 400-408
+  s_e25e29d8ebebad::t_517226aeffffe2 237-238,250-251
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_e25e29d8ebebad::t_cfbcabd18277cd 162
+  s_e25e29d8ebebad::t_6104ca7be0d255 50,72,86-99,142-143
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_e25e29d8ebebad::t_6dbf6a80948d1a 12,261-262,264-268,270-271,273-281,283-284,287,290-305,307-312
+  s_e25e29d8ebebad::t_e72df43c861276 174-176,178-181,205
+  s_e25e29d8ebebad::t_3ff90b37371e49 182-184
+  s_e25e29d8ebebad::t_b46d25330c4ad5 263,269,272,282,285-286,288-289,306
+  s_e25e29d8ebebad::t_2ba539b1fbeb9d 3-4,185-204
+  s_e25e29d8ebebad::t_d093340ce9b3cb 177
+packages/gatekeeper-mcp-portal/__tests__/configurator-ui.test.ts
+  s_e25e29d8ebebad::t_523cf7cf616801 22
+  s_e25e29d8ebebad::t_0f789a696f66fa 91,102,105-107
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_523cf7cf616801 181-187
+  s_e25e29d8ebebad::t_852740047924f9 112-113,116-118,129,133,136,139-151,159,169-179
+  s_e25e29d8ebebad::t_e72df43c861276 152-158,167-168,180
+  s_e25e29d8ebebad::t_d25d66ab35369a 197
+  s_e25e29d8ebebad::t_ae399eff60c6a8 160-166
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_12ec26507e9f01 41,43,75,85-86,90-91,111,115-126,128,135,334-348,352-356,358-361,363,375,414,424,427-428,433,448-451,461-462,464,472-473,475-476,543
+  s_e25e29d8ebebad::t_517226aeffffe2 87-89
+  s_e25e29d8ebebad::t_4d8705bc6c3f48 67,74,349-351,357,362,470
+  s_e25e29d8ebebad::t_a89edff54d9d9c 26,34,437-438,444,463,493-494,542,544,564
+  s_e25e29d8ebebad::t_fdf28b82ea6d8f 27,415,431-432,434-436,439-443,445,452-458,465-469,471,474
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_ae399eff60c6a8 210,222
+  s_e25e29d8ebebad::t_db78a69b8b3f8d 191-196,199-202
+  s_e25e29d8ebebad::t_3e335e2f94ffab 211
+  s_e25e29d8ebebad::t_fa501c1ced5c2a 89-91,136-140,143-144,151,153-156,160,165-166,169,171-174,177-180,187,190,197,208,212-220
+  s_e25e29d8ebebad::t_523cf7cf616801 146-149,152
+  s_e25e29d8ebebad::t_d25d66ab35369a 226-227,230,233-238
+  s_e25e29d8ebebad::t_7bccdd8df28393 167
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_87d000431cc6d7 573,575-576
+  s_e25e29d8ebebad::t_cfbcabd18277cd 574
+  s_e25e29d8ebebad::t_517226aeffffe2 48,54,321-322
+  s_e25e29d8ebebad::t_b28adef7a53733 577-580
+packages/gatekeeper-mcp-portal/README.md
+  s_e25e29d8ebebad::t_1829c8f634a6f3 170
+  s_e25e29d8ebebad::t_1542fc35ce4586 31-45,58-61,147,149-151,156-157,164,171,174,176-177
+  s_e25e29d8ebebad::t_cfbcabd18277cd 108,111,172-173
+  s_e25e29d8ebebad::t_517226aeffffe2 158-163,165-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "893a951a5f00d1a03e1ae824f67e33fe94feb679",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

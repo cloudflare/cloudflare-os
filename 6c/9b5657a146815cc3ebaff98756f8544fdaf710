@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/observer-coverage-scrub.test.ts
+  s_e3c1456410672e::t_29b56c102e36ce 3-5,8
+packages/workshop-backend/src/overseer.ts
+  s_e3c1456410672e::t_bfba079f572f55 8291-8294,8362-8365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6c9b5657a146815cc3ebaff98756f8544fdaf710",
+  "prompts": {},
+  "sessions": {
+    "s_e3c1456410672e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19fc7fdd-8235-4154-b783-6863ad5cfced",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

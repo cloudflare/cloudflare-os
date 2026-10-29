@@ -1,0 +1,53 @@
+packages/workshop-backend/src/env.d.ts
+  s_16a3a163f9f88e::t_5d3f8ef8aa73c6 18
+packages/workshop-backend/src/ai-gateway.ts
+  s_16a3a163f9f88e::t_25e3daac6c08c9 25-26,93-95,113
+packages/workshop-backend/src/ai-models.ts
+  s_16a3a163f9f88e::t_25e3daac6c08c9 16,39-40,61-65,67,80-86,91-99,109,164,172-179,183,193-195,197,207,210,213-214,216-217,219-220,227
+  s_16a3a163f9f88e::t_69f4bf7f36e54c 78
+  s_16a3a163f9f88e::t_1ef4d541cdde03 185,196
+packages/workshop-backend/src/overseer.ts
+  s_16a3a163f9f88e::t_1ef4d541cdde03 2422-2425
+  s_16a3a163f9f88e::t_25e3daac6c08c9 14-18,2420-2421,3288,3305,5428
+  s_b9d78ba39005bb::t_6dad19ac8eea20 13
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_16a3a163f9f88e::t_4eaaef958feb34 79,81,104-108
+  s_16a3a163f9f88e::t_813605293e0b99 38,44,94,124,143,169,203,272
+  s_16a3a163f9f88e::t_d35d83ce29454b 221-222,224-225,235,238-260,262-265,278
+  s_16a3a163f9f88e::t_134a0fbb176ab2 187,189,214-218
+  s_16a3a163f9f88e::t_5fbe9b4259b47c 154,156,173
+packages/workshop-backend/__tests__/web-fetch.test.ts
+  s_16a3a163f9f88e::t_bb50a2dbe0647c 8,112,123-125,135,146-150
+packages/workshop-backend/src/web-fetch.ts
+  s_16a3a163f9f88e::t_25e3daac6c08c9 174-175
+README.md
+  s_16a3a163f9f88e::t_5d3f8ef8aa73c6 73,102-103
+  s_16a3a163f9f88e::t_2a6845568cdc14 104,106
+docs/ai-gateway-billing.md
+  s_16a3a163f9f88e::t_2a6845568cdc14 62-67
+  s_16a3a163f9f88e::t_5d3f8ef8aa73c6 17-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1a6bb2c344463b979209ad55bcc01f1825834d4d",
+  "prompts": {},
+  "sessions": {
+    "s_16a3a163f9f88e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2c0bb8ffeWRj78Ro5gwWR55",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

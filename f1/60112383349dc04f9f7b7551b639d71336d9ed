@@ -1,0 +1,25 @@
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_e25e29d8ebebad::t_9353b83aa672d5 50,72,92-99
+  s_e25e29d8ebebad::t_839cb45f6d4f10 100-102
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_e25e29d8ebebad::t_9353b83aa672d5 24-26,28-30
+packages/gatekeeper-mcp-portal/__tests__/configurator-ui.test.ts
+  s_e25e29d8ebebad::t_a731898c60f7a6 102
+  s_e25e29d8ebebad::t_9353b83aa672d5 105-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f160112383349dc04f9f7b7551b639d71336d9ed",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

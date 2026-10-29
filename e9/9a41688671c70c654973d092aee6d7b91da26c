@@ -1,0 +1,49 @@
+packages/workshop-backend/src/external-message-gateway.ts
+  s_78a1a7c3756c1d::t_c70e18b6c7341a 30
+packages/workshop-backend/src/overseer.ts
+  s_78a1a7c3756c1d::t_56d0523b6e0c50 4438-4443,4445-4450
+  s_78a1a7c3756c1d::t_1b321d585631d0 2543-2544
+  s_78a1a7c3756c1d::t_20e9bacab21ba6 4406
+  s_78a1a7c3756c1d::t_ec7559129758c0 2498
+  s_78a1a7c3756c1d::t_2f64e88cb6719d 4420
+  s_78a1a7c3756c1d::t_ae595c7f7e83ed 2523
+  s_78a1a7c3756c1d::t_c757b932adf574 4409-4412
+  s_78a1a7c3756c1d::t_c90428acc406c2 930,938,943,945,947,961,968
+  s_78a1a7c3756c1d::t_8683fa9262d66c 2493-2494
+  s_78a1a7c3756c1d::t_69e46b95c9e020 2479-2480,2482
+  s_78a1a7c3756c1d::t_18079e144615c8 2516,2519-2520,2527-2529,2531,2534
+  s_78a1a7c3756c1d::t_d0030110d6b66c 4417-4418,4421-4422,4478-4479,4481-4483
+  s_78a1a7c3756c1d::t_d072f70fb18bc7 2474-2477,2481
+  s_78a1a7c3756c1d::t_c70e18b6c7341a 4419,4480
+  s_78a1a7c3756c1d::t_0036e5fe50bd8f 422,427
+  s_78a1a7c3756c1d::t_789153cd6ef2b8 2299,2303,2335,2377,2380,2407,2429,2454-2456,2464,2469,2497,2501,2504,2509-2511,2515,2537,2541,2546,4249,4489,6106
+  s_d62853a085272a::t_d830ce69737c6e 2309
+packages/workshop-shared/src/external-message-gateway.ts
+  s_78a1a7c3756c1d::t_c70e18b6c7341a 44
+  s_78a1a7c3756c1d::t_6186290c45ae92 3
+  s_78a1a7c3756c1d::t_549c622eb37318 19-20,43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e99a41688671c70c654973d092aee6d7b91da26c",
+  "prompts": {},
+  "sessions": {
+    "s_78a1a7c3756c1d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_093df5611ffeQY5XXuyr5ugGaQ",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_d62853a085272a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07f3a23baffeycd8CGIsH1bEDM",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

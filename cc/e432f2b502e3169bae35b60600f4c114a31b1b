@@ -1,0 +1,33 @@
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_fb1ead9db1e9e5 1,79-136,926-930,939-940,2011-2015,2770-2771
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_e6e2564de1d93f 34-35,50
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_a7bb70f5df31c6 3,14,155-159,821-828,3026-3031,3086-3090,3502-3544,7520-7528,7820-7821,7900,8386-8388
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_011d0cf132f015 483
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_1dfdf61332f5c7::t_1cf2fbeb5eb5e8 40,54,57
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_ba9d8b4c2b3d73 4396
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_7432fc7e4120b0 240-241
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_1f68bc8a8ef949 793-803,805-811,814-818,821-826,829,1213-1214,1222,1443-1444,1449-1473,1525-1528,1934,1938-1941,1964-1965,1980-1985
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cce432f2b502e3169bae35b60600f4c114a31b1b",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

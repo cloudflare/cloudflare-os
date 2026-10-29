@@ -1,0 +1,23 @@
+packages/workshop-frontend/index.html
+  s_7ebc2a75b360ad::t_02c0e59d58cd02 7-11
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7ebc2a75b360ad::t_f5965ce37fa59e 1019,1021-1023,1025-1026
+  s_7ebc2a75b360ad::t_2b5351ef24eedf 1109-1127
+  s_7ebc2a75b360ad::t_3cc580bd6f3809 1074-1075
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4f272ba62a4d08427eaaae7332e038ac2dea81d8",
+  "prompts": {},
+  "sessions": {
+    "s_7ebc2a75b360ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bee6e659-c28d-4b19-a30d-b44498ed993d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

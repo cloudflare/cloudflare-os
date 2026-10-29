@@ -1,0 +1,33 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4d52d07e403ec7e52564f2419e3723c301bf6ac8",
+  "prompts": {},
+  "sessions": {
+    "s_58367f93b79243": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f598cbe98ffeMAuO9VHkfYSKxN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_c57fbc57db258e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f5990b83cffeLKZGa8awZwvHKE",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

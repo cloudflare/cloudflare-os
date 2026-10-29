@@ -1,0 +1,36 @@
+packages/workshop-frontend/src/Activity.tsx
+  s_28123150a77f15::t_7d4a317d16eb30 1,647-652,690-691,696
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_28123150a77f15::t_199c591c7cdef6 6889-6893,6895,6953,6960
+packages/workshop-frontend/src/components/ResolveButton.tsx
+  s_28123150a77f15::t_057bdb336b48f9 8,14-19,32
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_3dacb3241b0d1d::t_2630f985fec5a1 82-84,86-87
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_3dacb3241b0d1d::t_5c9172c79b0ce9 246-247,258
+  s_3dacb3241b0d1d::t_e16910755e182f 517-518
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "948762fbcd19b0e46701a8bb494e3d6733dc84d8",
+  "prompts": {},
+  "sessions": {
+    "s_28123150a77f15": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fd04377-ba7e-45fe-82f3-8535aad1711d",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_3dacb3241b0d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6d45d09-7703-4cdc-ad53-ddc1f9ca4ec6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

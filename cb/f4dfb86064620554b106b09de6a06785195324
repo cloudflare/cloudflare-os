@@ -1,0 +1,37 @@
+.oxlintrc.json
+  s_46a6ef7969e9ae::t_e2339647eea8ed 84
+packages/router/__tests__/router.test.ts
+  s_46a6ef7969e9ae::t_5a2c6fdfc9509a 1-126
+packages/router/package.json
+  s_46a6ef7969e9ae::t_f699dc0e896806 1-22
+packages/router/src/index.ts
+  s_46a6ef7969e9ae::t_199742159cf3a9 1-2,4-18,21-22,24,26-27,29,34-35,40-45,47,55,62-70
+packages/router/tsconfig.json
+  s_46a6ef7969e9ae::t_97b583d6864326 1-17
+packages/router/vitest.config.ts
+  s_46a6ef7969e9ae::t_ad31a65122bea9 1-19
+packages/router/worker-configuration.d.ts
+  s_46a6ef7969e9ae::t_a9922f1c66c40e 1-14507
+packages/router/wrangler.jsonc
+  s_46a6ef7969e9ae::t_92a4f0eb2d82b2 1-38
+pnpm-lock.yaml
+  s_46a6ef7969e9ae::t_e2457a20e699a3 142,160,163,178,476-493,970,982-983,988-989,994-995,1000-1001,1006-1007,1013,3633,3675,3703,3777-3778,4245,4249,4266,4269,4272,4275,4278,6454,7178,7180-7184,7198,7204
+wrangler.jsonc
+  s_46a6ef7969e9ae::t_5820fb82e00115 3-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cbf4dfb86064620554b106b09de6a06785195324",
+  "prompts": {},
+  "sessions": {
+    "s_46a6ef7969e9ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce2212d8-15d0-4bbf-9af8-e2236b2c9c81",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

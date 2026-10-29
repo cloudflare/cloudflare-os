@@ -1,0 +1,42 @@
+packages/gatekeeper-spotify/src/spotify.ts
+  s_ce6b95284c6a0e::t_22980115bb35ed 1006-1009
+packages/gatekeeper-notion/src/notion.ts
+  s_ce6b95284c6a0e::t_3a0fa376eeee80 686-689
+  s_ce6b95284c6a0e::t_9ec628ac869a51 619-622
+packages/gatekeeper-google/src/google.ts
+  s_ce6b95284c6a0e::t_fa29714ed87da0 2150-2153
+  s_ce6b95284c6a0e::t_29994c1c450a89 1463-1466
+packages/workshop-backend/src/ai-models.ts
+  s_ce6b95284c6a0e::t_cc4546e22a4492 213-216
+packages/workshop-shared/src/gatekeeper.ts
+  s_ce6b95284c6a0e::t_fdec8a193d5cca 469-470
+packages/gatekeeper-supabase/src/supabase.ts
+  s_ce6b95284c6a0e::t_f2e036b5360a52 911-914
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_ce6b95284c6a0e::t_9324984e1b43f9 1105-1108
+packages/workshop-backend/src/overseer.ts
+  s_ce6b95284c6a0e::t_434527d8b73f02 4313-4318
+  s_ce6b95284c6a0e::t_fa041301283ab6 5652-5655
+packages/gatekeeper-email/src/email.ts
+  s_ce6b95284c6a0e::t_47d4dbebe89e6a 522-525
+packages/gatekeeper-github/src/github.ts
+  s_ce6b95284c6a0e::t_034def01805b6c 3139-3142
+packages/gatekeeper-linear/src/linear.ts
+  s_ce6b95284c6a0e::t_158b790fe620e8 1237-1240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "08ae4165fc8848b5ccd1ec47a9ac61c678f4187d",
+  "prompts": {},
+  "sessions": {
+    "s_ce6b95284c6a0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0afebb1-8396-4b25-b5c0-72b3256a95e6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,50 @@
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_03a6adb0968e42 11,3462,3464-3465,3464-3467,3472-3473,3473,3475-3478,3476,3481,3483-3484,3484
+  s_1dfdf61332f5c7::t_75e46b4ee60a94 7680,7759
+  s_1dfdf61332f5c7::t_8e0a00086d5516 15
+  s_1dfdf61332f5c7::t_e9ad0cacc412cf 3479
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 11,809-812,3466-3467,3472,3475,3477-3478,3481,3483,3485-3486
+  s_1dfdf61332f5c7::t_7962950e02fc6d 3050
+  s_1dfdf61332f5c7::t_a10e53ad0f90ff 3463,3471,3480
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 127-136,2994-2995,3474,3482
+  s_1dfdf61332f5c7::t_d519bec36cd85c 3485-3486
+  s_1dfdf61332f5c7::t_a2039ece597d00 809
+  s_1dfdf61332f5c7::t_0d098b16177c59 810-812
+  s_1dfdf61332f5c7::t_65d122bce18dc5 3468-3470
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 1871-1873
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 1867,1896
+  s_1dfdf61332f5c7::t_c25f8f223a6bc5 1871-1873
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 2,5-13,16,19-20,22-24,27-31,36
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 3-4,21
+  s_1dfdf61332f5c7::t_f029dee6b0a530 2,5-13,16,19-20,22-24,27-31,36
+  s_1dfdf61332f5c7::t_65d122bce18dc5 1,14-15,17-18,25-26,32-35
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_e5ac85fca2ef43::t_b8755853b94392 240-241
+  s_1dfdf61332f5c7::t_8eb329c7f0761c 240-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fe5b901510b4260f17aff35a666f9a29fd569934",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_e5ac85fca2ef43": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0520ee52affeJH69RpWzRRdY52",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

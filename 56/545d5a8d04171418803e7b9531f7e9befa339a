@@ -1,0 +1,25 @@
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_ea02e51719966b::t_30cbd5fdbab13b 24,81,101,106-107,117-120,293-338
+packages/integration-tests/src/rpc-client.ts
+  s_ea02e51719966b::t_25a4cb109fdb56 80-87
+docs/observers.md
+  s_ea02e51719966b::t_c6cff309a9b0b3 100
+docs/sharing.md
+  s_ea02e51719966b::t_a5de2ccdd83fa5 100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "56545d5a8d04171418803e7b9531f7e9befa339a",
+  "prompts": {},
+  "sessions": {
+    "s_ea02e51719966b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69722b37-a87f-46c2-bee8-3c2a79849264",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

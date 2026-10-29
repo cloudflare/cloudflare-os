@@ -1,0 +1,19 @@
+scripts/preview/preview.mjs
+  s_d5a5c2310a35ff::t_4d7d4d43e3cf1e 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "30ebc380d490d9ae73f0c4173862162f57ad4f82",
+  "prompts": {},
+  "sessions": {
+    "s_d5a5c2310a35ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2811bfc5-5e06-4bfd-b283-0eb104af8476",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

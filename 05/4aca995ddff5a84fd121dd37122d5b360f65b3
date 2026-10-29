@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_244f2101fabd66::t_a1a5faaf86f21b 14-25,36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "054aca995ddff5a84fd121dd37122d5b360f65b3",
+  "prompts": {},
+  "sessions": {
+    "s_244f2101fabd66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_244f2101fabd66",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

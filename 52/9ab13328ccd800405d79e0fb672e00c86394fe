@@ -1,0 +1,23 @@
+docs/observers.md
+  s_6f89b2f4ac3a92::t_4f1123d57d4aef 628
+packages/gatekeeper-google/README.md
+  s_6f89b2f4ac3a92::t_14dcb105c36059 123-128
+packages/gatekeeper-google/src/google.ts
+  s_6f89b2f4ac3a92::t_3c82050dddc728 884-885,971-979
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "529ab13328ccd800405d79e0fb672e00c86394fe",
+  "prompts": {},
+  "sessions": {
+    "s_6f89b2f4ac3a92": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bac66a40-cd69-470a-ab91-5e2425762fb9",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

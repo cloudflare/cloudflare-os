@@ -1,0 +1,66 @@
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_cd499ea12d2b3c::t_678ee826129eab 146
+  s_cd499ea12d2b3c::t_674384cc1dcb10 147
+  s_cd499ea12d2b3c::t_26ef9c823f1b82 3-4,88-89,91,98-100,102,104-105,110,112,114,116-118,121-125,128-129,132,134-135,137,141-142
+packages/workshop-shared/src/gatekeeper.ts
+  s_cd499ea12d2b3c::t_26ef9c823f1b82 21-24,77-78,105-108,110,112-115,117,120-122,125-126
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_cd499ea12d2b3c::t_b1b2209cbda6c1 169
+  s_cd499ea12d2b3c::t_407dfa86da10f9 126-127,130
+  s_cd499ea12d2b3c::t_d408fea3145be6 4,135,156,189-190
+packages/gatekeeper-context/src/library-read.ts
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 12,175
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_cd499ea12d2b3c::t_d408fea3145be6 21,307-308
+  s_cd499ea12d2b3c::t_407dfa86da10f9 8,40,305-306,318,328-338,340-341,343-344
+  s_cd499ea12d2b3c::t_f323520dddd085 41,43,303-304
+  s_cd499ea12d2b3c::t_fa5d953e116f8b 42,244
+  s_cd499ea12d2b3c::t_47838caab3526e 233,243,245
+  s_cd499ea12d2b3c::t_45f24506d7b2ca 242,246
+packages/workshop-backend/src/agent-catalog.ts
+  s_cd499ea12d2b3c::t_26ef9c823f1b82 3,16-20,23-28,30,32-33,43-44,47-52,54,57,64,88
+packages/gatekeeper-context/src/context-types.ts
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 147-149
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_cd499ea12d2b3c::t_fa5d953e116f8b 1724,1726,1951,3188
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 2988,3034
+packages/gatekeeper-context/src/context-collection.ts
+  s_cd499ea12d2b3c::t_45f24506d7b2ca 191-192,214
+  s_cd499ea12d2b3c::t_39ada0abb1d7f4 8,17-18,89,184-185,188,198,201-203,206,208-209,211-212,261-262,266,268,283-284,286-291,295,298,319,321,387,389,476,483
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 11,207
+  s_cd499ea12d2b3c::t_fa5d953e116f8b 196-197,199-200
+  s_3b6d8098f24a7b::t_7af3e390a99adb 193-195
+packages/workshop-shared/src/api.ts
+  s_cd499ea12d2b3c::t_407dfa86da10f9 1094-1095
+packages/gatekeeper-context/src/agent-skill.ts
+  s_cd499ea12d2b3c::t_b1b2209cbda6c1 17,28,100
+  s_cd499ea12d2b3c::t_7d247b5970e561 3
+  s_cd499ea12d2b3c::t_407dfa86da10f9 9-10,30,41,115-116
+  s_cd499ea12d2b3c::t_39ada0abb1d7f4 23
+  s_cd499ea12d2b3c::t_d408fea3145be6 29
+  s_3b6d8098f24a7b::t_989cdd573d0e78 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d2a7c9fc393ca8cd2f9f9fad5c12a209c241e153",
+  "prompts": {},
+  "sessions": {
+    "s_3b6d8098f24a7b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_09616466fffeJujVX6V8f1na1V",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+docs/observers.md
+  s_cf9cda7e93fb6f::t_947419dd15d69f 365-372,390-394
+docs/sharing.md
+  s_cf9cda7e93fb6f::t_626a7b9916f1cd 162-163
+packages/workshop-backend/__tests__/revocation-restart-window.test.ts
+  s_cf9cda7e93fb6f::t_1ebdfdfad1307d 1-153
+packages/workshop-backend/src/overseer.ts
+  s_cf9cda7e93fb6f::t_18297f81c472af 4577-4586,4739-4747,5161-5167,8077-8088,8091,8096-8099
+packages/workshop-backend/src/sharing.ts
+  s_cf9cda7e93fb6f::t_05fbbd97f0b8a3 312-313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a7d046b687ea681f20a6b0b8c967334be4645d47",
+  "prompts": {},
+  "sessions": {
+    "s_cf9cda7e93fb6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbd45cc1-bb9f-4ad8-bd45-3d8db79f288c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

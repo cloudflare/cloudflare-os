@@ -1,0 +1,138 @@
+packages/gatekeeper-google/src/sheets.ts
+  s_010272bf0842e6::t_2aff785feb2fe9 21,33
+  s_010272bf0842e6::t_3945cead3321f5 24-26,32,48-49,321-335,435,532-569,571-602,726-729
+  s_010272bf0842e6::t_09c650e10967c6 22-23
+  s_010272bf0842e6::t_8023c376acd903 570
+  s_f8f4e8eafb49cb::t_b8f4ca21534386 37
+  s_f8f4e8eafb49cb::t_092f3482460551 38-39
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_010272bf0842e6::t_b0b2aa4bef43e2 1,3
+  s_010272bf0842e6::t_1be2e3cd5630b4 2,19-58,75-82,190-194,225-229
+  s_f8f4e8eafb49cb::t_f6b49189f6562e 230-231
+  s_f8f4e8eafb49cb::t_30183b5975d18f 198-200
+  s_f8f4e8eafb49cb::t_b320287cb5c5d3 201
+  s_f8f4e8eafb49cb::t_b8f4ca21534386 202
+  s_f8f4e8eafb49cb::t_0edbc2613a5adf 203-207
+packages/gatekeeper-google/src/sheets-simulation.ts
+  s_010272bf0842e6::t_809bf3b6aeb19f 38,40
+  s_010272bf0842e6::t_69db77bd34903b 15-19,29,39,43,81-83,88,100,127-129,133,152,444-456,460-461,472-477,715-719,746-790
+packages/gatekeeper-google/src/sheets-input.ts
+  s_010272bf0842e6::t_3d920c41c9e62c 312
+  s_010272bf0842e6::t_ae1cc0ac3452e5 313
+  s_63fdba5c9a28cc::t_0344bb13ba5023 6,9-10,30-33,46,64,133-241,321,371,378-387,396
+packages/gatekeeper-google/src/sheets-plan.ts
+  s_010272bf0842e6::t_6a9f47cb774f69 19,97,100,103,229,302,323
+  s_010272bf0842e6::t_b28c995d738c38 337,340,366-367,372,375,377-379,386,394,406,414,440,442,455,478,493,498,570,644-645
+  s_010272bf0842e6::t_255b37cfdecaa4 7-9,15,18,24,31,98,104-110,216-228,230-290,292-301,304-322,324-336,661,727,839,920,942
+  s_f8f4e8eafb49cb::t_d061f740b5ea78 41-42,630-631
+  s_f8f4e8eafb49cb::t_44af298f0bda49 452
+  s_f8f4e8eafb49cb::t_7da5ebfe9529c5 29,94-95,99,126-128,138-155,157-158,162,432-436,450-451,491,728
+  s_f8f4e8eafb49cb::t_1f40463399d109 167-168,170-171,174-175,303,357,359,376,380,421,626,633,872-873
+  s_0c68076cfec9c1::t_26ace7b540b8c6 921-924
+packages/gatekeeper-google/src/sheets-format.ts
+  s_010272bf0842e6::t_208c8225d9f4e9 16
+  s_010272bf0842e6::t_d3ec6134cce2e6 1-15,17-234
+packages/gatekeeper-google/__tests__/workerd/sheets-actions.test.ts
+  s_010272bf0842e6::t_758a63ad495a6c 2131-2132
+  s_010272bf0842e6::t_ac42939aa96995 6,9-11,28,49-92,105-106,156,198-292,454-455,464,515-537,563-606,645-649,657-660,689-690,698-699,732-736,853,928,1477,1889-2130
+  s_f8f4e8eafb49cb::t_67d11b4e777171 150-155
+packages/gatekeeper-google/__tests__/sheets-fixture.ts
+  s_c64553d463df78::t_03b73c0bc8cb67 216-261
+packages/gatekeeper-google/__tests__/sheets-simulation.test.ts
+  s_010272bf0842e6::t_6fe3bc69a34c44 3,15-16,676-859,861-868
+  s_f8f4e8eafb49cb::t_17a6d8d278b239 5
+  s_f8f4e8eafb49cb::t_f43c4549e72d66 860
+  s_f8f4e8eafb49cb::t_b8f4ca21534386 10
+  s_f8f4e8eafb49cb::t_092f3482460551 11
+packages/gatekeeper-google/__tests__/types.test.ts
+  s_c64553d463df78::t_67c88ceef6cc34 230-257
+packages/gatekeeper-google/__tests__/workerd/native-sessions.test.ts
+  s_c64553d463df78::t_02a1e6f95db231 16,226-229,506-513,558-574,613
+packages/gatekeeper-google/__tests__/workerd/sheets-session.test.ts
+  s_010272bf0842e6::t_bbbb2a5c97fbd0 12-13,65-77,82,103-104,122-153,366,453-581
+  s_f8f4e8eafb49cb::t_2f9e3f0963e9c4 17,452
+  s_f8f4e8eafb49cb::t_17a6d8d278b239 105-118,120-121
+packages/gatekeeper-google/src/sheets-api.ts
+  s_010272bf0842e6::t_0d992708796938 2,7-10,13,18,135-146,435-519
+  s_010272bf0842e6::t_8023c376acd903 568,603-619
+  s_010272bf0842e6::t_ae9a565f85a629 620
+  s_f8f4e8eafb49cb::t_b44d4ec5f0ede3 11-12
+packages/gatekeeper-google/src/sheets-read-types.d.ts
+  s_010272bf0842e6::t_a2906684632e19 66-132,159-165
+packages/gatekeeper-google/__tests__/sheets-format.test.ts
+  s_63fdba5c9a28cc::t_0a7a6bb4bcfcc8 1-5,7-345
+  s_010272bf0842e6::t_ae9a565f85a629 355-356
+  s_010272bf0842e6::t_523b461357d03a 6,346-354
+packages/gatekeeper-google/__tests__/sheets-input.test.ts
+  s_63fdba5c9a28cc::t_414ad6dbf80cf8 47-48,204,209-338
+packages/gatekeeper-google/__tests__/sheets-plan.test.ts
+  s_63fdba5c9a28cc::t_13176dc9b33c42 153-181,525-526,575-577,847-852
+  s_f8f4e8eafb49cb::t_47a2a851cd8a60 765-767
+  s_f8f4e8eafb49cb::t_cc4bb42bb41a38 714-715,732,758,761,769,794-795
+packages/gatekeeper-google/src/sheets-actions.ts
+  s_8bbf84fb73a6a3::t_b5ae1ee75cd874 11-12,44-45,79-81,83-86,89-90,257-323,356-357,413,417,429
+packages/gatekeeper-google/src/type-bundle.ts
+  s_63fdba5c9a28cc::t_3c83b71f7dc431 24-26
+packages/gatekeeper-google/README.md
+  s_f8f4e8eafb49cb::t_f6b49189f6562e 434
+  s_f8f4e8eafb49cb::t_30183b5975d18f 435
+  s_f8f4e8eafb49cb::t_b320287cb5c5d3 436
+  s_f8f4e8eafb49cb::t_b8f4ca21534386 437,440
+  s_f8f4e8eafb49cb::t_0edbc2613a5adf 438-439
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a10c813570265c2d1b13d3af8cf655e0e436b9f2",
+  "prompts": {},
+  "sessions": {
+    "s_010272bf0842e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_0c68076cfec9c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84984110-a45c-49f6-ab14-a52150ec2200",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_63fdba5c9a28cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a0d06df6f1e3966ae",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8bbf84fb73a6a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a19e5ea3a3a9ad0c5",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c64553d463df78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "190b76b5-6004-4f84-b206-24043da8572a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f8f4e8eafb49cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "96d8cda6-efce-42a7-8834-fd3434ebce3b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

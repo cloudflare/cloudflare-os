@@ -1,0 +1,27 @@
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/comments-model.test.ts
+  s_e1dd627472f56c::t_6cb53d98edc5db 11,60-73
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/session.test.ts
+  s_e1dd627472f56c::t_7ecfb277b3ed53 114-137
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/comments-model.ts
+  s_e1dd627472f56c::t_afb365fa2c26f4 85-92,136-140,150,155,158
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/protocol.ts
+  s_e1dd627472f56c::t_1eafdf5c5199cb 41-46,103-104
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/session.ts
+  s_e1dd627472f56c::t_7d837e0ffac7f2 51-53,56-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e3a010ea8e3145a7612319144c5956dfaadf8580",
+  "prompts": {},
+  "sessions": {
+    "s_e1dd627472f56c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a708a8fa-f215-459a-b93e-8c454b24072f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

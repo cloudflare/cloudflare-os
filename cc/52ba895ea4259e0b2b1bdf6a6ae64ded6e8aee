@@ -1,0 +1,23 @@
+docs/observers.md
+  s_d1089a88558635::t_d7d806ed34109c 436-443
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_d1089a88558635::t_3ac74b9b372597 323-344
+packages/workshop-backend/src/overseer.ts
+  s_d1089a88558635::t_5b96cca615bbd9 9718-9737
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cc52ba895ea4259e0b2b1bdf6a6ae64ded6e8aee",
+  "prompts": {},
+  "sessions": {
+    "s_d1089a88558635": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e87b81c-e915-4a43-90c9-be649c6d0cf2",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

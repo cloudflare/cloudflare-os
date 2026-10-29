@@ -1,0 +1,19 @@
+packages/workshop-backend/src/deployment-updates.ts
+  s_99c5462c433ffc::t_84275bb8ce8000 5,33-49,56,122-123,125-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0757d0b768cf24cad3347c98d941ff9d897a299a",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

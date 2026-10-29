@@ -1,0 +1,87 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_58819f73dfb5a6::t_bd9279b705cd61 61-66,2794,2797-2800,3911,5383-5390,5467-5488,5527-5576,5610,5638,5640-5644,5647-5654,5656,5658,5660,6258-6261,6598-6600,6644-6647,6678-6685
+packages/workshop-frontend/src/Connections.tsx
+  s_58819f73dfb5a6::t_4e7fcded69cdbd 25-27,61-62,220,228,232-248
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_58819f73dfb5a6::t_c7eabea82bfe3d 49-54,343,473-474,1894-1901,1987-1997,2072-2074,2196-2203
+packages/workshop-frontend/src/ShareModal.tsx
+  s_58819f73dfb5a6::t_7c7eb97ff748de 24-26,345,1347-1351,1353,1406-1408
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_58819f73dfb5a6::t_dbea1f695ffcf9 8-9,61-64
+packages/workshop-frontend/src/features/chat/composer/ComposerAddMenu.tsx
+  s_58819f73dfb5a6::t_7e04f5010566ed 22-25,58,96-97,128,136,148,305,320-323,331,400-406
+packages/workshop-frontend/src/features/scoped-connections/AccountUsageDialog.tsx
+  s_74eb0b1cbb84f7::t_f04f54c576f285 1-63
+packages/workshop-frontend/src/features/scoped-connections/ChatAccessLostState.tsx
+  s_74eb0b1cbb84f7::t_756b99943e33cb 1-25
+packages/workshop-frontend/src/features/scoped-connections/ChatConnectionsPanel.tsx
+  s_74eb0b1cbb84f7::t_0f3966a28ccc2f 1-47
+packages/workshop-frontend/src/features/scoped-connections/ConnectToChatDialog.tsx
+  s_58819f73dfb5a6::t_27be35d5a0c823 1-295
+packages/workshop-frontend/src/features/scoped-connections/ConnectionStatusPill.tsx
+  s_6e159c0858b8f9::t_86ffca33d7782c 1-20
+packages/workshop-frontend/src/features/scoped-connections/GadgetShareDialog.tsx
+  s_58819f73dfb5a6::t_9820ed0a8c9126 1-164
+packages/workshop-frontend/src/features/scoped-connections/PrototypeChatCard.tsx
+  s_74eb0b1cbb84f7::t_2ed989d4821a08 1-145
+packages/workshop-frontend/src/features/scoped-connections/ScopeIcon.tsx
+  s_74eb0b1cbb84f7::t_dd4bbccac7b9fd 1-29
+packages/workshop-frontend/src/features/scoped-connections/ScopedConnectionList.tsx
+  s_58819f73dfb5a6::t_cf93dbaa28eba7 1-123
+packages/workshop-frontend/src/features/scoped-connections/StandaloneGadgetPage.tsx
+  s_74eb0b1cbb84f7::t_2419e6919dd202 1-77
+packages/workshop-frontend/src/features/scoped-connections/TransferDialog.tsx
+  s_6e159c0858b8f9::t_c6abe1907a5f9d 1-67
+packages/workshop-frontend/src/features/scoped-connections/prototypeState.ts
+  s_58819f73dfb5a6::t_4f108a1aafc0f6 3,5,7-173
+packages/workshop-frontend/src/features/scoped-connections/vendorBranding.ts
+  s_74eb0b1cbb84f7::t_749e3ee7d5a28c 1-7
+packages/workshop-frontend/src/routeTree.gen.ts
+  s_58819f73dfb5a6::t_93f727a0b4532b 28,110-114,133,152,172,193,212,231,251,368-374,395
+packages/workshop-frontend/src/routes/g.$workspaceId.$gadgetId.tsx
+  s_74eb0b1cbb84f7::t_9ed17fe7848672 1-13
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_58819f73dfb5a6::t_db59087191edc3 19-21,471,857,878-884
+packages/workshop-frontend/src/storyboard/fakeBackend.ts
+  s_58819f73dfb5a6::t_cbd8bff0d1cff2 147-151,171,174,176-178
+packages/workshop-frontend/src/storyboard/main.tsx
+  s_58819f73dfb5a6::t_4ab92ab39d57c6 13,18-23,33-34
+packages/workshop-frontend/src/storyboard/shots.ts
+  s_58819f73dfb5a6::t_be1c15394c0289 3-32,41,57-82,84-357,360-507,509-908,911-1018,1021-1022,1025-1073,1078-1080
+packages/workshop-frontend/src/storyboard/world.ts
+  s_58819f73dfb5a6::t_85e0f7504b24af 24,30
+storyboard/tools/capture.mjs
+  s_58819f73dfb5a6::t_b515d0f9c7f0e8 87-92,143-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "44717c39a0efa939dbfd8225b33218eb2cd37422",
+  "prompts": {},
+  "sessions": {
+    "s_58819f73dfb5a6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed869cedaffeaNXQbjGyMXeIZR",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

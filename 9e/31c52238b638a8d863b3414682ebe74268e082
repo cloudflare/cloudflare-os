@@ -1,0 +1,137 @@
+packages/gatekeeper-slack/deploy-inputs.json
+  s_26c0be70719a03::t_25ec94d7ed6688 1-20
+packages/router/src/index.ts
+  s_8020c00abab0eb::t_22cd65518a6938 71
+  s_8020c00abab0eb::t_f6cd3a39643b81 11-14
+  s_4842f19c489ca9::t_4821920719c8d8 20
+scripts/testdata/fixture-assets/access/assets/shared.css
+  s_26c0be70719a03::t_ff5d081d5975b8 1
+scripts/release-promote.test.js
+  s_26c0be70719a03::t_0a8016db2e6b92 1-33
+scripts/release/upload-release.mjs
+  s_26c0be70719a03::t_d46622355af699 1-110
+scripts/release/build-release.mjs
+  s_4842f19c489ca9::t_3f8010d766d4d2 73-76
+  s_26c0be70719a03::t_56f5f0156916a6 1-3,6-48,50-53,58,63-72,77-91,93-94,96-142
+  s_4842f19c489ca9::t_fa3d9310722386 4-5
+  s_8020c00abab0eb::t_6b5c5a232f05c4 49,54-57,59-62
+  s_4842f19c489ca9::t_87fa6fc4766102 92,95
+scripts/testdata/fixture-assets/access/assets/app.js
+  s_26c0be70719a03::t_2fd709ec6e53cc 1
+AGENTS.md
+  s_8020c00abab0eb::t_bdc4b63bc6160f 33
+  s_8020c00abab0eb::t_3b42d02ffca315 42-44,46,51
+  s_8020c00abab0eb::t_89b3d17856e73c 47-50
+  s_8020c00abab0eb::t_dba223d7e4d1a0 45
+  s_4842f19c489ca9::t_ee43d49baf0447 52
+scripts/testdata/fixture-bundles/gatekeeper-context/context.js
+  s_26c0be70719a03::t_db87be2266ba54 1
+scripts/testdata/fixture-bundles/gatekeeper-google/abc123-types.txt
+  s_26c0be70719a03::t_c5b1b7b356fc23 1
+scripts/testdata/fixture-bundles/gatekeeper-github/github.js
+  s_26c0be70719a03::t_bd3a9e0423661b 1
+scripts/testdata/fixture-assets/access/index.html
+  s_26c0be70719a03::t_6ce982908c5fde 1
+scripts/release-hash.test.js
+  s_4842f19c489ca9::t_572e68c75ee3db 73-75,79-83,85-86
+  s_26c0be70719a03::t_4179a9ad2f5480 1-72,76-78,84,87-92
+scripts/testdata/fixture-bundles/gatekeeper-zoominfo/zoominfo.js
+  s_26c0be70719a03::t_32a01c3c64dcd0 1
+scripts/testdata/fixture-bundles/gatekeeper-google/google.js.map
+  s_26c0be70719a03::t_bef1da93933604 1
+scripts/release/promote-release.mjs
+  s_8020c00abab0eb::t_41e6f8b843a851 64-65
+  s_8020c00abab0eb::t_62e35cb506ddc6 5-10
+  s_26c0be70719a03::t_893ad404582699 1-4,11-63,66-155
+package.json
+  s_26c0be70719a03::t_8fdccb9346f51a 18
+scripts/testdata/fixture-bundles/gatekeeper-scheduler/scheduler.js
+  s_26c0be70719a03::t_cfca2eee53234e 1
+packages/gatekeeper-google/deploy-inputs.json
+  s_26c0be70719a03::t_1b614d22cbbeb8 1-21
+scripts/release-manifest.test.js
+  s_26c0be70719a03::t_2d6e5050afc0f7 1-118,120-126,128-192
+  s_4842f19c489ca9::t_258c9a60996a72 119,127
+scripts/testdata/fixture-bundles/workshop-backend/server.js
+  s_26c0be70719a03::t_1bab3218e49d39 1
+scripts/testdata/fixture-bundles/gatekeeper-cloudflare/cloudflare.js
+  s_26c0be70719a03::t_1e9e10acc04771 1
+.gitlab-ci.yml
+  s_8020c00abab0eb::t_89b761eda4ba63 60-62,82-96,116-123,134-142
+  s_26c0be70719a03::t_0f7fb03feb0588 111,114
+  s_26c0be70719a03::t_7031f12d24ae99 7,52-59,63-81,97-110,112-113,115,124-133
+  s_8020c00abab0eb::t_a764a1a385c433 143
+scripts/testdata/fixture-bundles/gatekeeper-linear/linear.js
+  s_26c0be70719a03::t_926636e8d34e38 1
+scripts/testdata/fixture-bundles/router/index.js
+  s_26c0be70719a03::t_0f0b1d16a62934 1
+scripts/testdata/fixture-bundles/gatekeeper-google/README.md
+  s_26c0be70719a03::t_945a9b17662828 1
+packages/gatekeeper-github/deploy-inputs.json
+  s_26c0be70719a03::t_381f150159c686 1-20
+scripts/testdata/fixture-bundles/gatekeeper-confluence/confluence.js
+  s_26c0be70719a03::t_bb2a2e020406b4 1
+scripts/testdata/fixture-bundles/gatekeeper-mcp/mcp.js
+  s_26c0be70719a03::t_da7117534823f9 1
+scripts/testdata/fixture-bundles/gatekeeper-spotify/spotify.js
+  s_26c0be70719a03::t_fd68f2c820e7a8 1
+scripts/release/hash-lib.mjs
+  s_26c0be70719a03::t_b62bf9fc1160b5 1-114
+scripts/testdata/fixture-bundles/gatekeeper-notion/notion.js
+  s_26c0be70719a03::t_688d2126b64ca6 1
+scripts/testdata/fixture-bundles/gatekeeper-mcp-portal/mcp-portal.js
+  s_26c0be70719a03::t_64bff3c039d24c 1
+packages/gatekeeper-notion/deploy-inputs.json
+  s_26c0be70719a03::t_8eaf60ec64d233 1-20
+scripts/testdata/fixture-bundles/gatekeeper-google/google.js
+  s_26c0be70719a03::t_704858c381715c 1
+scripts/testdata/fixture-bundles/gatekeeper-supabase/supabase.js
+  s_26c0be70719a03::t_c66bf779b419b5 1
+scripts/release/manifest-lib.mjs
+  s_26c0be70719a03::t_5df5c15d81334b 1-42,46-163,167-266
+  s_8020c00abab0eb::t_a093ac17c2088a 164-166
+  s_8020c00abab0eb::t_0cacc5bae0b709 43-45
+scripts/testdata/fixture-bundles/gatekeeper-email/email.js
+  s_26c0be70719a03::t_e7a9551e19acfc 1
+scripts/testdata/fixture-bundles/gatekeeper-homeassistant/homeassistant.js
+  s_26c0be70719a03::t_3c4a42d08e78d7 1
+scripts/testdata/fixture-bundles/gatekeeper-slack/slack.js
+  s_26c0be70719a03::t_361ba139517101 1
+scripts/testdata/golden-manifest.json
+  s_8020c00abab0eb::t_57b8d9ef518d70 510,516,552,558,665,671
+  s_26c0be70719a03::t_838652d8337094 1-509,511-515,517-551,553-557,559-664,666-670,672-1118
+scripts/testdata/fixture-assets/access/assets/print.css
+  s_4842f19c489ca9::t_d0391da171bf06 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9e31c52238b638a8d863b3414682ebe74268e082",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_4842f19c489ca9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e639c9d9-6252-4de9-af8a-a77f107d0bcf",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_8020c00abab0eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9e9ee91-0307-41bc-9530-0bb117fda2d8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

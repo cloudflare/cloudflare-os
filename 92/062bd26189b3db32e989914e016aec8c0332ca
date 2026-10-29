@@ -1,0 +1,118 @@
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_f74e55bad93be8::t_a14467632c6ab6 2,4
+  s_f74e55bad93be8::t_0c39edd0749f82 29,125
+  s_f74e55bad93be8::t_30eb7a0ac1b904 1,3,5-10,12,15-28,30-67,69-124,126-134
+  s_f74e55bad93be8::t_d77da4a2dd8aa0 13
+  s_f74e55bad93be8::t_3cc8808cc9e4fe 11,14,68
+packages/workshop-frontend/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 9,40-41
+  s_f74e55bad93be8::t_bb1fbce11e21a5 38
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_f74e55bad93be8::t_4f38f36b49e8cc 1-2,4,9-16,21-22,24-34,37-139
+  s_f74e55bad93be8::t_0a6e3f140f75f3 5-6,23,35-36
+  s_f74e55bad93be8::t_4642b846973d62 7-8,17-20
+  s_68cc100c981f46::t_7ffd0b954f6876 3
+packages/workshop-frontend/src/components/chat/slash-command-input.test.ts
+  s_f74e55bad93be8::t_319004d5782cb8 4,45,51-55,59
+  s_f74e55bad93be8::t_a10eace8811085 5
+  s_f74e55bad93be8::t_404d8f9a76b8e8 56
+  s_f74e55bad93be8::t_0254e49d75bdd8 1-3,6-44,46-50,57-58,60-77
+packages/workshop-backend/src/slash-commands.ts
+  s_68cc100c981f46::t_0d24f1cbf88539 3
+  s_68cc100c981f46::t_446c8a06a254e2 1
+  s_68cc100c981f46::t_06519ea3f597f9 2,4-163
+pnpm-lock.yaml
+  s_f74e55bad93be8::t_2e8b45abc8eca4 81,190,334,409,467,547-549,717-719,957-984,2400-2403,2411-2414,2430-2432,2503-2506,2687-2690,2697-2700,2705-2708,2746-2748,2784-2792,2907-2909,3131-3133,3177-3179,3228-3231,3294-3296,3300-3306,3403-3405,3451-3457,3466-3473,3687-3690,3695-3698,3702-3714,3770-3776,3992-3999,4193,4200,4324-4343,5286,5469-5473,5479-5483,5492-5493,5568-5569,5814-5817,5822-5828,5835-5838,5865-5866,5901-5927,6013-6014,6450-6451,6518-6521,6552-6553,6676-6677,6680-6685,6809-6810,6843-6848,6859-6866,7008,7036,7051,7076,7082-7085,7089-7090,7093-7103,7157-7160
+  s_f74e55bad93be8::t_8531f1dc6e8247 415,473,556-558
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_d14a53144c7516 2434-2435
+  s_f74e55bad93be8::t_27becef38acb7d 27
+  s_f74e55bad93be8::t_1848c19ef6f6f1 5353
+  s_f74e55bad93be8::t_97956f561204c7 3803
+  s_68cc100c981f46::t_446c8a06a254e2 26,883-884
+  s_f74e55bad93be8::t_51780af99a8e8a 893,2679-2680,5060,5062,5282,6039
+  s_f74e55bad93be8::t_684976258b3358 5-8,646,648,878-882,885-892,1467-1473,1475-1476,1478-1493,1495-1496,1508-1518,1520,1526,2400,2441-2444,2553-2555,2579,2589,2594,2600,2603,2606,2681-2682,3192-3195,3729,3731,3733,4288,4290,4925,4943-4948,5063-5064,5264-5265,5276,5278-5279,5281,5343-5344,5347-5348,5354,6045-6046,6048-6049,6140,6205-6216
+  s_f74e55bad93be8::t_8653a7275182ac 5273-5275
+  s_f74e55bad93be8::t_7cd296bd524b9f 2438,2440
+  s_f74e55bad93be8::t_12fbd84974624f 2436-2437,2439
+  s_f74e55bad93be8::t_5cbe77b32bc663 2451
+  s_f74e55bad93be8::t_58cf4bde491649 3,5266,5269-5272,5277,5285,5287-5288,5349,5351-5352
+  s_68cc100c981f46::t_d9f521740e61dd 3802,5061
+  s_f74e55bad93be8::t_a4126aa814c2b6 647,1465-1466,1474,1477,1494
+  s_f74e55bad93be8::t_ecfd438e85da12 5267-5268,5286,5350
+packages/workshop-backend/src/utils.ts
+  s_f74e55bad93be8::t_2028dfb2a90a59 6,10
+  s_f74e55bad93be8::t_27becef38acb7d 1-5,7-9,11-17
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_f74e55bad93be8::t_715bff47939c74 8,68-70,84-104,115-119,131,133-148,152
+  s_f74e55bad93be8::t_021a1262ae4025 279-281,284-286
+  s_f74e55bad93be8::t_8555d0017276c3 288-290,305-307
+  s_f74e55bad93be8::t_0254e49d75bdd8 10
+  s_f74e55bad93be8::t_d176085eec1f7a 235-239
+  s_f74e55bad93be8::t_4a9a8df967f60f 5-7,9,11-67,71-83,105-114,120-130,132,149-151,153-234,240-278,287,308
+  s_f74e55bad93be8::t_4457eda5e73885 309
+  s_f74e55bad93be8::t_ed8ad4acd2e30a 2-4
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,282-283,291-304
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f74e55bad93be8::t_d176085eec1f7a 1773,1792
+  s_f74e55bad93be8::t_0254e49d75bdd8 73
+  s_f74e55bad93be8::t_21dd3382c5bb84 4340,4374
+  s_f74e55bad93be8::t_058f7a2215feca 67-68,90,1443,1485-1486,1508,1521,1733-1748,1750,1758,1768,1771-1772,1774-1791,1793-1846,1852,1856,2337,2402,2422-2424,2426-2429,2431,2433-2436,2438-2450,2477-2481,2518-2543,3358,4326,4329,4337-4339,4349,4365,4368,4371-4373,5544,6306,6424
+  s_f74e55bad93be8::t_58cf4bde491649 2425,2430,2432,2437
+packages/workshop-shared/src/slash-commands.ts
+  s_f74e55bad93be8::t_f944c257d7cfef 22
+  s_f74e55bad93be8::t_4891539f254de3 11-12
+  s_f74e55bad93be8::t_0e12e8eb64d0d5 1
+  s_f74e55bad93be8::t_0dde982038ea22 2-10,13-21
+packages/workshop-shared/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 16-19
+packages/workshop-frontend/src/components/chat/slash-command-input.ts
+  s_f74e55bad93be8::t_6b76405debb72a 1-62
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_b89c375b25cd3f 757-758
+  s_f74e55bad93be8::t_8a984fe55b906f 677-678
+  s_f74e55bad93be8::t_3efee3f7fff56b 746-748
+  s_f74e55bad93be8::t_f4d72d7c782d58 20
+  s_f74e55bad93be8::t_0dde982038ea22 194-196,679,743-745,749,752-753,755
+  s_f74e55bad93be8::t_28700d66eeac86 750-751,754,756
+packages/workshop-frontend/src/routes/index.tsx
+  s_f74e55bad93be8::t_5100c787179106 94,98
+  s_f74e55bad93be8::t_ba3852d68ffe26 14,86,95-96,104-105
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 941
+packages/workshop-backend/__tests__/timeout.test.ts
+  s_f74e55bad93be8::t_27becef38acb7d 2
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,3-20,22-34
+  s_f74e55bad93be8::t_eb327649fb8142 21
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_402eb715fab803 1654-1656
+  s_f74e55bad93be8::t_3cc8808cc9e4fe 1104
+  s_f74e55bad93be8::t_1d8258ed0b3ad9 1096,1101,1103,1111,1113-1114
+  s_f74e55bad93be8::t_28700d66eeac86 1094-1095,1650,1652-1653
+  s_f74e55bad93be8::t_1dc6f9f988d226 1622-1629,1633-1649,1651
+  s_f74e55bad93be8::t_8a984fe55b906f 1630-1632
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "92062bd26189b3db32e989914e016aec8c0332ca",
+  "prompts": {},
+  "sessions": {
+    "s_68cc100c981f46": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096c4277bffdUFF8ALSoCkBc6w",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": null
+    },
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

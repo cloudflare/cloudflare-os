@@ -1,0 +1,37 @@
+packages/gatekeeper-x/__tests__/workerd/reads.test.ts
+  s_6e159c0858b8f9::t_044442012e1b3a 9,288-300
+packages/gatekeeper-x/__tests__/x-simulation.test.ts
+  s_6e159c0858b8f9::t_3d88775d71a2d4 2,41-43,85-100
+packages/gatekeeper-x/src/x-actions.ts
+  s_6e159c0858b8f9::t_40e0ee8e8e51c9 339
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_721a394d1541a8 31,165-166,193,398,405,413-414,422,428,436-437,560-561,825-826,843-844
+packages/gatekeeper-x/src/x-simulation.ts
+  s_6e159c0858b8f9::t_53fc9bc9441588 9-10,157-170,173-174,177-179,233
+plans/x-gatekeeper.md
+  s_58819f73dfb5a6::t_094dc758dd40ee 692
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0df7e68e5d418fc19c394dae6a36799198feaab9",
+  "prompts": {},
+  "sessions": {
+    "s_58819f73dfb5a6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed869cedaffeaNXQbjGyMXeIZR",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

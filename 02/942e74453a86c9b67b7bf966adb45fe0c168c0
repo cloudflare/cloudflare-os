@@ -1,0 +1,29 @@
+docs/wiki.md
+  s_e1dd627472f56c::t_fdaa60bbc2bc6b 605-613
+packages/wiki-import/README.md
+  s_e1dd627472f56c::t_ef9f61d35935bf 283-291
+packages/wiki-import/__tests__/plan.test.ts
+  s_e1dd627472f56c::t_afbc15d6bf3393 1461-1496
+packages/wiki-import/__tests__/workshop-client.test.ts
+  s_e1dd627472f56c::t_696f3a21e84d74 86,93-96,975-1008
+packages/wiki-import/src/import.ts
+  s_e1dd627472f56c::t_dbe7084b68876a 207-214,379,933-934,949,960,1396-1397,2091-2096,2111,2126,2132-2145
+packages/wiki-import/src/workshop-client.ts
+  s_e1dd627472f56c::t_6e11c5537ed941 163-175,552-554,561,783-784
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "02942e74453a86c9b67b7bf966adb45fe0c168c0",
+  "prompts": {},
+  "sessions": {
+    "s_e1dd627472f56c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a708a8fa-f215-459a-b93e-8c454b24072f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

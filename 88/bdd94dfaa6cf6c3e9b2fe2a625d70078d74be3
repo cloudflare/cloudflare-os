@@ -1,0 +1,169 @@
+packages/backend-utils/package.json
+  s_5c41473b1bde3f::t_8e2eca819273f7 36
+packages/backend-utils/vite.config.ts
+  s_5c41473b1bde3f::t_20a2cf4138624e 2-3
+packages/backend-utils/vitest.config.ts
+  s_5c41473b1bde3f::t_509384dbe72539 55
+packages/configurator-ui/package.json
+  s_5c41473b1bde3f::t_bbc6923c8ee010 17
+packages/configurator-ui/vite.config.ts
+  s_5c41473b1bde3f::t_318b15adcc396c 2-3
+packages/error-reporting/package.json
+  s_5c41473b1bde3f::t_ca7a02524b772b 17
+packages/error-reporting/vite.config.ts
+  s_5c41473b1bde3f::t_2c22c3c8d6042f 2-3
+packages/gatekeeper-cloudflare/package.json
+  s_5c41473b1bde3f::t_4199215cc1bfec 21
+packages/gatekeeper-cloudflare/vite.config.ts
+  s_5c41473b1bde3f::t_61f46d367f26af 1-2
+packages/gatekeeper-cloudflare/vitest.worker.config.ts
+  s_5c41473b1bde3f::t_1955a39b4b917b 37
+packages/gatekeeper-confluence/package.json
+  s_5c41473b1bde3f::t_5773709229ad33 20
+packages/gatekeeper-confluence/vite.config.ts
+  s_5c41473b1bde3f::t_da1c383e9a105d 3
+packages/gatekeeper-context/build-app.mjs
+  s_5c41473b1bde3f::t_cf6a779cd0a64c 6-7
+packages/gatekeeper-context/package.json
+  s_5c41473b1bde3f::t_2ee65d8cdbc050 37
+packages/gatekeeper-context/vite.config.ts
+  s_5c41473b1bde3f::t_2152499ff0c2a1 2,19
+packages/gatekeeper-context/vitest.config.ts
+  s_5c41473b1bde3f::t_4c6da84d12db71 15
+packages/gatekeeper-email/package.json
+  s_5c41473b1bde3f::t_1d0654c5c914bf 20
+packages/gatekeeper-email/vite.config.ts
+  s_5c41473b1bde3f::t_e5c9b79de15049 3
+packages/gatekeeper-github/package.json
+  s_5c41473b1bde3f::t_c68afd316d5b1f 20
+packages/gatekeeper-github/vite.config.ts
+  s_5c41473b1bde3f::t_782580d0132741 3
+packages/gatekeeper-google/package.json
+  s_5c41473b1bde3f::t_fa0d02c800aad6 24
+packages/gatekeeper-google/vite.config.ts
+  s_5c41473b1bde3f::t_7a952d39e69229 1-2
+packages/gatekeeper-google/vitest.docs-worker.config.ts
+  s_5c41473b1bde3f::t_1976ee511e83de 29
+packages/gatekeeper-google/vitest.worker.config.ts
+  s_5c41473b1bde3f::t_2e3f59b3e52974 29
+packages/gatekeeper-homeassistant/package.json
+  s_5c41473b1bde3f::t_b05e483524b215 18
+packages/gatekeeper-homeassistant/vite.config.ts
+  s_5c41473b1bde3f::t_9e15fb8d2e6e11 3
+packages/gatekeeper-kit/package.json
+  s_5c41473b1bde3f::t_501ac92d3d8f94 35
+packages/gatekeeper-kit/vite.config.ts
+  s_5c41473b1bde3f::t_e16242e511e73f 4
+packages/gatekeeper-kit/vitest.worker.config.ts
+  s_5c41473b1bde3f::t_4a0d4b67b8bc6c 16
+packages/gatekeeper-linear/package.json
+  s_5c41473b1bde3f::t_57e844c0f3d9c4 19
+packages/gatekeeper-linear/vite.config.ts
+  s_5c41473b1bde3f::t_6c59811db77e27 3
+packages/gatekeeper-mcp-portal/package.json
+  s_5c41473b1bde3f::t_86a8fa469361e9 21
+packages/gatekeeper-mcp-portal/vite.config.ts
+  s_5c41473b1bde3f::t_a0987ea39dea12 5
+packages/gatekeeper-mcp/package.json
+  s_5c41473b1bde3f::t_58153a14423f09 21
+packages/gatekeeper-mcp/vite.config.ts
+  s_5c41473b1bde3f::t_03bdf222d1f44a 3
+packages/gatekeeper-notion/package.json
+  s_5c41473b1bde3f::t_af875e96681f21 19
+packages/gatekeeper-notion/vite.config.ts
+  s_5c41473b1bde3f::t_e7e65eff72713a 3
+packages/gatekeeper-scheduler/build-app.mjs
+  s_5c41473b1bde3f::t_e96f0e04c91705 4-5
+packages/gatekeeper-scheduler/package.json
+  s_5c41473b1bde3f::t_d74630f41745e3 25
+packages/gatekeeper-scheduler/vite.config.ts
+  s_5c41473b1bde3f::t_cb8d2371d197d4 2,20
+packages/gatekeeper-scheduler/vitest.config.ts
+  s_5c41473b1bde3f::t_2461510906b490 34
+packages/gatekeeper-slack/package.json
+  s_5c41473b1bde3f::t_92fb20e576da7e 18
+packages/gatekeeper-slack/vite.config.ts
+  s_5c41473b1bde3f::t_3ba2cc475b824f 3
+packages/gatekeeper-spotify/package.json
+  s_5c41473b1bde3f::t_d9d15ea0c406ea 18
+packages/gatekeeper-spotify/vite.config.ts
+  s_5c41473b1bde3f::t_ae048fbf26211c 3
+packages/gatekeeper-supabase/package.json
+  s_5c41473b1bde3f::t_52ea033a0da6a9 19
+packages/gatekeeper-supabase/vite.config.ts
+  s_5c41473b1bde3f::t_1903c0edd360f3 3
+packages/gatekeeper-zoominfo/package.json
+  s_5c41473b1bde3f::t_c10e02d1c5b8fe 18
+packages/gatekeeper-zoominfo/vite.config.ts
+  s_5c41473b1bde3f::t_f62f17e95b11c0 3
+packages/integration-tests/package.json
+  s_5c41473b1bde3f::t_1e029455bf4530 25
+packages/integration-tests/src/global-setup.ts
+  s_5c41473b1bde3f::t_062095e3bdfbbf 6
+packages/integration-tests/vite.config.ts
+  s_5c41473b1bde3f::t_e8d71baecd12e6 1
+packages/mcp-shared/package.json
+  s_5c41473b1bde3f::t_9f608893788109 38
+packages/mcp-shared/vite.config.ts
+  s_5c41473b1bde3f::t_31c15a2ee4f2ae 2-3
+packages/router/package.json
+  s_5c41473b1bde3f::t_d91ebb7dc99f47 16
+packages/router/vite.config.ts
+  s_5c41473b1bde3f::t_88b8d5f5321c15 2-3
+packages/router/vitest.config.ts
+  s_5c41473b1bde3f::t_6c1bfd0cdaf307 22
+packages/typed-storage/package.json
+  s_5c41473b1bde3f::t_d642dfc4c477e5 23
+packages/typed-storage/vite.config.ts
+  s_5c41473b1bde3f::t_d3d99000cd432a 2-3
+packages/typed-storage/vitest.config.ts
+  s_5c41473b1bde3f::t_3443aae96d6a86 22
+packages/workshop-backend/package.json
+  s_5c41473b1bde3f::t_98e3fde5373ac4 35
+packages/workshop-backend/vite.config.ts
+  s_5c41473b1bde3f::t_146178b82ccabd 2-3
+packages/workshop-backend/vitest.config.ts
+  s_5c41473b1bde3f::t_29d147edf06084 28
+packages/workshop-backend/vitest.integration.config.ts
+  s_5c41473b1bde3f::t_f487322caee947 27
+packages/workshop-frontend/package.json
+  s_5c41473b1bde3f::t_3627631ec9af0f 49
+packages/workshop-frontend/vite.config.ts
+  s_5c41473b1bde3f::t_4aeaa0d73244a7 6
+pnpm-lock.yaml
+  s_5c41473b1bde3f::t_e905700e78c4f2 68-70,77-79,89-91,120-122,154-156,230-232,318-320,346-348,389-391,423-425,448-450,476-478,507-509,541-543,569-571,609-611,685-687,710-712,738-740,763-765,791-793,822-824,843-845,867-869,925-927,1052-1054,1099-1120
+scripts/build-gatekeeper-configurator.test.ts
+  s_6c8bdafa950da2::t_6228d7ee769858 472-485,487-490,555,557-559
+scripts/build-gatekeeper-configurator.ts
+  s_5c41473b1bde3f::t_bf0262e9b46a50 1
+scripts/clean-error-reporting-artifacts.ts
+  s_5c41473b1bde3f::t_649972e049a499 1
+scripts/gatekeeper-configurator-vite-config.ts
+  s_6c8bdafa950da2::t_17f556425e864c 1,50,54
+scripts/with-timeout.ts
+  s_5c41473b1bde3f::t_51f77185ae00ad 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "88bdd94dfaa6cf6c3e9b2fe2a625d70078d74be3",
+  "prompts": {},
+  "sessions": {
+    "s_5c41473b1bde3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43656ea4-7343-48df-8911-e44f8bee03cb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6c8bdafa950da2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f340f41a-ad3a-42b3-92f6-f4b4d9e45456",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

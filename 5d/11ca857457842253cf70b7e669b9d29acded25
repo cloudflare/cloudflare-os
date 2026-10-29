@@ -1,0 +1,25 @@
+scripts/preview/staging-config.test.ts
+  s_e971b264843e72::t_80c83e55a98e1d 314-324,326-328
+scripts/preview/staging-config.ts
+  s_e971b264843e72::t_d40ebe7b4f914d 580,588-590,612
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_e971b264843e72::t_d4a4deaadd21e9 61-75
+packages/workshop-backend/src/ai-gateway.ts
+  s_e971b264843e72::t_aba8007970d41f 39-42,45,55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5d11ca857457842253cf70b7e669b9d29acded25",
+  "prompts": {},
+  "sessions": {
+    "s_e971b264843e72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ac0b381-61be-45db-b7ff-e2f857bfb44d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

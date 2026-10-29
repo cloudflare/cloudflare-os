@@ -1,0 +1,33 @@
+scripts/preview/staging-config.ts
+  s_e971b264843e72::t_6a98a3d49fbcb6 569,623-624
+packages/workshop-backend/__tests__/web-fetch.test.ts
+  s_e971b264843e72::t_adf4d3e6dbd134 123-125,130,153-155,161
+docs/public-server.md
+  s_e971b264843e72::t_9fe92b3978d0d1 56-58,62-64,70-71
+docs/ai-gateway-billing.md
+  s_e971b264843e72::t_9b1eb43797b81a 69-73
+packages/workshop-backend/src/ai-gateway.ts
+  s_e971b264843e72::t_fb0eeda8b5b249 10-24,29-30,43-46,74,78-80,82-83,89-91,94
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_e971b264843e72::t_b9cd429ae49a6e 389-397
+packages/workshop-backend/src/ai-models.ts
+  s_e971b264843e72::t_7536025c11d78b 450-455
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_e971b264843e72::t_41d29a2413e08a 115-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5c09db821fdf1e85fbb9467194e29962ae8fb35f",
+  "prompts": {},
+  "sessions": {
+    "s_e971b264843e72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ac0b381-61be-45db-b7ff-e2f857bfb44d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

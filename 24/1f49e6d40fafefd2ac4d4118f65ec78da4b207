@@ -1,0 +1,20 @@
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_7de7d2dc95a2a2::t_a87892323d367f 225-253
+  s_7de7d2dc95a2a2::t_3f00ca4243026e 223-224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "241f49e6d40fafefd2ac4d4118f65ec78da4b207",
+  "prompts": {},
+  "sessions": {
+    "s_7de7d2dc95a2a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6e3c069-e1cb-4210-aba4-5216199a21ef",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

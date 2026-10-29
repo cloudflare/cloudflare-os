@@ -1,0 +1,21 @@
+packages/workshop-backend/src/observability.ts
+  s_30f26bb8696b2b::t_9b86f15aa76f8c 28
+packages/workshop-backend/src/overseer.ts
+  s_30f26bb8696b2b::t_af6780a827f71d 1397-1418,1567-1592,5029-5031,5048,5051-5088,9152-9153,9174,9178-9188,9190,9193-9196,9414,10543-10544,10563-10564,10664,10685,10689-10696,10698,10701-10704
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "92ac198bceb1c2a0ac583fb7fdaf9481f03fbfaa",
+  "prompts": {},
+  "sessions": {
+    "s_30f26bb8696b2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21d32dcc-b1ee-4f1a-bf95-5a1ecfae3ff2",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+packages/workshop-backend/src/external-message-gateway.ts
+  s_78a1a7c3756c1d::t_c70e18b6c7341a 30
+packages/workshop-backend/src/overseer.ts
+  s_78a1a7c3756c1d::t_56d0523b6e0c50 4202-4207,4209-4214
+  s_78a1a7c3756c1d::t_1b321d585631d0 2413-2414
+  s_78a1a7c3756c1d::t_20e9bacab21ba6 4170
+  s_78a1a7c3756c1d::t_ec7559129758c0 2368
+  s_78a1a7c3756c1d::t_2f64e88cb6719d 4184
+  s_78a1a7c3756c1d::t_ae595c7f7e83ed 2393
+  s_78a1a7c3756c1d::t_c757b932adf574 4173-4176
+  s_78a1a7c3756c1d::t_c90428acc406c2 905,913,918,920,922,936,943
+  s_78a1a7c3756c1d::t_8683fa9262d66c 2363-2364
+  s_78a1a7c3756c1d::t_69e46b95c9e020 2349-2350,2352
+  s_78a1a7c3756c1d::t_18079e144615c8 2386,2389-2390,2397-2399,2401,2404
+  s_78a1a7c3756c1d::t_d0030110d6b66c 4181-4182,4185-4186,4242-4243,4245-4247
+  s_78a1a7c3756c1d::t_d072f70fb18bc7 2344-2347,2351
+  s_78a1a7c3756c1d::t_c70e18b6c7341a 4183,4244
+  s_78a1a7c3756c1d::t_0036e5fe50bd8f 400,405
+  s_78a1a7c3756c1d::t_789153cd6ef2b8 2155,2159,2199,2239,2242,2276,2299,2324-2326,2334,2339,2367,2371,2374,2379-2381,2385,2407,2411,2416,4021,4253,5846
+packages/workshop-shared/src/external-message-gateway.ts
+  s_78a1a7c3756c1d::t_c70e18b6c7341a 44
+  s_78a1a7c3756c1d::t_6186290c45ae92 3
+  s_78a1a7c3756c1d::t_549c622eb37318 19-20,43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1746b1f3cdb8550c5bd3dd1fb23a6ba029a59e76",
+  "prompts": {},
+  "sessions": {
+    "s_78a1a7c3756c1d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_093df5611ffeQY5XXuyr5ugGaQ",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

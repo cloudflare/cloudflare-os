@@ -1,0 +1,29 @@
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_7f6a34c1e4e953::t_1ec8a05789e630 398-400
+packages/gatekeeper-context/src/generated/demo-cloudflare-os-context.ts
+  s_7f6a34c1e4e953::t_f61c6d534b9b8e 1-3
+packages/gatekeeper-context/src/registry-do.ts
+  s_7f6a34c1e4e953::t_1ec8a05789e630 6-11,47-65
+  s_7f6a34c1e4e953::t_a0ca977c782659 66-67
+scripts/generate-demo-cloudflare-os-context.mjs
+  s_7f6a34c1e4e953::t_1ec8a05789e630 1-43
+packages/gatekeeper-context/src/context-collection.ts
+  s_7f6a34c1e4e953::t_1ec8a05789e630 119-120,187-210
+  s_7f6a34c1e4e953::t_5d8d855a604535 211-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "284ce987582fe3f2aabc1f73053dca7e7914d40a",
+  "prompts": {},
+  "sessions": {
+    "s_7f6a34c1e4e953": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_094c7ae60ffenuZXH3piPwNMTl",
+        "model": "grok-4.5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

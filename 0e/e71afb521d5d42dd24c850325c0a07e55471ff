@@ -1,0 +1,29 @@
+packages/gadget-libraries/README.md
+  s_fe30841bd8390c::t_eb43e91b1683ec 28-33
+packages/workshop-backend/__tests__/format-blueprint-files.test.ts
+  s_fe30841bd8390c::t_47368b2afefee0 505,512-528
+packages/workshop-backend/scripts/build-format-blueprints.ts
+  s_fe30841bd8390c::t_b7941e238449ce 99-102
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_fe30841bd8390c::t_306de24634805e 24,50,56,58-115,145-146,161,186-191
+packages/workshop-backend/scripts/format-blueprint-files.ts
+  s_fe30841bd8390c::t_794c7ca5b95cda 208-211,213,377-383,388,417-428
+packages/workshop-backend/src/gadget-library-resolution.ts
+  s_fe30841bd8390c::t_be4e7e44b5ff51 48-51,67-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0ee71afb521d5d42dd24c850325c0a07e55471ff",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+packages/workshop-backend/src/auth/login-flow.ts
+  s_870ba59a049dcb::t_778b79be747c1f 43-44,61-64,67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b15fdcba7c5c30771635cb49e7f06225d90960e2",
+  "prompts": {},
+  "sessions": {
+    "s_870ba59a049dcb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6c52e96-18f1-42c2-8a3f-29d1de25ded9",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+docs/revocable-sessions-dev.md
+  s_6ec4b9345a258b::t_10b2495898ac31 18-44
+packages/workshop-backend/__tests__/observer-coverage-scrub.test.ts
+  s_6ec4b9345a258b::t_998858fe9ca07c 28-31
+packages/workshop-backend/__tests__/observer-scope-prune.test.ts
+  s_6ec4b9345a258b::t_cecd78c0d3e320 131-134
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_6ec4b9345a258b::t_69c9daccd4949e 41-44
+packages/workshop-backend/__tests__/revocable-sessions.test.ts
+  s_6ec4b9345a258b::t_d550e327a2a269 1-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "71e906868f9be33fdab373994fdda10a32b84ff3",
+  "prompts": {},
+  "sessions": {
+    "s_6ec4b9345a258b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_6ec4b9345a258b",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

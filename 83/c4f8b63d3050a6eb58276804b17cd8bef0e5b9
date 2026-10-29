@@ -1,0 +1,20 @@
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_f5d4fa896fc128::t_2fdc8ebba36403 1330,1357
+  s_f5d4fa896fc128::t_ff889ae61195d8 1298
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "83c4f8b63d3050a6eb58276804b17cd8bef0e5b9",
+  "prompts": {},
+  "sessions": {
+    "s_f5d4fa896fc128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41e3e171-c705-490f-8506-a539c1a11e55",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

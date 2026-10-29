@@ -1,0 +1,27 @@
+packages/workshop-frontend/src/LoginPage.tsx
+  s_541af6f33f7bfd::t_456796a9c03302 62
+packages/workshop-frontend/src/SignupPage.tsx
+  s_541af6f33f7bfd::t_456796a9c03302 81
+packages/workshop-frontend/src/siteLogoUtils.ts
+  s_541af6f33f7bfd::t_456796a9c03302 7,240,248-249,258-269,273-274
+  s_541af6f33f7bfd::t_5347f495473482 77-79,82,86-87,91-128,141-145
+packages/workshop-frontend/src/siteLogoUtils.test.ts
+  s_541af6f33f7bfd::t_456796a9c03302 170,172-181,187,189,192,198-202
+  s_541af6f33f7bfd::t_5347f495473482 157-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "47bfe98eecf0d0f8302e591af64aa9b43959e14f",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

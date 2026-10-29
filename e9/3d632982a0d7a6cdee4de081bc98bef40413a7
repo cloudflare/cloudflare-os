@@ -1,0 +1,19 @@
+packages/gatekeeper-google/__tests__/workerd/slides-actions.test.ts
+  s_c64553d463df78::t_766389b6ef1d4e 1311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e93d632982a0d7a6cdee4de081bc98bef40413a7",
+  "prompts": {},
+  "sessions": {
+    "s_c64553d463df78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "190b76b5-6004-4f84-b206-24043da8572a",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

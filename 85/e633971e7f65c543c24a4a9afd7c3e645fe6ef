@@ -1,0 +1,87 @@
+packages/workshop-frontend/src/components/chat/slash-command-input.test.ts
+  s_993634b014452f::t_d34118a0cc6791 56
+  s_993634b014452f::t_b527b7a92c920b 32-37,51-53,57-63
+  s_993634b014452f::t_7e9b3454bcb1e0 66-67,69-70,72
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_993634b014452f::t_94100cc3f5c5b0 15,27
+  s_993634b014452f::t_7e9b3454bcb1e0 14,37-38,118,169,177,179,182
+  s_993634b014452f::t_d34118a0cc6791 10-11,186-213,226
+  s_993634b014452f::t_a9d6d014162e59 134,145-147
+  s_993634b014452f::t_6ba932d588393e 2,13,21-26,28,51-56,66-72,74-82,84-101,111-114,126,129-131,139-142,144,150-168,174,181,183-184
+  s_993634b014452f::t_0df9229af13ca9 83
+  s_993634b014452f::t_b1a0831d924d74 185
+packages/workshop-shared/src/api.ts
+  s_993634b014452f::t_e65a0546ee0be8 1627-1628,1634,1636,1639,1642,1645,1648,1652,1654-1656
+  s_993634b014452f::t_73ff68a0b0b700 1096
+  s_993634b014452f::t_b21ae627a51be2 1638,1641,1644,1649
+  s_993634b014452f::t_acc5f8d8fd4b8c 1094-1095,1103-1104,1115-1116
+packages/workshop-backend/src/overseer.ts
+  s_993634b014452f::t_30472d3b891015 3
+  s_993634b014452f::t_8e5466513fed61 4240-4241
+  s_993634b014452f::t_c78d4c42efa85f 5264-5276,5300-5301
+  s_993634b014452f::t_861520dd1d7f96 5053
+  s_993634b014452f::t_cc59db85e9f5f9 6223-6224
+  s_993634b014452f::t_eb15718c4e7c17 3795
+  s_993634b014452f::t_40c7483f262c1b 880-884,886
+  s_993634b014452f::t_205fb4ee38d5eb 2671
+  s_993634b014452f::t_d34118a0cc6791 1459
+  s_993634b014452f::t_7720310fe94667 4239,4242
+  s_993634b014452f::t_f8992854e30061 5054-5058
+  s_993634b014452f::t_f882d1e029ac9a 5261-5263,5277-5278
+  s_993634b014452f::t_90da84d694a37e 5364-5365
+  s_993634b014452f::t_a643a98f1a932d 6058
+packages/workshop-backend/src/slash-commands.ts
+  s_993634b014452f::t_a9d6d014162e59 33,62
+  s_993634b014452f::t_ae490ec4ab5044 6,12,27,32,34-61,63-64,66-70,73
+  s_993634b014452f::t_d34118a0cc6791 97
+  s_993634b014452f::t_8420aa3e479f1b 24,31
+packages/workshop-frontend/src/components/chat/slash-command-input.ts
+  s_993634b014452f::t_79619d1dff6c69 4,6,8,10,14-15,33,39
+  s_993634b014452f::t_7e9b3454bcb1e0 36,44
+  s_993634b014452f::t_d34118a0cc6791 48
+  s_993634b014452f::t_ce6220f7fe0c55 1,19,41,43
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_993634b014452f::t_f8992854e30061 122-125
+  s_993634b014452f::t_e0c1f20e8a5269 5-8,68,85-92,248,304
+  s_993634b014452f::t_7e9b3454bcb1e0 71
+  s_cd499ea12d2b3c::t_aff1ed4727ea4d 259
+  s_993634b014452f::t_8492bd872f6bc8 72-73,81-82,127-128,146,163,165,167,221-223,271,273,275,308-310
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_993634b014452f::t_5e53051ff88dfd 9,27,29,101,142
+  s_993634b014452f::t_3bb45f7ad1e370 165-167
+  s_993634b014452f::t_fa323f41cd27aa 164,169
+  s_993634b014452f::t_f8992854e30061 68-74,168
+  s_993634b014452f::t_7e9b3454bcb1e0 126-134
+  s_993634b014452f::t_e0c1f20e8a5269 150-163
+  s_993634b014452f::t_c097884a3e970a 170
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_993634b014452f::t_2cab34d510db09 1806-1820
+packages/workshop-shared/src/gatekeeper.ts
+  s_993634b014452f::t_5c25ff8746f8be 742,744,747,750,753,757,759-760,762-763,766,768-770
+  s_993634b014452f::t_53a9539e5639f6 743,745-746,748-749,751-752,754-756,758,767
+  s_993634b014452f::t_a8c6dacc029471 676
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "85e633971e7f65c543c24a4a9afd7c3e645fe6ef",
+  "prompts": {},
+  "sessions": {
+    "s_993634b014452f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0969032eeffeVD5vUYO1mfYENE",
+        "model": "grok-4.5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

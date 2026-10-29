@@ -1,0 +1,275 @@
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_8d0860843c0baa::t_26104157f5cfb0 595,603-616
+.agents/skills/write-gatekeeper/SKILL.md
+  s_8d0860843c0baa::t_392b5abf838f6f 121-129
+.gitattributes
+  s_8d0860843c0baa::t_230d9edfded14a 1-7
+.github/workflows/bonk-pr.yml
+  s_8d0860843c0baa::t_a6807c1ef26086 12-16,26-29,34,41-43,45-51,53,56,75-85,88-92,101-102,108,113,120-138,141,145
+.github/workflows/ci.yml
+  s_8d0860843c0baa::t_1312eadebafca2 16-18,44-46
+.github/workflows/contribution-policy.yml
+  s_8d0860843c0baa::t_3a99fc8ff1a431 34
+.github/workflows/preview.yml
+  s_8d0860843c0baa::t_d4666d038df644 1-257
+.gitignore
+  s_8d0860843c0baa::t_6298945d263ff1 24,34-36
+AGENTS.md
+  s_8d0860843c0baa::t_109ed924060125 22,33-40,52-54,56-59,62-63,67-69,72,75,79-80,83,90
+CONTRIBUTING.md
+  s_8d0860843c0baa::t_cfdd73738bc4d7 12-23
+docs/ai-gateway-billing.md
+  s_8d0860843c0baa::t_02b879958d3a2b 49
+docs/oauth-signin.md
+  s_8d0860843c0baa::t_cc5cc2260751bc 71
+docs/public-server.md
+  s_8d0860843c0baa::t_97a767575141e6 16
+packages/backend-utils/vitest.config.ts
+  s_8d0860843c0baa::t_f67bd0a15daccd 55
+packages/configurator-ui/src/index.ts
+  s_8d0860843c0baa::t_903c2b724949dd 170
+packages/gatekeeper-cloudflare/README.md
+  s_8d0860843c0baa::t_77222871dd0d10 3,6-10,14-85,90-110,115-116,147,164-166,175
+packages/gatekeeper-cloudflare/__tests__/cloudflare-api.test.ts
+  s_8d0860843c0baa::t_9a5f53b7ae70c9 1-100
+packages/gatekeeper-cloudflare/__tests__/configurator-fields.test.ts
+  s_8d0860843c0baa::t_40f77faec5666e 1-99
+packages/gatekeeper-cloudflare/__tests__/configurator-url.test.ts
+  s_8d0860843c0baa::t_8b6961d3deceb2 1-69
+packages/gatekeeper-cloudflare/__tests__/env.d.ts
+  s_8d0860843c0baa::t_76b0532a41d968 1-17
+packages/gatekeeper-cloudflare/__tests__/oauth.test.ts
+  s_8d0860843c0baa::t_3510a762b9fc3f 1-135
+packages/gatekeeper-cloudflare/__tests__/observability-api.test.ts
+  s_8d0860843c0baa::t_d75c60923df035 1-1175
+packages/gatekeeper-cloudflare/__tests__/resources.test.ts
+  s_8d0860843c0baa::t_2191aa09fd7951 1-92
+packages/gatekeeper-cloudflare/__tests__/worker.ts
+  s_8d0860843c0baa::t_95971f8d0ec510 1-83
+packages/gatekeeper-cloudflare/__tests__/workerd/observer.test.ts
+  s_8d0860843c0baa::t_170aef853a524f 1-60
+packages/gatekeeper-cloudflare/__tests__/workerd/session.test.ts
+  s_8d0860843c0baa::t_dd93dfee71a6cb 1-220
+packages/gatekeeper-cloudflare/package.json
+  s_8d0860843c0baa::t_7c478efd052a6d 8-10,14,20-21,23
+packages/gatekeeper-cloudflare/src/cloudflare-api.ts
+  s_8d0860843c0baa::t_0867b10b0bfc5b 13-19,23,26-27,40-44,78-92,94-120
+packages/gatekeeper-cloudflare/src/cloudflare-configurators.ts
+  s_8d0860843c0baa::t_96bac535eaffbb 1-59
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_8d0860843c0baa::t_40c1d09ccc8754 1,6-7,10-13,15-32,179,181-183,193-195,202,218,224,234,236,244-248,267-269,296-302,354-356,390-395,401,412-420,428,431,435-441,444-458,467-468,474-476,480-486,488-574
+packages/gatekeeper-cloudflare/src/configurator/cloudflare-account-configurator-ui.tsx
+  s_8d0860843c0baa::t_dc1308dd07fd8a 1-31
+packages/gatekeeper-cloudflare/src/configurator/cloudflare-configurator-types.d.ts
+  s_8d0860843c0baa::t_543591b64a574f 1-18
+packages/gatekeeper-cloudflare/src/configurator/cloudflare-worker-configurator-ui.tsx
+  s_8d0860843c0baa::t_336b2de01af677 1-48
+packages/gatekeeper-cloudflare/src/oauth.ts
+  s_8d0860843c0baa::t_576ebe14a62c97 10-11,13,18,26-30,96,104,151
+packages/gatekeeper-cloudflare/src/observability-api.ts
+  s_8d0860843c0baa::t_41f9678f52a0a6 1-659
+packages/gatekeeper-cloudflare/src/observability-discovery.ts
+  s_8d0860843c0baa::t_94cb920742a2a7 1-107
+packages/gatekeeper-cloudflare/src/observability-parse.ts
+  s_8d0860843c0baa::t_ea32d1c077945d 1-251
+packages/gatekeeper-cloudflare/src/observability-session.ts
+  s_8d0860843c0baa::t_fd7d509302a151 1-148
+packages/gatekeeper-cloudflare/src/observability.ts
+  s_8d0860843c0baa::t_270b207f891c4f 5-7,9-10,13-14
+packages/gatekeeper-cloudflare/src/resources.ts
+  s_8d0860843c0baa::t_c1bf9626661a2d 1-81
+packages/gatekeeper-cloudflare/src/types.d.ts
+  s_8d0860843c0baa::t_5ac8eb9d9b5665 1-26,28-514
+packages/gatekeeper-cloudflare/tsconfig.json
+  s_8d0860843c0baa::t_22b5fa79a69bd2 5,8-9,12-13,16-17
+packages/gatekeeper-cloudflare/vite.config.ts
+  s_8d0860843c0baa::t_45dee036584e12 1-14
+packages/gatekeeper-cloudflare/vitest.config.ts
+  s_8d0860843c0baa::t_a7a54d1bc2b0a0 1-8
+packages/gatekeeper-cloudflare/vitest.worker.config.ts
+  s_8d0860843c0baa::t_8ebc38d7636d33 1-39
+packages/gatekeeper-cloudflare/wrangler.jsonc
+  s_8d0860843c0baa::t_119de3bb343dc1 17-20
+packages/gatekeeper-confluence/README.md
+  s_8d0860843c0baa::t_a9c1d38181eb6b 83,154
+packages/gatekeeper-confluence/package.json
+  s_8d0860843c0baa::t_88d4e8351b7943 8
+packages/gatekeeper-context/build-app.mjs
+  s_8d0860843c0baa::t_565eb18bd18722 6-7,20-26,28-29
+packages/gatekeeper-context/package.json
+  s_8d0860843c0baa::t_af217ed9fb0feb 8
+packages/gatekeeper-context/vite.config.ts
+  s_8d0860843c0baa::t_40b22ba15cdd09 19
+packages/gatekeeper-email/package.json
+  s_8d0860843c0baa::t_26e75233821b37 8
+packages/gatekeeper-github/package.json
+  s_8d0860843c0baa::t_bb51c26479f53d 8
+packages/gatekeeper-google/package.json
+  s_8d0860843c0baa::t_9f8e480dce5669 8
+packages/gatekeeper-homeassistant/package.json
+  s_8d0860843c0baa::t_c8a98687181415 8
+packages/gatekeeper-linear/package.json
+  s_8d0860843c0baa::t_6a86c20714efdf 8
+packages/gatekeeper-mcp-portal/README.md
+  s_8d0860843c0baa::t_c2a8823d119447 197
+packages/gatekeeper-mcp-portal/package.json
+  s_8d0860843c0baa::t_bf9728d4d53001 8
+packages/gatekeeper-mcp/README.md
+  s_8d0860843c0baa::t_2a78b4f1531197 222
+packages/gatekeeper-mcp/package.json
+  s_8d0860843c0baa::t_fa9c5da6e95c84 8
+packages/gatekeeper-notion/README.md
+  s_8d0860843c0baa::t_935b79009ad130 10,57
+packages/gatekeeper-notion/package.json
+  s_8d0860843c0baa::t_dd7e07d8a131bf 8
+packages/gatekeeper-scheduler/build-app.mjs
+  s_8d0860843c0baa::t_37c4c6cdb33b4a 4-5,13-19,21-22
+packages/gatekeeper-scheduler/package.json
+  s_8d0860843c0baa::t_2de1b0c823e85c 8
+packages/gatekeeper-scheduler/vite.config.ts
+  s_8d0860843c0baa::t_7472cdb0b9936f 20
+packages/gatekeeper-scheduler/vitest.config.ts
+  s_8d0860843c0baa::t_dd5df893947473 34
+packages/gatekeeper-slack/README.md
+  s_8d0860843c0baa::t_01722936c6798b 15,67
+packages/gatekeeper-slack/package.json
+  s_8d0860843c0baa::t_2c8f9d63e8e94a 8
+packages/gatekeeper-spotify/package.json
+  s_8d0860843c0baa::t_8ee8e1d5142e0e 8
+packages/gatekeeper-supabase/README.md
+  s_8d0860843c0baa::t_626ed8c9f291cb 36
+packages/gatekeeper-supabase/package.json
+  s_8d0860843c0baa::t_7b5ced7917a469 8
+packages/gatekeeper-zoominfo/README.md
+  s_8d0860843c0baa::t_7da4b4b8e9e1db 50
+packages/gatekeeper-zoominfo/package.json
+  s_8d0860843c0baa::t_215cd285017853 8
+packages/integration-tests/src/harness.ts
+  s_8d0860843c0baa::t_ca2844da318ea5 29,67,88
+packages/router/vitest.config.ts
+  s_8d0860843c0baa::t_9cfc4915f1acbd 22
+packages/typed-storage/vitest.config.ts
+  s_8d0860843c0baa::t_7f9e06dee7c4a8 22
+packages/workshop-backend/__tests__/cloudflare-account-service.test.ts
+  s_8d0860843c0baa::t_eab875d55e88dc 1-75
+packages/workshop-backend/format-blueprints/README.md
+  s_8d0860843c0baa::t_ddb9266252ae1e 89,92-94
+packages/workshop-backend/src/ai-gateway-billing/cloudflare/account-service.ts
+  s_8d0860843c0baa::t_9e7d5966ee33c3 18,26,39-43,46-52,54-73
+packages/workshop-backend/src/env.d.ts
+  s_8d0860843c0baa::t_030367a6ffdb77 9-11
+packages/workshop-backend/src/server.ts
+  s_8d0860843c0baa::t_d7c91059e37eb5 666-671
+packages/workshop-backend/src/user.ts
+  s_8d0860843c0baa::t_d186cca2e5a9a0 1558-1559
+packages/workshop-backend/vite.config.ts
+  s_8d0860843c0baa::t_1d185f7f7c6f53 3,6,8-50
+packages/workshop-backend/vitest.config.ts
+  s_8d0860843c0baa::t_73fd7f70e85a4a 28
+packages/workshop-backend/vitest.integration.config.ts
+  s_8d0860843c0baa::t_fa974d69bac488 27
+packages/workshop-backend/wrangler.jsonc
+  s_8d0860843c0baa::t_250e98ed4d1498 42
+packages/workshop-frontend/README.md
+  s_8d0860843c0baa::t_514c85221ac2d3 8-10,13-20,40
+packages/workshop-frontend/src/components/billing/OutOfCreditsModal.tsx
+  s_8d0860843c0baa::t_e9421058794d02 63
+packages/workshop-frontend/src/components/billing/UsageSettings.tsx
+  s_8d0860843c0baa::t_e778aea1351e92 63
+packages/workshop-frontend/vite.config.ts
+  s_8d0860843c0baa::t_deb0b492c16387 6-55,64
+packages/workshop-shared/src/api.ts
+  s_8d0860843c0baa::t_5669e50100db5b 532-535
+packages/workshop-shared/src/gatekeeper.ts
+  s_8d0860843c0baa::t_bc1fea8d5935e0 436-438,475-477
+pnpm-lock.yaml
+  s_8d0860843c0baa::t_0a94bbd6aa250e 43-45,107-109,120-125,129-131
+pnpm-workspace.yaml
+  s_8d0860843c0baa::t_1568b1e3db1af6 12
+scripts/bin-entry.test.ts
+  s_8d0860843c0baa::t_f4c82cd0ffbf7a 1-65
+scripts/bin-entry.ts
+  s_8d0860843c0baa::t_3d3f44eb9462b4 1-28
+scripts/build-gatekeeper-configurator.test.ts
+  s_8d0860843c0baa::t_5a775a83859ac9 3,8,11,15-18,22-26,45,53,59-66,79-111,143,150,156,302-455
+scripts/build-gatekeeper-configurator.ts
+  s_8d0860843c0baa::t_30bdb85240843f 26-31,35,39,45-46,48,54,64,70,957,961,970-971,977,1041,1062
+scripts/clean-error-reporting-artifacts.ts
+  s_8d0860843c0baa::t_6d94717ac88708 18-19,23
+scripts/contribution-policy.test.ts
+  s_8d0860843c0baa::t_2d230828d0739a 8-13,25-36,144,147-148,191,200,205,223,240,249,263,279,292,308,313-325,327-332
+scripts/contribution-policy.ts
+  s_8d0860843c0baa::t_67763a7321d51d 1-78,106-107,109,138-139,141-145,206,214-217,236
+scripts/deploy-scripts.test.ts
+  s_8d0860843c0baa::t_c649968cd77629 1-64
+scripts/dev-server-config.test.ts
+  s_8d0860843c0baa::t_084227bbde474b 7
+scripts/dev-server-config.ts
+  s_8d0860843c0baa::t_493873b0f12ff5 1-5,12,32-40
+scripts/env-passthrough.test.ts
+  s_8d0860843c0baa::t_dcffe939df2adc 1-232
+scripts/gatekeeper-configurator-vite-config.ts
+  s_8d0860843c0baa::t_6ee2b529c2aa2a 16-41,48,50,54,67,71-77
+scripts/generate-worker-types.ts
+  s_8d0860843c0baa::t_7c3378e9d3df49 21-22,39,41,56,65,72,80,96,103,116,127,131-136,138-139,142-146,186
+scripts/kill-process-tree.test.ts
+  s_8d0860843c0baa::t_22acb23707c9f1 4,6,12,16,27-28,33-37,44
+scripts/kill-process-tree.ts
+  s_8d0860843c0baa::t_52d6c1e18e5493 19-20,23,36,43-44,55,60,65-68,76
+scripts/oxlint-plugin.test.ts
+  s_8d0860843c0baa::t_c3f501491e0433 10
+scripts/pnpm-command.test.ts
+  s_8d0860843c0baa::t_3b7b5ef5d7905f 1-51
+scripts/pnpm-command.ts
+  s_8d0860843c0baa::t_f11cf6fecd4b5a 1-39
+scripts/preview/preview.ts
+  s_8d0860843c0baa::t_546a44f6c4a0a0 1-863
+scripts/preview/staging-config.test.ts
+  s_8d0860843c0baa::t_47451b88f4020a 1-438
+scripts/preview/staging-config.ts
+  s_8d0860843c0baa::t_79cff847c9095c 1-702
+scripts/release/build-release.ts
+  s_8d0860843c0baa::t_8cc5298efa03d2 7,13,15,22-23,26-27,33-35,37-38,41-42,45,50,55,62,69,71-72,78-82,84,113
+scripts/release/hash-lib.test.ts
+  s_8d0860843c0baa::t_9d717ca8a69ab7 10
+scripts/release/hash-lib.ts
+  s_8d0860843c0baa::t_2ccd1466438e05 15-45,50,65-68,71,81-85,89-90,113-115,126-127,143,147,150,152
+scripts/release/manifest-lib.test.ts
+  s_8d0860843c0baa::t_8920f82af9ecfa 4,7,14,17,19-21,24,32,67,72,113,118,126-127,143
+scripts/release/manifest-lib.ts
+  s_8d0860843c0baa::t_5002e0cbc80854 22,24,27-231,276-277,291,304-306,309-310,313,316,323,331-333,345-346,378,394,396,408,466-467,471-472,484-492,497
+scripts/release/promote-release.test.ts
+  s_8d0860843c0baa::t_3979b48fcad388 1,7
+scripts/release/promote-release.ts
+  s_8d0860843c0baa::t_2e094e5a5d9b2d 5,24,31,38,48,54-55,57,60-61,66-71,98
+scripts/release/testdata/golden-manifest.json
+  s_8d0860843c0baa::t_9ddbd05fce6c9f 60-65
+scripts/release/upload-release.ts
+  s_8d0860843c0baa::t_ceb514de68e3cf 3,11,16,21,25,31-33,35-36,39-40,53,55-56
+scripts/run-dev-server.ts
+  s_8d0860843c0baa::t_39b3fa85cb66ba 15,17,23-30,34-41,44,71-72,77,84,114-115,117,120-121,140,151,156,168,172-173,184,186,195,221,227,235-236,273-276,282,293,303,324,346,353,374,409,427,495,546,554,556
+scripts/run-local.ts
+  s_8d0860843c0baa::t_a0ee7e0993b330 9-10,24-25,34,36,40,52,59,66,78-79,90,106,125-128,132,139-140,155
+scripts/tsconfig.json
+  s_8d0860843c0baa::t_6517a13ad7f71a 1-23
+vite.config.ts
+  s_8d0860843c0baa::t_8aac54952261fd 140-151
+wrangler.jsonc
+  s_8d0860843c0baa::t_9f98ad0acf190a 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e1bf0860461a9b5e7cd5935c6358dba7e4214715",
+  "prompts": {},
+  "sessions": {
+    "s_8d0860843c0baa": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ffe85d935ffeYh8qWwFq0Rv3J8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

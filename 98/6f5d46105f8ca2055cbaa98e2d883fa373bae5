@@ -1,0 +1,20 @@
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_fcb81335a24bc2::t_b9005958537a55 293,319,322,426
+  s_fcb81335a24bc2::t_47e0fbd0e12b80 743
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "986f5d46105f8ca2055cbaa98e2d883fa373bae5",
+  "prompts": {},
+  "sessions": {
+    "s_fcb81335a24bc2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03601b558fferm7fC0nANC1UUW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

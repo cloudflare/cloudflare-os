@@ -1,0 +1,47 @@
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 12,720-721,725,814,825-830,838,841-843,847-850,857,890-904,1026,1187
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_6913684decf7f1 34-35
+  s_1dfdf61332f5c7::t_1c78620a0d09d9 50
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 1-137
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_0dfd81e47fced8 43-44
+  s_1dfdf61332f5c7::t_5bebcf0af4e8f9 1-2
+  s_1dfdf61332f5c7::t_2404ba4d7d5fa8 55-58
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 3-12,17-42,45-53,59-227
+  s_1dfdf61332f5c7::t_338fe0f49de76d 13-16
+  s_1dfdf61332f5c7::t_5a80fbfd08910c 54
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 1328-1332,1663-1666,1670-1671
+  s_1dfdf61332f5c7::t_8a8378cba77c18 705-718,722,724,726-727,730-734,737-742,745
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_fa5330f3a6437e 483
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_0bf0954895b640 2456,2458-2467
+  s_1dfdf61332f5c7::t_94839baceca769 2695
+  s_1dfdf61332f5c7::t_ccdc9a9d6203cb 17-18
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 11,15-16,19,626-629,2180-2187,2190-2191,2242-2245,2415-2436,2439-2442,2447-2455,2457,2469-2470,2679-2694,2696-2744,2831-2834,2836,2838-2840,2847-2849,2853,2882-2891,2898-2907,3390-3395,6229-6231,6278
+  s_1dfdf61332f5c7::t_07edb17bc16cc0 2324-2326
+  s_1dfdf61332f5c7::t_ed170a38871b81 2835,2837
+packages/workshop-backend/src/slash-commands.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 6,19-25,51,58
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 6,63-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "865b3b7a2d19fa725d6c73798e9c9708b333a117",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

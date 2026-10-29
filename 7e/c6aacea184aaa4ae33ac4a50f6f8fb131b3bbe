@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_cd499ea12d2b3c::t_a269922ac600b2 120
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_cd499ea12d2b3c::t_a269922ac600b2 259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7ec6aacea184aaa4ae33ac4a50f6f8fb131b3bbe",
+  "prompts": {},
+  "sessions": {
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

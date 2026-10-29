@@ -1,0 +1,83 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_307482e965ac20 4395
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_c25f8f223a6bc5 1925-1927
+  s_1dfdf61332f5c7::t_f77200c0e067db 1450-1451,1454-1456,1458-1461
+  s_1dfdf61332f5c7::t_17774dff98e895 1209-1210,1218,1444-1449,1452-1453,1457,1920,1924,1928
+  s_e5ac85fca2ef43::t_625507ab2300d2 796-802,804-805,808-812,815-820,823,1951
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_8eb329c7f0761c 241
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 240
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_7dd6b2172ca03c 129-130,137-138
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 131-136,139-142
+  s_1dfdf61332f5c7::t_3ad6a3e067bab4 7604
+  s_1dfdf61332f5c7::t_89f157e8e8ad1a 3526,3532-3534,3543-3545,3576-3577,3597-3598
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 11,3552-3553,3558,3561,3574-3575,3578,3580
+  s_1dfdf61332f5c7::t_3231c4c5759a72 7597,7601-7602,7605-7606,8474-8476
+  s_1dfdf61332f5c7::t_a2039ece597d00 826
+  s_1dfdf61332f5c7::t_bd914bce41fe8c 14
+  s_1dfdf61332f5c7::t_0d098b16177c59 830-831
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 3092,3095
+  s_1dfdf61332f5c7::t_cf8c6a38ac4a87 827-829
+  s_1dfdf61332f5c7::t_d519bec36cd85c 3608-3609
+  s_1dfdf61332f5c7::t_41a84c4e8355e3 7978
+  s_1dfdf61332f5c7::t_7560009250c02a 15,17,3036-3037,3040-3041,3093-3094,3196-3198,3287-3294,3297-3300,3305-3323,3325-3326,3546-3551,3554,3559-3560,3562,3564-3573,3579,3581-3585,3587-3596,3703-3704,3711,3713,3716-3727,4594-4599
+  s_1dfdf61332f5c7::t_f790663309980e 8009-8013
+  s_1dfdf61332f5c7::t_5988456af393f2 16
+  s_1dfdf61332f5c7::t_7b88a501e4f8bd 7964-7969,7971-7973,7975-7977
+  s_1dfdf61332f5c7::t_ca8715def0cc73 3033,3555-3557
+  s_1dfdf61332f5c7::t_d1448accb9e5d4 3586,3599-3600,3603-3607
+  s_1dfdf61332f5c7::t_bcf3d39a5c6fb3 3601
+  s_1dfdf61332f5c7::t_88e60667d2d8eb 7598-7600,7603,7607-7611
+  s_1dfdf61332f5c7::t_b8621d7a4af5f4 3035,3527,3535,3563,3602,3712
+  s_1dfdf61332f5c7::t_0d7cdec7e7fcd3 3528-3531,3536-3542
+  s_1dfdf61332f5c7::t_cc87b0e8b10db8 7594-7596
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_ddf1c0d43c1994 84-115
+  s_1dfdf61332f5c7::t_c0e2b00b7107db 2099,2101
+  s_1dfdf61332f5c7::t_7560009250c02a 5,12-16,943,1156-1165,1173-1175,1177-1179,1181-1183,1185-1192,1197,1228-1231,1233,1356,1794-1802,2021-2034,2048-2049,2053,2055-2096,2113-2117
+  s_1dfdf61332f5c7::t_23b6bab0468e42 965,1127
+  s_1dfdf61332f5c7::t_bbc06a0e01b8a2 116,118,121,124,127
+  s_1dfdf61332f5c7::t_37ebc596e1fe7e 117,119-120,122-123,125-126,128-130
+  s_1dfdf61332f5c7::t_5224d2da4177b7 2104-2109
+  s_1dfdf61332f5c7::t_ab17cea714edc7 928-930
+  s_1dfdf61332f5c7::t_655066dc6fca8c 2035-2047
+  s_1dfdf61332f5c7::t_f0c8b30000d3fb 1593,2050-2052,2054,2097-2098,2100,2102-2103,2110-2112
+  s_1dfdf61332f5c7::t_4bcb4bf19c9891 2118
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_f029dee6b0a530 6,34,53
+  s_1dfdf61332f5c7::t_7560009250c02a 1-4,7-33,35-52,54-97,100-105,107-119,122,126-127,133,136-152,154-155,158-161,176-178,184,189,196,203-220,223-229,231-237
+  s_1dfdf61332f5c7::t_363ae9111b9942 5
+  s_1dfdf61332f5c7::t_2d0bd585587d88 98-99,106,120-121,123-125,128-132,134-135,153,156-157,162-175,179-183,185-188,190-195,197-202,221-222,230
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_7560009250c02a 1-244
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_7560009250c02a 34-35,50
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_7560009250c02a 483
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "56f7641c46161c9ec9af1dafd70b600946afeb4f",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    },
+    "s_e5ac85fca2ef43": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0520ee52affeJH69RpWzRRdY52",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

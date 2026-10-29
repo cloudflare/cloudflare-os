@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/network-interceptor.test.ts
+  s_4c4222726010fb::t_fa51c25510f6da 1-26,31-44,46-121
+  s_4c4222726010fb::t_38dec94c71e044 45
+  s_4c4222726010fb::t_59888418a542ab 27-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "db8ce82ead940aa0c348740a6a1ecc480fbe3ea9",
+  "prompts": {},
+  "sessions": {
+    "s_4c4222726010fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5865b5c-4e69-4687-9ed8-7dba84b5c46d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

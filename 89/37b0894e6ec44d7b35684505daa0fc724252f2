@@ -1,0 +1,89 @@
+packages/workshop-frontend/src/GadgetUseView.tsx
+  s_a676e8860d1ca3::t_a8579881ee0b96 17,25,109-112
+packages/workshop-backend/src/agent.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 372-373,399-402,404-407,410,413
+  s_a676e8860d1ca3::t_502b3657126bd8 414
+packages/workshop-backend/__tests__/format-blueprints.test.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 2-3,7-16,80-82
+  s_a676e8860d1ca3::t_64f75da8f72cde 83-85
+packages/workshop-backend/package.json
+  s_a676e8860d1ca3::t_a8579881ee0b96 9-11,13-15,22,35
+packages/workshop-backend/src/browser-export-runtime.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 1-75
+packages/workshop-backend/src/env.d.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 47-49
+packages/workshop-frontend/src/fileTransfers.test.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 1-90
+packages/workshop-shared/src/api.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 2702-2707,2785-2786
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 68-76,89,137,141-146,220-228,261-265,339-343
+  s_a676e8860d1ca3::t_e1917667bd8d12 344
+packages/workshop-backend/format-blueprints/workspace-slides.json
+  s_a676e8860d1ca3::t_a8579881ee0b96 12
+packages/workshop-backend/build-browser-runtime.mjs
+  s_a676e8860d1ca3::t_a8579881ee0b96 1-22
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_a676e8860d1ca3::t_3fa329b79cada0 190
+  s_a676e8860d1ca3::t_a8579881ee0b96 90-99,197-217
+  s_541af6f33f7bfd::t_2bff2435ac9f7a 218-220
+packages/workshop-backend/src/browser-export.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 1-312
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_a676e8860d1ca3::t_a8579881ee0b96 12-16,597,599-603
+.gitignore
+  s_a676e8860d1ca3::t_a8579881ee0b96 12,27,29
+packages/workshop-backend/format-blueprints/workspace-sheets.json
+  s_a676e8860d1ca3::t_a8579881ee0b96 12
+packages/workshop-backend/wrangler.jsonc
+  s_a676e8860d1ca3::t_a8579881ee0b96 6,30-31,35-39
+  s_a676e8860d1ca3::t_b64456359562e6 40
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_a676e8860d1ca3::t_a8579881ee0b96 56,1593-1600
+  s_a676e8860d1ca3::t_db27558d46c2d2 1601
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 73-74
+docs/observers.md
+  s_a676e8860d1ca3::t_a8579881ee0b96 74-80,260-262,300-302
+packages/workshop-backend/src/overseer.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 47,6009-6013,6015-6033,9013-9022,9260-9268
+  s_a676e8860d1ca3::t_f8916b2e8ec4bd 9269-9270
+packages/workshop-frontend/src/GadgetExportMenu.tsx
+  s_a676e8860d1ca3::t_a8579881ee0b96 1-60
+packages/workshop-frontend/src/fileTransfers.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 3-4,7-12,14-15,47,49-53,60-77,80-86,91
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_a676e8860d1ca3::t_a8579881ee0b96 31-62,66-67,76-95,97-98,103-118,165,179,188,198-207,209-212,214-358,432-433,442
+packages/workshop-backend/__tests__/browser-export.test.ts
+  s_a676e8860d1ca3::t_a8579881ee0b96 1-206
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_a676e8860d1ca3::t_a8579881ee0b96 4,130,132-136,142,149-152,155-159,161,163-202,205-242,340-345,348-349,354-367,371,374-375,377-378,392,394,491
+packages/workshop-backend/format-blueprints/workspace-docs.json
+  s_a676e8860d1ca3::t_a8579881ee0b96 13
+pnpm-lock.yaml
+  s_a676e8860d1ca3::t_4ebe40d51298c3 44,50,59,68,115,200,212,215,233,236,398,429,454,485,506,509,536,539,658,683,689,695,699-701,704,707,738-741,747,792,795,801,814,823,826,835,1098-1101,1983-1987,2365-2367,2424-2426,2507-2514,2523-2526,2534-2541,2548-2584,2593-2596,2618-2620,2627-2629,2702-2705,2710-2716,2774-2777,2815-2818,2830-2832,2866-2871,2918-2931,2938-2941,2946-2948,2968-2978,3038-3041,3050-3057,3150-3153,3167-3170,3356-3359,3570-3573,3638-3645,3672-3674,3714-3717,3725-3734,3793-3796,3882-3893,3920-3926,3933-3936,3963-3971,3986-3991,4080-4082,4370-4373,4421-4424,4433-4443,4706,4711,4715,4719,4744,4746,4751,4753-4754,4756,4777,4779,4782,4784,4799,4807,4865-4878,4885,4892,4900,4907,5053,5055,5068,5072,5076-5077,5191,5193,5616-5631,5903,5907,5916,5918,5922-5923,5940,5946,5957-5958,6025-6029,6032,6034-6036,6135-6140,6145-6148,6155-6157,6159,6161,6168-6196,6201-6202,6223-6224,6229-6233,6309-6314,6317-6322,6372-6373,6383,6405-6410,6419-6420,6457-6462,6519-6530,6537-6538,6541-6546,6559-6574,6610,6613,6618,6620,6628-6629,6648-6659,6662,6666-6667,6709,6718-6720,6743,6746,6750,6753,6773-6774,6786-6787,6832,6838-6839,6952-6953,6969,6976,6994,6998,7004,7007,7012,7017,7022,7026,7031,7033,7035-7038,7043,7049,7054,7062,7071,7077,7284,7287,7388-7389,7457-7474,7501-7502,7527-7528,7545-7564,7580,7586,7590,7622,7625,7627,7633,7636,7656-7657,7820-7834,7854-7868,7878-7881,7904-7933,7950-7957,8023-8027,8099,8102,8127,8129,8153,8164,8176,8181,8196,8221,8225,8250,8354-8359,8381-8382,8387-8403
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8937b0894e6ec44d7b35684505daa0fc724252f2",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_a676e8860d1ca3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0369a8e51ffenkdNC7esrlYmyW",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

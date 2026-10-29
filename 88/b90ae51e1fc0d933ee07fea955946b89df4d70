@@ -1,0 +1,19 @@
+.github/pull_request_template.md
+  s_41ce97281be1d0::t_05d929655b6978 2-8,10,12,14,16,20-21,23-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "88b90ae51e1fc0d933ee07fea955946b89df4d70",
+  "prompts": {},
+  "sessions": {
+    "s_41ce97281be1d0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00f0bafc9ffeBd7DM3rbvoCjjj",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

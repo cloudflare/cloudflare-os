@@ -1,0 +1,159 @@
+packages/gatekeeper-spotify/package.json
+  s_7cb2e13456d040::t_02a0bba9905aae 8
+packages/workshop-frontend/README.md
+  s_3a0d42b8627676::t_564844e8a8738b 8-10,13-20,40
+packages/gatekeeper-mcp/vite.config.ts
+  s_7cb2e13456d040::t_48aa5685c83844 1-3
+packages/gatekeeper-mcp/README.md
+  s_7cb2e13456d040::t_2f3623aedc4d60 222-223
+packages/gatekeeper-confluence/package.json
+  s_7cb2e13456d040::t_bb55c0a9800fe4 8-10
+packages/typed-storage/vite.config.ts
+  s_7cb2e13456d040::t_0e994291f60ee9 1-5
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_f3a3dd1ae3894d::t_e5d294f2e18b74 595,603-616,622-625
+packages/gatekeeper-email/package.json
+  s_7cb2e13456d040::t_433e5fdf5e752d 8
+packages/integration-tests/vite.config.ts
+  s_7cb2e13456d040::t_3ddd36d4b441f5 1-5
+packages/gatekeeper-confluence/README.md
+  s_7cb2e13456d040::t_3217aebeeb8fa2 154-155
+packages/gatekeeper-mcp-portal/package.json
+  s_7cb2e13456d040::t_2f1d3b9ca98825 8,10
+packages/configurator-ui/package.json
+  s_7cb2e13456d040::t_7da39d10873a5e 14
+packages/router/package.json
+  s_7cb2e13456d040::t_63e6e98cf5ef36 11
+packages/gatekeeper-confluence/vite.config.ts
+  s_7cb2e13456d040::t_cd9e77a679100b 1-3
+packages/gatekeeper-context/package.json
+  s_7cb2e13456d040::t_6075cd8f6e2a9a 8,13
+packages/workshop-frontend/tsconfig.vite.json
+  s_7cb2e13456d040::t_e88c5968b89c73 6-14
+packages/gatekeeper-slack/README.md
+  s_7cb2e13456d040::t_43a492e45b469a 67
+packages/workshop-backend/package.json
+  s_7cb2e13456d040::t_4aa7eb2176df38 12
+packages/workshop-backend/vite.config.ts
+  s_f3a3dd1ae3894d::t_58d158100c3e32 1-46
+packages/mcp-shared/package.json
+  s_7cb2e13456d040::t_44bfa8dd6fda31 36
+packages/typed-storage/package.json
+  s_7cb2e13456d040::t_5dfa769841b8f6 17
+packages/integration-tests/README.md
+  s_7cb2e13456d040::t_ad0c70b3405e4d 7
+packages/error-reporting/vite.config.ts
+  s_7cb2e13456d040::t_5d163d95d535a3 1-5
+packages/gatekeeper-mcp-portal/vite.config.ts
+  s_7cb2e13456d040::t_beb4f263142281 1-3
+packages/gatekeeper-homeassistant/package.json
+  s_7cb2e13456d040::t_207b1b85686976 8
+packages/mcp-shared/vite.config.ts
+  s_7cb2e13456d040::t_bfe7ec2b6253e6 1-5
+packages/gatekeeper-linear/package.json
+  s_7cb2e13456d040::t_cf62aea8bf52bf 8
+packages/gatekeeper-slack/package.json
+  s_f3a3dd1ae3894d::t_e8d675311b7b84 8
+packages/router/vite.config.ts
+  s_7cb2e13456d040::t_b0af2fe5b046ef 1-5
+packages/gatekeeper-google/package.json
+  s_7cb2e13456d040::t_1d9dd85f6a5e0b 8
+packages/gatekeeper-zoominfo/package.json
+  s_7cb2e13456d040::t_9d7285af74f132 8
+packages/workshop-frontend/tsconfig.json
+  s_7cb2e13456d040::t_4ced96abb97e7f 23
+.agents/skills/write-gatekeeper/SKILL.md
+  s_7cb2e13456d040::t_a9a882272a4c99 122-129
+packages/workshop-frontend/package.json
+  s_7cb2e13456d040::t_4e42faea7739a6 8-9
+scripts/gatekeeper-configurator-vite-config.ts
+  s_3a0d42b8627676::t_c034f76c9f0ffa 1-91
+packages/workshop-backend/format-blueprints/README.md
+  s_f3a3dd1ae3894d::t_926e9d69de8072 89,92-94
+packages/backend-utils/vite.config.ts
+  s_7cb2e13456d040::t_ae4676b4272141 1-5
+packages/gatekeeper-scheduler/package.json
+  s_7cb2e13456d040::t_0a45b964482b11 8,12-13
+packages/backend-utils/package.json
+  s_7cb2e13456d040::t_f68c647d5c8b52 27
+packages/integration-tests/package.json
+  s_7cb2e13456d040::t_0ead83ee542145 13
+packages/gatekeeper-notion/vite.config.ts
+  s_7cb2e13456d040::t_559151a9216329 1-3
+packages/gatekeeper-mcp-portal/README.md
+  s_7cb2e13456d040::t_88dd87791dad10 197-198
+packages/error-reporting/package.json
+  s_7cb2e13456d040::t_469341c021e466 14
+package.json
+  s_7cb2e13456d040::t_3c20ee37c7ead4 10
+scripts/deploy-scripts.test.js
+  s_2468f0ce250808::t_62134ae817dbaf 1-64
+packages/gatekeeper-mcp/package.json
+  s_7cb2e13456d040::t_590159a838f224 8,10
+packages/mcp-shared/README.md
+  s_7cb2e13456d040::t_0169157ad4fb24 132
+packages/gatekeeper-scheduler/README.md
+  s_7cb2e13456d040::t_de0f957afd1074 179
+scripts/vitest-task-vite-config.ts
+  s_7cb2e13456d040::t_284369c8fffb4b 1-130
+packages/gatekeeper-scheduler/vite.config.ts
+  s_7cb2e13456d040::t_5d61be83d57dd3 2,11-14
+packages/configurator-ui/vite.config.ts
+  s_7cb2e13456d040::t_52a1067aeb26b6 1-5
+packages/gatekeeper-github/vite.config.ts
+  s_7cb2e13456d040::t_795a62d82d25e6 1-3
+packages/gatekeeper-context/vite.config.ts
+  s_7cb2e13456d040::t_73550fe06d6321 2,11-13
+packages/gatekeeper-github/package.json
+  s_7cb2e13456d040::t_9c82fb6139c64d 8-10
+packages/gatekeeper-notion/README.md
+  s_7cb2e13456d040::t_adacdf541ba213 57-58
+scripts/release/build-release.mjs
+  s_2468f0ce250808::t_9a5da6799cc174 75-78,81
+packages/gatekeeper-notion/package.json
+  s_7cb2e13456d040::t_36693f6829a1b5 8-10
+packages/gatekeeper-supabase/package.json
+  s_7cb2e13456d040::t_d046f93f01d4e3 8
+packages/workshop-frontend/vite.config.ts
+  s_3a0d42b8627676::t_13e3bff0896c2f 6-46,53-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6471b23a52a0cd841d0bdedd5599f05951c4c373",
+  "prompts": {},
+  "sessions": {
+    "s_2468f0ce250808": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ffe1af759ffep104mLydbCruTy",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_3a0d42b8627676": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7205f765-6350-4a4b-9278-81cdcd8f0763",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_7cb2e13456d040": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ebfd974-e57c-46ad-aea5-f64db9f3a4aa",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f3a3dd1ae3894d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbdd4246-043b-4b58-b789-54d5368846cf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

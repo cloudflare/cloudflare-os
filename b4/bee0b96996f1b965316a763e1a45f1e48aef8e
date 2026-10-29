@@ -1,0 +1,27 @@
+packages/gatekeeper-email/src/email.ts
+  s_fcb81335a24bc2::t_1951a5138cc598 266
+packages/workshop-backend/src/overseer.ts
+  s_fcb81335a24bc2::t_b36c1eed7b581d 24
+packages/workshop-backend/src/agent.ts
+  s_fcb81335a24bc2::t_b36c1eed7b581d 2194-2195
+  s_fcb81335a24bc2::t_d5aea108d3c553 2056
+  s_fcb81335a24bc2::t_04a325fb3a9722 1286
+packages/gatekeeper-slack/src/configurator/workspace-configurator-ui.tsx
+  s_fcb81335a24bc2::t_85ea21888aae4f 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b4bee0b96996f1b965316a763e1a45f1e48aef8e",
+  "prompts": {},
+  "sessions": {
+    "s_fcb81335a24bc2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03601b558fferm7fC0nANC1UUW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    }
+  }
+}

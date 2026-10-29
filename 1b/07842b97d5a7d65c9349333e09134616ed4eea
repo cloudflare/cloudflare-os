@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/spaces.test.ts
+  s_d78fe856f76a3c::t_fcb22f202bace6 10,88-99
+packages/workshop-shared/src/api.ts
+  s_d78fe856f76a3c::t_5048d9195dd596 4349-4360,4362,4365-4368,4371
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1b07842b97d5a7d65c9349333e09134616ed4eea",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

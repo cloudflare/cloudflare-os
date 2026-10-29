@@ -1,0 +1,212 @@
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_e25e29d8ebebad::t_fdf28b82ea6d8f 11,134-135,139,144,147-148
+  s_e25e29d8ebebad::t_51e11cbff5db75 9,95-97,131-133,136-138,140-141,143,145-146,149,151-154
+  s_e25e29d8ebebad::t_1b1659c150e1f8 92-93
+  s_e25e29d8ebebad::t_a6a1e9a9d88db9 113-114,129-130
+  s_e25e29d8ebebad::t_7bccdd8df28393 98-105,110-112
+  s_e25e29d8ebebad::t_517226aeffffe2 150
+  s_e25e29d8ebebad::t_4d8705bc6c3f48 12,15,109,113-128
+  s_e25e29d8ebebad::t_d25d66ab35369a 16,142
+  s_e25e29d8ebebad::t_070f00c7d09b5f 106-108
+  s_e25e29d8ebebad::t_c6acdc94cdd2ca 190
+packages/mcp-shared/__tests__/scope.test.ts
+  s_e25e29d8ebebad::t_3ff90b37371e49 222-230
+  s_e25e29d8ebebad::t_d85055b439a98d 13,74-82,186,189-194
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_e25e29d8ebebad::t_3543d4825e6d9d 30-32,34-35
+  s_e25e29d8ebebad::t_0ef6cefbae7c50 37
+  s_e25e29d8ebebad::t_cfbcabd18277cd 9,46,58,60
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_b6f83fb7452057 246,396
+  s_e25e29d8ebebad::t_e72df43c861276 400-408
+  s_e25e29d8ebebad::t_517226aeffffe2 237-238,250-251
+  s_e25e29d8ebebad::t_d85055b439a98d 3-7,15,18,20,26-29,32-47,80-98,130-235,239-245,247-248,252-270,275-294,326-338,352-395,397-399,409-439,446-454,504-506,512,516-517,582-587
+  s_e25e29d8ebebad::t_7e21183abc8013 99-119
+  s_e25e29d8ebebad::t_036792a8ebf161 271
+  s_e25e29d8ebebad::t_d2ebc4c6705448 272-273
+  s_e25e29d8ebebad::t_490b5457e4323f 274
+  s_e25e29d8ebebad::t_77da3842f714ff 59-79
+  s_e25e29d8ebebad::t_fe991d6df936b9 339-351
+  s_e25e29d8ebebad::t_2178eaa15bb1dc 236,249
+  s_e25e29d8ebebad::t_d093340ce9b3cb 323
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_e25e29d8ebebad::t_cfbcabd18277cd 162
+  s_e25e29d8ebebad::t_6104ca7be0d255 50,72,86-99,142-143
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_e25e29d8ebebad::t_6dbf6a80948d1a 12,265-266,268-272,274-275,277-285,287-288,291,294-309,311-316
+  s_e25e29d8ebebad::t_e72df43c861276 178-180,182-185,209
+  s_e25e29d8ebebad::t_3ff90b37371e49 186-188
+  s_e25e29d8ebebad::t_b46d25330c4ad5 267,273,276,286,289-290,292-293,310
+  s_e25e29d8ebebad::t_2ba539b1fbeb9d 3-4,189-208
+  s_e25e29d8ebebad::t_d093340ce9b3cb 181
+  s_e25e29d8ebebad::t_a3fe8a8ac981b4 145,147-151
+packages/gatekeeper-mcp-portal/__tests__/configurator-ui.test.ts
+  s_e25e29d8ebebad::t_523cf7cf616801 22
+  s_e25e29d8ebebad::t_0f789a696f66fa 91,102,105-107
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_523cf7cf616801 181-187
+  s_e25e29d8ebebad::t_852740047924f9 112-113,116-118,129,133,136,139-151,159,169-179
+  s_e25e29d8ebebad::t_e72df43c861276 152-158,167-168,180
+  s_e25e29d8ebebad::t_d25d66ab35369a 197
+  s_e25e29d8ebebad::t_ae399eff60c6a8 160-166
+  s_e25e29d8ebebad::t_d85055b439a98d 12-14,18-19,25-27,36-37,46-47,58-59
+  s_e25e29d8ebebad::t_197e2ad537b69f 17
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_12ec26507e9f01 34-36,38,45,47,79,90-91,95-96,116,120-131,133,140,420-434,438-442,444-447,449,461,500,510,513-514,519,534-537,547-548,550,558-559,561-562,629
+  s_e25e29d8ebebad::t_517226aeffffe2 92-94
+  s_e25e29d8ebebad::t_4d8705bc6c3f48 71,78,435-437,443,448,556
+  s_e25e29d8ebebad::t_a89edff54d9d9c 26,523-524,530,549,579-580,628,630,650
+  s_e25e29d8ebebad::t_fdf28b82ea6d8f 27,501,517-518,520-522,525-529,531,538-544,551-555,557,560
+  s_e25e29d8ebebad::t_c7b0ffd06104e1 28,37,80,248-251,272-348
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_ae399eff60c6a8 210,222
+  s_e25e29d8ebebad::t_db78a69b8b3f8d 191-196,199-202
+  s_e25e29d8ebebad::t_3e335e2f94ffab 211
+  s_e25e29d8ebebad::t_fa501c1ced5c2a 89-91,136-140,143-144,151,153-156,160,165-166,169,171-174,177-180,187,190,197,208,212-220
+  s_e25e29d8ebebad::t_523cf7cf616801 146-149,152
+  s_e25e29d8ebebad::t_d25d66ab35369a 226-227,230,233-238
+  s_e25e29d8ebebad::t_7bccdd8df28393 167
+  s_e25e29d8ebebad::t_d85055b439a98d 59
+  s_e25e29d8ebebad::t_866655f9fcee2a 48,51-55
+  s_e25e29d8ebebad::t_197e2ad537b69f 61
+  s_e25e29d8ebebad::t_10a335af6ad641 58
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_87d000431cc6d7 573,575-576
+  s_e25e29d8ebebad::t_cfbcabd18277cd 574
+  s_e25e29d8ebebad::t_517226aeffffe2 48,54,321-322
+  s_e25e29d8ebebad::t_b28adef7a53733 577-580
+  s_e25e29d8ebebad::t_5f63516b1a3812 50,56,58
+  s_e25e29d8ebebad::t_970c92241c15d4 622,655-658,660
+  s_e25e29d8ebebad::t_890b904e8efc70 564-567
+  s_e25e29d8ebebad::t_57f7d0624697cd 609-610,624-625,627,629
+  s_e25e29d8ebebad::t_644e9966719eae 626,628,630-631,652-654
+  s_e25e29d8ebebad::t_2178eaa15bb1dc 356,358
+  s_e25e29d8ebebad::t_b642f552f4700b 397-399
+  s_e25e29d8ebebad::t_d85055b439a98d 18,49,51-53,55,57,59-69,85-87,90-94,109-111,235,250-253,288,302,320,323-339,352-355,357,359-367,382,466-473,487,489-491,503,512-516,569-572,581-607,612-618,621,623,632-633,638,641,645-651
+  s_e25e29d8ebebad::t_7bccdd8df28393 662
+packages/gatekeeper-mcp-portal/README.md
+  s_e25e29d8ebebad::t_1829c8f634a6f3 170
+  s_e25e29d8ebebad::t_1542fc35ce4586 31-45,58-61,147,149-151,156-157,164,171,174,176-177
+  s_e25e29d8ebebad::t_cfbcabd18277cd 108,111,172-173
+  s_e25e29d8ebebad::t_517226aeffffe2 158-163,165-169
+packages/mcp-shared/src/types.d.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 4-5,77,79-80,82-84
+  s_e25e29d8ebebad::t_419fdc8a259fc3 74,78,81
+packages/gatekeeper-mcp/src/mcp.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 5,29,371-374,457-458
+  s_e25e29d8ebebad::t_2deee0cbf73927 38,291,295-298
+  s_e25e29d8ebebad::t_10a335af6ad641 286,288-290,292-294,299-300
+packages/mcp-shared/src/tool-search.ts
+  s_e25e29d8ebebad::t_970c92241c15d4 37
+  s_e25e29d8ebebad::t_d85055b439a98d 1-9,11-12,14-34,36,38-39,41-51
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 10,13,35,40
+packages/mcp-shared/src/schema-to-ts.ts
+  s_e25e29d8ebebad::t_644e9966719eae 364,366
+  s_e25e29d8ebebad::t_d85055b439a98d 11-12,16,343-345,361,363,365,367,392-393,409-416
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 4,59-97,100,102-109,112-227,245-259
+  s_e25e29d8ebebad::t_faba2b73c0d81d 58
+  s_e25e29d8ebebad::t_a1cd48c13dbe61 44,98-99,101
+  s_e25e29d8ebebad::t_b187980dcde16b 110-111
+  s_e25e29d8ebebad::t_336f09b7c074f7 228-244
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_a1cd48c13dbe61 5,52,66,75
+  s_e25e29d8ebebad::t_77da3842f714ff 35,46-51,172-190
+  s_e25e29d8ebebad::t_d85055b439a98d 1,6-8,23,25-34,53-65,67-70,73,91,101-171,191
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 31
+  s_e25e29d8ebebad::t_970c92241c15d4 199,202
+  s_e25e29d8ebebad::t_bfd393328004af 109-112
+  s_e25e29d8ebebad::t_d85055b439a98d 15,195-198
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 32
+packages/mcp-shared/__tests__/session-methods.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 70-79
+packages/mcp-shared/__tests__/tool-search.test.ts
+  s_e25e29d8ebebad::t_77da3842f714ff 48-51
+  s_e25e29d8ebebad::t_d85055b439a98d 1-47,52
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_036792a8ebf161 199
+  s_e25e29d8ebebad::t_d85055b439a98d 14-19,29-30,34-39,51-53,60,64-66,114,117,133,137-145,148-151,164-168,170-179,196-198,200-203,215,278,280-281
+  s_e25e29d8ebebad::t_33452f1a58e7dd 279
+  s_e25e29d8ebebad::t_10a335af6ad641 28,146-147,152-163,169
+  s_e25e29d8ebebad::t_970c92241c15d4 115,121,129-130,180-195,204-214
+  s_e25e29d8ebebad::t_0751f2c5c47203 131-132
+packages/mcp-shared/__tests__/hydrated-tools.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 1-82
+packages/mcp-shared/README.md
+  s_e25e29d8ebebad::t_c7f7d6d025aae3 116-117
+  s_e25e29d8ebebad::t_dce1a83891a2c9 122
+  s_e25e29d8ebebad::t_d85055b439a98d 24,26,33,113,115
+packages/mcp-shared/src/base-types.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 14-15,87,89-90,92-94
+  s_e25e29d8ebebad::t_419fdc8a259fc3 84,88,91
+packages/mcp-shared/src/catalog.ts
+  s_e25e29d8ebebad::t_c7f7d6d025aae3 203,226
+  s_e25e29d8ebebad::t_d85055b439a98d 1-3,9,11,14-20,63-64,66,68,70,74,80,87-92,94,128-143,150-155,157-202,204-225,227
+  s_e25e29d8ebebad::t_970c92241c15d4 59-60,93
+  s_957b1e84b891f0::t_698cec4fdeb773 61-62
+  s_e25e29d8ebebad::t_bcb45c5bb08e12 65,67,69
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 144-149,156
+packages/gatekeeper-mcp/README.md
+  s_e25e29d8ebebad::t_d85055b439a98d 55-66
+packages/mcp-shared/package.json
+  s_e25e29d8ebebad::t_d85055b439a98d 28
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_e25e29d8ebebad::t_e9bf13bbeecf86 463
+  s_e25e29d8ebebad::t_0e3121867fff6a 461
+  s_e25e29d8ebebad::t_fe991d6df936b9 145-147,451,453
+  s_e25e29d8ebebad::t_d85055b439a98d 51-67,123-144,148-150,447,450,452,454,457-460,462
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_b0b8b85c20c7ec 90,115-116
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 210-213
+  s_e25e29d8ebebad::t_d85055b439a98d 5-11,102-113,196-201,214
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_cab4f69e687b16 138-139
+  s_e25e29d8ebebad::t_33452f1a58e7dd 60,82,193-194
+  s_e25e29d8ebebad::t_036792a8ebf161 79
+  s_e25e29d8ebebad::t_10a335af6ad641 11-14
+  s_e25e29d8ebebad::t_d85055b439a98d 17-32,77,81,83-84,94-102,122-137,140-164,166,168-172,174-182,186
+  s_e25e29d8ebebad::t_da8a0343b298f3 74,76,78
+packages/mcp-shared/__tests__/connection.test.ts
+  s_e25e29d8ebebad::t_d660a6dcc90a41 188-230,235-237
+  s_e25e29d8ebebad::t_aca444835d9172 231-234
+packages/mcp-shared/src/scope.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 18,94-97,103,114-116,173-175
+packages/mcp-shared/__tests__/session-methods-e2e.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 27-30
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_8cd8656b42adf7 330-335
+  s_e25e29d8ebebad::t_a5ebb4537866a7 183-192,216-222,343-348,401-407,611-616
+packages/gatekeeper-mcp-portal/__tests__/account-revision.test.ts
+  s_e25e29d8ebebad::t_2bd661f69b5eb3 1-2,8-36,42,49-54
+  s_e25e29d8ebebad::t_643307ea16b6c8 3-7,37-41,43-48
+packages/gatekeeper-mcp-portal/vitest.config.ts
+  s_e25e29d8ebebad::t_eff8482fc92d53 1,3-5,7-13
+  s_e25e29d8ebebad::t_87ca10e340da70 2,6
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_e25e29d8ebebad::t_8cd8656b42adf7 181-206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e68befc3f39942a509f7df6390ec46212f526443",
+  "prompts": {},
+  "sessions": {
+    "s_957b1e84b891f0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0044ffadfffeKs31F1Kn3C0pP0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

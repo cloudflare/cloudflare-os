@@ -1,0 +1,23 @@
+AGENTS.md
+  s_d78fe856f76a3c::t_7ba0db6f9617d4 18,22,43
+docs/wiki.md
+  s_d78fe856f76a3c::t_1ddba700f3ee18 1-459
+packages/workshop-backend/format-blueprints/README.md
+  s_d78fe856f76a3c::t_b2eb222cdd075d 72-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3827b86c0a300bb22d0b54d07fef51a6489a5892",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

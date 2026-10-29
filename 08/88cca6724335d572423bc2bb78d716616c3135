@@ -1,0 +1,22 @@
+packages/workshop-backend/src/overseer.ts
+  s_d62853a085272a::t_15101ec85513b9 2333-2345,2347-2353,2355-2370,2372-2374
+  s_d62853a085272a::t_1a0824cdde38af 683-830,852,1134,1174-1186,1709-1717,1719,3863-3953,4311,4407,5266,5367,5445,5459,5463
+  s_d62853a085272a::t_581648536aafc4 1718
+  s_d62853a085272a::t_ad8aedcb2c7a2c 1720
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0888cca6724335d572423bc2bb78d716616c3135",
+  "prompts": {},
+  "sessions": {
+    "s_d62853a085272a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07f3a23baffeycd8CGIsH1bEDM",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

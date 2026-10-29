@@ -1,0 +1,44 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_664125cd80dfd6::t_082874cf359fa0 356-358,360-371,373-374,377,381-394,396-399
+  s_664125cd80dfd6::t_ba39b022f3569a 21,25,28-29,339-350,352-355,359,372,375-376,378-380,395
+  s_664125cd80dfd6::t_9cc4486c2dcdf2 27
+  s_664125cd80dfd6::t_1a5142e239f5cf 26
+packages/workshop-backend/src/deployment-updates.ts
+  s_664125cd80dfd6::t_103ad8367f50de 163
+  s_664125cd80dfd6::t_6724c974a00728 20
+  s_664125cd80dfd6::t_096928d435af17 22-27,46-47,49-50,54-97,152-153,156-157,161-162,164-165,179-180
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_664125cd80dfd6::t_6724c974a00728 203-206
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_664125cd80dfd6::t_f5f7791b249bfd 3,5,943-955,958-961,963-964,966
+  s_664125cd80dfd6::t_49b16bf74a1aa3 956-957,962,965
+  s_664125cd80dfd6::t_103ad8367f50de 827-830,832-836,838,871
+  s_664125cd80dfd6::t_1bab6112050741 178,896,906,908-909,914-915,917,980-998
+  s_664125cd80dfd6::t_7b46d18848e06c 42
+  s_664125cd80dfd6::t_36475d417d313b 7,9-11,75,90-94,110-112,126-177,454-456,790-826,831,837,839-843,846-851,856-861,863-870,872-895,897-905,907,910-913,916,918-935
+  s_664125cd80dfd6::t_67184134f4aa90 29-30,34,41,43-44,293-308,312,314,320,322,328,330,336,338,344-345,355,358,366,373,379,388,435,473-474,481,632,661-662,666,688
+  s_664125cd80dfd6::t_e9e6dab9e829fe 13-15,21,179,936-942,967-979,999
+  s_664125cd80dfd6::t_9d9f09d6840788 844-845,852-855,862
+  s_664125cd80dfd6::t_6e2696d9dcfaec 180
+packages/workshop-backend/src/server.ts
+  s_664125cd80dfd6::t_1a5142e239f5cf 43-48,862,866-867,870
+  s_664125cd80dfd6::t_b0035b23e8d763 49,857-858,861,868-869,871-875
+  s_664125cd80dfd6::t_410524926c1fc1 34,859-860,863-865
+  s_664125cd80dfd6::t_7a5ab5c82ea664 876
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c6ba5741edd8e17fd7b03d831ccf65a2ea2e7c5c",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

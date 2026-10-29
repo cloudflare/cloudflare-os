@@ -1,0 +1,29 @@
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_a3b331e638035b::t_de8a8dfa224fb8 134-135
+packages/workshop-backend/__tests__/git-push-actions.test.ts
+  s_a3b331e638035b::t_59456554fec540 154,165
+packages/workshop-backend/src/auto-approval.ts
+  s_a3b331e638035b::t_15c281e64d5add 24-26
+packages/workshop-backend/src/overseer.ts
+  s_a3b331e638035b::t_15c281e64d5add 1157-1159,1163,5247-5248,5250,5539-5541,5803-5804,5812-5813,5815,11279
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_a3b331e638035b::t_de8a8dfa224fb8 78,85,116
+packages/workshop-backend/__tests__/restricted-writes-to-self.test.ts
+  s_a3b331e638035b::t_de8a8dfa224fb8 38-39,55-56,84,87,90,178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6dbcba4fdb2f9cf6b44ee91c3e1392d7ea0f0db1",
+  "prompts": {},
+  "sessions": {
+    "s_a3b331e638035b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "999acfcd-fa5b-4bb9-aa87-f931b20970ba",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

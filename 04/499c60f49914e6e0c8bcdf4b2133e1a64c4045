@@ -1,0 +1,86 @@
+packages/integration-tests/src/agent-session.ts
+  s_23a91689dbf18c::t_3b9084da83792b 1013-1019
+packages/workshop-backend/src/user.ts
+  s_23a91689dbf18c::t_d6380df9351c38 10
+  s_23a91689dbf18c::t_f8246fbbf8076c 660-663,672,687,689,762-763,864-865,867,872,897-912
+  s_f18ed49093aba3::t_0fad1e57b07e8a 2,734-737
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_23a91689dbf18c::t_56351b57b096be 118-156
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_23a91689dbf18c::t_e3ba418981e1c2 128,131-132,147
+  s_23a91689dbf18c::t_6ec06e7c46ba6d 180,192
+  s_f18ed49093aba3::t_f8f675e944df67 152-179,181-191,193-234,237,239-260,285-286
+  s_e259f2380cb0a8::t_fb4a364c595e5c 2
+  s_e259f2380cb0a8::t_a167c5d0e34f98 235-236,238,261-283
+  s_e259f2380cb0a8::t_3477c57493a5a6 284
+packages/workshop-backend/src/ai-gateway.ts
+  s_23a91689dbf18c::t_ca0e1a244e2b9b 198-199
+  s_f18ed49093aba3::t_6528367e9cced4 245
+  s_f18ed49093aba3::t_163b5311f75893 2,19-25,41-43,46-53,55,57-60,65,69,71-73,75,81,95-97,103-109,135-138,213-214,218-229,235-244
+  s_f18ed49093aba3::t_2edc3d264498f5 54,63-64,89-92
+  s_23a91689dbf18c::t_1dbe491c3f92a3 190-193,200-203
+  s_f18ed49093aba3::t_58fff3283e26c2 26-40,45,56,61-62,66-68,70,74,76,79-80,82-88,93-94,98-102,175-177
+  s_e259f2380cb0a8::t_a167c5d0e34f98 12-18,44,77-78
+packages/workshop-shared/src/api.ts
+  s_23a91689dbf18c::t_3ac9ee92cd922b 524-525,529-533
+  s_f18ed49093aba3::t_0fad1e57b07e8a 1293-1297
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.test.tsx
+  s_23a91689dbf18c::t_595701b756dcd9 79,138,181,248,338
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.tsx
+  s_23a91689dbf18c::t_595701b756dcd9 52
+  s_23a91689dbf18c::t_550b3699593bd6 125,172,491
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_23a91689dbf18c::t_550b3699593bd6 3336-3337,3339,5358,6337-6340
+packages/workshop-frontend/src/features/chat/composer/ComposerModelSelector.tsx
+  s_23a91689dbf18c::t_550b3699593bd6 47
+  s_23a91689dbf18c::t_da20cd1e77be27 5-10,13,24-25
+packages/workshop-frontend/src/features/chat/composer/ComposerModelSelector.test.tsx
+  s_23a91689dbf18c::t_595701b756dcd9 8,26,42,47,51
+packages/workshop-frontend/src/routes/index.tsx
+  s_23a91689dbf18c::t_550b3699593bd6 190
+docs/public-server.md
+  s_f18ed49093aba3::t_0fad1e57b07e8a 66-67,69-85,90
+  s_e259f2380cb0a8::t_a167c5d0e34f98 68,86-87
+  s_e259f2380cb0a8::t_fb4a364c595e5c 88-89
+packages/workshop-backend/src/server.ts
+  s_f18ed49093aba3::t_0fad1e57b07e8a 242
+packages/workshop-backend/src/env.d.ts
+  s_f18ed49093aba3::t_58fff3283e26c2 24-27
+scripts/run-dev-server.ts
+  s_f18ed49093aba3::t_0fad1e57b07e8a 553-554,556
+packages/workshop-frontend/src/routes/providers.tsx
+  s_f18ed49093aba3::t_3348634d8ebecc 181-182
+  s_f18ed49093aba3::t_56a96d90ad31d6 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "04499c60f49914e6e0c8bcdf4b2133e1a64c4045",
+  "prompts": {},
+  "sessions": {
+    "s_23a91689dbf18c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "295fb5ca-5ade-4ada-9d5b-faa74287b789",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e259f2380cb0a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2360c005-6db4-412b-be00-5e18fb49a0fc",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f18ed49093aba3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "64175d87-67f9-4da9-8473-62dd12583e4b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

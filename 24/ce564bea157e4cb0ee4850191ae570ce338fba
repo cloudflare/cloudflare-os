@@ -1,0 +1,24 @@
+packages/workshop-backend/src/chat-attachment-validation.ts
+  s_851dd2aa785588::t_c53b2bbb24f678 7,51-52
+  s_851dd2aa785588::t_bee7fab3cb0991 19-21
+  s_851dd2aa785588::t_abda575f0114bb 1-6,8-18,22-50,53
+packages/workshop-backend/src/overseer.ts
+  s_851dd2aa785588::t_abda575f0114bb 32-36
+  s_851dd2aa785588::t_c53b2bbb24f678 2566
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "24ce564bea157e4cb0ee4850191ae570ce338fba",
+  "prompts": {},
+  "sessions": {
+    "s_851dd2aa785588": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0514ff91dffe7QuCQy7ut88FTy",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    }
+  }
+}

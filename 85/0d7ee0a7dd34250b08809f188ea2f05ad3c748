@@ -1,0 +1,27 @@
+vite.config.ts
+  s_22a01a7c8205cc::t_16d3205673da8a 19-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "850d7ee0a7dd34250b08809f188ea2f05ad3c748",
+  "prompts": {},
+  "sessions": {
+    "s_22a01a7c8205cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_22a01a7c8205cc",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_244f2101fabd66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_244f2101fabd66",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

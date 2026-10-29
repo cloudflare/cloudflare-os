@@ -1,0 +1,19 @@
+AGENTS.md
+  s_70a74eb525c8be::t_587a69a0d967fd 17,21,66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cf8ff858da74aa8fd38ec91a4edb059c3c2c4752",
+  "prompts": {},
+  "sessions": {
+    "s_70a74eb525c8be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ad7440e2-3857-4332-a283-5fbb8cf921fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+packages/gatekeeper-google/__tests__/workerd/native-sessions.test.ts
+  s_05cdbcec96f16f::t_ee0724c89d3e97 1596-1615
+packages/gatekeeper-google/src/drive-comments.ts
+  s_05cdbcec96f16f::t_64a702746c956b 122-126,266-269,272,277,287,309-326,340-341,359,448-450,453-455
+  s_05cdbcec96f16f::t_a667c76c5dd26c 451-452
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c0fcc76db425af2f217c35589d4af7aacd8ad645",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_05cdbcec96f16f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2293583-4ce7-43c7-8705-b6fb3a100ac2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

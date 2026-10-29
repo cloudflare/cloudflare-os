@@ -1,0 +1,137 @@
+packages/gatekeeper-email/src/email.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 450
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_77fa7c8bd47def::t_dad457305f98b6 28-37,78,81,88-92,145
+  s_77fa7c8bd47def::t_fb69e2dfaf5446 73-77,79-80,82-87,93-98,139,153-164,166-169,172,174-187
+packages/gatekeeper-kit/src/connect-pages.ts
+  s_77fa7c8bd47def::t_26032156074586 140-155,186-187,190-192,197,199-200
+packages/workshop-frontend/src/connectHandoff.ts
+  s_77fa7c8bd47def::t_9bf3f1e9c7e54c 2-5,33-35,37,46-64,71,73-74,79-89,100,102,106-109,111-113,118-121
+  s_77fa7c8bd47def::t_dad457305f98b6 114-117
+  s_d4911edf51be0b::t_9a34215a1aaaaa 65-68
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 466-467,469,489-491,692-693
+  s_d4911edf51be0b::t_fa4d11a28f571c 389-394,419,462
+packages/workshop-backend/src/user.ts
+  s_77fa7c8bd47def::t_95c94807273ee4 47-49,1719-1725,1729-1732,1742,1748-1755,1763-1765,1774-1792,1818,1835,1921-1922
+  s_d4911edf51be0b::t_2b200b732e5a02 1577-1578,1581,1608,1621,1681-1692,1766,1796-1809,1828
+packages/gatekeeper-notion/src/notion.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 396-397,412-414,581-582
+  s_d4911edf51be0b::t_fa4d11a28f571c 117-122,346,362,392
+packages/workshop-backend/__tests__/pending-login.test.ts
+  s_77fa7c8bd47def::t_a6d8bdf88e2b01 93-107
+  s_d4911edf51be0b::t_2344d62cdab31e 141-144,152-153,161,180,184
+  s_d4911edf51be0b::t_edd6bf12fd0b19 4-5,7,12,16-31,108-124,137-140,145-151,154-160,162-179,181-183,185-195
+  s_d4911edf51be0b::t_088788dc2f0a47 196
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 273
+packages/mcp-shared/src/user.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 18-19,68-70
+packages/workshop-frontend/src/ObserverConfigModal.test.tsx
+  s_77fa7c8bd47def::t_72112bdbbb34e0 122-128,201,212-213,221,238-239,248,264-265
+packages/gatekeeper-kit/__tests__/credential-stage.test.ts
+  s_77fa7c8bd47def::t_26032156074586 4,20,22,24,26-44,50,52,56,58,60-62,68,70-71,75-76,78-94
+packages/gatekeeper-linear/src/linear.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 595-596,613-615,817-818
+  s_d4911edf51be0b::t_fa4d11a28f571c 511-521,542,557,591
+packages/gatekeeper-spotify/src/spotify.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 582-583,600-602,767-768
+  s_d4911edf51be0b::t_fa4d11a28f571c 78-83,527,542,578
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 489,513-519,521,526-528,574-604
+  s_77fa7c8bd47def::t_10943d3793352f 605
+  s_d4911edf51be0b::t_a99ec2f99170c5 116-118,550-551
+  s_d4911edf51be0b::t_edd6bf12fd0b19 115,479,494,509-512,524,529-549,552-571
+  s_d4911edf51be0b::t_6be0d9ac255f70 572-573
+packages/gatekeeper-google/src/google.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 507-508,517,522-523,544-545,547-548,871,873
+packages/mcp-shared/__tests__/user.test.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 29
+  s_d4911edf51be0b::t_b7ce23e45a3f34 18,58-60
+packages/workshop-backend/__tests__/test-worker.ts
+  s_77fa7c8bd47def::t_a6d8bdf88e2b01 25,28,44,47-48
+  s_d4911edf51be0b::t_2b200b732e5a02 7,17-18,26,29,38
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_77fa7c8bd47def::t_9bf3f1e9c7e54c 74
+  s_d4911edf51be0b::t_9a34215a1aaaaa 92-94,96,107,114-115,121,123,125-128
+  s_d4911edf51be0b::t_f6b1a9a70e19ba 4,6,14-17,20,24-30,36-40,50-51,58-59,64-67,71,75-77,80,83-84,87-91,99,101-103,106,108-110,129-138,140-141,147
+  s_d4911edf51be0b::t_daaa5d7336f0c5 111-113
+AGENTS.md
+  s_77fa7c8bd47def::t_d865dc21b3bc2a 25
+packages/workshop-backend/src/connect-handoff.ts
+  s_77fa7c8bd47def::t_95c94807273ee4 2-6,9-11
+packages/workshop-backend/__tests__/connect-handoff.test.ts
+  s_77fa7c8bd47def::t_a6d8bdf88e2b01 55-56,132,144-146,155-164,166-178,188,196-198,261,296
+  s_d4911edf51be0b::t_edd6bf12fd0b19 27,35-36,50-51,165,206-251
+  s_d4911edf51be0b::t_b24b2b4ff0b7f0 252
+packages/workshop-backend/src/auth/login-flow.ts
+  s_77fa7c8bd47def::t_95c94807273ee4 45-46,75-77,101
+  s_77fa7c8bd47def::t_de479b09dfdea2 44,47,74
+  s_d4911edf51be0b::t_42c48e21741de5 193-194
+  s_d4911edf51be0b::t_2b200b732e5a02 27-31,36,49-51,53,60-61,80-92,99,111,172-174,195-210,212-215
+packages/gatekeeper-confluence/src/confluence.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 344-345,360-362,531-532
+  s_d4911edf51be0b::t_fa4d11a28f571c 134-144,340
+  s_d4911edf51be0b::t_4575985dc90e27 295-298,310-313
+packages/gatekeeper-kit/__tests__/connect-pages.test.ts
+  s_77fa7c8bd47def::t_99aad153ff9e71 51,53-56,58,62-63,67-81,108,113-114
+packages/gatekeeper-kit/src/credential-stage.ts
+  s_77fa7c8bd47def::t_603209522d7f26 18,102-104
+  s_77fa7c8bd47def::t_ea342ada659ea2 11-15,24-27,35,39-40,48-62,71,73-75,79-83,86-87,91,96-99,105,108-117
+  s_d4911edf51be0b::t_8d3a9882034716 66-68
+packages/workshop-shared/src/gatekeeper.ts
+  s_77fa7c8bd47def::t_3541eecc3ad88f 447-450,455-456,460-466,480,484,496-498,582-589,591,671-674,686,689-695,697,717-718
+packages/gatekeeper-github/src/github.ts
+  s_77fa7c8bd47def::t_720cfc2871e39c 1315-1318,1344-1345,1347,1531,1533
+  s_d4911edf51be0b::t_1b22afcd51d71f 137-142,1265,1280,1312
+packages/gatekeeper-supabase/src/supabase.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 452-453,472-474,679-680
+  s_d4911edf51be0b::t_fa4d11a28f571c 82-87,400,417,448
+packages/gatekeeper-slack/src/slack.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 414-416,418-420,422,426-428,448-449,451,661-662
+  s_d4911edf51be0b::t_fa4d11a28f571c 36-41,359,381,399,417
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 468-469,486-488,622-623
+  s_d4911edf51be0b::t_fa4d11a28f571c 101-106,392,415,464
+packages/mcp-shared/src/account.ts
+  s_77fa7c8bd47def::t_f6c13478170b4e 476-479,551,555,678-680,682-684,736
+  s_d4911edf51be0b::t_8d3a9882034716 380,427,602-603,637,645,663,667
+  s_d4911edf51be0b::t_a99ec2f99170c5 141,424-425,434-435,439,480,499-504,531,552-554,567,574-575,672
+  s_d4911edf51be0b::t_42c48e21741de5 142-143
+  s_d4911edf51be0b::t_1a896c0cd2581b 119-126,133-138,144-145,286,288-291,309,314,329-331,340-341,346,390,414,422-423,426,431,576,600,669,673-674,687-688,690-694,700,727-735,737,739
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_77fa7c8bd47def::t_7db107e46f27f4 315-316,335-337,495-496
+  s_d4911edf51be0b::t_966e2934c58129 49-54,245,270,311
+packages/mcp-shared/src/html.ts
+  s_d4911edf51be0b::t_59e3b62e61bad9 11-18
+  s_d4911edf51be0b::t_42c48e21741de5 2-5
+packages/mcp-shared/__tests__/http.test.ts
+  s_d4911edf51be0b::t_8335a9617c9711 64-66
+packages/workshop-frontend/src/components/auth/OAuthButtons.test.tsx
+  s_d4911edf51be0b::t_82a5f766ccf896 108
+  s_d4911edf51be0b::t_edd6bf12fd0b19 84-107,109-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "252f5f499cfbe49542b90813de2a70a0e9c03f86",
+  "prompts": {},
+  "sessions": {
+    "s_77fa7c8bd47def": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "781841ab-ed59-4d5b-8a61-8e585560247f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d4911edf51be0b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f65990fa-92c5-4009-b053-1dddb94ef652",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

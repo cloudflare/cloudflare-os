@@ -1,0 +1,23 @@
+packages/integration-tests/fixtures/seeded-gadgets/durable-notes.js
+  s_6ca33ca8799205::t_a03e606b4cf1be 1-38
+packages/integration-tests/fixtures/seeded-gadgets/overselling-desk.js
+  s_6ca33ca8799205::t_24a2f9c59ef858 1-50
+packages/integration-tests/fixtures/seeded-gadgets/valid-server.js
+  s_6ca33ca8799205::t_dfdcbc3822038d 1-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "732815a647e44ec2996398e6ea72f34ede937eba",
+  "prompts": {},
+  "sessions": {
+    "s_6ca33ca8799205": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_037cf4233ffeun10uERnLny25u",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

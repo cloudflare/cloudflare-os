@@ -1,0 +1,33 @@
+packages/integration-tests/README.md
+  s_23124d99541bb8::t_93b20bcfa23a85 29-39,41-44,49-50,53,55
+packages/integration-tests/__tests__/agent-session.test.ts
+  s_23124d99541bb8::t_1895b1391fd930 1,4-6,8-46,58-131
+packages/integration-tests/package.json
+  s_23124d99541bb8::t_0a665649e18efe 7
+packages/integration-tests/src/agent-session-internals.ts
+  s_23124d99541bb8::t_7ec144064169c5 3-5,7-65,67-142
+packages/integration-tests/src/agent-session.ts
+  s_23124d99541bb8::t_d5c10ddbbd8c9f 1-2,6,9-23,28-44,45-55,58-77,81-98,99-144,146-149,160-209,210,212-218,225-282,285-287,292-321,322-345
+packages/integration-tests/src/harness.ts
+  s_23124d99541bb8::t_df81d3759f6fbd 84,100-102,126-127,145-146
+packages/integration-tests/src/rpc-client.ts
+  s_23124d99541bb8::t_741a188200e741 14-16
+pnpm-lock.yaml
+  s_23124d99541bb8::t_9a56d78f8f9905 1275,1290,1294,1298,1307,1314,1320,1326,1332,1338,1344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1e3c883f40ec5fdeb5668f388ba3b13da6e095ce",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+packages/gatekeeper-notion/src/notion-actions.ts
+  s_ea0ed5df37b4df::t_1237dd95cf826f 18,31-34,54-56,684-691,702,710,719,728-729,735,741,747,752-759,761-776,1001-1011,1023-1024
+packages/gatekeeper-notion/src/notion.ts
+  s_ea0ed5df37b4df::t_1237dd95cf826f 1543-1544,1549
+  s_ea0ed5df37b4df::t_e16eeed0cd98e7 56
+packages/gatekeeper-notion/__tests__/notion-actions.test.ts
+  s_ea0ed5df37b4df::t_c03228671ccd39 1-26,28-32,34-86
+  s_ea0ed5df37b4df::t_64084826c0cc93 27,33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0a94e186b4d9c66b1cac01d6269eb8b3867a043b",
+  "prompts": {},
+  "sessions": {
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

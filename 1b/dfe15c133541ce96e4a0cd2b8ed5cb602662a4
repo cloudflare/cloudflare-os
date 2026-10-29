@@ -1,0 +1,20 @@
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_a24cd1bf692064::t_7faacda4f3047f 396-397,401,651,654
+  s_a24cd1bf692064::t_d76810511de0bb 402-435,437-471,474,476-477,479-491,493-494,496-497,499-526,528,530-531,533-539,541-573,575-582,584-592,594-635,637-648,650
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1bdfe15c133541ce96e4a0cd2b8ed5cb602662a4",
+  "prompts": {},
+  "sessions": {
+    "s_a24cd1bf692064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a03e8cb-afb5-47be-a446-f8f2b664bb38",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

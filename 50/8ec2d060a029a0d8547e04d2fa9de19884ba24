@@ -1,0 +1,23 @@
+AGENTS.md
+  s_0c2ab7edd98432::t_7f5475007e3ba2 92
+scripts/with-timeout.ts
+  s_0c2ab7edd98432::t_117a86a0d933c4 20-27,32-36,143,149,183,247,259,275
+scripts/with-timeout.test.ts
+  s_0c2ab7edd98432::t_350bf248625b43 10-11,14,50,52,70,83,110,120,137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "508ec2d060a029a0d8547e04d2fa9de19884ba24",
+  "prompts": {},
+  "sessions": {
+    "s_0c2ab7edd98432": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a56be55-d294-47df-b436-2527e0afbfa4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

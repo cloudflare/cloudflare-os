@@ -1,0 +1,107 @@
+packages/workshop-frontend/src/features/chat/composer/chatSettingsSelection.test.ts
+  s_b935ef13c35665::t_933ef87739958f 1-50
+packages/workshop-frontend/src/features/ai-models/modelForm.ts
+  s_b935ef13c35665::t_3ae5e778eeda58 33-45
+packages/workshop-frontend/src/features/ai-models/ReasoningLevelSelect.tsx
+  s_b935ef13c35665::t_3ae5e778eeda58 2-3,5,9-11,14,18,20,22-23,26
+  s_b935ef13c35665::t_53297581c1d4e8 6,42,48,54-55,58,60
+packages/workshop-frontend/src/features/chat/composer/useChatModelDescription.ts
+  s_b935ef13c35665::t_654e35740345f5 1-3,5-11,14-19,21-27,29,31-39,41,43-46,48,59
+  s_b935ef13c35665::t_eb8e8875566860 4,40
+  s_b935ef13c35665::t_0a780083f609b6 49-50
+  s_b935ef13c35665::t_6a64a2830ecdd4 12-13,20,28,30,42,47,51-58
+packages/workshop-frontend/src/features/chat/composer/ComposerChatSettings.tsx
+  s_b935ef13c35665::t_7bdefd08f52822 8,69,90,109-125
+  s_b935ef13c35665::t_350cd92ef291af 2-7,12-21,25-37,43-57,59,67-68,70-72,74,80-85,91-92,96,105-108,126-134,143-162,164-172,174-220,222-225,228-321,324-345,347-353
+  s_b935ef13c35665::t_7f208e453cc4e4 63-66,86-87,94-95,97-104
+  s_b935ef13c35665::t_5e54044312f67a 38-42,88-89,163,221
+  s_b935ef13c35665::t_32e26047d507f3 226-227,322-323,346
+  s_b935ef13c35665::t_cf6d13a1418e13 1,9-11,22-24,58,60-62,73,75-79,93,135-142,173
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_b935ef13c35665::t_3ae5e778eeda58 13-19,225
+packages/workshop-frontend/src/features/chat/composer/chatPresets.test.ts
+  s_b935ef13c35665::t_44a7c49f44977f 56-62,87-91
+  s_b935ef13c35665::t_d087da54938a1d 1-55,63-75,81-86,92-129
+  s_b935ef13c35665::t_bbefb2aa8eca3b 76-80
+packages/workshop-frontend/src/features/chat/composer/chatSettingsSelection.ts
+  s_b935ef13c35665::t_f327ffacc6f70e 1-38
+packages/workshop-frontend/src/features/chat/composer/ModelFields.tsx
+  s_b935ef13c35665::t_06b6d1db65bcd6 1-19,21-40,42,44-46,48-56
+  s_b935ef13c35665::t_788e30bec46b66 20,41
+  s_b935ef13c35665::t_01c3d2fa029b13 43,47
+packages/workshop-frontend/src/features/chat/composer/useChatPresets.ts
+  s_b935ef13c35665::t_5bac8433ddfedf 41
+  s_b935ef13c35665::t_9366d50bd766f3 29-30,32,37,40,45,59,64
+  s_b935ef13c35665::t_cdbc43c25dc8b1 1-16,19-21,23-28,31,33-36,38-39,42-44,46-58,60-63,65-68,72-73,75-82,88-89
+  s_b935ef13c35665::t_6a64a2830ecdd4 17-18,22,69-71,74,83-87
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_b935ef13c35665::t_043a3c56faf60f 4083,4086-4087,4091-4094,4121-4124,4127-4134,5550
+  s_b935ef13c35665::t_5572856fcfa269 86,120-126,2801-2804,3153,4025,4063,4084-4085,4097-4099,4103,4105-4106,4111-4118,6556,6642-6645
+  s_b935ef13c35665::t_d0c7e1dfa3aefb 2705-2707,3515,3523,3832,4088-4090,4095-4096,4100-4102,4104,4107-4110,6639-6641
+  s_b935ef13c35665::t_91ea2c93bd8992 4119-4120,4125-4126
+  s_b935ef13c35665::t_e92920be140704 6646
+packages/workshop-frontend/src/homeChatSettings.test.tsx
+  s_b935ef13c35665::t_4de9eca9c1a15a 1-124
+packages/workshop-frontend/src/routes/index.tsx
+  s_b935ef13c35665::t_043a3c56faf60f 68-69,176,229
+  s_b935ef13c35665::t_72063947f16f84 15,26-32,67,70,106-110,142-143,168,224-228,230
+  s_b935ef13c35665::t_4d90290c96490c 177
+packages/workshop-frontend/src/features/ai-models/CompactionBudgetHelp.tsx
+  s_b935ef13c35665::t_66c02620eda679 13,16,24-25,29-31
+packages/workshop-frontend/src/features/chat/composer/InlineNameField.tsx
+  s_b935ef13c35665::t_c8c081534be316 1-57
+packages/workshop-frontend/src/features/chat/composer/ComposerChatSettings.test.tsx
+  s_b935ef13c35665::t_0a3937a26316ea 83,106,208,211,231-238,409-412,535-540,543
+  s_b935ef13c35665::t_9ce19a2d8f9201 130-131,133-135,263,350,415,423,555
+  s_b935ef13c35665::t_da107ccb732688 429,432-457
+  s_b935ef13c35665::t_ffa1f19e578874 541-542
+  s_b935ef13c35665::t_7ef6875987ffd3 67,84-85,104-105,114,209,214-230,280-292,494-504,520,525-533
+  s_b935ef13c35665::t_7f208e453cc4e4 210,212-213
+  s_b935ef13c35665::t_9c31be1d3bf4a6 534
+  s_b935ef13c35665::t_dcd9958daf5c52 544-545
+  s_b935ef13c35665::t_84c9d3d37a9b72 1-66,68-82,86-103,107-113,115-129,132,136-207,239-262,264-279,293-349,351-408,413-414,416-422,424-428,430-431,458-493,505-519,521-524,546-554,556-560,572-579
+  s_b935ef13c35665::t_1487b3ff81c1c0 561-571
+packages/workshop-frontend/src/features/chat/composer/BudgetField.tsx
+  s_b935ef13c35665::t_06b6d1db65bcd6 1-119
+packages/workshop-frontend/src/ChatInterface.chatSettings.test.tsx
+  s_b935ef13c35665::t_9ad3841c47cfeb 36-39,114-116
+  s_b935ef13c35665::t_f6cd0c9d52644f 5,15-24,26-29
+  s_b935ef13c35665::t_0782463143785d 149-150
+  s_b935ef13c35665::t_72551eb1b5f2b5 100-102
+  s_b935ef13c35665::t_4132d7dd9b97b2 1-4,6-14,25,30-35,40-41,43-47,49-59,61-99,103-106,108-109,111-113,117-121,123-135,137-148,151-159,163,165-168,171-217,239-256,275-282,348-349
+  s_b935ef13c35665::t_7e27c014fc0b78 60,107,136,160-162,164,169-170,257-274,298-300,314,318-324,328,330
+  s_b935ef13c35665::t_cdd203e388c48c 42,48,218-238,306-312,332-347
+  s_b935ef13c35665::t_d577c8db7979ee 110,122,283-287,289-291,293-294,296-297
+  s_b935ef13c35665::t_2112fccee20ccd 301-305,313,315-317,325-327,329,331
+  s_b935ef13c35665::t_76a66bcf1d4d1a 288,292,295
+packages/workshop-frontend/src/features/chat/composer/PresetList.tsx
+  s_b935ef13c35665::t_6ac668d8f9e5a9 1-153
+packages/workshop-frontend/src/features/chat/composer/chatPresets.ts
+  s_b935ef13c35665::t_44a7c49f44977f 43-47,51-56,66-69,72-74
+  s_b935ef13c35665::t_21d279ecad5214 1-26,39-42,48-50,57,65,70-71,75-112
+  s_b935ef13c35665::t_32e26047d507f3 27-38
+  s_b935ef13c35665::t_9ce19a2d8f9201 62-63
+  s_b935ef13c35665::t_5bac8433ddfedf 58-61,64
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.tsx
+  s_b935ef13c35665::t_45cbecd0438122 903-908
+  s_b935ef13c35665::t_a632bd90f642c3 52,89,129-130,966
+packages/workshop-frontend/src/features/chat/composer/useChatPresets.test.tsx
+  s_b935ef13c35665::t_d577c8db7979ee 1-19,21-24,26-28,30,32-35,45-46,50-53,62-64
+  s_b935ef13c35665::t_76a66bcf1d4d1a 20,25,29,31,36-44,47-49,54-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f282d649a3f655a0232687e21fb1f68622383e63",
+  "prompts": {},
+  "sessions": {
+    "s_b935ef13c35665": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58c3f333-baff-470f-84e4-eccedd1e8e9f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}

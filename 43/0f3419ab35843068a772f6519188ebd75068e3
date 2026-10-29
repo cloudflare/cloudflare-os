@@ -1,0 +1,27 @@
+scripts/testdata/golden-manifest.json
+  s_46a6ef7969e9ae::t_40a19fbb6a5f4a 271,274-281,343,346-354,545,548-555,617,620-627
+packages/gatekeeper-github/deploy-inputs.json
+  s_46a6ef7969e9ae::t_edc1f49eb9ae03 1-20
+packages/gatekeeper-google/deploy-inputs.json
+  s_46a6ef7969e9ae::t_9b22efb4b253ff 1-21
+packages/gatekeeper-notion/deploy-inputs.json
+  s_46a6ef7969e9ae::t_93e63b2052a41e 1-20
+packages/gatekeeper-slack/deploy-inputs.json
+  s_46a6ef7969e9ae::t_21130252948304 1-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "430f3419ab35843068a772f6519188ebd75068e3",
+  "prompts": {},
+  "sessions": {
+    "s_46a6ef7969e9ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce2212d8-15d0-4bbf-9af8-e2236b2c9c81",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

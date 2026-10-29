@@ -1,0 +1,67 @@
+packages/gadget-libraries/page/README.md
+  s_fe30841bd8390c::t_a96a082ebbc8af 10,16-31,35-37,217-222,234-243,321-323
+packages/gadget-libraries/page/__tests__/document-model.test.ts
+  s_fe30841bd8390c::t_b75e833e528e91 11,319-320,326-327
+packages/gadget-libraries/page/__tests__/fixtures/legacy-wiki-highlighted-code.html
+  s_fe30841bd8390c::t_5fb9657df51b43 2
+packages/gadget-libraries/page/__tests__/fixtures/legacy-wiki-panels.html
+  s_fe30841bd8390c::t_c300cfd8286834 6-8,10-12,14-16,18-19,21,23-24
+packages/gadget-libraries/page/__tests__/fixtures/legacy-wiki-table.html
+  s_fe30841bd8390c::t_84af10a039a15b 1-4,6
+packages/gadget-libraries/page/__tests__/fixtures/legacy-wiki-tasks.html
+  s_fe30841bd8390c::t_0c297ab811aa02 4
+packages/gadget-libraries/page/__tests__/presence.test.ts
+  s_fe30841bd8390c::t_acf4b387f5788f 4,6,14-16,22,58,60,62
+packages/gadget-libraries/page/__tests__/server.test.ts
+  s_fe30841bd8390c::t_718708e29f62c5 6-8,30-64
+packages/gadget-libraries/page/__tests__/sync.test.ts
+  s_fe30841bd8390c::t_2b60e3acd463aa 5,7,87-107
+packages/gadget-libraries/page/client.ts
+  s_fe30841bd8390c::t_a12746144f5255 23,26,28-29,35-38,40-41,220,285,317,392,433,436,454,458,462,465-466,475,495,502,506
+packages/gadget-libraries/page/library.json
+  s_fe30841bd8390c::t_708e7aff43374b 3-4
+packages/gadget-libraries/page/server.ts
+  s_fe30841bd8390c::t_0e1dc9bc2fcdce 5-12,56,67,74,76-81,118,132,152,167,196,201,260,293,297,301,306,344
+packages/gadget-libraries/page/src/anchors.ts
+  s_fe30841bd8390c::t_59f03077d6202e 75
+packages/gadget-libraries/page/src/comments.ts
+  s_fe30841bd8390c::t_cd5948b26aef37 39,44,78-82
+packages/gadget-libraries/page/src/document-model.ts
+  s_fe30841bd8390c::t_e78ee87a962bfa 156-161,168-173
+packages/gadget-libraries/page/src/editor.ts
+  s_fe30841bd8390c::t_adb33db5560f53 59,96-101
+packages/gadget-libraries/page/src/history.ts
+  s_fe30841bd8390c::t_cc280eddaa1fef 59
+packages/gadget-libraries/page/src/link-popover.ts
+  s_fe30841bd8390c::t_db119d14059bdf 11,13
+packages/gadget-libraries/page/src/presence.ts
+  s_fe30841bd8390c::t_e202ed81eb8dc9 6-11,18-19,21-22,28,30-31,34,39,42,44,48-49,56-58,77-79,81-82,86,128,134,141,160,162-171
+packages/gadget-libraries/page/src/sync.ts
+  s_fe30841bd8390c::t_190b4707d3d2e4 26-29,34,41,49-51,69,74,85-91,99-104,108,171-172,176-184,196-197,199-210,212-222,289-293,303-304,307
+packages/gadget-libraries/page/src/toolbar.ts
+  s_fe30841bd8390c::t_63eddd6002a32b 9,52,61-65,149
+packages/workshop-backend/format-blueprints/workspace-pages/blueprint.json
+  s_fe30841bd8390c::t_30237f4a851cf5 18,20
+packages/workshop-backend/format-blueprints/workspace-pages/files/README.md
+  s_fe30841bd8390c::t_c7460481553e67 6-10
+packages/workshop-backend/format-blueprints/workspace-pages/files/client.ts
+  s_fe30841bd8390c::t_b2ba80c01d220c 3-4
+packages/workshop-backend/format-blueprints/workspace-pages/files/gadget.json
+  s_fe30841bd8390c::t_cd696bb4b4b3a4 3-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e9dff71e6ebeaf27b328ebc0c5fa010052efecc0",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

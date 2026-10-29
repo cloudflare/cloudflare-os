@@ -1,0 +1,131 @@
+.gitignore
+  s_541af6f33f7bfd::t_11476246089c99 12,17-19,27,29
+dev-router.js
+  s_541af6f33f7bfd::t_4ce6b859a264ee 23-24,26-32
+package.json
+  s_541af6f33f7bfd::t_61507eb11c9d28 8
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_541af6f33f7bfd::t_55ddf21f50ba88 719,726-729,732-735,796-831,833-836,838-841,843,1130,1139,1166,1194,1235-1245,1273-1275,1298,1307,1347-1348,1362-1363,1429,2178,2232,2236,2241,2544,2552,2728-2730,2773
+packages/gatekeeper-context/src/context-api.ts
+  s_541af6f33f7bfd::t_95440688be5f2f 110-115,120-121,137-139,178,188,194,200,206
+packages/gatekeeper-context/src/context-collection.ts
+  s_541af6f33f7bfd::t_18e92d4245295f 144-149,152-153,157,467,479,497,506,572-573,650,666
+packages/gatekeeper-context/src/context-types.ts
+  s_541af6f33f7bfd::t_096ad27fae7e66 305-306
+packages/gatekeeper-context/src/env.d.ts
+  s_541af6f33f7bfd::t_970bb7edb6b7a2 7-8
+packages/gatekeeper-context/worker-configuration.d.ts
+  s_541af6f33f7bfd::t_88a660b100724e 2
+packages/gatekeeper-context/wrangler.jsonc
+  s_541af6f33f7bfd::t_3a7dae70e2e331 36
+packages/gatekeeper-scheduler/README.md
+  s_541af6f33f7bfd::t_ca370c4e15be04 41,54-73
+packages/gatekeeper-scheduler/__tests__/driver-state.test.ts
+  s_541af6f33f7bfd::t_b9814c505c8744 164-251
+packages/gatekeeper-scheduler/__tests__/schedule-driver.test.ts
+  s_541af6f33f7bfd::t_7731962c477c7d 278,293-294,492-498,534,1132-1181
+packages/gatekeeper-scheduler/__tests__/scheduler-core.test.ts
+  s_541af6f33f7bfd::t_36c48720f8bcea 7,12,24-73
+packages/gatekeeper-scheduler/__tests__/scheduler.test.ts
+  s_541af6f33f7bfd::t_8928b9e4e8a6f5 90-167
+packages/gatekeeper-scheduler/app/SchedulerPage.tsx
+  s_541af6f33f7bfd::t_718c957999a294 16,375-376
+packages/gatekeeper-scheduler/app/format.test.ts
+  s_541af6f33f7bfd::t_befaa1433fbe5b 2,74-150
+packages/gatekeeper-scheduler/app/format.ts
+  s_541af6f33f7bfd::t_060e849d3baab1 56-69,80,98-100,106-108
+packages/gatekeeper-scheduler/src/driver-state.ts
+  s_541af6f33f7bfd::t_15bc8390c7e8c0 2,17-22,26,32,38,49,59,67-68,84-87,89-91,107,113,120,144,155-162,175,184,190,201-205,228-231,234-245
+packages/gatekeeper-scheduler/src/schedule-driver.ts
+  s_541af6f33f7bfd::t_a623bf59410672 79-81,112,114,123,132-140,345-375,526,534-535,539-540,653-657,676-677,686
+packages/gatekeeper-scheduler/src/scheduler-core.ts
+  s_541af6f33f7bfd::t_b828034482da62 2-9,45-72,134-137
+packages/gatekeeper-scheduler/src/scheduler.ts
+  s_541af6f33f7bfd::t_bfbfbfcb7318f3 34,41,43,71,115,118,125,128-130,140,160-161,163-166,179-180
+packages/gatekeeper-scheduler/src/types.d.ts
+  s_541af6f33f7bfd::t_a3163cfebe820f 16-19,99-124,184-185,199-202,207,209-210,221,227,274-275,292,297-300,326,340
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_541af6f33f7bfd::t_8bb0c86b21c2fc 73-74
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_541af6f33f7bfd::t_f975bc71fdabb1 106
+packages/workshop-backend/__tests__/browser-export.test.ts
+  s_541af6f33f7bfd::t_b159cc6c91dd1e 1-206
+packages/workshop-backend/__tests__/format-blueprints.test.ts
+  s_541af6f33f7bfd::t_29fc2f285c70fa 2-3,7-16,80-85
+packages/workshop-backend/build-browser-runtime.mjs
+  s_541af6f33f7bfd::t_a8c7541477f415 1-22
+packages/workshop-backend/format-blueprints/workspace-docs.json
+  s_541af6f33f7bfd::t_698ca783319cf3 13
+packages/workshop-backend/format-blueprints/workspace-sheets.json
+  s_541af6f33f7bfd::t_9f64b3fc39c6b5 12
+packages/workshop-backend/format-blueprints/workspace-slides.json
+  s_541af6f33f7bfd::t_bc136529892970 12
+packages/workshop-backend/package.json
+  s_541af6f33f7bfd::t_d77172cc906146 9-11,13-15,22,35
+packages/workshop-backend/src/agent.ts
+  s_541af6f33f7bfd::t_dda217f13449aa 372-373,399-402,404-407,410,413-414
+packages/workshop-backend/src/browser-export-runtime.ts
+  s_541af6f33f7bfd::t_acf84a2e541e4e 1-75
+packages/workshop-backend/src/browser-export.ts
+  s_541af6f33f7bfd::t_807686fe2a76dc 1-312
+packages/workshop-backend/src/env.d.ts
+  s_541af6f33f7bfd::t_fdb3e92e9ca39f 47-49
+packages/workshop-backend/src/overseer.ts
+  s_541af6f33f7bfd::t_2d5166f750df67 47,8977-8986,9224-9234
+packages/workshop-backend/wrangler.jsonc
+  s_541af6f33f7bfd::t_8df8ad7f7b3a69 6,30-31,35-40
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_541af6f33f7bfd::t_b3b526136c7300 27-45,193,218,277-278,287,314
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_541af6f33f7bfd::t_b8f21e1740e7b8 12-16,597,599-603
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_541af6f33f7bfd::t_15b8c8e59d85e7 56-59,720-740,1597-1605,1729
+packages/workshop-frontend/src/GadgetExportMenu.tsx
+  s_541af6f33f7bfd::t_a46d85dfe2edda 1-60
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_541af6f33f7bfd::t_3d2f6c5fd7f44f 31-62,66-67,76-95,97-98,103-118,165,179,188,198-207,209-212,214-358,432-433,442
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_541af6f33f7bfd::t_91e7b7ede9942c 4,130,132-136,142,149-152,155-159,161,163-202,205-242,340-345,348-349,354-367,371,374-375,377-378,392,394,491
+packages/workshop-frontend/src/GadgetUseView.tsx
+  s_a676e8860d1ca3::t_ce516b1fc870be 18,26,112-115
+packages/workshop-frontend/src/WorkpiecePicker.test.tsx
+  s_541af6f33f7bfd::t_6e9621139bf08a 1-55
+packages/workshop-frontend/src/WorkpiecePicker.tsx
+  s_541af6f33f7bfd::t_d3c5810f1b79d2 2,19-20,33,81,127,159-169
+packages/workshop-frontend/src/fileTransfers.test.ts
+  s_541af6f33f7bfd::t_9ab20c8590177c 1-90
+packages/workshop-frontend/src/fileTransfers.ts
+  s_541af6f33f7bfd::t_dff3c767b1b200 3-4,7-12,14-15,47,49-53,60-77,80-86,91
+packages/workshop-shared/src/api.ts
+  s_541af6f33f7bfd::t_81aefd95c8ee6d 958-960,962,970,2708-2713,2791-2792
+pnpm-lock.yaml
+  s_541af6f33f7bfd::t_a8a6107db6904f 44,50,59,68,115,200,212,215,233,236,398,429,454,485,506,509,536,539,658,683,689,695,699-701,704,707,738-741,747,792,795,801,814,823,826,835,1098-1101,1983-1987,2365-2367,2424-2426,2507-2514,2523-2526,2534-2541,2548-2584,2593-2596,2618-2620,2627-2629,2702-2705,2710-2716,2774-2777,2815-2818,2830-2832,2866-2871,2918-2931,2938-2941,2946-2948,2968-2978,3038-3041,3050-3057,3150-3153,3167-3170,3356-3359,3570-3573,3638-3645,3672-3674,3714-3717,3725-3734,3793-3796,3882-3893,3920-3926,3933-3936,3963-3971,3986-3991,4080-4082,4370-4373,4421-4424,4433-4443,4706,4711,4715,4719,4744,4746,4751,4753-4754,4756,4777,4779,4782,4784,4799,4807,4865-4878,4885,4892,4900,4907,5053,5055,5068,5072,5076-5077,5191,5193,5616-5631,5903,5907,5916,5918,5922-5923,5940,5946,5957-5958,6025-6029,6032,6034-6036,6135-6140,6145-6148,6155-6157,6159,6161,6168-6196,6201-6202,6223-6224,6229-6233,6309-6314,6317-6322,6372-6373,6383,6405-6410,6419-6420,6457-6462,6519-6530,6537-6538,6541-6546,6559-6574,6610,6613,6618,6620,6628-6629,6648-6659,6662,6666-6667,6709,6718-6720,6743,6746,6750,6753,6773-6774,6786-6787,6832,6838-6839,6952-6953,6969,6976,6994,6998,7004,7007,7012,7017,7022,7026,7031,7033,7035-7038,7043,7049,7054,7062,7071,7077,7284,7287,7388-7389,7457-7474,7501-7502,7527-7528,7545-7564,7580,7586,7590,7622,7625,7627,7633,7636,7656-7657,7820-7834,7854-7868,7878-7881,7904-7933,7950-7957,8023-8027,8099,8102,8127,8129,8153,8164,8176,8181,8196,8221,8225,8250,8354-8359,8381-8382,8387-8403
+run-dev-server.js
+  s_541af6f33f7bfd::t_747b5d633b7bf5 56-60,274-285
+scripts/run-local.mjs
+  s_541af6f33f7bfd::t_c1cfc2b434a675 1-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2408b0e2fbd0c952e6a1be01d0f237ae46fe4456",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_a676e8860d1ca3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0369a8e51ffenkdNC7esrlYmyW",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

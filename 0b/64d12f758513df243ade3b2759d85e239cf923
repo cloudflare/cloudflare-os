@@ -1,0 +1,58 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_d16787129ca3ae::t_8ddb5146d52138 1,11-12,30-38,437,483,487
+  s_d16787129ca3ae::t_908ac19e5eab66 836
+  s_d16787129ca3ae::t_38e1ede5a4b524 13,23-27,436,438-443,446-448,470,476-482,484-486,488-509,519,523-534,538,546-554,829-835
+  s_d16787129ca3ae::t_3b3f425416c2a7 28-29
+  s_d16787129ca3ae::t_b9568398f97583 444-445
+packages/workshop-backend/src/admin-config.ts
+  s_d16787129ca3ae::t_8ddb5146d52138 240
+  s_d16787129ca3ae::t_ef2f27769faa26 202,212-213,223-230,237-239,241-250,290-296,320-321
+packages/workshop-shared/src/api.ts
+  s_d16787129ca3ae::t_908ac19e5eab66 1018-1023,1205-1208,1213-1214,1245-1262,1450-1470,1493-1500,1516-1539
+  s_d16787129ca3ae::t_b9568398f97583 1540-1546
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_d16787129ca3ae::t_908ac19e5eab66 661-663
+  s_d16787129ca3ae::t_aa678802ce82be 49-51,354-359,361-411,437-610,612-615,631-660,666,677-681
+  s_d16787129ca3ae::t_b9568398f97583 611,616-628
+  s_d16787129ca3ae::t_08332d72d00a2f 629-630
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_d16787129ca3ae::t_0dabbcfa5e5bbe 8,26-29,32,35,38,40,43,48
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_d16787129ca3ae::t_989fe46e5fed60 421-431
+  s_d16787129ca3ae::t_0120ff567ecb24 11,160-161,163-166,341-383,386-395,397,399-420,432
+  s_d16787129ca3ae::t_ae8dc75e07f801 384-385
+  s_d16787129ca3ae::t_4a8a91f3b525c4 396,398
+  s_d16787129ca3ae::t_0927ac50c602f1 433-434
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_d16787129ca3ae::t_908ac19e5eab66 220-227
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_d16787129ca3ae::t_c0073281390b78 6-8,13-17,80-86,94-102,105,157,159,211,266-323,326
+  s_d16787129ca3ae::t_908ac19e5eab66 324-325,327
+packages/workshop-backend/src/ai-gateway.ts
+  s_d16787129ca3ae::t_2207116e254da8 3,34-46,145,160-161,164-165,168,174-175,210-211,216-217,222-224
+  s_d16787129ca3ae::t_8ddb5146d52138 32-33,221
+  s_d16787129ca3ae::t_29613ec68901be 176-177
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_d16787129ca3ae::t_aefabfe46f9630 218-296
+  s_d16787129ca3ae::t_908ac19e5eab66 297-298
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_d16787129ca3ae::t_70d60d7bd509fd 1-79
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_d16787129ca3ae::t_c87340d49eba55 7,19,200,219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0b64d12f758513df243ade3b2759d85e239cf923",
+  "prompts": {},
+  "sessions": {
+    "s_d16787129ca3ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d53efdfd-725e-49f2-bc5f-96438ab0f01c",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

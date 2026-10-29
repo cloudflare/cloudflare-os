@@ -1,0 +1,23 @@
+scripts/release-promote.test.js
+  s_2a4282cc6bde68::t_278274bcf6ad44 1-33
+scripts/release/promote-release.mjs
+  s_2a4282cc6bde68::t_7c74c3f3ffa701 1-149
+scripts/release/upload-release.mjs
+  s_2a4282cc6bde68::t_bfcb6cd86828ff 10-13,16,32,35,95-96,105-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8ec30e4eebc4d132371f0192de946d8bbf109ac4",
+  "prompts": {},
+  "sessions": {
+    "s_2a4282cc6bde68": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6163254-e3e9-48a0-b8f8-138919606150",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

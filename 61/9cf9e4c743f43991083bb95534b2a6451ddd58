@@ -1,0 +1,21 @@
+packages/workshop-ios/src/screens/AppsSheetScreen.tsx
+  s_d7442014144fa6::t_f1a1bc22ff7573 78-82,91,101-106,134-140,143-150,157-158,160-167
+packages/workshop-ios/src/ui/Fab.tsx
+  s_d7442014144fa6::t_56097195c1a467 3,10-11,37-38,40,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "619cf9e4c743f43991083bb95534b2a6451ddd58",
+  "prompts": {},
+  "sessions": {
+    "s_d7442014144fa6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01952a888ffepZghe17beKKXPK",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

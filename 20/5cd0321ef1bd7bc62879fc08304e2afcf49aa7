@@ -1,0 +1,23 @@
+scripts/release/manifest-lib.test.ts
+  s_51f79ae6e055d3::t_28e7f667540c86 16,28-29,43,45,191-242
+scripts/release/manifest-lib.ts
+  s_51f79ae6e055d3::t_2997b198d21c79 330-341,454,476,525-530,532-542
+scripts/release/testdata/golden-manifest.json
+  s_51f79ae6e055d3::t_602d9aad030077 602,604
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "205cd0321ef1bd7bc62879fc08304e2afcf49aa7",
+  "prompts": {},
+  "sessions": {
+    "s_51f79ae6e055d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7c4dcc0-61f7-4d70-a904-a76d58108f28",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

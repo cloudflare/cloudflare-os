@@ -1,0 +1,21 @@
+packages/gatekeeper-google/README.md
+  s_010272bf0842e6::t_41b67762fa8aff 364-366,368
+  s_010272bf0842e6::t_74906cff2d7571 342-362
+  s_010272bf0842e6::t_e78c2f2862ff72 334-335,363,369-375
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bb0826b30feab1fdf2b565edd8b992cef3d266fc",
+  "prompts": {},
+  "sessions": {
+    "s_010272bf0842e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

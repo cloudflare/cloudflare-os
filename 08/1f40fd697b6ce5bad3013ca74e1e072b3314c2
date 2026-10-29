@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_e25e29d8ebebad::t_b51810b361b4e0 179-207
+packages/workshop-backend/src/auto-approval.ts
+  s_e25e29d8ebebad::t_b51810b361b4e0 44,58,86,95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "081f40fd697b6ce5bad3013ca74e1e072b3314c2",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

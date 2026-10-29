@@ -1,0 +1,53 @@
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_8a8378cba77c18 705-722,724-725,728-732,735-740,743
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 1326-1330,1661-1662,1666-1667
+packages/workshop-backend/src/slash-commands.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 5,42
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_fa5330f3a6437e 483
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 11,14-17,624-627,2178-2181,2184-2185,2236-2239,2410-2417,2420-2423,2428-2434,2436,2448-2449,2658-2675,2677-2708,2796,2803-2805,2808-2818,3339-3344,6178-6180,6227
+  s_1dfdf61332f5c7::t_ed170a38871b81 2795
+  s_1dfdf61332f5c7::t_94839baceca769 2676
+  s_1dfdf61332f5c7::t_0bf0954895b640 2435,2437-2446
+  s_1dfdf61332f5c7::t_07edb17bc16cc0 2319-2321
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 1-197
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_1c78620a0d09d9 50
+  s_1dfdf61332f5c7::t_6913684decf7f1 34-35
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_1dfdf61332f5c7::t_b7b3e36f8b0054 5
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 6,62-67
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 12-16,53-64,736-738,742,830-831,842-849,857-859,861-863,865-867,869-876,881,914-928,930,1051,1212,1370,1546,1579,1581-1582
+  s_1dfdf61332f5c7::t_514a0da9543507 1367-1369
+  s_1dfdf61332f5c7::t_9f61f3ac9a467d 1543-1545
+  s_1dfdf61332f5c7::t_a3c007cda35c61 1547-1549,1576-1578
+  s_1dfdf61332f5c7::t_473ae03c205060 1580
+  s_1dfdf61332f5c7::t_303b26acbb5db7 1583
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_5bebcf0af4e8f9 1-2
+  s_1dfdf61332f5c7::t_338fe0f49de76d 11-14
+  s_1dfdf61332f5c7::t_074d3aacaf63a9 4-10,15-40,43-58,65-186
+  s_1dfdf61332f5c7::t_0dfd81e47fced8 41-42
+  s_1dfdf61332f5c7::t_5a80fbfd08910c 59
+  s_1dfdf61332f5c7::t_2404ba4d7d5fa8 60-64
+  s_1dfdf61332f5c7::t_e752545ddc7e24 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5e7dad8475731dba793f399abf3aad21297e2ce4",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

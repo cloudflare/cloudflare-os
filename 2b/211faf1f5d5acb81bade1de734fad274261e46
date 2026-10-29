@@ -1,0 +1,21 @@
+.github/workflows/README.md
+  s_d5a5c2310a35ff::t_1ac6fd725bbecf 42,45-52,79-83
+.github/workflows/preview.yml
+  s_d5a5c2310a35ff::t_7244b6e8cd8ec2 48,126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2b211faf1f5d5acb81bade1de734fad274261e46",
+  "prompts": {},
+  "sessions": {
+    "s_d5a5c2310a35ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2811bfc5-5e06-4bfd-b283-0eb104af8476",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

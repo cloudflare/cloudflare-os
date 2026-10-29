@@ -1,0 +1,76 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_55a2a163dd3e82::t_52e4e1628c6753 375,562,588,614,778-781,783-785,788,829,906,912,915,1072
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_55a2a163dd3e82::t_4bad6d255dba0d 86-87,125-213,215
+  s_e39f3856b111b5::t_72f62df1f42353 214,216-320
+  s_e39f3856b111b5::t_580d1be0e1c521 321
+  s_c092403ddb8a9a::t_11271758f70798 36-38,40-49
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_b2b14f7ca4579b::t_7a6f85243ed9d9 228-229
+  s_25c73b55bb6f5d::t_1f864829e44653 57-58,74,113-116,119-121,135-137,159
+  s_e39f3856b111b5::t_1cbd32c28a013f 59-67,199-207
+  s_713362881198d7::t_5ba6d456c027da 132-134,138-148,208
+  s_c092403ddb8a9a::t_b027707b00d4e6 13-17,68-73,122-131,149-158
+packages/workshop-frontend/src/retainedShareKeys.ts
+  s_c092403ddb8a9a::t_ef3f5a7e8578f1 1-74
+packages/workshop-frontend/src/useAuth.test.tsx
+  s_c092403ddb8a9a::t_07e1567b97d4e4 72,152-169
+packages/workshop-frontend/src/useAuth.ts
+  s_c092403ddb8a9a::t_bb8ad6c245a69c 5,128-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d120690a23f2b71397a5e152beeb0e897274e2e9",
+  "prompts": {},
+  "sessions": {
+    "s_25c73b55bb6f5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2101343c-de6f-4ba0-a197-cc0763b856b5",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_55a2a163dd3e82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ea68da17-d052-4ba9-9d50-3b11e4aeb641",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_713362881198d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f58b6235-da14-4af2-afe2-4bfa43ca0fc6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b2b14f7ca4579b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "daf3181f-e227-440d-a6bb-dc4b7a6ebe82",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c092403ddb8a9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f5f07a65-dda8-4640-add7-1669888d6aab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e39f3856b111b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9e161aca-79f5-4828-be95-9b2de8aa8d9c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

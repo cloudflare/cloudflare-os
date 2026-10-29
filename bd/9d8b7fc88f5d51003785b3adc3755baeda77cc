@@ -1,0 +1,61 @@
+packages/gatekeeper-mcp/package.json
+  s_fa07440e282490::t_6d054c14d0e18a 19
+packages/gatekeeper-email/package.json
+  s_fa07440e282490::t_3005a0e0cebd34 17
+packages/gatekeeper-github/package.json
+  s_fa07440e282490::t_322c8feb6f9357 18
+packages/workshop-shared/package.json
+  s_fa07440e282490::t_e9d87a033edf38 42
+packages/gatekeeper-confluence/package.json
+  s_fa07440e282490::t_b8833d383c275d 17
+packages/workshop-frontend/package.json
+  s_fa07440e282490::t_b4f68078242a35 20
+packages/gatekeeper-homeassistant/package.json
+  s_fa07440e282490::t_0aa49a59ef4fcb 16
+packages/gatekeeper-zoominfo/package.json
+  s_fa07440e282490::t_34b08b9a7d0254 16
+packages/gatekeeper-supabase/package.json
+  s_fa07440e282490::t_c7ce8dfe0a7478 17
+packages/gatekeeper-slack/package.json
+  s_fa07440e282490::t_79e67d5a1170b5 16
+packages/gatekeeper-google/package.json
+  s_fa07440e282490::t_d2cf662c565b58 17
+packages/gatekeeper-mcp-portal/package.json
+  s_fa07440e282490::t_db81f2092d805d 19
+packages/gatekeeper-context/package.json
+  s_fa07440e282490::t_84d9346b3dc2ed 21
+packages/integration-tests/package.json
+  s_fa07440e282490::t_3940056d43b8a0 18
+pnpm-lock.yaml
+  s_fa07440e282490::t_b7ab5a0b168ba4 96-97,100,118-119,122,152-153,156,270-271,274,298-299,302,326-327,330,354-355,358,379-380,383,407-408,411,438-439,442,463-464,467,491-492,495,570-571,574,592-593,596,617-618,621,639-640,643,658-659,759-760,763,814-815,881-882,2987-2988,6759,6764,6776
+packages/gatekeeper-linear/package.json
+  s_fa07440e282490::t_9ebd71b2a4ab2c 17
+packages/workshop-backend/package.json
+  s_fa07440e282490::t_94c3ab62f13db5 26
+packages/gatekeeper-cloudflare/package.json
+  s_fa07440e282490::t_d7e11174cadc4d 15
+packages/gatekeeper-scheduler/package.json
+  s_fa07440e282490::t_e5f61453f916f3 20
+packages/gatekeeper-notion/package.json
+  s_fa07440e282490::t_b4347f05b4d091 17
+packages/gatekeeper-spotify/package.json
+  s_fa07440e282490::t_2d6f0bc5ae7f41 16
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_fa07440e282490::t_4d2d37a5dd7d1f 12-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bd9d8b7fc88f5d51003785b3adc3755baeda77cc",
+  "prompts": {},
+  "sessions": {
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

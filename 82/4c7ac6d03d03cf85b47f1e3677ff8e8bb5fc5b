@@ -1,0 +1,91 @@
+packages/workshop-backend/__tests__/overseer-integration-worker.ts
+  s_b9d78ba39005bb::t_ea419638f4b411 1-131
+packages/workshop-backend/__tests__/overseer-new-chat.integration.test.ts
+  s_b9d78ba39005bb::t_bb4d72d8cab13f 93-95
+  s_b9d78ba39005bb::t_67d21099e65baa 1-4,6-79,100-123,127-160,165-179,182-185,187-190
+  s_b9d78ba39005bb::t_34477ee2f4a7df 5,80-92,96-99,124-126,161-164,180-181,186
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_b9d78ba39005bb::t_3fc74590f46f87 175,197-204
+  s_b9d78ba39005bb::t_42377731806794 176-179,181,183,186-196
+  s_b9d78ba39005bb::t_f21369f2f43bae 50-52
+  s_b9d78ba39005bb::t_5fa447a79703c1 6,32,118-122,142-152,154-159,161-162,165-170,172,174
+  s_b9d78ba39005bb::t_b96fa5725d5946 63,78
+  s_b9d78ba39005bb::t_f3893794c1dbbd 49,153,160,163-164,171,173,180,182,184-185
+packages/workshop-backend/src/slash-commands.ts
+  s_b9d78ba39005bb::t_71dd64483900bd 2-5,111-112,138,144,147
+  s_b9d78ba39005bb::t_1e3b8401cb5023 8,92-101,115,128,130-131,135-136,141-143,151,153-162,164-169
+  s_b9d78ba39005bb::t_6cac7c8f2ff9ee 32,102-110
+  s_b9d78ba39005bb::t_e756d01f9d3f2f 10-19,31,33-34,43-62,64-68,85-91,113-114,116-127,129,132-134,137,139-140,145-146,148-150,152,163
+packages/workshop-shared/src/api.ts
+  s_b9d78ba39005bb::t_6b5f112eec8bbc 27,1681-1682
+  s_b9d78ba39005bb::t_a8dddb042f93c7 1106-1107,1123-1124
+  s_b9d78ba39005bb::t_9a89a4d76325f9 1112-1114,1116-1117
+  s_b9d78ba39005bb::t_33b49cd0a393ad 1376-1379
+  s_16a3a163f9f88e::t_ddc4fa3b593bea 1683
+packages/workshop-shared/src/gatekeeper.ts
+  s_b9d78ba39005bb::t_1e3b8401cb5023 756-766,773,813-815
+  s_b9d78ba39005bb::t_6cac7c8f2ff9ee 774-777
+  s_b9d78ba39005bb::t_6b5f112eec8bbc 781-782,794-796
+  s_b9d78ba39005bb::t_e2907f1bb97a93 742,745,748,780
+  s_b9d78ba39005bb::t_71dd64483900bd 743-744,746-747,749-750
+  s_b9d78ba39005bb::t_9bd81114a496de 751-755
+  s_32548df1600d92::t_c834f4e804599d 797
+packages/workshop-backend/vitest.config.ts
+  s_b9d78ba39005bb::t_10f73526118a50 14-17
+  s_b9d78ba39005bb::t_be179096a443e3 11,13,20-29
+  s_b9d78ba39005bb::t_d5a413965a4323 3,30
+packages/workshop-backend/src/overseer.ts
+  s_b9d78ba39005bb::t_a8dddb042f93c7 27-29,123,2135,2154-2158,2161,2164-2169,2203,2297,2378
+  s_b9d78ba39005bb::t_7d75b9171a6c5c 5714
+  s_b9d78ba39005bb::t_6bd12df0ee4980 863-864,2321-2329,2337,2390-2398,2404,2507-2515
+  s_b9d78ba39005bb::t_33b49cd0a393ad 2190
+  s_b9d78ba39005bb::t_e756d01f9d3f2f 2298,2379,2621-2623,2631-2637
+  s_b9d78ba39005bb::t_5ab39c4cf9f0bd 2143-2153,2354-2361,2412-2419
+  s_b9d78ba39005bb::t_026c4054744bc6 4,2142
+  s_b9d78ba39005bb::t_bd8766d0b1402e 129,132-155,706-709,2226,2233-2234,2241-2242,2244-2248,2250-2254,2256,2263-2285,2293-2294,2314-2320,5715
+  s_b9d78ba39005bb::t_9a89a4d76325f9 126-128,586-590,2224,2230,2232,2235-2240,2243,2255,2257-2262,2286-2292,5712-5713,5847-5848,6384-6385
+  s_b9d78ba39005bb::t_6cac7c8f2ff9ee 2638-2641
+  s_200aaded18b671::t_e032abc668fe7e 124-125,591-592
+packages/workshop-backend/src/analytics.ts
+  s_b9d78ba39005bb::t_5ab39c4cf9f0bd 60-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "824c7ac6d03d03cf85b47f1e3677ff8e8bb5fc5b",
+  "prompts": {},
+  "sessions": {
+    "s_16a3a163f9f88e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2c0bb8ffeWRj78Ro5gwWR55",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_200aaded18b671": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07a6c59acffejnU2JMePhdcjLn",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_32548df1600d92": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07a601f57ffeB8JgVFT3HOZt1g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

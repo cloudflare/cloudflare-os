@@ -1,0 +1,39 @@
+packages/gadget-libraries/README.md
+  s_25829d5784fcda::t_d1c245de5e59db 28-31,41-44
+packages/workshop-backend/__tests__/format-blueprint-files.test.ts
+  s_25829d5784fcda::t_72b23ddb45ca2c 3-4,43,291-302,396-416,488-501,503-511
+  s_25829d5784fcda::t_8d5410105ede27 37-42,502
+  s_25829d5784fcda::t_f1747a26c4ca8d 512
+packages/workshop-backend/tsconfig.blueprints-server.json
+  s_25829d5784fcda::t_d1c245de5e59db 32-35
+packages/integration-tests/__tests__/worker-inputs.test.ts
+  s_25829d5784fcda::t_d1c245de5e59db 23-24,66
+packages/integration-tests/src/worker-inputs.ts
+  s_25829d5784fcda::t_d1c245de5e59db 70-72
+packages/workshop-backend/tsconfig.blueprints-tests.json
+  s_25829d5784fcda::t_d1c245de5e59db 27-33
+packages/workshop-backend/vitest.blueprints.config.ts
+  s_25829d5784fcda::t_d1c245de5e59db 1-2,18-24,35-39
+  s_25829d5784fcda::t_4b675a3761be37 40
+packages/workshop-backend/scripts/format-blueprint-files.ts
+  s_25829d5784fcda::t_67d1982cebbd0b 12,263-297,324-332,358-365,386-390,447-450,454,469-472,533-534
+  s_25829d5784fcda::t_6396a14852eadd 9,413-418,424,428,453
+packages/workshop-backend/tsconfig.blueprints-client.json
+  s_25829d5784fcda::t_d1c245de5e59db 30-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "23e658005fd4f63018290757b73e9570ac57d78f",
+  "prompts": {},
+  "sessions": {
+    "s_25829d5784fcda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c9c9773b-eb6e-4ded-89c9-6d0f52c0dd08",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

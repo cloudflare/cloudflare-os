@@ -1,0 +1,23 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_a18738247b8cd3::t_b8c3ae494077c9 246
+packages/gatekeeper-google/src/google.ts
+  s_a18738247b8cd3::t_49878b81377424 1966-1968,3628,3660,3672,3693,3703,3729,3738,3775
+packages/gatekeeper-mcp/README.md
+  s_a18738247b8cd3::t_193bd53d6aa46f 180-181,209-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "20897fb7bca3fe1f005078656cb8c99adf9be02a",
+  "prompts": {},
+  "sessions": {
+    "s_a18738247b8cd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48ea2cb4-1210-4a7a-9ed1-990c8221106f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

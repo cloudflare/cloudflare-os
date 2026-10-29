@@ -1,0 +1,92 @@
+packages/bundled-blueprints/src/generate.ts
+  s_257b4539981478::t_6ed819244d9d09 1-195
+packages/workshop-backend/__tests__/bundled-blueprints.test.ts
+  s_257b4539981478::t_6ed819244d9d09 1-210
+packages/bundled-blueprints/tsconfig.node.json
+  s_257b4539981478::t_6ed819244d9d09 1-21
+packages/workshop-shared/src/api.ts
+  s_257b4539981478::t_6ed819244d9d09 914-915
+packages/bundled-blueprints/README.md
+  s_257b4539981478::t_6ed819244d9d09 1-2,9-114,118-154,158-178
+  s_257b4539981478::t_c4d402202faaf3 3-8,115-117,155-157
+packages/bundled-blueprints/blueprints/workspace-sheets/files/README.md
+  s_257b4539981478::t_6ed819244d9d09 1-267
+packages/bundled-blueprints/src/manifest.ts
+  s_257b4539981478::t_6ed819244d9d09 1-126
+packages/bundled-blueprints/package.json
+  s_257b4539981478::t_c4d402202faaf3 5
+  s_257b4539981478::t_6ed819244d9d09 1-4,6-26
+packages/bundled-blueprints/src/index.ts
+  s_257b4539981478::t_6ed819244d9d09 1-16
+packages/bundled-blueprints/libraries/README.md
+  s_257b4539981478::t_6ed819244d9d09 1-71
+packages/bundled-blueprints/vite.config.ts
+  s_257b4539981478::t_6ed819244d9d09 1-34
+AGENTS.md
+  s_257b4539981478::t_6ed819244d9d09 73
+  s_257b4539981478::t_c4d402202faaf3 17-18
+packages/workshop-backend/package.json
+  s_257b4539981478::t_6ed819244d9d09 11-14,36
+REVIEW.md
+  s_257b4539981478::t_6ed819244d9d09 42,116
+packages/bundled-blueprints/blueprints/workspace-docs/files/README.md
+  s_257b4539981478::t_6ed819244d9d09 1-101
+docs/blueprints.md
+  s_257b4539981478::t_6ed819244d9d09 123
+.gitignore
+  s_257b4539981478::t_6ed819244d9d09 10-11
+packages/bundled-blueprints/blueprints/workspace-slides/files/README.md
+  s_257b4539981478::t_6ed819244d9d09 1-377
+packages/workshop-backend/src/server.ts
+  s_257b4539981478::t_6ed819244d9d09 35,37,817,821-823,828,833-834
+vite.config.ts
+  s_257b4539981478::t_6ed819244d9d09 95
+packages/bundled-blueprints/__tests__/files.test.ts
+  s_257b4539981478::t_6ed819244d9d09 1-565
+packages/workshop-backend/vite.config.ts
+  s_257b4539981478::t_6ed819244d9d09 14,17,20,23,26-27,45,47,59,66,74,90
+scripts/env-passthrough.test.ts
+  s_257b4539981478::t_6ed819244d9d09 24,59,64,80,166
+packages/workshop-backend/src/admin-settings.ts
+  s_257b4539981478::t_6ed819244d9d09 14-15,33-34,79,89-90,98,100,102,114,118,121,142,214,330,385
+packages/workshop-backend/src/bundled-blueprints.ts
+  s_257b4539981478::t_c4d402202faaf3 1-2
+  s_257b4539981478::t_6ed819244d9d09 3-98
+scripts/build-bundled-blueprints.test.ts
+  s_257b4539981478::t_6ed819244d9d09 1-354
+packages/bundled-blueprints/src/files.ts
+  s_257b4539981478::t_6ed819244d9d09 1-671
+packages/workshop-backend/scripts/import-bundled-blueprint.ts
+  s_257b4539981478::t_6ed819244d9d09 1-292
+scripts/run-dev-server.ts
+  s_257b4539981478::t_6ed819244d9d09 297,329,331
+scripts/vite.config.ts
+  s_257b4539981478::t_6ed819244d9d09 42,54
+packages/integration-tests/src/worker-inputs.ts
+  s_257b4539981478::t_6ed819244d9d09 41-43,49,54,73
+packages/workshop-backend/scripts/build-bundled-blueprints.ts
+  s_257b4539981478::t_6ed819244d9d09 1-48,50-76
+  s_257b4539981478::t_e99ed9f557d1a1 49
+packages/workshop-evals/evals/appointment-desk.eval.ts
+  s_257b4539981478::t_6ed819244d9d09 43
+packages/integration-tests/__tests__/worker-inputs.test.ts
+  s_257b4539981478::t_6ed819244d9d09 24,34,60,62-63
+pnpm-lock.yaml
+  s_257b4539981478::t_5ca2ddec221d2e 86-90,92-94,98-106,114,126,979,981
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ef1b0ffcfeaad364b8aff577a9b31381c7906372",
+  "prompts": {},
+  "sessions": {
+    "s_257b4539981478": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec2780f3-3866-4c3e-bc33-af0ba1c8cd6e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

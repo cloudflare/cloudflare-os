@@ -1,0 +1,19 @@
+packages/gatekeeper-context/src/context-collection.ts
+  s_265cfc1bf8929d::t_77cea03602e698 188-206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c5653695bcba6698a070521c4b149f37f8973949",
+  "prompts": {},
+  "sessions": {
+    "s_265cfc1bf8929d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7238-7c21-74c2-a011-8304ebf1a852",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

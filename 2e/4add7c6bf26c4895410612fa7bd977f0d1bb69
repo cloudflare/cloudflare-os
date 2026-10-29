@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/BlueprintModal.tsx
+  s_2482ce94ca1637::t_4697e0f934a1a8 282,310-311,454
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2e4add7c6bf26c4895410612fa7bd977f0d1bb69",
+  "prompts": {},
+  "sessions": {
+    "s_2482ce94ca1637": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f9c5c3d85ffeh4H8FuSpFvMW33",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

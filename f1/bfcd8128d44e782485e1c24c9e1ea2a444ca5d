@@ -1,0 +1,68 @@
+packages/workshop-backend/src/overseer.ts
+  s_a726de9bb45000::t_81bfa307479021 8449,8452-8459
+  s_a726de9bb45000::t_d97bbc791c90a1 7801-7804,7820-7830,7837-7856
+packages/workshop-backend/__tests__/observer-serialization.test.ts
+  s_a726de9bb45000::t_4579a4e29e8332 1-133
+packages/gatekeeper-google/package.json
+  s_4c4437c01da8c5::t_f144a5f446a5b1 23
+packages/gatekeeper-google/src/bigquery-api.ts
+  s_4c4437c01da8c5::t_106b2fd1773c9d 33-44,354,370,433,446
+packages/gatekeeper-google/src/configurator/bigquery-configurator-types.d.ts
+  s_4c4437c01da8c5::t_7dfd143e8b44a7 14-23,26-27
+packages/gatekeeper-google/src/configurator/bigquery-public-configurator-ui.tsx
+  s_4c4437c01da8c5::t_5ad63dc2d5de00 1-113
+packages/gatekeeper-google/src/google-configurators.ts
+  s_4c4437c01da8c5::t_3e3c397ec521e4 4,172-189
+packages/gatekeeper-google/vite.config.ts
+  s_4c4437c01da8c5::t_54ce80fc994bc6 3
+packages/gatekeeper-google/vitest.config.ts
+  s_4c4437c01da8c5::t_8a31b1ad9b0dc3 1-8
+packages/gatekeeper-google/wrangler.jsonc
+  s_4c4437c01da8c5::t_cb0f270ad1f092 31-38
+pnpm-lock.yaml
+  s_4c4437c01da8c5::t_1090bad043af3c 371-373
+scripts/preview/staging-config.test.ts
+  s_4c4437c01da8c5::t_170145707cf262 411-421
+scripts/release/testdata/golden-manifest.json
+  s_4c4437c01da8c5::t_42ff353352d7f0 411-412
+scripts/run-dev-server.ts
+  s_4c4437c01da8c5::t_c01d94b9adb887 435-448,464-465
+packages/gatekeeper-google/README.md
+  s_4c4437c01da8c5::t_e63a3c4bd7c5d6 82-131,187
+packages/gatekeeper-google/__tests__/bigquery-resource.test.ts
+  s_4c4437c01da8c5::t_606e5d5b75cca5 1-215
+packages/gatekeeper-google/src/bigquery-resource.ts
+  s_4c4437c01da8c5::t_5ae3c03321f4c7 1-239
+packages/gatekeeper-google/src/bigquery-types.d.ts
+  s_4c4437c01da8c5::t_4750f866dfa92e 130-137
+packages/gatekeeper-google/src/google.ts
+  s_4c4437c01da8c5::t_8396022b327291 17,20,47,123-125,201-215,348,707,780-791,2956-2966,2969-2973,2990-2994,2996-3000,3002-3016,3030-3045,3050-3051,3054,3117-3118,3121-3123,3131-3132,3135,3141,3145,3176-3187,3189,3192-3196,3275,3301,3306,3322,3338,3345,3350,3356,3361,3368,3378,3384,3394,3396,3403,3412,3422,3437,3440-3441,3448
+scripts/preview/staging-config.ts
+  s_4c4437c01da8c5::t_6747c02cc6c22a 336-349,360
+plans/restricted-data-sharing.md
+  s_a726de9bb45000::t_7cdc7b3a4ee8c7 1-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1bfcd8128d44e782485e1c24c9e1ea2a444ca5d",
+  "prompts": {},
+  "sessions": {
+    "s_4c4437c01da8c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "635d6ba7-0072-4d35-9467-ff060ac90333",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,34 @@
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_1dfdf61332f5c7::t_50f474cc3b6f03 27-33,44,49,59,182-215
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_fb1ead9db1e9e5 131
+  s_1dfdf61332f5c7::t_eefb9e06758744 5,12-17,939-940,954,976,1137-1139,1169-1188,1196-1200,1202-1204,1206-1208,1210-1217,1222,1253-1257,1259,1382,1619,1820-1827,2046-2122,2124-2125
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_ce203cbafd31cf 1-312
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_2172806ca88a8b 1-413
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_2ca53014d2c7fe 1-117
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_4ace8a5b2d9209 16,3027-3060,3063,3095-3097,3291-3294,3314,3513-3516,3521-3533,3539-3540,3545-3549,3554-3564,3570-3590,3692-3693,3696-3710,4393-4402,4587-4592,7597-7599,7601-7603,7606,7609-7616,7980,8012-8016
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_d8d921f23e0203 55,63-66,82-87,93,138,140,156,170,175,177
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_783115beae9d8f 62,1853,3028,3061-3066,3250-3254,3262-3272,3431-3433,3438-3440,3458-3459,3470,3497,3561,3582-3583,3693-3729,3865-3868,3870-3871,4019-4020,4025,4123-4128,4198-4206,4216,4327-4332,4482,4498,4501,4504-4505,4540-4560,5993-6018,6586,6608-6613,6738-6741,6758
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6923a8fe45d7342130646fea76727cbec20c9f5e",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

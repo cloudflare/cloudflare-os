@@ -1,0 +1,34 @@
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_cd499ea12d2b3c::t_24d22dc5fd7309 326-328
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 21-22,71-72,303-306
+packages/workshop-shared/src/gatekeeper.ts
+  s_cd499ea12d2b3c::t_e71e3fbc48030b 743
+packages/workshop-backend/__tests__/agent-context.test.ts
+  s_cd499ea12d2b3c::t_b5749e549824ca 2,4-5
+packages/workshop-backend/src/agent.ts
+  s_cd499ea12d2b3c::t_b5749e549824ca 98,1089,1727,1735,1737
+packages/gatekeeper-context/src/library-read.ts
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 8
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 170,174
+packages/workshop-backend/src/overseer.ts
+  s_cd499ea12d2b3c::t_b5749e549824ca 14,46,91,1636,3089,3186,3212,5167
+packages/gatekeeper-context/src/agent-skill.ts
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3b059fe09bb8131b5684a7707cb8873e5899800a",
+  "prompts": {},
+  "sessions": {
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,50 @@
+packages/workshop-backend/src/overseer.ts
+  s_eb93aae96f1477::t_de3eaa9a6bf045 66-67,9026-9027,9030-9031,9047-9048,10118-10122
+  s_eb93aae96f1477::t_c448928fdf79f4 64
+packages/workshop-backend/__tests__/gadget-libraries.test.ts
+  s_eb93aae96f1477::t_f5e38e970debc8 13,274-304
+  s_eb93aae96f1477::t_5791ce48799e95 305-306
+scripts/vite.config.ts
+  s_eb93aae96f1477::t_c448928fdf79f4 35-39
+packages/gadget-libraries/README.md
+  s_eb93aae96f1477::t_f5e38e970debc8 46-50
+packages/workshop-backend/scripts/import-format-blueprint.ts
+  s_eb93aae96f1477::t_c9e8d6c41bfe55 9,245-250
+packages/workshop-backend/scripts/bundled-gadget-libraries.ts
+  s_eb93aae96f1477::t_c9e8d6c41bfe55 1-26
+packages/workshop-backend/__tests__/format-blueprint-files.test.ts
+  s_eb93aae96f1477::t_1e31fac9e287b9 656-657,662
+  s_eb93aae96f1477::t_f5e38e970debc8 560-582,640-655,658-661,663-675,700-706,730
+scripts/build-format-blueprints.test.ts
+  s_eb93aae96f1477::t_f5e38e970debc8 1,232-287,370-396
+  s_eb93aae96f1477::t_2399a9c2fc6526 397
+packages/workshop-backend/format-blueprints/README.md
+  s_eb93aae96f1477::t_f5e38e970debc8 150-155
+packages/workshop-backend/src/gadget-library-resolution.ts
+  s_eb93aae96f1477::t_e6a34058e09245 8,12,87-111
+  s_eb93aae96f1477::t_3fd84dc751c9bf 112
+scripts/run-dev-server.ts
+  s_eb93aae96f1477::t_c448928fdf79f4 297-302,330-334,337-346
+packages/workshop-backend/scripts/build-format-blueprints.ts
+  s_eb93aae96f1477::t_c9e8d6c41bfe55 22,25,101-102,135-136,139
+packages/workshop-backend/src/gadget-libraries.ts
+  s_eb93aae96f1477::t_e6a34058e09245 70-76,94-95
+packages/workshop-backend/scripts/format-blueprint-files.ts
+  s_eb93aae96f1477::t_c9e8d6c41bfe55 278-281,362-369,382-392,406
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3ae7b59ee027438200dcc51f8c2a28f9f2df4ccf",
+  "prompts": {},
+  "sessions": {
+    "s_eb93aae96f1477": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45e7c202-6cc2-4031-bb04-77d173c6edb9",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

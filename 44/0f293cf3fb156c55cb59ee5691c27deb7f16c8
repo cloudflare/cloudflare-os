@@ -1,0 +1,32 @@
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_28123150a77f15::t_b4b01fb773b4d0 226-245,248-257,259-261
+  s_3dacb3241b0d1d::t_5c9172c79b0ce9 246-247,258
+packages/workshop-backend/src/overseer.ts
+  s_28123150a77f15::t_5dbb98d70dca70 4335-4351
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_3dacb3241b0d1d::t_2630f985fec5a1 82-84,86-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "440f293cf3fb156c55cb59ee5691c27deb7f16c8",
+  "prompts": {},
+  "sessions": {
+    "s_28123150a77f15": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fd04377-ba7e-45fe-82f3-8535aad1711d",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_3dacb3241b0d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6d45d09-7703-4cdc-ad53-ddc1f9ca4ec6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+scripts/run-dev-server.ts
+  s_60aeeeaf25bd99::t_635d230ac2ba8f 418-419
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e47e8f4983737436c8d8d44b23295be6104329f0",
+  "prompts": {},
+  "sessions": {
+    "s_60aeeeaf25bd99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d4115a4-5673-4d84-ab9e-14db303f137d",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

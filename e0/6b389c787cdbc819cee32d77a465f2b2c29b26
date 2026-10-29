@@ -1,0 +1,46 @@
+packages/workshop-backend/src/spaces.ts
+  s_1da8b1c2e6d0c9::t_1ec51046d56f61 221
+  s_1da8b1c2e6d0c9::t_0c02a0f36ad3e4 168-171,173-174,216,240,245,268,272-273,276-280,494,525
+  s_1da8b1c2e6d0c9::t_282d4eb6112d40 219-220,225,230,234,241,244,515-524,566
+  s_1da8b1c2e6d0c9::t_3c315fe94719b0 269-271
+  s_1da8b1c2e6d0c9::t_dcd0739fc5a806 226-228,511-514
+  s_1da8b1c2e6d0c9::t_18c9fa85325b9c 274-275,493
+  s_1da8b1c2e6d0c9::t_d5606bbbbbf3ca 281-282
+packages/workshop-backend/src/storage-schema/space-storage.ts
+  s_1da8b1c2e6d0c9::t_6460cd38c0c2c9 43-44
+packages/workshop-backend/__tests__/spaces-roles.test.ts
+  s_1da8b1c2e6d0c9::t_9acacc53ccf0a3 8,476-477,479-483,485-489,491-492,494-509,511,574
+  s_1da8b1c2e6d0c9::t_51a3c5196d5846 478,490,493,520,528,567
+  s_1da8b1c2e6d0c9::t_f45efeefaa5c61 426-431,435-437,447-449,453-455,459,461,463,465-468,484,510,513-515,521-527,529-539,544,552,560-561,563-566,568-569,571-573
+  s_1da8b1c2e6d0c9::t_3c315fe94719b0 512,562
+  s_1da8b1c2e6d0c9::t_dbdce952664a9e 553,558
+  s_1da8b1c2e6d0c9::t_e6f0e018b66ae7 517
+  s_1da8b1c2e6d0c9::t_bdfe6dbee561f1 433-434,446,516,518-519
+  s_1da8b1c2e6d0c9::t_197a180624f6e0 570
+  s_1da8b1c2e6d0c9::t_9813ca7ba240d9 540-543,545-551,554-557,559
+  s_1da8b1c2e6d0c9::t_d173683a611e7e 575
+packages/workshop-backend/src/user.ts
+  s_1da8b1c2e6d0c9::t_5ba1ad0e34aed8 1196-1200,1204-1207
+packages/workshop-backend/__tests__/spaces.test.ts
+  s_1da8b1c2e6d0c9::t_89d5de093f6766 31,170-172,235-236
+  s_1da8b1c2e6d0c9::t_7ebbea274dedcc 140,145,227,229-234,237-238,240,243,245-263,265-280,569,577-581,589
+  s_1da8b1c2e6d0c9::t_72d8f8db887e9c 550-568
+  s_1da8b1c2e6d0c9::t_bdfe6dbee561f1 241-242
+  s_1da8b1c2e6d0c9::t_48abb4f086d16f 570
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e06b389c787cdbc819cee32d77a465f2b2c29b26",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,653 @@
+packages/workshop-ios/src/ui/AppDrawer.tsx
+  s_04cd646b8cbcd3::t_2b9ab1bc2ad229 1,9
+  s_04cd646b8cbcd3::t_6d01f9bd898651 85
+  s_d7442014144fa6::t_07bb900731fccb 2,4,23,64-68
+  s_04cd646b8cbcd3::t_90ab7c5009e8e7 86-108
+  s_04cd646b8cbcd3::t_6834b3e17bfbdb 109
+  s_04cd646b8cbcd3::t_f66bf0fdf1972d 49-50
+  s_d7442014144fa6::t_c81554e84c92d8 69
+packages/workshop-ios/src/draft-changes.ts
+  s_d7442014144fa6::t_4ebfcfbe876fa4 1-34
+packages/workshop-ios/src/workspace-session.ts
+  s_54bc232984f3cd::t_c4254b67183bdf 213
+  s_04cd646b8cbcd3::t_536c5177d27d63 226-228
+  s_658d3cc3df86ed::t_0e8634f31f3697 16
+  s_54bc232984f3cd::t_cfdb62be2a0cb2 402-404
+  s_54bc232984f3cd::t_93bfcff649f9b6 29,31-35,39,50-53
+  s_4183242ffd4ec0::t_ab4fe5d040147b 1,6-8,15
+  s_fcac2195398da0::t_cf18c884a056fa 255
+  s_4183242ffd4ec0::t_af25432e34c220 160-171
+  s_4183242ffd4ec0::t_642b189261d858 101-104,111
+  s_4183242ffd4ec0::t_90d2ac27503fc4 135,138,141-159,172-184
+  s_d7442014144fa6::t_8178a3c016369a 17,289-314
+  s_04cd646b8cbcd3::t_8b42b0c35992e1 242
+  s_54bc232984f3cd::t_4f2cbb63292894 56,358-360,367-371,381-396
+  s_658d3cc3df86ed::t_25c25f1de85ec1 114-116
+  s_d7442014144fa6::t_4ebfcfbe876fa4 18,286-288
+  s_4183242ffd4ec0::t_eeea6ea50b760a 57-74
+  s_fcac2195398da0::t_09411126b323f7 328
+  s_4183242ffd4ec0::t_9940041c85ede7 340
+  s_04cd646b8cbcd3::t_91c7a5369ca1ad 14
+  s_54bc232984f3cd::t_c817fa1952fed9 99-100,112-113,117-134,136-137,139-140,185,187-196,200-201,206,210-212,214-217,222,232,237,241
+  s_54bc232984f3cd::t_626e5ee9d810a5 54-55
+  s_d7442014144fa6::t_8507cd2a829294 315
+  s_54bc232984f3cd::t_54c440e35c3c22 397-398
+packages/workshop-ios/src/photo-picker.ts
+  s_15221915f1aed6::t_c1f5049b32be75 1-5,7-27,30-53
+  s_d7442014144fa6::t_e9e410f8799e9d 6,28-29
+packages/workshop-ios/src/screens/ChatScreen.tsx
+  s_4183242ffd4ec0::t_f8dc00a53c1bd3 656,658-667,731
+  s_54bc232984f3cd::t_850998ac3e7131 121-123
+  s_04cd646b8cbcd3::t_36ac86299ec76b 21
+  s_04cd646b8cbcd3::t_079c7b9a85c2d4 246,248-249
+  s_15221915f1aed6::t_d9d4664143ef75 1123-1138,1144-1161
+  s_15221915f1aed6::t_5c8789f52cbcd9 265-273,289-293,299,305,307,313,317,323
+  s_15221915f1aed6::t_26dd8668aa1407 738-768
+  s_d7442014144fa6::t_bb9d4ee5183686 7,160-167
+  s_d7442014144fa6::t_c102ac4debcd3d 186-190,625,627,632,635,649-651
+  s_4183242ffd4ec0::t_34a68434de38fa 528-531
+  s_54bc232984f3cd::t_5904ff3fc10479 74-77
+  s_4183242ffd4ec0::t_8c1f740589e162 34
+  s_15221915f1aed6::t_8c4a65b82f7910 523-526
+  s_d7442014144fa6::t_622a8fd1ea3967 13,61,177-185,191,329-372,626,628-631,633-634,636-648,652-654,701-729,1059-1104
+  s_54bc232984f3cd::t_ad13330abf5395 552-555
+  s_15221915f1aed6::t_5c46f1e748667a 942-951
+  s_15221915f1aed6::t_7cffda67d9cf5a 414-415,417-477,479-484,486-489,492-504,508,513-515,517
+  s_15221915f1aed6::t_4e03d87094b92a 50-52,54-60
+  s_15221915f1aed6::t_ec6c8294a22975 485,490-491
+  s_658d3cc3df86ed::t_97ea4071521922 892-941,952-957
+  s_658d3cc3df86ed::t_1dbdc42bf4faa9 22
+  s_15221915f1aed6::t_18f17ea6934afa 1,6,9
+  s_658d3cc3df86ed::t_e0e1ac2f718d2e 67-68
+  s_04cd646b8cbcd3::t_5ac9c788ec6490 129-132
+  s_658d3cc3df86ed::t_9b5a53516686cb 48
+  s_658d3cc3df86ed::t_7615d65b1fff1c 212-220,225-229,235
+  s_658d3cc3df86ed::t_194fefe850b8d8 301-304,306,308-309,311,314-315
+  s_658d3cc3df86ed::t_344b48b5b1723f 1000-1012,1014-1016
+  s_fcac2195398da0::t_ec05a519febdc0 535-551,655,730
+  s_658d3cc3df86ed::t_f3ab91542a03fb 581-586
+  s_15221915f1aed6::t_bc1e021ee51c05 1013
+  s_d7442014144fa6::t_e9e410f8799e9d 53,478
+  s_15221915f1aed6::t_25d989a8362656 1139-1143
+  s_15221915f1aed6::t_2169f7d0b1cb96 109-120,124-128,133-147
+  s_d7442014144fa6::t_cb6f4ad6a0433a 168
+  s_d7442014144fa6::t_4aabe69e90a480 373
+  s_4183242ffd4ec0::t_32f73263de126d 657
+  s_4183242ffd4ec0::t_59525acc745817 732
+  s_d7442014144fa6::t_1b73c34bf404f2 1105
+packages/workshop-ios/README.md
+  s_d7442014144fa6::t_622a8fd1ea3967 114-115
+packages/workshop-ios/src/access-registration.test.ts
+  s_e049077387f35d::t_c4a66df465ec42 1-26,30-65
+  s_e049077387f35d::t_3f9bd704ad1dad 27-29
+packages/workshop-ios/src/chat-store.ts
+  s_d7442014144fa6::t_c5f0542456de9a 779-782
+  s_54bc232984f3cd::t_955cf3dab0edb4 410-426
+  s_d7442014144fa6::t_bb9d4ee5183686 15,95-101,212-213,218-219,321,361,366-407,486-488,507-518,772,826-830,929
+  s_15221915f1aed6::t_f05a499cd3129b 631-654
+  s_d7442014144fa6::t_ccfe5ff773390e 831-832
+  s_15221915f1aed6::t_77da8c6c129c40 668-669,671-677,683
+  s_658d3cc3df86ed::t_ae5c955cecc99d 657-667,670,678-682,684-695,698-701
+  s_4183242ffd4ec0::t_b4f103137ec776 864-923
+  s_658d3cc3df86ed::t_1f7fb6d3d46df6 461
+  s_d7442014144fa6::t_abb5f126071a37 796-800
+  s_4183242ffd4ec0::t_de32fefd612bcd 927-928
+  s_15221915f1aed6::t_dc3afd58681575 9-10
+  s_658d3cc3df86ed::t_513956ee620a0f 324-327
+  s_4183242ffd4ec0::t_1055e1e0ef56ac 801,803-804
+  s_15221915f1aed6::t_5ca0e597e96218 43-58
+  s_d7442014144fa6::t_c102ac4debcd3d 478-485
+  s_d7442014144fa6::t_a003b10c1f4c55 802
+  s_d7442014144fa6::t_4ebfcfbe876fa4 66-67,408,655,988-996
+  s_658d3cc3df86ed::t_3fffac56788e4f 233-235,239-241,245
+  s_658d3cc3df86ed::t_421a2c733a5aba 17
+  s_4183242ffd4ec0::t_3dc08589c0180d 220-221
+  s_54bc232984f3cd::t_564143ff1c9cb1 236-238,246-251
+  s_658d3cc3df86ed::t_e6fdf5a2d140df 160-165
+  s_d7442014144fa6::t_568ac23d7b4c30 997
+packages/workshop-ios/src/ui/SwipeToDelete.tsx
+  s_d7442014144fa6::t_8fce28811729dc 218-220
+  s_000cfe5a09cb7e::t_54aec1f6f8ad9d 31-33,70-71,136-148,160,167
+  s_c3ba53cc0080d1::t_13438b003e0865 3-9,13-27,34-36,64-65,67-69,72-106,108,110-113,117-121,125-133,151-154,157-159,162,165,173-178,186,190-191,194,203-210,214-216,221-227,229-231,236
+  s_d7442014144fa6::t_12fd3aa078cd19 42-43,51-58
+  s_d7442014144fa6::t_adb17d4c100cd2 179-185,188,192
+packages/workshop-ios/src/swipe-model.ts
+  s_000cfe5a09cb7e::t_ac87ac028c4371 1-19,54-78,81-97,99-101
+  s_c3ba53cc0080d1::t_493a36529e62dc 98
+  s_c3ba53cc0080d1::t_8d90b5143906ff 20-53
+  s_c3ba53cc0080d1::t_05e8291372309b 79-80
+packages/workshop-ios/src/bytes.ts
+  s_15221915f1aed6::t_21de3c7e9b47b5 25-51
+packages/workshop-ios/src/workspace-list.test.ts
+  s_0654a9e352fe33::t_c20014af3c5a39 1-36
+packages/workshop-ios/src/diagnostics.test.ts
+  s_04cd646b8cbcd3::t_24cba585424f79 1-162
+packages/workshop-ios/src/observer-config.ts
+  s_4183242ffd4ec0::t_68d10405950353 1-179
+packages/workshop-ios/src/auth-model.test.ts
+  s_54bc232984f3cd::t_5ee3e172b73eac 1-5,7-10,25-80,85,87-226
+  s_54bc232984f3cd::t_9f471af1581900 81-84,86
+  s_d7442014144fa6::t_77cd387362b40b 6,11-24
+packages/workshop-ios/src/outputs.test.ts
+  s_1dbdec3142ad8b::t_90de51e8d25914 38,40
+  s_1dbdec3142ad8b::t_6a28d17c20e8d3 2,4
+  s_1dbdec3142ad8b::t_0392fd72551296 36-37,39,41-47,50-53
+  s_1dbdec3142ad8b::t_a4b086e4a16d4c 48-49
+packages/workshop-ios/src/thread-groups.test.ts
+  s_c9ff3bbe9cf839::t_aa49654fc8c9a8 3
+  s_c9ff3bbe9cf839::t_652c8a155276cd 74-113
+packages/workshop-ios/src/ui/Drawer.tsx
+  s_0654a9e352fe33::t_1651c6542003b0 101,105-115
+  s_0654a9e352fe33::t_b03eae768a5d01 177-191
+  s_0654a9e352fe33::t_0f770f80bab77b 44,53-54
+  s_04cd646b8cbcd3::t_086336dd391ac4 102-104
+  s_04cd646b8cbcd3::t_1206f165c0e57b 55-56
+  s_04cd646b8cbcd3::t_2541f69801ee54 45
+packages/workshop-ios/App.tsx
+  s_d7442014144fa6::t_77cd387362b40b 1,46,57-62
+  s_0654a9e352fe33::t_30ae4c191e3641 103-108
+  s_54bc232984f3cd::t_6fd9006bcb4422 52-54
+  s_4183242ffd4ec0::t_1d0274f95f1c4f 17
+  s_54bc232984f3cd::t_a63c2892966c42 2,5-6,8
+  s_0654a9e352fe33::t_b4e8ed6f406524 129
+  s_4183242ffd4ec0::t_d5d1ea34cc43fa 139-141
+  s_54bc232984f3cd::t_887dd8572d5d92 75-77,86-89,92-94
+packages/workshop-ios/src/screens/WorkspacesScreen.tsx
+  s_0654a9e352fe33::t_5ea66920efc64a 82
+  s_0654a9e352fe33::t_4bad590b1771b0 250-267,269-271
+  s_0654a9e352fe33::t_610ab3723a93a0 1
+  s_d7442014144fa6::t_761f7039a5e5ba 298
+  s_0654a9e352fe33::t_f229d6356c7a9c 191-193,196-206,208-214,216-220,222-225,227
+  s_c51c39bb256ea0::t_46fd7276d39844 402-405
+  s_d7442014144fa6::t_8178a3c016369a 5,26,35,41,54,86,126-159,295
+  s_0654a9e352fe33::t_0b689ea8d1e27b 44-46
+  s_d7442014144fa6::t_52bed1bb17d7ff 97-100,104-122
+  s_0654a9e352fe33::t_e6e4a7799b793b 25
+  s_0654a9e352fe33::t_79f03e95a5d78d 162-167,169-175,179
+  s_d7442014144fa6::t_4ebfcfbe876fa4 3,87-94
+  s_d7442014144fa6::t_973a3bd8d3c3e0 299-300,304-305
+  s_0654a9e352fe33::t_db1017ccc25761 367,370,377
+  s_c51c39bb256ea0::t_efc0fa6028cd5d 401,410,415,420-421,425
+  s_0654a9e352fe33::t_40a60dc937d06e 441-442
+  s_0654a9e352fe33::t_f06ad34a202674 268
+  s_0654a9e352fe33::t_256d0f53271d42 341
+  s_0654a9e352fe33::t_c66b0033d4da0f 429-431
+  s_fcac2195398da0::t_6eb217e05aab12 288-289,297,301-303,306-312
+  s_c51c39bb256ea0::t_8bac77d454e8b4 48-49,61-62,68-70,72-76
+  s_d7442014144fa6::t_f00019def5efb2 332
+  s_0654a9e352fe33::t_1988bf5949ca69 378
+  s_c51c39bb256ea0::t_34f7581b71ee2d 21
+packages/workshop-ios/src/workspace-list.ts
+  s_0654a9e352fe33::t_2b443c193c25d0 1-27
+packages/workshop-ios/src/observer-config.test.ts
+  s_4183242ffd4ec0::t_97b3fdd474cb18 2,38-39,55-56,65-66,79-80
+  s_4183242ffd4ec0::t_278b230a6773e8 1,3-37,40-54,57-64,67-78,81-150
+packages/workshop-ios/src/workspace-role.test.ts
+  s_fcac2195398da0::t_3356d2dfbab791 1,3-5,7-9,13-23,35-36
+  s_d7442014144fa6::t_8178a3c016369a 2,24-34
+  s_d7442014144fa6::t_de2e9be855c2d2 6,10-12
+packages/workshop-ios/src/ui/ChatRows.tsx
+  s_1dbdec3142ad8b::t_2387c0b325dcdc 34
+  s_1dbdec3142ad8b::t_27b3fdbb53eaef 217-218,224
+  s_4183242ffd4ec0::t_adca76cff4a26f 469-471
+  s_46e168f8355264::t_09817acc8ccb77 59-84
+  s_d7442014144fa6::t_4ebfcfbe876fa4 590-592
+  s_46e168f8355264::t_84778dfa8867de 15-21
+  s_46e168f8355264::t_538801f2c6df6e 145-146,148
+  s_46e168f8355264::t_b2c92921195f35 708
+  s_46e168f8355264::t_c6a30a55c35b0b 58
+packages/workshop-ios/src/connections.test.ts
+  s_4183242ffd4ec0::t_3e5d2bb1de682c 7
+  s_d7442014144fa6::t_a003b10c1f4c55 138,146-152
+  s_d7442014144fa6::t_abb5f126071a37 165-173
+  s_4183242ffd4ec0::t_a8eac9e57ebb92 184-211
+packages/workshop-ios/src/screens/GadgetScreen.tsx
+  s_54bc232984f3cd::t_c23857a491095b 105-108
+  s_d7442014144fa6::t_8178a3c016369a 34,48,51-59,62-66,220,228
+  s_d7442014144fa6::t_4ebfcfbe876fa4 60,87,103,113,134,173,211
+  s_04cd646b8cbcd3::t_ec9766fdee74e9 14
+  s_04cd646b8cbcd3::t_394eba4ce7dbc6 151-155
+packages/workshop-ios/src/access-registration.ts
+  s_e049077387f35d::t_e7f9adc4055bb1 1-59
+packages/workshop-ios/src/hooks.ts
+  s_d7442014144fa6::t_afe3f538143ab3 208-210,212,223
+  s_04cd646b8cbcd3::t_60408969d3c0d6 145
+  s_54bc232984f3cd::t_a067cd34444632 11-16
+  s_d7442014144fa6::t_47a8913786cf0e 75
+  s_04cd646b8cbcd3::t_88fb7213ce08ac 98-101
+  s_d7442014144fa6::t_c5b4064aae401c 2
+  s_04cd646b8cbcd3::t_82a3ec1a6b289e 10
+  s_54bc232984f3cd::t_f1908f78ca1f6c 43-46,49-50,54-58
+  s_d7442014144fa6::t_4ebfcfbe876fa4 78,121,130,150-157,198-201,236
+  s_d7442014144fa6::t_8178a3c016369a 18,76-77,124,204-207,211,213-221,224,235
+  s_d7442014144fa6::t_c102ac4debcd3d 123,135,174,188
+  s_d7442014144fa6::t_2760ecd6ca0a50 160-164,166-169,172,175,177-186,189-197
+  s_d7442014144fa6::t_a003b10c1f4c55 115
+  s_54bc232984f3cd::t_1a9e106bd3dd5a 59
+  s_d7442014144fa6::t_f5c5ad59e898d1 202-203
+packages/workshop-ios/src/configurator-shell.ts
+  s_4183242ffd4ec0::t_4bbb939a487f02 1-70
+packages/workshop-ios/TODO.md
+  s_fcac2195398da0::t_37e706f447d66f 190-194
+  s_d7442014144fa6::t_4577cb8e8a9f03 25-31
+  s_d7442014144fa6::t_fb69354cd71223 237-239
+  s_4183242ffd4ec0::t_b4c6b896653967 169-180,183-186
+  s_658d3cc3df86ed::t_5e66b44c554cbb 163-165
+  s_d7442014144fa6::t_1fcce62b638164 210-211
+  s_0654a9e352fe33::t_f4331493473cd2 89-98,106-108,122-124
+  s_d7442014144fa6::t_e75f15f7d4abad 216-218
+  s_1dbdec3142ad8b::t_72ac1dd20f463b 84-85
+  s_d7442014144fa6::t_ddfb052db7080c 156-158
+  s_c51c39bb256ea0::t_9cefed704114df 109-116
+  s_54bc232984f3cd::t_8886aa578cac36 65-68,73-80
+  s_c9ff3bbe9cf839::t_a93e727b8f74cf 200-204
+  s_ef53f43a59b753::t_7547ae08ac6961 99-105
+  s_c51c39bb256ea0::t_4845202625e8e7 125-133
+  s_46e168f8355264::t_0ea061f9556b9d 20
+  s_d7442014144fa6::t_4ebfcfbe876fa4 167
+  s_d7442014144fa6::t_c5f0542456de9a 181-182,187-189
+  s_d7442014144fa6::t_abb5f126071a37 219-221,226-230
+  s_d7442014144fa6::t_f918f0a72291c0 195-199
+  s_d7442014144fa6::t_063573dcd5a912 50-55
+  s_15221915f1aed6::t_768ca120cea1de 152-155
+  s_d7442014144fa6::t_de008f906c5fed 21
+  s_d7442014144fa6::t_4990ba73b4f5de 205-206
+  s_ef53f43a59b753::t_f7379d6e61b139 134-138
+  s_c3ba53cc0080d1::t_3ff29cf674ebf5 32-39
+  s_d7442014144fa6::t_07bb900731fccb 222-225
+  s_d7442014144fa6::t_ce6ebd173c13d3 86-87
+  s_d7442014144fa6::t_e9e410f8799e9d 159-162
+  s_d7442014144fa6::t_8178a3c016369a 207-209
+  s_d7442014144fa6::t_77cd387362b40b 69-72
+  s_d7442014144fa6::t_622a8fd1ea3967 168
+  s_d7442014144fa6::t_3b933f328b063c 166
+  s_04cd646b8cbcd3::t_695eccbd2ff6c4 141-151
+packages/workshop-ios/src/outbox.ts
+  s_15221915f1aed6::t_01c852b7733d57 39-44
+  s_15221915f1aed6::t_2ae820872119db 224
+  s_15221915f1aed6::t_6219b10731433c 56
+  s_658d3cc3df86ed::t_aedda7a518a317 2,5-38,45-55,57-111,113-119,121-125,127-154,156-165,167-187,189-223,225,227-234,240-243,245-261,265-275
+  s_15221915f1aed6::t_ee1d8ffd36ef21 112,120
+  s_04cd646b8cbcd3::t_0f6e4e65822b69 226,235-239,244
+  s_15221915f1aed6::t_89d55c5bac5344 1
+  s_658d3cc3df86ed::t_487c2b372d2587 166
+  s_658d3cc3df86ed::t_aea880c47d3e79 262-264
+  s_04cd646b8cbcd3::t_4141c652f57069 3-4
+  s_04cd646b8cbcd3::t_f04117cecd60d8 126
+  s_04cd646b8cbcd3::t_780ad1cee7ce01 188
+  s_04cd646b8cbcd3::t_e3db56d7b6c755 155
+packages/workshop-ios/src/transcript.ts
+  s_d7442014144fa6::t_4ebfcfbe876fa4 212-213
+  s_46e168f8355264::t_c2c54507ba260e 464-499
+packages/workshop-ios/ios/Gadgets.xcodeproj/project.pbxproj
+  s_15221915f1aed6::t_3e93c162c0ed5d 256-257
+  s_15221915f1aed6::t_0f19b21400b3f6 28-29
+  s_15221915f1aed6::t_f6f36b34ca84c4 14-15
+  s_15221915f1aed6::t_9d4c22dfb6f704 51-52
+packages/workshop-ios/src/diagnostics.ts
+  s_04cd646b8cbcd3::t_c75680d0b01f84 1-260
+packages/workshop-ios/src/access-auth.ts
+  s_e049077387f35d::t_9fd63f1e3cdf1e 315
+  s_04cd646b8cbcd3::t_f8dc0295e00232 55
+  s_54bc232984f3cd::t_07f832a5854d53 216-228,230,239,241-250
+  s_e049077387f35d::t_6a7e3ec237df74 192
+  s_e049077387f35d::t_05600e3690c035 30-35
+  s_e049077387f35d::t_6cbcff27e08dbd 115-117,119
+  s_e049077387f35d::t_4f253bc0aae9f5 9
+  s_54bc232984f3cd::t_1834e454595051 229,231,236-238,240
+  s_04cd646b8cbcd3::t_b9b0efebc4b630 173,180-184,189
+  s_e049077387f35d::t_7208ad0a219b17 232-235
+  s_54bc232984f3cd::t_4a030642e6fb97 10
+  s_04cd646b8cbcd3::t_b7f877a4477c65 11
+  s_e049077387f35d::t_650eede875276e 166-172,174
+  s_e049077387f35d::t_34c5b05cd41467 258
+  s_e049077387f35d::t_ce5bcf27c07ce4 137
+  s_04cd646b8cbcd3::t_72defbcb545818 214,252-255
+  s_04cd646b8cbcd3::t_3512716b8ff1a4 97-100
+  s_04cd646b8cbcd3::t_9818ee5393d2e5 132,136
+  s_54bc232984f3cd::t_85ef8ebf6df819 267-274,277,279-283,287
+  s_04cd646b8cbcd3::t_2e95e2edbb98e5 309,311
+packages/workshop-ios/index.js
+  s_04cd646b8cbcd3::t_576630aa20faa0 10,14-16
+  s_04cd646b8cbcd3::t_36fba0a60d60f2 17
+packages/workshop-ios/src/ui/Markdown.tsx
+  s_04cd646b8cbcd3::t_e97e88fc8c809e 12
+  s_04cd646b8cbcd3::t_9c13020ed5ab3d 59-62
+packages/workshop-ios/src/screens/GatekeeperScreen.tsx
+  s_1537257d716dc7::t_f1563cbffa5a6e 45-47,54,58,67,79-81
+  s_0654a9e352fe33::t_bc9c9b38af09aa 1,3
+  s_0654a9e352fe33::t_88276a501ea511 49,51-52,55-57,59-66,68-78
+  s_1537257d716dc7::t_7447d840b18b7f 6
+packages/workshop-ios/src/screens/SignInScreen.tsx
+  s_04cd646b8cbcd3::t_b4ecf0a96b47c8 43-44,53,66
+  s_54bc232984f3cd::t_d9272bdfc02487 166-168
+  s_04cd646b8cbcd3::t_b0a68e516045b6 201-202
+  s_54bc232984f3cd::t_d8b1dffe0f98be 85-86
+  s_04cd646b8cbcd3::t_6807fd409b57fc 14,16
+  s_54bc232984f3cd::t_076a1a5f7d1390 25-28,34
+  s_04cd646b8cbcd3::t_920bb577a97d26 138-146,148
+packages/workshop-ios/src/ui/LogViewer.tsx
+  s_04cd646b8cbcd3::t_39b5a93bd96554 18-30,33,35
+  s_04cd646b8cbcd3::t_b6bd42c46464ee 34
+  s_04cd646b8cbcd3::t_3a75a8642b5703 1-17,31-32,36-144
+packages/workshop-ios/src/thread-preview.ts
+  s_ef53f43a59b753::t_baeb87c26b18a1 1-34,36-77
+  s_ef53f43a59b753::t_4951ebd455186a 35
+packages/workshop-ios/src/workspace-role.ts
+  s_d7442014144fa6::t_8178a3c016369a 41-45
+  s_fcac2195398da0::t_ab208199aadad5 1-20,28,31-40
+  s_d7442014144fa6::t_6aca64a837a11c 21-27,29-30
+packages/workshop-ios/src/session.ts
+  s_d7442014144fa6::t_77cd387362b40b 6-10,376-379,383-385
+  s_04cd646b8cbcd3::t_6e309a0f437d4e 391
+  s_04cd646b8cbcd3::t_b282085804a5e8 159
+  s_04cd646b8cbcd3::t_74584b1925fa6c 322,328
+  s_04cd646b8cbcd3::t_6c6c8b1a64ae93 177,179,183
+  s_54bc232984f3cd::t_6b3fb927df75cd 132-135,137-138,140-148,150
+  s_04cd646b8cbcd3::t_de0302966da57e 341,351
+  s_54bc232984f3cd::t_e80c5152f09792 35-39,47,54-55,61-66
+  s_54bc232984f3cd::t_d4bff604bd0ef7 94-100
+  s_54bc232984f3cd::t_640e8c5dd359d8 320-321,323,336-339,345,352-354,359,362-369,381
+  s_04cd646b8cbcd3::t_da6f51add68f79 18
+  s_54bc232984f3cd::t_f836d5e3a4c165 395
+  s_04cd646b8cbcd3::t_a18f23c47c9d9b 130,156-158
+  s_54bc232984f3cd::t_0a1cbcc27b6c27 160,176,184-186,188,191-252,260-262,264-282,288-292
+  s_04cd646b8cbcd3::t_9a7084dc71a4a5 296
+  s_d7442014144fa6::t_2b8e7726511e2b 5
+packages/workshop-ios/src/chat-backend.ts
+  s_15221915f1aed6::t_65c66aca170629 100-107
+  s_d7442014144fa6::t_4ebfcfbe876fa4 112-113
+packages/workshop-ios/src/screens/OutputsScreen.tsx
+  s_04cd646b8cbcd3::t_0b203e9030797d 115-118
+  s_be32ae03aecb53::t_914268f3ee4dd4 141-190
+  s_04cd646b8cbcd3::t_87b5ec80535e92 15
+  s_be32ae03aecb53::t_4f6bd3b7aec577 5,17,20,24-27
+  s_be32ae03aecb53::t_9edbe410394cfd 214-236
+  s_be32ae03aecb53::t_2fe9e3e53d46ed 28
+packages/workshop-ios/src/attachments.ts
+  s_d7442014144fa6::t_e9e410f8799e9d 25-29,34-42,44-51,53-60,62-69,71-81,83-91
+  s_d7442014144fa6::t_882575bb7313a8 30-33,43,52,61,70,82
+  s_15221915f1aed6::t_dd5ebba247edbf 1-24,92-193
+packages/workshop-ios/ios/Gadgets/PhotoPicker.swift
+  s_d7442014144fa6::t_e9e410f8799e9d 64-75,103,105-110,118-121,126-131,135-136,143-151,158-159,161,174,177-205,208
+  s_15221915f1aed6::t_ae8e8cf9ae947a 1-63,76-102,104,111-117,122-125,132-134,137-142,152-157,160,162-173,175-176,206-207,209-220
+packages/workshop-ios/src/outbox.test.ts
+  s_15221915f1aed6::t_01ee0b690a4f97 97-125
+  s_658d3cc3df86ed::t_c9e8cb864df069 292,298-299,302
+  s_658d3cc3df86ed::t_24c3a72b0e7b04 1-96,126-291,293-297,300-301,303-305
+packages/workshop-ios/src/connections-backend.ts
+  s_4183242ffd4ec0::t_88ab3147079908 111
+  s_4183242ffd4ec0::t_a2e22765d33520 5
+  s_4183242ffd4ec0::t_7fda543a6ce16b 63-83
+packages/workshop-ios/src/swipe-model.test.ts
+  s_000cfe5a09cb7e::t_d20e01d9a1d203 1-5,7,10-39,86-118
+  s_c3ba53cc0080d1::t_6045311cb3d9bd 6,8-9
+  s_c3ba53cc0080d1::t_4e9273d14590f4 40-85
+packages/workshop-ios/src/ui/ConfiguratorView.tsx
+  s_4183242ffd4ec0::t_d2836c4fe6dbca 11-17
+  s_4183242ffd4ec0::t_727ecec1e32a35 51,57,69
+  s_4183242ffd4ec0::t_60240be76f0ebb 1-10,18-50,52-56,58-68,70-150,153-230
+  s_4183242ffd4ec0::t_ffc1b58182efc2 151-152
+packages/workshop-ios/src/chat-store.test.ts
+  s_4183242ffd4ec0::t_0795de396e5a34 793,804,808-809,811-812,814-845,876-896
+  s_54bc232984f3cd::t_fc3f1fe8d264bf 399,401-413,415-445
+  s_d7442014144fa6::t_0617e8122cbc1a 767,846-875
+  s_d7442014144fa6::t_bb9d4ee5183686 160,172,738-766
+  s_15221915f1aed6::t_4b7eb9a2acdb91 73-75
+  s_54bc232984f3cd::t_0fd14807e7d301 397-398,400
+  s_15221915f1aed6::t_7dfbd00cdc198f 8-9
+  s_d7442014144fa6::t_f00019def5efb2 76,142-149
+  s_54bc232984f3cd::t_07dc6ebe5e3d65 414
+  s_15221915f1aed6::t_d110a929612bf7 95-96,99-113
+  s_15221915f1aed6::t_e63314e8d0a474 531-572
+  s_d7442014144fa6::t_c5f0542456de9a 712-725
+  s_d7442014144fa6::t_abb5f126071a37 781,789-790
+  s_d7442014144fa6::t_5709e29ff4f59b 768
+packages/workshop-ios/ios/Gadgets/PhotoPicker.m
+  s_15221915f1aed6::t_ab38c169583528 1-12
+packages/workshop-ios/src/navigation.ts
+  s_0654a9e352fe33::t_883f655da18bcf 13-18
+  s_0654a9e352fe33::t_bf837526200aee 29
+  s_d7442014144fa6::t_4ebfcfbe876fa4 32
+packages/workshop-ios/src/avatar.ts
+  s_c51c39bb256ea0::t_71a962037da3fa 1-52
+packages/workshop-ios/src/ui/ConnectionSetupSheet.tsx
+  s_d7442014144fa6::t_c39f833a2a9688 68,147,151,159,212
+  s_d7442014144fa6::t_a003b10c1f4c55 19-24,67,70-74,283-285
+  s_4183242ffd4ec0::t_05b93578a4365f 311-312
+  s_4183242ffd4ec0::t_8db26e12ae61cd 334,338-343
+  s_4183242ffd4ec0::t_e134e764e2a5e6 1-18,25-30,32-49,51-66,69,75-146,148-150,152-158,160-211,213-214,217-282,286-294,296-310,313-333,335-337,344-471
+  s_d7442014144fa6::t_c5f0542456de9a 31,50
+  s_d7442014144fa6::t_c102ac4debcd3d 215-216
+  s_4183242ffd4ec0::t_5a32e0f3b7a790 295
+packages/workshop-ios/src/connections.ts
+  s_4183242ffd4ec0::t_eedac7697e5c9f 166,174-176,180-191
+  s_4183242ffd4ec0::t_f5031a964684be 120,126-130
+  s_4183242ffd4ec0::t_e625c7fd0410b5 60-62
+  s_d7442014144fa6::t_a003b10c1f4c55 123,149-150,162-165
+  s_d7442014144fa6::t_abb5f126071a37 124,152-157
+  s_4183242ffd4ec0::t_503c221ec88623 8-12
+  s_4183242ffd4ec0::t_c97d278d4a91fb 167
+  s_4183242ffd4ec0::t_b742dc8008c85a 192
+packages/workshop-ios/src/draft-changes.test.ts
+  s_d7442014144fa6::t_4ebfcfbe876fa4 1-40
+packages/workshop-ios/src/outputs.ts
+  s_1dbdec3142ad8b::t_0cf2ee528b4e64 1
+  s_1dbdec3142ad8b::t_69fe60b4c070e2 33-36,38-39,41-42,47
+packages/workshop-ios/src/transcript.test.ts
+  s_46e168f8355264::t_61b03970f1ba1c 11
+  s_46e168f8355264::t_15d6f42053f45b 613-652
+packages/workshop-ios/src/screens/ThreadsScreen.tsx
+  s_ef53f43a59b753::t_8a80b561a9e55d 30,37-38,48-49,67,70
+  s_c51c39bb256ea0::t_a60aabf9937dda 442,446
+  s_c9ff3bbe9cf839::t_583ddae3318290 19
+  s_c9ff3bbe9cf839::t_54cc5ba81c6fb6 1,12
+  s_d7442014144fa6::t_8178a3c016369a 15,121-125,129-134,136,200-220,236,244
+  s_c9ff3bbe9cf839::t_414d9147c68c1e 191-196
+  s_c9ff3bbe9cf839::t_2e37f7ad7bf205 296-307
+  s_ef53f43a59b753::t_2fb44a4911ceae 327
+  s_c51c39bb256ea0::t_7996c5eac7d454 386,393,398
+  s_c51c39bb256ea0::t_77854c1d562de6 387-388
+  s_c9ff3bbe9cf839::t_44deed5af7c30e 314
+  s_fcac2195398da0::t_dad30885109678 294
+  s_c9ff3bbe9cf839::t_fb9fd52738baa9 337-344
+  s_ef53f43a59b753::t_822e7ad09b2000 402-409
+  s_ef53f43a59b753::t_6c13e528eb2283 20
+  s_fcac2195398da0::t_279c8fae744580 222-235,237-243,245-259,263,267-271
+  s_c9ff3bbe9cf839::t_8e49c41259629d 410-419
+  s_c51c39bb256ea0::t_30803e92efe039 22
+  s_c51c39bb256ea0::t_65c87f9e8dda89 44-47,50,62-66,68-69,71-82
+packages/workshop-ios/src/auth-model.ts
+  s_54bc232984f3cd::t_72c63a0bb2b7b8 93
+  s_d7442014144fa6::t_77cd387362b40b 166-184
+  s_54bc232984f3cd::t_55f9a65a82d246 1-92,94-114,116-165
+  s_54bc232984f3cd::t_e0a91a1f2d492f 115
+packages/workshop-ios/src/avatar.test.ts
+  s_c51c39bb256ea0::t_d7c849e164b7e2 1-46
+packages/workshop-ios/src/ui/ObserverConfigSheet.tsx
+  s_4183242ffd4ec0::t_de600573708e97 1-485
+packages/workshop-ios/src/ui/Avatar.tsx
+  s_c51c39bb256ea0::t_0724488dc15b59 1-18,22-23,26-28,30-48,51
+  s_c51c39bb256ea0::t_e3b8e13bd510e2 19-21,24-25,29
+  s_c51c39bb256ea0::t_f1873e7bdc2d49 49-50
+packages/workshop-ios/src/configurator-shell.test.ts
+  s_4183242ffd4ec0::t_a701865d987345 1-6,10-13,17-31
+  s_4183242ffd4ec0::t_a259d8bbbcc306 7-9
+  s_4183242ffd4ec0::t_a0de857e303c13 14-16
+packages/workshop-ios/src/attachments.test.ts
+  s_15221915f1aed6::t_c00ea27f117b5a 1-6,8-87,101-132
+  s_d7442014144fa6::t_e9e410f8799e9d 7,88-100
+packages/workshop-ios/src/thread-preview.test.ts
+  s_ef53f43a59b753::t_c17a8eb2f8b8c2 58
+  s_ef53f43a59b753::t_661bd25c505331 1-57,67-127
+  s_ef53f43a59b753::t_d4f137550f6c1d 59-66
+packages/workshop-ios/src/bytes.test.ts
+  s_15221915f1aed6::t_13586c60d9af78 38-72
+  s_15221915f1aed6::t_d6ab63c3c60c2e 2
+packages/workshop-ios/src/thread-groups.ts
+  s_c9ff3bbe9cf839::t_7f22a28c6c8924 24-44
+packages/workshop-ios/src/credential.ts
+  s_54bc232984f3cd::t_72299a72bf9e9b 8
+  s_04cd646b8cbcd3::t_7745acecac0b66 9
+  s_04cd646b8cbcd3::t_7d4c25190becb0 83,85,90,92
+  s_04cd646b8cbcd3::t_4775c505b99196 34-37
+  s_54bc232984f3cd::t_9e1f3fdd1128ae 61-64,66-69,73-74
+packages/workshop-ios/src/gadget-frame.ts
+  s_04cd646b8cbcd3::t_5546946c7adb3d 55-57
+packages/workshop-ios/src/workspace-session.test.ts
+  s_d7442014144fa6::t_8178a3c016369a 1-12,17-25,27,29-31,37,39,43,45,47-48,50-71,73,77-125
+  s_d7442014144fa6::t_91ba2348ad129c 13-16,26,28,32-36,38,40-42,44,46,49
+  s_d7442014144fa6::t_e6e9f9384b9555 72,74-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b6e483cdba4b6e3c6d4fc475e5860680d6aef06a",
+  "prompts": {},
+  "sessions": {
+    "s_000cfe5a09cb7e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0194e0538ffervQNtXAKWvQp5Q",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_04cd646b8cbcd3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_018787905ffeuRJxS9BDffEB1d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_0654a9e352fe33": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_018781fa6ffe9t0d9TSyNzX34J",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_15221915f1aed6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0193fa230ffeP61D0fzk0hU7bx",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_1537257d716dc7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0194de130ffeB3RRHAWH6qPGqD",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_1dbdec3142ad8b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0194aa09dffeos6Z9FNdd5lY2G",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_4183242ffd4ec0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_018491697ffeJztB8xXQXBsIg7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_46e168f8355264": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0194a7ea1ffexgKq8O9y6mJMUm",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_54bc232984f3cd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_018685a8fffe3o0L8jAqsYsxS0",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_658d3cc3df86ed": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0194a4cfeffe5B9vjrJrnPiCab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_be32ae03aecb53": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0194dac2bffe8mPH7jBoMtOyar",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_c3ba53cc0080d1": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_018496f25ffew3G6Zxmdf4FhlX",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_c51c39bb256ea0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_017407d6dffek6wARaC7qTOxlo",
+        "model": "claude-opus-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_c9ff3bbe9cf839": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0193114dfffet1ux6yIHi2YI7H",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_d7442014144fa6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01952a888ffepZghe17beKKXPK",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_e049077387f35d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01849ff20ffesjs7tVdH7TCFyd",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_ef53f43a59b753": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01849bf0affeP2y6BTqiNvgvyZ",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    },
+    "s_fcac2195398da0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0192e560cffeZpcTHVLYjTekfy",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_b831f88f249552::t_3101a73984732f 8-11,154-156,166-168
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_b831f88f249552::t_f123a1d36e6074 1-632
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_b831f88f249552::t_bcc009970db0a5 253-255,267,271
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0f78af2a52c6e392a9c8805aca601673c4d962cd",
+  "prompts": {},
+  "sessions": {
+    "s_b831f88f249552": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "010fdb2a-8792-46e0-84cc-2e828765473b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

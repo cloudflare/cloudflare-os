@@ -1,0 +1,69 @@
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-131
+packages/workshop-backend/package.json
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 12-13
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-102
+packages/mcp-shared/README.md
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 38,40
+docs/sharing.md
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 52,149,155
+packages/mcp-shared/src/http.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-43
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 3748,4439,4441-4443,4446,4594-4595,4597-4600,4826-4830
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-96
+packages/mcp-shared/src/user.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-75
+docs/observers.md
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 228-232
+packages/workshop-backend/src/overseer.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 3,5983,5989-5991,6035-6036,6054-6056,6058-6060,6069-6070,7646,7669-7672,7684,7690,7708,7764-7768
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-197
+packages/workshop-backend/src/server.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 4,203-209
+packages/gatekeeper-mcp-portal/worker-configuration.d.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 15
+packages/mcp-shared/package.json
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 18,30
+packages/mcp-shared/__tests__/user.test.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-60
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 51-52,337-341,343-365,486-489,580-584,764-769,772,775-779,781,783-788,791-803,805-806,808-812,818,831,996-997,1010,1053,1063-1064,1090-1100,1104-1106,1108-1109,1111,1127,1134,1327,1421
+packages/workshop-shared/src/api.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 251-284,371-372
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-35
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 35,63-68,129-138,233,249,257-258
+packages/workshop-backend/vitest.integration.config.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-34
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-144
+packages/gatekeeper-mcp/src/mcp.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 35,57-62,95-102,105-119,218,238,246-247
+packages/workshop-backend/wrangler.jsonc
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 26
+packages/mcp-shared/__tests__/http.test.ts
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1-64
+packages/workshop-frontend/src/GadgetCodeInterface.tsx
+  s_541af6f33f7bfd::t_4924e0c3f20d6d 1,193-203,280-282,286-287,289,706
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d98d625a9c7a82274fc4a6fbd1abac3c53f0d755",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

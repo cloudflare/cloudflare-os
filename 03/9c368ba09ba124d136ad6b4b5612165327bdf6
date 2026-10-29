@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_3c1ab8c0a1269e::t_c85e73fef26916 285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "039c368ba09ba124d136ad6b4b5612165327bdf6",
+  "prompts": {},
+  "sessions": {
+    "s_3c1ab8c0a1269e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ab061e0-fb7c-499d-9776-c0e0a58e311b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

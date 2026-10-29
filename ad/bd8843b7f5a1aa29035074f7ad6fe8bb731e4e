@@ -1,0 +1,19 @@
+docs/multi-chat-code-conflicts.md
+  s_10196e55ce28cf::t_894b8421cbfff3 1-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "adbd8843b7f5a1aa29035074f7ad6fe8bb731e4e",
+  "prompts": {},
+  "sessions": {
+    "s_10196e55ce28cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "445d984a-aa15-4ea4-b4ae-89a1d48b07ea",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

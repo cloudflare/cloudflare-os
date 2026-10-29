@@ -1,0 +1,21 @@
+packages/workshop-ios/src/ui/AppsHeaderButton.tsx
+  s_d7442014144fa6::t_3426efcfb81a98 2,31-32
+packages/workshop-ios/src/session.ts
+  s_d7442014144fa6::t_86d35f986c097c 214-218
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "be18e73c19a09e19410c37def89f34e09216bec4",
+  "prompts": {},
+  "sessions": {
+    "s_d7442014144fa6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01952a888ffepZghe17beKKXPK",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

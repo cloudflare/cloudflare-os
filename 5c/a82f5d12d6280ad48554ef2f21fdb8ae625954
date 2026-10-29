@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_526789b8d80518::t_34d0d7c2cb512c 626-633
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5ca82f5d12d6280ad48554ef2f21fdb8ae625954",
+  "prompts": {},
+  "sessions": {
+    "s_526789b8d80518": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0c46227-4545-472d-9adb-3f12047aa84d",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

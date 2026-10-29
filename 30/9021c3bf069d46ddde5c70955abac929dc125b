@@ -1,0 +1,39 @@
+.github/workflows/workshop-evals.yml
+  s_23124d99541bb8::t_81923332ef713c 39,52-55,87
+packages/workshop-evals/README.md
+  s_23124d99541bb8::t_39a5ea97e2f96d 100-104,124-126,128-130,138-161
+packages/workshop-evals/src/scorer.test.ts
+  s_23124d99541bb8::t_068f8388b862a3 85-98
+packages/workshop-evals/src/scorer.ts
+  s_23124d99541bb8::t_6f1ea6c19a694f 17-28
+packages/workshop-evals/src/summary.test.ts
+  s_23124d99541bb8::t_17032283de1731 3-7,189-195
+packages/workshop-evals/src/summary.ts
+  s_23124d99541bb8::t_2b8e49db11cbd3 272,279-285,289
+packages/workshop-evals/tasks/appointment-desk.task.ts
+  s_23124d99541bb8::t_52c4a163a69f08 4-7,9-13,15-21,24-32,36-47,50-51,54-58,60-78,80-90,92-96,99-140,142-146,150-157,159-160
+packages/workshop-evals/tasks/org-chart.task.ts
+  s_23124d99541bb8::t_ea3662d6ea25ab 37,43
+packages/workshop-evals/tasks/registry.test.ts
+  s_23124d99541bb8::t_bea302365f04a0 11-12,14-15
+packages/workshop-evals/tasks/spaced-repetition.task.ts
+  s_23124d99541bb8::t_b8536f6e2c137a 1-194
+packages/workshop-evals/tasks/time-tracker.task.ts
+  s_23124d99541bb8::t_7fe78f7593a937 1-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "309021c3bf069d46ddde5c70955abac929dc125b",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

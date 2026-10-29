@@ -1,0 +1,70 @@
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_c09355646b34c4 42-43,55-57,60-61,75-79,83-84,93-97,139
+packages/gatekeeper-mcp-portal/__tests__/configurator-ui.test.ts
+  s_e25e29d8ebebad::t_0f789a696f66fa 91,102,105-107
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_d093340ce9b3cb 309,314-315
+  s_e25e29d8ebebad::t_517226aeffffe2 237-238,250-251,295,306
+  s_e25e29d8ebebad::t_e72df43c861276 392-400
+  s_e25e29d8ebebad::t_b6f83fb7452057 246,296-305,307-308,388
+packages/mcp-shared/__tests__/tools.test.ts
+  s_e25e29d8ebebad::t_33393d3ce84575 38-40
+  s_e25e29d8ebebad::t_c09355646b34c4 5,22-37
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_e25e29d8ebebad::t_3543d4825e6d9d 31-33,35-36
+  s_e25e29d8ebebad::t_0ef6cefbae7c50 38
+packages/gatekeeper-mcp-portal/README.md
+  s_e25e29d8ebebad::t_1829c8f634a6f3 170
+  s_e25e29d8ebebad::t_517226aeffffe2 158-163,165-169,173
+  s_e25e29d8ebebad::t_1542fc35ce4586 31-45,58-61,108,147,149-151,156-157,164,171-172,174,176-177
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_fa501c1ced5c2a 105-107,152-156,159-160,162-163,165-170,174,179-180,183,185-188,191-194,201,204,211,222,224,226-234,236
+  s_e25e29d8ebebad::t_db78a69b8b3f8d 205-210,213-216
+  s_e25e29d8ebebad::t_7bccdd8df28393 181
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_517226aeffffe2 48,54,321-322
+  s_e25e29d8ebebad::t_87d000431cc6d7 573-576
+  s_e25e29d8ebebad::t_b28adef7a53733 577-580
+  s_e25e29d8ebebad::t_7bccdd8df28393 662
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_82a3e3ad8080d2 17,205-217
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_e72df43c861276 172-181
+  s_e25e29d8ebebad::t_852740047924f9 132-133,136-138,149,153,156,159-171,182-192
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_e25e29d8ebebad::t_e72df43c861276 172-174,176-180
+  s_e25e29d8ebebad::t_b46d25330c4ad5 238,244,247,257,260-261,263-264,281,291
+  s_e25e29d8ebebad::t_d093340ce9b3cb 175
+  s_e25e29d8ebebad::t_6dbf6a80948d1a 10,236-237,239-243,245-246,248-256,258-259,262,265-280,282-290,292-298
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_e25e29d8ebebad::t_1b1659c150e1f8 93-94
+  s_e25e29d8ebebad::t_a6a1e9a9d88db9 111-112
+  s_e25e29d8ebebad::t_fdf28b82ea6d8f 11,116-117,121,124,126,129-130
+  s_e25e29d8ebebad::t_7bccdd8df28393 15,99-110
+  s_e25e29d8ebebad::t_517226aeffffe2 16,132
+  s_e25e29d8ebebad::t_51e11cbff5db75 9,17,96-98,113-115,118-120,122-123,125,127-128,131,133-136
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_e25e29d8ebebad::t_6104ca7be0d255 50,72,86-99,142-143
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_897f128614014a 356-358
+  s_e25e29d8ebebad::t_517226aeffffe2 93-95
+  s_e25e29d8ebebad::t_fdf28b82ea6d8f 30,423,439,449-450,452-462,469-475,482-488,491
+  s_e25e29d8ebebad::t_d9233366f0b239 437-438
+  s_e25e29d8ebebad::t_12ec26507e9f01 27-29,37-41,48-49,51,81,91-92,96-97,117-128,132,134,141,340-355,359-370,382,421-422,432,435-436,440-444,446,451,465-468,478-479,481,489-490,492-493,562-563
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9380b8ac2ce038b30a5b6d0caeac110d0c7c35a6",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

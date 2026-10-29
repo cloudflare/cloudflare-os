@@ -1,0 +1,22 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_f498035bc5c4d3 3195-3203,3210-3214,3380-3384,3400,3411,3438,3504-3505,3526-3528,3786-3816,3825-3828,3830-3831,3981-3982,4081,4160-4161,4272-4277,4459-4462,4467,4469-4472,5033-5035,5911-5921,5951,6015,6051,6178,6227,6471,6492-6500,6626,6643
+  s_1dfdf61332f5c7::t_937a5c2c4018e3 6045-6050
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_59a8946a7759d9 1-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "667e121f3a43056b8f138c10d6047c9d02d1a6ef",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

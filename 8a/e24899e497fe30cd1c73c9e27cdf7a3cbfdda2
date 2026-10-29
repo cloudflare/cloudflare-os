@@ -1,0 +1,23 @@
+docs/wiki.md
+  s_47c456ca6ea293::t_200ce23d7685a9 191-192
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_47c456ca6ea293::t_cc23c1c9c15c51 1-2,8-9,39-187
+packages/workshop-backend/src/overseer.ts
+  s_47c456ca6ea293::t_9603e97c6ac066 10099-10105,10107-10115,10117,10124,10133,10135-10138,11460-11462,11474-11478
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8ae24899e497fe30cd1c73c9e27cdf7a3cbfdda2",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_0d64b22985f805 136-139
+  s_1dfdf61332f5c7::t_4152031ad0b97d 199-201,204,212,214-216,218
+  s_1dfdf61332f5c7::t_9312e4db21893d 1-119,122-135,140-198,202-203,205-211,213,217,219-315
+  s_1dfdf61332f5c7::t_f95fd3e50ccb4c 120-121
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_fc2b415806d9a6 15,58,67-70,86-91,102,140,142,158,172,177,179,246
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_1dfdf61332f5c7::t_39c49a19a1e456 29-35,47,53,64,228-261
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_d86b2c04fa1d64 1-117
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_bf2c4b875a3b27 5,12-17,131,939-940,954,976,1137-1139,1169-1188,1196-1200,1202-1204,1206-1208,1210-1217,1222,1253-1257,1259,1382,1619,1820-1823,1825-1826,2045-2121,2124-2125,2127-2128
+  s_1dfdf61332f5c7::t_cf1138221e4d3c 1824
+  s_1dfdf61332f5c7::t_566ba1252bb1f9 2122-2123
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_1e6110d28b2135 16,2994-3027,3030,3062-3065,3067-3068,3265-3268,3288,3487-3490,3495-3507,3513-3514,3519-3523,3528-3538,3544-3564,3666-3667,3670-3684,4367-4376,4561-4566,7586-7588,7590-7592,7595,7598-7605,7969,8001-8005
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_12bba15d4fdc5a 4767
+  s_1dfdf61332f5c7::t_80836c1237e29b 64,2106,3277,3310-3315,3499-3503,3511-3521,3680-3682,3687-3689,3707-3708,3719,3746,3810,3831-3832,3942-3993,4129-4132,4134-4135,4283-4284,4289,4387-4392,4462-4470,4480,4591-4597,4599-4601,4751,4770,4773-4774,4809-4829,6262-6287,6842,6864-6869,6994-6997,7014
+  s_1dfdf61332f5c7::t_c0763bbd8ed0bb 4598
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_fb19213e332135 1-429
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9898689083085821b466acd926e42c1f1aaa50e7",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

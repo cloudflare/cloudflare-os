@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/routes/admin-workspace.tsx
+  s_de88629d731a38::t_a124ef69f3bc86 1342,1355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7c4d4b2e2049fbd82d386c40c6fc8965a97332eb",
+  "prompts": {},
+  "sessions": {
+    "s_de88629d731a38": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "07b826ef-48e7-47b8-a30b-d4a440107701",
+        "model": "Claude Opus 4.8 Medium"
+      },
+      "human_author": "saslyma <sasly@cloudflare.com>"
+    }
+  }
+}

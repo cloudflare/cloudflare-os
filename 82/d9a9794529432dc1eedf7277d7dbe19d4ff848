@@ -1,0 +1,59 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_541af6f33f7bfd::t_18df9eac5e52ad 16-32,65-67,183-189,192-197,253-254
+  s_541af6f33f7bfd::t_69deaa303cfa0c 182,190-191,198-199,201-203,232-238,272-276,281-285
+packages/workshop-frontend/src/siteLogoUtils.ts
+  s_541af6f33f7bfd::t_36cff1e1a0c5de 94-97,99-101
+  s_541af6f33f7bfd::t_2e919ba9d67e00 5-6,9,12,21-33,35-37,40-75,91-93,114-115,124,133-135,151,154,156,158-168,237
+  s_541af6f33f7bfd::t_1025ffa622e0e7 136-149,155
+  s_541af6f33f7bfd::t_725d6119fd5f65 98
+  s_541af6f33f7bfd::t_69deaa303cfa0c 34,38-39,81-90,102-113,116-123,125-132,150,152-153,157,185,226-227,231
+  s_541af6f33f7bfd::t_1460cb41c6bf27 7,261-263,273-290
+  s_541af6f33f7bfd::t_cb618336c9f461 76-80
+  s_541af6f33f7bfd::t_d3c78945e6293a 8
+packages/workshop-frontend/src/siteLogoUtils.test.ts
+  s_541af6f33f7bfd::t_2e919ba9d67e00 44,66-74
+  s_541af6f33f7bfd::t_36cff1e1a0c5de 121-126
+  s_541af6f33f7bfd::t_1460cb41c6bf27 7,136,139,148-152
+  s_541af6f33f7bfd::t_69deaa303cfa0c 76,110-120,127-131
+  s_541af6f33f7bfd::t_e80212ad1f1f53 75
+  s_541af6f33f7bfd::t_d55e1d77f831a9 77
+packages/workshop-backend/__tests__/site-logo.test.ts
+  s_541af6f33f7bfd::t_18df9eac5e52ad 125-128
+  s_541af6f33f7bfd::t_9584969c604f51 28-77,95-99
+  s_b9d78ba39005bb::t_eedef675c71fc2 100
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_541af6f33f7bfd::t_2e919ba9d67e00 796
+packages/workshop-backend/src/site-logo.ts
+  s_541af6f33f7bfd::t_18df9eac5e52ad 110-113,116,121-123,125,127-129,131-133,136-137,139,176-179
+  s_541af6f33f7bfd::t_466e3c96ca9b43 124
+  s_541af6f33f7bfd::t_69deaa303cfa0c 117-120,126,130
+packages/workshop-frontend/src/components/SiteLogo.tsx
+  s_541af6f33f7bfd::t_1460cb41c6bf27 4
+packages/workshop-frontend/src/components/SiteLogo.test.tsx
+  s_541af6f33f7bfd::t_a94091667a804c 6,18,70-77
+  s_b9d78ba39005bb::t_bb31f9679f3733 78-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "82d9a9794529432dc1eedf7277d7dbe19d4ff848",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_e4667f724fbd09::t_b6f62b35026bdd 542-636,751-862,971-974,976
+packages/workshop-backend/src/overseer.ts
+  s_2bc8ff0da5f5f2::t_681172619d5c10 806-812,1450-1454,1637,1640-1648,1662-1663,1725-1754,1767-1768,1778-1792,1855,1858,2403-2418,2420-2430,2432-2434,4241-4248,4251-4252,4254,4261-4271,5344-5347,5723-5726,5728-5729,5803-5805,5807-5808,6092-6094,6098-6099,6102,6109,7065-7068,7079,9162-9166,10173-10180,11498-11500,11769-11771
+docs/observers.md
+  s_2bc8ff0da5f5f2::t_d853598e72c0ba 358-362,382-390,418-424,442-449
+packages/workshop-backend/__tests__/overseer-hooks.test.ts
+  s_2bc8ff0da5f5f2::t_dfb7ce4ea05fe3 18-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a91dccaac8fbb3193c2c1b09e94dcf03e7d16ce0",
+  "prompts": {},
+  "sessions": {
+    "s_2bc8ff0da5f5f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5cf53db4-d969-45be-8aaf-547baad359bc",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e4667f724fbd09": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fa1197f60ffeIDKw3I41VBhvQt",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

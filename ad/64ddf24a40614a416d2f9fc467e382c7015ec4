@@ -1,0 +1,290 @@
+packages/workshop-backend/src/agent.ts
+  s_39da1951e89896::t_ce357728b4c3f5 1291-1292
+  s_fcb81335a24bc2::t_57931177c934f4 323-325,380,2061-2065,2203-2204
+  s_fcb81335a24bc2::t_36e4d4419bbafa 476,612
+  s_fcb81335a24bc2::t_46b68ffa5d4995 403
+  s_e53cf2c996845a::t_e7e4c66f24a0a6 599,605,615,617
+  s_7b56d08793e52d::t_8da389570e6f35 601,627
+  s_e53cf2c996845a::t_716e7698d96ea1 1295
+  s_7b56d08793e52d::t_9dadf7781aded4 387
+  s_e53cf2c996845a::t_010c1297754b4f 480,482,484,519,526,530,532,534,540,544,546,548,552,566
+  s_e53cf2c996845a::t_b141671f7b3f67 381,383,389,391,393,395,397,399,401,415,426
+  s_e53cf2c996845a::t_4d6cf0608ae6f0 1237,1772,1778,1913-1914,2086,2123-2124,2130-2131,2134,2138,2141,2149,2158,2162,2173,2312,2505,2509,2512,2516,2524,2532,2564,2569,2573,2579
+  s_fcb81335a24bc2::t_94daa1e6553486 424
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_fcb81335a24bc2::t_c8139d9b791996 1183,1242
+  s_fcb81335a24bc2::t_9275720571d2d3 1361,1381-1382,1424-1425,1443-1444,1620,1645,1782
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_7b56d08793e52d::t_b0c54a382deb07 211,229,245,364
+  s_fcb81335a24bc2::t_2428de1936fec0 254
+packages/gatekeeper-notion/src/notion.ts
+  s_7b56d08793e52d::t_b0c54a382deb07 298
+  s_fcb81335a24bc2::t_2428de1936fec0 170,180
+  s_ebf95fa6541f85::t_33f6e93c85112c 762,902,919
+packages/gatekeeper-google/src/configurator/gmail-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 40
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_ebf95fa6541f85::t_ea7abcf2e153a5 310
+packages/gatekeeper-mcp/src/configurator/server-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 44
+packages/workshop-frontend/src/AdminPage.tsx
+  s_fcb81335a24bc2::t_b47d9fa6474187 447,453
+  s_fcb81335a24bc2::t_ae21d0ba0a85c3 800
+packages/workshop-backend/src/admin-config.ts
+  s_fcb81335a24bc2::t_56853f071a518f 81-86
+  s_fcb81335a24bc2::t_2655fd81d49f8a 20
+packages/gatekeeper-supabase/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 2,210
+packages/gatekeeper-linear/src/linear.ts
+  s_7b56d08793e52d::t_b0c54a382deb07 105,441,488
+  s_fcb81335a24bc2::t_5a7a5e85a4c76f 128,138
+  s_ebf95fa6541f85::t_33f6e93c85112c 1472,1482,1504
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_fcb81335a24bc2::t_c8139d9b791996 51,373,404,477,480,501
+packages/workshop-frontend/src/FileSidebar.tsx
+  s_fcb81335a24bc2::t_51807fc62703e7 191,259
+packages/gatekeeper-scheduler/app/SchedulerPage.tsx
+  s_ebf95fa6541f85::t_ea7abcf2e153a5 349
+packages/gatekeeper-google/src/configurator/calendar-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 20
+packages/gatekeeper-context/src/context-observers.ts
+  s_fcb81335a24bc2::t_de07dc483a8477 65
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 19
+packages/gatekeeper-google/src/google.ts
+  s_ebf95fa6541f85::t_33f6e93c85112c 1956,2316,2580,3050,3406
+  s_fcb81335a24bc2::t_5a7a5e85a4c76f 175,189
+  s_7b56d08793e52d::t_621ae647d14dee 205,441
+packages/gatekeeper-slack/src/configurator/workspace-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 21
+packages/gatekeeper-email/src/configurator/email-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 23
+packages/gatekeeper-email/src/email.ts
+  s_7b56d08793e52d::t_621ae647d14dee 266,268
+  s_fcb81335a24bc2::t_5a7a5e85a4c76f 137,151
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_fcb81335a24bc2::t_fcc83b9d3a543c 26,257,261,431,445,753
+  s_fcb81335a24bc2::t_de7454e08ce147 404
+packages/gatekeeper-scheduler/app/SchedulerPage.test.tsx
+  s_ebf95fa6541f85::t_ea7abcf2e153a5 253
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_fcb81335a24bc2::t_51807fc62703e7 577,758
+  s_fcb81335a24bc2::t_fcc83b9d3a543c 69,797
+packages/mcp-shared/src/sharing-policy.ts
+  s_fcb81335a24bc2::t_053a6ac29c981f 12
+packages/gatekeeper-github/src/github.ts
+  s_fcb81335a24bc2::t_5a7a5e85a4c76f 306,320
+  s_7b56d08793e52d::t_621ae647d14dee 975,1020
+  s_ebf95fa6541f85::t_33f6e93c85112c 3776
+packages/gatekeeper-mcp/src/mcp.ts
+  s_fcb81335a24bc2::t_90acdab3f5249a 177
+packages/workshop-frontend/src/ServerConfigContext.tsx
+  s_fcb81335a24bc2::t_51807fc62703e7 22
+packages/workshop-frontend/src/components/ConnectConnectorModal.tsx
+  s_fcb81335a24bc2::t_65af9da3684438 320,323,334,343
+packages/gatekeeper-scheduler/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 269,271,278,280
+packages/workshop-frontend/src/gatekeeper-modal/AgentSpawnerConfigForm.tsx
+  s_fcb81335a24bc2::t_36e4d4419bbafa 83,130-131
+packages/gatekeeper-supabase/src/supabase.ts
+  s_ebf95fa6541f85::t_33f6e93c85112c 1144,1167
+  s_fcb81335a24bc2::t_2428de1936fec0 141,151
+  s_7b56d08793e52d::t_e861c46f4cfadf 301,348
+packages/gatekeeper-spotify/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 1,10
+packages/gatekeeper-slack/src/configurator/conversation-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 28
+packages/workshop-backend/src/agent-spawner-binding.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 5
+packages/gatekeeper-confluence/src/confluence-observers.ts
+  s_fcb81335a24bc2::t_6846c350156bfe 182
+packages/workshop-frontend/src/routes/context.tsx
+  s_fcb81335a24bc2::t_fcc83b9d3a543c 5,60,72
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 115
+packages/gatekeeper-homeassistant/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 1
+packages/workshop-backend/src/user.ts
+  s_fcb81335a24bc2::t_8ffa92a839ec98 455
+  s_8661cd05027612::t_8123fd847ae86c 722,731
+  s_fcb81335a24bc2::t_57ec0240c34f60 1032
+packages/workshop-frontend/src/components/GadgetPresence.tsx
+  s_fcb81335a24bc2::t_9275720571d2d3 186
+packages/workshop-frontend/src/routes/index.tsx
+  s_fcb81335a24bc2::t_51807fc62703e7 126
+packages/mcp-shared/src/endpoint.ts
+  s_0141247acdcec6::t_26a13fde56dee0 82
+packages/workshop-frontend/src/gatekeeper-modal/AiModelConnectionConfig.tsx
+  s_fcb81335a24bc2::t_36e4d4419bbafa 22
+packages/workshop-frontend/src/ShareModal.tsx
+  s_fcb81335a24bc2::t_c8139d9b791996 783
+  s_fcb81335a24bc2::t_626d7533be0a07 789
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_7b56d08793e52d::t_621ae647d14dee 690
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_fcb81335a24bc2::t_9275720571d2d3 3610,7385
+  s_fcb81335a24bc2::t_405f4447ccfa07 3548,6920,7245,7271,7276,7423,7648
+  s_fcb81335a24bc2::t_c8139d9b791996 657,762,830,858,884
+packages/workshop-backend/src/agent-catalog.ts
+  s_8661cd05027612::t_8123fd847ae86c 93
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_fcb81335a24bc2::t_57ec0240c34f60 715,888
+  s_fcb81335a24bc2::t_405f4447ccfa07 970,993,1026,1091
+  s_fcb81335a24bc2::t_5615ce0c44700d 771,777,894
+  s_fcb81335a24bc2::t_2655fd81d49f8a 583
+packages/gatekeeper-cloudflare/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 2
+packages/gatekeeper-confluence/src/confluence.ts
+  s_fcb81335a24bc2::t_5a7a5e85a4c76f 173,183
+  s_7b56d08793e52d::t_621ae647d14dee 248
+packages/gatekeeper-linear/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 1
+packages/workshop-backend/src/overseer.ts
+  s_fcb81335a24bc2::t_1b65bf0853532c 687,4150,5177,5519,6083,6534,6726
+  s_8661cd05027612::t_969fdd1edf0de5 9463
+  s_fcb81335a24bc2::t_c673a273eaa8f6 5029,5085,7321,9183
+  s_fcb81335a24bc2::t_2655fd81d49f8a 24,5565
+  s_e53cf2c996845a::t_1a9db8d6800ff2 1474,1486,1488,1517-1518,1526,1530,1549,1557,1561,1735
+  s_e53cf2c996845a::t_64efd8c93b390d 3346,3695-3696,4935
+  s_e53cf2c996845a::t_4c4e09b6f9b493 2107,2356-2357,3156
+  s_8661cd05027612::t_1216c7b3b8ca0f 4312,6110,6173,6241,8635,8694,8705
+  s_e53cf2c996845a::t_49d312cd2e731b 5755-5756,5808,5811,5817,5819,5826,5828,5831
+  s_8661cd05027612::t_55df3ed048a4a4 3563,6541
+  s_e53cf2c996845a::t_fbc1cf2e6ca738 7507
+  s_7b56d08793e52d::t_d4e82c221ee6a9 3185,8801
+  s_fcb81335a24bc2::t_a96c5f7fd73cf9 8404
+  s_e53cf2c996845a::t_b6081e959b00fd 8868,9193,9274
+  s_fcb81335a24bc2::t_8ffa92a839ec98 288,2650-2651,2817,2862
+  s_fcb81335a24bc2::t_bc92110214e35f 4822,6513,6574
+  s_fcb81335a24bc2::t_9cdbeff8181f9b 5558-5564,5566-5568
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_fcb81335a24bc2::t_36e4d4419bbafa 118,129
+  s_fcb81335a24bc2::t_fcc83b9d3a543c 36,110-111,117,128,134-135,250,252,255
+  s_fcb81335a24bc2::t_9275720571d2d3 812
+packages/workshop-frontend/index.html
+  s_fcb81335a24bc2::t_57ecd23b68884f 11
+packages/workshop-frontend/src/BlueprintModal.tsx
+  s_fcb81335a24bc2::t_51807fc62703e7 294,477,598
+packages/gatekeeper-slack/src/slack.ts
+  s_fcb81335a24bc2::t_2428de1936fec0 186,196
+  s_ebf95fa6541f85::t_33f6e93c85112c 984,1058,1131
+  s_7b56d08793e52d::t_b0c54a382deb07 286
+packages/workshop-shared/src/api.ts
+  s_fcb81335a24bc2::t_2655fd81d49f8a 386
+packages/mcp-shared/src/base-types.ts
+  s_43eda97ef47e1d::t_4b6f3ac3e18c7e 13
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_fcb81335a24bc2::t_5a7a5e85a4c76f 81,88
+packages/gatekeeper-email/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 54
+packages/workshop-frontend/src/Connections.tsx
+  s_fcb81335a24bc2::t_9275720571d2d3 139,203,222,247,358
+packages/workshop-frontend/src/components/RecentApps.tsx
+  s_fcb81335a24bc2::t_46a1d370f63a67 52,97,112,122,132
+packages/gatekeeper-zoominfo/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 5,307
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_fcb81335a24bc2::t_2428de1936fec0 159,169
+  s_7b56d08793e52d::t_e861c46f4cfadf 289,332,685
+  s_ebf95fa6541f85::t_33f6e93c85112c 694
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_fcb81335a24bc2::t_de7454e08ce147 148
+packages/gatekeeper-spotify/src/spotify.ts
+  s_7b56d08793e52d::t_e861c46f4cfadf 423,467,469
+  s_fcb81335a24bc2::t_2428de1936fec0 135,145
+packages/gatekeeper-mcp/src/configurator/server-configurator-types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 16
+packages/workshop-backend/src/sharing.ts
+  s_fcb81335a24bc2::t_8ffa92a839ec98 272
+  s_8661cd05027612::t_8123fd847ae86c 607
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_fcb81335a24bc2::t_808f032997c624 107,240,252-253,270,291,314,316,337,341,378,384,427
+  s_fcb81335a24bc2::t_401f48d4fc8cad 248,409,412-413
+packages/workshop-frontend/src/GadgetUseView.tsx
+  s_fcb81335a24bc2::t_de7454e08ce147 136
+packages/gatekeeper-google/src/configurator/bigquery-configurator-ui.tsx
+  s_fcb81335a24bc2::t_13f0bd9434a038 30
+packages/mcp-shared/src/types.d.ts
+  s_43eda97ef47e1d::t_d40c13b162f7f4 3
+packages/workshop-backend/src/server.ts
+  s_fcb81335a24bc2::t_8ffa92a839ec98 274,283
+  s_fcb81335a24bc2::t_c673a273eaa8f6 238
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_fcb81335a24bc2::t_b47d9fa6474187 135,140
+packages/mcp-shared/src/schema-to-ts.ts
+  s_ebf95fa6541f85::t_ea7abcf2e153a5 346
+packages/workshop-frontend/public/favicon.svg
+  s_fcb81335a24bc2::t_b4630c051c1d99 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ad64ddf24a40614a416d2f9fc467e382c7015ec4",
+  "prompts": {},
+  "sessions": {
+    "s_0141247acdcec6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03522acb6ffeUuVv7lUAUAivhy",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_39da1951e89896": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0359b2527ffetdlBoD3RrwqsM6",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_43eda97ef47e1d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0314f0ed2ffeOnbviz1orIOApW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_7b56d08793e52d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03522ac8bffe2Y41E6FvcE8RIm",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_8661cd05027612": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0317c4b5bffeNjQf2Jx7fVXetY",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_e53cf2c996845a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_035aec8ceffe00NB4r8wNRT9ia",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_ebf95fa6541f85": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0317c4b41ffetWtzomLf7YZ0ME",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    },
+    "s_fcb81335a24bc2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03601b558fferm7fC0nANC1UUW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    }
+  }
+}

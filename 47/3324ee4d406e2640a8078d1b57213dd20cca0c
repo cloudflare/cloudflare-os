@@ -1,0 +1,38 @@
+scripts/registry-policy.test.ts
+  s_cf15469d2f69ec::t_0716dfd2900797 1-43
+.github/workflows/preview.yml
+  s_cf15469d2f69ec::t_1878e25b442524 23-24,83-84,88-92,95-96,205-206,250
+  s_cf15469d2f69ec::t_cf12ba53a1af7c 251
+  s_cf15469d2f69ec::t_c0a61189108356 210-214,217-218,255-259,262-263
+.github/workflows/ci.yml
+  s_cf15469d2f69ec::t_dd414e36aae773 28-29,33-36,66
+  s_cf15469d2f69ec::t_13f9032775cfd1 37-39
+  s_cf15469d2f69ec::t_220898ea4ae610 67
+  s_b2b14f7ca4579b::t_3026c797128318 40-41,44-45,71-75,78-79
+.npmrc
+  s_cf15469d2f69ec::t_f1796db0e9a5a5 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "473324ee4d406e2640a8078d1b57213dd20cca0c",
+  "prompts": {},
+  "sessions": {
+    "s_b2b14f7ca4579b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "daf3181f-e227-440d-a6bb-dc4b7a6ebe82",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_cf15469d2f69ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7391dd3-f2ad-41c6-8fa0-bece3956fa6b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

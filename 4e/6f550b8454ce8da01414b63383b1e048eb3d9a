@@ -1,0 +1,21 @@
+packages/workshop-backend/src/overseer.ts
+  s_a726de9bb45000::t_d97bbc791c90a1 7765-7768,7775-7785,7792-7811
+packages/workshop-backend/__tests__/observer-serialization.test.ts
+  s_a726de9bb45000::t_4579a4e29e8332 1-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4e6f550b8454ce8da01414b63383b1e048eb3d9a",
+  "prompts": {},
+  "sessions": {
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

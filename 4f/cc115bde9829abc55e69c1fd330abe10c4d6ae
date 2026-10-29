@@ -1,0 +1,23 @@
+packages/workshop-backend/__tests__/fixtures.ts
+  s_30f26bb8696b2b::t_bc9dc896b6b0e6 71-72,76,84,109
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_30f26bb8696b2b::t_2d822d032e779d 138-170
+packages/workshop-backend/src/overseer.ts
+  s_30f26bb8696b2b::t_7f43b725ca0bac 4436-4441,4443-4446,5171-5192,5215-5218,5220,9653-9655,11493-11496
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4fcc115bde9829abc55e69c1fd330abe10c4d6ae",
+  "prompts": {},
+  "sessions": {
+    "s_30f26bb8696b2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21d32dcc-b1ee-4f1a-bf95-5a1ecfae3ff2",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

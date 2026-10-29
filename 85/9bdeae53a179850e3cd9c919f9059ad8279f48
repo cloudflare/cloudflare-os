@@ -1,0 +1,37 @@
+packages/workshop-backend/src/agent-catalog.ts
+  s_8d0860843c0baa::t_20729400834af9 20-26
+  s_8d0860843c0baa::t_e11d1da25d7ae9 35-41,43-46
+packages/workshop-shared/src/gatekeeper.ts
+  s_8d0860843c0baa::t_8a2f979c1a5424 131-134,136,138,143,742-743
+  s_8d0860843c0baa::t_e74e2f5fc7c9b1 106-109,111,118-123,125
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_8d0860843c0baa::t_2776af6f817625 9
+  s_8d0860843c0baa::t_a98fb0eed81f78 20,324
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_8d0860843c0baa::t_cce5efef07db00 3,5,271-309
+  s_8d0860843c0baa::t_8f8d64ed501441 310-311
+packages/workshop-backend/src/overseer.ts
+  s_8d0860843c0baa::t_925ae3788fe6a5 4
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_8d0860843c0baa::t_d8c120d182fbb8 106-110,113,116-120,123-128
+  s_8d0860843c0baa::t_15d887510c9bb9 3-4,15-16,24-25
+  s_8d0860843c0baa::t_efaba175a80d36 41-57,115,122
+packages/gatekeeper-context/src/agent-skill.ts
+  s_8d0860843c0baa::t_5cfbab941dcfd0 3-4,10-18,73-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "859bdeae53a179850e3cd9c919f9059ad8279f48",
+  "prompts": {},
+  "sessions": {
+    "s_8d0860843c0baa": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ffe85d935ffeYh8qWwFq0Rv3J8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

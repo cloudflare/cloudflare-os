@@ -1,0 +1,31 @@
+docs/observers.md
+  s_3c1ab8c0a1269e::t_71211894a58221 285-290,296-298,347,359,380-381,485-489
+docs/sharing.md
+  s_3c1ab8c0a1269e::t_5c5b9a8caeeb92 163
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_3c1ab8c0a1269e::t_a0f1eafbb7f1ad 16
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_3c1ab8c0a1269e::t_265593c3ce4776 19
+packages/integration-tests/src/harness.ts
+  s_3c1ab8c0a1269e::t_f7599d00cfa360 176-180
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_3c1ab8c0a1269e::t_e637e94d058dd8 8-9,263,275,282-286
+packages/workshop-backend/src/overseer.ts
+  s_3c1ab8c0a1269e::t_a3353c94534722 441-444,8060-8062,8203,8215-8217,8255-8257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dfc56f77e1707352a404ad4f0d547027bb1902af",
+  "prompts": {},
+  "sessions": {
+    "s_3c1ab8c0a1269e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ab061e0-fb7c-499d-9776-c0e0a58e311b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

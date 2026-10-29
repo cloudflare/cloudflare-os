@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/features/spaces/PublicAccessRow.tsx
+  s_1da8b1c2e6d0c9::t_11afde5d288df5 64-68,72,78,85-92,94-105,107-108,110-113,131,140-143,175
+packages/workshop-frontend/src/features/spaces/PublicAccessRow.test.tsx
+  s_1da8b1c2e6d0c9::t_11afde5d288df5 8,18,57-58,60,70,74-77,83,103-122,125,132-133,135,140,151,165,173-182,185,195-196,199-200,205-209,212,214-275,279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4b930442744e531a9e2c60d984770faf570266c0",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

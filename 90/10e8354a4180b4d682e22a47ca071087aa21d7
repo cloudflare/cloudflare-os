@@ -1,0 +1,71 @@
+package.json
+  s_fa07440e282490::t_feab7860f96b82 8
+packages/backend-utils/package.json
+  s_fa07440e282490::t_8b9e6878454561 25
+packages/configurator-ui/package.json
+  s_fa07440e282490::t_0351087f843b6f 12
+packages/error-reporting/package.json
+  s_fa07440e282490::t_ce148a1f51997f 12
+packages/gatekeeper-cloudflare/package.json
+  s_fa07440e282490::t_f978f78b01a180 9
+packages/gatekeeper-confluence/package.json
+  s_fa07440e282490::t_969af597b495c0 10
+packages/gatekeeper-context/package.json
+  s_fa07440e282490::t_4c72ac44030d0f 11-12
+packages/gatekeeper-email/package.json
+  s_fa07440e282490::t_6704d94ca0d4bd 10
+packages/gatekeeper-github/package.json
+  s_fa07440e282490::t_573fafcdbbf395 10
+packages/gatekeeper-google/package.json
+  s_fa07440e282490::t_f8121191c3313b 10
+packages/gatekeeper-homeassistant/package.json
+  s_fa07440e282490::t_e05ebeb0ddb1e7 10
+packages/gatekeeper-linear/package.json
+  s_fa07440e282490::t_b6cad98375d2d9 10
+packages/gatekeeper-mcp-portal/package.json
+  s_fa07440e282490::t_c6057f997e8458 10
+packages/gatekeeper-mcp/package.json
+  s_fa07440e282490::t_ccf51b38ed20d5 10
+packages/gatekeeper-notion/package.json
+  s_fa07440e282490::t_93e7968ea60e22 10
+packages/gatekeeper-scheduler/package.json
+  s_fa07440e282490::t_0b3e6d11fa0d81 11-12
+packages/gatekeeper-slack/package.json
+  s_fa07440e282490::t_df7972f7a2e65e 10
+packages/gatekeeper-spotify/package.json
+  s_fa07440e282490::t_87e39cabd21ac3 10
+packages/gatekeeper-supabase/package.json
+  s_fa07440e282490::t_84e597296b6537 10
+packages/gatekeeper-zoominfo/package.json
+  s_fa07440e282490::t_181d3a9e437a08 10
+packages/integration-tests/package.json
+  s_fa07440e282490::t_d52972d8f5b563 12
+packages/mcp-shared/package.json
+  s_fa07440e282490::t_c678841d664efd 34
+packages/router/package.json
+  s_fa07440e282490::t_f1c811fb955296 9
+packages/typed-storage/package.json
+  s_fa07440e282490::t_1c265bbc484d7d 14
+packages/workshop-backend/package.json
+  s_fa07440e282490::t_23753095a5ecf1 10
+packages/workshop-shared/package.json
+  s_fa07440e282490::t_a96ce9c1c6108a 36
+AGENTS.md
+  s_fa07440e282490::t_073fe16289fb0a 57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9010e8354a4180b4d682e22a47ca071087aa21d7",
+  "prompts": {},
+  "sessions": {
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

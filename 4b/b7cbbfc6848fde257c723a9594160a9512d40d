@@ -1,0 +1,33 @@
+packages/integration-tests/src/rpc-client.ts
+  s_4c4222726010fb::t_27d543eec0d703 152
+  s_4c4222726010fb::t_6c66a5b8ddb5fe 126-132
+packages/integration-tests/src/harness.ts
+  s_4c4222726010fb::t_16d550e89f4186 64-66,74
+  s_4c4222726010fb::t_85c7d7b73efdef 112-114,117,124-125
+docs/integration-testing.md
+  s_4c4222726010fb::t_aa80ddbed7664f 172-175
+.oxlintrc.json
+  s_4c4222726010fb::t_9958b7fa866401 107-134
+packages/integration-tests/README.md
+  s_4c4222726010fb::t_435259b2663b53 36-37
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_4c4222726010fb::t_f8f745302cc696 145-146,156-157
+  s_4c4222726010fb::t_8740d998563941 180-181,198-199,227-228
+  s_4c4222726010fb::t_0052dc05f8cb30 22-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4bb7cbbfc6848fde257c723a9594160a9512d40d",
+  "prompts": {},
+  "sessions": {
+    "s_4c4222726010fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5865b5c-4e69-4687-9ed8-7dba84b5c46d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+packages/workshop-backend/package.json
+  s_84afcc2582343a::t_f2c0905185916f 18-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "552e1d97eb655b6a68115414ad5be0c265edd9a7",
+  "prompts": {},
+  "sessions": {
+    "s_84afcc2582343a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "909a9227-fbe8-4c29-b020-ed6379066ed8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

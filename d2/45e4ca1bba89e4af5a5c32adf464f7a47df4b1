@@ -1,0 +1,19 @@
+packages/workshop-backend/src/overseer.ts
+  s_b21f811357f49a::t_52af1e43c3ee19 8113-8118,11870-11874
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d245e4ca1bba89e4af5a5c32adf464f7a47df4b1",
+  "prompts": {},
+  "sessions": {
+    "s_b21f811357f49a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "669436b5-28e4-459a-9c63-e82a9009fbd7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

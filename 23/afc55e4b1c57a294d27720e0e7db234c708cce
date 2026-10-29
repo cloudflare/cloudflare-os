@@ -1,0 +1,64 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_cd499ea12d2b3c::t_df7b3266eed79e 4346,4352,4361-4362,4382,4388,4392-4393
+  s_cd499ea12d2b3c::t_fd1c16fb143bc9 5847,5849-5853
+  s_cd499ea12d2b3c::t_f3f494e499b294 4351,4387
+  s_cd499ea12d2b3c::t_99030059b4ece3 1810-1817
+  s_cd499ea12d2b3c::t_d0300e22407233 68,73,1439
+  s_cd499ea12d2b3c::t_713061770ea7b3 1818,2456
+  s_cd499ea12d2b3c::t_2301be75329810 1772,1805-1809,1820,1846-1854,1859
+packages/workshop-shared/src/api.ts
+  s_cd499ea12d2b3c::t_713061770ea7b3 1099
+  s_cd499ea12d2b3c::t_8d3fa7438e28bd 27,1104-1105,1113-1114,1351-1353
+  s_cd499ea12d2b3c::t_0afa14b06cdedd 1633-1638
+packages/workshop-frontend/src/components/chat/slash-command-input.ts
+  s_cd499ea12d2b3c::t_713061770ea7b3 34,66
+  s_cd499ea12d2b3c::t_1120c1d750b9a6 33,35-65,67-71
+packages/workshop-backend/src/overseer.ts
+  s_cd499ea12d2b3c::t_267344821ac08e 3184-3190
+  s_cd499ea12d2b3c::t_925b67dd2d6342 3-4,26,115,151
+  s_cd499ea12d2b3c::t_865e18bf2d8493 5148
+  s_cd499ea12d2b3c::t_b65dfc28547b55 2542-2543,2567,2577,2582
+  s_cd499ea12d2b3c::t_8fd02a1c786da4 4244,5056
+  s_cd499ea12d2b3c::t_3a89b649875a5e 1500
+  s_cd499ea12d2b3c::t_a98aa0b9f2e70f 2665-2672
+  s_cd499ea12d2b3c::t_d0c3c3094d7b07 5259,5261-5263,5265-5273,5278,5281-5282,5286-5287,5314,5344-5345,5351-5352,5373
+  s_cd499ea12d2b3c::t_fc62e52cf0f6fb 5328-5329
+  s_cd499ea12d2b3c::t_c08a852a33f1d0 6046-6054
+  s_cd499ea12d2b3c::t_6fe8535ab250f0 1624,1635
+packages/workshop-backend/src/slash-commands.ts
+  s_cd499ea12d2b3c::t_32294c38ddd0c1 13
+  s_cd499ea12d2b3c::t_05f7d4862dd994 3,6,9,14-17,19-45,47-52
+packages/workshop-frontend/src/routes/index.tsx
+  s_cd499ea12d2b3c::t_1b082306dc3add 14,82,95-99,106
+  s_cd499ea12d2b3c::t_713061770ea7b3 90-94
+packages/workshop-shared/src/gatekeeper.ts
+  s_cd499ea12d2b3c::t_25610506595e75 739-740,744-750,752,785-788,791,793
+  s_cd499ea12d2b3c::t_713061770ea7b3 751,753-754
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_cd499ea12d2b3c::t_5d0a7fd3d5eeed 1-5,7,15-16,29,31-32,46,62-63,65-73,75,78-83,88-95,98-101,103,105-112,119-122,124-125
+  s_cd499ea12d2b3c::t_32294c38ddd0c1 6,43-45
+packages/workshop-frontend/src/components/chat/slash-command-input.test.ts
+  s_cd499ea12d2b3c::t_a449c9a3558ba8 4-5,42-46
+  s_cd499ea12d2b3c::t_713061770ea7b3 47
+  s_cd499ea12d2b3c::t_dccccf11d2edef 48-49
+packages/workshop-backend/src/agent.ts
+  s_cd499ea12d2b3c::t_957224218818ec 913-914
+  s_cd499ea12d2b3c::t_e30429e411ab0a 2,12,14-15,909-910
+  s_cd499ea12d2b3c::t_a87c87d4a53069 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "23afc55e4b1c57a294d27720e0e7db234c708cce",
+  "prompts": {},
+  "sessions": {
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

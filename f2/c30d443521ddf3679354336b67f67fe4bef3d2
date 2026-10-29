@@ -1,0 +1,19 @@
+packages/workshop-backend/src/sharing.ts
+  s_3dacb3241b0d1d::t_3aed7d648b4234 185,187,192-193,197,200-207,213,215,218,224,229-235,237-242,245-257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f2c30d443521ddf3679354336b67f67fe4bef3d2",
+  "prompts": {},
+  "sessions": {
+    "s_3dacb3241b0d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6d45d09-7703-4cdc-ad53-ddc1f9ca4ec6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

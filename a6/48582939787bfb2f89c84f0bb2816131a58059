@@ -1,0 +1,22 @@
+packages/workshop-frontend/src/retainedShareKeys.ts
+  s_28ac523488f580::t_7cd06089a580b2 69-71,186-187
+  s_28ac523488f580::t_2af056be0a57b2 101-103,108-117,120-121,183-185
+packages/workshop-frontend/src/retainedShareKeys.test.ts
+  s_28ac523488f580::t_7cd06089a580b2 80-94,302-304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a648582939787bfb2f89c84f0bb2816131a58059",
+  "prompts": {},
+  "sessions": {
+    "s_28ac523488f580": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cffe8d77-4731-4129-852a-5621b08181ee",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

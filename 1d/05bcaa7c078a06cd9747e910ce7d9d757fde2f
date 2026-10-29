@@ -1,0 +1,57 @@
+docs/observers.md
+  s_d8ceb61b85a9aa::t_196fd98e910190 33-39,41,60,72-73,94-105,138-139,171,201,231-233,237-241,243,287-292,322,338,373,380-381,417-469,472-481,489-509,527-529,576-578,583-586,595-597,625-626
+  s_e3c1456410672e::t_c3f9162bf44751 242,374,382,658-662,667,668-670
+  s_d815e00a8db64b::t_ed5197281c460c 293-294
+  s_aa37a454cabc7a::t_5feb085cd6f8e8 663-666
+plans/restricted-data-sharing.md
+  s_e3c1456410672e::t_ca44acc5ab87a9 200,210,215,221-223,234-235,236
+  s_e3c1456410672e::t_6ff187687c03bd 181-183,199,214
+  s_d8ceb61b85a9aa::t_0379abb6639e9d 1-53,62-102,104,111,116-118,123-127,132-134,138-153,156-180,184-190,193-194,196,201-207,209,211-213,237-238,242-294
+  s_aa37a454cabc7a::t_c75c3533f117ac 197-198,216-220,231-233,240
+docs/sharing.md
+  s_d8ceb61b85a9aa::t_386b994d5c4f26 36,47,102,104,114-115,154,160,162-163
+  s_e3c1456410672e::t_7aa8be12b0f72e 161,174-176,181
+  s_aa37a454cabc7a::t_cb781d2fe5fc11 177-180
+packages/workshop-backend/src/overseer.ts
+  s_aa37a454cabc7a::t_1f1aed5a5ec36c 4491-4494
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1d05bcaa7c078a06cd9747e910ce7d9d757fde2f",
+  "prompts": {},
+  "sessions": {
+    "s_aa37a454cabc7a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d01493cd-f0b1-45eb-bf9c-4a59a32ccd83",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d815e00a8db64b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "71501ca5-3722-4fe5-9c5b-0c1d232568e2",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d8ceb61b85a9aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a4c66b08-0974-4063-af54-4fb2e92c6224",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e3c1456410672e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19fc7fdd-8235-4154-b783-6863ad5cfced",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

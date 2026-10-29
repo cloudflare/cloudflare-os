@@ -1,0 +1,19 @@
+REVIEW.md
+  s_2003ed128da2d3::t_c76a2e47c7afa6 1-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "122f5045d4ee554543a552581dcd2f8e79b6c267",
+  "prompts": {},
+  "sessions": {
+    "s_2003ed128da2d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "77a8fbd3-8660-491f-99e4-fba94e5ad4ac",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

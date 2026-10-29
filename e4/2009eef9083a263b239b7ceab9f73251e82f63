@@ -1,0 +1,62 @@
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_4c4222726010fb::t_062673ad6128b1 289-294,299-302,304-305
+  s_4c4222726010fb::t_40009f69522cb4 1-288,295-298,303,306-308,310-311
+  s_4c4222726010fb::t_c6b93f5b685e10 309
+  s_4c4222726010fb::t_8f345f39b87ebf 312-313
+packages/integration-tests/README.md
+  h_766a26d8f6ed11 3-4,12-13,22-23,28-33,39,45,57-59
+  s_4c4222726010fb::t_56e1c09368ae73 1-2,5-11,14-21,24-27,34-38,40-44,46-56
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_4c4222726010fb::t_326362c9053403 111
+  s_4c4222726010fb::t_41fab91959ac1f 294-295
+  s_4c4222726010fb::t_197aec49c947dc 59,95,202,215,278
+  s_4c4222726010fb::t_e60c1bc6d649b2 25-27,79-82,85,236-238,265-268
+  s_4c4222726010fb::t_212183394e1ed6 30-31,35
+  s_4c4222726010fb::t_ab288f1246b08d 1-24,28-29,32-34,36-58,60-78,83-84,86-94,96-110,112-132,135-201,203-214,216-235,239-264,269-277,279-293
+  s_4c4222726010fb::t_858e583b1221b1 133-134
+packages/integration-tests/vitest.config.ts
+  s_4c4222726010fb::t_181d31355e7019 1-13
+packages/integration-tests/src/harness.ts
+  s_4c4222726010fb::t_1df43ecf30124c 1-139
+  s_4c4222726010fb::t_1b3ab8b380fc7d 140-142
+packages/integration-tests/package.json
+  s_4c4222726010fb::t_ed16c487f19763 26
+  s_4c4222726010fb::t_ac64c19869fdff 1-25,27-28
+  s_4c4222726010fb::t_e4a39e39b6335a 29
+packages/integration-tests/src/network-interceptor.ts
+  s_4c4222726010fb::t_eef93dd3fa2de1 1-90
+pnpm-lock.yaml
+  s_4c4222726010fb::t_cc32321b15de6d 34,87,115,236,264,289,320,342,367,392,414,436,461,483-514,584,593,1005,1011,1017,1023,1029,1035-1038,1111-1112,3199-3203,3442-3443,3883-3892,4351-4365,4383-4384,4506,4770,6563-6574,6862,6889,7326-7355
+  s_4c4222726010fb::t_6aa9ca52c19f9d 7356-7358
+packages/integration-tests/tsconfig.json
+  s_4c4222726010fb::t_d85e54ed4ea14e 1-18
+packages/integration-tests/src/rpc-client.ts
+  s_4c4222726010fb::t_555ae2937366d8 30-45
+  s_4c4222726010fb::t_1c6e3cdee70800 1-29,46-163
+  s_4c4222726010fb::t_8843ddc53eff71 164-166
+docs/integration-testing.md
+  h_766a26d8f6ed11 1-117
+packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc
+  s_4c4222726010fb::t_f8730f2674d830 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e42009eef9083a263b239b7ceab9f73251e82f63",
+  "prompts": {},
+  "humans": {
+    "h_766a26d8f6ed11": {
+      "author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  },
+  "sessions": {
+    "s_4c4222726010fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5865b5c-4e69-4687-9ed8-7dba84b5c46d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

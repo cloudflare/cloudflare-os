@@ -1,0 +1,132 @@
+packages/workshop-frontend/src/slash-commands.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-52
+pnpm-lock.yaml
+  s_f74e55bad93be8::t_8531f1dc6e8247 559-560
+  s_f74e55bad93be8::t_6d819681a490b8 81,103-108,148,160,187,190,193,196,340,415,421,473,479,500,530,543,552,558,561,3657-3661,4054,4061,4877,4882,4922,4935,5026,5034,5055,5061,5063,5069,6706,6712,6727,6730,6734,6739,6744,6758,6760,6764,6782-6783,6802,6805,6822,6903-6904
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_1dc6f9f988d226 1645-1652,1656-1676
+  s_f74e55bad93be8::t_1d8258ed0b3ad9 1094-1097,1102-1103,1105-1106,1113-1114,1116-1117
+  s_f74e55bad93be8::t_8a984fe55b906f 1653-1655
+  s_f74e55bad93be8::t_402eb715fab803 1677-1679
+  s_f74e55bad93be8::t_9fd665b9e92700 1328-1342,1363-1365,1570-1571
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_8a984fe55b906f 711-712
+  s_f74e55bad93be8::t_3efee3f7fff56b 780-782,789
+  s_f74e55bad93be8::t_b89c375b25cd3f 790-791
+  s_f74e55bad93be8::t_f4d72d7c782d58 20
+  s_f74e55bad93be8::t_0dde982038ea22 228-230,713,777-779,783-788
+  s_f74e55bad93be8::t_9fd665b9e92700 81-82,109-129,131-133,135-136,138-139,142-144,147-164,961-962
+  s_f74e55bad93be8::t_cc75443ae714e5 960
+packages/workshop-backend/src/slash-commands.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-8,1-6,7-8,10,13-51,53-69,71-78,80-86,88-98,100-129,131-152,155-170,172-181,185,188,190-191,193-200,202-204,207-208,211-215,217-222,224-229,233-235,238-290,292,295-301,304-307,309-363
+  s_f74e55bad93be8::t_809931ece27d5f 99
+  s_f74e55bad93be8::t_58cef1f8afce4c 130,171,232,236-237,291,293-294,302-303,308
+  s_f74e55bad93be8::t_27becef38acb7d 9
+packages/workshop-shared/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 16-19
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_90fc64c68be309 5346
+  s_f74e55bad93be8::t_27becef38acb7d 29
+  s_f74e55bad93be8::t_f5d864c1baf77a 3869-3870
+  s_f74e55bad93be8::t_5dc35722351f29 3871
+  s_f74e55bad93be8::t_684976258b3358 5-8,26-28,26,27-28,661-666,896-912,1484-1516,1528-1538,1540,1546,2438,2479-2482,2591-2593,2617,2627,2632,2638,2641,2644,2716-2719,3256-3259,3796,3798,3800,4359,4361,4996,5014-5019,5131-5134,5334-5335,5338-5340,5341,5343,5349,5351-5352,5354-5355,5359,5416-5417,5420-5421,5423,5426,6112,6118-6119,6121-6122,6213,6278-6289
+  s_f74e55bad93be8::t_7cd296bd524b9f 2476,2478
+  s_f74e55bad93be8::t_12fbd84974624f 2474-2475,2477
+  s_f74e55bad93be8::t_cc75443ae714e5 3
+  s_f74e55bad93be8::t_9fd665b9e92700 4,30-32,424-428,437,522-527,1605-1622,1662,2647-2648,2691,3119-3145,3149,3188,3272-3275,4027,4038-4040,5336-5337,5342,5344-5345,5350,5358,5360,5387,5422,5424,5445
+  s_f74e55bad93be8::t_c5af4ca7feba8c 5347-5348
+packages/workshop-backend/__tests__/timeout.test.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,3-41
+  s_f74e55bad93be8::t_27becef38acb7d 2
+packages/workshop-backend/src/utils.ts
+  s_f74e55bad93be8::t_27becef38acb7d 1-25
+packages/workshop-frontend/src/routes/index.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 14,86,94-96,103-104
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_f74e55bad93be8::t_21fb4344ef42bf 148,150,201,209,249-254,275
+  s_f74e55bad93be8::t_8bcdc8f5788d63 226,331
+  s_f74e55bad93be8::t_d4c3076066e537 299
+  s_f74e55bad93be8::t_2ff840616b5398 12,18,24,39,52,69-71
+  s_f74e55bad93be8::t_80b484905e7a68 91,106-107,138,166
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-11,1-4,5-11,13-17,19-23,25-38,40-51,53-68,72-90,92-105,108-137,108-116,117-129,130-137,139-147,149,151-165,151-152,153-165,167-200,202-208,210-225,227-248,255-274,276-298,276-279,280-298,300-330,332-379,332-373,374-379
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_f74e55bad93be8::t_d176085eec1f7a 213-217
+  s_f74e55bad93be8::t_021a1262ae4025 257-259,262-264
+  s_f74e55bad93be8::t_4a9a8df967f60f 5-212,218-256,265,286
+  s_f74e55bad93be8::t_8555d0017276c3 266-268,283-285
+  s_f74e55bad93be8::t_ed8ad4acd2e30a 2-4
+  s_f74e55bad93be8::t_4457eda5e73885 287
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,260-261,269-282
+packages/workshop-shared/src/slash-commands.ts
+  s_f74e55bad93be8::t_0dde982038ea22 1-29,1-14,15-30
+  s_f74e55bad93be8::t_f944c257d7cfef 30
+packages/workshop-frontend/src/slash-commands.test.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-14,16-20,22-45,51-75,77-81
+  s_f74e55bad93be8::t_077e8aea6596f3 15,21,46-50,76
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 941
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f74e55bad93be8::t_058f7a2215feca 67-68,73,90,1449,1491-1492,1514,1527,1739-1754,1756,1764,1774,1777-1778,1780-1797,1799-1852,1858,1862,2343,2408,2428-2430,2443-2446,2448,2450-2453,2455-2467,2494-2498,2535-2560,3375,4343,4346,4354-4356,4366,4382,4385,4388-4390,5561,6341,6459
+  s_f74e55bad93be8::t_d176085eec1f7a 1779,1798
+  s_f74e55bad93be8::t_c344e24cd398a0 5855
+  s_f74e55bad93be8::t_079a507f6dcd78 2454
+  s_f74e55bad93be8::t_093405ba75c6e3 5862
+  s_f74e55bad93be8::t_26f5bf93432a1c 2447
+  s_f74e55bad93be8::t_9fd665b9e92700 466-471,2431-2442,2449,5845-5854,5856-5861
+packages/workshop-frontend/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 9,39-40
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_f74e55bad93be8::t_0ec2514b6d6ce9 45
+  s_f74e55bad93be8::t_cdc1cb8b516eba 16,331
+  s_f74e55bad93be8::t_9fd665b9e92700 5,8,18,22-26,42-44,46,48-50,52-55,58-61,63-68,229-249,257,265-270,282-288,290-292,294-299,302-305,307-309,310-311,319-328,333-334
+  s_f74e55bad93be8::t_2826550356be57 9-11,47,51,56-57,62,289,293,300-301,306
+packages/workshop-backend/__tests__/agent-skills.test.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1-291
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 3-4,39-52,61-70,112-113,115,122-125,127,129-130,135,137-141,143,146-147,151-154,156,158-159,163,166,169-173,175-196
+packages/gatekeeper-context/package.json
+  s_f74e55bad93be8::t_b087d0971c8724 21
+  s_f74e55bad93be8::t_9fd665b9e92700 22-23
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1-208
+packages/workshop-backend/src/agent.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1,11-16,31,95-98,827-832,871,901-902,965-968,1080,1326,1719,1726-1743,1745-1746,1748,1826-1834,1855-1865,1867-1871,1873,1875-1877
+packages/gatekeeper-context/src/agent-skill.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1-140
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_f74e55bad93be8::t_4334600056f95d 3227-3228
+  s_f74e55bad93be8::t_9fd665b9e92700 43,52,2948-2949,2989-2991,3030-3037,3185-3190,3224-3226
+packages/workshop-backend/src/agent-skills.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1-281
+packages/gatekeeper-context/src/context-types.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 131-158,175-179,189,290
+packages/gatekeeper-context/src/library-read.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 7,9,11-12,17,21,40,46,48,150-153,156-159,161-171,174-175,177-191,195-200
+  s_f74e55bad93be8::t_cdc1cb8b516eba 8,69
+  s_f74e55bad93be8::t_20aaa8ad9e5f24 176
+packages/gatekeeper-context/src/context-collection.ts
+  s_f74e55bad93be8::t_185908d1626c46 334
+  s_f74e55bad93be8::t_4e7396e10dce77 8-9,11
+  s_f74e55bad93be8::t_9fd665b9e92700 16-19,65-69,76,90-95,112,181,192-271,313,322,337-350,355,357-358,374,377-378,381-382,399,441-449,452-453
+  s_f74e55bad93be8::t_35188b5df8656a 538-540,542-552,554,571-574
+packages/workshop-backend/src/agent-catalog.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 3,16-29,31,33-41,43-44,46-47,57,60-64,66,69-73,80,104-106
+packages/gatekeeper-context/src/document-id.ts
+  s_f74e55bad93be8::t_9fd665b9e92700 1-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "60531a3aded985986b19b853965a22434be14ab8",
+  "prompts": {},
+  "sessions": {
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": null
+    }
+  }
+}

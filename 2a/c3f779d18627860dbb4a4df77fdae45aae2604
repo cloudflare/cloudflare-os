@@ -1,0 +1,19 @@
+packages/workshop-backend/vitest.integration.config.ts
+  s_4fb1a5c681f438::t_15798dce264bf2 26-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2ac3f779d18627860dbb4a4df77fdae45aae2604",
+  "prompts": {},
+  "sessions": {
+    "s_4fb1a5c681f438": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a477845-3b92-45ae-8ed9-16ec37af7ca6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

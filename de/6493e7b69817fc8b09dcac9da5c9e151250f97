@@ -1,0 +1,23 @@
+docs/observers.md
+  s_cf9cda7e93fb6f::t_7cc09b4c7ab5e9 243-249
+packages/workshop-backend/__tests__/external-message-staleness.test.ts
+  s_cf9cda7e93fb6f::t_3270b36aea28a1 6-11,191-195,200-204,216-218,220-223
+packages/workshop-backend/src/overseer.ts
+  s_cf9cda7e93fb6f::t_43fe24895373e6 769-777,5560-5568
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "de6493e7b69817fc8b09dcac9da5c9e151250f97",
+  "prompts": {},
+  "sessions": {
+    "s_cf9cda7e93fb6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbd45cc1-bb9f-4ad8-bd45-3d8db79f288c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

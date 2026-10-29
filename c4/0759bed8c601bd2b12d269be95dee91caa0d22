@@ -1,0 +1,64 @@
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_cd499ea12d2b3c::t_dd206198800cf0 171
+  s_cd499ea12d2b3c::t_e92921c70293f1 120
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_cd499ea12d2b3c::t_d53219d8fd9723 5828-5831
+  s_cd499ea12d2b3c::t_e3624b65703bdf 2432
+  s_cd499ea12d2b3c::t_75276edfd6dfb2 4340,4374
+  s_cd499ea12d2b3c::t_9769cd7f69954c 5832
+packages/workshop-backend/src/overseer.ts
+  s_cd499ea12d2b3c::t_84607f66eabdc7 1635-1636,1644-1650,5165-5166,5187
+  s_cd499ea12d2b3c::t_c361e12d120358 3779-3782
+  s_cd499ea12d2b3c::t_f2679d5b548223 4,114-118,5281,5291,5299,5301,5327,5363,5365,5385
+  s_cd499ea12d2b3c::t_8624ce7fd8de8f 5277,5280,5285-5286,5296
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_cd499ea12d2b3c::t_d5f02b46e441e1 2,11-12,38-41,172-173,184-185,187
+  s_cd499ea12d2b3c::t_28cd86c47c7990 174
+packages/workshop-shared/src/api.ts
+  s_cd499ea12d2b3c::t_7723a4185b1295 1656-1657
+  s_cd499ea12d2b3c::t_66e86772092e80 1351,1651
+  s_cd499ea12d2b3c::t_9cf70d8e6ac962 1105
+  s_cd499ea12d2b3c::t_84607f66eabdc7 1353-1354
+  s_cd499ea12d2b3c::t_96acea542912f3 27,1352,1355
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_cd499ea12d2b3c::t_e3624b65703bdf 259
+packages/workshop-shared/src/gatekeeper.ts
+  s_cd499ea12d2b3c::t_9cf70d8e6ac962 779,783-784,788
+  s_cd499ea12d2b3c::t_7723a4185b1295 769-771,780-782
+  s_cd499ea12d2b3c::t_66e86772092e80 739-750,764
+packages/workshop-backend/src/slash-commands.ts
+  s_cd499ea12d2b3c::t_cefaac8068ae52 3,77,79
+packages/workshop-backend/__tests__/agent-context.test.ts
+  s_cd499ea12d2b3c::t_7c1c8ca3bc5b5f 2
+  s_cd499ea12d2b3c::t_225f250556a997 1,3-7,10
+  s_cd499ea12d2b3c::t_dc2b91555d2f32 8-9
+packages/workshop-frontend/src/routes/index.tsx
+  s_cd499ea12d2b3c::t_fc8d875b8e3930 94
+packages/workshop-backend/src/agent.ts
+  s_993634b014452f::t_ef4f4bdbbc67f2 913-914
+  s_cd499ea12d2b3c::t_f2679d5b548223 2,12-19,911-912
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c40759bed8c601bd2b12d269be95dee91caa0d22",
+  "prompts": {},
+  "sessions": {
+    "s_993634b014452f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0969032eeffeVD5vUYO1mfYENE",
+        "model": "grok-4.5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+packages/workshop-backend/__tests__/fixtures.ts
+  s_26649233ed25d8::t_18df8464c42488 89-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "238482f1cee5c83236cb0572aac2884b99e43148",
+  "prompts": {},
+  "sessions": {
+    "s_26649233ed25d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b8d8c57-29ba-4330-89d8-daafcc112219",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

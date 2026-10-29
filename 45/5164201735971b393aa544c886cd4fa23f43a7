@@ -1,0 +1,34 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_664125cd80dfd6::t_43b9a5cb1b167a 306-307
+  s_664125cd80dfd6::t_3edf9a19a4fd03 919-920
+  s_664125cd80dfd6::t_d2c03dd3e750df 1,21,282-305,308-317,1064-1067
+packages/workshop-backend/src/deployment-updates.ts
+  s_664125cd80dfd6::t_0a1c0b13270e8f 1-51,55-56,58-60,75,80-81,85-122
+  s_664125cd80dfd6::t_43b9a5cb1b167a 82-84
+  s_664125cd80dfd6::t_2e86c303f1f0c4 52-54,57,61-74,76-79
+packages/workshop-backend/src/env.d.ts
+  s_664125cd80dfd6::t_f1e724e7e1ffae 80-88
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_664125cd80dfd6::t_251c96c2c988a5 194,200
+  s_664125cd80dfd6::t_1a1b3d15eab5b3 1-193,195-199,201-364,370-450
+  s_664125cd80dfd6::t_2918197f7b6d70 365-369
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_664125cd80dfd6::t_f75c10b7250353 187-190
+  s_664125cd80dfd6::t_5e32fac5d30d22 152-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "455164201735971b393aa544c886cd4fa23f43a7",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

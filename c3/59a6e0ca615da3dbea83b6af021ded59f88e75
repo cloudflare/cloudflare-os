@@ -1,0 +1,90 @@
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_8ee96d0444445d 10,59-62,81,84,86-90,94-99,104-108,278,296-341
+  s_e25e29d8ebebad::t_917de0877d3dc3 359-360
+  s_e25e29d8ebebad::t_ac1a11bb8865a8 2,6,24-40,125-127,205-226,265-277,279-295,404
+  s_e25e29d8ebebad::t_d85055b439a98d 111
+  s_e25e29d8ebebad::t_8528c55b3a1136 11-15,113-117,344-358
+  s_e25e29d8ebebad::t_b99625e0100519 57-58,80,110,112,342-343,361-403
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_035e27d6cbdf38 2670
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 531-536,745,2665,2669,2671,2674,2676-2680,2682,2684,2690,7854,7971
+  s_e25e29d8ebebad::t_0848483a006e1d 38,2666,2668,2672-2673,2675,2681,2683,7855
+packages/workshop-shared/src/gatekeeper.ts
+  s_e25e29d8ebebad::t_27fa7939b06fa2 53
+  s_e25e29d8ebebad::t_49b424dba5fc43 26-38,50-51,70-71
+  s_e25e29d8ebebad::t_b238b44d8d73ce 21-25,39-49,72-73,867-871
+  s_e25e29d8ebebad::t_0848483a006e1d 52,54-69
+packages/workshop-backend/src/auto-approval.ts
+  s_e25e29d8ebebad::t_3702773cfbf424 31-33,39-40
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 110
+  s_e25e29d8ebebad::t_fc16249da5d3d0 34-38
+  s_e25e29d8ebebad::t_aeb4447c48115c 41
+  s_e25e29d8ebebad::t_0848483a006e1d 8-11,29,42-56,77,85-86,90,111,120
+  s_e25e29d8ebebad::t_dadf8372f049e1 119,129
+  s_e25e29d8ebebad::t_9de1b6cec6bae7 30
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_e25e29d8ebebad::t_fa3885e8e99e24 353
+  s_e25e29d8ebebad::t_f582cddeb47c29 175-177
+  s_e25e29d8ebebad::t_571df8024921f8 249-254
+  s_e25e29d8ebebad::t_5d226ede3cda08 246-248
+  s_e25e29d8ebebad::t_030fa9c2624c26 256
+  s_e25e29d8ebebad::t_8528c55b3a1136 8,12-15,354-381
+  s_e25e29d8ebebad::t_ae0bedb87d16f2 79,92,102
+  s_e25e29d8ebebad::t_0c4fb8b9778aee 382
+  s_e25e29d8ebebad::t_f6ce14c13812a2 170,178-182,184-185,187,195-196,199-200
+  s_e25e29d8ebebad::t_3702773cfbf424 3-7,9,313-325
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 171-174,186,188-194,197-198,201-216,218-245,255,326
+  s_e25e29d8ebebad::t_fc16249da5d3d0 327-352
+  s_e25e29d8ebebad::t_971d8e464d89dd 183,217
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_e63ff8ab05589b 38-40,58,82,96,112,121,123,139-140,148-149,154-157,161-162,168,190,213,231,244,258,279,301,323,345,351,357,369,379,386,402,422,431
+  s_e25e29d8ebebad::t_7fe7cedcc9297c 4-12,22,43-57,59-81,83-95,97-109
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_2d263981569064 238,244,249,341-343,353,358-361
+  s_e25e29d8ebebad::t_49b424dba5fc43 332-335
+  s_e25e29d8ebebad::t_0848483a006e1d 5-11,336-338
+  s_e25e29d8ebebad::t_df87996048640e 264,271,345,378
+  s_e25e29d8ebebad::t_481dc9b8a258f3 14-18,25,34-38,47,78-82,234-237,239-243,245-248,250-263,265-270,272-280,310-315,330-331,339-340,344,346-352,354-357,362-363
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_4ae8e59c4373b5 137,140
+  s_e25e29d8ebebad::t_f3a17a99ab419e 138,141-142
+  s_e25e29d8ebebad::t_346f4e120ba3e1 139
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_df87996048640e 91,160,171
+packages/mcp-shared/__tests__/tools.test.ts
+  s_e25e29d8ebebad::t_932164cdced6b6 7,73-84
+  s_e25e29d8ebebad::t_f147ab7048eb96 85-87
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_e63ff8ab05589b 145,174
+  s_e25e29d8ebebad::t_0c251dc9f3d5dc 4-7,25-27,41-43,58-71,84-86,92-105,110,113-117,129-130,137,142-144,146,171-173,176,193-196,205,211,213-218,220-231
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_9aee6fcc4b86e2 186-203
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_df87996048640e 94,96,225-226
+  s_e25e29d8ebebad::t_3be9078c40b34d 13,50-55,67,87-93,103-107,211-213,227-231,237
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_a56f9da344ce80 105,107,129,131,151,153
+  s_e25e29d8ebebad::t_07364e7b4ab08b 7-12,50,104,118-128,130,132-150,152,154-160,188
+packages/workshop-shared/src/api.ts
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 1473,1510-1511
+  s_e25e29d8ebebad::t_2806e8bbb8efb8 1512
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_9aee6fcc4b86e2 569-570,591
+  s_e25e29d8ebebad::t_2d263981569064 419,436,469,475,572-575,592,595,611,628
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c359a6e0ca615da3dbea83b6af021ded59f88e75",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

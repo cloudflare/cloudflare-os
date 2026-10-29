@@ -1,0 +1,19 @@
+docs/sharing.md
+  s_a18738247b8cd3::t_41dbc81877509f 36,162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "19178d0ebf58c5f5b3dc5440e3291c0cc462fe35",
+  "prompts": {},
+  "sessions": {
+    "s_a18738247b8cd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48ea2cb4-1210-4a7a-9ed1-990c8221106f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

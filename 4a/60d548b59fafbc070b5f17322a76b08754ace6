@@ -1,0 +1,28 @@
+packages/integration-tests/fixtures/gatekeeper-test/src/env.d.ts
+  s_4c4222726010fb::t_30744109b76154 1-23
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_4c4222726010fb::t_a29bb58d9d758c 70-73
+  s_4c4222726010fb::t_704c031e0afd9a 223
+  s_4c4222726010fb::t_fda3baa2445d26 236
+  s_4c4222726010fb::t_41d244987328a7 146
+  s_4c4222726010fb::t_a78708481cc942 273
+  s_4c4222726010fb::t_84c1dbb6cd1687 99
+  s_4c4222726010fb::t_347f3128552c64 23,25-27
+  s_4c4222726010fb::t_08759670c50092 155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4a60d548b59fafbc070b5f17322a76b08754ace6",
+  "prompts": {},
+  "sessions": {
+    "s_4c4222726010fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5865b5c-4e69-4687-9ed8-7dba84b5c46d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

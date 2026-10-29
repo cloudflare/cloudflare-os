@@ -1,0 +1,27 @@
+docs/observers.md
+  s_a726de9bb45000::t_d85ee8325d89cd 413-422,519-521
+docs/sharing.md
+  s_a726de9bb45000::t_c6edbcbe146c66 162
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_a726de9bb45000::t_00c52accaa2b15 67-70,72-73,76,297-332
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_a726de9bb45000::t_8aa7b19d5da195 63-71,74,76-78,329-330,394-396,398,404-406,411
+packages/workshop-backend/src/overseer.ts
+  s_a726de9bb45000::t_00d0b09a65f0aa 8017-8019,8110-8124,8178-8183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1773f44ff067acc314b8c9d300ca9c46a4e313a2",
+  "prompts": {},
+  "sessions": {
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

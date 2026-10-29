@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_c112dea2bc0662::t_8842a4e32f681f 1239-1240,1244-1245,1257-1262
+packages/workshop-backend/src/ai-models.ts
+  s_c112dea2bc0662::t_5db44ef13c1c2a 188-193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ce8aeb73e087cf63cc802d1d99ab02ea6a0004a6",
+  "prompts": {},
+  "sessions": {
+    "s_c112dea2bc0662": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b85182d-63dc-42c2-af5a-e365a1753a49",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

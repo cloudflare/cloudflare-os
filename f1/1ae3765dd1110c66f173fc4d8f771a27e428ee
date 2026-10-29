@@ -1,0 +1,25 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_b235d7e85db519::t_2319b837542665 341
+AGENTS.md
+  s_b235d7e85db519::t_53d3593e5f1d14 33-38
+plans/gitlab-gatekeeper.md
+  s_b235d7e85db519::t_36176e02552ec6 865,867-899
+scripts/run-dev-server.ts
+  s_b235d7e85db519::t_ce25355686f221 470
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f11ae3765dd1110c66f173fc4d8f771a27e428ee",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

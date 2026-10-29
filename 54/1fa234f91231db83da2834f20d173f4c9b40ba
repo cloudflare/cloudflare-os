@@ -1,0 +1,65 @@
+packages/gatekeeper-gitlab/__tests__/env.d.ts
+  s_b235d7e85db519::t_b5bff2a694f107 1-18
+packages/gatekeeper-gitlab/__tests__/gitlab-discussions.test.ts
+  s_b235d7e85db519::t_11241903ded30e 1-9,11-59,61-115,147-199
+packages/gatekeeper-gitlab/__tests__/workerd/account.test.ts
+  s_b235d7e85db519::t_6404a34fdcb642 1,3-115,117,145-171
+packages/gatekeeper-gitlab/__tests__/workerd/fake-gitlab.ts
+  s_b235d7e85db519::t_aa43500d1d42dc 1-89
+packages/gatekeeper-gitlab/__tests__/workerd/reads.test.ts
+  s_b235d7e85db519::t_988c4829c83e1c 1-247
+packages/gatekeeper-gitlab/__tests__/workerd/worker.ts
+  s_b235d7e85db519::t_26e96c151383aa 1-56,58-215,220-233
+packages/gatekeeper-gitlab/package.json
+  s_b235d7e85db519::t_a524dd20f0cc55 10
+packages/gatekeeper-gitlab/src/configurator/gitlab-issue-configurator-types.d.ts
+  s_b235d7e85db519::t_e4ac069f65ed40 1-17
+packages/gatekeeper-gitlab/src/configurator/gitlab-issue-configurator-ui.tsx
+  s_6aef510ba173d7::t_38b6e6cf53919d 1-60
+packages/gatekeeper-gitlab/src/configurator/gitlab-merge-request-configurator-types.d.ts
+  s_b235d7e85db519::t_541703c0d503d8 1-17
+packages/gatekeeper-gitlab/src/configurator/gitlab-project-configurator-types.d.ts
+  s_b235d7e85db519::t_61e610ca389fc9 1-16
+packages/gatekeeper-gitlab/src/gitlab-configurators.ts
+  s_b235d7e85db519::t_5b90717e79eabf 1-189
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_b235d7e85db519::t_7d449f05cb6855 1-1376,1379-1386
+packages/gatekeeper-gitlab/src/gitlab-sessions.ts
+  s_b235d7e85db519::t_e648e6665709f2 1-384
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_b235d7e85db519::t_de2c45f41253e0 1-432,433,434-436,438-512,519-691,699,703-781
+packages/gatekeeper-gitlab/storage-schema.md
+  s_b235d7e85db519::t_0dca0476ede826 24-37
+packages/gatekeeper-gitlab/tsconfig.json
+  s_b235d7e85db519::t_1bc542400a4109 10
+packages/gatekeeper-gitlab/vite.config.ts
+  s_b235d7e85db519::t_0d0e11cb2d65d4 5-8,12
+packages/gatekeeper-gitlab/vitest.worker.config.ts
+  s_b235d7e85db519::t_74e49fb199c628 1-43
+packages/gatekeeper-gitlab/worker-configuration.d.ts
+  s_b235d7e85db519::t_66165b543eb0f9 1-15370
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "541fa234f91231db83da2834f20d173f4c9b40ba",
+  "prompts": {},
+  "sessions": {
+    "s_6aef510ba173d7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f5fb44317ffeJlssBTLROlQN5e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

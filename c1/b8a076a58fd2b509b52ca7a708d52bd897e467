@@ -1,0 +1,34 @@
+packages/integration-tests/src/network-interceptor.ts
+  s_23124d99541bb8::t_763fb13af77c81 23
+  s_23124d99541bb8::t_8494592f6ad1e9 21-22
+packages/integration-tests/package.json
+  s_23124d99541bb8::t_0a665649e18efe 7
+packages/integration-tests/__tests__/agent-session.test.ts
+  s_23124d99541bb8::t_1895b1391fd930 9-148
+  s_23124d99541bb8::t_71701982e6a193 6-8
+packages/integration-tests/src/agent-session.ts
+  s_23124d99541bb8::t_d5c10ddbbd8c9f 1-374,385,389,391
+  s_23124d99541bb8::t_47e81915d0e0dc 375-377,382-384
+  s_23124d99541bb8::t_6bd023dcf5ce66 386-388
+  s_23124d99541bb8::t_1f1c73a7aa5288 390
+packages/integration-tests/src/rpc-client.ts
+  s_23124d99541bb8::t_741a188200e741 14-15
+packages/integration-tests/src/harness.ts
+  s_23124d99541bb8::t_df81d3759f6fbd 84,100-101,125,143-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c1b8a076a58fd2b509b52ca7a708d52bd897e467",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

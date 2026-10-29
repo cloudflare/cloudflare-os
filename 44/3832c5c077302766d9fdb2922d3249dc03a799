@@ -1,0 +1,208 @@
+pnpm-lock.yaml
+  s_f74e55bad93be8::t_8531f1dc6e8247 562-563
+  s_f74e55bad93be8::t_2e8b45abc8eca4 553-555,723-725,963-990,2406-2409,2417-2420,2436-2438,2509-2512,2693-2696,2703-2706,2711-2714,2752-2754,2790-2798,2913-2915,3137-3139,3183-3185,3234-3237,3300-3302,3306-3312,3409-3411,3457-3463,3472-3479,3693-3696,3701-3704,3708-3720,3776-3782,4003-4010,4335-4354,5297,5480-5484,5490-5494,5503-5504,5579-5580,5825-5828,5833-5839,5846-5849,5876-5877,5912-5938,6024-6025,6461-6462,6529-6532,6563-6564,6687-6688,6691-6696,6820-6821,6854-6859,6870-6877,7048,7088,7094-7097,7101-7102,7105-7115,7169-7172
+  s_f74e55bad93be8::t_be92904804f803 81,103-108,148,160,187,190,193,196,340,415,421,473,479,500,530,543,552,561,564,3799-3803,4204,4211,5047,5052,5092,5105,5196,5204,5225,5231,5233,5239,6966,6972,6987,6990,6994,6999,7004,7018,7020,7024,7042-7043,7063,7066,7083,7186-7187
+packages/workshop-frontend/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 9,40-41
+  s_f74e55bad93be8::t_bb1fbce11e21a5 38
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_f74e55bad93be8::t_30eb7a0ac1b904 1,3,5-8,10,12,15-26,28,30-67,76-100,102-119,121-125,135-140,143-149,172
+  s_f74e55bad93be8::t_a14467632c6ab6 2,4
+  s_f74e55bad93be8::t_d77da4a2dd8aa0 13
+  s_f74e55bad93be8::t_0c39edd0749f82 141
+  s_f74e55bad93be8::t_3cc8808cc9e4fe 11,14,75
+  s_cd499ea12d2b3c::t_8e111887920078 171
+packages/workshop-frontend/src/components/chat/slash-command-input.test.ts
+  s_f74e55bad93be8::t_319004d5782cb8 4,54-55
+  s_f74e55bad93be8::t_0254e49d75bdd8 1-3,6-31,38-50,64-65,68,71,73-74
+  s_f74e55bad93be8::t_a10eace8811085 5
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_8a984fe55b906f 1636,1638
+  s_f74e55bad93be8::t_1d8258ed0b3ad9 1096,1101,1103,1111,1113-1114
+  s_f74e55bad93be8::t_1dc6f9f988d226 1630-1634,1641,1644,1647,1648,1652-1653,1655
+  s_f74e55bad93be8::t_402eb715fab803 1658-1660
+  s_cd499ea12d2b3c::t_8e111887920078 27,1104,1350-1351,1354,1651,1656-1657
+  s_cd499ea12d2b3c::t_84607f66eabdc7 1352-1353
+  s_cd499ea12d2b3c::t_8944a3d5d122f6 1094
+  s_cd499ea12d2b3c::t_f10c804de670e0 1554
+packages/workshop-backend/src/slash-commands.ts
+  s_f74e55bad93be8::t_97956f561204c7 20,22,84,91-92
+  s_f74e55bad93be8::t_ba3852d68ffe26 2,4,9-16,17-19,21,23,25,26,28-30,65,71-72,80-83,85-87,100-101
+  s_f74e55bad93be8::t_a24ba74943dac6 74,93-95,97-99
+  s_cd499ea12d2b3c::t_8e111887920078 3,77,79
+packages/workshop-frontend/src/components/chat/slash-command-input.ts
+  s_f74e55bad93be8::t_6b76405debb72a 2-3,5,7,9,11-13,16-18,20-21,22,23-32,34-35,37-38,40,42,45-47,49
+packages/workshop-frontend/src/routes/index.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 14,86,95-96,103-104
+  s_cd499ea12d2b3c::t_8e111887920078 94
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_f74e55bad93be8::t_d176085eec1f7a 239-243
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,286-287,295-303,305-307
+  s_f74e55bad93be8::t_021a1262ae4025 283-285,288-290
+  s_f74e55bad93be8::t_4a9a8df967f60f 9-10,12,14-63,64-67,69-70,75-80,83-84,114-117,118-121,126,131-134,135-140,142,157-159,161-162,164,166,168-220,224-238,244-247,249-258,260-270,272,274,276-282,291,312
+  s_f74e55bad93be8::t_0254e49d75bdd8 13
+  s_f74e55bad93be8::t_ed8ad4acd2e30a 2-4
+  s_f74e55bad93be8::t_4457eda5e73885 313
+  s_f74e55bad93be8::t_8555d0017276c3 292-294,311
+  s_f74e55bad93be8::t_715bff47939c74 11,74,93-113,129-130,141,143-145,147-156,160
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_b89c375b25cd3f 793-794
+  s_f74e55bad93be8::t_0dde982038ea22 194-196,679,780,789-790,791
+  s_f74e55bad93be8::t_8a984fe55b906f 678
+  s_f74e55bad93be8::t_3efee3f7fff56b 776,779
+  s_f74e55bad93be8::t_314610d6049a00 126
+  s_cd499ea12d2b3c::t_26ef9c823f1b82 21-24,105-108,110,112,117,124,129
+  s_cd499ea12d2b3c::t_03622d0c71a0b9 77-79
+  s_cd499ea12d2b3c::t_33b1a60075ef5f 113-115
+  s_cd499ea12d2b3c::t_f162a030aca079 120-123,125-126,130
+  s_cd499ea12d2b3c::t_8e111887920078 744-754,768,773-775,783-788,792
+  s_cd499ea12d2b3c::t_e71e3fbc48030b 743
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_ecfd438e85da12 5283-5284,5301,5366
+  s_f74e55bad93be8::t_1848c19ef6f6f1 5368
+  s_f74e55bad93be8::t_58cf4bde491649 5285
+  s_f74e55bad93be8::t_51780af99a8e8a 892,2684,5075
+  s_f74e55bad93be8::t_684976258b3358 5-8,651,653,883-884,890,1466-1472,1474-1475,1477-1492,1494-1495,1507-1516,1518,2404,2445-2448,2557-2559,2583,2593,2598,2604,2607,2610,2685-2686,3196-3199,3733,3735,3737,4297,4299,4934,4952-4957,5076-5077,5279-5280,5291,5293-5294,5296,5359-5360,5363-5364,5369,6061-6062,6064-6065,6222-6233
+  s_f74e55bad93be8::t_a4126aa814c2b6 652,1465,1473,1476,1493
+  s_f74e55bad93be8::t_d14a53144c7516 2438-2439
+  s_f74e55bad93be8::t_5cbe77b32bc663 2455
+  s_f74e55bad93be8::t_7cd296bd524b9f 2442,2444
+  s_f74e55bad93be8::t_8653a7275182ac 5288-5290
+  s_f74e55bad93be8::t_27becef38acb7d 27
+  s_f74e55bad93be8::t_12fbd84974624f 2440-2441,2443
+  s_cd499ea12d2b3c::t_26ef9c823f1b82 2642-2659
+  s_cd499ea12d2b3c::t_c361e12d120358 3780-3783
+  s_cd499ea12d2b3c::t_96230522b2a4fd 1635
+  s_cd499ea12d2b3c::t_8e111887920078 4,114-118,5278,5281-5282,5286-5287,5292,5297,5300,5302,5328,5365,5367,5387
+  s_cd499ea12d2b3c::t_d84e45136029b4 5342-5343
+  s_cd499ea12d2b3c::t_84607f66eabdc7 1637,1645-1650,1651,5166,5188
+  s_cd499ea12d2b3c::t_b5749e549824ca 14,46,91,1636,3089,3186,3212,5167
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_f74e55bad93be8::t_0a6e3f140f75f3 5-6,32,46-47
+  s_f74e55bad93be8::t_4f38f36b49e8cc 1,4,9,13,17-20,30-31,33-37,42-45,48-53,60-68,76,105-111,112,113,118-120,122-128,130,131,135-136,138-141,146,151-152,175-178,180,181,183,219-220,221
+  s_f74e55bad93be8::t_4642b846973d62 7-8,21
+  s_cd499ea12d2b3c::t_8e111887920078 2,11-12,38-41,172-174,184-185,187
+packages/workshop-backend/__tests__/timeout.test.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,3-20,22-34
+  s_f74e55bad93be8::t_27becef38acb7d 2
+  s_f74e55bad93be8::t_eb327649fb8142 21
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f74e55bad93be8::t_d176085eec1f7a 1759,1778
+  s_f74e55bad93be8::t_0254e49d75bdd8 73
+  s_f74e55bad93be8::t_058f7a2215feca 67-68,90,1429,1471-1472,1494,1507,1719-1734,1736,1744,1754,1757-1758,1760-1777,1779-1791,1792-1832,1838,1842,2323,2388,2408-2410,2423-2426,2428,2430-2433,2435-2447,2474-2478,2515-2540,3355,4355,4358,4366-4368,4378,4394,4397,4400-4402,5573,6341,6459
+  s_cd499ea12d2b3c::t_8e111887920078 4369,4403,5856,5862
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 1010
+packages/workshop-backend/src/utils.ts
+  s_f74e55bad93be8::t_2028dfb2a90a59 6,10
+  s_f74e55bad93be8::t_27becef38acb7d 1-5,7-9,11-17
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_f74e55bad93be8::t_a008a50a391a1c 1-3,5-125,127-134,136-153,154-155,157-166,168-169,171-173,175-177,179-195,196-197,199-208
+  s_cd499ea12d2b3c::t_d408fea3145be6 135,156,198
+  s_cd499ea12d2b3c::t_7f3c45b7dcb877 126-127,130,178
+  s_cd499ea12d2b3c::t_d24d0711763cec 4
+  s_cd499ea12d2b3c::t_dbfe0cd3ad15c3 171-173
+  s_cd499ea12d2b3c::t_e775c39f5a86e1 167-169
+  s_cd499ea12d2b3c::t_eef6e7cfffab16 175
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 170,174
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_f74e55bad93be8::t_94e581a2ed4fc6 43,2947-2948,2989-2990,3029-3033,3035-3036,3184-3187,3189,3223-3227
+  s_cd499ea12d2b3c::t_fa5d953e116f8b 1724,1726,1951,3188
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 2988,3034
+packages/gatekeeper-context/package.json
+  s_f74e55bad93be8::t_a23878b875c2f1 21-23
+packages/gatekeeper-context/src/agent-skill.ts
+  s_f74e55bad93be8::t_095babddba727a 1-2,4-6,9-14,16-18,19-20,22-25,28-43,48-51,54-61,63-111,113-134
+  s_cd499ea12d2b3c::t_32c49887f1bdc7 7-8,62
+  s_cd499ea12d2b3c::t_b1b2209cbda6c1 15,26,112
+  s_cd499ea12d2b3c::t_7d247b5970e561 3
+  s_cd499ea12d2b3c::t_d408fea3145be6 27
+  s_cd499ea12d2b3c::t_7f3c45b7dcb877 28
+  s_cd499ea12d2b3c::t_f162a030aca079 48-51,53-56
+  s_cd499ea12d2b3c::t_9140bc87b30c55 44-47,57-58
+  s_cd499ea12d2b3c::t_03622d0c71a0b9 21
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 52
+packages/gatekeeper-context/src/context-collection.ts
+  s_f74e55bad93be8::t_61714504045585 9,16,19,65-69,186-187,189-190,198-199,204,208-209,275,278,289,292,308,311,315,373,374-379,383,470-474,475,477
+  s_cd499ea12d2b3c::t_32c49887f1bdc7 206
+  s_cd499ea12d2b3c::t_39ada0abb1d7f4 8,17-18,89,184-185,188,193,195-197,200,202-203,205,254-255,259,261,276-277,279-284,288,291,312,314,380,382,469,476
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 11,201
+  s_3b6d8098f24a7b::t_7af3e390a99adb 192
+  s_cd499ea12d2b3c::t_7f3c45b7dcb877 191,194,207
+packages/gatekeeper-context/src/context-types.ts
+  s_f74e55bad93be8::t_613fd2456039b9 67-80,145-146,150-157,158-160,177-181,191,292
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 147-149
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_f74e55bad93be8::t_7071a366b4c1e2 5,20,22-24,40,41-47,48,50-59,62-66,229,231-237,240-241,242-245,253,261-266,278-285,287-295,297-299,302,307-308
+  s_cd499ea12d2b3c::t_32c49887f1bdc7 331,333-334
+  s_cd499ea12d2b3c::t_407dfa86da10f9 8
+  s_cd499ea12d2b3c::t_45f24506d7b2ca 239
+  s_cd499ea12d2b3c::t_7f3c45b7dcb877 230,238,295-296
+  s_cd499ea12d2b3c::t_07fbeb1beaaae7 16,84
+  s_cd499ea12d2b3c::t_c466a49ece62de 70,73,316,330-334
+  s_cd499ea12d2b3c::t_641871358acc11 81-82
+  s_cd499ea12d2b3c::t_33b1a60075ef5f 317-325,336-337
+  s_cd499ea12d2b3c::t_d24d0711763cec 13-14,49,60-61,286,300-301
+  s_cd499ea12d2b3c::t_24d22dc5fd7309 326-328
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 21-22,71-72,303-306
+packages/gatekeeper-context/src/library-read.ts
+  s_f74e55bad93be8::t_64a8a213da602b 7,9,11,37,43,45,66,147-150,153-156,158,164-165,166-169,173-178
+  s_cd499ea12d2b3c::t_32c49887f1bdc7 8,159
+  s_cd499ea12d2b3c::t_f0ab97958ccfab 12
+  s_cd499ea12d2b3c::t_f2bbcd82019b6b 8
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_f74e55bad93be8::t_9c50813aa1bb40 131-132,134,137,139-141,144-146
+  s_cd499ea12d2b3c::t_678ee826129eab 147
+  s_cd499ea12d2b3c::t_26ef9c823f1b82 3-4,89,91,99-100,103,105-106,111,113,115,117-119,122-126,129-130,133,135-136,138,142-143
+  s_cd499ea12d2b3c::t_0172547ebfae60 88,94,98,101
+packages/workshop-backend/src/agent-catalog.ts
+  s_cd499ea12d2b3c::t_26ef9c823f1b82 3,16-18,25,27-29,35-36,46-47,50-55,57,60,67,91
+  s_cd499ea12d2b3c::t_cab58f81e972ac 19-20,22-24,26,30,32-33
+packages/workshop-backend/src/agent.ts
+  s_cd499ea12d2b3c::t_8e111887920078 2,12-19,942-943
+  s_cd499ea12d2b3c::t_ebf5083e028f3f 944-945
+  s_cd499ea12d2b3c::t_b5749e549824ca 98,1120,1764,1772,1774
+packages/workshop-backend/__tests__/agent-context.test.ts
+  s_cd499ea12d2b3c::t_7c1c8ca3bc5b5f 1,3,6-8,9
+  s_cd499ea12d2b3c::t_b5749e549824ca 2,4-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "443832c5c077302766d9fdb2922d3249dc03a799",
+  "prompts": {},
+  "sessions": {
+    "s_3b6d8098f24a7b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_09616466fffeJujVX6V8f1na1V",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_7f6a34c1e4e953": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_094c7ae60ffenuZXH3piPwNMTl",
+        "model": "grok-4.5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": null
+    }
+  }
+}

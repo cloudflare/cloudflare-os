@@ -1,0 +1,25 @@
+docs/observers.md
+  s_42132ec51be60c::t_409c7f028b9354 33-41,60,72-73,94-95,98-105,138-139,171,201,231-232,318,334,414-416,421,424,496-498,503-506,515-517,545-546
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_42132ec51be60c::t_3056318f057064 3-6,198,259-260,280-281
+packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc
+  s_42132ec51be60c::t_5102454cb6e68c 29
+packages/workshop-backend/src/overseer.ts
+  s_42132ec51be60c::t_b10ad26f4a329c 826-828
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3f0645067b159a59c9e2c0d525ff821924ba683f",
+  "prompts": {},
+  "sessions": {
+    "s_42132ec51be60c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dd31f440-4364-434d-81e7-7e84248f919e",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

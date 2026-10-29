@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/overseer-new-chat.integration.test.ts
+  s_b9d78ba39005bb::t_4a10bb93f5363a 249-271
+packages/workshop-backend/src/overseer.ts
+  s_b9d78ba39005bb::t_4a10bb93f5363a 133-134,596,2286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "65021dfb8c85f0871f77180d5f7f9aff6c5a54e8",
+  "prompts": {},
+  "sessions": {
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

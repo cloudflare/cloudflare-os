@@ -1,0 +1,21 @@
+.github/workflows/ci.yml
+  s_7727453cc7f579::t_13af69a62fd852 45-48
+scripts/kill-process-tree.test.js
+  s_7727453cc7f579::t_57da778789eb25 3,35-54,65-73,81-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3baeb18400a4b5a3a350bc74c098aa545af7d6ce",
+  "prompts": {},
+  "sessions": {
+    "s_7727453cc7f579": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c0925e8-b509-43e0-93a3-8e4889914940",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,99 @@
+scripts/release/manifest-lib.mjs
+  s_821114639ecbff::t_c4ac6b47ef72f6 189-192
+packages/workshop-backend/src/env.d.ts
+  s_821114639ecbff::t_a5e9337a77dee4 17-20
+  s_821114639ecbff::t_c411a2bd1b632f 24
+  s_821114639ecbff::t_3750d4511e53a2 25
+packages/workshop-backend/src/ai-models.ts
+  s_8ebea081b6fc96::t_eef950ab8f1e89 435
+  s_8ebea081b6fc96::t_27eaa9b23bbb7b 421,426-427,436-437,442-443,464-470,475-476,494-496
+  s_821114639ecbff::t_a1488fea7c87ed 433
+  s_8ebea081b6fc96::t_bf09c7f55c7017 4-5,8-9
+  s_8ebea081b6fc96::t_e80ae07cfe821f 314
+  s_8ebea081b6fc96::t_cde5b6d8b53e9e 10
+  s_8ebea081b6fc96::t_aaecb4fff287e2 264-266
+  s_821114639ecbff::t_e4565cee8431a1 417-420
+  s_821114639ecbff::t_172ab4496b7874 434
+docs/ai-gateway-billing.md
+  s_821114639ecbff::t_ed2ae62c44ae01 68-77
+  s_160cf45cf1fd3b::t_3a9bb2a1a9dae4 67,78-79
+  s_160cf45cf1fd3b::t_c5906ba8475b4f 57,59-60
+run-dev-server.js
+  s_160cf45cf1fd3b::t_822a7d2a3248bf 244
+  s_821114639ecbff::t_654d1149a92017 245-247
+  s_821114639ecbff::t_b97be58b52d9b3 248,251
+  s_821114639ecbff::t_e0909e88a80e10 275-277
+packages/workshop-backend/src/ai-gateway.ts
+  s_821114639ecbff::t_05d66616f294f2 31-32
+  s_8ebea081b6fc96::t_3abb5f28e7db1c 27
+  s_821114639ecbff::t_113134878347ed 15-18
+  s_8ebea081b6fc96::t_178a11f05e2f93 14,28,33,38-42,49-63
+  s_821114639ecbff::t_edf97c01b79ca8 29-30
+  s_821114639ecbff::t_e399d7212708f4 23-24
+packages/workshop-backend/src/ai-gateway-binding-fetch.ts
+  s_c639c7e7c11b31::t_18376342fc8ce3 10-15
+  s_c639c7e7c11b31::t_7f72164f3baff3 117
+  s_8ebea081b6fc96::t_832324d04b523a 63-65
+  s_8ebea081b6fc96::t_2a33dc922bd379 1-2,6-9,16,18-45,49-54,56-62,66-69,75-77,83,85-87,95-96,109-110,112-113,116,118-121,123-124,126-128,132-133,135-140,143-145,152-154,158-161,164-167,170-171
+  h_b6783f91d645b1 17
+  s_c639c7e7c11b31::t_90a3595f5f017e 70-74
+  s_8ebea081b6fc96::t_cdea6d88ea38d8 102-103,105-107,111,122,125
+  s_8ebea081b6fc96::t_162ccbafefce1d 134
+  s_8ebea081b6fc96::t_83273966ebd661 141-142,146-148,162-163,168-169,172-180
+  s_c639c7e7c11b31::t_0fc2c605f4b0f4 149-151
+  s_c639c7e7c11b31::t_ee30167ae30806 3-5
+  s_821114639ecbff::t_446c6eb4adc97a 108,114-115
+  s_c639c7e7c11b31::t_cb1380d485399b 46-48
+  s_821114639ecbff::t_cda23377ad0db8 78-82,90-91,94
+  s_c639c7e7c11b31::t_217f124142e8ca 55
+  s_c639c7e7c11b31::t_66af38767a40f8 88-89,92-93
+  s_c639c7e7c11b31::t_427da1d6eff4d8 155-157
+  s_c639c7e7c11b31::t_141f4bca1a3842 97-101,104
+  s_c639c7e7c11b31::t_e94ea1b94109ba 129-131
+  s_8ebea081b6fc96::t_aa931432758690 84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9e6945a7ee054dda8a29638b2cd839bbe2c2a197",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_160cf45cf1fd3b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d7188ae-b772-4d99-8636-c004862f914e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_821114639ecbff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "147b2439-e6fc-4ad6-a597-a927ab277c1a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8ebea081b6fc96": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c47020f8-5568-403c-a52e-0b5e39196040",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c639c7e7c11b31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15446a1d-daf3-4b88-a432-61390a827dd6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

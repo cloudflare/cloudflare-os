@@ -1,0 +1,41 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_10a2c94691622e::t_15a45ccfcd8656 246
+docs/observers.md
+  s_10a2c94691622e::t_05edf200fcd36e 33-45,101,235-237,411-417,488-491
+docs/sharing.md
+  s_10a2c94691622e::t_a0a784fd57cfcb 159
+packages/gatekeeper-google/src/google.ts
+  s_10a2c94691622e::t_b0f2b32fdb6017 1966-1967
+packages/gatekeeper-mcp/README.md
+  s_10a2c94691622e::t_9f669054abf8d6 174-175,205-206
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_10a2c94691622e::t_3a4cbff3163c73 1-254
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_10a2c94691622e::t_fae7316afc9277 23,220-254,287-295
+packages/workshop-backend/src/overseer.ts
+  s_10a2c94691622e::t_2846e15796cdce 815-816,2752,2872-2910,6630-6632,8826-8830
+packages/workshop-backend/src/sharing.ts
+  s_10a2c94691622e::t_18d51ed30a1382 18-22,163,290-291
+packages/workshop-frontend/src/ShareModal.tsx
+  s_10a2c94691622e::t_17818194f10ab9 561,587,613,777-780,782-784,787,828,905,911,914,1070
+packages/workshop-shared/src/api.ts
+  s_10a2c94691622e::t_96e1f93d0942b5 1250-1253
+packages/workshop-shared/src/gatekeeper.ts
+  s_10a2c94691622e::t_d7585dabf8f43d 1069-1078,1080-1082
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f633a1aa410301cd4240fdb3f036bd4eaaa17eab",
+  "prompts": {},
+  "sessions": {
+    "s_10a2c94691622e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b88e8fcc-ef8d-4563-88ac-f35859cbca49",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

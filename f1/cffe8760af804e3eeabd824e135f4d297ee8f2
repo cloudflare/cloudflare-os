@@ -1,0 +1,35 @@
+docs/observers.md
+  s_4b32d41ad4fea8::t_f85b36efb5749c 632
+packages/gatekeeper-google/README.md
+  s_4b32d41ad4fea8::t_50044e22c92720 129-135
+packages/gatekeeper-google/__tests__/bigquery-session.test.ts
+  s_4b32d41ad4fea8::t_175f00eb698eaa 1-93
+packages/gatekeeper-google/__tests__/stubs/capnweb-validate.ts
+  s_4b32d41ad4fea8::t_fe57a4ba11fef0 1-8
+packages/gatekeeper-google/__tests__/stubs/cloudflare-workers.ts
+  s_4b32d41ad4fea8::t_03ac85f7e6b207 1-20
+packages/gatekeeper-google/src/bigquery-session.ts
+  s_4b32d41ad4fea8::t_9baf946ee03883 1-364
+packages/gatekeeper-google/src/bigquery-types.d.ts
+  s_4b32d41ad4fea8::t_819e3616c8f88d 146-149,167-168
+packages/gatekeeper-google/src/google.ts
+  s_4b32d41ad4fea8::t_f657e8229efd16 3,16-17,22
+packages/gatekeeper-google/vitest.config.ts
+  s_4b32d41ad4fea8::t_8a748dad5a6cfa 1,8-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1cffe8760af804e3eeabd824e135f4d297ee8f2",
+  "prompts": {},
+  "sessions": {
+    "s_4b32d41ad4fea8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f0ea7e7-15f3-469c-9793-845de800d631",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

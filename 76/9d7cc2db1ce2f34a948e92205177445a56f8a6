@@ -1,0 +1,144 @@
+packages/workshop-backend/wrangler.jsonc
+  s_16a3a163f9f88e::t_49e87061ec122c 82
+.gitignore
+  s_16a3a163f9f88e::t_49e87061ec122c 8
+packages/workshop-backend/__tests__/client-errors.test.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-215
+packages/workshop-frontend/src/main.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 13-14,116,163-167,177-179
+scripts/build-gatekeeper-configurator.test.js
+  s_16a3a163f9f88e::t_49e87061ec122c 1-142
+packages/gatekeeper-context/vite.config.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 4,17,22-32,48-70,72-80,82-92,94
+packages/workshop-backend/src/user.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 639-648,686-690,1483-1484,1487-1489,1491-1499
+packages/workshop-frontend/src/components/HomeBlueprintList.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 2,173,280,301-302,333
+packages/workshop-frontend/src/FrontendErrorBoundary.test.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 1-34
+packages/gatekeeper-context/app/ErrorBoundary.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 1-24
+packages/workshop-backend/package.json
+  s_16a3a163f9f88e::t_49e87061ec122c 21
+packages/workshop-backend/src/external-message-gateway.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-39
+packages/gatekeeper-context/app/error-reporting.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-42
+packages/workshop-frontend/src/components/AppShell/SidebarGadgetRow.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 2,16-17,115-116
+packages/gatekeeper-google/src/sheets-api.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 4,165,168-170
+packages/gatekeeper-context/app/main.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 13-16,46-51,59
+packages/error-reporting/tsconfig.json
+  s_16a3a163f9f88e::t_49e87061ec122c 1-16
+packages/workshop-backend/src/env.d.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 36-41
+scripts/build-gatekeeper-configurator.mjs
+  s_16a3a163f9f88e::t_49e87061ec122c 2,5,10-11,14-19,25-34,36,44-65,67-96,380,544,553-555,703-715,740-741,755-758,764-768,770-785,791
+packages/error-reporting/src/serialize-exception.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-81
+packages/workshop-backend/__tests__/access.test.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-76
+packages/workshop-backend/src/client-errors.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-152
+packages/error-reporting/package.json
+  s_16a3a163f9f88e::t_49e87061ec122c 1-20
+packages/gatekeeper-google/src/auth-retry.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-207
+packages/error-reporting/src/index.test.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-162
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 2,91,142-143,300
+packages/error-reporting/vitest.config.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-5
+packages/workshop-frontend/src/SandboxedGatekeeperApp.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 8,163,165,243-245,262
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 7,641,644,872,877,934
+packages/workshop-frontend/src/GatekeeperAppPage.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 5,40-42,63
+packages/gatekeeper-google/src/docs-api.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 6-7,92,96-100,118,120-121,153,162
+packages/gatekeeper-context/package.json
+  s_16a3a163f9f88e::t_49e87061ec122c 19
+packages/workshop-frontend/src/SandboxedResourceConfigurator.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 7,362-365
+  s_16a3a163f9f88e::t_19b77ee5306b9e 366
+AGENTS.md
+  s_16a3a163f9f88e::t_49e87061ec122c 88-103
+packages/gatekeeper-google/src/google.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 49,68-80,484-508,591-592,596-605,607-609,611-613,615-626,628-630,656-676,680,684-685,687,691-745,747-749,751-765,770-776,780-787,1102,1105,1109,1120,1131,1142,1152,1789-1793,1795-1796,1855,1894,2170-2174,2176-2177,2181,2202,2236,2523-2528,2530-2531,2535,2555,2831-2835,2843-2844,2848,2872,2891,2943,3258,3261-3265,3296
+packages/workshop-backend/src/access.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-48
+packages/workshop-frontend/vite.config.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1,7-28,30
+packages/gatekeeper-google/src/bigquery-api.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 12,242,244-250,252-253,287
+packages/workshop-frontend/src/FrontendErrorBoundary.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 1-35
+packages/error-reporting/src/index.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-238
+packages/workshop-frontend/src/Connections.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 25,76,631-634,652
+packages/workshop-frontend/src/components/BlueprintList.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 8,70,101-102,187
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 149,338
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 30,368,378,563-568,595,620-622,637-639
+packages/gatekeeper-google/src/calendar-api.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 13,169,172-180,182-183
+packages/gatekeeper-context/__tests__/vite-config.test.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-25
+packages/workshop-frontend/src/errorReporting.test.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-223
+packages/backend-utils/src/error-reporting.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 3-20,48-49
+packages/gatekeeper-google/src/google-api.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 9,51,53-54,64-65,98-107,119,129-133,149-153,204-206,218,500,528,532-536,559,581,609,640,665,667,692,715,971-974,981,1010
+docs/observers.md
+  s_16a3a163f9f88e::t_49e87061ec122c 173-177,180-184,187-188,270,274-281,397-400
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 17,648-655
+packages/workshop-backend/src/overseer.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 39,42,403-459,475,558-561,637-659,938-940,948-986,1025,1071,1367,2223,2257,2271,2274,2283,2289,2292,2300,2309-2310,2312-2315,2338,2340-2353,2357-2359,2386,2388-2391,2410,2412-2422,2426-2428,2438-2561,2638-2639,2652-2653,2875-2876,4130-4133,4135,4137,4269,4417-4539,6127-6130
+packages/backend-utils/package.json
+  s_16a3a163f9f88e::t_49e87061ec122c 27-29
+packages/workshop-frontend/vite.config.test.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-31
+packages/workshop-shared/package.json
+  s_16a3a163f9f88e::t_49e87061ec122c 23-26
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_16a3a163f9f88e::t_49e87061ec122c 13,1630,4245
+packages/workshop-frontend/package.json
+  s_16a3a163f9f88e::t_49e87061ec122c 15
+packages/workshop-backend/__tests__/user-verifier.test.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-49
+package.json
+  s_16a3a163f9f88e::t_49e87061ec122c 8,21
+packages/workshop-frontend/src/errorReporting.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-201
+packages/workshop-backend/src/server.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 3,22,25-26,50-52,703-706,715-716,727-728
+packages/workshop-shared/src/external-message-gateway.ts
+  s_16a3a163f9f88e::t_49e87061ec122c 1-52
+pnpm-lock.yaml
+  s_16a3a163f9f88e::t_6168a685b805a7 29-31,37-40,58-66,122-124,511-513,569-571
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "769d7cc2db1ce2f34a948e92205177445a56f8a6",
+  "prompts": {},
+  "sessions": {
+    "s_16a3a163f9f88e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2c0bb8ffeWRj78Ro5gwWR55",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

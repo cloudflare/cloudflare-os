@@ -1,0 +1,68 @@
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_9bf74c11bd609e::t_8b9deacd5eec47 128-129,140-152
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_9bf74c11bd609e::t_4dbc91fab277cf 286
+  s_9bf74c11bd609e::t_219630c42b1964 241,246-251,256
+  s_9bf74c11bd609e::t_d96bfccf96dad9 323-326,332
+  s_9bf74c11bd609e::t_76cff74be8852c 257
+packages/workshop-shared/src/api.ts
+  s_9bf74c11bd609e::t_10df30fa1c461f 1047-1049
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_9bf74c11bd609e::t_effdae0410882f 6580
+  s_9bf74c11bd609e::t_4032ef0abf822b 6498-6501
+  s_9bf74c11bd609e::t_073e30cacc0dbe 48
+  s_9bf74c11bd609e::t_3715de33381a85 6641
+  s_9bf74c11bd609e::t_c81cbba0b0e748 6467-6483
+packages/workshop-backend/src/overseer.ts
+  s_9bf74c11bd609e::t_5e27fe3c54e5d8 7295-7296
+  s_9bf74c11bd609e::t_0a7119483adc84 38
+  s_9bf74c11bd609e::t_9538e833e66e6e 2976-2977,2983-2991
+  s_9bf74c11bd609e::t_bcb6b621613d80 2993
+  s_9bf74c11bd609e::t_7030cd90c0f5e3 1409,1419-1450
+  s_9bf74c11bd609e::t_081985e9b3a335 2925-2926
+  s_9bf74c11bd609e::t_edea5fda79ca81 7318-7322,7324-7332,7340-7341,7347-7348
+  s_9bf74c11bd609e::t_95b12863e1443c 424-446
+  s_9bf74c11bd609e::t_5f11f12cb64f6e 6453
+  s_9bf74c11bd609e::t_c7e73afcbbfecb 2726-2729
+  s_9bf74c11bd609e::t_b40b0aa5305f97 7919-7921
+  s_9bf74c11bd609e::t_47f3c2feac799a 707-709
+  s_9bf74c11bd609e::t_b9568c0537393c 7275-7276
+  s_9bf74c11bd609e::t_157137f8f320b0 3015-3017
+  s_9bf74c11bd609e::t_c4469c5cbc5237 2992,7870-7877
+  s_9bf74c11bd609e::t_e49159b655c94c 752-757,763-769
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_9bf74c11bd609e::t_12dd8bbde92ba2 39,54
+  s_9bf74c11bd609e::t_ad8cfccdaa0e15 225-386
+  s_9bf74c11bd609e::t_89e3019b6b49bb 3-7,10,15-18
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_9bf74c11bd609e::t_45f3cbf7885e8a 1-166
+packages/workshop-shared/src/gatekeeper.ts
+  s_9bf74c11bd609e::t_a2e85dfb1578b3 1031-1039
+  s_9bf74c11bd609e::t_1c501d0150ddde 939-943
+packages/workshop-backend/src/auto-approval.ts
+  s_9bf74c11bd609e::t_d1c0a8766b54ab 6,8,17-53
+  s_9bf74c11bd609e::t_a7108c1aba254c 94-96,105-106
+packages/workshop-frontend/src/Activity.tsx
+  s_9bf74c11bd609e::t_e954a7edc268f2 223-226
+  s_9bf74c11bd609e::t_c3472b204d7849 593
+  s_9bf74c11bd609e::t_eae37324ac8af6 629-641
+  s_9bf74c11bd609e::t_048dd178f19c47 511
+  s_9bf74c11bd609e::t_7f60e519cd6700 554-567
+  s_9bf74c11bd609e::t_5ca3e7195e5a0e 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "668ea86cf78b0e0dd562a061d702288f6ff7da33",
+  "prompts": {},
+  "sessions": {
+    "s_9bf74c11bd609e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8fd70c9d-60ef-43a4-b7de-13457ccc64ce",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

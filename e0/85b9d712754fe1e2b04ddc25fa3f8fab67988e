@@ -1,0 +1,21 @@
+scripts/release/manifest-lib.test.ts
+  s_47c456ca6ea293::t_adff3e4c1f945d 16-19,75-76,88-94,96,294-412,426-430
+scripts/release/manifest-lib.ts
+  s_47c456ca6ea293::t_9e8d3ab53fe300 13,45-95,167-168,216-221,308-311,510-562,655-680
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e085b9d712754fe1e2b04ddc25fa3f8fab67988e",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,229 @@
+packages/gatekeeper-google/package.json
+  s_4c4437c01da8c5::t_f144a5f446a5b1 23
+packages/gatekeeper-google/src/bigquery-api.ts
+  s_4c4437c01da8c5::t_106b2fd1773c9d 33-44,354,370,433,446
+packages/gatekeeper-google/src/configurator/bigquery-configurator-types.d.ts
+  s_4c4437c01da8c5::t_7dfd143e8b44a7 14-23,26-27
+packages/gatekeeper-google/src/configurator/bigquery-public-configurator-ui.tsx
+  s_4c4437c01da8c5::t_5ad63dc2d5de00 1-113
+packages/gatekeeper-google/src/google-configurators.ts
+  s_4c4437c01da8c5::t_3e3c397ec521e4 4,172-189
+packages/gatekeeper-google/vite.config.ts
+  s_4c4437c01da8c5::t_54ce80fc994bc6 3
+packages/gatekeeper-google/vitest.config.ts
+  s_4c4437c01da8c5::t_8a31b1ad9b0dc3 1-8
+packages/gatekeeper-google/wrangler.jsonc
+  s_4c4437c01da8c5::t_cb0f270ad1f092 31-38
+pnpm-lock.yaml
+  s_4c4437c01da8c5::t_1090bad043af3c 371-373
+scripts/preview/staging-config.test.ts
+  s_4c4437c01da8c5::t_170145707cf262 411-421
+scripts/release/testdata/golden-manifest.json
+  s_4c4437c01da8c5::t_42ff353352d7f0 411-412
+scripts/run-dev-server.ts
+  s_4c4437c01da8c5::t_c01d94b9adb887 435-448,464-465
+packages/gatekeeper-google/README.md
+  s_4c4437c01da8c5::t_e63a3c4bd7c5d6 82-131,187
+packages/gatekeeper-google/__tests__/bigquery-resource.test.ts
+  s_4c4437c01da8c5::t_606e5d5b75cca5 1-215
+packages/gatekeeper-google/src/bigquery-resource.ts
+  s_4c4437c01da8c5::t_5ae3c03321f4c7 1-239
+packages/gatekeeper-google/src/bigquery-types.d.ts
+  s_4c4437c01da8c5::t_4750f866dfa92e 130-137
+packages/gatekeeper-google/src/google.ts
+  s_4c4437c01da8c5::t_8396022b327291 17,20,47,123-125,201-215,348,707,780-791,2956-2966,2969-2973,2990-2994,2996-3000,3002-3016,3030-3045,3050-3051,3054,3117-3118,3121-3123,3131-3132,3135,3141,3145,3176-3187,3189,3192-3196,3275,3301,3306,3322,3338,3345,3350,3356,3361,3368,3378,3384,3394,3396,3403,3412,3422,3437,3440-3441,3448
+scripts/preview/staging-config.ts
+  s_4c4437c01da8c5::t_6747c02cc6c22a 336-349,360
+packages/workshop-backend/__tests__/restricted-data.test.ts
+  s_713362881198d7::t_4bb15b3676f46b 1-39
+packages/workshop-shared/src/api.ts
+  s_ecfb0993480272::t_58162a17a61ca0 1257-1260,1262
+  s_ecfb0993480272::t_3605d27975f90f 3971-3980
+docs/sharing.md
+  s_a18738247b8cd3::t_d3ebc7d4304274 161
+  s_ecfb0993480272::t_f8d19dc10de77a 46-47,104-105,107-108,114-116,155,164
+  s_ea02e51719966b::t_a5de2ccdd83fa5 102
+  s_a18738247b8cd3::t_41dbc81877509f 36,162
+  s_b2b14f7ca4579b::t_5ec8eb99a46acb 154
+  s_e39f3856b111b5::t_8d91451d18db9a 160
+packages/workshop-backend/src/overseer.ts
+  s_d1089a88558635::t_0b0be0e64cb8b6 4574-4576
+  s_42132ec51be60c::t_b10ad26f4a329c 1016-1018
+  s_d1089a88558635::t_356cd956ef3bed 8536,8543-8545
+  s_25c73b55bb6f5d::t_1d8faefd5da385 11313-11314,11327,11344
+  s_ecfb0993480272::t_bd1c69b8b55656 4571,4581-4582,4588-4593,4596-4606,4610-4625,10556-10557,11315-11317,11319,11333-11343
+  s_b2b14f7ca4579b::t_c849a8fcde2307 7828-7830
+  s_713362881198d7::t_59d912a126f580 1355-1370,4583-4587,4594-4595,11328-11332
+  s_c092403ddb8a9a::t_2e961ca23542c9 8025-8027,8118-8132,8186-8191
+  s_d1089a88558635::t_008db20095b6c1 4565-4566,4573
+  s_a18738247b8cd3::t_88c4076318a70f 1012,4531,4533-4541,4553-4554,4563-4564,4572,4580,7939
+  s_c1f77da9d711a8::t_6dc6737c8fbc09 44,7918,7938
+  s_468ba4f943f873::t_73f5139f987dba 4516-4518,4579,7915-7917,7928-7930,7992-7993,8509-8518,8535,8546-8548,8621-8624,8629-8630,8633,8636-8638,9318,9337,9359,9361,9369,9375,10551-10555
+  s_b2b14f7ca4579b::t_cd32dd2d89b1ca 4561
+  s_c1f77da9d711a8::t_c4d4c9c9797ac0 4380,4393-4398
+  s_468ba4f943f873::t_54f1bd9b62dc39 4513-4515
+  s_713362881198d7::t_d1d9e2441eb508 10560-10562,10583-10588,10641-10644,10648-10654
+  s_b2b14f7ca4579b::t_03fa9630086ef6 4607-4609,8497-8501,10558-10559
+  s_a18738247b8cd3::t_cff826f341267a 4557-4560,4567-4570
+  s_c1f77da9d711a8::t_978f2a9d6a5814 8491,8493,8519-8521,8524-8525,8530-8534
+  s_d1089a88558635::t_61f49ce025f5af 4543
+  s_d1089a88558635::t_5b96cca615bbd9 4542,4544,4546-4547,4577-4578,11310-11312,11318,11320-11326,11345-11346
+  s_c1f77da9d711a8::t_28417800d75198 4381
+  s_42132ec51be60c::t_be5dee2e8789e1 1013-1015
+  s_b2b14f7ca4579b::t_4b89d9e7891211 4526-4530,7821-7827,7831-7833,7940-7948,7952-7964
+  s_d1089a88558635::t_df8678c931999d 4545
+  s_713362881198d7::t_c19d07fae5ede6 7985-7991
+  s_c1f77da9d711a8::t_13a5d2b7e045ef 4548-4550,4552,7806-7820,7839
+  s_42132ec51be60c::t_83f125cb50b338 7922-7923,7931-7933,7935,7949,8631-8632
+  s_42132ec51be60c::t_31fa62c89d3f3e 4519-4523,4551,4555-4556,4562,7919-7921,8625-8627
+  s_ecfb0993480272::t_0f515b96c8fc54 4524-4525,4532,7924-7927,7934,7936-7937,7950-7951,7965-7984,8487-8490,8522-8523,8526-8529,8537-8542
+packages/workshop-backend/src/sharing.ts
+  s_ecfb0993480272::t_8bbca693e66973 17-19,189-193,195,197-200,205-213,231-235,292-297,311-356,362,684-687,693,698,735-741
+  s_c1f77da9d711a8::t_5d0a8e3b2b3e32 31-36
+  s_713362881198d7::t_29b9881983b1a6 217-219,256-262,264-267,272-273,277,280-287,298-310
+  s_ecfb0993480272::t_cf8983e5ba959b 21-25,391-392
+  s_c1f77da9d711a8::t_77e0ef19b91e2c 222,242,245,251,288-291,357-361,363
+  s_b2b14f7ca4579b::t_229ae9a5877d20 223-230,241,268-271,274-276,279
+  s_713362881198d7::t_ef560242f9b351 535-546,555,567-572,587
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_ecfb0993480272::t_3adcd96fc6ad34 165
+  s_ecfb0993480272::t_e8e07c6f4b7616 47-61,137,163-164,166,179,187-190,272-274,347-525,805,874-875,893,965
+  s_713362881198d7::t_44662735bdfba0 214-237,239,242,244-262
+  s_b2b14f7ca4579b::t_054f4d7ccc8a9a 284-294,297-344
+  s_ecfb0993480272::t_f99f32735af23e 345-346
+  s_c1f77da9d711a8::t_85aa46b66b6c12 178,180-183,191-202,206-212,263-269,275-283
+  s_713362881198d7::t_02bf40b89a2529 173-174
+  s_713362881198d7::t_2bd4f13b9e32a9 176
+  s_713362881198d7::t_fd6f9e64c4e107 171
+  s_713362881198d7::t_f61d3d8eafdb1f 168-169
+  s_713362881198d7::t_b553beb46e3517 167,170,175,177,834-853,915-931
+docs/observers.md
+  s_468ba4f943f873::t_94c2a574f1a4a0 237-243
+  s_b2b14f7ca4579b::t_7f46e8c8a751b8 435-445
+  s_a18738247b8cd3::t_1db49f9b853fd9 97
+  s_ecfb0993480272::t_1fa5877845e134 458-461,478-481,494
+  s_b2b14f7ca4579b::t_fbd50bc551a645 495-507
+  s_42132ec51be60c::t_409c7f028b9354 33-39,41,60,72-73,94-95,98-105,138-139,171,201,231-232,318,334,413-425,430,433,572-574,579-582,591-593,621-622
+  s_42132ec51be60c::t_6eb5f48ef3cd3e 426-429,431-432,434
+  s_d1089a88558635::t_d7d806ed34109c 469-472
+  s_e39f3856b111b5::t_fad0b8278f4bb3 482-493
+  s_a18738247b8cd3::t_af9db71232b259 446-455
+  s_c092403ddb8a9a::t_a533bccc4b2d8f 508,523-525
+  s_ea02e51719966b::t_c6cff309a9b0b3 96
+  s_25c73b55bb6f5d::t_3e3082cb4ce397 473-477
+  s_42132ec51be60c::t_e3414c722fbbc1 233
+packages/workshop-shared/src/gatekeeper.ts
+  s_ecfb0993480272::t_aeb00c105e4581 1073-1082,1084-1086,1088
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "194c622b8a27f54f31447c64bbea654e89624e65",
+  "prompts": {},
+  "sessions": {
+    "s_25c73b55bb6f5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2101343c-de6f-4ba0-a197-cc0763b856b5",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_42132ec51be60c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dd31f440-4364-434d-81e7-7e84248f919e",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_468ba4f943f873": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55112baf-aa26-452c-bd3a-11324d913307",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_4c4437c01da8c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "635d6ba7-0072-4d35-9467-ff060ac90333",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_713362881198d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f58b6235-da14-4af2-afe2-4bfa43ca0fc6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_a18738247b8cd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48ea2cb4-1210-4a7a-9ed1-990c8221106f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b2b14f7ca4579b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "daf3181f-e227-440d-a6bb-dc4b7a6ebe82",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c092403ddb8a9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f5f07a65-dda8-4640-add7-1669888d6aab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c1f77da9d711a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d22a408f-2bdf-4942-8452-61d98facc2d1",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d1089a88558635": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e87b81c-e915-4a43-90c9-be649c6d0cf2",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e39f3856b111b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9e161aca-79f5-4828-be95-9b2de8aa8d9c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_ea02e51719966b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69722b37-a87f-46c2-bee8-3c2a79849264",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_ecfb0993480272": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "725d63fa-44bb-462e-9ef9-b3bfc203749a",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

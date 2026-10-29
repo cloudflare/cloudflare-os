@@ -1,0 +1,48 @@
+packages/workshop-backend/src/gatekeeper-admin-panels.ts
+  s_410d84684ab8ba::t_2fc64f5eb5214b 1,3-5,7,10,13-14,39
+  s_410d84684ab8ba::t_b0b1878a1fa801 2,6,8-9,11-12,15-38,40-56
+AGENTS.md
+  s_410d84684ab8ba::t_1ebb7226b2f34e 35
+docs/blueprints.md
+  s_410d84684ab8ba::t_b0b1878a1fa801 103-104
+  s_410d84684ab8ba::t_c0a340a4f33157 105
+packages/workshop-frontend/src/AdminPage.tsx
+  s_410d84684ab8ba::t_b0b1878a1fa801 4,30-33,97-98,100,133,316-351,725-726
+  s_410d84684ab8ba::t_9a941eb65511fc 352
+  s_410d84684ab8ba::t_7c206910c2e12e 727
+packages/workshop-backend/__tests__/gatekeeper-admin-panels.test.ts
+  s_410d84684ab8ba::t_b0b1878a1fa801 1-2,4-71
+  s_410d84684ab8ba::t_e00e530d676bac 3
+packages/workshop-backend/src/server.ts
+  s_410d84684ab8ba::t_b0b1878a1fa801 4,8,97-100,497-498
+  s_410d84684ab8ba::t_50252ca226ecd4 6
+  s_410d84684ab8ba::t_baad4c79468dea 101-105
+  s_410d84684ab8ba::t_e457560428dc0b 106-107
+packages/workshop-frontend/src/AuthContext.tsx
+  s_410d84684ab8ba::t_b0b1878a1fa801 3-6,13,16-17,32,44-45,53-54
+  s_410d84684ab8ba::t_841f53e9ef7edd 14-15
+  s_410d84684ab8ba::t_f8d31ca090129f 50
+  s_410d84684ab8ba::t_aacf1491cf0ea8 51
+packages/workshop-shared/src/api.ts
+  s_410d84684ab8ba::t_b0b1878a1fa801 411-414,426-440,442-447
+  s_410d84684ab8ba::t_179979d858d7af 441
+  s_410d84684ab8ba::t_99c6c572c1d2e3 448
+packages/workshop-shared/src/gatekeeper.ts
+  s_410d84684ab8ba::t_b0b1878a1fa801 71-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5a65d8fcc9023396d873df5c7a2ad4ee695a04d7",
+  "prompts": {},
+  "sessions": {
+    "s_410d84684ab8ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8908277b-01d5-41d7-9035-c059aec82597",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+packages/gadget-libraries/page/__tests__/table-picker.test.ts
+  s_f74476d0cbb433::t_277289fa42878e 1-131
+packages/gadget-libraries/page/__tests__/toolbar.test.ts
+  s_f74476d0cbb433::t_3c424b114c455b 1-386
+packages/gadget-libraries/page/src/palette-menu.ts
+  s_f74476d0cbb433::t_058ed543760a95 1-165
+packages/gadget-libraries/page/src/styles.ts
+  s_f74476d0cbb433::t_bcb1c2195f75e2 11-16,19-31,42,53,92,98-131,192-197,259
+packages/gadget-libraries/page/src/toolbar.ts
+  s_f74476d0cbb433::t_de63eec8b56fa2 2-8,11-19,25-34,37-51,58,65-66,71,73-81,90-94,97-130,133-149,157,160-164,166,168-171,179-182,184-200,204-209,211-219,221-225
+packages/gadget-libraries/page/src/dropdown-menu.ts
+  s_3ed59047bb4588::t_44b115b5dbbe57 1-151
+packages/gadget-libraries/page/src/icons.ts
+  s_f74476d0cbb433::t_4302d444c407c3 1-32
+packages/gadget-libraries/page/src/table-picker.ts
+  s_3ed59047bb4588::t_d33b46013385a1 1-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "464b0f149301319661be3b30d24e3a6d0b2606dc",
+  "prompts": {},
+  "sessions": {
+    "s_3ed59047bb4588": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ad1d3de547765624f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f74476d0cbb433": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbbaec07-89a3-4c4a-84e7-31df83ae61b4",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

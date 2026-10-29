@@ -1,0 +1,27 @@
+packages/workshop-backend/src/overseer.ts
+  s_993634b014452f::t_205fb4ee38d5eb 7976
+  s_cd499ea12d2b3c::t_a98aa0b9f2e70f 7979-7982
+  s_3cad2b45cc756c::t_816d09c0821bc8 48,238-242,7156-7163,7886-7890,7896
+  s_3cad2b45cc756c::t_e936b83efb3563 7891
+  s_3cad2b45cc756c::t_aacd6f684ecfe0 7892-7895
+  s_3cad2b45cc756c::t_3182db9b46d885 7897-7898
+  s_993634b014452f::t_77b4a320917735 7973-7975
+packages/workshop-backend/src/agent.ts
+  s_3cad2b45cc756c::t_1aa994c9c63fb1 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cf84ac317c226a868c08dd61ca1e8ec722a08eaa",
+  "prompts": {},
+  "sessions": {
+    "s_3cad2b45cc756c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_feaad9dc7ffeW96WPSaxSCRmdU",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+packages/gatekeeper-scheduler/vitest.config.ts
+  s_6b06793b4e8acf::t_64bed9fdbab018 33-34
+packages/router/vitest.config.ts
+  s_6b06793b4e8acf::t_baaf9344877959 18-20
+test-setup/assert-workerd.ts
+  s_6b06793b4e8acf::t_bf4016f4bbc6cf 1-17
+packages/workshop-backend/vitest.config.ts
+  s_6b06793b4e8acf::t_044577a8c54555 25-26
+AGENTS.md
+  s_6b06793b4e8acf::t_7ab8b68d8d279f 56
+packages/workshop-backend/vitest.integration.config.ts
+  s_6b06793b4e8acf::t_e46c1f59754730 26-27
+packages/backend-utils/vitest.config.ts
+  s_6b06793b4e8acf::t_715ebdaa068621 53-55
+packages/typed-storage/vitest.config.ts
+  s_6b06793b4e8acf::t_1cc2f6b8bfc840 18-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "24745173b0e9033de7da6078d87b3a2b37ca5b6f",
+  "prompts": {},
+  "sessions": {
+    "s_6b06793b4e8acf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6f167f9-9137-46f3-884c-130e77ad244b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

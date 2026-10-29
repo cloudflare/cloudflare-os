@@ -1,0 +1,25 @@
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_c1f77da9d711a8::t_fe69107f4d318f 291-322
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_c1f77da9d711a8::t_85aa46b66b6c12 173-225
+packages/workshop-backend/src/overseer.ts
+  s_c1f77da9d711a8::t_978f2a9d6a5814 2982-2983,6741-6743,6745,6766-6779
+packages/workshop-backend/src/sharing.ts
+  s_c1f77da9d711a8::t_77e0ef19b91e2c 198-202,208,211,217,227-234,248-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dfe53fb0eb7bfae2a9d8fbce4c19b353ba019ff6",
+  "prompts": {},
+  "sessions": {
+    "s_c1f77da9d711a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d22a408f-2bdf-4942-8452-61d98facc2d1",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

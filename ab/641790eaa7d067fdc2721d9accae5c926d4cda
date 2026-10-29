@@ -1,0 +1,24 @@
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_feab755a4b586b::t_080c7816336637 1550
+  s_feab755a4b586b::t_e73e0f8e49541e 1485-1522,1528,1530
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_feab755a4b586b::t_9c97ffe16b3979 450-457
+  s_feab755a4b586b::t_f3029e265f45dc 142,206-211,258-263,354,379,446-449,458-462
+  s_feab755a4b586b::t_197748bc3be40a 463
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ab641790eaa7d067fdc2721d9accae5c926d4cda",
+  "prompts": {},
+  "sessions": {
+    "s_feab755a4b586b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "750b8cdf-c97a-4e2b-9e74-7e717d08900f",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

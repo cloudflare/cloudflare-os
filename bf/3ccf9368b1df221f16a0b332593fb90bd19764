@@ -1,0 +1,62 @@
+packages/workshop-shared/src/api.ts
+  s_e5ac85fca2ef43::t_625507ab2300d2 766-772,774-775,778-782,785-790,793,1921
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_c0e2b00b7107db 2099,2101
+  s_1dfdf61332f5c7::t_7560009250c02a 5,12-16,943,1156-1165,1173-1175,1177-1179,1181-1183,1185-1192,1197,1228-1231,1233,1356,1794-1802,2021-2034,2048-2049,2053,2055-2096,2113-2117
+  s_1dfdf61332f5c7::t_23b6bab0468e42 965,1127
+  s_1dfdf61332f5c7::t_bbc06a0e01b8a2 116,118,121,124,127
+  s_1dfdf61332f5c7::t_37ebc596e1fe7e 117,119-120,122-123,125-126,128-130
+  s_1dfdf61332f5c7::t_5224d2da4177b7 2104-2109
+  s_1dfdf61332f5c7::t_ab17cea714edc7 928-930
+  s_1dfdf61332f5c7::t_655066dc6fca8c 2035-2047
+  s_1dfdf61332f5c7::t_f0c8b30000d3fb 1593,2050-2052,2054,2097-2098,2100,2102-2103,2110-2112
+  s_1dfdf61332f5c7::t_4bcb4bf19c9891 2118
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_f029dee6b0a530 6,34,53
+  s_1dfdf61332f5c7::t_7560009250c02a 1-4,7-33,35-52,54-97,100-105,107-119,122,126-127,133,136-152,154-155,158-161,176-178,184,189,196,203-220,223-229,231-237
+  s_1dfdf61332f5c7::t_363ae9111b9942 5
+  s_1dfdf61332f5c7::t_2d0bd585587d88 98-99,106,120-121,123-125,128-132,134-135,153,156-157,162-175,179-183,185-188,190-195,197-202,221-222,230
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_7560009250c02a 1-244
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_41a84c4e8355e3 7909
+  s_1dfdf61332f5c7::t_7560009250c02a 15,17,3025-3026,3029-3030,3082-3083,3185-3187,3276-3283,3286-3289,3294-3312,3314-3315,3535-3540,3543,3548-3549,3551,3553-3562,3568,3570-3574,3576-3585,3692-3693,3700,3702,3705-3716,4583-4588
+  s_1dfdf61332f5c7::t_f790663309980e 7940-7944
+  s_1dfdf61332f5c7::t_5988456af393f2 16
+  s_1dfdf61332f5c7::t_7b88a501e4f8bd 7895-7900,7902-7904,7906-7908
+  s_1dfdf61332f5c7::t_ca8715def0cc73 3022,3544-3546
+  s_1dfdf61332f5c7::t_d1448accb9e5d4 3575,3588-3589,3592-3596
+  s_1dfdf61332f5c7::t_bcf3d39a5c6fb3 3590
+  s_1dfdf61332f5c7::t_88e60667d2d8eb 7529-7531,7534,7538-7542
+  s_1dfdf61332f5c7::t_b8621d7a4af5f4 3024,3516,3524,3552,3591,3701
+  s_1dfdf61332f5c7::t_0d7cdec7e7fcd3 3517-3520,3525-3531
+  s_1dfdf61332f5c7::t_cc87b0e8b10db8 7525-7527
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_7560009250c02a 34-35,50
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_7560009250c02a 483
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bf3ccf9368b1df221f16a0b332593fb90bd19764",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_e5ac85fca2ef43": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0520ee52affeJH69RpWzRRdY52",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

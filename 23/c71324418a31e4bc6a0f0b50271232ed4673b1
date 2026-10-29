@@ -1,0 +1,24 @@
+packages/workshop-shared/src/external-message-gateway.ts
+  s_d62853a085272a::t_c6e62a365f261a 82-84,110-111
+  s_d62853a085272a::t_46111bd94bdf41 48,54,61,67
+packages/workshop-backend/src/overseer.ts
+  s_d62853a085272a::t_21d76a4db38a57 903-907,917,980
+  s_d62853a085272a::t_46111bd94bdf41 915,927,982,991
+  s_d62853a085272a::t_2272577d0bf182 2296-2297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "23c71324418a31e4bc6a0f0b50271232ed4673b1",
+  "prompts": {},
+  "sessions": {
+    "s_d62853a085272a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07f3a23baffeycd8CGIsH1bEDM",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

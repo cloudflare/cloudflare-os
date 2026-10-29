@@ -1,0 +1,23 @@
+packages/workshop-frontend/src/Activity.tsx
+  s_e76afbbdc88896::t_452baa2869b578 29-34,120,228-230,340-344,368,372,485-493,499-501
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e76afbbdc88896::t_6559e927f963fc 4412-4415,4610,6859-6860,6862
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_e76afbbdc88896::t_2245dd2738072c 1666,1827
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "40b21627938413aa98bc6ffb4050e2b47c32c321",
+  "prompts": {},
+  "sessions": {
+    "s_e76afbbdc88896": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27e5b167-6a90-4bca-9f66-0a020d76005f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

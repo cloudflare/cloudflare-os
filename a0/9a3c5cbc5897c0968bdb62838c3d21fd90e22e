@@ -1,0 +1,57 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 6437-6438
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 168-227
+  s_e25e29d8ebebad::t_f582cddeb47c29 165-167
+  s_e25e29d8ebebad::t_5d226ede3cda08 228-230
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 523-528,737,2585-2586,2588-2609,2615,7780-7781,7897
+packages/workshop-frontend/src/Activity.test.tsx
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 71
+  s_e25e29d8ebebad::t_7e87ffb8479f97 68-70
+  s_e25e29d8ebebad::t_8e4397191a7dcb 72-74
+packages/workshop-frontend/src/Activity.tsx
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 99-101
+packages/workshop-shared/src/api.ts
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 1470,1507-1508
+  s_e25e29d8ebebad::t_2806e8bbb8efb8 1509
+packages/workshop-backend/src/auto-approval.ts
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 66-72,86-87
+  s_e25e29d8ebebad::t_5259b424e46887 65
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_7fe7cedcc9297c 4-12,22,40-106
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_ac1a11bb8865a8 2,6,10,20-36,53,71,74,85,87,95-97,175-196,235-266
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_07364e7b4ab08b 7-12,50,104-105,107,118-160,188
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_0c251dc9f3d5dc 4-7,25-27,41-43,58-71,84-86,92-105,110,113-117,129-130,137,142-146,171-173,175-176,178,195-198,207,213,215-220,222-233
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_3375be0d324ee3 92,161,172
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_481dc9b8a258f3 13-17,24,29,34-38,47,78-82,234-278,308-313,328-353,368
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_3be9078c40b34d 13,16,50-55,67,87-94,96,103-107,211-213,225-231,237
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_f3a17a99ab419e 152-156
+packages/workshop-frontend/src/useResolveAction.ts
+  s_e25e29d8ebebad::t_9c086947d4badc 1,4
+packages/workshop-shared/src/gatekeeper.ts
+  s_e25e29d8ebebad::t_b238b44d8d73ce 21-49,839-843
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a09a3c5cbc5897c0968bdb62838c3d21fd90e22e",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

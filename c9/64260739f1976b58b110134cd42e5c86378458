@@ -1,0 +1,43 @@
+packages/integration-tests/src/network-interceptor.ts
+  s_b09edcbcfbc4af::t_dbfef6d8a0d549 48-54
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_b09edcbcfbc4af::t_fb0af7b1791c3e 84-86
+  s_b09edcbcfbc4af::t_f756d1844946c2 142
+  s_b09edcbcfbc4af::t_f432d08f74b081 116-118
+  s_b09edcbcfbc4af::t_77b5af671d1de6 102-105,107
+packages/integration-tests/__tests__/network-interceptor.test.ts
+  s_b09edcbcfbc4af::t_2c3754693dadb9 6-9
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_b09edcbcfbc4af::t_e62844aec4b5ea 317-318
+  s_b09edcbcfbc4af::t_2c89f763906761 261-274,280-291,295-302,304-305
+packages/integration-tests/README.md
+  s_b09edcbcfbc4af::t_ba7bcb3506dfa1 61-66
+  s_b09edcbcfbc4af::t_af668fc0c92ede 39-40,43-45,49
+docs/integration-testing.md
+  s_b09edcbcfbc4af::t_b1fef2d27ab0d2 62
+  s_b09edcbcfbc4af::t_bfeffe5d92f4a1 64
+  s_b09edcbcfbc4af::t_f869992d3014bb 51-54,59
+  s_b09edcbcfbc4af::t_6a147fcb0f50ca 20-22
+  s_b09edcbcfbc4af::t_24cf33763c111a 3,10
+  s_b09edcbcfbc4af::t_61c455add044c5 15-19
+  s_b09edcbcfbc4af::t_412cae3b63a0b0 60-61
+  s_b09edcbcfbc4af::t_b2c82b24f73a7e 127
+packages/integration-tests/vitest.config.ts
+  s_b09edcbcfbc4af::t_7704b413690a32 9-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c964260739f1976b58b110134cd42e5c86378458",
+  "prompts": {},
+  "sessions": {
+    "s_b09edcbcfbc4af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c9b41178-e4bb-4205-87ea-40d785e5024b",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}

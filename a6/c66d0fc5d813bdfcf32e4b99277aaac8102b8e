@@ -1,0 +1,26 @@
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 68-71
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_1dfdf61332f5c7::t_28db582295c511 40
+  s_1dfdf61332f5c7::t_a651f04c19b9fc 54,57
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_19ec565d7f51d9 5874-5878
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_73b0fca2ca7a14 23-29,247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a6c66d0fc5d813bdfcf32e4b99277aaac8102b8e",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

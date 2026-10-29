@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/workshop-lifecycle.test.ts
+  s_3fd32ba9d290d1::t_02f61cbf81592b 5,36,38,59-66,68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "93a0157ff5f04731bbcf9e82fcbe9bc0b40f2037",
+  "prompts": {},
+  "sessions": {
+    "s_3fd32ba9d290d1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54cfef4d-a815-4b29-b293-946cabbd7fae",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

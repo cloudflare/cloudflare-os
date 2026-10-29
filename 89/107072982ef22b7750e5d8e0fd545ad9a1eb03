@@ -1,0 +1,27 @@
+packages/workshop-backend/src/overseer.ts
+  s_851dd2aa785588::t_8fdc69a1a6c902 33,2580-2583,2600,3138-3139,3215-3216,7383-7394,8303-8306
+packages/workshop-backend/src/chat-attachment-validation.ts
+  s_851dd2aa785588::t_8fdc69a1a6c902 1-2,4,8-18,30-49,53,56-57,59
+packages/workshop-shared/src/api.ts
+  s_851dd2aa785588::t_8fdc69a1a6c902 1256-1257,1260
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_851dd2aa785588::t_8fdc69a1a6c902 1722
+packages/workshop-backend/__tests__/chat-attachment-validation.test.ts
+  s_851dd2aa785588::t_8fdc69a1a6c902 1-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "89107072982ef22b7750e5d8e0fd545ad9a1eb03",
+  "prompts": {},
+  "sessions": {
+    "s_851dd2aa785588": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0514ff91dffe7QuCQy7ut88FTy",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

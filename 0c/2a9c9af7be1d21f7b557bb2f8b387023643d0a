@@ -1,0 +1,23 @@
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_8037eb60c4df8b::t_a5caf4776ead1f 16-17,170-174
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_8037eb60c4df8b::t_d89679a9803856 19-20
+packages/integration-tests/src/harness.ts
+  s_8037eb60c4df8b::t_d54d90179f2ded 167-185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0c2a9c9af7be1d21f7b557bb2f8b387023643d0a",
+  "prompts": {},
+  "sessions": {
+    "s_8037eb60c4df8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bbe8c583-eff7-4186-b6df-cf4fc16fa195",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

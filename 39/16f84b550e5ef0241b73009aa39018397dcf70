@@ -1,0 +1,54 @@
+docs/spaces.md
+  s_dd2417a6d5bd82::t_7eac56842ca4ee 93
+  s_dd2417a6d5bd82::t_799ec90e44d571 3
+  s_dd2417a6d5bd82::t_85fba57f0aa54b 111
+  s_dd2417a6d5bd82::t_f49f2b3dec6edd 91
+  s_dd2417a6d5bd82::t_7ebd9cd254c0ef 97
+  s_dd2417a6d5bd82::t_7c6550704f6ba3 107,136
+  s_dd2417a6d5bd82::t_9a4c9c3d44549c 138
+  s_dd2417a6d5bd82::t_116952f6fa4bac 55
+  s_dd2417a6d5bd82::t_be3bf3c51c8a0e 22
+  s_dd2417a6d5bd82::t_0280ab2f7f06b1 103
+  s_dd2417a6d5bd82::t_d1837f8abb9fb6 95
+  s_dd2417a6d5bd82::t_c41cde7dfdb19e 85
+  s_dd2417a6d5bd82::t_64ae00d0ed5649 139
+  s_dd2417a6d5bd82::t_944f737f37c41b 82-84
+  s_dd2417a6d5bd82::t_d887b01df66de7 86-90
+  s_dd2417a6d5bd82::t_9f2a6dcdf3705e 92
+  s_dd2417a6d5bd82::t_a7922e6de73c11 94
+  s_dd2417a6d5bd82::t_a2cafb1bdbefaa 96
+  s_dd2417a6d5bd82::t_7334e811ff3efd 98-102
+  s_dd2417a6d5bd82::t_3ba08230288655 104-106
+  s_dd2417a6d5bd82::t_a9eb850c539fb9 108-110
+  s_dd2417a6d5bd82::t_413c238e2df9ca 112
+  s_dd2417a6d5bd82::t_f120b2cc0bae2b 135
+  s_dd2417a6d5bd82::t_209f3ebda19d21 137
+  s_dd2417a6d5bd82::t_28aa1f233af3a6 140
+  s_960355c43d55ec::t_0c91f6ee1ad353 5,13,18,29,37,44,48,50-51,71,73,78-81,115-117,128-131,142
+AGENTS.md
+  s_dd2417a6d5bd82::t_e94616c34453bd 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3916f84b550e5ef0241b73009aa39018397dcf70",
+  "prompts": {},
+  "sessions": {
+    "s_960355c43d55ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a7f99d8718095d3ec",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

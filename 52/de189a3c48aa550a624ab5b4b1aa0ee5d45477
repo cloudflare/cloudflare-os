@@ -1,0 +1,31 @@
+packages/workshop-backend/__tests__/tsconfig.json
+  s_e3eb00eefefcec::t_e5777926c448e1 1-11
+packages/workshop-backend/__tests__/fixtures/rpc-disconnect-worker.ts
+  s_e3eb00eefefcec::t_e5777926c448e1 1-128
+packages/workshop-backend/src/server.ts
+  s_e3eb00eefefcec::t_e5777926c448e1 24,190-197
+packages/workshop-backend/__tests__/rpc-disconnect.test.ts
+  s_e3eb00eefefcec::t_e5777926c448e1 1-115
+packages/workshop-backend/src/rpc-session.ts
+  s_e3eb00eefefcec::t_e5777926c448e1 1-42
+packages/workshop-backend/package.json
+  s_e3eb00eefefcec::t_e5777926c448e1 35
+packages/workshop-backend/vitest.config.ts
+  s_e3eb00eefefcec::t_e5777926c448e1 3,7-8,11,13,16-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "52de189a3c48aa550a624ab5b4b1aa0ee5d45477",
+  "prompts": {},
+  "sessions": {
+    "s_e3eb00eefefcec": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b1b405dffeCnKNg5y1Hwfsr2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

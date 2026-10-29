@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/useAlwaysApproveTag.ts
+  s_e25e29d8ebebad::t_c92c7bf3e6daa2 6,18,21,24-32,34,37
+packages/workshop-frontend/src/Activity.tsx
+  s_e25e29d8ebebad::t_c92c7bf3e6daa2 190
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_c92c7bf3e6daa2 5465,5882
+packages/workshop-frontend/src/useAlwaysApproveTag.test.tsx
+  s_e25e29d8ebebad::t_c92c7bf3e6daa2 8,18-27,40,50-51,55-61,65-66,70,74,77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6b09f15d0296bc6c0a66b50269e2e2895fc3cf15",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

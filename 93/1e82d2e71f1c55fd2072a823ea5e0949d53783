@@ -1,0 +1,23 @@
+scripts/map-concurrent.ts
+  s_385c47813d6783::t_1a1d7575393598 13-16,24-27,33,43,46-49,62
+scripts/map-concurrent.test.ts
+  s_385c47813d6783::t_7ce8127789f40e 72-108
+scripts/release/build-release.ts
+  s_385c47813d6783::t_92d03e57a3eecb 90-99,142,145,152,155,180,182-193,196-197,200-208,261-263
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "931e82d2e71f1c55fd2072a823ea5e0949d53783",
+  "prompts": {},
+  "sessions": {
+    "s_385c47813d6783": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38f31025-0785-4dfe-901e-900d72366c8e",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

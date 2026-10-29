@@ -1,0 +1,33 @@
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_f4752a3f31547a::t_8c2ccb50bfca04 141
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_f4752a3f31547a::t_b59af59f13f726 28-29,32,35,37-38,830-921
+docs/sharing.md
+  s_f4752a3f31547a::t_3a1fcb415a64fb 175-178
+packages/workshop-backend/__tests__/chatgpt-workspace-lock.test.ts
+  s_f4752a3f31547a::t_60e4136b946aec 1-156
+packages/workshop-backend/src/overseer.ts
+  s_f4752a3f31547a::t_bb588e578a4827 70,7051-7088,9976-9977,11094,11120,11150-11155,11162,11170,12388-12394,12787
+packages/workshop-backend/src/sharing.ts
+  s_f4752a3f31547a::t_506f495187ea8a 23-25,116-119,124-134,154-162,198-199,210,252,309,451,479,581-582,593
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_f4752a3f31547a::t_c52efbdef98fdb 1233-1237
+packages/workshop-shared/src/api.ts
+  s_f4752a3f31547a::t_bb2e124dbc8e39 2309-2315,3319-3326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ca43e8ea11c74e8177faaabdd976ac8d2df634f2",
+  "prompts": {},
+  "sessions": {
+    "s_f4752a3f31547a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a8928a7-4e3d-4b4d-8e6a-5564c5c9710a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

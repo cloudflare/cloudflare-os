@@ -1,0 +1,85 @@
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_f5d864c1baf77a 3809-3810
+  s_f74e55bad93be8::t_684976258b3358 5-8,26-28,648-653,883-899,1471-1503,1515-1525,1527,1533,2407,2448-2451,2560-2562,2586,2596,2601,2607,2610,2613,2686-2689,3199-3202,3736,3738,3740,4296,4298,4933,4951-4956,5068-5071,5271-5276,5278-5284,5286-5287,5290-5291,5346-5347,5350-5353,5355,6040,6046-6047,6049-6050,6141,6206-6217
+  s_f74e55bad93be8::t_12fbd84974624f 2443-2444,2446
+  s_f74e55bad93be8::t_d14a53144c7516 2441-2442
+  s_f74e55bad93be8::t_54b7ef5cc72c61 3
+  s_f74e55bad93be8::t_5dc35722351f29 3811
+  s_f74e55bad93be8::t_90fc64c68be309 5277
+  s_f74e55bad93be8::t_7cd296bd524b9f 2445,2447
+  s_f74e55bad93be8::t_27becef38acb7d 29
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_1d8258ed0b3ad9 1094-1097,1102-1103,1105-1106,1113-1114,1116-1117
+  s_f74e55bad93be8::t_8a984fe55b906f 1633-1635
+  s_f74e55bad93be8::t_1dc6f9f988d226 1625-1632,1636-1656
+  s_f74e55bad93be8::t_402eb715fab803 1657-1659
+packages/workshop-frontend/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 9,39-40
+packages/workshop-frontend/src/slash-commands.ts
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-52
+packages/workshop-backend/src/utils.ts
+  s_f74e55bad93be8::t_27becef38acb7d 1-25
+packages/workshop-frontend/src/routes/index.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 14,86,94-96,103-104
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 941
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_3efee3f7fff56b 746-748,755
+  s_f74e55bad93be8::t_f4d72d7c782d58 20
+  s_f74e55bad93be8::t_b89c375b25cd3f 756-757
+  s_f74e55bad93be8::t_0dde982038ea22 194-196,679,743-745,749-754
+  s_f74e55bad93be8::t_8a984fe55b906f 677-678
+packages/workshop-backend/src/slash-commands.ts
+  s_f74e55bad93be8::t_58cef1f8afce4c 130,171,232,236-237,291,293-294,302-303,308
+  s_f74e55bad93be8::t_d14a53144c7516 11-12,52,70,79,87,153-154,182-184,186-187,189,192,201,205-206,209-210,216,223,230-231
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-8,10,13-51,53-69,71-78,80-86,88-98,100-129,131-152,155-170,172-181,185,188,190-191,193-200,202-204,207-208,211-215,217-222,224-229,233-235,238-290,292,295-301,304-307,309-363
+  s_f74e55bad93be8::t_809931ece27d5f 99
+  s_f74e55bad93be8::t_27becef38acb7d 9
+packages/workshop-backend/__tests__/timeout.test.ts
+  s_f74e55bad93be8::t_27becef38acb7d 2
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,3-41
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_f74e55bad93be8::t_d4c3076066e537 299
+  s_f74e55bad93be8::t_2ff840616b5398 12,18,24,39,52,69-71
+  s_f74e55bad93be8::t_80b484905e7a68 91,106-107,138,166
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-11,13-17,19-23,25-38,40-51,53-68,72-90,92-105,108-137,139-147,149,151-165,167-200,202-208,210-225,227-248,255-274,276-298,300-330,332-379
+  s_f74e55bad93be8::t_21fb4344ef42bf 148,150,201,209,249-254,275
+  s_f74e55bad93be8::t_8bcdc8f5788d63 226,331
+pnpm-lock.yaml
+  s_f74e55bad93be8::t_8531f1dc6e8247 553-555
+packages/workshop-frontend/src/slash-commands.test.ts
+  s_f74e55bad93be8::t_077e8aea6596f3 15,21,46-50,76
+  s_f74e55bad93be8::t_ba3852d68ffe26 1-14,16-20,22-45,51-75,77-81
+packages/workshop-shared/package.json
+  s_f74e55bad93be8::t_ba3852d68ffe26 16-19
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_f74e55bad93be8::t_ba3852d68ffe26 1,260-261,269-282
+  s_f74e55bad93be8::t_ed8ad4acd2e30a 2-4
+  s_f74e55bad93be8::t_4a9a8df967f60f 5-212,218-256,265,286
+  s_f74e55bad93be8::t_8555d0017276c3 266-268,283-285
+  s_f74e55bad93be8::t_021a1262ae4025 257-259,262-264
+  s_f74e55bad93be8::t_4457eda5e73885 287
+  s_f74e55bad93be8::t_d176085eec1f7a 213-217
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f74e55bad93be8::t_058f7a2215feca 67-68,73,90,1443,1485-1486,1508,1521,1733-1748,1750,1758,1768,1771-1772,1774-1791,1793-1846,1852,1856,2337,2402,2422-2450,2477-2481,2518-2543,3358,4326,4329,4337-4339,4349,4365,4368,4371-4373,5544,6306,6424
+  s_f74e55bad93be8::t_d176085eec1f7a 1773,1792
+packages/workshop-shared/src/slash-commands.ts
+  s_f74e55bad93be8::t_f944c257d7cfef 30
+  s_f74e55bad93be8::t_0dde982038ea22 1-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "70ea5522be4c78972ee1ae22bc89eb663f0a73ce",
+  "prompts": {},
+  "sessions": {
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": null
+    }
+  }
+}

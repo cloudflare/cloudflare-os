@@ -1,0 +1,32 @@
+REVIEW.md
+  s_d8168e28e90524::t_9f788475c84bc5 86-89
+package.json
+  s_d8168e28e90524::t_1012a67a2fb56e 8,10,19
+AGENTS.md
+  s_d8168e28e90524::t_28494f9b50e118 69,73
+  s_176cc1671a30ab::t_025587cb1d1f2c 75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "62d0252b84be4e51c20fdac59f052bb455d1feb4",
+  "prompts": {},
+  "sessions": {
+    "s_176cc1671a30ab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "588a8702-6f34-459e-b107-5ac05f27d3ff",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d8168e28e90524": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78bf0016-ebc7-4405-83df-b9b826484738",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

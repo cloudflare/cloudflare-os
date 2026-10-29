@@ -1,0 +1,21 @@
+packages/mcp-shared/__tests__/connection.test.ts
+  s_e25e29d8ebebad::t_62e51b6ed44b44 30-46
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_f2d78a1ce2d4f9 133-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4796066aabb48f8fca74966ec9f7485abe46ab59",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

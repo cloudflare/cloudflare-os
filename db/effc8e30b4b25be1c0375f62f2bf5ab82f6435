@@ -1,0 +1,17 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dbeffc8e30b4b25be1c0375f62f2bf5ab82f6435",
+  "prompts": {},
+  "sessions": {
+    "s_7f6a34c1e4e953": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_094c7ae60ffenuZXH3piPwNMTl",
+        "model": "grok-4.5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,79 @@
+packages/workshop-frontend/src/features/chat/composer/useChatModelDescription.ts
+  s_b935ef13c35665::t_eb8e8875566860 4,36
+  s_b935ef13c35665::t_654e35740345f5 1-3,5-35,37-47
+packages/workshop-frontend/src/features/chat/composer/useChatPresets.ts
+  s_b935ef13c35665::t_cdbc43c25dc8b1 1-26,29,31-34,36-37,40-42,44-56,58-61,63-68,71-80
+  s_b935ef13c35665::t_9366d50bd766f3 27-28,30,35,38,43,57,62,69-70
+  s_b935ef13c35665::t_5bac8433ddfedf 39
+packages/workshop-frontend/src/features/chat/composer/ComposerChatSettings.tsx
+  s_b935ef13c35665::t_5e54044312f67a 63-67,88,90-94,103,111-112,117-124,170,227,361-362,365,369-370,380,389,397,428,480
+  s_b935ef13c35665::t_32e26047d507f3 2-9,232-233,328-329,352,383,387,406-407,422,504,506,516,518,525,656
+  s_b935ef13c35665::t_350cd92ef291af 1,10-62,68-87,89,95-102,104-110,113-116,125-169,171-226,228-231,234-327,330-351,353-360,366-368,371-379,381-382,384-386,388,390-396,398-405,408-421,423-427,429-479,481-503,505,507-515,517,519-524,526-547,550-635,638-655,657-659,677-682
+  s_b935ef13c35665::t_9334c490abbaad 660,662-676
+  s_b935ef13c35665::t_5bac8433ddfedf 548-549
+  s_b935ef13c35665::t_dcd9958daf5c52 636-637,661
+  s_b935ef13c35665::t_60a6d853ada353 363-364
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_b935ef13c35665::t_91ea2c93bd8992 4106-4107,4112-4113
+  s_b935ef13c35665::t_043a3c56faf60f 4077,4080-4087,4108-4111,4114-4121,5537
+  s_b935ef13c35665::t_5572856fcfa269 86,120-126,2798-2801,3150,4019,4057,4078-4079,4088-4105,6543,6626-6630
+  s_b935ef13c35665::t_e92920be140704 6631
+packages/workshop-frontend/src/features/chat/composer/chatSettingsSelection.test.ts
+  s_b935ef13c35665::t_933ef87739958f 1-50
+packages/workshop-frontend/src/ChatInterface.chatSettings.test.tsx
+  s_b935ef13c35665::t_4132d7dd9b97b2 1-4,6-14,25,30-35,40-58,60-98,102-105,107-111,115-133,135-146,149-157,161,163-166,169-233,252-260,290-291
+  s_b935ef13c35665::t_9ad3841c47cfeb 36-39,112-114
+  s_b935ef13c35665::t_72551eb1b5f2b5 99-101
+  s_b935ef13c35665::t_f6cd0c9d52644f 5,15-24,26-29
+  s_b935ef13c35665::t_7e27c014fc0b78 59,106,134,158-160,162,167-168,234-251,261-263,272,276-282,286,288
+  s_b935ef13c35665::t_0782463143785d 147-148
+  s_b935ef13c35665::t_2112fccee20ccd 264-271,273-275,283-285,287,289
+packages/workshop-frontend/src/routes/index.tsx
+  s_b935ef13c35665::t_043a3c56faf60f 68-69,176,229
+  s_b935ef13c35665::t_72063947f16f84 15,26-32,67,70,106-110,142-143,168,224-228,230
+  s_b935ef13c35665::t_4d90290c96490c 177
+packages/workshop-frontend/src/features/ai-models/CompactionBudgetHelp.tsx
+  s_b935ef13c35665::t_66c02620eda679 13,16,24-25,29-31
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_b935ef13c35665::t_3ae5e778eeda58 13-19,225
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.tsx
+  s_b935ef13c35665::t_a632bd90f642c3 52,89,129-130,963
+packages/workshop-frontend/src/features/chat/composer/chatSettingsSelection.ts
+  s_b935ef13c35665::t_f327ffacc6f70e 1-38
+packages/workshop-frontend/src/features/chat/composer/chatPresets.ts
+  s_b935ef13c35665::t_5bac8433ddfedf 52-55,58
+  s_b935ef13c35665::t_21d279ecad5214 1-26,39-51,59-101
+  s_b935ef13c35665::t_32e26047d507f3 27-38
+  s_b935ef13c35665::t_9ce19a2d8f9201 56-57
+packages/workshop-frontend/src/features/ai-models/ReasoningLevelSelect.tsx
+  s_b935ef13c35665::t_3ae5e778eeda58 2-3,5,9-11,14,18,20,22-23,26
+  s_b935ef13c35665::t_53297581c1d4e8 6,42,48,54-55,58,60
+packages/workshop-frontend/src/features/chat/composer/chatPresets.test.ts
+  s_b935ef13c35665::t_d087da54938a1d 1-68,74-117
+  s_b935ef13c35665::t_bbefb2aa8eca3b 69-73
+packages/workshop-frontend/src/features/ai-models/modelForm.ts
+  s_b935ef13c35665::t_3ae5e778eeda58 33-45
+packages/workshop-frontend/src/features/chat/composer/ComposerChatSettings.test.tsx
+  s_b935ef13c35665::t_9ce19a2d8f9201 128-129,131-133,244,318,383,391,502
+  s_b935ef13c35665::t_1487b3ff81c1c0 508-518
+  s_b935ef13c35665::t_da107ccb732688 397,400-425
+  s_b935ef13c35665::t_84c9d3d37a9b72 1-82,84-103,105-111,113-127,130,134-205,220-243,245-317,319-376,381-382,384-390,392-396,398-399,426-481,493-501,503-507,519-526
+  s_b935ef13c35665::t_0a3937a26316ea 83,104,112,206-219,377-380,482-490
+  s_b935ef13c35665::t_dcd9958daf5c52 491-492
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8b5a5d7b55e0a8edb688842979370ae91ab22f9c",
+  "prompts": {},
+  "sessions": {
+    "s_b935ef13c35665": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58c3f333-baff-470f-84e4-eccedd1e8e9f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

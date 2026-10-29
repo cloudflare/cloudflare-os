@@ -1,0 +1,51 @@
+AGENTS.md
+  s_494faef1c0ee9f::t_407f41ea2d9408 69,73-75
+scripts/env-passthrough.test.ts
+  s_f3d5b60068a8b0::t_6a76678de039f4 93-94
+scripts/release/build-release.ts
+  s_f3d5b60068a8b0::t_9396d3ccb3a08e 30,224-225,227
+scripts/run-dev-server.ts
+  s_f3d5b60068a8b0::t_d0dc0e9a7d43a4 28,236-238,240,268-271,281-282,284
+scripts/run-local.ts
+  s_f3d5b60068a8b0::t_f80c06e9da617a 20,24-27,42,57
+scripts/vp-concurrency.ts
+  s_494faef1c0ee9f::t_a35ccd3ddda1de 1-81
+package.json
+  s_8ab77516abe232::t_f41caff819fd44 8,10,17
+scripts/vp-concurrency.test.ts
+  s_f3d5b60068a8b0::t_69c5293841592a 1-73
+scripts/vp-run.ts
+  s_8ab77516abe232::t_1b500dfc8c7e07 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "59781eeade02b387c47937dccfd926fe6fa031e8",
+  "prompts": {},
+  "sessions": {
+    "s_494faef1c0ee9f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8b64a32d-8f92-4557-bb9c-d981ff1f8582",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8ab77516abe232": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e86ed18c-64f1-4fd8-aac5-62d6b02ca0a0",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f3d5b60068a8b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a49c5199-d948-4b3a-8340-95bdf03cb15e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

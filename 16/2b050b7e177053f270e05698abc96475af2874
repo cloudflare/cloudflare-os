@@ -1,0 +1,25 @@
+.github/workflows/preview.yml
+  s_8e22eafc336426::t_121cdb46e2ace3 1-241
+scripts/preview/staging-config.test.ts
+  s_8e22eafc336426::t_cf06b5591ac032 1-394
+scripts/preview/staging-config.ts
+  s_8e22eafc336426::t_0ee110ffdd3e65 1-741
+scripts/preview/preview.ts
+  s_8e22eafc336426::t_b16970b26b291e 1-783
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "162b050b7e177053f270e05698abc96475af2874",
+  "prompts": {},
+  "sessions": {
+    "s_8e22eafc336426": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "60e584a3-0499-4799-bfbd-1be2dd515824",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

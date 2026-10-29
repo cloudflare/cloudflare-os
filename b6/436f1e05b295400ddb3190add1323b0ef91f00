@@ -1,0 +1,106 @@
+packages/workshop-backend/src/overseer.ts
+  s_cd499ea12d2b3c::t_fc62e52cf0f6fb 5376
+  s_cd499ea12d2b3c::t_3b57fd710dd5c4 5331
+  s_cd499ea12d2b3c::t_4a891a248ae691 114
+  s_cd499ea12d2b3c::t_925b67dd2d6342 3,26
+  s_cd499ea12d2b3c::t_b65dfc28547b55 2542-2543,2567,2577,2582
+  s_cd499ea12d2b3c::t_a98aa0b9f2e70f 2665,2667-2672
+  s_cd499ea12d2b3c::t_5fc854f0831704 3184-3185,5175,5271,5341,5395
+  s_cd499ea12d2b3c::t_acb8645467cf35 115,5265-5266,5269,5338-5340,5357,5366,5374,5393-5394,5407,5416
+  s_cd499ea12d2b3c::t_b57f03dff4c170 116,5277-5279,5283,5304,5375
+  s_f74e55bad93be8::t_684976258b3358 5335-5336
+  s_cd499ea12d2b3c::t_267344821ac08e 3186-3190
+  s_cd499ea12d2b3c::t_c08a852a33f1d0 6083,6085-6091
+  s_cd499ea12d2b3c::t_24e122ec776427 3724-3728,3731-3733
+  s_cd499ea12d2b3c::t_b7e577752a73f9 2440
+  s_cd499ea12d2b3c::t_8cd330cc46d1c3 5154
+  s_cd499ea12d2b3c::t_1f21063e1c0957 6084
+  s_cd499ea12d2b3c::t_dae1f02cec0fc3 5322-5323
+  s_cd499ea12d2b3c::t_8fd02a1c786da4 4250,5062
+  s_cd499ea12d2b3c::t_72c3eec97e232b 4,152,1501,1625-1626,1634,2666,5272,5280
+  s_cd499ea12d2b3c::t_2806454dea16bd 1496,1508
+  s_cd499ea12d2b3c::t_bdf114d4fde671 2415-2416
+  s_cd499ea12d2b3c::t_d0c3c3094d7b07 5268,5270,5274-5276,5281-5282,5288,5337,5345,5391-5392,5401
+  s_cd499ea12d2b3c::t_c1df203a5aa709 5291-5303,5305-5321,5324-5330,5332-5334,5362-5363,5412-5413
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_cd499ea12d2b3c::t_bdec05b4dbeed0 1805-1806,5869-5881
+  s_cd499ea12d2b3c::t_d0300e22407233 68,1439
+  s_cd499ea12d2b3c::t_df7b3266eed79e 4367,4373,4382,4403,4409,4413
+  s_cd499ea12d2b3c::t_99030059b4ece3 1810-1811
+  s_cd499ea12d2b3c::t_f3f494e499b294 4372,4408
+  s_cd499ea12d2b3c::t_8105a6ef9de846 5858-5860,5882-5884,5894-5895
+  s_cd499ea12d2b3c::t_713061770ea7b3 1816
+  s_cd499ea12d2b3c::t_8ef6fe4c3120fb 5861-5867,5889,5892
+  s_cd499ea12d2b3c::t_078245fa31c3fe 5868,5902-5919
+  s_cd499ea12d2b3c::t_ffbc0cf1dcc818 1772,1791,1812-1815
+  s_cd499ea12d2b3c::t_2301be75329810 1807-1809,1818,1844-1852,1857
+  s_cd499ea12d2b3c::t_09be3e14b76f0d 2943,5890-5891,5893
+  s_cd499ea12d2b3c::t_9ed57c8d43acf7 2809,2941-2942,2944-2962,3069-3070
+packages/workshop-frontend/src/routes/index.tsx
+  s_cd499ea12d2b3c::t_0953978fffb702 91
+  s_cd499ea12d2b3c::t_713061770ea7b3 90,92-94
+  s_cd499ea12d2b3c::t_1b082306dc3add 14,82,101
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_cd499ea12d2b3c::t_33322c5ca83400 15,29,31,100,115
+  s_cd499ea12d2b3c::t_32294c38ddd0c1 6,43-45
+  s_cd499ea12d2b3c::t_ffbc0cf1dcc818 105-108
+  s_cd499ea12d2b3c::t_72a2aed92e636f 32,113-114
+  s_cd499ea12d2b3c::t_5d0a7fd3d5eeed 1-5,7,16,46,62-63,65-73,75,78-83,88-95,98-99,101,103,109-112,122-125,127-128
+packages/workshop-backend/src/agent.ts
+  s_cd499ea12d2b3c::t_f01efded6681e6 1185-1188
+  s_cd499ea12d2b3c::t_91f7d3e285c458 2
+packages/workshop-backend/src/slash-commands.ts
+  s_cd499ea12d2b3c::t_05f7d4862dd994 3,6,9,14-17,19-45,47-51
+  s_cd499ea12d2b3c::t_b860ad324d0579 52
+  s_cd499ea12d2b3c::t_32294c38ddd0c1 13
+packages/workshop-shared/src/gatekeeper.ts
+  s_cd499ea12d2b3c::t_2687dc9611c227 21-27
+  s_9f88b9af80d2e3::t_5c1c92742d79fd 770
+  s_cd499ea12d2b3c::t_33322c5ca83400 778
+  s_cd499ea12d2b3c::t_91f7d3e285c458 194,676,742-743,748-750,779-780
+  s_cd499ea12d2b3c::t_28add2c8cc2cee 745-746
+  s_cd499ea12d2b3c::t_1e672428dc0d66 784
+  s_cd499ea12d2b3c::t_25610506595e75 744,781,786
+packages/workshop-shared/src/api.ts
+  s_cd499ea12d2b3c::t_28add2c8cc2cee 1363-1365
+  s_cd499ea12d2b3c::t_09be3e14b76f0d 1355-1357
+  s_cd499ea12d2b3c::t_0afa14b06cdedd 1646-1647,1652-1653
+  s_cd499ea12d2b3c::t_ffbc0cf1dcc818 1648
+  s_cd499ea12d2b3c::t_1e672428dc0d66 1098-1099,1106,1110-1111,1358-1362,1649-1651
+  s_cd499ea12d2b3c::t_bdec05b4dbeed0 1100,1112
+  s_cd499ea12d2b3c::t_91f7d3e285c458 27
+  s_cd499ea12d2b3c::t_f5f17ad9cfd741 1645
+  s_cd499ea12d2b3c::t_8d3fa7438e28bd 1105,1117-1118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b6436f1e05b295400ddb3190add1323b0ef91f00",
+  "prompts": {},
+  "sessions": {
+    "s_9f88b9af80d2e3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_08e386c15ffe3hc7xTciAh89y2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    },
+    "s_cd499ea12d2b3c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_096ab086cffe3Jvx0xOqTAl2ew",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    },
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": null
+    }
+  }
+}

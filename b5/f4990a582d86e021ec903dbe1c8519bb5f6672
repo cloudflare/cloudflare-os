@@ -1,0 +1,19 @@
+scripts/build-gatekeeper-configurator.test.js
+  s_332df1b421cf7c::t_75329363ec14a0 261-299
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b5f4990a582d86e021ec903dbe1c8519bb5f6672",
+  "prompts": {},
+  "sessions": {
+    "s_332df1b421cf7c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_332df1b421cf7c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

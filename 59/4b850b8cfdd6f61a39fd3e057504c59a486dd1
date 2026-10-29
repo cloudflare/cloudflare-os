@@ -1,0 +1,21 @@
+docs/observers.md
+  s_30f26bb8696b2b::t_d1dd53387e0dfd 407-422
+docs/sharing.md
+  s_30f26bb8696b2b::t_71e3cef3ab47ee 161-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "594b850b8cfdd6f61a39fd3e057504c59a486dd1",
+  "prompts": {},
+  "sessions": {
+    "s_30f26bb8696b2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21d32dcc-b1ee-4f1a-bf95-5a1ecfae3ff2",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

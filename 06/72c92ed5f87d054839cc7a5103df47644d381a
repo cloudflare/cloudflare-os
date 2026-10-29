@@ -1,0 +1,53 @@
+packages/workshop-backend/__tests__/ai-gateway-binding-fetch.test.ts
+  s_8f3094573d27f9::t_d0c3ec91cbe1b6 8,10-19,23,25-28,30-33,38,54,59-122,126,134,138,147,151,162-163,167,183,193,202-206,209-210,220,225,237-239,267,273-275,278,284,294,298,307,314,317-318,327,333-334,336,341-342
+packages/workshop-backend/src/ai-models.ts
+  s_821114639ecbff::t_e4565cee8431a1 428-430
+  s_7cb2e13456d040::t_f64ef04c2c7a07 9,480-482
+packages/workshop-backend/src/ai-gateway-binding-fetch.ts
+  s_7cb2e13456d040::t_7f90a1e1fe217a 1-4,8-27,36-42,57-62,64,76-77,79-80,89-90,132,135-142,145-148,152-157,161-164
+  s_7cb2e13456d040::t_57d68aba4d7f0e 165-169
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_7cb2e13456d040::t_100ef147386c27 234-235,246-254
+packages/workshop-backend/src/ai-gateway.ts
+  s_7545e34ff06026::t_4810fa4cd91780 12-16,20-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0672c92ed5f87d054839cc7a5103df47644d381a",
+  "prompts": {},
+  "sessions": {
+    "s_7545e34ff06026": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0ac89dbf-363a-47fd-9b6b-5c69d6bb50b6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_7cb2e13456d040": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ebfd974-e57c-46ad-aea5-f64db9f3a4aa",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_821114639ecbff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "147b2439-e6fc-4ad6-a597-a927ab277c1a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8f3094573d27f9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0769358-a83f-43de-8b63-bd73fa173cd9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,66 @@
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_c25f8f223a6bc5 1933-1935
+  s_1dfdf61332f5c7::t_1d1059ea0ddf72 1440-1441
+  s_1dfdf61332f5c7::t_b63a2bec585092 1447-1449,1452-1453,1458-1459,1461-1469
+  s_1dfdf61332f5c7::t_d9cd67c0d72e32 809-813,816-821
+  s_1dfdf61332f5c7::t_3404d9d08d9267 1977
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 793-799,801-804,806,824,1974-1976,1978-1979
+  s_1dfdf61332f5c7::t_f77200c0e067db 1457,1460
+  s_1dfdf61332f5c7::t_0bec8918f4ed3a 805
+  s_1dfdf61332f5c7::t_17774dff98e895 1210-1211,1219,1446,1450-1451,1454-1456,1928,1932
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 1958-1959
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 34-35,50
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 240
+  s_1dfdf61332f5c7::t_8eb329c7f0761c 241
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 40,54,57
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_d519bec36cd85c 3536-3537
+  s_1dfdf61332f5c7::t_d9cd67c0d72e32 7513-7515
+  s_1dfdf61332f5c7::t_3ad6a3e067bab4 7519
+  s_1dfdf61332f5c7::t_db9ea584a741d7 7813-7814,7893
+  s_1dfdf61332f5c7::t_93f6a8f7fe36d0 3521-3522
+  s_1dfdf61332f5c7::t_b5a91637f1bbab 3087-3091
+  s_1dfdf61332f5c7::t_b63a2bec585092 14,156-157,821,825-826,3503,3505,3512,3516-3517,3519,3526
+  s_1dfdf61332f5c7::t_117cab1d9042fd 3,155,158-159,822-824
+  s_1dfdf61332f5c7::t_3231c4c5759a72 7516-7518,7520-7521,8379-8381
+  s_1dfdf61332f5c7::t_03a6adb0968e42 3520,3535
+  s_1dfdf61332f5c7::t_89f157e8e8ad1a 3504,3506-3511,3513-3515,3518,3523-3524,3527-3534
+  s_1dfdf61332f5c7::t_a10e53ad0f90ff 3525
+  s_1dfdf61332f5c7::t_2f3a476aa54eff 3031-3032
+  s_1dfdf61332f5c7::t_0d098b16177c59 827-828
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_307482e965ac20 4395
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_4b90b5f8a1df74 483
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_b63a2bec585092 1,82,86-87,107-109,113,115,927
+  s_1dfdf61332f5c7::t_8da07d761c45c4 111,2753
+  s_1dfdf61332f5c7::t_6138d01bb19bc3 119
+  s_1dfdf61332f5c7::t_d9cd67c0d72e32 83
+  s_1dfdf61332f5c7::t_3838f42d6bb642 117-118
+  s_1dfdf61332f5c7::t_bbc06a0e01b8a2 112,114,120
+  s_1dfdf61332f5c7::t_37ebc596e1fe7e 116,121-123
+  s_1dfdf61332f5c7::t_d5c3a87d7024f0 913-917
+  s_1dfdf61332f5c7::t_af93147a70c332 2752
+  s_1dfdf61332f5c7::t_ddf1c0d43c1994 79-81,84-85,88-106,110
+  s_1dfdf61332f5c7::t_ab17cea714edc7 926
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5cf7d8e631f7eea9f60ceca28a76a74e45e45c4e",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

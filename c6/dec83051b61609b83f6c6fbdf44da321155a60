@@ -1,0 +1,25 @@
+packages/integration-tests/README.md
+  s_4c4222726010fb::t_cbf62d4b14d5f3 31-37
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_4c4222726010fb::t_39b223d0ef16ae 16,23,137
+docs/integration-testing.md
+  s_4c4222726010fb::t_5f039963aa602b 156-173
+packages/integration-tests/src/rpc-client.ts
+  s_4c4222726010fb::t_2fd3636963dfd8 53-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c6dec83051b61609b83f6c6fbdf44da321155a60",
+  "prompts": {},
+  "sessions": {
+    "s_4c4222726010fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5865b5c-4e69-4687-9ed8-7dba84b5c46d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

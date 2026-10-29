@@ -1,0 +1,36 @@
+AGENTS.md
+  ai_agent 33-37
+packages/workshop-backend/src/overseer.ts
+  s_1c28d19ad743d0::t_9d657570120796 3
+  s_1c28d19ad743d0::t_1becc1bafd3a99 2638
+  s_1c28d19ad743d0::t_17c390179b82ec 9
+  s_1c28d19ad743d0::t_5c611710e80f65 2592
+packages/workshop-backend/src/ai-models.ts
+  ai_agent 45-52,56-61,159,161-162,168,178,183,185-189,197,206
+packages/workshop-backend/src/user.ts
+  ai_agent 8-9,37,43,405-414,419,421,425,427,441-450,454-459,492-493,495-496,592,598-600,621-624
+run-dev-server.js
+  ai_agent 16,45-56,210-211
+packages/workshop-backend/src/env.d.ts
+  ai_agent 21-27
+.gitignore
+  ai_agent 24-26
+packages/workshop-backend/src/deployment-custom-models.ts
+  ai_agent 1-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "28e3c79026346658f1ea1ea83c363125a9ef312c",
+  "prompts": {},
+  "sessions": {
+    "s_1c28d19ad743d0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe75c0fd-6b65-4f3d-8809-6f39a25ddea2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

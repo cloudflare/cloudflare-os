@@ -1,0 +1,22 @@
+packages/workshop-backend/src/slash-commands.ts
+  s_b9d78ba39005bb::t_9f84801dca9de1 52-53,107-108
+  s_b9d78ba39005bb::t_1ea7f1a42d830f 6
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_b9d78ba39005bb::t_935c2c0d942004 9-12,38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0c03cef206262c5fb4ad6319e7264a5e33060795",
+  "prompts": {},
+  "sessions": {
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

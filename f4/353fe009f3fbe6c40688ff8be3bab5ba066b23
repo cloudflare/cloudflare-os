@@ -1,0 +1,29 @@
+packages/workshop-backend/src/overseer.ts
+  s_c18eab6b56510c::t_119ebde091dfd5 4385-4396,4398-4408,4415-4417,4419,4445-4449,4563-4566,4705,4713-4719,4734,4736-4737,4739-4742,4744,4746,8101,8192
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_76184b90d4f6b2::t_b14b8a43a2d64e 1-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f4353fe009f3fbe6c40688ff8be3bab5ba066b23",
+  "prompts": {},
+  "sessions": {
+    "s_76184b90d4f6b2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c6efae7-9c7e-4942-8058-f1dc47671e61",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c18eab6b56510c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "915b6d04-11a1-4cf0-94e7-4f476d727ea3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

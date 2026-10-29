@@ -1,0 +1,43 @@
+packages/gatekeeper-context/src/context-types.ts
+  s_01a419c1d1869c::t_f5f84e3b15c880 194,196-197
+packages/gatekeeper-context/app/skills/SkillsNavigatorTree.test.tsx
+  s_01a419c1d1869c::t_aa0d0b7957382b 16,41,44,63,71,100-101,112-113,124,138,140,147,162-163,402-447
+packages/gatekeeper-context/__tests__/skill-manifest-errors.test.ts
+  s_01a419c1d1869c::t_51805feb340c83 1-70
+packages/gatekeeper-context/app/skills/README.md
+  s_7801bbf134048b::t_7d1d487edc658f 18-31
+packages/gatekeeper-context/src/observability.ts
+  s_01a419c1d1869c::t_b3224e76737bfe 8,11-12
+packages/gatekeeper-context/app/skills/skillNavigatorModel.ts
+  s_01a419c1d1869c::t_12d22b110dbd78 15-19,84,93,96,107-113,123-125
+packages/gatekeeper-context/app/skills/SkillsNavigatorTree.tsx
+  s_01a419c1d1869c::t_5ec38fe9293c82 17,44,50,80-82,127-128,138-142,222,244-253,528-543,627-631
+packages/gatekeeper-context/src/context-collection.ts
+  s_01a419c1d1869c::t_f49a1f84981836 24,36-40,605-607,613-620,624-628,630-632,635-636,641,645,647,740-741,748,1180,1187-1188,1200-1210
+packages/gatekeeper-context/app/skills/skillNavigatorModel.test.ts
+  s_01a419c1d1869c::t_d26ec163f8feb0 25,32,111-174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5db8a2b5e1ef7a8a0bfb5af2ce3bd0524b84161e",
+  "prompts": {},
+  "sessions": {
+    "s_01a419c1d1869c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6ffb023-2e7d-4151-9156-65c62a82612f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_7801bbf134048b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e69110af-6dc8-4306-90ae-798ba71a1a4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

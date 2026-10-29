@@ -1,0 +1,25 @@
+AGENTS.md
+  s_fcc903b17ec62a::t_21fe47fc422ed6 75
+scripts/vp-concurrency.test.ts
+  s_fcc903b17ec62a::t_5adc0df38c445d 9,272-354
+scripts/vp-concurrency.ts
+  s_fcc903b17ec62a::t_ee8c9e337f10c3 31-35,255-272,277-284,286-288,290
+scripts/vp-run.ts
+  s_fcc903b17ec62a::t_c0f32128912c8b 11-14,25-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "006e2a58731a8517b6b7628a98b096b56517f709",
+  "prompts": {},
+  "sessions": {
+    "s_fcc903b17ec62a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75d068b1-2d92-4e32-9f38-87260ac2c2f3",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

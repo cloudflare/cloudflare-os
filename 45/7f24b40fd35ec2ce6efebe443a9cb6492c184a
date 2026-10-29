@@ -1,0 +1,62 @@
+packages/workshop-frontend/src/AdminPage.tsx
+  s_99c5462c433ffc::t_ae5faa4036752f 15,99
+  s_99c5462c433ffc::t_ce9c24d16a8b36 97-98
+  s_99c5462c433ffc::t_d6cf1d70672256 487
+  s_99c5462c433ffc::t_f6635582a09274 16,167
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.test.tsx
+  s_99c5462c433ffc::t_35d4d0af1b6273 144,150-167
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.tsx
+  s_99c5462c433ffc::t_13108a46b058f6 58-60
+packages/workshop-frontend/src/features/deployment-updates/latestReads.ts
+  s_99c5462c433ffc::t_e0f5a930e784a5 9-11,14-15,17,30,33,42,45-47
+packages/workshop-frontend/src/features/deployment-updates/latestReads.test.ts
+  s_99c5462c433ffc::t_a5c4b3ec7ac6af 1-84,111-128
+packages/workshop-shared/src/api.ts
+  s_99c5462c433ffc::t_470cd4c491b5ac 1109-1116
+packages/workshop-backend/src/server.ts
+  s_99c5462c433ffc::t_470cd4c491b5ac 901-903,917,922,926-927
+  s_99c5462c433ffc::t_eb8755902f1715 4,34,50-51,906-907,908-910,912-916,921
+  s_99c5462c433ffc::t_a5851e08dd0e52 44-49,904-905,911,918-920,923-925
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_99c5462c433ffc::t_5f26355a436b1a 6-8,1075-1088,1146-1171
+  s_99c5462c433ffc::t_03ce14a9cba70d 1092-1093,1113-1114,1117-1118,1120-1124,1143-1145
+  s_99c5462c433ffc::t_eb8755902f1715 3,5,9-13,15-17,23,32-33,37,47-50,81,96-100,116-118,132-186,299-314,318,320,326,328,334,336,342,344,350-351,361,364,374,381,387,396,443,512-514,531-532,539,708,737-738,742,764,866-1074,1172
+  s_99c5462c433ffc::t_1e87a1bbe30ee0 1089-1091,1094-1112,1115-1116,1119,1125-1140
+  s_99c5462c433ffc::t_8ec2ac8aaa0948 1141-1142
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_99c5462c433ffc::t_eb8755902f1715 207-210
+packages/workshop-backend/src/admin-settings.ts
+  s_99c5462c433ffc::t_eb8755902f1715 21,25-29,350-361,363-410
+packages/workshop-backend/src/deployment-updates.ts
+  s_99c5462c433ffc::t_eb8755902f1715 19,21-26,38,59-98,149-150,153-154,158-162,177-178
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.ts
+  s_99c5462c433ffc::t_f6635582a09274 6,38
+packages/workshop-frontend/src/features/deployment-updates/probeRouterTag.ts
+  s_99c5462c433ffc::t_1cb4c2c5e99a13 1-23
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.test.tsx
+  s_99c5462c433ffc::t_e394e0fcead9a4 13,18,100-109
+  s_99c5462c433ffc::t_840cc110ba1a1d 110-111
+packages/workshop-frontend/src/features/deployment-updates/probeRouterTag.test.ts
+  s_99c5462c433ffc::t_50a73e16804317 1-31
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_99c5462c433ffc::t_f6635582a09274 10,124
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_99c5462c433ffc::t_e394e0fcead9a4 13,15,18-19,312-321
+  s_99c5462c433ffc::t_ab27e417df1287 322-323
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "457f24b40fd35ec2ce6efebe443a9cb6492c184a",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

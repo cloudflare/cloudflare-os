@@ -1,0 +1,26 @@
+packages/gatekeeper-kit/src/action-description.ts
+  s_6d79354b9d5d8c::t_b160a9ee025740 106-114,131,133,147,182,195
+  s_6d79354b9d5d8c::t_00e83128ce88da 1-102,115-130,132,134-146,148-181,183-194,196-268
+  s_6d79354b9d5d8c::t_2f5ee5737efe4a 103-105
+packages/gatekeeper-kit/package.json
+  s_6d79354b9d5d8c::t_00e83128ce88da 8
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_6d79354b9d5d8c::t_5e647d757ba141 1-111,115-173
+  s_6d79354b9d5d8c::t_2f5ee5737efe4a 112-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "be7dc40b5e69ddf220d594acc91c0890d2c90dea",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

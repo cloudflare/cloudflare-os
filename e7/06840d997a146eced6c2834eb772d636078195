@@ -1,0 +1,23 @@
+packages/integration-tests/__tests__/workshop-space-sync-jobs.test.ts
+  s_1da8b1c2e6d0c9::t_fd56c5e8990fe8 1-15,18-117,119-120,122-180,183-186,188-194,196-203,205-207,209-213,217-234,236-238,240-245,249-255
+  s_1da8b1c2e6d0c9::t_9eed2f1924d6d8 16-17,118,121,181-182,187,195,204,208,214-216,235,239,246-248
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_1da8b1c2e6d0c9::t_9eed2f1924d6d8 27-33,49-55,99-108,280-344,516,520-529,1014-1035
+  s_1da8b1c2e6d0c9::t_3f999594368ad3 1036
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e706840d997a146eced6c2834eb772d636078195",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

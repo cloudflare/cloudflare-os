@@ -1,0 +1,114 @@
+packages/gatekeeper-notion/README.md
+  s_7cb2e13456d040::t_adacdf541ba213 57
+packages/gatekeeper-mcp-portal/README.md
+  s_7cb2e13456d040::t_88dd87791dad10 197
+packages/gatekeeper-email/package.json
+  s_7cb2e13456d040::t_433e5fdf5e752d 8
+packages/workshop-frontend/vite.config.ts
+  s_407b100d40ade2::t_ed5f9df1066137 6-42
+  s_3a0d42b8627676::t_9dc935300e5bd4 43-46,55
+.agents/skills/write-gatekeeper/SKILL.md
+  s_7cb2e13456d040::t_a9a882272a4c99 122-129
+packages/gatekeeper-scheduler/package.json
+  s_7cb2e13456d040::t_0a45b964482b11 8
+packages/workshop-backend/vite.config.ts
+  s_407b100d40ade2::t_4fa8bda68a75c9 3,10-46
+packages/gatekeeper-mcp/package.json
+  s_7cb2e13456d040::t_590159a838f224 8
+packages/workshop-frontend/README.md
+  s_407b100d40ade2::t_9741e90951b2f8 8-10,13-20,40
+AGENTS.md
+  s_407b100d40ade2::t_597dafcf0ba9d5 54,59-60
+  s_407b100d40ade2::t_5696892f7bc5bf 61
+  s_3a0d42b8627676::t_a5fff4364a2e17 64,71
+packages/gatekeeper-slack/README.md
+  s_7cb2e13456d040::t_43a492e45b469a 67
+packages/gatekeeper-linear/package.json
+  s_7cb2e13456d040::t_cf62aea8bf52bf 8
+packages/gatekeeper-slack/package.json
+  s_f3a3dd1ae3894d::t_e8d675311b7b84 8
+packages/gatekeeper-mcp-portal/package.json
+  s_7cb2e13456d040::t_2f1d3b9ca98825 8
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_f3a3dd1ae3894d::t_e5d294f2e18b74 595,603-616
+scripts/release/build-release.mjs
+  s_407b100d40ade2::t_55c7b3f0b8078f 75-78,81
+packages/gatekeeper-github/package.json
+  s_7cb2e13456d040::t_9c82fb6139c64d 8
+packages/gatekeeper-zoominfo/package.json
+  s_7cb2e13456d040::t_9d7285af74f132 8
+scripts/gatekeeper-configurator-vite-config.ts
+  s_3a0d42b8627676::t_c034f76c9f0ffa 16-41,71-77
+packages/gatekeeper-homeassistant/package.json
+  s_7cb2e13456d040::t_207b1b85686976 8
+packages/gatekeeper-confluence/README.md
+  s_7cb2e13456d040::t_3217aebeeb8fa2 154
+packages/gatekeeper-mcp/README.md
+  s_7cb2e13456d040::t_2f3623aedc4d60 222
+packages/gatekeeper-google/package.json
+  s_7cb2e13456d040::t_1d9dd85f6a5e0b 8
+scripts/deploy-scripts.test.js
+  s_2468f0ce250808::t_62134ae817dbaf 1-64
+packages/gatekeeper-confluence/package.json
+  s_7cb2e13456d040::t_bb55c0a9800fe4 8
+packages/gatekeeper-supabase/package.json
+  s_7cb2e13456d040::t_d046f93f01d4e3 8
+packages/gatekeeper-notion/package.json
+  s_7cb2e13456d040::t_36693f6829a1b5 8
+packages/gatekeeper-spotify/package.json
+  s_7cb2e13456d040::t_02a0bba9905aae 8
+packages/gatekeeper-context/package.json
+  s_7cb2e13456d040::t_6075cd8f6e2a9a 8
+packages/workshop-backend/format-blueprints/README.md
+  s_407b100d40ade2::t_97d1dbe8f86592 89,92-94
+scripts/task-output-cleanup.test.js
+  s_3a0d42b8627676::t_1bb7cffa1429a1 1-252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c43d9c721e795140d36e95c445e665ab21eda172",
+  "prompts": {},
+  "sessions": {
+    "s_2468f0ce250808": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ffe1af759ffep104mLydbCruTy",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_3a0d42b8627676": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7205f765-6350-4a4b-9278-81cdcd8f0763",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_407b100d40ade2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_407b100d40ade2",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_7cb2e13456d040": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ebfd974-e57c-46ad-aea5-f64db9f3a4aa",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f3a3dd1ae3894d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbdd4246-043b-4b58-b789-54d5368846cf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

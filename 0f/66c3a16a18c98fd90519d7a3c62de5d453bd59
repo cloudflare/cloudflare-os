@@ -1,0 +1,73 @@
+packages/workshop-backend/__tests__/site-logo.test.ts
+  s_541af6f33f7bfd::t_4508c81455fd3a 5,11-17,34-35,55,59-63,65-66,69,72,75-93,96-98,100,105
+  s_541af6f33f7bfd::t_dc56e852358b9c 18
+  s_541af6f33f7bfd::t_11b5aeec627998 30,33,36-43
+  s_541af6f33f7bfd::t_42115c6049f889 4,48-52
+  s_541af6f33f7bfd::t_ace0b02e3458c5 1-3,6-10,19-29,31-32,44-47,53-54,56-58,64,67-68,70-71,73-74,94-95,99,101-104,106-107
+packages/workshop-shared/src/api.ts
+  s_541af6f33f7bfd::t_65484dc1051f21 617-622,630,663,735
+  s_541af6f33f7bfd::t_11b5aeec627998 659-661
+  s_541af6f33f7bfd::t_8e069be3bec3d5 629,734
+  s_541af6f33f7bfd::t_503a15dcfdb8cb 662
+  s_541af6f33f7bfd::t_c58146acb1c290 736
+packages/workshop-backend/src/server.ts
+  s_541af6f33f7bfd::t_65484dc1051f21 29,745-747
+  s_097fdaa44b0b3f::t_1b8baa707709f4 748
+packages/workshop-frontend/vite.config.ts
+  s_541af6f33f7bfd::t_65484dc1051f21 24
+packages/workshop-backend/src/blueprint-archive.ts
+  s_541af6f33f7bfd::t_65484dc1051f21 17
+  s_541af6f33f7bfd::t_42115c6049f889 15-16,34-35
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_541af6f33f7bfd::t_4508c81455fd3a 13-14
+  s_541af6f33f7bfd::t_42115c6049f889 8-9
+  s_541af6f33f7bfd::t_ace0b02e3458c5 1-7,10-12,15-17
+packages/workshop-backend/src/admin-config.ts
+  s_541af6f33f7bfd::t_42115c6049f889 14,81
+  s_541af6f33f7bfd::t_65484dc1051f21 25,47
+  s_541af6f33f7bfd::t_8e069be3bec3d5 23-24
+dev-router.js
+  s_541af6f33f7bfd::t_65484dc1051f21 21
+packages/workshop-frontend/vite.config.test.ts
+  s_541af6f33f7bfd::t_65484dc1051f21 28
+packages/workshop-backend/wrangler.jsonc
+  s_541af6f33f7bfd::t_65484dc1051f21 82
+packages/workshop-backend/src/deployment-config.ts
+  s_541af6f33f7bfd::t_65484dc1051f21 11,54
+packages/workshop-backend/src/site-logo.ts
+  s_541af6f33f7bfd::t_42115c6049f889 3,9,11-31,33,39-41,47-48,52-54,60-69,72-75,78,80-85,88,90-99,122-126,129-140,143-144,149,154-162,164,167
+  s_541af6f33f7bfd::t_65484dc1051f21 1-2,4,6-8,10,44-46,49-51,100,127-128,142,145-146,148,150-153,163,165-166,168-171
+  s_541af6f33f7bfd::t_8e069be3bec3d5 5,42,141,147
+  s_541af6f33f7bfd::t_11b5aeec627998 32,34-38,43,55-59,70-71,76-77,79,86-87,89,101-121
+packages/workshop-backend/src/admin-settings.ts
+  s_541af6f33f7bfd::t_11b5aeec627998 48-50,206-222,340
+  s_541af6f33f7bfd::t_65484dc1051f21 186,223-225,342
+  s_541af6f33f7bfd::t_42115c6049f889 10
+  s_541af6f33f7bfd::t_503a15dcfdb8cb 205,341
+  s_541af6f33f7bfd::t_228a90b45e8094 339
+  s_541af6f33f7bfd::t_4ed730e7fd732f 343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0f66c3a16a18c98fd90519d7a3c62de5d453bd59",
+  "prompts": {},
+  "sessions": {
+    "s_097fdaa44b0b3f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b969153ffe8nZ1Gt6EsvqsKy",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+packages/gatekeeper-google/src/sheets-api.ts
+  s_3164a040f402c3::t_ee7393d26bc51e 4,165,168-170
+packages/gatekeeper-google/src/auth-retry.ts
+  s_3164a040f402c3::t_c6692d5e1a69be 140-180
+packages/gatekeeper-google/src/calendar-api.ts
+  s_3164a040f402c3::t_ee7393d26bc51e 13,169,172,179
+packages/gatekeeper-google/src/google.ts
+  s_3164a040f402c3::t_ee7393d26bc51e 1664,1724,1763,2399,2404,2424,2712,2717,2741,2760,2812,3165
+  s_3164a040f402c3::t_34114052251eee 2039-2043,2046
+  s_3164a040f402c3::t_98e57c353f5076 2700-2704,2713
+  s_3164a040f402c3::t_b7ad9a152df6f0 1658-1662,1665
+  s_3164a040f402c3::t_7b2a74bde82c11 3127,3130-3134
+  s_3164a040f402c3::t_5f922904b361ec 2392-2397,2400
+  s_3164a040f402c3::t_e159ee1f61a701 49
+packages/gatekeeper-google/src/google-api.ts
+  s_3164a040f402c3::t_82d2b2454c9530 951-954
+  s_3164a040f402c3::t_ee7393d26bc51e 9,480,508,512-514,516,539,647,672
+packages/gatekeeper-google/src/bigquery-api.ts
+  s_3164a040f402c3::t_ee7393d26bc51e 12,242,244,250,284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3eaf570f0ee1a8d72ff88d0e81fd6b977750129e",
+  "prompts": {},
+  "sessions": {
+    "s_3164a040f402c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52538c21-bcf9-4d71-9396-3c198fdfd111",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

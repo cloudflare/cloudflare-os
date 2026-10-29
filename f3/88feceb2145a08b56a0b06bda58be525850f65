@@ -1,0 +1,32 @@
+packages/workshop-backend/__tests__/slash-commands.test.ts
+  s_b9d78ba39005bb::t_ae0a5c0c4594ca 59,74
+packages/workshop-shared/src/api.ts
+  s_b9d78ba39005bb::t_ae0a5c0c4594ca 1923-1924
+  s_b9d78ba39005bb::t_c57b0be8de6ba5 1922,1925
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_b9d78ba39005bb::t_ae0a5c0c4594ca 157,163
+packages/gatekeeper-context/src/agent-skill.ts
+  s_b9d78ba39005bb::t_ae0a5c0c4594ca 38
+packages/workshop-backend/src/slash-commands.ts
+  s_b9d78ba39005bb::t_ae0a5c0c4594ca 31
+packages/workshop-shared/src/gatekeeper.ts
+  s_b9d78ba39005bb::t_140c1dddbe2809 746,766-767
+  s_b9d78ba39005bb::t_c57b0be8de6ba5 765,769
+  s_b9d78ba39005bb::t_ae0a5c0c4594ca 745,768
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f388feceb2145a08b56a0b06bda58be525850f65",
+  "prompts": {},
+  "sessions": {
+    "s_b9d78ba39005bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07b2897ffffex0u2hdFKFa4hqN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

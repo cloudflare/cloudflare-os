@@ -1,0 +1,46 @@
+tsconfig.json
+  s_8a20e3764578b6::t_a37d1db28c1244 15-19
+packages/workshop-backend/src/overseer.ts
+  s_8a20e3764578b6::t_bcbbef6d254fe2 9109-9110,9365-9366
+pnpm-lock.yaml
+  s_8a20e3764578b6::t_b7ae3ce3c108d0 19-20,48-51,57,82,91,113,138,250,259,290,315,349,371,396,424,455,480,553,562,587,609,634,656,684,709-712,727,794,851,879,898,2543-2662,4600-4601,4605-4609,6555-6614,6699,6721,6957,8152,8175,8186,8208,8738,8740,8752-8775,8860,8873-8875,8918,8922
+packages/typed-storage/tsconfig.json
+  s_8a20e3764578b6::t_c127adf15700f0 10
+packages/workshop-backend/src/server.ts
+  s_8a20e3764578b6::t_bbea7b79689988 566-567,579
+packages/gatekeeper-context/tsconfig.app.json
+  s_8a20e3764578b6::t_cb2b7642df1eb0 4-5
+packages/mcp-shared/package.json
+  s_8a20e3764578b6::t_8783bc76c16335 46
+scripts/build-gatekeeper-configurator.mjs
+  s_8a20e3764578b6::t_20e010a059416a 4-7
+AGENTS.md
+  s_8a20e3764578b6::t_f2a6880fdc6244 57,68-69
+packages/workshop-backend/src/env.d.ts
+  s_8a20e3764578b6::t_9ac74ec40fae15 50-53
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_8a20e3764578b6::t_1286b0daa1b352 2-4
+  s_8a20e3764578b6::t_b217be75291de2 29-32
+packages/gatekeeper-scheduler/tsconfig.app.json
+  s_8a20e3764578b6::t_5bb17a80a37c16 3-4
+scripts/build-gatekeeper-configurator.test.js
+  s_8a20e3764578b6::t_5e877b46969582 8
+vite.config.ts
+  s_8a20e3764578b6::t_19f87d45745a92 19-22,58-75,147-148,159-164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1b3307e36e2ce29a6384002447ef0bb1d75e84c8",
+  "prompts": {},
+  "sessions": {
+    "s_8a20e3764578b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "834fbca9-b49b-4d95-ba7f-d50127acef2f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

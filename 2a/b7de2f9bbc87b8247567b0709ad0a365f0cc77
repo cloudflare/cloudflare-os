@@ -1,0 +1,21 @@
+packages/wiki-import/__tests__/plan.test.ts
+  s_c6057c10ed1db5::t_df2370ab638e8e 15,1367-1378,1402-1403
+packages/wiki-import/src/import.ts
+  s_c6057c10ed1db5::t_98140fd4d0cc0e 131,897,959,1992,1996,2083,2095,2123-2125,2128-2131,2133-2135,2140-2152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2ab7de2f9bbc87b8247567b0709ad0a365f0cc77",
+  "prompts": {},
+  "sessions": {
+    "s_c6057c10ed1db5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f727234-2a81-45e1-9b19-084244971b57",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

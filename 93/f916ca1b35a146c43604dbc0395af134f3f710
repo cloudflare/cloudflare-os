@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/retainedShareKeys.ts
+  s_4b32d41ad4fea8::t_f524fd0db7c23e 87-101
+packages/workshop-frontend/src/retainedShareKeys.test.ts
+  s_4b32d41ad4fea8::t_4814de277e2a01 41-78
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_4b32d41ad4fea8::t_38d7e9e229e643 556-606
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_4b32d41ad4fea8::t_6bd0d0ed9c97de 216-230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "93f916ca1b35a146c43604dbc0395af134f3f710",
+  "prompts": {},
+  "sessions": {
+    "s_4b32d41ad4fea8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f0ea7e7-15f3-469c-9793-845de800d631",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

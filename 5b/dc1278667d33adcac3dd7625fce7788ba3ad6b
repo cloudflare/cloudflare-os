@@ -1,0 +1,25 @@
+packages/gatekeeper-google/src/google.ts
+  s_5ea74d9d4aa12b::t_6fa664f67fdbee 736-740
+  s_5ea74d9d4aa12b::t_a735631984fd43 762-765,767-769,773
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5bdc1278667d33adcac3dd7625fce7788ba3ad6b",
+  "prompts": {},
+  "humans": {
+    "h_766a26d8f6ed11": {
+      "author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  },
+  "sessions": {
+    "s_5ea74d9d4aa12b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "327d3793-ea88-4e2c-9cfd-a93e08e8f1de",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

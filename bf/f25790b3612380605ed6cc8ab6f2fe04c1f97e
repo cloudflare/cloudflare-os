@@ -1,0 +1,29 @@
+.gitignore
+  s_9687893864678c::t_81635cc0e05fd9 12-13
+packages/workshop-backend/package.json
+  s_9687893864678c::t_19e181a937bc0a 9,11-13
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_9687893864678c::t_9a0925e6271966 14-22,25,28,33-34,74-77,91-93,150,160-168,179-182,194-195,198-199,201-250,261,265-284,305-306,315,317-318
+packages/workshop-backend/scripts/build-gadget-library-types.ts
+  s_9687893864678c::t_650189d832261e 1-39
+packages/workshop-backend/scripts/gadget-libraries-source.ts
+  s_9687893864678c::t_7d5f20842ece4b 14,20-36
+packages/workshop-backend/vite.config.ts
+  s_9687893864678c::t_34d87a711a3277 29-32,36,39-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bff25790b3612380605ed6cc8ab6f2fe04c1f97e",
+  "prompts": {},
+  "sessions": {
+    "s_9687893864678c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53be0b5f-c978-4cf6-9c71-1b7089449bb7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

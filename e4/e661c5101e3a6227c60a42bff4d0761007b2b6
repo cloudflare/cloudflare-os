@@ -1,0 +1,65 @@
+scripts/preview/staging-config.ts
+  s_8e22eafc336426::t_0ee110ffdd3e65 1-741
+  s_8e22eafc336426::t_2e1afc3c449b6f 742-744
+.github/workflows/preview.yml
+  s_8e22eafc336426::t_121cdb46e2ace3 1-241
+  s_8e22eafc336426::t_f491bf42336ba9 242-244
+scripts/preview/preview.ts
+  s_8e22eafc336426::t_b16970b26b291e 1-769,774,783
+  s_8e22eafc336426::t_8e52f70dcbcc2a 770-773
+  s_8e22eafc336426::t_b5625c93284819 775-777,780-782
+  s_8e22eafc336426::t_476f08d4989a41 784-786
+scripts/preview/staging-config.test.ts
+  s_8e22eafc336426::t_cf06b5591ac032 1-394
+  s_8e22eafc336426::t_11465143e8e923 395-397
+.github/workflows/ci.yml
+  s_888911f77dd4d3::t_dea9d0a7a8f126 16-18,44-46
+.gitignore
+  s_888911f77dd4d3::t_6b6c5e8d7b658b 34-36
+CONTRIBUTING.md
+  s_888911f77dd4d3::t_d57828514451aa 12-23
+package.json
+  s_888911f77dd4d3::t_42bed93e2ca2f7 10-14,21-22,26
+packages/workshop-backend/src/env.d.ts
+  s_888911f77dd4d3::t_117e79d40b0d5a 9-11
+pnpm-lock.yaml
+  s_888911f77dd4d3::t_f026998f2969dd 40-42
+scripts/tsconfig.json
+  s_888911f77dd4d3::t_07c5aab9027fc9 1-23
+vite.config.ts
+  s_888911f77dd4d3::t_596d5364771828 140-151
+scripts/env-passthrough.test.js
+  s_cc0a3cb6dfb523::t_6e762eb97af021 58,61-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4e661c5101e3a6227c60a42bff4d0761007b2b6",
+  "prompts": {},
+  "sessions": {
+    "s_888911f77dd4d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "79ad18b1-9b20-4a1c-b347-6c9a3d762d94",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8e22eafc336426": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "60e584a3-0499-4799-bfbd-1be2dd515824",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_cc0a3cb6dfb523": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "017c57b9-2255-4965-ac44-09cc2dacfe92",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

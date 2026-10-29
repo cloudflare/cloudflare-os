@@ -1,0 +1,21 @@
+packages/workshop-backend/vitest.integration.config.ts
+  s_097fdaa44b0b3f::t_8b495d03d48709 26
+packages/workshop-backend/src/overseer.ts
+  s_097fdaa44b0b3f::t_8b495d03d48709 5933-5934
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8ebac7f18e39b25e0540edacbd30dd807a909a6e",
+  "prompts": {},
+  "sessions": {
+    "s_097fdaa44b0b3f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b969153ffe8nZ1Gt6EsvqsKy",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,34 @@
+packages/workshop-shared/src/api.ts
+  s_dd2417a6d5bd82::t_ec054d5fd16080 2388-2389
+  s_dd2417a6d5bd82::t_c897939231a154 452-453,641-647,650,830-835,839-840,1955-1957,1963-1970,2370-2374,2386-2387,2390-2392,5126-5134,5142-5143,5145-5146,5185,5189,5236-5258,5275-5280,5287-5290
+  s_dd2417a6d5bd82::t_fc4a3a8f2b7554 1958-1962
+  s_dd2417a6d5bd82::t_4ef009d446cc4f 2375-2378,2381-2385
+  s_dd2417a6d5bd82::t_a0eb5ce16de3b0 2379-2380
+  s_dd2417a6d5bd82::t_d3e3e62d3a7faa 5281-5283
+  s_dd2417a6d5bd82::t_fd531637d34340 5284-5286
+  s_0a52902bfbdd4c::t_b317d00e3cb428 5190,5291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f3a060ce987f718819a999f44105b7a4b3c14026",
+  "prompts": {},
+  "sessions": {
+    "s_0a52902bfbdd4c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d505eba-5567-4f95-8b42-e45bd5269e15",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

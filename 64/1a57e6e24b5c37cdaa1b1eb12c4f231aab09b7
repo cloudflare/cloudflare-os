@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/gadget-durability.test.ts
+  s_23124d99541bb8::t_2a2755d3c53ec0 4-6,30-33,129-158
+packages/integration-tests/fixtures/seeded-gadgets.ts
+  s_23124d99541bb8::t_4c4b8b69300ec7 93-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "641a57e6e24b5c37cdaa1b1eb12c4f231aab09b7",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

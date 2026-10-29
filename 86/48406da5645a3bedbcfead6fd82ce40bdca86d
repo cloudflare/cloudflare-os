@@ -1,0 +1,85 @@
+packages/mcp-shared/src/base-types.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 14-15,25,68,80,83-91
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 1,5-9,23,25-34,45-65,68,70,86,96-188
+packages/gatekeeper-mcp/src/mcp.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 5,29,38,282,284-294,365-368,449-450
+packages/gatekeeper-mcp-portal/README.md
+  s_e25e29d8ebebad::t_10a335af6ad641 31
+packages/mcp-shared/src/schema-to-ts.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 11-12,16,337-339,352,354-358,383-384,400-407
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 512-514
+packages/mcp-shared/__tests__/tools.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 5,22-41
+  s_e25e29d8ebebad::t_d49216ea583db7 42-44
+packages/mcp-shared/src/types.d.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 4-5,15,58,70,73-81
+packages/mcp-shared/src/catalog.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 1-3,9,11,14-20,57-72,79-85,119-244
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 13-24,29,33-40,44-50,62-64,71,75-82,130-131,133,137,146,150-272,304-309,324-325,327-347,361-364
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 4-11,36-264
+packages/mcp-shared/src/scope.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 18,86-89,95,104-106,161-163
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 3-7,15,18,20,26-29,32-47,59-77,88-285,295-386,393-401,451-453,459,463-464,529-534
+packages/workshop-shared/src/gatekeeper.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 21-23
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 4,2493-2502
+packages/mcp-shared/__tests__/session-methods.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 70-79
+packages/mcp-shared/src/tool-search.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 1-54
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 45-61,117-141,435,438-442,445-450
+  s_e25e29d8ebebad::t_84b556eaefa8f9 451
+packages/mcp-shared/__tests__/scope.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 13,74-82,186,189-194
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 11-16,18-33,46-50,72-78,81-84,89-93,98-106,124-166,168,170-174,176-184,188,195-197,209-215,221
+packages/mcp-shared/README.md
+  s_e25e29d8ebebad::t_10a335af6ad641 24,26,33,113,115,120
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 8,22-24,38-40,55-64,77-79,85-98,103,106-110,122-123,130,135-139,164-166,168-169,171,196,202,204-209,211-222
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 15,17,20,102,182-185,188-203
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 5-12,41-42,52-56,59-60,72-77,81-82,91-97,111-122,138,144-148,206-211,220,223-226
+packages/mcp-shared/package.json
+  s_e25e29d8ebebad::t_10a335af6ad641 28
+packages/gatekeeper-mcp/README.md
+  s_e25e29d8ebebad::t_10a335af6ad641 55-66
+packages/mcp-shared/__tests__/session-methods-e2e.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 27-30
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 44,47-66,68-69,71-74
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 18-19,47-72,88-90,93-97,110-112,230,245-248,283,297,315-334,347-363,376,378-380,394-398,465-472,486,488-490,502,511-515,562-606,609-615,618-619,621-628,630-631,636,639,643-648
+packages/mcp-shared/__tests__/tool-search.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 1-48
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 14-16,18-22,24-25,31-33,42-43,52-53,64-65
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 4-9,19,37-84
+packages/mcp-shared/__tests__/hydrated-tools.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 1-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8648406da5645a3bedbcfead6fd82ce40bdca86d",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

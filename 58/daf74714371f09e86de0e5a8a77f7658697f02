@@ -1,0 +1,19 @@
+packages/workshop-backend/src/overseer.ts
+  s_3da49ffc33f7d2::t_101ca07f45ea92 764-768
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "58daf74714371f09e86de0e5a8a77f7658697f02",
+  "prompts": {},
+  "sessions": {
+    "s_3da49ffc33f7d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-adc29c911b4324b43",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

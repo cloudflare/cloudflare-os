@@ -1,0 +1,19 @@
+scripts/contribution-policy.js
+  s_957b1e84b891f0::t_fdf1fa3ab9cdb4 7,79-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f6a38641a852e76eb6f4cc9a97320af57d702553",
+  "prompts": {},
+  "sessions": {
+    "s_957b1e84b891f0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0044ffadfffeKs31F1Kn3C0pP0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+docs/testing-strategy.md
+  s_23124d99541bb8::t_92bc804086853f 100-109,131-141
+packages/workshop-evals/README.md
+  s_23124d99541bb8::t_ee406660f7747c 133-134,139-143,206-227
+packages/workshop-evals/src/harness.ts
+  s_23124d99541bb8::t_7717fcb2472432 12,59-60,70,149-150
+packages/workshop-evals/src/scorer.test.ts
+  s_23124d99541bb8::t_78f28243025462 24,89,99,107
+packages/workshop-evals/src/source-checks.test.ts
+  s_23124d99541bb8::t_0be44447cd4966 1-39
+packages/workshop-evals/src/summary.test.ts
+  s_23124d99541bb8::t_7652642823d178 45
+packages/workshop-evals/src/summary.ts
+  s_23124d99541bb8::t_7f5525bccb6d64 42,98-99,170-172
+packages/workshop-evals/src/task.ts
+  s_23124d99541bb8::t_41d3f390ee0b34 142-148
+packages/workshop-evals/src/transcript.ts
+  s_23124d99541bb8::t_f9a086ddc12fc5 74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "16b53b9dad06ba8f641d55826d14ee26e4147774",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

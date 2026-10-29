@@ -1,0 +1,47 @@
+packages/workshop-backend/src/agent.ts
+  s_1dfdf61332f5c7::t_566ba1252bb1f9 1,85-130,132-133,134-137,927-929,938,2882-2883
+  s_1dfdf61332f5c7::t_bf2c4b875a3b27 5,12-17,131,939-940,954,976,1137-1139,1169-1188,1196-1200,1202-1204,1206-1208,1210-1217,1222,1253-1257,1259,1382,1619,1820-1827,2046-2126,2128-2129
+packages/workshop-backend/src/ai-gateway.ts
+  s_1dfdf61332f5c7::t_2544fec4220769 34-35,50
+packages/workshop-backend/src/overseer.ts
+  s_1dfdf61332f5c7::t_3ef8204d2d0efc 3,14,161-165,780-787,3066,3069,3486,3491-3494,3508-3511,3512,3515-3518,3524-3527,3539-3543,3565-3566,7589,7593-7594,7596-7597,8478-8480
+  s_1dfdf61332f5c7::t_1e6110d28b2135 16,2994-3027,3030,3062-3065,3067-3068,3265-3268,3288,3487-3490,3495-3507,3513-3514,3519-3523,3528-3538,3544-3564,3666-3667,3670-3684,4367-4376,4561-4566,7586-7588,7590-7592,7595,7598-7605,7969,8001-8005
+packages/workshop-backend/src/user.ts
+  s_1dfdf61332f5c7::t_07f37087eb65fa 483
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_1dfdf61332f5c7::t_c95c9dbfa72738 40,54,57
+packages/workshop-frontend/src/components/chat/slash-command-catalog.ts
+  s_1dfdf61332f5c7::t_f103338760b8be 27-30,41,49
+  s_1dfdf61332f5c7::t_8dd3cbf48f64c7 27-30
+  s_1dfdf61332f5c7::t_296548464bb3ab 41,49
+packages/workshop-shared/src/api.ts
+  s_1dfdf61332f5c7::t_147f0b30001981 793-803,805-811,814-818,821-826,829,1213-1214,1222,1453-1454,1459-1483,1535-1538,1949,1953-1956,1979-1980,1995-2001,2004-2005
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+  s_1dfdf61332f5c7::t_fb19213e332135 1-427
+packages/workshop-backend/src/agent-compaction.ts
+  s_1dfdf61332f5c7::t_9312e4db21893d 1-314
+packages/workshop-frontend/src/ChatInterface.compaction.test.ts
+  s_1dfdf61332f5c7::t_d86b2c04fa1d64 1-117
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1dfdf61332f5c7::t_80836c1237e29b 64,2106,3277,3310-3315,3499-3503,3511-3521,3680-3682,3687-3689,3707-3708,3719,3746,3810,3831-3832,3942-3993,4129-4132,4134-4135,4283-4284,4289,4387-4392,4462-4470,4480,4591-4601,4751,4767,4770,4773-4774,4809-4829,6262-6287,6842,6864-6869,6994-6997,7014
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.test.tsx
+  s_1dfdf61332f5c7::t_39c49a19a1e456 29-35,47,53,64,228-261
+packages/workshop-frontend/src/components/chat/SlashCommandPicker.tsx
+  s_1dfdf61332f5c7::t_fc2b415806d9a6 15,58,67-70,86-91,102,140,142,158,172,177,179,246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cfc762d14620677a4a5f8f6f83d7be1532f02327",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

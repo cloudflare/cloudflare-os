@@ -1,0 +1,28 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_7ebc2a75b360ad::t_6bc2fbfdcca7b4 1114
+  s_7ebc2a75b360ad::t_c227151d9bf8b0 40-41
+  s_7ebc2a75b360ad::t_b1b0e04c5f22b8 1098
+  s_7ebc2a75b360ad::t_c5742609d95f41 1056,1063-1068
+  s_7ebc2a75b360ad::t_a8e99e1ff4b1ee 1029
+  s_7ebc2a75b360ad::t_aa78c34b12e178 986,988
+  s_7ebc2a75b360ad::t_f92a188c878b1b 1732
+  s_7ebc2a75b360ad::t_63dbd9c4ff2b8d 1087-1088
+  s_7ebc2a75b360ad::t_74996590690410 907-971
+  s_7ebc2a75b360ad::t_ea79d3e36f54c4 77-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8b67050238025a3634589beb5890c98ef7107944",
+  "prompts": {},
+  "sessions": {
+    "s_7ebc2a75b360ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bee6e659-c28d-4b19-a30d-b44498ed993d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

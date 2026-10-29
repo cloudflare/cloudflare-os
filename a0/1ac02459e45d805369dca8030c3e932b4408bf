@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/restricted-data.test.ts
+  s_a726de9bb45000::t_911842843feb77 1-39
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_a726de9bb45000::t_7043c37a441d9f 47-61,137,163-171,173-183,187-202,206,208-237,239,242,244-269,272-294,297-475,755,784-803,824-825,843,865-881,915
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a01ac02459e45d805369dca8030c3e932b4408bf",
+  "prompts": {},
+  "sessions": {
+    "s_a726de9bb45000": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bdc0597-d7f8-4613-b8df-146cec7aa6c3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

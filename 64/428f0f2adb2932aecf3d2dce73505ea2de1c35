@@ -1,0 +1,23 @@
+docs/sharing.md
+  s_cf9cda7e93fb6f::t_e60fef12c925b8 166
+packages/workshop-backend/__tests__/keyless-commit-gate.test.ts
+  s_cf9cda7e93fb6f::t_7ad520cb535c15 1-119
+packages/workshop-backend/src/overseer.ts
+  s_cf9cda7e93fb6f::t_315ece8a59f35b 8152-8156,8169-8207,8209-8216,8218,8228-8229,8232-8238,8244-8245,8249,8911-8919
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "64428f0f2adb2932aecf3d2dce73505ea2de1c35",
+  "prompts": {},
+  "sessions": {
+    "s_cf9cda7e93fb6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbd45cc1-bb9f-4ad8-bd45-3d8db79f288c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

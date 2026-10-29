@@ -1,0 +1,31 @@
+packages/workshop-evals/tasks/expense-ledger.task.ts
+  s_23124d99541bb8::t_a7fa8de73398e4 1-373
+packages/workshop-evals/tasks/index.ts
+  s_23124d99541bb8::t_85c02ef944e668 3-7,9,18-27
+packages/workshop-evals/tasks/org-chart.task.ts
+  s_23124d99541bb8::t_f75f2d2262e27b 1-79
+packages/workshop-evals/tasks/pantry-kitchen.task.ts
+  s_23124d99541bb8::t_712aad562c8d0f 1-208
+packages/workshop-evals/tasks/project-doc.task.ts
+  s_23124d99541bb8::t_267cde0ad85531 1-121
+packages/workshop-evals/tasks/spaced-repetition.task.ts
+  s_23124d99541bb8::t_0c0e245ed9dcd6 1-194
+packages/workshop-evals/tasks/time-tracker.task.ts
+  s_23124d99541bb8::t_8d4426c113f35e 1-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "91693f6ce45d830eb164661c31b0cb245da0175e",
+  "prompts": {},
+  "sessions": {
+    "s_23124d99541bb8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fef98a453ffecOM1mrANny9DvN",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

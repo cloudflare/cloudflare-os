@@ -1,0 +1,21 @@
+AGENTS.md
+  s_1d9a9373565b79::t_4efa65ec39e92f 67-68
+pnpm-workspace.yaml
+  s_1d9a9373565b79::t_ecd2839faaf21e 9-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b47ea9df22edaf936387e7cbe744c4da01adc981",
+  "prompts": {},
+  "sessions": {
+    "s_1d9a9373565b79": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_1d9a9373565b79",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

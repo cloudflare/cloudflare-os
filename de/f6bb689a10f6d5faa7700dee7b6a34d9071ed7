@@ -1,0 +1,89 @@
+AGENTS.md
+  s_8a20e3764578b6::t_f859be83a454ab 60-65
+  s_6e01b44d9df42b::t_fa1771a0955564 58-59
+scripts/build-gatekeeper-configurator.test.js
+  s_6e01b44d9df42b::t_f9ce1d49860e23 17-18,20-22,26-29,37,83-88,94-95,175-198
+pnpm-lock.yaml
+  s_8a20e3764578b6::t_4ea28ffb810562 257-259,268,296,324,355,377,402,433,464,489,563-564
+  s_8a20e3764578b6::t_858cf25b49a23f 29,60,116,144,574,596,618,643,665,696,739,806,1151,1166,1170,1174,1183,1190,1196,1202,1208,1214,1220
+  s_8a20e3764578b6::t_3e2aa3a4a1345b 565
+packages/gatekeeper-scheduler/vite.config.ts
+  s_8a20e3764578b6::t_41d434319998ae 1,7-50,53
+  s_edad149ae182a8::t_5f33ad7e097dcc 3-6
+packages/gatekeeper-scheduler/vite.app.config.ts
+  s_8a20e3764578b6::t_c8a9cd97b0899a 1-75
+packages/gatekeeper-context/__tests__/vite-config.test.ts
+  s_8a20e3764578b6::t_5e0017892ebeec 12
+packages/gatekeeper-scheduler/package.json
+  s_8a20e3764578b6::t_e1c1e9c2ded073 8,11,41
+packages/gatekeeper-context/build-app.mjs
+  s_8a20e3764578b6::t_48a52ff917f11c 9-11,20-27
+packages/gatekeeper-context/vite.app.config.ts
+  s_8a20e3764578b6::t_c95fe2326e676d 1-53,55-102
+  s_edad149ae182a8::t_de99bb34c888db 54
+scripts/kill-process-tree.js
+  s_6e01b44d9df42b::t_263d436da116ba 1-84
+packages/gatekeeper-scheduler/build-app.mjs
+  s_8a20e3764578b6::t_62c2288ebad32b 7-9,13-20
+scripts/kill-process-tree.test.js
+  s_6e01b44d9df42b::t_f10f2db5f29fe4 1-77
+  s_0a06850b893bc7::t_3f12c953fafa2a 78-85
+packages/gatekeeper-context/package.json
+  s_8a20e3764578b6::t_14ff24512b724d 8,11,54
+packages/gatekeeper-scheduler/tsconfig.vite.json
+  s_8a20e3764578b6::t_25741809390f74 6
+packages/gatekeeper-context/vite.config.ts
+  s_edad149ae182a8::t_bfe94ba055c564 3-6
+  s_8a20e3764578b6::t_d98cbd48f97cd3 1,7-31,33-50,53
+run-dev-server.js
+  s_8a20e3764578b6::t_f26fc5699e2368 529
+  s_0a06850b893bc7::t_1d40366eb4c147 534-555
+  s_6e01b44d9df42b::t_1b8e1074199b8e 530-533
+  s_8a20e3764578b6::t_3ad54fdf93c6bb 14-19,24,97-101,103,105-125,137-254,256-261,266,271-276,278-282,291-359
+  s_0a06850b893bc7::t_16151c327d7685 556
+  s_0a06850b893bc7::t_ba47072a7f2c2f 416,502
+packages/gatekeeper-context/tsconfig.vite.json
+  s_8a20e3764578b6::t_4f099c9729631a 6
+scripts/build-gatekeeper-configurator.mjs
+  s_8a20e3764578b6::t_362f4381ee91ed 13,15-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "def6bb689a10f6d5faa7700dee7b6a34d9071ed7",
+  "prompts": {},
+  "sessions": {
+    "s_0a06850b893bc7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0c459a0b-1139-4b21-86dc-097a3c131b87",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6e01b44d9df42b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a63e5b1-7c40-4c34-b295-0fae5c659cea",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8a20e3764578b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "834fbca9-b49b-4d95-ba7f-d50127acef2f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_edad149ae182a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6422549d-f284-4db8-b46a-91da03ee65f8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

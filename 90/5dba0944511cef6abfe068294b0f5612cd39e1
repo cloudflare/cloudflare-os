@@ -1,0 +1,110 @@
+packages/gatekeeper-google/__tests__/drive-api.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 4-6,624,1337-1774
+packages/gatekeeper-google/src/drive-comment-body.ts
+  s_aaa01c4baa45ab::t_780d66b506307f 9,11,35-36,54-55,57-58
+  s_aaa01c4baa45ab::t_fdf5bbfeb7af59 56
+  s_aaa01c4baa45ab::t_f51c6fc64cfd1b 81-84
+  s_aaa01c4baa45ab::t_c2357d9393256a 87-90
+  s_aaa01c4baa45ab::t_1a713df84a915d 1-8,10,12-34,37-53,59-80,85-86,91-128,130-159,163-183
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 129,160-162
+packages/gatekeeper-google/__tests__/drive-observers.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 93-130
+packages/gatekeeper-google/__tests__/drive-session.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 5,8,13-14,44-47,58-59,65,88-91,131-143,476-477,638-641,667-668,956-1032
+packages/gatekeeper-google/__tests__/worker.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 9-13,21,26,36-44,73-91,135,385-508,620-657
+  s_aaa01c4baa45ab::t_9561eb8ff8733a 658
+packages/gatekeeper-google/__tests__/drive-comment-body.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 102-107,189,203,210,213,218,220-222
+  s_aaa01c4baa45ab::t_b38fa01426e2d1 1-101,108-111,140-188,190-202,204-209,211-212,214-217,219,223-286
+  s_aaa01c4baa45ab::t_644e84fa9239bc 114-115,124-139
+  s_aaa01c4baa45ab::t_f51c6fc64cfd1b 116-123
+  s_aaa01c4baa45ab::t_dbdd6c976b6e21 112-113
+packages/gatekeeper-google/src/resources.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 136-137,149-150,154-157,163-165,170,176-177,334-336,363-372,377
+packages/gatekeeper-google/README.md
+  s_aaa01c4baa45ab::t_812a69da37b87b 87,646
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 614,626,636,642-645,647-650
+  s_aaa01c4baa45ab::t_6f24fb5fce15f8 651
+packages/gatekeeper-google/src/docs-api.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 117-118
+packages/gatekeeper-google/src/drive-observers.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 11-14,17-24,28,32-35
+packages/gatekeeper-google/__tests__/drive-configurator.test.ts
+  s_aaa01c4baa45ab::t_e05caf97f2af4d 247,256,261-263,267-284,289-290,293,296-297,301-302
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 2-3,5-9,25-26,28-36,40-41,48,51-61,67,69-75,140-246,248-249,254,257,259,264,304-305,314,316,321-392
+  s_aaa01c4baa45ab::t_ee32dcef154e0e 63,250-253,255,258,260,265-266,306-313,315,317-320
+  s_aaa01c4baa45ab::t_f51c6fc64cfd1b 285-288,291-292,294-295,298-300,303
+packages/gatekeeper-google/src/configurator/drive-configurator-types.d.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 37-42,51-52
+packages/gatekeeper-google/src/configurator/drive-configurator-ui.tsx
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 7,117-119,124,130-134,138,142-144,148-152,154-164,167-169,171-174,176-178,181-184,186,188-195,197-216,218-227,238-243,265,283,307
+  s_aaa01c4baa45ab::t_0c992cbfe77438 153,228-230,236-237
+  s_aaa01c4baa45ab::t_afcf882344d3da 232,235
+  s_aaa01c4baa45ab::t_98e57f7ce8ab14 135-137,139-141,145-147,165-166,170,175,179-180,185,187,196,217,231,233-234
+packages/gatekeeper-google/__tests__/resources.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 3,888-969
+  s_aaa01c4baa45ab::t_fc796e5cd2a8f2 970
+packages/gatekeeper-google/src/google-configurators.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 31,33,44,562-566,570,646-653
+  s_aaa01c4baa45ab::t_29e38f2adcb594 654
+packages/gatekeeper-google/__tests__/workerd/native-sessions.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 1,10,14-15,236-242,260,742,1021-1054,1058-1364,1367-1559,1596-1736,1750
+  s_aaa01c4baa45ab::t_bfee203b151a6d 1055-1057
+  s_aaa01c4baa45ab::t_7fba5315c3d225 1561-1563,1565,1570-1577,1579-1584,1586-1592,1594-1595
+  s_aaa01c4baa45ab::t_e27293d33fe87b 1564,1566-1569
+  s_aaa01c4baa45ab::t_be6aa264a4eb0c 1560,1578
+  s_aaa01c4baa45ab::t_2aaa88a32829e0 1737-1749
+  s_aaa01c4baa45ab::t_21059b989194d3 1585,1593
+  s_aaa01c4baa45ab::t_dbdd6c976b6e21 1365-1366
+  s_aaa01c4baa45ab::t_43a5c48df54b69 1751
+packages/gatekeeper-google/src/drive-api.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 30-51,75,78-79,88,93,374,377-381,547,554,686-857,925,1085-1182,1190-1196,1283-1297
+  s_aaa01c4baa45ab::t_276efbde797677 1298
+packages/gatekeeper-google/src/google.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 4,41-54,62-63,66-67,119,126-127,996-997,2990-2998,3000-3005,3011-3015,3027,3036,3045,3055-3056,3060-3061,3069-3073,3075,3084,3088-3101,3103-3114,3247-3252,3277,3291,3307,3337-3338,3402-3523
+  s_aaa01c4baa45ab::t_5b6029038d58c1 3524
+packages/gatekeeper-google/src/observability.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 6-9,19-20
+packages/gatekeeper-google/src/drive-session.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 7-8,17-18,60-61,115-132,386-433,556-575,749-774
+  s_aaa01c4baa45ab::t_fb493472b1fec8 775
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 19-22,49-50,351-375
+packages/gatekeeper-google/src/markdown-converter.ts
+  s_aaa01c4baa45ab::t_fdf5bbfeb7af59 267-268
+  s_aaa01c4baa45ab::t_780d66b506307f 262-266,269-271
+packages/gatekeeper-google/src/drive-types.d.ts
+  s_aaa01c4baa45ab::t_0b909ef4c7e553 142-178,180-187,192-206,208-214
+  s_aaa01c4baa45ab::t_34e3ee6746f2bc 321-345
+  s_aaa01c4baa45ab::t_d7513fdefa157a 271-272
+  s_aaa01c4baa45ab::t_f51c6fc64cfd1b 188-189
+  s_aaa01c4baa45ab::t_780d66b506307f 270
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 179,207,287
+  s_aaa01c4baa45ab::t_dbdd6c976b6e21 190-191
+  s_aaa01c4baa45ab::t_8d5bff39769d04 257-269,273-284
+packages/gatekeeper-google/__tests__/types.test.ts
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 304-348
+packages/gatekeeper-google/src/drive-comments.ts
+  s_aaa01c4baa45ab::t_42fe25bb81ecdd 1-12,15-38,42-52,55-73,76,78-103,121-145,147-208,210-223,225-242,244-261,263-274,279-283,285-296,299-326,328-335,337-344,347-446,449-452,454-489,493-494,498-516,520-537,541-551,556-561,565-572
+  s_aaa01c4baa45ab::t_18628a9a9455ae 39-41,53-54,275-278
+  s_aaa01c4baa45ab::t_8742d8b0fbea51 13-14,74-75,77,104-120,146,209,224,243,262,284,297-298,327,336,345-346,447-448,453,490-492,495-497,517-519,538-540,552-555,562-564
+packages/integration-tests/__tests__/google-fake.ts
+  s_aaa01c4baa45ab::t_2ec16a9a41ca16 3-5,136-155,168-169,211-213,218,252-261,367-448
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "905dba0944511cef6abfe068294b0f5612cd39e1",
+  "prompts": {},
+  "sessions": {
+    "s_aaa01c4baa45ab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfdfe8ae-18cc-4499-83ad-f7c800e7a45c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

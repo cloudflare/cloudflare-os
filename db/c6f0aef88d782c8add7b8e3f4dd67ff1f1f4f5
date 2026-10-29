@@ -1,0 +1,34 @@
+packages/workshop-shared/src/api.ts
+  s_dd2417a6d5bd82::t_84abb58427dd77 5329
+  s_dd2417a6d5bd82::t_1524ff289bfb4d 453-454
+  s_dd2417a6d5bd82::t_0860707adf7e88 841
+  s_dd2417a6d5bd82::t_3ac201b100d0f8 2412-2414
+  s_dd2417a6d5bd82::t_c376dca58ca168 5270-5274
+  s_dd2417a6d5bd82::t_f3c30b1caa800e 842-843
+  s_dd2417a6d5bd82::t_173642eb78438d 650-651
+  s_dd2417a6d5bd82::t_79de89b25c5a22 1982-1985
+  s_dd2417a6d5bd82::t_2a1c7463e927c2 652
+  s_dd2417a6d5bd82::t_2f63be1d7f0d9f 2415-2417
+  s_dd2417a6d5bd82::t_b8e638b7d09cf7 5155-5158
+  s_dd2417a6d5bd82::t_48815db4f56de5 5315,5320
+  s_dd2417a6d5bd82::t_9f2033b94856b8 5326-5327,5331-5332
+  s_dd2417a6d5bd82::t_ec00fd60c73a6d 5316-5319,5328,5330
+  s_dd2417a6d5bd82::t_307364d6a56c90 649,653
+  s_dd2417a6d5bd82::t_c80faf76593d44 1952-1957,1965-1969
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dbc6f0aef88d782c8add7b8e3f4dd67ff1f1f4f5",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

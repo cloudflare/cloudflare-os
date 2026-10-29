@@ -1,0 +1,19 @@
+packages/workshop-shared/src/gatekeeper.ts
+  s_993634b014452f::t_3d6083ff0d9eb5 21-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3ab7d538142943115d6c4223e35d30468f134871",
+  "prompts": {},
+  "sessions": {
+    "s_993634b014452f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0969032eeffeVD5vUYO1mfYENE",
+        "model": "grok-4.5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

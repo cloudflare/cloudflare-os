@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/components/BlueprintList.tsx
+  s_ad9e29856447e3::t_42d21b634516de 10,12,126-127,182-200,238-271,303-320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "33ece7ff8237ac909729833c35c361d03e0d827a",
+  "prompts": {},
+  "sessions": {
+    "s_ad9e29856447e3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41889cf4-b700-4cd5-a805-12e0d42d97df",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

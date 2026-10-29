@@ -1,0 +1,22 @@
+packages/gatekeeper-scheduler/__tests__/schedule-driver.test.ts
+  s_21110c2b969646::t_28d6c9de3f06b5 722
+  s_21110c2b969646::t_fcd21d26614bea 24
+packages/gatekeeper-scheduler/__tests__/worker.ts
+  s_21110c2b969646::t_28d6c9de3f06b5 23-26,88-95,131,177-180,226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "77ef680b942908d2d104f34d4e9017b8366627ef",
+  "prompts": {},
+  "sessions": {
+    "s_21110c2b969646": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "14850c27-1f92-4fa0-9d31-19723888a11e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

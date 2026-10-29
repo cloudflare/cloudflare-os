@@ -1,0 +1,20 @@
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_ea0ed5df37b4df::t_56d0249a0b2170 389-391,407
+  s_ea0ed5df37b4df::t_beb976f7ee04d0 12-15,392-396,405-406,408-409,424,433,442,452,459,466,471,489,496
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c21a98df9df2346bbcd86b96857f1ca99aeff654",
+  "prompts": {},
+  "sessions": {
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

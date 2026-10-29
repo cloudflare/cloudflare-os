@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_b935ef13c35665::t_7759bdf222336b 117,132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fe1607493b95d78e4b9c0e5f860f49c7fd79ec9a",
+  "prompts": {},
+  "sessions": {
+    "s_b935ef13c35665": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58c3f333-baff-470f-84e4-eccedd1e8e9f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

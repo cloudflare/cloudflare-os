@@ -1,0 +1,40 @@
+packages/integration-tests/vitest.config.ts
+  s_b09edcbcfbc4af::t_7704b413690a32 9-12
+packages/integration-tests/src/network-interceptor.ts
+  s_b09edcbcfbc4af::t_dbfef6d8a0d549 48-54
+docs/integration-testing.md
+  s_b09edcbcfbc4af::t_61c455add044c5 15-23
+  s_b09edcbcfbc4af::t_f869992d3014bb 52-55,60
+  s_b09edcbcfbc4af::t_412cae3b63a0b0 61-62
+  s_b09edcbcfbc4af::t_b1fef2d27ab0d2 63
+  s_b09edcbcfbc4af::t_24cf33763c111a 3,10
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_b09edcbcfbc4af::t_e62844aec4b5ea 317-318
+  s_b09edcbcfbc4af::t_2c89f763906761 261-274,280-291,295-302,304-305
+packages/integration-tests/__tests__/network-interceptor.test.ts
+  s_b09edcbcfbc4af::t_2c3754693dadb9 6-9
+packages/integration-tests/README.md
+  s_b09edcbcfbc4af::t_af668fc0c92ede 39-40,43-45,49
+  s_b09edcbcfbc4af::t_ba7bcb3506dfa1 61-66
+packages/integration-tests/__tests__/observer-reverification.test.ts
+  s_b09edcbcfbc4af::t_f756d1844946c2 142
+  s_b09edcbcfbc4af::t_f432d08f74b081 116-118
+  s_b09edcbcfbc4af::t_fb0af7b1791c3e 84-86
+  s_b09edcbcfbc4af::t_77b5af671d1de6 102-105,107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c11892967104260fc815cd35b6a26b6b67c9a0d3",
+  "prompts": {},
+  "sessions": {
+    "s_b09edcbcfbc4af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c9b41178-e4bb-4205-87ea-40d785e5024b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

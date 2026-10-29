@@ -1,0 +1,19 @@
+packages/gatekeeper-notion/src/notion-actions.ts
+  s_6d79354b9d5d8c::t_c10ce0c3efafce 30,678-682,688-690,696-699,705-707,713-715,721,727,733,744-748,751
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c2c535f213d7eaea19c52c2b8e636a021b6285d5",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

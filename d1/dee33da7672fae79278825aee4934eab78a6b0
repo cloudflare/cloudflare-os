@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/features/wiki/PageTree.test.tsx
+  s_4a30a440cc2138::t_c29f246cf5f82a 124-151
+packages/workshop-frontend/src/features/wiki/PageTreeNode.tsx
+  s_4a30a440cc2138::t_ce2e265ee01604 54-56,76,129,132,160-192,194,196-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d1dee33da7672fae79278825aee4934eab78a6b0",
+  "prompts": {},
+  "sessions": {
+    "s_4a30a440cc2138": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8775eb53-edf4-4778-8216-f263267a5316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

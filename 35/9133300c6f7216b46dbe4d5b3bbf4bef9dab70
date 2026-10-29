@@ -1,0 +1,19 @@
+packages/gatekeeper-cloudflare/vitest.worker.config.ts
+  s_8496ad5ea09729::t_a70355a8ed939c 37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "359133300c6f7216b46dbe4d5b3bbf4bef9dab70",
+  "prompts": {},
+  "sessions": {
+    "s_8496ad5ea09729": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eac9a5d1-c627-4331-9d29-75af63c47fb4",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

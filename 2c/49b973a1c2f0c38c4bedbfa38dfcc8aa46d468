@@ -1,0 +1,92 @@
+packages/workshop-ios/src/screens/HomeScreen.tsx
+  s_d7442014144fa6::t_b4be1495303814 41-51,53-54
+  s_d7442014144fa6::t_13906fe420915e 52
+  s_d7442014144fa6::t_8fba219a826b61 1-2,5-7,9-15,17-25,28,35-36,55,57-59,61-65,67-71,89-93,97,101,105-107,109
+  s_d7442014144fa6::t_e9c19a0a24dda9 4,8,16,29-34,37-40,56,60,66,72-74,103
+  s_d7442014144fa6::t_d2acd5ac535fb5 3,75-88,94-96,98-100,102,104,108
+  s_d7442014144fa6::t_cd46874aaffc1f 26-27
+packages/workshop-ios/src/ui/MenuButton.tsx
+  s_d7442014144fa6::t_7f9220a8f097f9 1-2,4-5,14-17,24-42,44,46-49
+  s_d7442014144fa6::t_2691bc931e093c 6-9,11-12,20-23,43,45
+  s_d7442014144fa6::t_e9c19a0a24dda9 18
+  s_d7442014144fa6::t_4bf681c0c19501 3,10,13,19
+packages/workshop-ios/src/hooks.ts
+  s_d7442014144fa6::t_fea5f33d8bb2a0 20,115-156
+  s_d7442014144fa6::t_802dd14e71b860 22,180-188,191,202,218-219
+  s_d7442014144fa6::t_a53308d78c2817 206-209
+  s_d7442014144fa6::t_8a1549a4137b14 21
+  s_d7442014144fa6::t_ed6e1547c54eb7 157-158
+packages/workshop-ios/src/recents.ts
+  s_d7442014144fa6::t_fea5f33d8bb2a0 1-30
+packages/workshop-ios/src/screens/GatekeeperScreen.tsx
+  s_d7442014144fa6::t_047f49126ded7c 112
+  s_d7442014144fa6::t_c89bebe41b7be3 15,192
+packages/workshop-ios/ios/Gadgets/AppDelegate.swift
+  s_d7442014144fa6::t_84d4e213996816 25-33,40
+packages/workshop-ios/src/screens/OutputsScreen.tsx
+  s_d7442014144fa6::t_c89bebe41b7be3 19,260
+  s_d7442014144fa6::t_047f49126ded7c 193
+packages/workshop-ios/src/screens/ThreadsScreen.tsx
+  s_d7442014144fa6::t_42d510027681e9 23,90-92,94,98-102
+  s_d7442014144fa6::t_047f49126ded7c 93
+packages/workshop-ios/src/screens/WorkspacesScreen.tsx
+  s_d7442014144fa6::t_74ff707f4d7f08 23-24,185-187
+  s_d7442014144fa6::t_047f49126ded7c 193
+  s_d7442014144fa6::t_a53308d78c2817 218
+  s_d7442014144fa6::t_532a17a1bf5c9d 277,286
+packages/workshop-ios/src/ui/AppDrawer.tsx
+  s_d7442014144fa6::t_d17f5edae4d8c6 1,31,223,293
+  s_d7442014144fa6::t_ebee9ad0554e6b 225,229-262,273-279,291,299,313
+  s_d7442014144fa6::t_985a5c743496cc 314
+  s_d7442014144fa6::t_123ddfd85c50f3 2-11,16,23-30,32-34,51,57,60-62,65-68,72-73,75,77-83,86-87,91-93,97-101,103,105-115,117-120,127-154,161,165-168,174,186,193,205,224,263-272,280-284,286-288,290,292,298,300-312
+  s_d7442014144fa6::t_99242830957d4d 74,76,84-85,88-90,102,104,116,160,226-228,285
+  s_d7442014144fa6::t_7f9220a8f097f9 14,21,155,200-204,218-220
+  s_d7442014144fa6::t_a6559964597ccf 121-126
+  s_d7442014144fa6::t_532a17a1bf5c9d 192,194-197,206-217
+  s_d7442014144fa6::t_81fab281d51dbd 94-96
+  s_d7442014144fa6::t_1150521a3b1e01 22
+packages/workshop-ios/src/screens/ChatScreen.tsx
+  s_d7442014144fa6::t_532a17a1bf5c9d 613
+  s_d7442014144fa6::t_2103621ac19e73 35,71-76,82-85,178,180,182,187,611-612,614-617,665-666,668-670,789,1004-1007,1060-1061
+  s_d7442014144fa6::t_047f49126ded7c 181
+  s_d7442014144fa6::t_70e9cadb615717 77-81,183-186,192
+  s_d7442014144fa6::t_278cb349c78512 190-191,193-198,663-664,667,1053,1064-1065
+  s_d7442014144fa6::t_050505176a6b30 1054-1059
+  s_d7442014144fa6::t_a0c120bd299aea 1062-1063
+packages/workshop-ios/src/ui/ChatRows.tsx
+  s_d7442014144fa6::t_1374031e9c1105 487,494,497-507,509-516
+packages/workshop-ios/src/navigation.ts
+  s_d7442014144fa6::t_13906fe420915e 45-46
+  s_d7442014144fa6::t_7f9220a8f097f9 13-14
+packages/workshop-ios/src/recents.test.ts
+  s_d7442014144fa6::t_fea5f33d8bb2a0 1-43
+packages/workshop-ios/App.tsx
+  s_d7442014144fa6::t_13906fe420915e 152-159
+  s_d7442014144fa6::t_8fba219a826b61 11,116,130
+  s_d7442014144fa6::t_d17f5edae4d8c6 1,3,21,50-55,105-115,178-183,186-208
+  s_d7442014144fa6::t_e473ec7657c27c 209
+packages/workshop-ios/src/ui/SwipeToDelete.tsx
+  s_d7442014144fa6::t_c3cb1ca9029b3f 143-149
+packages/workshop-ios/src/ui/Drawer.tsx
+  s_d7442014144fa6::t_7f9220a8f097f9 26-27,34-35,108,154-167,182-183,185
+  s_d7442014144fa6::t_be66b2ba03f5c2 1,6,19,21-22,47-51,134-135
+  s_d7442014144fa6::t_e9c19a0a24dda9 184
+  s_d7442014144fa6::t_6443f11633bfad 5,52,66,68,125,127
+  s_d7442014144fa6::t_a20c582969b636 53-54,56-65,69,72-75,77-107,109-124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2c49b973a1c2f0c38c4bedbfa38dfcc8aa46d468",
+  "prompts": {},
+  "sessions": {
+    "s_d7442014144fa6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01952a888ffepZghe17beKKXPK",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

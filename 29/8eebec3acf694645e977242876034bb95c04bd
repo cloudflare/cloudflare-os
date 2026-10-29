@@ -1,0 +1,133 @@
+packages/gatekeeper-google/README.md
+  s_74eb0b1cbb84f7::t_566ec42b3a72a7 82,84-86,211-245,260-281,284-286,303-326,334-345
+packages/gatekeeper-google/__tests__/env.d.ts
+  s_74eb0b1cbb84f7::t_b7748953e149c6 3,9
+packages/gatekeeper-google/__tests__/resources.test.ts
+  s_74eb0b1cbb84f7::t_eaf8ee16ff4ac4 6-9,296,300-328
+packages/gatekeeper-google/__tests__/slides-design.test.ts
+  s_74eb0b1cbb84f7::t_4ac759a1f9fd8d 16-20,103,134,137,242-246,286-329,397
+packages/gatekeeper-google/__tests__/slides-fixture.ts
+  s_74eb0b1cbb84f7::t_da383c14dccecd 71,94,96-105
+packages/gatekeeper-google/__tests__/slides-model.test.ts
+  s_74eb0b1cbb84f7::t_f4bb7368867490 3,39,46,188-313,328,346-349,352-364
+packages/gatekeeper-google/__tests__/slides-simulation.test.ts
+  s_74eb0b1cbb84f7::t_a644e73e1b8cd7 5,7,121,130-145,147,149,154-156,167-279
+packages/gatekeeper-google/__tests__/worker.ts
+  s_74eb0b1cbb84f7::t_1d169fa61b2227 3-4,10,13-16,18-21,25,27,48-51,87-90,110,116-182,269
+packages/gatekeeper-google/__tests__/workerd/google-doc-actions.test.ts
+  s_74eb0b1cbb84f7::t_c0f40bdcef8e31 86-87,99-110,238,255-267,270-276,1980-2148
+packages/gatekeeper-google/__tests__/workerd/google-file-creation.test.ts
+  s_74eb0b1cbb84f7::t_1e64b4c8d6564b 1-192
+packages/gatekeeper-google/__tests__/workerd/slides-actions.test.ts
+  s_74eb0b1cbb84f7::t_7579bd8989e4d8 82-83,102-103,201-208,236-268,373-396,778,997-1187
+packages/gatekeeper-google/__tests__/workerd/slides-session.test.ts
+  s_74eb0b1cbb84f7::t_6fede4a2941ca5 10,87-91,97,154-176
+packages/gatekeeper-google/package.json
+  s_74eb0b1cbb84f7::t_a42cde1731a783 10-11
+packages/gatekeeper-google/scripts/record-blank-presentation.ts
+  s_74eb0b1cbb84f7::t_47011566253335 1-140
+packages/gatekeeper-google/src/blank-presentation.json
+  s_74eb0b1cbb84f7::t_ed6a992961a26b 1-724
+packages/gatekeeper-google/src/creation.ts
+  s_74eb0b1cbb84f7::t_dfebcb608fc1a8 1-114
+packages/gatekeeper-google/src/docs-api.ts
+  s_74eb0b1cbb84f7::t_6bf1ce087c5e82 274-290,405-456
+packages/gatekeeper-google/src/google-verifier-types.ts
+  s_74eb0b1cbb84f7::t_3a08d1d4360aa6 4-7,17-19,31-35
+packages/gatekeeper-google/src/google.ts
+  s_74eb0b1cbb84f7::t_634f314146ed0e 3,14-18,20-23,105,111,409-425,1042-1043,1176-1179,1396,1574-1585,1588-1589,1618,1738-1742,1751-1768,1783-1788,1792,1796-1809,1840-1841,1843,1870-1880,1882,1884,1902,1904,1906-1908,1910,1925-1942,1944,1972,2002,2016,2031,2080,2092,2101,2425,2431,2434,2439-2443,2449-2459,2461,2463,2480,2484-2488,2493-2504,2523,2536,2542
+packages/gatekeeper-google/src/mutex.ts
+  s_74eb0b1cbb84f7::t_ff95b514615b91 1-22
+packages/gatekeeper-google/src/observability.ts
+  s_74eb0b1cbb84f7::t_924accba81d000 6,14
+packages/gatekeeper-google/src/resources.ts
+  s_74eb0b1cbb84f7::t_78b0336402db71 42,45-51,57,68,234,377,496-519
+packages/gatekeeper-google/src/sheets-api.ts
+  s_74eb0b1cbb84f7::t_004435218d85c2 36-37,40-42,61,70-74,84-87,130-133,137,139,146-164,213-249
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_74eb0b1cbb84f7::t_5225756f9cce0b 22
+packages/gatekeeper-google/src/slides-actions.ts
+  s_74eb0b1cbb84f7::t_68ff5f1e8b1c3e 24,27-28,40-43,46,62-66,86-88,100,110,550-612
+packages/gatekeeper-google/src/slides-api.ts
+  s_74eb0b1cbb84f7::t_02eddb34eefab8 4-7,111-137,147-148,155,157,159,166-167,170-174,179-181,188,204-209,254-260,266-281,318-325,389-446
+packages/gatekeeper-google/src/slides-design.ts
+  s_74eb0b1cbb84f7::t_7fd61492a187d3 19,97,483-484,486,489-494,555-561,576,580-581,583,597-604,638,655-656
+packages/gatekeeper-google/src/slides-fields.ts
+  s_74eb0b1cbb84f7::t_a53b456a937a43 1-35
+packages/gatekeeper-google/src/slides-format.ts
+  s_74eb0b1cbb84f7::t_16f8e9f521774a 8-9,13-14,32-36,55-56,61-62,68-76,82-84,140-157,161-163,169-172,183,185-199
+packages/gatekeeper-google/src/slides-geometry.ts
+  s_74eb0b1cbb84f7::t_d54990afc6d582 11,75-97,100-101,104-110
+packages/gatekeeper-google/src/slides-model.ts
+  s_74eb0b1cbb84f7::t_3e8ef05fdef3e2 11,13-14,16-18,20-21,32-36,70-139,175,182-201,216-230,260,266,273-283,295
+packages/gatekeeper-google/src/slides-read-types.d.ts
+  s_74eb0b1cbb84f7::t_54ef9f3fed0500 17-18,27-42,45,55-56,114-115,120-121,126-135,151-156,191-192,197-202,215-216,218,223-229,238-255,272-276,279-331,334-335
+packages/gatekeeper-google/src/slides-simulation.ts
+  s_74eb0b1cbb84f7::t_727cd4a58a1431 18,28-37,56-65,78-81,89-90,94,96,114-138,141-142,148-151,164-223,225,230,240,253-255,262-269,275-291,320-321
+packages/gatekeeper-google/src/slides-types.d.ts
+  s_74eb0b1cbb84f7::t_966626cb950f73 124,171-173,208-209,240-243,253-256,264-280
+packages/gatekeeper-google/src/slides.ts
+  s_74eb0b1cbb84f7::t_19d988a4d20c41 9-11,14-15,17-20,27-29,46-47,63-64,115,118,124,126,131-135,137-148,151,168,172-174,193-204,249,284,291,323-325,336,340-343,358,360-365,424-429,439-446,502-503,530-599,646-666
+packages/gatekeeper-google/vitest.docs-worker.config.ts
+  s_74eb0b1cbb84f7::t_9c794a7fdf4cf3 8,20,31
+packages/gatekeeper-slack/README.md
+  s_74eb0b1cbb84f7::t_f4280710b6cc9a 28-86,104-105,127,129-133
+packages/gatekeeper-slack/package.json
+  s_74eb0b1cbb84f7::t_38e89b01d43705 7,20
+packages/gatekeeper-slack/src/configurator/conversation-configurator-types.d.ts
+  s_74eb0b1cbb84f7::t_3f33ddafa50c49 9,14-15,17
+packages/gatekeeper-slack/src/configurator/conversation-configurator-ui.test.ts
+  s_74eb0b1cbb84f7::t_f967dbf8c80520 1-112
+packages/gatekeeper-slack/src/configurator/conversation-configurator-ui.tsx
+  s_74eb0b1cbb84f7::t_75082092e0a37d 10-11,14-18,23,25-26,29,31-42,51-52
+packages/gatekeeper-slack/src/configurator/workspace-configurator-types.d.ts
+  s_74eb0b1cbb84f7::t_75bb9b1ca9750b 1,4-5
+packages/gatekeeper-slack/src/configurator/workspace-configurator-ui.tsx
+  s_74eb0b1cbb84f7::t_3d2e335258fd3d 1,9-10,13-15,18-23,26,29-35
+packages/gatekeeper-slack/src/slack-api.test.ts
+  s_74eb0b1cbb84f7::t_5e5e2a8019738b 1-400
+packages/gatekeeper-slack/src/slack-api.ts
+  s_74eb0b1cbb84f7::t_925fc06108d114 18-23,39-48,51-58,76-77,93-95,181-183,294,336-340,343-345,351,353-359,362-468,472-473,502-504,532-533,536,539-542,563-582,589-596,599,606,622-623,635,637-641,649-676,681,689,698,714,718-721
+packages/gatekeeper-slack/src/slack-configurators.ts
+  s_74eb0b1cbb84f7::t_32e535a66363be 39-42,53,58-61,64-65
+packages/gatekeeper-slack/src/slack.test.ts
+  s_74eb0b1cbb84f7::t_c0ecef3855c6a0 1-247
+packages/gatekeeper-slack/src/slack.ts
+  s_74eb0b1cbb84f7::t_35bfd7812cecea 14,119,144-149,156-157,161-163,190,192,194-195,378-384,480-488,499-507,578-619,635,641,643,645,677,687-688,694,701,721,736,750,780,783-784,797-798,807,811-812,814,816,818,823,825,964,981,1055,1057,1087-1088,1102,1124,1138,1142-1144,1178-1179,1198,1211-1212,1255-1256,1330
+packages/gatekeeper-slack/src/types.d.ts
+  s_74eb0b1cbb84f7::t_d0d92f8e497c76 136,140
+packages/gatekeeper-slack/vite.config.ts
+  s_74eb0b1cbb84f7::t_f56e22a666e48c 4
+packages/gatekeeper-slack/vitest.config.ts
+  s_74eb0b1cbb84f7::t_97a342b03e93c0 1-6
+packages/integration-tests/__tests__/workshop-agent-context.test.ts
+  s_74eb0b1cbb84f7::t_63b197a211de07 78-81,106-107,111-116,119,121-124
+packages/integration-tests/__tests__/workshop-prompt-cache.test.ts
+  s_74eb0b1cbb84f7::t_956cf6ce1b5fa2 9-10,69-126
+packages/workshop-backend/src/agent.ts
+  s_74eb0b1cbb84f7::t_7197a9eee5a12d 306-308,655,2897-2898,2938-2939,2942-2944,3008-3011,3041,3113
+packages/workshop-backend/src/overseer.ts
+  s_74eb0b1cbb84f7::t_b0077533ab3d2f 6936-6943
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_74eb0b1cbb84f7::t_392c303c5f2b36 586-608,636-643
+pnpm-lock.yaml
+  s_74eb0b1cbb84f7::t_c5017df9850a2c 814-816
+scripts/tsconfig.json
+  s_74eb0b1cbb84f7::t_cc0c87bc833102 27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "298eebec3acf694645e977242876034bb95c04bd",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

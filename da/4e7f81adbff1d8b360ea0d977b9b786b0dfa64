@@ -1,0 +1,24 @@
+packages/workshop-backend/__tests__/git-push-actions.test.ts
+  s_7fb837265947ac::t_e6fc2ca0c3424a 30-31,35-47
+packages/workshop-backend/__tests__/restricted-actions.test.ts
+  s_7fb837265947ac::t_f4327b7b3a996a 1-2,52
+  s_7fb837265947ac::t_736ca1b322d7a7 3-51,53-67
+packages/workshop-backend/src/overseer.ts
+  s_7fb837265947ac::t_8d6863b37c7a12 5784-5792,5815-5816
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da4e7f81adbff1d8b360ea0d977b9b786b0dfa64",
+  "prompts": {},
+  "sessions": {
+    "s_7fb837265947ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e87a5291-c3bd-4e4b-b82b-245e159a74a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

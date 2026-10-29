@@ -1,0 +1,42 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_a18738247b8cd3::t_b8c3ae494077c9 246
+packages/gatekeeper-mcp/README.md
+  s_a18738247b8cd3::t_193bd53d6aa46f 180-181,209-212
+packages/gatekeeper-google/README.md
+  s_4c4437c01da8c5::t_e63a3c4bd7c5d6 115-117
+packages/gatekeeper-google/__tests__/bigquery-resource.test.ts
+  s_4c4437c01da8c5::t_606e5d5b75cca5 96-97
+packages/gatekeeper-google/src/bigquery-types.d.ts
+  s_4c4437c01da8c5::t_4750f866dfa92e 134
+  s_4c4437c01da8c5::t_3d3be95cdd9b4b 135
+packages/gatekeeper-google/src/google.ts
+  s_4c4437c01da8c5::t_8396022b327291 3327-3328,3392,3543
+  s_a18738247b8cd3::t_49878b81377424 2011-2013
+  s_4c4437c01da8c5::t_dc0a11a519daf9 3729,3761,3773,3791,3801,3826,3835,3871
+packages/gatekeeper-google/src/bigquery-resource.ts
+  s_4c4437c01da8c5::t_5ae3c03321f4c7 47-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e07bf6b48118c142b5e4826b3bd86e8ee409abcc",
+  "prompts": {},
+  "sessions": {
+    "s_4c4437c01da8c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "635d6ba7-0072-4d35-9467-ff060ac90333",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_a18738247b8cd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48ea2cb4-1210-4a7a-9ed1-990c8221106f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

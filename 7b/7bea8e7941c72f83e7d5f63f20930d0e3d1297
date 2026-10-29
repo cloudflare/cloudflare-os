@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/format-blueprints.test.ts
+  s_fe30841bd8390c::t_cf1ecc7a341212 38-48,128,135-142
+packages/workshop-backend/__tests__/gadget-libraries.test.ts
+  s_fe30841bd8390c::t_9a5c751a897199 9-12,17,35-68,72,75-77,146-149,151-162,180-184,194-196,198-199,212-214,242-243,279,281-285,322,347-351,353-357,369,437,440,442-444,447-449,464,466-468,470-473,475-476
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7b7bea8e7941c72f83e7d5f63f20930d0e3d1297",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

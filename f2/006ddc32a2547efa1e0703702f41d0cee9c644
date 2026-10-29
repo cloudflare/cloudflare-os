@@ -1,0 +1,39 @@
+packages/wiki-import/README.md
+  s_d78fe856f76a3c::t_2455d703218fba 34,41-47,247-250,295-297
+packages/wiki-import/__tests__/fixtures/diagrams.xhtml
+  s_d78fe856f76a3c::t_66171f10266cec 1-17
+packages/wiki-import/__tests__/fixtures/embeds.xhtml
+  s_d78fe856f76a3c::t_6806dc5b098577 1-7
+packages/wiki-import/__tests__/fixtures/expand.xhtml
+  s_d78fe856f76a3c::t_872cd1cccc7fb5 11-15
+packages/wiki-import/__tests__/fixtures/issues.xhtml
+  s_d78fe856f76a3c::t_fadd3832c87c02 1-16
+packages/wiki-import/__tests__/fixtures/toc.xhtml
+  s_d78fe856f76a3c::t_cb803367b6d4ca 5-19,21
+packages/wiki-import/__tests__/fixtures/unknown-macro.xhtml
+  s_d78fe856f76a3c::t_e51fd0125860b0 4
+packages/wiki-import/__tests__/plan.test.ts
+  s_d78fe856f76a3c::t_1bb53a3c6524a6 234,244,401-420,1206-1207,1217
+packages/wiki-import/__tests__/storage-to-blocks.test.ts
+  s_d78fe856f76a3c::t_7398d94355d3f0 35-36,95-100,104-108,192-194,208-210,243-280,300-379,507-512,517-518,520-521,526-527,532,534,542,545,554,557
+packages/wiki-import/src/import.ts
+  s_d78fe856f76a3c::t_23cccd999ede8a 151-155,256,474,724-729,754-762,951-954,973,993,1011,1042
+packages/wiki-import/src/storage-to-blocks.ts
+  s_d78fe856f76a3c::t_b86ad75b1b1522 34-39,141-159,246-250,252-264,266-280,315-323,329-330,381-383,405-406,854-864,872,882-883,982-985,994-1005,1007-1008,1043-1128,1199,1256-1259,1263-1265,1447,1451,1453,1459-1460,1466-1469,1471,1473-1508,1520-1527
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f2006ddc32a2547efa1e0703702f41d0cee9c644",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

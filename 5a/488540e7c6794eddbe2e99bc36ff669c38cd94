@@ -1,0 +1,27 @@
+packages/workshop-shared/src/external-message-gateway.ts
+  s_78a1a7c3756c1d::t_53d51130184ac3 19,21,23,25,27,29,31
+  s_78a1a7c3756c1d::t_b542d26e83178e 17
+packages/workshop-backend/src/overseer.ts
+  s_78a1a7c3756c1d::t_3b9e47998adf95 355,390,584,587,593,597,903,2161,2164,2172
+  s_78a1a7c3756c1d::t_3c450ac34b759c 3937-3942
+  s_78a1a7c3756c1d::t_df094083f98fa2 3981
+  s_78a1a7c3756c1d::t_edb7cab26b0fd7 954,1000,2151-2158,2280,2356,2623
+  s_78a1a7c3756c1d::t_f82462a712b683 2159,3916-3924,3961,3963,3965,3982-3983,3989,3993
+  s_78a1a7c3756c1d::t_a8fe2114dd6be3 2160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5a488540e7c6794eddbe2e99bc36ff669c38cd94",
+  "prompts": {},
+  "sessions": {
+    "s_78a1a7c3756c1d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_093df5611ffeQY5XXuyr5ugGaQ",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

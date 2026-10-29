@@ -1,0 +1,29 @@
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_74eb0b1cbb84f7::t_6ffa914af26c75 385-424
+packages/gatekeeper-google/__tests__/workerd/gmail-hooks.test.ts
+  s_74eb0b1cbb84f7::t_62046ebcff4a44 271-294,512-573
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_74eb0b1cbb84f7::t_37248a09b3077d 5,24-40
+packages/gatekeeper-google/src/chat-hooks.ts
+  s_74eb0b1cbb84f7::t_8bca2eb986185e 96-99,111-112,133,195-204,208-209,218-222
+packages/gatekeeper-google/src/gmail-hooks.ts
+  s_74eb0b1cbb84f7::t_03c56fb184a214 114-117,128-130,147,149-150,183,342-351,355-356,365-369
+packages/gatekeeper-google/src/google.ts
+  s_74eb0b1cbb84f7::t_dfbeb1a7a84e61 743-754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2eae15bda4b3a7c0cf685157ab1f8b9816f79cc6",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+packages/gatekeeper-google/src/google-api.ts
+  s_3164a040f402c3::t_a5a68fdb88081c 96-97,99,104,126-130,146-150
+  s_3164a040f402c3::t_ab9820e4b9137f 95,98,100
+packages/gatekeeper-google/src/google.ts
+  s_3164a040f402c3::t_3a2e9b531f3fab 689-697
+  s_3164a040f402c3::t_a5a68fdb88081c 713-714,722-723
+  s_3164a040f402c3::t_b37a27419f2afb 75-76,78-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "39601f56882cf74b29024ff718fceb2a41210847",
+  "prompts": {},
+  "humans": {
+    "h_766a26d8f6ed11": {
+      "author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  },
+  "sessions": {
+    "s_3164a040f402c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52538c21-bcf9-4d71-9396-3c198fdfd111",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

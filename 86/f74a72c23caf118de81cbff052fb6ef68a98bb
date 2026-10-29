@@ -1,0 +1,23 @@
+packages/integration-tests/__tests__/observer-sever.test.ts
+  s_30f26bb8696b2b::t_3597a738ed68a3 1-284
+packages/workshop-backend/__tests__/fixtures.ts
+  s_30f26bb8696b2b::t_0d6d805850e749 85,89-91
+packages/workshop-backend/__tests__/session-sever.test.ts
+  s_30f26bb8696b2b::t_941e5d9e74e126 1-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "86f74a72c23caf118de81cbff052fb6ef68a98bb",
+  "prompts": {},
+  "sessions": {
+    "s_30f26bb8696b2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21d32dcc-b1ee-4f1a-bf95-5a1ecfae3ff2",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

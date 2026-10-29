@@ -1,0 +1,19 @@
+scripts/kill-process-tree.test.js
+  s_7727453cc7f579::t_4c813cec24baef 3,6-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0c95b4cb35d9b4cf2256004e3a84aa18972694ed",
+  "prompts": {},
+  "sessions": {
+    "s_7727453cc7f579": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c0925e8-b509-43e0-93a3-8e4889914940",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,65 @@
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_18215e41479440::t_ca27d777c43f53 595,604-607
+.agents/skills/write-gatekeeper/SKILL.md
+  s_18215e41479440::t_c4fb0bf362cd25 122-129
+AGENTS.md
+  s_18215e41479440::t_41454ea9088678 71
+packages/gatekeeper-confluence/package.json
+  s_18215e41479440::t_8da925ed2d6a0e 8
+packages/gatekeeper-context/package.json
+  s_18215e41479440::t_a4db3bb2abf20a 8
+packages/gatekeeper-email/package.json
+  s_18215e41479440::t_a5df92211026e4 8
+packages/gatekeeper-github/package.json
+  s_18215e41479440::t_7535d544d89d1d 8
+packages/gatekeeper-google/package.json
+  s_18215e41479440::t_df63d7b8a14843 8
+packages/gatekeeper-homeassistant/package.json
+  s_18215e41479440::t_ce27267141f67f 8
+packages/gatekeeper-linear/package.json
+  s_18215e41479440::t_f0da576f1fd4a5 8
+packages/gatekeeper-mcp-portal/package.json
+  s_18215e41479440::t_d7eb43e5b04597 8
+packages/gatekeeper-mcp/package.json
+  s_18215e41479440::t_1bf5251068e70d 8
+packages/gatekeeper-notion/package.json
+  s_18215e41479440::t_5d800c021a2959 8
+packages/gatekeeper-scheduler/package.json
+  s_18215e41479440::t_fa5a18a9d43eed 8
+packages/gatekeeper-slack/package.json
+  s_18215e41479440::t_64c599d8765d71 8
+packages/gatekeeper-spotify/package.json
+  s_18215e41479440::t_ac8697a7fa6b5b 8
+packages/gatekeeper-supabase/package.json
+  s_18215e41479440::t_21cf49d45276b3 8
+packages/gatekeeper-zoominfo/package.json
+  s_18215e41479440::t_c3eb72461ccf06 8
+scripts/deploy-scripts.test.js
+  s_7cb2e13456d040::t_bc1a21a8c27682 1-60
+scripts/gatekeeper-configurator-vite-config.ts
+  s_7cb2e13456d040::t_020861464589e5 17-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c208cf4582131327fa7fc38afd386995fd82544c",
+  "prompts": {},
+  "sessions": {
+    "s_18215e41479440": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17289fb1-9f5b-4701-8148-444900569a1e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_7cb2e13456d040": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ebfd974-e57c-46ad-aea5-f64db9f3a4aa",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

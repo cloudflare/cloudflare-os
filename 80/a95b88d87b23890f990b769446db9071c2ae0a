@@ -1,0 +1,30 @@
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_1dfdf61332f5c7::t_be7dcccee1e3c3 40,54,57
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e5ac85fca2ef43::t_2ba0fada24d3e1 6025-6029
+  s_1dfdf61332f5c7::t_1918aa186c895c 3195-3203,3210-3214,3380-3384,3501-3502,3523,3781-3806,3815-3818,3820-3821,4070,4149-4150,4448,4450-4453,5014-5016,5892-5901,5931,5995,6156,6205,6594,6611
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "80a95b88d87b23890f990b769446db9071c2ae0a",
+  "prompts": {},
+  "sessions": {
+    "s_1dfdf61332f5c7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_099907512ffeP5YAqRX5D9hz8g",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_e5ac85fca2ef43": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0520ee52affeJH69RpWzRRdY52",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

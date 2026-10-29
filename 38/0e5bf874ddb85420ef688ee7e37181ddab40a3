@@ -1,0 +1,53 @@
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_f74e55bad93be8::t_a008a50a391a1c 1-211
+packages/gatekeeper-context/app/ContextLibraryPage.tsx
+  s_f74e55bad93be8::t_94e581a2ed4fc6 43,52,2948-2949,2989-2991,3030-3037,3185-3190,3224-3228
+packages/gatekeeper-context/package.json
+  s_f74e55bad93be8::t_a23878b875c2f1 21-23
+packages/gatekeeper-context/src/agent-skill.ts
+  s_f74e55bad93be8::t_095babddba727a 1-136
+packages/gatekeeper-context/src/context-collection.ts
+  s_f74e55bad93be8::t_61714504045585 8-9,11,16-19,65-69,76,90-95,112,181,192-271,313,322,334,337-350,355,357-358,374,377-378,381-382,399,441-449,452-453,538-540,542-552,554,571-574
+packages/gatekeeper-context/src/context-types.ts
+  s_f74e55bad93be8::t_613fd2456039b9 67-80,145-172,189-193,203,304
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_f74e55bad93be8::t_7071a366b4c1e2 5,8-11,16,18,22-26,42-70,231-251,259,267-272,284-314,322-330,333-334
+packages/gatekeeper-context/src/library-read.ts
+  s_f74e55bad93be8::t_64a8a213da602b 7-9,11-12,20,39,45,47,68,149-152,155-158,160-170,173-194,198-203
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_f74e55bad93be8::t_9c50813aa1bb40 3-4,39-52,61-70,112-113,115,122-125,127,129-130,135,137-141,143,146-147,151-154,156,158-159,163,166,169-173,175-196
+packages/workshop-backend/__tests__/agent-skills.test.ts
+  s_f74e55bad93be8::t_f590f6b050c888 1-319
+packages/workshop-backend/src/agent-catalog.ts
+  s_f74e55bad93be8::t_01ae8a3ecf4d23 3,16-29,31,33-41,43-44,46-47,57,60-64,66,69-73,80,104-106
+packages/workshop-backend/src/agent-skills.ts
+  s_f74e55bad93be8::t_d9135ebb216e26 1-280
+packages/workshop-backend/src/agent.ts
+  s_f74e55bad93be8::t_ecbe120982f1cb 1,11-16,31,95-98,827-832,901-902,965-968,1080,1326,1719,1726-1743,1745-1746,1748,1826-1834,1855-1865,1867-1871,1873,1875-1877
+packages/workshop-backend/src/overseer.ts
+  s_f74e55bad93be8::t_1f2ead902e8285 3-4,30-32,424-428,437,522-527,1600-1617,1657,2642-2643,2686,3114-3140,3144,3183,3267-3270,4022,4033-4035,5331-5335,5337,5339-5340,5344-5345,5350,5358,5360-5361,5388,5423,5425-5426,5447
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_f74e55bad93be8::t_65a03b26d5ef81 466-471,2431-2442,2447,2449,2454,5845-5862
+packages/workshop-shared/src/api.ts
+  s_f74e55bad93be8::t_33b0c9b7a460c3 1325-1339,1360-1362,1567-1568
+packages/workshop-shared/src/gatekeeper.ts
+  s_f74e55bad93be8::t_314610d6049a00 81-82,109-129,131-133,135-136,138-139,142-144,147-164,961-963
+pnpm-lock.yaml
+  s_f74e55bad93be8::t_be92904804f803 81,103-108,148,160,187,190,193,196,340,415,421,473,479,500,530,543,552,561,564,3799-3803,4204,4211,5047,5052,5092,5105,5196,5204,5225,5231,5233,5239,6966,6972,6987,6990,6994,6999,7004,7018,7020,7024,7042-7043,7063,7066,7083,7186-7187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "380e5bf874ddb85420ef688ee7e37181ddab40a3",
+  "prompts": {},
+  "sessions": {
+    "s_f74e55bad93be8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0dcb6c77fffeZYcvIhpBXlzU3v",
+        "model": "kindle-alpha-api"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

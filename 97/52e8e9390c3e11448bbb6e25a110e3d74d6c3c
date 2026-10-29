@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_fcb81335a24bc2::t_74abf1f73dcdaf 789
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9752e8e9390c3e11448bbb6e25a110e3d74d6c3c",
+  "prompts": {},
+  "sessions": {
+    "s_fcb81335a24bc2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03601b558fferm7fC0nANC1UUW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

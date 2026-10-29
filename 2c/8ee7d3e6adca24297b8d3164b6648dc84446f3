@@ -1,0 +1,97 @@
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_df87996048640e 261,268,333,335,367
+  s_e25e29d8ebebad::t_481dc9b8a258f3 13-17,24,33-37,46,77-81,233-260,262-267,269-277,307-312,327-332,334,336-352
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_3be9078c40b34d 13,50-55,67,87-93,103-107,211-213,227-231,237
+  s_e25e29d8ebebad::t_df87996048640e 94,96,225-226
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_07364e7b4ab08b 7-12,50,104,118-128,130,132-150,152,154-160,188
+  s_e25e29d8ebebad::t_a56f9da344ce80 105,107,129,131,151,153
+packages/workshop-shared/src/api.ts
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 1470,1507-1508
+  s_e25e29d8ebebad::t_2806e8bbb8efb8 1509
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_e63ff8ab05589b 145,174
+  s_e25e29d8ebebad::t_0c251dc9f3d5dc 4-7,25-27,41-43,58-71,84-86,92-105,110,113-117,129-130,137,142-144,146,171-173,176,193-196,205,211,213-218,220-231
+packages/workshop-frontend/src/useResolveAction.ts
+  s_e25e29d8ebebad::t_9c086947d4badc 1,4
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_df87996048640e 92,161,172
+packages/mcp-shared/__tests__/tools.test.ts
+  s_e25e29d8ebebad::t_932164cdced6b6 8,93-104
+  s_e25e29d8ebebad::t_f147ab7048eb96 105-107
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_ac1a11bb8865a8 2,6,20-36,55,76,98-100,178-199,238-268,314
+  s_e25e29d8ebebad::t_b99625e0100519 53-54,73,87,89,91,269-313
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_3702773cfbf424 38,2596-2598
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 523-528,737,2585-2586,2588-2589,2591-2595,2599-2607,2613,7778-7779,7895
+  s_e25e29d8ebebad::t_035e27d6cbdf38 2590
+  s_e25e29d8ebebad::t_f83c3c4e0a31b4 4
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_4ae8e59c4373b5 145,147-148
+  s_e25e29d8ebebad::t_f3a17a99ab419e 146,149-150
+packages/workshop-shared/src/gatekeeper.ts
+  s_e25e29d8ebebad::t_b238b44d8d73ce 21-49,839-843
+packages/workshop-frontend/src/Activity.test.tsx
+  s_e25e29d8ebebad::t_7b15617098dd0a 100,110-111,119-120,124-132
+  s_e25e29d8ebebad::t_9caded2761218f 134
+  s_e25e29d8ebebad::t_17c3008e65dbe0 40-61
+  s_e25e29d8ebebad::t_28675921bddc1c 64-66
+  s_e25e29d8ebebad::t_0f4ee1fe892117 16-39,63,83-84,98-99,101-109,112-118,121-123,133
+  s_e25e29d8ebebad::t_8e4397191a7dcb 74-76
+  s_e25e29d8ebebad::t_b94ba4b6035316 68-69
+  s_e25e29d8ebebad::t_03af81361b5deb 62,67,81
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 73
+  s_e25e29d8ebebad::t_1570dc619370d5 85-97
+  s_e25e29d8ebebad::t_34c9eed64389a4 13-15
+  s_e25e29d8ebebad::t_604fb5c330e4f0 80,82
+  s_e25e29d8ebebad::t_7e87ffb8479f97 70-72
+  s_e25e29d8ebebad::t_97d5f35015e1e9 77-79
+  s_e25e29d8ebebad::t_a3d5fac2b2810c 1-12
+packages/workshop-frontend/src/Activity.tsx
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 99-101
+  s_e25e29d8ebebad::t_0f4ee1fe892117 333-334,336,363
+  s_e25e29d8ebebad::t_7b15617098dd0a 136,158-160,335
+  s_e25e29d8ebebad::t_a43654ef9718f0 624-628
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_7fe7cedcc9297c 4-12,22,43-57,59-81,83-95,97-109
+  s_e25e29d8ebebad::t_e63ff8ab05589b 38-40,58,82,96,112,121,123,139-140,148-149,154-157,161-162,168,190,213,231,244,258,279,301,323,345,351,357,369,379,386,402,422,431
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_e25e29d8ebebad::t_571df8024921f8 244-249
+  s_e25e29d8ebebad::t_5d226ede3cda08 241-243
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 166-169,181,183-189,192-193,196-240,250,321
+  s_e25e29d8ebebad::t_030fa9c2624c26 251
+  s_e25e29d8ebebad::t_f582cddeb47c29 170-172
+  s_e25e29d8ebebad::t_fa3885e8e99e24 348
+  s_e25e29d8ebebad::t_3702773cfbf424 3-8,308-320
+  s_e25e29d8ebebad::t_f6ce14c13812a2 165,173-180,182,190-191,194-195
+  s_e25e29d8ebebad::t_fc16249da5d3d0 322-347
+  s_e25e29d8ebebad::t_ae0bedb87d16f2 74,87,97
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_89acc7ae9b1ea2 5884,6451-6454,6605-6607
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 6437-6438
+packages/workshop-backend/src/auto-approval.ts
+  s_e25e29d8ebebad::t_1c0a97ae7112fd 91-92
+  s_e25e29d8ebebad::t_45b26a3bbcc1ea 65-67
+  s_e25e29d8ebebad::t_9de1b6cec6bae7 25-26
+  s_e25e29d8ebebad::t_3702773cfbf424 27-29,35-36
+  s_e25e29d8ebebad::t_fc16249da5d3d0 30-34
+  s_e25e29d8ebebad::t_dadf8372f049e1 57,71,100-101,110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2c8ee7d3e6adca24297b8d3164b6648dc84446f3",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

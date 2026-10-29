@@ -1,0 +1,24 @@
+scripts/contribution-policy.js
+  s_41ce97281be1d0::t_fa2e68d6e31b64 32
+scripts/contribution-policy.test.js
+  s_41ce97281be1d0::t_383f843d1dee00 24,122-134,227-237
+  s_41ce97281be1d0::t_1c97dc1f7955e0 238-240
+.github/workflows/contribution-policy.yml
+  s_41ce97281be1d0::t_fa2e68d6e31b64 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "be20d7d02e5baac8ada4f7d9dd8fe707e0819687",
+  "prompts": {},
+  "sessions": {
+    "s_41ce97281be1d0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00f0bafc9ffeBd7DM3rbvoCjjj",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+packages/gatekeeper-google/__tests__/drive-pdf.test.ts
+  s_7801bbf134048b::t_2c8b986b3c8bc6 129-133,339-358
+  s_7801bbf134048b::t_d89345fd2a074c 359
+packages/gatekeeper-google/src/drive-pdf.ts
+  s_7801bbf134048b::t_331216f6e6c691 64,68-70,112-114,120,126,163,389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1140be5c1ab33b9fb8c2b5fd887ed227a001a585",
+  "prompts": {},
+  "sessions": {
+    "s_7801bbf134048b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e69110af-6dc8-4306-90ae-798ba71a1a4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

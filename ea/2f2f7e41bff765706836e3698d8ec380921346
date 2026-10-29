@@ -1,0 +1,25 @@
+.github/workflows/README.md
+  s_d5a5c2310a35ff::t_721859a9cb00c2 15-17
+scripts/preview.test.js
+  s_d5a5c2310a35ff::t_f0ed4ea16a7fc1 15,69-84,120-121,123-126,132,134-135,157-158
+scripts/preview/preview.mjs
+  s_d5a5c2310a35ff::t_00e76d3848d75f 24-27,40,232-234,236-241,264,275,278,281-289,293-296,304-312,315,353-354,356-359,367,371-372,379,381-383,385,494,498
+scripts/preview/staging-config.mjs
+  s_d5a5c2310a35ff::t_43369791693951 60-68,74-81,100-103,105,109-117,194,209,263-266,268,298-300,305-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ea2f2f7e41bff765706836e3698d8ec380921346",
+  "prompts": {},
+  "sessions": {
+    "s_d5a5c2310a35ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2811bfc5-5e06-4bfd-b283-0eb104af8476",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
