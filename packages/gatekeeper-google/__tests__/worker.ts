@@ -343,6 +343,11 @@ export class TestHooks extends DurableObject<Env> {
     return this.#slides(facetName).getAutoApprovableActions();
   }
 
+  /** Sets or clears `GOOGLE_SLIDES_ALL_AUTO_APPROVABLE` for one Slides facet. */
+  async setSlidesAllAutoApprovable(facetName: string, on: boolean): Promise<void> {
+    await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).setTestAllAutoApprovable(on);
+  }
+
   /** Leaves a Slides change claimed, as an activation that died while applying it would. */
   async orphanSlidesClaim(facetName: string, actionId: number): Promise<void> {
     await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
@@ -449,7 +454,17 @@ type TestDurableObjectState = { ctx: { storage: DurableObjectStorage } };
   return value === undefined ? undefined : JSON.stringify(value).length;
 };
 
-type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction(id: number): void };
+type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & {
+  claimTestAction(id: number): void;
+  setTestAllAutoApprovable(on: boolean): void;
+};
+
+(GoogleSlidesGatekeeperImpl.prototype as TestGoogleSlidesGatekeeper).setTestAllAutoApprovable = function(
+  on: boolean,
+): void {
+  let self = this as unknown as { env: Record<string, unknown> };
+  self.env = { ...self.env, GOOGLE_SLIDES_ALL_AUTO_APPROVABLE: on ? "true" : "false" };
+};
 
 (GoogleSlidesGatekeeperImpl.prototype as TestGoogleSlidesGatekeeper).claimTestAction = function(
   id: number,

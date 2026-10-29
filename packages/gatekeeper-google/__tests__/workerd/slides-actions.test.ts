@@ -416,6 +416,8 @@ function gatekeeper() {
     apply: (actionId: number, entered?: () => void) => hooks().applySlides(facet, actionId, entered),
     reject: (actionId: number) => hooks().rejectSlides(facet, actionId),
     autoApprovable: () => hooks().slidesAutoApprovable(facet),
+    /** Sets or clears the deployment's `GOOGLE_SLIDES_ALL_AUTO_APPROVABLE` for this gatekeeper. */
+    allAutoApprovable: (on: boolean) => hooks().setSlidesAllAutoApprovable(facet, on),
     orphan: (actionId: number) => hooks().orphanSlidesClaim(facet, actionId),
   };
 }
@@ -1553,5 +1555,75 @@ describe("Google Slides backgrounds and theme", () => {
     expect(outline.slides[0].background).toBe("picture");
     expect(s1.background).toBe("picture");
     expect(JSON.stringify([outline, s1])).not.toContain("googleusercontent");
+  });
+});
+
+describe("Google Slides with every change auto-approvable", () => {
+  const SHAPE = {
+    op: "createShape", slideId: "s2", ref: "badge", shapeType: "ROUND_RECTANGLE",
+    bounds: { x: 10, y: 20, width: 100, height: 40 }, text: "New",
+  };
+  const PICTURE = {
+    op: "insertImage", slideId: "s2", ref: "pic", url: "https://example.com/a.png",
+    bounds: { x: 0, y: 0, width: 10, height: 10 },
+  };
+  const kindOf = ({ action }: { action?: { autoApprovable?: boolean; actionKind?: { tag: string } } }) =>
+    action!.autoApprovable ? action!.actionKind!.tag : "manual";
+
+  it("leaves the kinds as they are by default", async () => {
+    new SlidesProvider(layoutDeck()).install();
+    let slides = gatekeeper();
+
+    expect(kindOf(await slides.queued("updateSlides", [SHAPE]))).toBe("manual");
+    expect(kindOf(await slides.queued("updateSlides", [PICTURE]))).toBe("manual");
+    expect(kindOf(await slides.queued("createSlide", "layout-title-body", "s1"))).toBe("manual");
+    expect((await slides.autoApprovable()).map(({ tag }) => tag))
+      .toEqual(["editSlidesText", "formatSlides", "skipSlides"]);
+  });
+
+  it("queues every change as a kind, the narrowest that admits all of it", async () => {
+    new SlidesProvider(layoutDeck()).install();
+    let slides = gatekeeper();
+    await slides.allAutoApprovable(true);
+
+    expect(await slides.autoApprovable()).toEqual([
+      { tag: "editSlidesText", label: "Slide text edits" },
+      { tag: "formatSlides", label: "Slide formatting and arrangement" },
+      { tag: "changeSlides", label: "Slide content and theme changes" },
+      { tag: "slideWebPictures", label: "Slide pictures from web links" },
+      { tag: "addSlides", label: "Adding, copying and reordering slides" },
+      { tag: "deleteSlides", label: "Deleting slides" },
+      { tag: "skipSlides", label: "Skipping slides" },
+    ]);
+    expect(kindOf(await slides.edit([{ slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }])))
+      .toBe("editSlidesText");
+    expect(kindOf(await slides.queued("updateSlides", [SHAPE]))).toBe("changeSlides");
+    // Google downloads the URL, which can carry data out, so a batch with one is its own kind.
+    expect(kindOf(await slides.queued("updateSlides", [PICTURE]))).toBe("slideWebPictures");
+    expect(kindOf(await slides.queued("updateSlides", [
+      { op: "setBackground", slideId: "s1", background: { imageUrl: "https://example.com/b.png" } },
+    ]))).toBe("slideWebPictures");
+    expect(kindOf(await slides.queued("updateSlides", [
+      { op: "setBackground", layoutId: "layout-title", background: "#ff0000" },
+    ]))).toBe("changeSlides");
+    expect(kindOf(await slides.queued("createSlide", "layout-title-body", "s1"))).toBe("addSlides");
+    expect(kindOf(await slides.queued("duplicateSlide", "s1"))).toBe("addSlides");
+    expect(kindOf(await slides.queued("moveSlides", ["s2"], null))).toBe("addSlides");
+    expect(kindOf(await slides.queued("deleteSlide", "s3"))).toBe("deleteSlides");
+  });
+
+  it("stops queueing changes as auto-approvable once cleared, and still applies those it queued", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    await slides.allAutoApprovable(true);
+    let first = await slides.queued("updateSlides", [SHAPE]);
+    await slides.allAutoApprovable(false);
+    let second = await slides.queued("deleteSlide", "s3");
+
+    expect(kindOf(first)).toBe("changeSlides");
+    expect(kindOf(second)).toBe("manual");
+    expect(await slides.apply(first.actionId!)).toBeNull();
+    expect(await slides.apply(second.actionId!)).toBeNull();
+    expect(provider.deck.slides!.map(s => s.objectId)).toEqual(["s1", "s2"]);
   });
 });
