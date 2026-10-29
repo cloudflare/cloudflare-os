@@ -3,7 +3,7 @@ import { Field } from "@cloudflare/kumo/primitives/field";
 import { Radio as RadioPrimitive } from "@cloudflare/kumo/primitives/radio";
 import { RadioGroup } from "@cloudflare/kumo/primitives/radio-group";
 import type { RadioCardsProps } from "../index.ts";
-import { radioMark } from "./HierarchyRow.tsx";
+import { radioMark } from "./radioMark.ts";
 
 /**
  * Named by the enclosing `Field`, whose label Base UI attaches to the radio group. Base UI would
@@ -42,8 +42,10 @@ export const RadioCards = ({ value, options, onChange, compact }: RadioCardsProp
             />
             <span className="flex min-w-0 gap-1.5">
               <span className="min-w-0 truncate font-medium">{option.title}</span>
-              <span aria-hidden="true" className="text-kumo-subtle">·</span>
-              <span className="min-w-0 shrink-[3] truncate text-kumo-subtle">{option.description}</span>
+              {option.description && <>
+                <span aria-hidden="true" className="text-kumo-subtle">·</span>
+                <span className="min-w-0 shrink-[3] truncate text-kumo-subtle">{option.description}</span>
+              </>}
             </span>
           </label>
         </Field.Item>
