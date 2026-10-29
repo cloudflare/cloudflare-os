@@ -206,6 +206,18 @@ describe("search", () => {
     await poll(picker.location).toBe("Spaces My first space Engineering Architecture");
     expect(await picker.tab("Spaces").getAttribute("aria-selected")).toBe("true");
   });
+
+  it("points a pasted link to the site at the card above, or says this connection can't take it", async () => {
+    const site: ConfluenceNode = { ref: SITE_REF, kind: "site", title: "Slew", expandable: true, selectable: true, path: [] };
+    const answers = { loadItems: (request: ConfluenceBrowseRequest) => request.query ? { items: [site] } : browse(request) };
+    const picker = await start({ answers });
+    await picker.search().fill("https://slew.atlassian.net/wiki");
+    await poll(picker.text).toContain("That link is to the whole site. Choose it above the tabs.");
+
+    const pagesOnly = await start({ answers, patterns: [PATTERNS.page] });
+    await pagesOnly.search().fill("https://slew.atlassian.net/wiki");
+    await poll(pagesOnly.text).toContain("This connection needs a page or blog post.");
+  });
 });
 
 describe("a resource URL that came with the frame", () => {

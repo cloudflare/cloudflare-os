@@ -165,7 +165,7 @@ function parseRef(ref: string): Ref {
   }
   if (rest === undefined || rest === "") throw invalid();
   if (kind === "space" || kind === "blogs") {
-    if (!/^~?[A-Za-z0-9_]{1,255}$/.test(rest)) throw invalid();
+    if (!/^[^/\s\p{Cc}]{1,255}$/u.test(rest)) throw invalid();
     return { kind, cloudId, key: rest };
   }
   if (kind === "page" || kind === "blogpost" || isTreeKind(kind)) {
@@ -189,8 +189,16 @@ async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Prom
   return results;
 }
 
-const isAccessError = (error: unknown) =>
-  error instanceof ConfluenceApiError && [400, 401, 403, 404].includes(error.status);
+/** Whether `error` is Confluence answering one of `statuses`. */
+const hasStatus = (...statuses: number[]) => (error: unknown) =>
+  error instanceof ConfluenceApiError && statuses.includes(error.status);
+const isAccessError = hasStatus(400, 401, 403, 404);
+
+/** A catch handler answering `fallback` for an error `expected` names, and rethrowing any other. */
+const unless = <T>(expected: (error: unknown) => boolean, fallback: T) => (error: unknown): T => {
+  if (expected(error)) return fallback;
+  throw error;
+};
 
 const toBase64 = (data: Uint8Array) => {
   let binary = "";
@@ -377,9 +385,9 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
 
   async #recent(site: AccessibleResource): Promise<ConfluenceBrowsePage> {
     const cql = `id in recentlyViewedContent(${RECENT_COUNT}) AND type in (page, blogpost)`;
-    // Recently viewed is a convenience; a site that won't answer it still lists its spaces. Only
-    // the most recent are shown, so there is no next page.
-    const { items } = await this.#hits(site, cql, { limit: RECENT_COUNT }).catch(() => ({ items: [] }));
+    // A site that can't run this search shows the tab empty; any other failure is the picker's to
+    // show, with its Try again. Only the most recent are shown, so there is no next page.
+    const { items } = await this.#hits(site, cql, { limit: RECENT_COUNT }).catch(unless(hasStatus(400), { items: [] }));
     return { items };
   }
 
@@ -440,7 +448,10 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
     const [roots, posts, home] = await Promise.all([
       api.listPagesInSpace({ spaceId: space.id, depth: "root", limit: PAGE_SIZE }),
       api.listBlogPostsInSpace({ spaceId: space.id, limit: 1 }).catch(() => ({ results: [] })),
-      space.homepageId ? this.#treeChildren(site, "pages", space.homepageId, undefined) : Promise.resolve(undefined),
+      // A home page the user can't read hides only its own pages, which are restricted with it.
+      space.homepageId
+        ? this.#treeChildren(site, "pages", space.homepageId, undefined).catch(unless(isAccessError, undefined))
+        : Promise.resolve(undefined),
     ]);
     // The home page is usually the space's first page, so in the first batch; read it alone if not.
     const homePage = roots.results.find(page => page.id === space.homepageId)
@@ -504,7 +515,9 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
           ...(children.nextCursor ? { nextCursor: children.nextCursor } : {}),
         };
       } catch (error) {
-        if (!(error instanceof ConfluenceApiError && (error.status === 401 || error.status === 403))) throw error;
+        // A denial means a missing scope only for a grant whose scopes weren't recorded; with them
+        // recorded, it is Confluence's answer.
+        if (!hasStatus(401, 403)(error) || await this.#account.getGrantedScopes() !== null) throw error;
         this.#fullTree = Promise.resolve(false);
       }
     }
@@ -608,11 +621,12 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
       return space.status === "archived" ? null : { ...spaceNode(site.id, space), path: [] };
     }
     const api = this.#api(site);
-    const content = await api.getContentById(target.id, { body: false });
+    const [content, hit] = await Promise.all([
+      api.getContentById(target.id, { body: false }),
+      // Search knows the ancestors (folders included) and the space's home page in one read.
+      api.searchWithContext(`id = ${target.id}`, { limit: 1 }).then(page => page.results[0], () => undefined),
+    ]);
     if ((content.status ?? "current") !== "current") return null;
-    // Search knows the ancestors (folders included) and the space's home page in one read.
-    const hit = await api.searchWithContext(`id = ${content.id}`, { limit: 1 })
-      .then(page => page.results[0], () => undefined);
     const fromSearch = hit ? this.#hitNode(site, hit) : undefined;
     if (fromSearch) return { ...fromSearch, title: displayText(content.title) || "Untitled" };
     const key = spaceKeyFromWebui(content._links?.webui);

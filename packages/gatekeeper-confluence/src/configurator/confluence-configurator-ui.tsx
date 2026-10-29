@@ -272,6 +272,11 @@ async function loadPage({ ui, acceptedResourceUrlPatterns: accepted }: Context, 
   const request: Request = query ? { site, query } : section ? { site, section } : { parent: parentId };
   if (cursor) request.cursor = cursor;
   const page = await ui.loadItems(request);
+  // A link to this site names the card above the tabs, which the picker doesn't list again.
+  if (query && page.items.some(node => node.ref === site)) {
+    const reason = refusal(accepted, { kind: "site", selectable: true });
+    return { items: [], nextCursor: null, notice: reason ?? "That link is to the whole site. Choose it above the tabs." };
+  }
   requestAvatars(ui, page.items.flatMap(node => [node, ...node.path ?? []]));
   return {
     items: page.items.map(node => toItem(node, accepted, section === "recent" || section === "starred")),

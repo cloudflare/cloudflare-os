@@ -156,7 +156,7 @@ describe("loadItems", () => {
     expect(page.nextCursor).toBeDefined();
   });
 
-  it("lists recently viewed pages with where they live and whether they open, and nothing when Confluence won't say", async () => {
+  it("lists recently viewed pages with where they live and whether they open, nothing on a site that can't, and fails on an outage", async () => {
     route(/^\/wiki\/rest\/api\/search\?/, {
       results: [
         hit({ id: "491521", type: "page", title: "Architecture", children: { page: { size: 2 } }, ancestors: [{ id: "100", type: "page", title: "Home" }, { id: "458753", type: "page", title: "Engineering" }] }),
@@ -175,8 +175,10 @@ describe("loadItems", () => {
     expect(requests[0]!.url.searchParams.get("cql")).toContain("recentlyViewedContent");
     expect(requests[0]!.url.searchParams.get("expand")).toContain("content.children.page");
 
-    route(/^\/wiki\/rest\/api\/search\?/, () => json({}, 500));
+    route(/^\/wiki\/rest\/api\/search\?/, () => json({}, 400));
     expect(await ui().loadItems({ site: `site:${CLOUD}`, section: "recent" })).toEqual({ items: [] });
+    route(/^\/wiki\/rest\/api\/search\?/, () => json({}, 500));
+    await expect(ui().loadItems({ site: `site:${CLOUD}`, section: "recent" })).rejects.toThrow();
   });
 
   it("opens a space at its home page, its blog, then the home page's children", async () => {
@@ -208,6 +210,18 @@ describe("loadItems", () => {
       ["page", "Stray", true, true],
     ]);
     expect(page.items[0]).toMatchObject({ subtitle: "Space home", meta: "Oct 20" });
+  });
+
+  it("still lists a space's blog and pages without a parent when its home page can't be read", async () => {
+    route(/^\/wiki\/api\/v2\/spaces\?keys=MFS/, { results: [MFS] });
+    route(/^\/wiki\/api\/v2\/spaces\/[^/]+\/pages\?/, { results: [pageJson("200", "Stray")] });
+    route(/^\/wiki\/api\/v2\/pages\/100$/, () => json({}, 403));
+    route(/^\/wiki\/api\/v2\/blogposts\?/, { results: [{ id: "360470", title: "Post" }] });
+    route(/^\/wiki\/api\/v2\/pages\/100\/(direct-children|descendants)/, () => json({}, 403));
+
+    const page = await ui().loadItems({ parent: `space:${CLOUD}/MFS` });
+
+    expect(page.items.map(item => [item.kind, item.title])).toEqual([["blogs", "Blog"], ["page", "Stray"]]);
   });
 
   it("heads a space with its home page when the home page isn't among the first pages without a parent", async () => {
@@ -247,10 +261,10 @@ describe("loadItems", () => {
     await expect(configurator.loadItems({ parent, cursor: "home:zzz" })).rejects.toThrow("expired");
   });
 
-  it("lists only pages, and says so, when the grant can't read the content tree", async () => {
+  it("lists only pages, and says so, when a grant from before scopes were recorded can't read the content tree", async () => {
     route(/^\/wiki\/api\/v2\/pages\/458753\/direct-children/, () => json({}, 401));
     route(/^\/wiki\/api\/v2\/pages\/458753\/children/, { results: [{ id: "491521", title: "Architecture" }] });
-    const configurator = ui({ refresh: async () => { throw new Error("no"); } });
+    const configurator = ui({ getGrantedScopes: async () => null, refresh: async () => { throw new Error("no"); } });
 
     const page = await configurator.loadItems({ parent: `page:${CLOUD}/458753` });
 
@@ -260,6 +274,29 @@ describe("loadItems", () => {
     requests = [];
     await configurator.loadItems({ parent: `page:${CLOUD}/458753` });
     expect(requests.some(request => request.url.pathname.endsWith("/direct-children"))).toBe(false);
+  });
+
+  it("keeps the content tree when Confluence denies one page to a grant that holds the scope", async () => {
+    route(/^\/wiki\/api\/v2\/pages\/458753\/direct-children/, () => json({}, 403));
+    const configurator = ui();
+
+    await expect(configurator.loadItems({ parent: `page:${CLOUD}/458753` })).rejects.toThrow();
+    requests = [];
+    await configurator.loadItems({ parent: `page:${CLOUD}/458753` }).catch(() => {});
+    expect(requests.some(request => request.url.pathname.endsWith("/direct-children"))).toBe(true);
+  });
+
+  it("opens a space whose key is a legacy personal one", async () => {
+    const legacy = space("~john.smith", { type: "personal" });
+    route(/^\/wiki\/api\/v2\/spaces\?keys=/, { results: [legacy] });
+    route(/^\/wiki\/api\/v2\/spaces\/[^/]+\/pages\?/, { results: [] });
+    route(/^\/wiki\/api\/v2\/blogposts\?/, { results: [] });
+    route(/^\/wiki\/api\/v2\/pages\/100/, { results: [] });
+
+    await ui().loadItems({ parent: `space:${CLOUD}/~john.smith` });
+
+    expect(requests[0]!.url.searchParams.get("keys")).toBe("~john.smith");
+    expect(await ui().resourceUrlFor(`space:${CLOUD}/~john.smith`)).toBe("https://slew.atlassian.net/wiki/spaces/~john.smith");
   });
 
   it("searches spaces, pages and blog posts, without Confluence's highlight markers in their titles", async () => {
