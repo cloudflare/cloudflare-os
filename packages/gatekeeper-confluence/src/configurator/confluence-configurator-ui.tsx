@@ -282,8 +282,9 @@ async function loadPage({ ui, acceptedResourceUrlPatterns: accepted }: Context, 
     items: page.items.map(node => {
       const item = toItem(node, accepted, section === "recent" || section === "starred");
       // A pasted link may name another of the connection's sites. Opened here, it would list under
-      // this site; chosen, the picker switches to that site and opens it there.
-      return query && siteRefOf(node.ref) !== site ? { ...item, kind: "leaf" as const, choice: undefined } : item;
+      // this site; chosen, the picker switches to that site and opens it there. One that can't be
+      // chosen stays a place to open, the only way to what inside it can be.
+      return query && item.selectable && siteRefOf(node.ref) !== site ? { ...item, kind: "leaf" as const, choice: undefined } : item;
     }),
     nextCursor: page.nextCursor ?? null,
     notice: page.notice ?? (page.items.length === 0 && !cursor && section ? EMPTY_TAB[section] : undefined),

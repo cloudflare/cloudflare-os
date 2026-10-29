@@ -326,6 +326,27 @@ describe("a connection to two sites", () => {
     expect(await picker.collected()).toBe(platform.ref);
   });
 
+  it("still opens a space pasted from the other site when only pages can be chosen", async () => {
+    const platform: ConfluenceNode = { ref: `space:${OTHER}/PLAT`, kind: "space", title: "Platform", expandable: true, selectable: true, path: [] };
+    const runbook: ConfluenceNode = { ref: `page:${OTHER}/7001`, kind: "page", title: "Runbook", expandable: false, selectable: true };
+    const picker = await start({
+      patterns: [PATTERNS.page],
+      answers: {
+        getStatus: () => TWO,
+        loadItems: (request: ConfluenceBrowseRequest) => request.query ? { items: [platform] }
+          : request.parent === platform.ref ? { items: [runbook] } : browse(request),
+        // Chosen, the page switches the picker to its site, which looks it up to show where it lives.
+        locate: () => ({ ...runbook, path: [{ ref: platform.ref, title: "Platform", kind: "space" }] }),
+        resourceUrlFor: () => "https://acme.atlassian.net/wiki/spaces/PLAT/pages/7001",
+      },
+    });
+    await picker.search().fill("https://acme.atlassian.net/wiki/spaces/PLAT");
+    await picker.option("Platform").click();
+    await picker.option("Runbook").click();
+    await poll(picker.chosen).toEqual(["Runbook"]);
+    expect(await picker.collected()).toBe(runbook.ref);
+  });
+
   it("shows no switcher for one site", async () => {
     const picker = await start();
     await poll(picker.titles).toContain("Q4 planning");
