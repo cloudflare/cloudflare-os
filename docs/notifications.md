@@ -34,13 +34,16 @@ flowchart LR
   end
 
   APNS -->|device token| App
-  App -->|Dashboard OAuth plus device token| Device
+  Browser -->|authorizeNotificationDevice| User
+  User -->|signed POST /v2/device-authorizations with own subject| Device
+  Device -->|single-use grant via User and Browser| App
+  App -->|grant plus device token| Device
   Device -->|store token; return one-time id| Registry
   Device -->|one-time registration id| App
   App -->|inject opaque id| Browser
   Endpoint -->|endpoint and keys for the VAPID public key| Browser
   Browser -->|registerNotificationDevice| User
-  User -->|signed POST /v1/subscriptions| Device
+  User -->|signed POST /v1 or /v2/subscriptions with own subject| Device
   Key -->|sign request locally| User
   Device -->|validate install; consume one-time id or store endpoint| Registry
   Device -->|device key and opaque subscription id| User
@@ -49,16 +52,20 @@ flowchart LR
 
 Data boundaries:
 
-- The APNs device token and Dashboard OAuth bearer never enter the customer installation.
+- APNs/FCM tokens and native device-management credentials never enter the customer installation.
+- A CFOS login is sufficient: the registered installation vouches for its authenticated User DO's
+  opaque id. Every subscription is owned by `(install id, User DO id)`, not a Dashboard account,
+  whether its destination is APNs, FCM, or Web Push.
 - The install signing private key is a backend secret, held like `CF_AI_GATEWAY_API_TOKEN`; gadget
   and agent code run in isolates whose env never includes it.
 - Workshop core stores only opaque central subscription ids, which are bound to the installation
   and useless without the install signing key, and the install-scoped device key each one reaches.
 - A one-time device registration id is short-lived and cannot send a notification.
-- A browser's Web Push endpoint and keys pass through the User DO to the service; the installation
-  stores only the subscription id the service returns for them.
+- A browser's Web Push endpoint and keys pass through the User DO to the service with that DO's
+  opaque subject; the installation stores only the subscription id the service returns for them.
 
-The native app hands the SPA a one-time registration id by setting
+The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
+registration id by setting
 `window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a
 `cloudflare-os:notification-device-registration` `CustomEvent` with
 `detail.deviceRegistrationId`. If none was injected, the SPA calls
@@ -67,10 +74,29 @@ time the signed-in app mounts (a WebSocket reconnect does not remount it) to req
 The SPA reports the outcome to `webkit.messageHandlers.cloudflareOSNotificationReady` as
 `{type: "ready"}` or `{type: "failed"}`.
 
+New native apps advertise `cloudflareOSNative.notifications.authorizationRequired`. Once the SPA
+is authenticated, it calls `authorizeNotificationDevice()` and passes the returned single-use
+ten-minute grant to `notifications.requestDeviceRegistration(grant)`. The backend derives the
+subject from its User DO, never from a client-supplied email or account. Native sends the grant and
+provider token directly to the central `/v2/devices` endpoint, keeps its per-install management
+credential in secure storage, and exposes only the one-use registration to the SPA.
+Native can request a replacement grant by dispatching the
+`cloudflare-os:notification-authorization-request` event.
+`registerAuthorizedNotificationDevice(id)` exchanges it with the same signed install/user scope.
+CFOS logout first stops any grant or registration in flight, then calls
+`notifications.disconnect()`; native revokes that install's device enrollment.
+Provider-token refresh uses the native credential without a Dashboard login or web session.
+
+Deploy central service, then CFOS backend/SPA, then native apps. Older native apps retain the
+legacy Dashboard-authenticated v1 path and globals until upgraded. New native apps never fall back
+to Dashboard authentication against old installations; the installation must be updated first.
+
 A desktop browser registers as a device too, with its Web Push subscription as the registration.
 When the deployment advertises the service's VAPID public key (`ServerConfig.webPushPublicKey`), the
 profile page offers a "Browser notifications" switch. Turning it on asks for permission, registers
 `/sw.js`, subscribes with that key, and passes the endpoint and keys to `registerNotificationDevice`.
+The User DO derives the same opaque subject used for native registration and every delivery; the
+subject records and enforces ownership but is not the endpoint's device key or the registry shard.
 The service delivers to an endpoint only for its most recent registration, so when another account
 in the same browser profile registers it, the previous account's subscription stops working. The
 browser remembers which user it subscribed for: each sign-in registers that user's subscription
@@ -122,9 +148,10 @@ flowchart LR
 ```
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
-subscription id, and same-origin deep-link path cross the central boundary during a send, plus the
-headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
-signature. Permission details, chat content, gatekeeper grants, and provider credentials do not. A
+subscription id, opaque User DO subject, and same-origin deep-link path cross the central boundary
+during a send, plus the headers every signed request carries: install id, key id, timestamp, nonce,
+body digest, and signature. Permission details, chat content, gatekeeper grants, and provider
+credentials do not. A
 visible browser tab is offered the notification first, and push is sent to every registered device
 only if no tab acknowledges it within three seconds. A tab subscribes while visible, and again if a
 User DO reset drops its subscription. When the service answers `device_gone` or

@@ -206,6 +206,14 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.registerNotificationDevice(registration);
   }
 
+  registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    return this.#user.registerAuthorizedNotificationDevice(deviceRegistrationId);
+  }
+
+  authorizeNotificationDevice(): Promise<string> {
+    return this.#user.authorizeNotificationDevice();
+  }
+
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
     return this.#user.subscribeToNotifications(subscriber);
