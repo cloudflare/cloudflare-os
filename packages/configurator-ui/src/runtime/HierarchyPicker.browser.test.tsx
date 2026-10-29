@@ -1244,6 +1244,19 @@ describe("tabs", () => {
     expect(loadItems.mock.calls.map(([request]) => request.parentId)).toEqual(["sites", "marketing", "files"]);
   });
 
+  it("opens a container a view tab lists where its path says it lives, so its breadcrumb leads up", async () => {
+    const recent = { id: "recent", title: "Recent" };
+    const loadItems = vi.fn<LoadItems>(async ({ parentId }) => ({
+      items: parentId === "recent" ? [{ ...marketing, path: [{ id: "sites", title: "Sites" }] }] : TABBED[parentId] ?? [],
+    }));
+    await render({ loadItems, tabs: [recent, ...TABS] });
+
+    await userEvent.click(option("Marketing"));
+    await expect.element(crumbs()).toMatchTextContent(/^SitesMarketing$/);
+    await expect.element(tab("Sites")).toHaveAttribute("aria-selected", "true");
+    await expect.element(option("Plan.docx")).toBeVisible();
+  });
+
   it("offers a tab that says it can be chosen, and keeps the whole hierarchy's choice across tabs", async () => {
     const choice = { title: "Every site" };
     const onChange = await render({ loadItems: tabbed(), tabs: [{ ...TABS[0]!, selectable: true, choice }, TABS[1]!] });

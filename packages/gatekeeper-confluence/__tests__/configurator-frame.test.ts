@@ -122,14 +122,15 @@ describe("choosing", () => {
     expect(await picker.collected()).toBe(SITE_REF);
   });
 
-  it("chooses a recent page, and opens one that has child pages", async () => {
+  it("chooses a recent page, and opens one that has child pages where it lives", async () => {
     const picker = await start();
     await picker.option("Q4 planning").click();
     await poll(picker.chosen).toEqual(["Q4 planning"]);
     expect(await picker.collected()).toBe(`page:${CLOUD}/589825`);
 
     await picker.option("Architecture").click();
-    await poll(picker.location).toContain("Architecture");
+    await poll(picker.location).toBe("Spaces My first space Engineering Architecture");
+    expect(await picker.tab("Spaces").getAttribute("aria-selected")).toBe("true");
     await poll(picker.titles).toEqual(["All of Architecture", "Storage architecture", "Networking"]);
   });
 

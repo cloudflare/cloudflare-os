@@ -370,11 +370,11 @@ const Navigator = (props: HierarchyPickerProps) => {
     navigate({ ...location, trail: location.trail.slice(0, depth), detached: depth > 0 && location.detached }, fromList);
   };
 
-  const openContainer = (item: Item) => navigate(
-    query
-      ? locationOf(item, tabs, location.tab)
-      : { ...location, trail: [...location.trail, item] },
-    true);
+  /** A search result, or a row a view tab (such as recent) lists away from its home, opens where it lives. */
+  const openContainer = (item: Item) => {
+    const home = locationOf(item, tabs, location.tab);
+    navigate(query || home.tab !== location.tab ? home : { ...location, trail: [...location.trail, item] }, true);
+  };
   activate.current = id => {
     const item = options.find(option => option.id === id);
     if (item && actionOf(item) === "open") openContainer(item);
