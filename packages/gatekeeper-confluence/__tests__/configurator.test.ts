@@ -69,6 +69,14 @@ describe("getStatus", () => {
   it("is unavailable when the connection can open no site", async () => {
     expect(await ui({ getSites: async () => [] }).getStatus()).toMatchObject({ state: "unavailable" });
   });
+
+  it("asks the account again after its sites couldn't be read, so Try again recovers", async () => {
+    const getSites = vi.fn().mockRejectedValueOnce(new Error("reset")).mockResolvedValue([SITE]);
+    const configurator = ui({ getSites });
+
+    await expect(configurator.getStatus()).rejects.toThrow("reset");
+    expect(await configurator.getStatus()).toMatchObject({ state: "ready" });
+  });
 });
 
 describe("loadItems", () => {
@@ -283,6 +291,15 @@ describe("loadItems", () => {
     await expect(configurator.loadItems({ parent: `page:${CLOUD}/458753` })).rejects.toThrow();
     await expect(configurator.loadItems({ parent: `page:${CLOUD}/458753` })).rejects.toThrow();
     expect(requests.filter(request => request.url.pathname.endsWith("/direct-children"))).toHaveLength(2);
+  });
+
+  it("asks the account again after its scopes couldn't be read, so Try again recovers", async () => {
+    route(/^\/wiki\/api\/v2\/pages\/458753\/direct-children/, { results: [] });
+    const getGrantedScopes = vi.fn().mockRejectedValueOnce(new Error("reset")).mockResolvedValue(["read:hierarchical-content:confluence"]);
+    const configurator = ui({ getGrantedScopes });
+
+    await expect(configurator.loadItems({ parent: `page:${CLOUD}/458753` })).rejects.toThrow("reset");
+    expect(await configurator.loadItems({ parent: `page:${CLOUD}/458753` })).toEqual({ items: [] });
   });
 
   it("opens a space whose key is a legacy personal one", async () => {

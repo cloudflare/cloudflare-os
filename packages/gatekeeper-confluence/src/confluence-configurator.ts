@@ -200,6 +200,15 @@ const unless = <T>(expected: (error: unknown) => boolean, fallback: T) => (error
   throw error;
 };
 
+/** `load`, run once and its answer kept, though a failure is forgotten so the next call asks again. */
+const once = <T>(load: () => Promise<T>) => {
+  let kept: Promise<T> | undefined;
+  return () => kept ??= load().catch(error => {
+    kept = undefined;
+    throw error;
+  });
+};
+
 const toBase64 = (data: Uint8Array) => {
   let binary = "";
   for (let i = 0; i < data.length; i += 0x8000) binary += String.fromCharCode(...data.subarray(i, i + 0x8000));
@@ -210,9 +219,10 @@ const toBase64 = (data: Uint8Array) => {
 @validateRpc()
 export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceConfiguratorRpc {
   readonly #account: ConfiguratorAccount;
-  #sites?: Promise<AccessibleResource[]>;
-  #scopes?: Promise<string[] | null>;
-  #fullTree?: Promise<boolean>;
+  readonly #allSites = once(() => this.#account.getSites());
+  readonly #grantedScopes = once(() => this.#account.getGrantedScopes());
+  /** Whether Confluence denied the content tree to a grant whose scopes weren't recorded. */
+  #treeDenied = false;
   readonly #spaces = new Map<string, Promise<SpaceResponse>>();
   readonly #icons = new Map<string, Promise<string | undefined>>();
 
@@ -311,26 +321,17 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
 
   // -- the connection ---------------------------------------------------------------------------
 
-  #allSites(): Promise<AccessibleResource[]> {
-    this.#sites ??= this.#account.getSites();
-    return this.#sites;
-  }
-
   async #site(cloudId: string): Promise<AccessibleResource> {
     const site = (await this.#allSites()).find(candidate => candidate.id === cloudId);
     if (!site) throw new Error("That site isn't part of this connection.");
     return site;
   }
 
-  #grantedScopes(): Promise<string[] | null> {
-    this.#scopes ??= this.#account.getGrantedScopes();
-    return this.#scopes;
-  }
-
-  #hasFullTree(): Promise<boolean> {
+  async #hasFullTree(): Promise<boolean> {
+    if (this.#treeDenied) return false;
     // A grant from before scopes were recorded is assumed to have it, and found out on first use.
-    this.#fullTree ??= this.#grantedScopes().then(scopes => scopes === null || scopes.includes(HIERARCHY_SCOPE));
-    return this.#fullTree;
+    const scopes = await this.#grantedScopes();
+    return scopes === null || scopes.includes(HIERARCHY_SCOPE);
   }
 
   #api(site: AccessibleResource): ConfluenceApi {
@@ -519,7 +520,7 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
         // A denial means a missing scope only for a grant whose scopes weren't recorded; with them
         // recorded, it is Confluence's answer.
         if (!hasStatus(401, 403)(error) || await this.#grantedScopes() !== null) throw error;
-        this.#fullTree = Promise.resolve(false);
+        this.#treeDenied = true;
       }
     }
     if (parent !== "pages") return { items: [], notice: PARTIAL_TREE };
