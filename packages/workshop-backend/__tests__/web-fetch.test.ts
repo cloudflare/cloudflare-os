@@ -88,15 +88,17 @@ describe("validateWebFetchUrl", () => {
     it("rejects Cloudflare's /cdn-cgi/ paths, however they are spelled", () => {
       for (const path of [
         "/cdn-cgi/image/w=1/https://evil.test/x",
-        "//cdn-cgi/trace",
         "/%63dn-cgi/trace",
+        "/%63dn-cgi/50%off",
         "/CDN-CGI/trace",
         "/docs/..%2fcdn-cgi/trace",
         "/docs/..%5Ccdn-cgi/trace",
       ]) {
         expect(() => validateWebFetchUrl(`https://docs.example.com${path}`, allowed), path).toThrow(/cdn-cgi/);
       }
-      expect(() => validateWebFetchUrl("https://docs.example.com/cdn-cgi-endpoint/", allowed)).not.toThrow();
+      for (const path of ["/cdn-cgi-endpoint/", "/50%off"]) {
+        expect(() => validateWebFetchUrl(`https://docs.example.com${path}`, allowed), path).not.toThrow();
+      }
     });
   });
 

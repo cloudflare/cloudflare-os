@@ -64,9 +64,14 @@ const USER_AGENT = "GadgetsWebFetch/1.0";
 // The Fetch standard's limit, which `redirect: "follow"` applies too.
 const MAX_REDIRECTS = 20;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-// A `cdn-cgi` segment anywhere in the decoded path, since an origin may decode the path and resolve
-// `..` before routing it.
+// A `cdn-cgi` segment anywhere in the path, since an origin may resolve `..` before routing it.
 const CDN_CGI_PATH = /(^|[/\\])cdn-cgi([/\\]|$)/i;
+
+// Decodes each `%XX` escape once, as Cloudflare's edge does: it sends /%63dn-cgi/ to /cdn-cgi/ but
+// serves /%2563dn-cgi/ as an ordinary path. Unlike decodeURIComponent, it leaves a stray `%` as is.
+function decodeEscapes(path: string): string {
+  return path.replace(/%([0-9a-f]{2})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
 
 /**
  * Validate a URL string for use with webFetch, whether the agent asked for it or a redirect led
@@ -103,7 +108,7 @@ export function validateWebFetchUrl(input: string, allowedHosts?: ReadonlySet<st
       );
     }
     // A query string can make a trusted host act on data the agent chose, as a reflected search
-    // or a `?url=` proxy does, and a cache keyed on it can reveal which URL was fetched.
+    // or a `?url=` proxy does.
     if (parsed.search) {
       throw new Error(
         "This workspace has observed sensitive data, so it may not fetch URLs with a query string.",
@@ -111,7 +116,7 @@ export function validateWebFetchUrl(input: string, allowedHosts?: ReadonlySet<st
     }
     // Cloudflare answers /cdn-cgi/ on every zone it proxies, and some of it (Image Transformations,
     // for one) can fetch another origin named in the path, which trusting the host doesn't cover.
-    if (CDN_CGI_PATH.test(decodeURIComponent(parsed.pathname))) {
+    if (CDN_CGI_PATH.test(decodeEscapes(parsed.pathname))) {
       throw new Error("This workspace has observed sensitive data, so it may not fetch /cdn-cgi/ paths.");
     }
   }

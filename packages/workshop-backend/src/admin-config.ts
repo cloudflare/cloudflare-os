@@ -325,8 +325,8 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
-// An exact, lowercase ASCII host name: no scheme, port, path, wildcard or trailing dot. ASCII only,
-// so a look-alike Unicode name can't pass for a trusted one.
+// An exact, lowercase ASCII host name: no scheme, port, path, wildcard or trailing dot. ASCII because
+// `URL.host` always is (an IDN arrives as punycode), so any other entry could never match.
 const HOST_NAME = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
 /**

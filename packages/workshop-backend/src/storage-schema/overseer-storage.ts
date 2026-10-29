@@ -1249,9 +1249,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // deadWorktreeIds: <WorkpieceId[]>[],
 
       // True if any past observation was authorized that had the `containsRestrictedData` flag
-      // set in its `ObservationDescription`. While set, public-web fetches are refused and every
-      // action pends for manual approval (autoApprovalRule never fires); the approver checks the
-      // action text for restricted data. The key on disk predates the flag's rename.
+      // set in its `ObservationDescription`. While set, web fetches reach only the hosts in
+      // `AdminConfig.restrictedWebFetchHosts`, and every action pends for manual approval
+      // (autoApprovalRule never fires); the approver checks the action text for restricted data.
+      // The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in

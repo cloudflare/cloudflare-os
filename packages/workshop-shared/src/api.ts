@@ -2301,8 +2301,9 @@ export type WorkspaceMetadata = {
   /**
    * True when the workspace has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
-   * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but can no longer
-   * fetch from the public web, and every action requires manual approval.
+   * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
+   * fetches reach only the hosts the deployment admin trusts (none by default), and every action
+   * requires manual approval.
    */
   containsRestrictedData?: boolean;
 

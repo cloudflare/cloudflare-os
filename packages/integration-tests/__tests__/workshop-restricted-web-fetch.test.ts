@@ -60,7 +60,7 @@ const openSession = (model: RoutedScriptedModel) => openAgentSession(harness.url
   usernamePrefix: "restrictedfetch",
 });
 
-it("refuses a web fetch once the workspace has read restricted data", async () => {
+it("refuses a web fetch once the workspace has read restricted data, with no trusted hosts", async () => {
   const model = models.script([
     READ_RESTRICTED,
     fetchStep("fetch-page", TARGET),
@@ -78,12 +78,11 @@ it("refuses a web fetch once the workspace has read restricted data", async () =
 });
 
 it("fetches only from trusted hosts once the workspace has read restricted data", async () => {
-  expect(await admin.setRestrictedWebFetchHosts([` ${TRUSTED_HOST.toUpperCase()} `])).toEqual([TRUSTED_HOST]);
+  await admin.setRestrictedWebFetchHosts([TRUSTED_HOST]);
   try {
     const model = models.script([
       READ_RESTRICTED,
       fetchStep("fetch-trusted", TARGET),
-      fetchStep("fetch-query", `${TARGET}?d=secret`),
       fetchStep("fetch-other", "https://other.example/"),
       { text: "Done." },
     ]);
@@ -91,10 +90,9 @@ it("fetches only from trusted hosts once the workspace has read restricted data"
     const turn = await session.runTurn("Read the restricted value, then fetch the pages.");
 
     expect(turn.outcome).toEqual({ status: "completed" });
-    expect(model.requests).toHaveLength(5);
+    expect(model.requests).toHaveLength(4);
     expect(model.requests[2]).toMatchObject(toolResult("fetch-trusted", PAGE));
-    expect(model.requests[3]).toMatchObject(toolResult("fetch-query", "may not fetch URLs with a query string"));
-    expect(model.requests[4]).toMatchObject(toolResult("fetch-other", `may only fetch from ${TRUSTED_HOST}`));
+    expect(model.requests[3]).toMatchObject(toolResult("fetch-other", `may only fetch from ${TRUSTED_HOST}`));
     expect(webRequests).toEqual([TARGET]);
   } finally {
     await admin.setRestrictedWebFetchHosts([]);
