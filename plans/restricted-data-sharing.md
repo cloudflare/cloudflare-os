@@ -214,6 +214,8 @@ stays on this ledger only if its failure mode is *persistent* wrong state that o
 the window. Each item is marked in the code by a matching `TODO` comment; this ledger is
 the follow-up worklist.
 
+- Observer verification is not serialized per profile, so concurrent opens by one
+  collaborator can overwrite each other's records and registrations.
 - A mid-registration observer named in `excludeObservers` is read as unknown and the
   observation admitted: a first-time `ensureObserver` registers the id with the
   gatekeepers before the record is persisted, so `#enforceExcludeObservers` cannot map it

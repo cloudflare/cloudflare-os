@@ -5829,7 +5829,7 @@ class OverseerImpl implements AgentHooks {
     // Nobody named can reach the observation. Tear down those who have lost access entirely, since
     // they are no longer set up to observe at all, and de-register the rest from this gatekeeper
     // only. A fresh open racing one of these removals is ordered behind it by
-    // #serialized, so its registration is never silently undone.
+    // #withObserverGatekeeperLock, so its registration is never silently undone.
     let allGatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
     let removals = unauthorized.map(observer => {
       this.storage.observers.delete(observer.profileId);
@@ -9823,26 +9823,26 @@ class OverseerImpl implements AgentHooks {
     return this.#inScopeGatekeepers(role).map(observerBindingNeed);
   }
 
-  // Tail of the in-flight observer work chain per key (see #serialized). In-memory only, entries
-  // dropped as each chain drains; the work it orders is itself re-run/repaired across DO restarts.
-  #observerLocks = new Map<string, Promise<void>>();
+  // Tail of the in-flight addObserver/removeObserver chain per `${observerId}/${gatekeeperId}`
+  // (see #withObserverGatekeeperLock). In-memory only, entries dropped as each chain drains; the
+  // calls it orders are themselves re-run/repaired across DO restarts.
+  #observerGatekeeperLocks = new Map<string, Promise<void>>();
 
-  // Run `fn` once every earlier call with the same `key` has settled. Two kinds of key:
-  //   - `${observerId}/${gatekeeperId}` orders this DO's addObserver/removeObserver RPCs per pair.
-  //     The overseer is the only caller of either, so ordering our own calls is enough to close
-  //     the race between an exclusion teardown's in-flight removeObserver and a fresh open's
-  //     addObserver on the same pair: the add either lands first or waits for the removal and
-  //     re-registers cleanly.
-  //   - `admission/${profileId}` orders one profile's ensureObserver calls (see there).
-  async #serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    let prior = this.#observerLocks.get(key) ?? Promise.resolve();
+  // Serialize this DO's addObserver/removeObserver RPCs per (observer, gatekeeper) pair. The
+  // overseer is the only caller of either, so ordering our own calls is enough to close the race
+  // between an exclusion teardown's in-flight removeObserver and a fresh open's addObserver on
+  // the same pair: the add either lands first or waits for the removal and re-registers cleanly.
+  async #withObserverGatekeeperLock<T>(
+      observerId: string, gatekeeperId: number, fn: () => Promise<T>): Promise<T> {
+    let key = `${observerId}/${gatekeeperId}`;
+    let prior = this.#observerGatekeeperLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
     let tail = new Promise<void>(resolve => { release = resolve; });
-    this.#observerLocks.set(key, tail);
+    this.#observerGatekeeperLocks.set(key, tail);
     tail.then(() => {
       // Drop the entry once the chain drains; a newer tail means someone queued behind us.
-      if (this.#observerLocks.get(key) === tail) {
-        this.#observerLocks.delete(key);
+      if (this.#observerGatekeeperLocks.get(key) === tail) {
+        this.#observerGatekeeperLocks.delete(key);
       }
     });
     await prior;  // never rejects: each holder settles its own tail via the finally below
@@ -9860,7 +9860,7 @@ class OverseerImpl implements AgentHooks {
   async #removeObserverFromGatekeepers(observerId: string, gatekeeperIds: number[]): Promise<void> {
     await Promise.all(gatekeeperIds.map(async id => {
       try {
-        await this.#serialized(`${observerId}/${id}`,
+        await this.#withObserverGatekeeperLock(observerId, id,
             async () => (await this.getGatekeeperFacet(id)).removeObserver(observerId));
       } catch (err) {
         this.logger.warn("failed to remove observer from gatekeeper", {
@@ -9958,19 +9958,14 @@ class OverseerImpl implements AgentHooks {
   // every open, catching revocation of the user's underlying resource access promptly: every
   // connection through its `addObserver()`, plus its `verifyObserverAccess()` for the
   // requirements its observations recorded that the role reaches (see observer-ledger.ts). Returns
-  // when fully verified; throws to deny access. Serialized per profile, so a queued open rereads
-  // the observer record the preceding one persisted (and they never mint two observerIds); an
-  // account prompt blocks only that profile. See observers-implementation-plan.md §5 Step 3.
-  ensureObserver(
-      profileId: string,
-      clientUser: DurableObjectStub<UserDurableObject>,
-      role: CollaboratorRole,
-      configureCb?: RpcStub<ObserverConfigCallback>): Promise<void> {
-    return this.#serialized(`admission/${profileId}`,
-        () => this.#ensureObserver(profileId, clientUser, role, configureCb));
-  }
-
-  async #ensureObserver(
+  // when fully verified; throws to deny access.
+  //
+  // See observers-implementation-plan.md §5 Step 3.
+  //
+  // TODO: Concurrent opens by the same profile race this method -- two calls mint two observerIds
+  //   and the last-written record forgets the other's gatekeeper registrations -- so verification
+  //   needs to be serialized per profile.
+  async ensureObserver(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
       role: CollaboratorRole,
@@ -10096,8 +10091,8 @@ class OverseerImpl implements AgentHooks {
             let verifier = await requireVerifier(clientUser, accountId, vendorId);
             // Serialized per (observer, gatekeeper) so this registration can't land while an
             // exclusion teardown's removeObserver for the same pair is still in flight (which
-            // would delete it moments later); see #serialized.
-            await this.#serialized(`${observerId}/${gk.id}`,
+            // would delete it moments later); see #withObserverGatekeeperLock.
+            await this.#withObserverGatekeeperLock(observerId, gk.id,
                 async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
             let required = scope.requirements.get(gk.id);
             if (required) {
@@ -10164,11 +10159,12 @@ class OverseerImpl implements AgentHooks {
       // the unpersisted record, so anything left behind would linger unresolvable.
       //
       // A *returning* observer's registrations are all kept -- including the ones this call added.
-      // Their persisted observerId remains resolvable by exclusion checks. De-registering is the
-      // fail-open direction: the gatekeeper stops naming that observer in `excludeObservers`, so
-      // an observation it should have excluded them from is admitted with nothing left to block
-      // it. A spurious registration merely blocks fail-closed until it is lazily cleaned up
-      // (see #enforceExcludeObservers) or a later open re-verifies it.
+      // Their persisted observerId is shared with concurrent opens, so a rollback here could
+      // delete a registration that a concurrent successful open just made and persisted.
+      // De-registering is the fail-open direction: the gatekeeper stops naming that observer in
+      // `excludeObservers`, so an observation it should have excluded them from is admitted with
+      // nothing left to block it. A spurious registration merely blocks fail-closed until it is
+      // lazily cleaned up (see #enforceExcludeObservers) or a later open re-verifies it.
       if (!returningObserver) {
         await this.#removeObserverFromGatekeepers(observerId, [...attempted]);
       }

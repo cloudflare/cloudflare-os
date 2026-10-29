@@ -83,8 +83,7 @@ keeps the legacy `addObserver`/`removeObserver`/`excludeObservers` protocol unch
   data already delivered, even after a restart; "use" collaborators stay verified against them
   only while something still binds or hooks the connection.
 - **Races between reads and admissions are closed by re-checking at the commit point, not by a
-  shared lock.** Only one profile's admissions are serialized with each other; after verifying,
-  admission recomputes its scope and re-runs if it grew.
+  shared lock.** After verifying, admission recomputes its scope and re-runs if it grew.
   It rereads requirements there only if its connections changed or `nextActionId` moved, since
   only a new action record can add one, so an admission nothing disturbed reads them once.
   An observation recomputes its audience after its checks and re-checks if it changed. A hook
