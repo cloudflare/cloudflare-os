@@ -379,9 +379,13 @@ describe("GatewayModels", () => {
       expect(listed.resolve("cloudflare/auto")?.config.autoRouterPool)
           .toStrictEqual({ models: ["anthropic/*", "@cf/*/*"] });
       // With every listed provider off the pool is empty, which getModel() refuses to send.
-      expect(gatewayModels({ modelSettings: { "cloudflare/auto": settings } },
-          "google,auto-router-cloudflare").resolve("cloudflare/auto")?.config.autoRouterPool)
+      const openaiOnly = { allowedModels: ["openai/gpt-6-luna"] };
+      expect(gatewayModels({ modelSettings: { "cloudflare/auto": openaiOnly } },
+          "anthropic,auto-router-cloudflare").resolve("cloudflare/auto")?.config.autoRouterPool)
           .toStrictEqual({ models: [] });
+      // The router routes to no Google model, so with Google alone on Auto is not offered.
+      expect(gatewayModels({}, "google,auto-router-cloudflare").get("cloudflare/auto"))
+          .toBeUndefined();
     });
 
     it("gives a model the reasoning level set for it, and no other model", () => {

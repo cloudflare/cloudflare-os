@@ -75,9 +75,9 @@ apply to language models.
 
 The **AI Gateway Auto Router** provider (`auto-router-cloudflare`) adds one model, **Auto**,
 which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
-pick the model behind each request by its difficulty and each candidate's cost. When the
-provider is on, Auto leads the model pickers and is the default for a new user or chat. It picks
-among the models of the other providers that are on, from
+pick the model behind each request by its difficulty and each candidate's cost. While the
+provider is on and the model enabled, Auto leads the model pickers and is the default for a new
+user or chat. It picks among the models of the other providers that are on, from
 [the Gateway's pool](https://developers.cloudflare.com/ai-gateway/features/auto-router/#models),
 which can include models this catalog doesn't list. The model's settings can instead list the
 models it may pick, as the Gateway names them (`anthropic/claude-sonnet-5.5`, `anthropic/*`,
@@ -89,6 +89,8 @@ model that answered. Within a chat turn Auto keeps the model its first request g
 prompt cache holds. It takes no reasoning level, and each chat is priced by the Gateway's log of
 the model that answered. A provider that is on but has no key in the Gateway runs on the
 account's Cloudflare credits (Unified Billing) unless the Gateway requires provider credentials.
+Auto Router routes to Anthropic, OpenAI and Workers AI models; while none of those providers is
+on, Auto is not offered.
 
 Disabling a model or turning a provider off is not a spend control while **Users may add their
 own models** is on: a user can still add a model under any provider that is on, and it runs

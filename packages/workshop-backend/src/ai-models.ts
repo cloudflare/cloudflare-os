@@ -1181,6 +1181,11 @@ async function bindingConfig(
   let models = await getGatewayModels(env);
   let { autoRouterPool, ...config } = props.config;
   if (models?.get(config.model)?.provider !== config.provider) {
+    // Never a user's own model, so the deployment stopped offering it; without its pool it would
+    // run on the gateway's default one.
+    if (config.provider === "auto-router-cloudflare") {
+      throw new Error("The Auto Router model is no longer offered on this deployment.");
+    }
     models?.refuseUserModel(props.displayName);
     return config;
   }

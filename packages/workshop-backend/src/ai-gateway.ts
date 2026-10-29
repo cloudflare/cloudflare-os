@@ -173,15 +173,15 @@ export function getAiGatewayConfig(env: Cloudflare.Env): AiGatewayConfig | null 
 }
 
 /**
- * How AI Gateway names each provider to Auto Router: in its `cf-aig-allowed-providers` header,
- * and as the prefix of the provider's models in `cf-aig-allowed-models` (Workers AI models keep
- * their own `@cf/` names there). Ollama is absent: the gateway serves no Ollama models.
+ * How AI Gateway names each provider Auto Router routes to: in its `cf-aig-allowed-providers`
+ * header, and as the prefix of the provider's models in `cf-aig-allowed-models` (Workers AI
+ * models keep their own `@cf/` names there). Google is absent because the router's pool holds no
+ * Google models, and Ollama because the gateway serves none.
  */
 export const AUTO_ROUTER_PROVIDER_NAMES:
     Partial<Record<AiModelProvider, { header: string; prefix: string }>> = {
   anthropic: { header: "anthropic", prefix: "anthropic/" },
   openai: { header: "openai", prefix: "openai/" },
-  google: { header: "google-ai-studio", prefix: "google-ai-studio/" },
   cloudflare: { header: "workers-ai", prefix: "@cf/" },
 };
 
@@ -241,8 +241,13 @@ export class GatewayModels {
       this.#byId.set(
           model.id, { ...model, mode, defaultMode, added, ...(settings && { settings }) });
     };
+    // With no provider Auto Router routes to on, its model would fail every request, so it is
+    // not offered.
+    let routable = [...this.providers]
+        .some(provider => AUTO_ROUTER_PROVIDER_NAMES[provider as AiModelProvider] !== undefined);
     for (let [provider, catalog] of Object.entries(SUGGESTED_MODELS)) {
       if (!this.providers.has(provider)) continue;
+      if (provider === "auto-router-cloudflare" && !routable) continue;
       for (let [id, model] of Object.entries(catalog)) {
         add({ provider: provider as AiModelProvider, id, name: model.name,
               ...(model.description && { description: model.description }), ...tokenLimits(model) },

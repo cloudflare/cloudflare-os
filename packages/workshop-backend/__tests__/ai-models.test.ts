@@ -285,7 +285,7 @@ describe("getModel AI Gateway routing", () => {
       // The pool, in the gateway's names for the providers it serves; the chat as the router's
       // session, so a turn's requests stay with one model and its prompt cache.
       expect(request.headers.get("cf-aig-allowed-providers"))
-          .toBe("anthropic,google-ai-studio,workers-ai");
+          .toBe("anthropic,workers-ai");
       expect(request.headers.get("cf-aig-allowed-models")).toBeNull();
       expect(request.headers.get("cf-aig-session-id")).toBe("session-a");
     }, 15000);
@@ -1587,6 +1587,9 @@ describe("LanguageModelGatekeeper.startSession", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+    // Once the deployment stops offering it, the binding stops rather than run without a pool.
+    await expect(startSession(minted, {}, { CF_AI_GATEWAY_PROVIDERS: "anthropic" }).session)
+        .rejects.toThrow("The Auto Router model is no longer offered on this deployment.");
   });
 
   it("does not read the admin config outside AI Gateway mode", async () => {

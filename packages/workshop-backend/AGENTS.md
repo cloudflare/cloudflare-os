@@ -87,4 +87,6 @@ them:
   `addedModels`, `modelSettings`, `addedProviders`, `userModelsEnabled`). `GatewayModels` in
   `ai-gateway.ts` is the only place that merges them with `SUGGESTED_MODELS`, and *disabled* is
   enforced where a model is about to run: `user.ts:getChatContext()` and
-  `LanguageModelGatekeeper.startSession()`.
+  `LanguageModelGatekeeper.startSession()`. The Auto Router model's pool (`modelSettings[id]
+  .allowedModels`, or else the enabled providers) is built there too; a model binding takes the
+  current pool at each session start, not the one it was minted with.
