@@ -295,6 +295,11 @@ export type ChatMessageRaw = {
   deletionMetadata?: { deletionType?: string };
   /** Set only for an app-authored message visible to one user in an otherwise shared space. */
   privateMessageViewer?: ChatUserRaw;
+  /**
+   * Set only from the `messageId` its creator passed to `messages.create`, as every send from this
+   * gatekeeper does.
+   */
+  clientAssignedMessageId?: string;
   annotations?: { type?: string; userMention?: { user?: ChatUserRaw; type?: string } }[];
 };
 

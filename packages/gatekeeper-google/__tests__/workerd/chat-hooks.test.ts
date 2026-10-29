@@ -8,6 +8,7 @@ import {SignJWT, exportJWK, generateKeyPair} from "jose";
 import {afterEach, beforeAll, beforeEach, expect, it, vi} from "vitest";
 import type {GoogleChatGatekeeperImplProps} from "../../src/chat";
 import type {ChatMessageRaw} from "../../src/chat-api";
+import type {ChatSubscribeOptions} from "../../src/chat-types";
 import type {TestHooks} from "./worker";
 
 const testEnv = env as unknown as {
@@ -131,8 +132,13 @@ function mockGoogle() {
     if (url.hostname === "chat.googleapis.com" && url.pathname === `/v1/${SPACE}/messages` && method === "POST") {
       const body = JSON.parse(init.body as string) as {text: string; thread?: {name: string}};
       google.posted.push(body);
-      const posted = {name: `${SPACE}/messages/posted`, ...body, createTime: new Date().toISOString()};
-      google.messages.set(posted.name, posted);
+      const messageId = url.searchParams.get("messageId");
+      const posted: ChatMessageRaw = {
+        name: `${SPACE}/messages/posted`, ...body, createTime: new Date().toISOString(),
+        sender: {name: `users/${subject}`, type: "HUMAN"},
+        ...(messageId ? {clientAssignedMessageId: messageId} : {}),
+      };
+      google.messages.set(posted.name!, posted);
       return json(posted);
     }
     const message = url.hostname === "chat.googleapis.com" && google.messages.get(url.pathname.slice("/v1/".length));
@@ -152,7 +158,7 @@ function chatMessage(sender: string, thread = THREAD): ChatMessageRaw {
 }
 
 /** One person's Chat connection, its hook subscribed through the restored facet and enabled. */
-async function connect(subject: string, binding: {threadId?: string} = {}) {
+async function connect(subject: string, binding: {threadId?: string} = {}, options?: ChatSubscribeOptions) {
   const name = `chat-hooks-${crypto.randomUUID()}`;
   const userObject = testEnv.UserAccount.get(testEnv.UserAccount.idFromName(name));
   await runInDurableObject(userObject, (_instance: unknown, state: DurableObjectState) => {
@@ -165,7 +171,7 @@ async function connect(subject: string, binding: {threadId?: string} = {}) {
   };
   const hooks = testEnv.TestHooks.get(testEnv.TestHooks.idFromName(name));
   const facet = {facetName: `chat-${name}`, id: testEnv.GoogleChatGatekeeperImpl.idFromName(name).toString(), props};
-  await hooks.chatSubscribe(facet);
+  await hooks.chatSubscribe(facet, options);
   return {hooks, ...facet};
 }
 
@@ -227,6 +233,36 @@ it("delivers each new message from someone else once, and the hook's reply appli
   await push("ada", [chatMessage("bob")]);
   await deliver();
   expect((await ada.hooks.readHook()).received).toHaveLength(1);
+});
+
+it("delivers the account's Google Chat posts only to hooks that ask, never what it posts through a connection", async () => {
+  const google = mockGoogle();
+  // Two of Ada's hooks in the space, sharing her subscription: only one asks for her own posts.
+  const own = await connect("ada", {}, {includeOwnMessages: true});
+  const others = await connect("ada");
+  await own.hooks.chatEnableHook();
+  await others.hooks.chatEnableHook();
+  await own.hooks.setHookBehavior({reply: "On it."});
+
+  // As when Ada addresses her own gadget in the space.
+  const written = chatMessage("ada");
+  google.messages.set(written.name!, written);
+  await push("ada", [written]);
+  await deliver();
+  const {received, submissions} = await own.hooks.readHook();
+  expect(received.map(info => info.id)).toEqual([written.name]);
+
+  // Google reports the hook's applied reply, posted as Ada, to her subscription as it does any new
+  // message. Bob's post through his own connection is named the same way, but is not hers.
+  await own.hooks.chatApplyAction(own.facetName, own.id, own.props, submissions[0].actionId);
+  const reply = google.messages.get(`${SPACE}/messages/posted`)!;
+  const bobs = {...chatMessage("bob"), clientAssignedMessageId: `client-${crypto.randomUUID()}`};
+  google.messages.set(bobs.name!, bobs);
+  await push("ada", [reply, bobs]);
+  await deliver();
+
+  expect((await own.hooks.readHook()).received.map(info => info.id)).toEqual([written.name, bobs.name]);
+  expect((await others.hooks.readHook()).received.map(info => info.id)).toEqual([bobs.name]);
 });
 
 it("lets a hook answer through the conversation it watches, where messages have no threads", async () => {

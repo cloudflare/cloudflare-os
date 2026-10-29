@@ -245,9 +245,16 @@ Each delivery is recorded as an observation on the hook's approval queue. `messa
 message capability, and `conversation` the `ChatSpace` or `ChatThread` the hook subscribed through,
 which can read around the message or post where a conversation has no threads and `reply()` throws.
 A write through either queues an approval action as any other write does, and both are released
-when `receiveMessage()` returns. Messages the connected account posts are never delivered, which
-keeps a hook from answering itself, but hooks of two connected accounts can still answer each other;
-approval is the only guard there.
+when `receiveMessage()` returns. By default, messages the connected account posts are never
+delivered, which keeps a hook from answering itself, but hooks of two connected accounts can still
+answer each other; approval is the only guard there.
+
+Subscribing with `{ includeOwnMessages: true }` also delivers what the connected user writes in
+Google Chat, so they can address their own gadget there. Such a hook still never receives what the
+account posts through the gatekeeper, so the account's hooks can't answer themselves or one another.
+Every send names its message `client-{requestId}`, and Google reports that name as the message's
+`clientAssignedMessageId`. Messages written in Chat don't carry one, so the space's driver drops
+only the account's messages that do.
 
 Delivery is at least once and unordered: Pub/Sub pushes are collapsed for 24 hours, but a failure
 after the hook ran redelivers the message. A firing that fails, whether the hook throws or the

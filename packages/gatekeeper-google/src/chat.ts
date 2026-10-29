@@ -46,8 +46,8 @@ import type {
   ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessage, ChatMessageEntry, ChatMessageInfo,
   ChatMessageSearch, ChatPerson, ChatReaction, ChatSession, ChatSpaceMessageSearch,
-  ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatUser, ChatThread, ChatThreadEntry, ChatThreadInfo,
-  ChatWindow,
+  ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatSubscribeOptions, ChatUser, ChatThread, ChatThreadEntry,
+  ChatThreadInfo, ChatWindow,
 } from "./chat-types";
 import type { ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
@@ -313,7 +313,8 @@ type ChatContext = {
   /** Immutable thread boundary inherited by every capability descended from a thread. */
   readonly boundThread?: string;
   /** Bind a hook on new messages in a conversation, or in one of its threads. */
-  subscribe(spaceName: string, threadName: string | undefined, hook: RpcStub<ChatMessageHookTarget>): Promise<void>;
+  subscribe(spaceName: string, threadName: string | undefined, hook: RpcStub<ChatMessageHookTarget>,
+            options: ChatSubscribeOptions): Promise<void>;
 };
 
 type ChatScope = Pick<ChatContext, "store" | "boundSpace" | "boundThread">;
@@ -845,7 +846,11 @@ async function hasExactly(api: ChatApi, spaceName: string, ids: readonly string[
   return present.size === ids.length + 1 && ids.every(id => present.has(id));
 }
 
-/** The name a send to exactly some people gives its message, so that a retry can find it. */
+/**
+ * The name every send gives its message, which Google reports as its `clientAssignedMessageId`. A
+ * retried send to exactly some people finds an earlier attempt's message by it, and hooks know by it
+ * what the account posted through here rather than in Google Chat (see chat-hooks.ts).
+ */
 const clientMessageId = (action: ChatSendMessageAction) => `client-${action.requestId}`;
 
 /** Once its target is deleted, nothing an earlier attempt wrote remains for a retry to find. */
@@ -1085,8 +1090,8 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text));
   }
 
-  async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>): Promise<void> {
-    await this.ctx.subscribe(this.#spaceName, undefined, hook);
+  async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>, options: ChatSubscribeOptions = {}): Promise<void> {
+    await this.ctx.subscribe(this.#spaceName, undefined, hook, options);
   }
 }
 
@@ -1138,10 +1143,10 @@ class ChatThreadImpl extends ChatRpcTarget implements ChatThread {
       await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name }));
   }
 
-  async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>): Promise<void> {
+  async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>, options: ChatSubscribeOptions = {}): Promise<void> {
     const thread = resolveThread(this.ctx, this.#name);
     if (thread.pending) throw new Error("This thread's first message has not been sent yet.");
-    await this.ctx.subscribe(thread.spaceName, thread.name, hook);
+    await this.ctx.subscribe(thread.spaceName, thread.name, hook, options);
   }
 }
 
@@ -1560,13 +1565,14 @@ export class GoogleChatGatekeeperImpl
       store: new ChatStore(this.ctx.storage),
       self,
       ...(boundSpace !== undefined ? { boundSpace } : {}),
-      subscribe: (spaceName, threadName, hook) => this.#subscribe(queue, self, spaceName, threadName, hook),
+      subscribe: (spaceName, threadName, hook, options) =>
+        this.#subscribe(queue, self, spaceName, threadName, hook, options),
     };
   }
 
   async #subscribe(
     queue: SharedApprovalQueue, self: ChatUser, spaceName: string, threadName: string | undefined,
-    hook: RpcStub<ChatMessageHookTarget>,
+    hook: RpcStub<ChatMessageHookTarget>, options: ChatSubscribeOptions,
   ): Promise<void> {
     if (!chatHooksConfigured(this.env)) {
       throw new Error("Google Chat hooks are not configured on this deployment.");
@@ -1578,13 +1584,18 @@ export class GoogleChatGatekeeperImpl
       key: crypto.randomUUID(),
       authority: self.id,
       userObjectId: this.ctx.props.userObjectId,
+      ...(options.includeOwnMessages ? { includeOwnMessages: true } : {}),
       delivery,
     } });
+    const where = threadName ?? spaceName;
     const watched = threadName === undefined ? "conversation" : "thread";
+    const delivered = options.includeOwnMessages
+      ? `each new message in ${where}, including those ${userLabel(self)} writes in Google Chat`
+      : `each new message anyone else posts in ${where}`;
     await queue.bindHook(controller, hook, {
       title: "Watch for new Google Chat messages",
-      description: `Call this hook with each new message anyone else posts in ${threadName ?? spaceName}, ` +
-        `letting it read that ${watched} and queue writes there for approval.`,
+      description: `Call this hook with ${delivered}, letting it read that ${watched} and queue writes ` +
+        "there for approval.",
     });
   }
 
@@ -1687,7 +1698,7 @@ export class GoogleChatGatekeeperImpl
             ...(threadName !== undefined ? { threadName } : {}),
           }, {
             requestId: action.requestId,
-            ...(recipients ? { messageId: clientMessageId(action) } : {}),
+            messageId: clientMessageId(action),
           }));
           // A replayed create echoes the request, not the message Chat stored.
           return readTarget(id);

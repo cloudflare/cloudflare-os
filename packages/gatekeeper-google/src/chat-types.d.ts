@@ -465,9 +465,10 @@ export interface ChatSpace extends RpcTarget {
 
   /**
    * Have `hook.receiveMessage()` called with each new message anyone else posts in this
-   * conversation, including thread replies; the connected account's own posts are never
-   * delivered. The hook starts disabled, and nothing is delivered until the user enables it.
-   * Every call creates a distinct hook, so subscribe once per conversation or thread to watch.
+   * conversation, including thread replies. Set `options.includeOwnMessages` to also receive the
+   * messages the connected user writes in Google Chat. The hook starts disabled, and nothing is
+   * delivered until the user enables it. Every call creates a distinct hook, so subscribe once per
+   * conversation or thread to watch.
    *
    * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
    * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's
@@ -519,7 +520,7 @@ export interface ChatSpace extends RpcTarget {
    * await env.OPS_CHAT.subscribeNewMessages(opsHook);
    * await env.OPS_CHAT.subscribeNewMessages(reportHook);
    */
-  subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
+  subscribeNewMessages(hook: RpcStub<ChatMessageHook>, options?: ChatSubscribeOptions): Promise<void>;
 }
 
 /**
@@ -552,7 +553,7 @@ export interface ChatThread extends RpcTarget {
    * As `ChatSpace.subscribeNewMessages()`, for replies in this thread only. Throws while the
    * thread's first message is still pending.
    */
-  subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
+  subscribeNewMessages(hook: RpcStub<ChatMessageHook>, options?: ChatSubscribeOptions): Promise<void>;
 }
 
 /**
@@ -620,6 +621,17 @@ export interface ChatAttachment extends RpcTarget {
    */
   getContent(): Promise<ArrayBuffer>;
 }
+
+/** What `subscribeNewMessages()` delivers. */
+export type ChatSubscribeOptions = {
+  /**
+   * Also deliver each message the connected user writes in Google Chat, whose sender is the user
+   * `getCurrentUser()` returns, so that they can address the Gadget there. Off by default. Messages
+   * sent as the connected account through this API, by you or any Gadget, are never delivered, so a
+   * hook never receives its own replies.
+   */
+  includeOwnMessages?: boolean;
+};
 
 /** A new message delivered to a `ChatMessageHook`, with what the hook watches. */
 export type ChatNewMessageEntry = ChatMessageEntry & {
