@@ -4,7 +4,7 @@ import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import { SupportedResource, VendorDescription, ResourceConfiguratorFrame, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
-import { Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
+import { Banner, Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
 
 import { useAuth } from './useAuth'
@@ -1619,6 +1619,11 @@ function BlueprintGatekeeperBindingField({
     account.vendorId === vendor?.id &&
     account.supportedResources.some(r => r.urlPattern === binding.typeUrlPattern)
   ), [accounts, vendor?.id, binding.typeUrlPattern])
+  // A gatekeeper may offer an account fewer resource types than its vendor does. When that leaves
+  // the chooser empty, say why, or an account the user just connected silently never appears.
+  const unusableAccountCount = matchingAccounts.length === 0
+    ? accounts.filter(account => account.vendorId === vendor?.id).length
+    : 0
 
   const selectedAccountId = (value as any).accountId ?? null
   const selectedAccount = matchingAccounts.find(a => a.id === selectedAccountId && a.credentialsValid) ?? null
@@ -1781,6 +1786,17 @@ function BlueprintGatekeeperBindingField({
         onGrantAccess={(id) => onGrantAccountResources(id, missingResourceUrlPatternsFor(id))}
         onReconnect={onReconnectAccount}
       />
+
+      {unusableAccountCount > 0 && (
+        <Banner
+          variant="alert"
+          size="sm"
+          title={unusableAccountCount === 1
+            ? `Your connected ${vendor.description.displayName} account can't be used for ${resource.title}`
+            : `Your ${unusableAccountCount} connected ${vendor.description.displayName} accounts can't be used for ${resource.title}`}
+          description="Connect an account that has access to it."
+        />
+      )}
 
       {selectedAccount && (
         <div className="space-y-2.5">
