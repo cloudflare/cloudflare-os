@@ -154,3 +154,58 @@ it.concurrent("a worktree stays private to its chat; merge, revert and delete ke
   expect((await ws.listChats()).some(chat => chat.id === chatA)).toBe(false);
   expect(model.remainingSteps()).toBe(0);
 });
+
+it.concurrent("agent code reads worktree edits made earlier in its step; gadget edits still wait",
+    async () => {
+  const [username] = nextUsernames("worktreestep");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, username!);
+  using ws = await api.newWorkspace();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+
+  using seed = ws.createGadget("Seed", undefined, "SEED");
+  const seedId = await seed.getId();
+  const baseCommit = await waitFor("the seed gadget commit", async () => {
+    const summary = workpieces.summaries.get(seedId);
+    return summary?.type === "gadget" && summary.commitId !== undefined
+      ? summary.commitId
+      : null;
+  });
+
+  const writeFile = (id: string, workpiece: string, filename: string, content: string) =>
+    ({ id, name: "writeFile", arguments: { workpiece, filename, content } });
+  const readDraft = (id: string) => ({ id, name: "executeCode", arguments: {
+    code: `export default async function(self, env) { console.log(await env.NOTES.readFile("draft.txt")); }`,
+  } });
+  const model = models.script([
+    { toolCall: { id: "create-worktree", name: "createWorktree", arguments: {
+      title: "Notes", bindingName: "NOTES", commitId: baseCommit,
+    } } },
+    { toolCalls: [writeFile("draft", "NOTES", "draft.txt", "drafted"), readDraft("read-draft")] },
+    // A gadget edit blocks the step's code even beside worktree edits: the gadget would run the
+    // code it had before the step.
+    { toolCalls: [
+      writeFile("redraft", "NOTES", "draft.txt", "redrafted"),
+      writeFile("edit-seed", "SEED", "server.js", "export default {};\n"),
+      readDraft("read-after-seed-edit"),
+    ] },
+    { text: "Done." },
+  ]);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+
+  const chatId = await ws.newChat("Draft a note and read it back.", SCRIPTED_MODEL_ID);
+  await waitFor("four model requests", async () => model.requests.length === 4 ? true : null);
+  await waitForIdleChat(ws, chatId);
+
+  const runs = (await loadAllChatHistory(before => ws.getChatHistory(chatId, before)))
+    .flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
+    .filter(call => call.toolName === "executeCode");
+  expect(runs).toEqual([
+    expect.objectContaining({ output: "drafted" }),
+    expect.objectContaining({ error: expect.stringContaining("changed Gadget code") }),
+  ]);
+  expect(model.remainingSteps()).toBe(0);
+});

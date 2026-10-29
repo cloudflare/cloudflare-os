@@ -60,14 +60,14 @@ first).
   broadcast supersedes previews at step end instead of per call. The stale "the row
   doubles as the streaming preview" comment (agent.ts:297) gets fixed —
   overseer.ts:2904-2906 already states the correct supersedes relationship.
-- **executeCode after any buffered edits throws.** Once the step buffer holds
-  any change, executeCode fails with a retryable, agent-visible error ("changes
-  land next step — retry") instead of running provisional code. Deliberately
-  coarse — no per-gadget touched-set, no machinery in the gadget-loading path:
-  editing code and then executing it in one step never worked (and agents don't
-  try it), and worktrees keep the same rule (their writes happen *inside*
-  executeCode, and a second executeCode in one step is never sensible — the
-  agent writes one script that does both things). This replaces what the
+- **executeCode after buffered gadget edits throws.** Once the step buffer holds
+  a change to anything but a worktree, executeCode fails with a retryable,
+  agent-visible error ("changes land next step — retry") instead of running
+  provisional code. Deliberately coarse — no per-gadget touched-set, no
+  machinery in the gadget-loading path: editing code and then executing it in
+  one step never worked (and agents don't try it). Worktree edits are exempt:
+  worktree bindings read the turn's session content, so the execution sees
+  them, and the barrier persists them with its record. This replaces what the
   mid-tool flushes guaranteed, and closes by construction the historical
   corruption where a mid-turn flush materialized a `"changes"` message
   containing a not-yet-persisted step's changes.
@@ -259,7 +259,7 @@ first).
    removes the log tail replay re-adopts them from. It dies with the
    re-adoption machinery itself.
 5. **executeCode guard.** The executeCode tool checks the step buffer before
-   running: non-empty ⇒ throw the retryable error. One `if` in the tool, no
+   running: any non-worktree change ⇒ throw the retryable error. One `if` in the tool, no
    changes to the gadget-loading path (see the locked decision).
 6. **Machinery deletion.** With no live agent rows possible outside the barrier:
    delete the replay-discharge path and `listUnmaterializedChatChanges`; delete
@@ -333,8 +333,9 @@ first).
   creation, and call atomically.
 - **Abort mid-step**: buffer dropped, prior steps' messages intact, nothing
   reverted.
-- **executeCode guard**: executeCode after any buffered edit throws the
-  retryable error; the next step succeeds.
+- **executeCode guard**: executeCode after a buffered gadget edit throws the
+  retryable error, even beside worktree edits; the next step succeeds. After
+  worktree-only edits it runs and reads them.
 - **User submission mid-turn** still rejected; post-turn resubmission transforms
   against the turn's retired rows (window intact across multiple per-step
   flushes).
