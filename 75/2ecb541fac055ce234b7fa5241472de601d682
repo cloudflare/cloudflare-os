@@ -1,0 +1,35 @@
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_35bfccc0e4fd33::t_26056b14d15cb4 11,161,174,213,221-222,238,240-245,252,257,264-265
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_35bfccc0e4fd33::t_2ec96dd648c51b 16-17,611,616
+packages/gatekeeper-google/src/chat-hooks.ts
+  s_bdd1d7b846fc73::t_f421bebbfc44c9 52-53,165-170
+packages/gatekeeper-google/src/chat-types.d.ts
+  s_35bfccc0e4fd33::t_1417d32fd01352 467-471,523,556,625-635
+packages/gatekeeper-google/src/chat.ts
+  s_bdd1d7b846fc73::t_f3b69957c61070 49-50,316-317,1093-1094,1146,1149,1568-1569,1575,1587,1590,1592-1594,1597-1598
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "752ecb541fac055ce234b7fa5241472de601d682",
+  "prompts": {},
+  "sessions": {
+    "s_35bfccc0e4fd33": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778ac576ffeowZhSSWX1X7glm",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_bdd1d7b846fc73": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e8107996fffePPF3DGQD3v3Tmi",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
