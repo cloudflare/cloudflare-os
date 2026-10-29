@@ -91,7 +91,7 @@ export async function registerAuthorizedDevice(
     subscription(await signedPost(env, "/v2/subscriptions", { deviceRegistrationId, subject }, signal)));
 }
 
-// Registration blocks sign-out, so bound the whole response, including parsing its body.
+// Bound each setup exchange through response parsing so a stalled service cannot pin the caller.
 // AbortSignal.timeout leaves its timer alive after success, delaying Durable Object eviction.
 async function registrationRequest<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
   let controller = new AbortController();

@@ -9,6 +9,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "../../rpcErrors";
 import { nativeApp } from "../native-app/nativeApp";
+import { registerNativeNotificationEnrollment } from "./nativeNotificationEnrollment";
 import { isChatVisible } from "./visibleChat";
 
 const DEVICE_REGISTRATION_EVENT = "cloudflare-os:notification-device-registration";
@@ -66,10 +67,16 @@ export const NotificationBridge = ({
   const mounted = useRef(false);
   const requestingAuthorization = useRef(false);
   const claimedRegistrations = useRef(new Set<string>());
+  const pendingRegistrations = useRef(0);
+  const retriedAuthorizedRegistration = useRef(false);
+  const activeEnrollmentEffect = useRef<symbol | undefined>(undefined);
 
   useEffect(() => {
+    const effect = Symbol();
+    activeEnrollmentEffect.current = effect;
     let legacyWindow = window as LegacyNativeNotificationWindow;
     let notifications = nativeApp()?.notifications;
+    let stopped = false;
     mounted.current = true;
     const reportRegistration = (outcome: "ready" | "failed") => {
       if (notifications) {
@@ -80,6 +87,7 @@ export const NotificationBridge = ({
       }
     };
     const requestRegistration = async () => {
+      if (!mounted.current) return;
       if (!notifications?.authorizationRequired) {
         if (notifications) notifications.requestDeviceRegistration();
         else legacyWindow.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?.();
@@ -100,7 +108,8 @@ export const NotificationBridge = ({
       }
     };
     const register = async (deviceRegistrationId: string | undefined) => {
-      if (!deviceRegistrationId || claimedRegistrations.current.has(deviceRegistrationId)) return;
+      if (!mounted.current || !deviceRegistrationId ||
+          claimedRegistrations.current.has(deviceRegistrationId)) return;
       // Native handles are single-use. The mounted ref lets the original exchange report through
       // Strict Mode's effect replay without redeeming the handle again.
       claimedRegistrations.current.add(deviceRegistrationId);
@@ -109,6 +118,7 @@ export const NotificationBridge = ({
         delete legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
       }
       let outcome: "ready" | "failed" = "ready";
+      pendingRegistrations.current++;
       try {
         if (notifications?.authorizationRequired) {
           await currentApi.current.registerAuthorizedNotificationDevice(deviceRegistrationId);
@@ -118,8 +128,18 @@ export const NotificationBridge = ({
       } catch (error) {
         outcome = "failed";
         logRpcFailure("Failed to register notification device:", error);
+      } finally {
+        pendingRegistrations.current--;
       }
-      if (mounted.current) reportRegistration(outcome);
+      if (!mounted.current) return;
+      reportRegistration(outcome);
+      // An injected handle may have expired before this authenticated mount. Ask native to mint
+      // one fresh handle, but never turn a service outage into an authorization retry loop.
+      if (outcome === "failed" && notifications?.authorizationRequired &&
+          !retriedAuthorizedRegistration.current) {
+        retriedAuthorizedRegistration.current = true;
+        void requestRegistration();
+      }
     };
     const onDeviceRegistration = (event: Event) => {
       void register(eventDeviceRegistration(event));
@@ -133,6 +153,20 @@ export const NotificationBridge = ({
     window.addEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
     const onAuthorizationRequest = () => { void requestRegistration(); };
     window.addEventListener(NOTIFICATION_AUTHORIZATION_REQUEST_EVENT, onAuthorizationRequest);
+    const stopEnrollment = () => {
+      if (stopped) return;
+      stopped = true;
+      mounted.current = false;
+      if (requestingAuthorization.current || pendingRegistrations.current > 0) {
+        reportRegistration("failed");
+      }
+      try {
+        notifications?.disconnect?.();
+      } catch (error) {
+        console.error("Failed to disconnect native notifications:", error);
+      }
+    };
+    const unregisterEnrollment = registerNativeNotificationEnrollment(stopEnrollment);
     // Each id costs a central registration. Ask at most once per authenticated mount, and not at
     // all when native already injected one.
     if (!askedNative.current) {
@@ -142,9 +176,20 @@ export const NotificationBridge = ({
       }
     }
     return () => {
+      const enrollmentWasPending =
+        requestingAuthorization.current || pendingRegistrations.current > 0;
       mounted.current = false;
       window.removeEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
       window.removeEventListener(NOTIFICATION_AUTHORIZATION_REQUEST_EVENT, onAuthorizationRequest);
+      unregisterEnrollment();
+      // React Strict Mode immediately starts a replacement effect. Defer the terminal callback so
+      // that replay can retain the one-use handle while a real unmount never strands native.
+      queueMicrotask(() => {
+        if (!stopped && enrollmentWasPending &&
+            activeEnrollmentEffect.current === effect && !mounted.current) {
+          reportRegistration("failed");
+        }
+      });
     };
   // Enrollment belongs to this authenticated mount, not each replacement WebSocket stub.
   }, []);

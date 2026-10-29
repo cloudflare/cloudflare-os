@@ -474,7 +474,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Vouch for this authenticated user using the installation's registered signing identity. */
   async authorizeNotificationDevice(): Promise<string> {
-    return authorizeDevice(this.env, this.ctx.id.toString());
+    return authorizeDevice(this.env, this.#notificationSubject);
   }
 
   /**
@@ -483,13 +483,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
     this.#storeNotificationSubscription(
-        await registerDevice(this.env, registration, this.ctx.id.toString()));
+        await registerDevice(this.env, registration, this.#notificationSubject));
   }
 
   /** Exchange a CFOS-authorized native registration under this User DO's central subject. */
   async registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
     this.#storeNotificationSubscription(await registerAuthorizedDevice(
-        this.env, deviceRegistrationId, this.ctx.id.toString()));
+        this.env, deviceRegistrationId, this.#notificationSubject));
+  }
+
+  get #notificationSubject(): string {
+    return this.ctx.id.toString();
   }
 
   #storeNotificationSubscription(
@@ -542,7 +546,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (acknowledged) return;
     let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
     let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
-      if (await deliver(this.env, this.ctx.id.toString(), subscriptionId, notification)) return;
+      if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification)) return;
       // This subscription is dead; the device gets a new one when its app next opens. Keep one it
       // registered while this delivery was in flight.
       let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();

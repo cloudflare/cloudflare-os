@@ -83,7 +83,8 @@ credential in secure storage, and exposes only the one-use registration to the S
 Native can request a replacement grant by dispatching the
 `cloudflare-os:notification-authorization-request` event.
 `registerAuthorizedNotificationDevice(id)` exchanges it with the same signed install/user scope.
-CFOS logout calls `notifications.disconnect()`; native revokes that install's device enrollment.
+CFOS logout first stops any grant or registration in flight, then calls
+`notifications.disconnect()`; native revokes that install's device enrollment.
 Provider-token refresh uses the native credential without a Dashboard login or web session.
 
 Deploy central service, then CFOS backend/SPA, then native apps. Older native apps retain the
