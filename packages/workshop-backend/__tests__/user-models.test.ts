@@ -250,7 +250,12 @@ describe("UserDurableObject gateway model modes", () => {
       // An admin's listing of a provider AI Gateway does not serve enables nothing.
       const ollama = { provider: "ollama" as const, model: "llama", apiToken: "" };
       await expect(user.addModel(PROFILE, ollama)).rejects.toThrow(providerUnavailable("ollama"));
-    }, { addedProviders: ["google", "ollama"] }));
+      // Nor is the Auto Router's, whose one model is the deployment's.
+      const auto =
+          { provider: "auto-router-cloudflare" as const, model: "cloudflare/auto", apiToken: "" };
+      await expect(user.addModel(PROFILE, auto))
+          .rejects.toThrow(providerUnavailable("auto-router-cloudflare"));
+    }, { addedProviders: ["google", "ollama", "auto-router-cloudflare"] }));
 
     // As when a provider leaves CF_AI_GATEWAY_PROVIDERS: the model stays and runs, uneditable.
     it("keeps a model whose provider an admin turned off again", () => {

@@ -73,6 +73,22 @@ compaction budgets, adds models the catalog doesn't list, and tests a provider o
 one real request. A decision model (Clef) has only a mode there: the settings and the test
 apply to language models.
 
+The **AI Gateway Auto Router** provider (`auto-router-cloudflare`) adds one model, **Auto**,
+which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
+pick the model behind each request by its difficulty and each candidate's cost. When the
+provider is on, Auto leads the model pickers and is the default for a new user or chat. It picks
+among the models of the other providers that are on, from
+[the Gateway's pool](https://developers.cloudflare.com/ai-gateway/features/auto-router/#models),
+which can include models this catalog doesn't list. The model's settings can instead list the
+models it may pick, as the Gateway names them (`anthropic/claude-sonnet-5.5`, `anthropic/*`,
+`openai/gpt-6-luna`, `@cf/*/*` for Workers AI); only models of providers that are on are
+accepted, and a listed model drops out of the pool if its provider is turned off. A name the
+Gateway doesn't know fails every request, so press Test after saving a list; a pass names the
+model that answered. Within a chat turn Auto keeps the model its first request got, so the
+prompt cache holds. It takes no reasoning level, and each chat is priced by the Gateway's log of
+the model that answered. A provider that is on but has no key in the Gateway runs on the
+account's Cloudflare credits (Unified Billing) unless the Gateway requires provider credentials.
+
 Disabling a model or turning a provider off is not a spend control while **Users may add their
 own models** is on: a user can still add a model under any provider that is on, and it runs
 through the deployment's Gateway. Turn that switch off to make the listed models the only ones.

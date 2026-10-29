@@ -314,7 +314,15 @@ describe("admin config gateway models", () => {
         .toStrictEqual({ reasoning: "max", compactionInputBudget: 1 });
     expect(sanitizeModelSettings({ reasoning: "max", compactionInputBudget: 2 ** 53 }))
         .toStrictEqual({ reasoning: "max" });
-    for (let value of [{}, { reasoning: undefined }, { compactionInputBudget: NaN }, null, "max"]) {
+    // Allowed models are kept trimmed and once each, less the malformed; an empty list is none.
+    expect(sanitizeModelSettings({
+      allowedModels: [
+        " anthropic/* ", "openai/gpt-6-luna", "anthropic/*", "claude opus", "a,b/c", 3,
+      ],
+    })).toStrictEqual({ allowedModels: ["anthropic/*", "openai/gpt-6-luna"] });
+    for (let value of [{}, { reasoning: undefined }, { compactionInputBudget: NaN }, null, "max",
+        { allowedModels: [] }, { allowedModels: ["anthropic"] },
+        { allowedModels: "anthropic/*" }]) {
       expect(sanitizeModelSettings(value)).toBeUndefined();
     }
   });

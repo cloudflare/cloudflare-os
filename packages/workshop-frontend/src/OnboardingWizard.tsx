@@ -578,7 +578,7 @@ export default function OnboardingWizard({
                               {model.name}
                             </p>
                             <p className="text-xs text-kumo-subtle truncate">
-                              {model.id}
+                              {model.description ?? model.id}
                             </p>
                           </div>
                           {selectedModelId === model.id && (

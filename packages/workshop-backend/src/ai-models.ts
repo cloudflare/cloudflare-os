@@ -33,7 +33,8 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
 import {
-  AiGatewayConfig, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
+  AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, getAiGatewayConfig, getGatewayModels,
+  type AiGatewayLogRoute,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
@@ -114,13 +115,13 @@ export type ModelHandle = {
   aiGatewayLogRoute?: AiGatewayLogRoute;
 
   /**
-   * Status and AI Gateway log id of the most recent HTTP response observed by `stream`. Reset at
-   * the start of every request and set from pi's onResponse callback (which fires only once a
-   * response arrives -- an SDK-level failure leaves this undefined), so consumers must read it
-   * right after the request they care about completes. Turns run requests sequentially, so this
-   * is safe.
+   * Status and AI Gateway log id of the most recent HTTP response observed by `stream`, and for
+   * the Auto Router model the gateway model that answered. Reset at the start of every request
+   * and set from pi's onResponse callback (which fires only once a response arrives -- an
+   * SDK-level failure leaves this undefined), so consumers must read it right after the request
+   * they care about completes. Turns run requests sequentially, so this is safe.
    */
-  lastResponse?: { status: number; aiGatewayLogId?: string };
+  lastResponse?: { status: number; aiGatewayLogId?: string; routedModel?: string };
 
   /**
    * The most recent request `stream` sent with prompt caching on, once its response ends, if the
@@ -190,6 +191,12 @@ const API_STREAMS: Record<string, StreamFunction<Api, SimpleStreamOptions>> = {
 };
 
 const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+// What the Auto Router model's answers cost per million tokens, roughly: the router picks among
+// frontier models priced around Claude Sonnet's. A chat's real cost comes from the gateway's log
+// of each request, which prices the model that answered (see AiGatewayLogRoute); the estimate
+// only sizes the resends that keep a prompt cached (see CachedRequest).
+const AUTO_ROUTER_COST: ModelCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 
 // pi's builtin catalogs, by provider. Import per-provider, not providers/all.
 const CATALOGS: Partial<Record<AiModelProvider, Record<string, Model<Api>>>> = {
@@ -299,12 +306,12 @@ function workersAiCompat(catalog: CatalogEntry | undefined): OpenAICompletionsCo
 // (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}) or, for binding-routed requests,
 // over the AI binding (https://workers-binding.ai/ai-gateway/gateways/{gateway}); each
 // provider's native API is exposed under the same per-provider path on either. AI Gateway also
-// offers a unified OpenAI-compat
-// translation layer (/compat), which we deliberately never use: we already speak every
-// provider's native API, and the translation drops provider features pi relies on (extended
-// thinking, Anthropic cache_control prompt caching, the OpenAI Responses API). Billing --
-// including unified billing on a user's own gateway -- is orthogonal to which API a request
-// speaks. Returns undefined for providers AI Gateway cannot serve (ollama).
+// offers a unified OpenAI-compat translation layer (/compat), which only the Auto Router model
+// speaks, because the router exists nowhere else: for every other model we speak the provider's
+// native API, since the translation drops provider features pi relies on (extended thinking,
+// Anthropic cache_control prompt caching, the OpenAI Responses API). Billing -- including unified
+// billing on a user's own gateway -- is orthogonal to which API a request speaks. Returns
+// undefined for providers AI Gateway cannot serve (ollama).
 function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Api> | undefined {
   const catalog = gatewayCatalogModel(config);
   const window = modelTokenWindow(config, catalog);
@@ -377,6 +384,21 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         // requests are otherwise sent no effort at all.
         ...(config.reasoning !== undefined ? { thinkingLevelMap: catalog?.thinkingLevelMap } : {}),
         compat: workersAiCompat(catalog),
+      };
+    case "auto-router-cloudflare":
+      // Auto Router answers on the gateway's /compat route in Chat Completions format whichever
+      // model it picks, so the descriptor claims only what every candidate has: text and image
+      // input, and no reasoning levels.
+      return {
+        id: config.model,
+        name: catalog?.name ?? config.model,
+        api: "openai-completions",
+        provider: "auto-router-cloudflare",
+        baseUrl: `${gatewayUrl}/compat`,
+        reasoning: false,
+        input: ["text", "image"],
+        cost: AUTO_ROUTER_COST,
+        ...window,
       };
     default:
       return undefined;
@@ -573,6 +595,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
           received = {
             status: response.status,
             aiGatewayLogId: getHeader(response.headers, "cf-aig-log-id"),
+            routedModel: getHeader(response.headers, "cf-aig-routed-model"),
           };
           handle.lastResponse = received;
           await options.onResponse?.(response, responseModel);
@@ -791,6 +814,7 @@ function getModelViaUserGateway(
       "cf-aig-authorization": `Bearer ${userGateway.apiKey}`,
       Authorization: null,
       "x-api-key": null,
+      ...autoRouterHeaders(config, sessionAffinity),
     },
     gatewayMetadata: metadata,
     sessionAffinity,
@@ -811,6 +835,26 @@ function getModelViaUserGateway(
  * recognizes and strips it rather than treating it as a BYOK provider key.
  */
 const CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL = "cloudflare-gateway-binding";
+
+// The headers that steer Auto Router, for its model alone: the pool (see AutoRouterPool), and the
+// chat as the router's session, so a turn's requests stay with one model and its prompt cache. An
+// empty pool is refused rather than sent, since it would leave the router nothing to pick.
+function autoRouterHeaders(config: AiModelConfig, sessionAffinity?: string): ProviderHeaders {
+  if (config.provider !== "auto-router-cloudflare") return {};
+  const pool = config.autoRouterPool;
+  const headers: ProviderHeaders =
+      sessionAffinity !== undefined ? { "cf-aig-session-id": sessionAffinity } : {};
+  if (pool === undefined) return headers;
+  const names = "models" in pool
+      ? pool.models
+      : pool.providers.flatMap(provider => AUTO_ROUTER_PROVIDER_NAMES[provider]?.header ?? []);
+  if (names.length === 0) {
+    throw new Error("Auto Router has no models to pick from: enable another provider on this " +
+        "deployment, or list models of one that is on.");
+  }
+  const header = "models" in pool ? "cf-aig-allowed-models" : "cf-aig-allowed-providers";
+  return { ...headers, [header]: names.join(",") };
+}
 
 /**
  * `Ai#fetch` exists at runtime but @cloudflare/workers-types' `Ai` doesn't declare it, so the
@@ -850,6 +894,7 @@ function getModelViaGateway(
         `Bearer ${binding ? CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL : gwConfig.apiToken}`,
     Authorization: null,
     "x-api-key": null,
+    ...autoRouterHeaders(config, options.sessionAffinity),
   };
   const gatewayBase =
       `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}`;
@@ -1033,6 +1078,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         ...directAuth(config, "Authorization"),
         sessionAffinity,
       });
+    case "auto-router-cloudflare":
+      throw new Error("The Auto Router model runs only through an AI Gateway.");
     default:
       config.provider satisfies never;
       throw new Error(`Unknown provider "${config.provider}".`);

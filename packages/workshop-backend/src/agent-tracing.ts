@@ -136,6 +136,7 @@ export function traceChat(
         "gen_ai.response.id": message.responseId,
         "cloudflare.agents.response.finish_reason": message.stopReason,
         "cloudflare.ai_gateway.log.id": received?.aiGatewayLogId,
+        "cloudflare.ai_gateway.routed_model": received?.routedModel,
         ...usageAttributes(message.usage),
       });
       if (message.stopReason === "aborted") {
