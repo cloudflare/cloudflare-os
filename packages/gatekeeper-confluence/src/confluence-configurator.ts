@@ -211,6 +211,7 @@ const toBase64 = (data: Uint8Array) => {
 export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceConfiguratorRpc {
   readonly #account: ConfiguratorAccount;
   #sites?: Promise<AccessibleResource[]>;
+  #scopes?: Promise<string[] | null>;
   #fullTree?: Promise<boolean>;
   readonly #spaces = new Map<string, Promise<SpaceResponse>>();
   readonly #icons = new Map<string, Promise<string | undefined>>();
@@ -256,12 +257,7 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
 
   async locate(url: string): Promise<ConfluenceNode | null> {
     if (url.length > 2048) return null;
-    try {
-      return await this.#locate(url);
-    } catch (error) {
-      if (isAccessError(error)) return null;
-      throw error;
-    }
+    return await this.#locate(url).catch(unless(isAccessError, null));
   }
 
   async resourceUrlFor(ref: string): Promise<string> {
@@ -326,9 +322,14 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
     return site;
   }
 
+  #grantedScopes(): Promise<string[] | null> {
+    this.#scopes ??= this.#account.getGrantedScopes();
+    return this.#scopes;
+  }
+
   #hasFullTree(): Promise<boolean> {
     // A grant from before scopes were recorded is assumed to have it, and found out on first use.
-    this.#fullTree ??= this.#account.getGrantedScopes().then(scopes => scopes === null || scopes.includes(HIERARCHY_SCOPE));
+    this.#fullTree ??= this.#grantedScopes().then(scopes => scopes === null || scopes.includes(HIERARCHY_SCOPE));
     return this.#fullTree;
   }
 
@@ -451,7 +452,7 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
       // A home page the user can't read hides only its own pages, which are restricted with it.
       space.homepageId
         ? this.#treeChildren(site, "pages", space.homepageId, undefined).catch(unless(isAccessError, undefined))
-        : Promise.resolve(undefined),
+        : undefined,
     ]);
     // The home page is usually the space's first page, so in the first batch; read it alone if not.
     const homePage = roots.results.find(page => page.id === space.homepageId)
@@ -517,7 +518,7 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
       } catch (error) {
         // A denial means a missing scope only for a grant whose scopes weren't recorded; with them
         // recorded, it is Confluence's answer.
-        if (!hasStatus(401, 403)(error) || await this.#account.getGrantedScopes() !== null) throw error;
+        if (!hasStatus(401, 403)(error) || await this.#grantedScopes() !== null) throw error;
         this.#fullTree = Promise.resolve(false);
       }
     }

@@ -281,9 +281,8 @@ describe("loadItems", () => {
     const configurator = ui();
 
     await expect(configurator.loadItems({ parent: `page:${CLOUD}/458753` })).rejects.toThrow();
-    requests = [];
-    await configurator.loadItems({ parent: `page:${CLOUD}/458753` }).catch(() => {});
-    expect(requests.some(request => request.url.pathname.endsWith("/direct-children"))).toBe(true);
+    await expect(configurator.loadItems({ parent: `page:${CLOUD}/458753` })).rejects.toThrow();
+    expect(requests.filter(request => request.url.pathname.endsWith("/direct-children"))).toHaveLength(2);
   });
 
   it("opens a space whose key is a legacy personal one", async () => {
