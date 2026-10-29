@@ -586,6 +586,10 @@ describe("Google Slides changes", () => {
     let slides = gatekeeper();
 
     let copy = await slides.queued("duplicateSlide", "s2");
+    expect(copy.action).toMatchObject({
+      autoApprovable: true,
+      actionKind: { tag: "addSlides", label: "Adding, copying and reordering slides" },
+    });
     let copyId = copy.value as string;
     let [copied] = await slides.slides(copyId);
     let body = copied.elements.find(e => (e as ShapeElement).text?.startsWith("Revenue:"))!;
@@ -609,9 +613,14 @@ describe("Google Slides changes", () => {
     let slides = gatekeeper();
 
     let move = await slides.queued("moveSlides", ["s3", "s1"], "s2");
+    expect(move.action).toMatchObject({ autoApprovable: true, actionKind: { tag: "addSlides" } });
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s2", "s1", "s3"]);
     let remove = await slides.queued("deleteSlide", "s1");
-    expect(remove.action).toMatchObject({ title: "Delete slide 2 (\"Q3 review\")" });
+    expect(remove.action).toMatchObject({
+      title: "Delete slide 2 (\"Q3 review\")",
+      autoApprovable: true,
+      actionKind: { tag: "deleteSlides", label: "Deleting slides" },
+    });
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s2", "s3"]);
 
     expect(await slides.apply(move.actionId!)).toBeNull();
@@ -841,6 +850,10 @@ describe("Google Slides changes", () => {
     expect(await slides.autoApprovable()).toEqual([
       { tag: "editSlidesText", label: "Slide text edits" },
       { tag: "formatSlides", label: "Slide formatting and arrangement" },
+      { tag: "changeSlides", label: "Slide content and theme changes" },
+      { tag: "slideWebPictures", label: "Slide pictures from web links" },
+      { tag: "addSlides", label: "Adding, copying and reordering slides" },
+      { tag: "deleteSlides", label: "Deleting slides" },
       { tag: "skipSlides", label: "Skipping slides" },
     ]);
   });
@@ -957,7 +970,8 @@ describe("Google Slides design changes", () => {
 
     expect(action).toMatchObject({
       title: "Change slide 2 (\"Revenue\")",
-      autoApprovable: false,
+      autoApprovable: true,
+      actionKind: { tag: "changeSlides", label: "Slide content and theme changes" },
       descriptionIsComplete: true,
       fields: [{ label: "Change 1: Text", kind: "text", value: "New" }],
     });
@@ -1017,23 +1031,32 @@ describe("Google Slides design changes", () => {
     expect(provider.text("s2", "t2")).toBe("Sales\n");
   });
 
-  it("lets a batch apply without asking only when it only edits text, or only formats", async () => {
+  it("queues a batch as the narrowest kind that admits all of it", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();
     let kindOf = async (...changes: object[]) => {
       let { action } = await slides.queued("updateSlides", changes);
-      return action!.autoApprovable ? action!.actionKind!.tag : "manual";
+      expect(action!.autoApprovable).toBe(true);
+      return action!.actionKind!.tag;
     };
     let format = (fields: object) => ({ op: "formatText", slideId: "s1", elementId: "t1", format: fields });
 
     expect(await kindOf(format({ bold: true }), { op: "arrange", slideId: "s1", elementId: "t1", to: "front" }))
       .toBe("formatSlides");
-    // Google keeps a font's or link's whole string, so either needs approval.
-    expect(await kindOf(format({ fontFamily: "Georgia" }))).toBe("manual");
-    expect(await kindOf(format({ link: "https://example.com/" }))).toBe("manual");
-    expect(await kindOf(format({ italic: true }), { op: "editText", slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }))
-      .toBe("manual");
-    expect(await kindOf({ op: "setAltText", slideId: "s1", elementId: "t1", title: "Title" })).toBe("manual");
+    expect(await kindOf({ op: "editText", slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }))
+      .toBe("editSlidesText");
+    // Google keeps a font's or link's whole string, so neither is mere formatting.
+    expect(await kindOf(format({ fontFamily: "Georgia" }))).toBe("changeSlides");
+    expect(await kindOf(format({ link: "https://example.com/" }))).toBe("changeSlides");
+    // Each batch builds on those queued before it, which changed "Q3" to "Q4".
+    expect(await kindOf(format({ italic: true }), { op: "editText", slideId: "s1", elementId: "t1", find: "Q4", replace: "Q5" }))
+      .toBe("changeSlides");
+    expect(await kindOf({ op: "setAltText", slideId: "s1", elementId: "t1", title: "Title" })).toBe("changeSlides");
+    // Google downloads an image's URL, which can carry data out, so any batch with one is apart.
+    let image = { op: "insertImage", slideId: "s1", ref: "pic", url: "https://example.com/a.png",
+      bounds: { x: 0, y: 0, width: 10, height: 10 } };
+    expect(await kindOf(image)).toBe("slideWebPictures");
+    expect(await kindOf(BADGE, image)).toBe("slideWebPictures");
   });
 
   // Neither the created-then-deleted element nor the formatting differs between a batch that
@@ -1071,7 +1094,8 @@ describe("Google Slides new and skipped slides", () => {
 
     expect(create.action).toMatchObject({
       title: "Add a slide",
-      autoApprovable: false,
+      autoApprovable: true,
+      actionKind: { tag: "addSlides" },
       descriptionIsComplete: true,
       description: 'Adds a slide with the layout "Title and body" after slide 1 ("Q3 review").',
     });
@@ -1261,12 +1285,13 @@ describe("Google Slides backgrounds and theme", () => {
   const RED: RestPageBackgroundFill =
     { propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1 } }, alpha: 1 } };
 
-  it("lets a slide's colour, none or inherited background apply without asking, but not a picture or a theme change", async () => {
+  it("queues a slide's colour, none or inherited background as formatting, apart from a picture or a theme change", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();
     let kindOf = async (...changes: object[]) => {
       let { action } = await slides.queued("updateSlides", changes);
-      return action!.autoApprovable ? action!.actionKind!.tag : "manual";
+      expect(action!.autoApprovable).toBe(true);
+      return action!.actionKind!.tag;
     };
 
     expect(await kindOf(background({ slideId: "s1" }, "#ff0000"))).toBe("formatSlides");
@@ -1276,11 +1301,11 @@ describe("Google Slides backgrounds and theme", () => {
       { op: "formatText", slideId: "s1", elementId: "t1", format: { bold: true } },
     )).toBe("formatSlides");
     // Google downloads a picture, and a layout or master reaches slides the user is not looking at.
-    expect(await kindOf(background({ slideId: "s1" }, { imageUrl: PICTURE_URL }))).toBe("manual");
-    expect(await kindOf(background({ layoutId: "layout-title" }, "#ff0000"))).toBe("manual");
-    expect(await kindOf(background({ masterId: "master-1" }, "ACCENT1"))).toBe("manual");
+    expect(await kindOf(background({ slideId: "s1" }, { imageUrl: PICTURE_URL }))).toBe("slideWebPictures");
+    expect(await kindOf(background({ layoutId: "layout-title" }, "#ff0000"))).toBe("changeSlides");
+    expect(await kindOf(background({ masterId: "master-1" }, "ACCENT1"))).toBe("changeSlides");
     expect(await kindOf({ op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#ff0000" } }))
-      .toBe("manual");
+      .toBe("changeSlides");
   });
 
   it("queues slide and theme changes as one approval, shows them in reads, and writes them as one batch", async () => {
@@ -1295,7 +1320,8 @@ describe("Google Slides backgrounds and theme", () => {
 
     expect(action).toMatchObject({
       title: "Change slide 2 (\"Revenue\") and the theme",
-      autoApprovable: false,
+      autoApprovable: true,
+      actionKind: { tag: "slideWebPictures" },
       descriptionIsComplete: true,
       fields: [{ label: "Change 2: Background image URL", kind: "text", value: PICTURE_URL }],
     });

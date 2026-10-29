@@ -247,7 +247,8 @@ export type SlideChange =
 /**
  * Read/write access to one directly bound Google Slides presentation.
  *
- * Changes are queued for the user's approval. `getPresentation()` and `getSlides()` show them as
+ * Changes are queued for the user's approval, unless the user has let that kind of change apply
+ * without asking. `getPresentation()` and `getSlides()` show them as
  * if already applied; `getSlideThumbnail()` renders the presentation as saved. A queued change
  * that no longer applies, because the presentation was edited elsewhere, fails when approved, and
  * reads of what it changes report it in `queuedChangeConflict`.
@@ -266,11 +267,11 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    * takes all 12 at once, so the others are sent as the master has them when the batch is
    * applied. Which layout a slide is made from cannot be changed.
    *
-   * The user may let a batch apply without asking when it only edits text, or when it only
-   * formats text, paragraphs and shapes, moves elements, or sets slides' backgrounds to a colour,
-   * `"none"` or `null`, setting no link or font. Any other batch waits for approval: one mixing
-   * those two, setting a picture background, changing a layout or master, or setting theme
-   * colours. So queue changes that need not apply together as separate batches.
+   * The user chooses which kinds of batch apply without asking: one that only edits text; one
+   * that only formats text, paragraphs and shapes, moves elements, or sets slides' backgrounds to
+   * a colour, `"none"` or `null`, setting no link or font; one that otherwise inserts or replaces
+   * an image or sets a picture background; and any other. A batch mixing kinds is the broadest it
+   * contains, so queue changes that need not apply together as separate batches.
    *
    * Reads show the changes as if applied, except what only Google can work out: a new element
    * reads with just what the change sets until it is applied, and an image's fitted size, the
@@ -312,7 +313,7 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
 
   /**
    * Queue skipping slides, which leaves them out when presenting, or with `skipped` false, showing
-   * them again. Reads show it as `SlideSummary.skipped`. The user may let this apply without asking.
+   * them again. Reads show it as `SlideSummary.skipped`.
    */
   setSlidesSkipped(slideIds: string[], skipped: boolean): Promise<void>;
 }

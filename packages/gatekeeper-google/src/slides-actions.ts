@@ -39,16 +39,26 @@ const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", 
 /** What an approved change is written with. */
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 
-// What a user may let apply without asking: a batch that only edits text, or one that only changes
-// how existing text, elements and slides look, in shapes and table cells alike, and skipping slides
-// or showing them again, which destroys nothing and is undone the same way. Setting a link or font
-// does not count, since Google keeps the whole string, nor does a picture background, which Google
-// downloads. Anything that creates or deletes, changes a table's rows, columns or cell fills, sets
-// alt text, or changes a layout or master, which reaches slides the user is not looking at, needs
-// approval.
+// Every change is a kind a user may let apply without asking, so building a deck need not ask once
+// per call; each kind admits no more than its label says, so a user can allow the benign ones and
+// keep reviewing the rest. Text edits, and formatting that changes how existing text, elements and
+// slides look, setting no link or font (whose whole string Google keeps), are their own kinds, as
+// is skipping slides. Any other batch, which creates or deletes elements, sets alt text, or changes
+// a layout or master that reaches slides the user is not looking at, is "content and theme". One
+// that makes Google download a picture is apart from it, since the URL itself carries data out of
+// the workspace. Adding, copying and reordering slides share a kind; deleting one is its own.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
 const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and arrangement" };
+const CHANGE_SLIDES: ActionKind = { tag: "changeSlides", label: "Slide content and theme changes" };
+const SLIDE_WEB_PICTURES: ActionKind = { tag: "slideWebPictures", label: "Slide pictures from web links" };
+const ADD_SLIDES: ActionKind = { tag: "addSlides", label: "Adding, copying and reordering slides" };
+const DELETE_SLIDES: ActionKind = { tag: "deleteSlides", label: "Deleting slides" };
 const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
+
+function fetchesPicture(change: DesignChange): boolean {
+  return change.op === "insertImage" || change.op === "replaceImage" ||
+    change.op === "setBackground" && change.background !== null && typeof change.background === "object";
+}
 
 function isFormatting(change: DesignChange): boolean {
   switch (change.op) {
@@ -68,9 +78,12 @@ function isFormatting(change: DesignChange): boolean {
 }
 
 /** The kind a batch is queued as, so approving a kind approves no more than it says. */
-export function batchKind(changes: readonly DesignChange[]): "editText" | "formatSlides" | "updateSlides" {
+export function batchKind(
+  changes: readonly DesignChange[],
+): "editText" | "formatSlides" | "updateSlides" | "pictureSlides" {
   if (changes.every(change => change.op === "editText")) return "editText";
-  return changes.every(isFormatting) ? "formatSlides" : "updateSlides";
+  if (changes.every(isFormatting)) return "formatSlides";
+  return changes.some(fetchesPicture) ? "pictureSlides" : "updateSlides";
 }
 
 // Planning against a fresh read, and resending a batch whose response was lost.
@@ -510,9 +523,10 @@ function slideIdsOf(changes: readonly DesignChange[]): string[] {
 }
 
 /** A design batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
-function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHost> {
+function designBatch(kind: ActionKind): ActionDefinition<DesignBatch, SlidesHost> {
   return {
-    ...(kind ? { kind, autoApprovable: true } : {}),
+    kind,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: batch => {
@@ -554,9 +568,12 @@ function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHos
 export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   editText: designBatch(EDIT_SLIDES_TEXT),
   formatSlides: designBatch(FORMAT_SLIDES),
-  updateSlides: designBatch(),
+  updateSlides: designBatch(CHANGE_SLIDES),
+  pictureSlides: designBatch(SLIDE_WEB_PICTURES),
 
   duplicateSlide: {
+    kind: ADD_SLIDES,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slide }) => ({
@@ -580,6 +597,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   },
 
   deleteSlide: {
+    kind: DELETE_SLIDES,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slide }) => ({
@@ -598,6 +617,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   },
 
   moveSlides: {
+    kind: ADD_SLIDES,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slides, afterSlide }) => {
@@ -628,6 +649,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   },
 
   createSlide: {
+    kind: ADD_SLIDES,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ layout, after, afterSlide }) => {
