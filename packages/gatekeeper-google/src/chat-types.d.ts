@@ -464,10 +464,12 @@ export interface ChatSpace extends RpcTarget {
   post(text: string): Promise<ChatMessageEntry>;
 
   /**
-   * Have `hook.receiveMessage()` called with each new message anyone else posts in this
-   * conversation, including thread replies; the connected account's own posts are never
-   * delivered. The hook starts disabled, and nothing is delivered until the user enables it.
-   * Every call creates a distinct hook, so subscribe once per conversation or thread to watch.
+   * Have `hook.receiveMessage()` called with each new message in this conversation, including
+   * thread replies and messages the connected user writes in Google Chat, whose sender is the user
+   * `getCurrentUser()` returns. Messages sent as the connected account through this API, by you
+   * or any Gadget, are never delivered, so a hook never receives its own replies. The hook starts
+   * disabled, and nothing is delivered until the user enables it. Every call creates a distinct
+   * hook, so subscribe once per conversation or thread to watch.
    *
    * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
    * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's

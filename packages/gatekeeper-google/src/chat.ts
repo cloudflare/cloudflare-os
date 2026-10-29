@@ -845,7 +845,11 @@ async function hasExactly(api: ChatApi, spaceName: string, ids: readonly string[
   return present.size === ids.length + 1 && ids.every(id => present.has(id));
 }
 
-/** The name a send to exactly some people gives its message, so that a retry can find it. */
+/**
+ * The name every send gives its message, which Google reports as its `clientAssignedMessageId`. A
+ * retried send to exactly some people finds an earlier attempt's message by it, and hooks know by it
+ * what the account posted through here rather than in Google Chat (see chat-hooks.ts).
+ */
 const clientMessageId = (action: ChatSendMessageAction) => `client-${action.requestId}`;
 
 /** Once its target is deleted, nothing an earlier attempt wrote remains for a retry to find. */
@@ -1583,8 +1587,9 @@ export class GoogleChatGatekeeperImpl
     const watched = threadName === undefined ? "conversation" : "thread";
     await queue.bindHook(controller, hook, {
       title: "Watch for new Google Chat messages",
-      description: `Call this hook with each new message anyone else posts in ${threadName ?? spaceName}, ` +
-        `letting it read that ${watched} and queue writes there for approval.`,
+      description: `Call this hook with each new message in ${threadName ?? spaceName}, except those ` +
+        `posted as ${userLabel(self)} through a connection, letting it read that ${watched} and queue ` +
+        "writes there for approval.",
     });
   }
 
@@ -1687,7 +1692,7 @@ export class GoogleChatGatekeeperImpl
             ...(threadName !== undefined ? { threadName } : {}),
           }, {
             requestId: action.requestId,
-            ...(recipients ? { messageId: clientMessageId(action) } : {}),
+            messageId: clientMessageId(action),
           }));
           // A replayed create echoes the request, not the message Chat stored.
           return readTarget(id);

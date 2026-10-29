@@ -222,9 +222,9 @@ until then `listReactions()` returns none.
 ## New-message hooks
 
 `space.subscribeNewMessages(hook)` and `thread.subscribeNewMessages(hook)` ask to have a gadget's
-`ChatMessageHook` called with each new message anyone else posts, in the whole conversation or in
-that thread. The hook takes effect once the user enables it in the Workshop, and `hook` must be a
-persistent stub from the gadget's `ctx.restore()`:
+`ChatMessageHook` called with each new message in the whole conversation or in that thread, the
+connected user's own included. The hook takes effect once the user enables it in the Workshop, and
+`hook` must be a persistent stub from the gadget's `ctx.restore()`:
 
 ```ts
 // In the gadget's DurableObject; RpcTarget and restore come from cloudflare:workers.
@@ -245,9 +245,12 @@ Each delivery is recorded as an observation on the hook's approval queue. `messa
 message capability, and `conversation` the `ChatSpace` or `ChatThread` the hook subscribed through,
 which can read around the message or post where a conversation has no threads and `reply()` throws.
 A write through either queues an approval action as any other write does, and both are released
-when `receiveMessage()` returns. Messages the connected account posts are never delivered, which
-keeps a hook from answering itself, but hooks of two connected accounts can still answer each other;
-approval is the only guard there.
+when `receiveMessage()` returns. What the connected user writes in Google Chat is delivered, but
+nothing the account posts through the gatekeeper: every send names its message `client-{requestId}`,
+which Google reports as `clientAssignedMessageId` and nothing written in Chat carries, and the
+space's driver drops the account's messages that carry it. That keeps a hook from answering itself,
+and the account's hooks from answering one another, but hooks of two connected accounts can still
+answer each other; approval is the only guard there.
 
 Delivery is at least once and unordered: Pub/Sub pushes are collapsed for 24 hours, but a failure
 after the hook ran redelivers the message. A firing that fails, whether the hook throws or the
