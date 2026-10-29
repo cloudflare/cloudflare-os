@@ -82,7 +82,8 @@ among the models of the other providers that are on, from
 which can include models this catalog doesn't list. The model's settings can instead list the
 models it may pick, as the Gateway names them (`anthropic/claude-sonnet-5.5`, `anthropic/*`,
 `openai/gpt-6-luna`, `@cf/*/*` for Workers AI); only models of providers that are on are
-accepted, and a listed model drops out of the pool if its provider is turned off. A name the
+accepted, and a listed model drops out of the pool if its provider is turned off. Disabling one
+model doesn't take it out of Auto's pool; list the models Auto may pick to leave it out. A name the
 Gateway doesn't know fails every request, so press Test after saving a list; a pass names the
 model that answered. Within a chat turn Auto keeps the model its first request got, so the
 prompt cache holds. It takes no reasoning level, and each chat is priced by the Gateway's log of

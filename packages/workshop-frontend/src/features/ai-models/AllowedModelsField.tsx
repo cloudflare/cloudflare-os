@@ -91,8 +91,9 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, busy, 
         <span className="font-mono">anthropic/claude-sonnet-5.5</span> is one model,{' '}
         <span className="font-mono">anthropic/*</span> every Anthropic model and{' '}
         <span className="font-mono">@cf/*/*</span> every Workers AI model. Only models of the
-        providers that are on are accepted. After saving, press Test: a name the gateway doesn’t
-        recognise makes every request fail, and Test shows that error.
+        providers that are on are accepted; disabling a model above doesn’t take it out of the
+        pool, listing does. After saving, press Test: a name the gateway doesn’t recognise makes
+        every request fail, and Test shows that error.
       </p>
       {alert.alert}
       <div className="flex gap-2">

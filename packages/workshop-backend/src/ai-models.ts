@@ -1169,18 +1169,24 @@ export type AiModelGatekeeperProps = {
 };
 
 /**
- * Throws if the deployment no longer lets a model binding run its model. A session starts on each
- * call of the binding, so a binding minted before an admin disabled its gateway model stops working
- * at its next call. While users may not add their own models, so does a binding for any other
- * model: one a user added, or one the admin added and removed.
+ * The config a model binding runs with: the one it was minted with, except that the Auto Router
+ * model's pool is the deployment's current one, as the pool is the admin's spend policy rather
+ * than the binding's to keep. Throws if the deployment no longer lets the binding run its model.
+ * A session starts on each call of the binding, so a binding minted before an admin disabled its
+ * gateway model stops working at its next call. While users may not add their own models, so does
+ * a binding for any other model: one a user added, or one the admin added and removed.
  */
-async function refuseRevokedModel(env: Cloudflare.Env, props: AiModelGatekeeperProps) {
+async function bindingConfig(
+    env: Cloudflare.Env, props: AiModelGatekeeperProps): Promise<AiModelConfig> {
   let models = await getGatewayModels(env);
-  if (models?.get(props.config.model)?.provider === props.config.provider) {
-    models.refuseDisabled(props.config.model);
-  } else {
+  let { autoRouterPool, ...config } = props.config;
+  if (models?.get(config.model)?.provider !== config.provider) {
     models?.refuseUserModel(props.displayName);
+    return config;
   }
+  models.refuseDisabled(config.model);
+  let pool = models.runConfig(config.model)?.autoRouterPool;
+  return pool ? { ...config, autoRouterPool: pool } : config;
 }
 
 export class LanguageModelGatekeeper
@@ -1215,8 +1221,7 @@ export class LanguageModelGatekeeper
       : Promise<LanguageModelBinding> {
     // A binding makes one-shot calls, which ask for no reasoning level. Without the level it was
     // minted with, its model is described as one with none set, whatever the admin has set since.
-    let { reasoning, ...config } = this.ctx.props.config;
-    await refuseRevokedModel(this.env, this.ctx.props);
+    let { reasoning, ...config } = await bindingConfig(this.env, this.ctx.props);
     let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
@@ -1287,8 +1292,8 @@ export class DecisionModelGatekeeper
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<DecisionModelBinding> {
-    let { config, initiator, metadata } = this.ctx.props;
-    await refuseRevokedModel(this.env, this.ctx.props);
+    let { initiator, metadata } = this.ctx.props;
+    let config = await bindingConfig(this.env, this.ctx.props);
     return new DecisionModelBindingImpl(getDecisionModel(this.env, config, initiator, metadata));
   }
 

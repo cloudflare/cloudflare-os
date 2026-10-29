@@ -710,6 +710,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (models && !models.addableProviders.includes(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
+    if (config.provider === "auto-router-cloudflare") {
+      throw new Error("The Auto Router model runs only through an AI Gateway.");
+    }
     for (let limit of [config.contextWindow, config.outputLimit]) {
       if (limit !== undefined && !(Number.isSafeInteger(limit) && limit > 0)) {
         throw new Error("Token limits must be positive integers.");

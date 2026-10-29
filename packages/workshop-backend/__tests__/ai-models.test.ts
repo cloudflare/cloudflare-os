@@ -1568,6 +1568,27 @@ describe("LanguageModelGatekeeper.startSession", () => {
     }
   });
 
+  // The pool is the admin's spend policy, so a binding follows the current one, not its own.
+  it("gives the Auto Router model the deployment's current pool", async () => {
+    const minted: AiModelConfig = {
+      provider: "auto-router-cloudflare", model: "cloudflare/auto", apiToken: "",
+      autoRouterPool: { providers: ["anthropic", "openai"] },
+    };
+    const narrowed: Partial<AdminConfig> =
+        { modelSettings: { "cloudflare/auto": { allowedModels: ["anthropic/*"] } } };
+    vi.stubGlobal("fetch", fetchStub);
+    try {
+      capturedRequests.length = 0;
+      const binding = await startSession(minted, narrowed,
+          { CF_AI_GATEWAY_PROVIDERS: "anthropic,auto-router-cloudflare" }).session;
+      await expect(binding.run({ prompt: "hello" })).rejects.toThrow();
+      expect(capturedRequests[0].headers.get("cf-aig-allowed-models")).toBe("anthropic/*");
+      expect(capturedRequests[0].headers.get("cf-aig-allowed-providers")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not read the admin config outside AI Gateway mode", async () => {
     const { session, getConfig } = startSession(
         { provider: "anthropic", model: MODEL_ID, apiToken: "direct-api-token" },
@@ -1622,7 +1643,7 @@ describe("LanguageModelGatekeeper.startSession", () => {
   });
 });
 
-// A decision model binding is revoked as a language model binding is (see refuseRevokedModel()).
+// A decision model binding is revoked as a language model binding is (see bindingConfig()).
 describe("DecisionModelGatekeeper.startSession", () => {
   it("refuses a decision model the admin disabled", async () => {
     const admin = { ...DEFAULT_ADMIN_CONFIG, modelModes: { "@cf/cloudflare/clef": "disabled" } };

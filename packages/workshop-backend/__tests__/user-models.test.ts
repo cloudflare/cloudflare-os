@@ -147,6 +147,11 @@ describe("UserDurableObject model editing", () => {
       expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(PROFILE);
       await user.deleteModel(PROFILE.id);
       expect(await user.listModels()).toEqual([]);
+      // The Auto Router model runs only through a gateway, so it can't be added without one.
+      const auto =
+          { provider: "auto-router-cloudflare" as const, model: "cloudflare/auto", apiToken: "" };
+      await expect(user.addModel(PROFILE, auto))
+          .rejects.toThrow("The Auto Router model runs only through an AI Gateway.");
     });
   });
 });
