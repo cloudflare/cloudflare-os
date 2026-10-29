@@ -1715,13 +1715,13 @@ export type CloudflareAccountOption = {
 };
 
 /**
- * Supported AI providers. "auto-router-cloudflare" is AI Gateway's Auto Router, which picks the
+ * Supported AI providers. "cloudflare-auto-router" is AI Gateway's Auto Router, which picks the
  * model behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway.
  */
 export type AiModelProvider =
-    "openai" | "anthropic" | "google" | "cloudflare" | "ollama" | "auto-router-cloudflare";
+    "openai" | "anthropic" | "google" | "cloudflare" | "ollama" | "cloudflare-auto-router";
 
-/** The model ID of AI Gateway's Auto Router, the one model of "auto-router-cloudflare". */
+/** The model ID of AI Gateway's Auto Router, the one model of "cloudflare-auto-router". */
 export const AUTO_ROUTER_MODEL_ID = "cloudflare/auto";
 
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
@@ -1729,7 +1729,7 @@ export type AiGatewayInfo = {
   enabled: true;
   /**
    * The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its
-   * admin turned on (see AdminApi.setGatewayProviderEnabled), less "auto-router-cloudflare",
+   * admin turned on (see AdminApi.setGatewayProviderEnabled), less "cloudflare-auto-router",
    * whose one model is the deployment's alone. A user can add a model of their own under these
    * only.
    */
@@ -2122,7 +2122,7 @@ type SuggestedModel = {
 const SUGGESTED_MODEL_CATALOG = {
   // First so that, when its provider is on, Auto leads the model pickers and is the model a new
   // user or chat gets by default.
-  "auto-router-cloudflare": {
+  "cloudflare-auto-router": {
     // The router answers with whichever model it picks, so the window is the smallest a model in
     // its pool is likely to have (Claude Haiku's 200K), and the output limit is reserved as
     // Workers AI reserves one, in case a Workers AI model is picked.

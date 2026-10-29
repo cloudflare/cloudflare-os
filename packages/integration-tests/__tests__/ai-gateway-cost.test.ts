@@ -392,7 +392,7 @@ it("an admin turns on a provider beside the environment's, and tests what one an
   // The environment lists Workers AI alone. Every other provider the gateway serves is off.
   const before = await gatewayModels();
   expect(before.providerSettings).toEqual([
-    offProvider("auto-router-cloudflare"),
+    offProvider("cloudflare-auto-router"),
     { provider: "cloudflare", enabledBy: "environment", needsApiToken: false },
     offProvider("anthropic"), offProvider("openai"), offProvider("google"),
   ]);
@@ -409,7 +409,7 @@ it("an admin turns on a provider beside the environment's, and tests what one an
       ...before,
       providers: ["cloudflare", "anthropic"],
       providerSettings: [
-        offProvider("auto-router-cloudflare"), before.providerSettings[1],
+        offProvider("cloudflare-auto-router"), before.providerSettings[1],
         { provider: "anthropic", enabledBy: "admin", needsApiToken: false },
         offProvider("openai"), offProvider("google"),
       ],

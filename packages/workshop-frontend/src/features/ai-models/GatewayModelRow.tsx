@@ -334,7 +334,7 @@ export const GatewayModelRow = ({
                 </form>
               )}
 
-              {model.provider === 'auto-router-cloudflare' && (
+              {model.provider === 'cloudflare-auto-router' && (
                 <AllowedModelsField
                   modelName={model.name}
                   allowedModels={model.settings?.allowedModels}

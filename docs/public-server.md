@@ -73,7 +73,7 @@ compaction budgets, adds models the catalog doesn't list, and tests a provider o
 one real request. A decision model (Clef) has only a mode there: the settings and the test
 apply to language models.
 
-The **AI Gateway Auto Router** provider (`auto-router-cloudflare`) adds one model, **Auto**,
+The **AI Gateway Auto Router** provider (`cloudflare-auto-router`) adds one model, **Auto**,
 which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
 pick the model behind each request by its difficulty and each candidate's cost. While the
 provider is on and the model enabled, Auto leads the model pickers and is the default for a new

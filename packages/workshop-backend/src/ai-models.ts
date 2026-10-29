@@ -385,7 +385,7 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         ...(config.reasoning !== undefined ? { thinkingLevelMap: catalog?.thinkingLevelMap } : {}),
         compat: workersAiCompat(catalog),
       };
-    case "auto-router-cloudflare":
+    case "cloudflare-auto-router":
       // Auto Router answers on the gateway's /compat route in Chat Completions format whichever
       // model it picks, so the descriptor claims only what every candidate has: text and image
       // input, and no reasoning levels.
@@ -393,7 +393,7 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         id: config.model,
         name: catalog?.name ?? config.model,
         api: "openai-completions",
-        provider: "auto-router-cloudflare",
+        provider: "cloudflare-auto-router",
         baseUrl: `${gatewayUrl}/compat`,
         reasoning: false,
         input: ["text", "image"],
@@ -840,7 +840,7 @@ const CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL = "cloudflare-gateway-binding";
 // chat as the router's session, so a turn's requests stay with one model and its prompt cache. An
 // empty pool is refused rather than sent, since it would leave the router nothing to pick.
 function autoRouterHeaders(config: AiModelConfig, sessionAffinity?: string): ProviderHeaders {
-  if (config.provider !== "auto-router-cloudflare") return {};
+  if (config.provider !== "cloudflare-auto-router") return {};
   const pool = config.autoRouterPool;
   const headers: ProviderHeaders =
       sessionAffinity !== undefined ? { "cf-aig-session-id": sessionAffinity } : {};
@@ -1078,7 +1078,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         ...directAuth(config, "Authorization"),
         sessionAffinity,
       });
-    case "auto-router-cloudflare":
+    case "cloudflare-auto-router":
       throw new Error("The Auto Router model runs only through an AI Gateway.");
     default:
       config.provider satisfies never;
@@ -1183,7 +1183,7 @@ async function bindingConfig(
   if (models?.get(config.model)?.provider !== config.provider) {
     // Never a user's own model, so the deployment stopped offering it; without its pool it would
     // run on the gateway's default one.
-    if (config.provider === "auto-router-cloudflare") {
+    if (config.provider === "cloudflare-auto-router") {
       throw new Error("The Auto Router model is no longer offered on this deployment.");
     }
     models?.refuseUserModel(props.displayName);

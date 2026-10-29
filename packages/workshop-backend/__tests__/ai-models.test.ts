@@ -261,7 +261,7 @@ describe("getModel AI Gateway routing", () => {
 
   describe("the Auto Router model", () => {
     const AUTO: AiModelConfig =
-        { provider: "auto-router-cloudflare", model: "cloudflare/auto", apiToken: "" };
+        { provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "" };
     const COMPAT =
         "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/compat";
 
@@ -276,7 +276,7 @@ describe("getModel AI Gateway routing", () => {
         api: "openai-completions", id: "cloudflare/auto", baseUrl: COMPAT, reasoning: false,
         input: ["text", "image"], contextWindow: 200000, maxTokens: 32768,
       });
-      expect(gatewayReasoningLevels("auto-router-cloudflare", "cloudflare/auto")).toEqual([]);
+      expect(gatewayReasoningLevels("cloudflare-auto-router", "cloudflare/auto")).toEqual([]);
 
       const request = await captureRequest(handle);
       expect(request.url).toBe(`${COMPAT}/chat/completions`);
@@ -1116,7 +1116,7 @@ describe("gateway model reasoning levels", () => {
     ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", null],
     ["cloudflare", "@cf/cloudflare/clef", null],
     ["cloudflare", "@cf/cloudflare/clef-flash", null],
-    ["auto-router-cloudflare", "cloudflare/auto", null],
+    ["cloudflare-auto-router", "cloudflare/auto", null],
   ];
   it.each(BUILT_IN)("says what %s model %s is asked for while no level is set",
       (provider, model, builtIn) => {
@@ -1571,7 +1571,7 @@ describe("LanguageModelGatekeeper.startSession", () => {
   // The pool is the admin's spend policy, so a binding follows the current one, not its own.
   it("gives the Auto Router model the deployment's current pool", async () => {
     const minted: AiModelConfig = {
-      provider: "auto-router-cloudflare", model: "cloudflare/auto", apiToken: "",
+      provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "",
       autoRouterPool: { providers: ["anthropic", "openai"] },
     };
     const narrowed: Partial<AdminConfig> =
@@ -1580,7 +1580,7 @@ describe("LanguageModelGatekeeper.startSession", () => {
     try {
       capturedRequests.length = 0;
       const binding = await startSession(minted, narrowed,
-          { CF_AI_GATEWAY_PROVIDERS: "anthropic,auto-router-cloudflare" }).session;
+          { CF_AI_GATEWAY_PROVIDERS: "anthropic,cloudflare-auto-router" }).session;
       await expect(binding.run({ prompt: "hello" })).rejects.toThrow();
       expect(capturedRequests[0].headers.get("cf-aig-allowed-models")).toBe("anthropic/*");
       expect(capturedRequests[0].headers.get("cf-aig-allowed-providers")).toBeNull();

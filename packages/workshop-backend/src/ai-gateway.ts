@@ -18,12 +18,12 @@ const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
  * Ollama has none, so a model added under it could never run.
  */
 const GATEWAY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>([
-  "anthropic", "openai", "google", "cloudflare", "auto-router-cloudflare",
+  "anthropic", "openai", "google", "cloudflare", "cloudflare-auto-router",
 ]);
 
 /** The providers a model may be added under: the gateway's, less Auto Router's, which has one. */
 const ADDABLE_PROVIDERS: ReadonlySet<string> =
-    new Set([...GATEWAY_PROVIDERS].filter(provider => provider !== "auto-router-cloudflare"));
+    new Set([...GATEWAY_PROVIDERS].filter(provider => provider !== "cloudflare-auto-router"));
 
 /** Throws unless AI Gateway serves `provider`. */
 export function assertGatewayProvider(provider: string): void {
@@ -247,7 +247,7 @@ export class GatewayModels {
         .some(provider => AUTO_ROUTER_PROVIDER_NAMES[provider as AiModelProvider] !== undefined);
     for (let [provider, catalog] of Object.entries(SUGGESTED_MODELS)) {
       if (!this.providers.has(provider)) continue;
-      if (provider === "auto-router-cloudflare" && !routable) continue;
+      if (provider === "cloudflare-auto-router" && !routable) continue;
       for (let [id, model] of Object.entries(catalog)) {
         add({ provider: provider as AiModelProvider, id, name: model.name,
               ...(model.description && { description: model.description }), ...tokenLimits(model) },
@@ -324,7 +324,7 @@ export class GatewayModels {
   // whole. It never exceeds the enabled providers, so a listed model drops out once its provider
   // is turned off. Undefined for every other model.
   #autoRouterPool(model: AdminModel): AutoRouterPool | undefined {
-    if (model.provider !== "auto-router-cloudflare") return undefined;
+    if (model.provider !== "cloudflare-auto-router") return undefined;
     let listed = model.settings?.allowedModels;
     if (listed === undefined) return { providers: this.addableProviders };
     return { models: listed.filter(name => this.enablesProviderOf(name)) };

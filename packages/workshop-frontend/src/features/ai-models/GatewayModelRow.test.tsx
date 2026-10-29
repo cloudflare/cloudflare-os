@@ -460,7 +460,7 @@ describe('GatewayModelRow', () => {
   describe('the allowed models', () => {
     // The Auto Router model: no reasoning levels, and the gateway's name for it.
     const AUTO: AdminModelView = {
-      provider: 'auto-router-cloudflare', id: 'cloudflare/auto', name: 'Auto',
+      provider: 'cloudflare-auto-router', id: 'cloudflare/auto', name: 'Auto',
       contextWindow: 200000, outputLimit: 32768, mode: 'enabled', defaultMode: 'enabled',
       added: false, reasoningLevels: [], builtInReasoning: null,
       builtInCompactionInputBudget: 167232, maxCompactionInputBudget: 167232, runtimeKnown: false,

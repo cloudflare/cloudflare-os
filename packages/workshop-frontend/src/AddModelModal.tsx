@@ -41,7 +41,7 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   cloudflare: 'Cloudflare API token',
   ollama: '(optional)',
   // Never shown: Auto Router's one model is the deployment's (see AiGatewayInfo.enabledProviders).
-  'auto-router-cloudflare': '',
+  'cloudflare-auto-router': '',
 }
 
 // Providers whose client can send no API key at all, so a proxy that extra headers authenticate
@@ -87,7 +87,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
 
   for (const provider of providerOrder) {
     // Auto Router's one model is the deployment's; it runs only through a gateway.
-    if (provider === 'auto-router-cloudflare') continue
+    if (provider === 'cloudflare-auto-router') continue
     if (enabledProviders && !enabledProviders.has(provider)) continue
 
     // In gateway mode, suggested models are already built-in, so don't list them.

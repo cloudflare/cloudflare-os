@@ -688,7 +688,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       }
       let allowed = settings.allowedModels;
       if (allowed !== undefined) {
-        if (model.provider !== "auto-router-cloudflare") {
+        if (model.provider !== "cloudflare-auto-router") {
           throw new Error("Only the Auto Router model takes a list of allowed models.");
         }
         if (allowed.length === 0) {

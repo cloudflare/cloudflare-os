@@ -360,12 +360,12 @@ describe("GatewayModels", () => {
 
     it("gives the Auto Router model the enabled providers to pick from, or the models listed",
         () => {
-      const models = gatewayModels({}, "anthropic,auto-router-cloudflare,ollama");
+      const models = gatewayModels({}, "anthropic,cloudflare-auto-router,ollama");
       expect(ids(models.all)).toContain("cloudflare/auto");
       // Its provider takes no added model, and ollama has no gateway route.
       expect(models.addableProviders).toEqual(["anthropic"]);
       expect(models.resolve("cloudflare/auto")?.config).toStrictEqual({
-        provider: "auto-router-cloudflare", model: "cloudflare/auto", apiToken: "",
+        provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "",
         autoRouterPool: { providers: ["anthropic"] },
       });
       expect(models.resolve("claude-opus-5-5")?.config).toStrictEqual(OPUS);
@@ -374,17 +374,17 @@ describe("GatewayModels", () => {
       // was turned off since the list named it, and Workers AI models carry their own prefix.
       const settings = { allowedModels: ["anthropic/*", "openai/gpt-6-luna", "@cf/*/*"] };
       const listed = gatewayModels({ modelSettings: { "cloudflare/auto": settings } },
-          "anthropic,cloudflare,auto-router-cloudflare");
+          "anthropic,cloudflare,cloudflare-auto-router");
       expect(listed.get("cloudflare/auto")?.settings).toStrictEqual(settings);
       expect(listed.resolve("cloudflare/auto")?.config.autoRouterPool)
           .toStrictEqual({ models: ["anthropic/*", "@cf/*/*"] });
       // With every listed provider off the pool is empty, which getModel() refuses to send.
       const openaiOnly = { allowedModels: ["openai/gpt-6-luna"] };
       expect(gatewayModels({ modelSettings: { "cloudflare/auto": openaiOnly } },
-          "anthropic,auto-router-cloudflare").resolve("cloudflare/auto")?.config.autoRouterPool)
+          "anthropic,cloudflare-auto-router").resolve("cloudflare/auto")?.config.autoRouterPool)
           .toStrictEqual({ models: [] });
       // The router routes to no Google model, so with Google alone on Auto is not offered.
-      expect(gatewayModels({}, "google,auto-router-cloudflare").get("cloudflare/auto"))
+      expect(gatewayModels({}, "google,cloudflare-auto-router").get("cloudflare/auto"))
           .toBeUndefined();
     });
 
@@ -611,7 +611,7 @@ describe("GatewayModels", () => {
   });
 
   describe("providers", () => {
-    const CATALOG_ORDER = ["auto-router-cloudflare", "cloudflare", "anthropic", "openai", "google"];
+    const CATALOG_ORDER = ["cloudflare-auto-router", "cloudflare", "anthropic", "openai", "google"];
     const GEMINI = "gemini-3.6-flash";
     const NO_TOKEN = 'Provider "google" cannot use the Workers AI binding transport, and no ' +
         "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.";
@@ -656,7 +656,7 @@ describe("GatewayModels", () => {
     it("says who enabled each provider the gateway serves, in catalog order", () => {
       expect(gatewayModels({ addedProviders: ["google"] }, "anthropic,ollama").providerSettings)
           .toStrictEqual([
-            { provider: "auto-router-cloudflare", needsApiToken: false },
+            { provider: "cloudflare-auto-router", needsApiToken: false },
             { provider: "cloudflare", needsApiToken: false },
             { provider: "anthropic", enabledBy: "environment", needsApiToken: false },
             { provider: "openai", needsApiToken: false },
@@ -737,7 +737,7 @@ describe("GatewayModels", () => {
         return String(err).includes("is not supported through AI Gateway");
       }
     })();
-    const addable = !unroutable && provider !== "auto-router-cloudflare";
+    const addable = !unroutable && provider !== "cloudflare-auto-router";
 
     const models = gatewayModels({
       addedModels: [{ provider, id: "test-model", name: "Test", contextWindow: 1000 }],

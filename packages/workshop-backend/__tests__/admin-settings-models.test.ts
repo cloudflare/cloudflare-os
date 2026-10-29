@@ -506,7 +506,7 @@ describe("AdminSettings gateway model settings", () => {
       async () => {
     const AUTO = "cloudflare/auto";
     const { inDo, settings } = adminSettings(
-        { ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,auto-router-cloudflare" });
+        { ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare-auto-router" });
     await inDo(admin => admin.setGatewayModelSettings(
         AUTO, { allowedModels: [" anthropic/* ", "openai/gpt-6-luna", "anthropic/*"] }));
     const stored = { [AUTO]: { allowedModels: ["anthropic/*", "openai/gpt-6-luna"] } };
@@ -828,7 +828,7 @@ describe("AdminSettings gateway providers", () => {
   const OPENAI_OFF = { provider: "openai", needsApiToken: false };
   const OPENAI_ON = { ...OPENAI_OFF, enabledBy: "admin" };
   const GOOGLE_OFF = { provider: "google", needsApiToken: false };
-  const AUTO_OFF = { provider: "auto-router-cloudflare", needsApiToken: false };
+  const AUTO_OFF = { provider: "cloudflare-auto-router", needsApiToken: false };
 
   it("turns a provider on and off, storing and mirroring each change", async () => {
     const { inDo, put, mirror } = adminSettings();
@@ -1205,9 +1205,9 @@ describe("AdminSettings.testGatewayProvider", () => {
       const response = completion("OK");
       response.headers.set("cf-aig-routed-model", "anthropic/claude-sonnet-5.5");
       return response;
-    }, { CF_AI_GATEWAY_PROVIDERS: "anthropic,auto-router-cloudflare" });
+    }, { CF_AI_GATEWAY_PROVIDERS: "anthropic,cloudflare-auto-router" });
     // A provider test carries no pool, so the gateway's own default pool answers.
-    expect((await test("auto-router-cloudflare")).result).toStrictEqual(
+    expect((await test("cloudflare-auto-router")).result).toStrictEqual(
         { model: "cloudflare/auto", ok: true, routedModel: "anthropic/claude-sonnet-5.5" });
     expect(requests[0]!.url).toBe("https://workers-binding.ai/ai-gateway/gateways/" +
         "platform-gateway/compat/chat/completions");
