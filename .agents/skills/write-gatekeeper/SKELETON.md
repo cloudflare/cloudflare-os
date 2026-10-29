@@ -412,8 +412,8 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
   //     through an authorizeSetObservation helper that sets `excludeObservers` (see SKILL.md).
   //   - Reporting subresources (per read path): pass `subresources` to authorizeObservation() on
   //     each converted read and implement verifyObserverAccess(observers, ids), checking each
-  //     observer's verifier the same way. Keep addObserver enforcing pre-conversion history and
-  //     every path that does not report them yet.
+  //     observer's verifier the same way. Keep addObserver enforcing binding-wide requirements,
+  //     pre-conversion history, and every path that does not report them yet.
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<MyVerifierApi>;
     if (!(await verifier.hasResourceAccess(/* this.ctx.props.resourceId */ "TODO"))) {

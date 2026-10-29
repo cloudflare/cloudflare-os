@@ -1,5 +1,6 @@
-// Authorization and observer verification run only at open(), so widening what a collaborator must
-// be verified against would otherwise leave their live session holding access nobody checked. Each
+// Authorization and per-connection observer verification run only at open() (only reads reporting
+// subresources are also checked as they happen), so widening what a collaborator must be verified
+// against would otherwise leave their live session holding access nobody checked. Each
 // widening restarts the workspace (scheduleAccessRestart), forcing every client to re-open and
 // re-verify against the new scope -- and a workspace where no collaborator is actually connected is
 // never disturbed, since severing sessions is all a restart does and the owner is never an
@@ -214,6 +215,26 @@ describe("restarting sessions when verification scope widens", () => {
     // one, it is blocked until the reset lands (loopbacks funnel through openSession, which
     // checks this).
     expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+  }));
+
+  it("refuses observations through the blocked connection's existing sessions until the reset",
+      () => withImpl(async impl => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    impl.bindWorkpiece(100, "DB", 1);
+    let before = impl.storage.nextActionId.get();
+
+    // A session opened before the binding outlives it until the reset lands; nothing it reads,
+    // whether or not the read reports subresources, may commit meanwhile.
+    for (let description of [
+      { title: "Read", description: "A read" },
+      { title: "Read", description: "A read", subresources: [] },
+    ]) {
+      await expect(impl.authorizeObservation(1, description, { from: "user" }))
+          .rejects.toThrow(/restarting/);
+    }
+    expect(impl.storage.nextActionId.get()).toBe(before);
   }));
 
   it("binding with nobody to sever leaves the connection immediately usable",
@@ -439,7 +460,6 @@ describe("restarting sessions when verification scope widens", () => {
     impl.storage.observers.put(
         { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
     impl.getGatekeeperFacet = () => ({
-      describe: async () => ({}),
       addObserver: async () => { throw new Error("access revoked upstream"); },
       removeObserver: async () => {},
     });

@@ -1083,7 +1083,8 @@ export interface Gatekeeper<Session> extends DurableObject {
    * `ObservationDescription.subresources`, and checks the subresources they recorded itself,
    * through `verifyObserverAccess()`: a collaborator must pass both. So a gatekeeper need not
    * track here what its reads report as subresources, but must keep enforcing everything else:
-   * the reads that omit them, and whatever it recorded before it began reporting them.
+   * any binding-wide requirement its reads rely on (such as tenant membership), the reads that
+   * omit subresources, and whatever it recorded before it began reporting them.
    */
   addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void>;
 
@@ -1547,8 +1548,10 @@ export type ObservationDescription = {
    * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
    * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)
    * with a JavaScript `length` of 1–512 (UTF-16 code units), and a single observation may report
-   * at most 10,000 IDs before deduplication. `[]` means nothing restricts it. Include any coarse
-   * binding-wide requirement the read relies on.
+   * at most 10,000 IDs totalling at most 500,000 code units, before deduplication; report a
+   * coarser ID (a containing folder or list, say) for a read that reveals more. `[]` means
+   * nothing restricts it. A binding-wide requirement every read relies on (such as tenant
+   * membership) belongs in `Gatekeeper.addObserver()`, which runs at every admission.
    *
    * The Workshop records these IDs on the chat or gadget whose trusted binding authorizer
    * approved the read (a hook firing's on the gadget the hook wakes, or the workspace for a user

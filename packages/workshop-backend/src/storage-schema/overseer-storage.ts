@@ -474,7 +474,7 @@ export type ActionRecord = {
    * `subresources` is kept only on an observation the Workshop verified them for: it writes the
    * validated list, and strips the field from a pending creation's simulated read. Kept, it makes
    * the record an observer requirement, attributed by `caller` (see observerContextOf and
-   * ObserverLedger.requiredSubresources). Nothing else stores requirements, which is why the
+   * ObserverLedger.observerScope). Nothing else stores requirements, which is why the
    * action log is append-only: deleting such a record would silently drop checks while its
    * connection still exists.
    */
@@ -1470,7 +1470,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           // Sparse index over the observer requirements: one key per subresource of each
           // observation through a real connection that kept `subresources` (see ActionRecord),
           // led by the connection and the context its caller attributes it to. Admission lists
-          // only the distinct keys (see ObserverLedger.requiredSubresources), never the records
+          // only the distinct keys (see ObserverLedger.observerScope), never the records
           // under them, so its cost follows distinct requirements, not repeated reads.
           byObserverRequirement(record: ActionRecord): string[] {
             let subresources = record.type === "observation" && record.gatekeeperId >= 0

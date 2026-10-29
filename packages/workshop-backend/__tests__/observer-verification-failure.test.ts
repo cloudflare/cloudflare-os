@@ -44,38 +44,14 @@ function seedGatekeepers(impl: ObserverImpl, ids: number[] = [1, 2]): void {
   }
 }
 
-// A read of `subresource` reported by a user outside any chat, which records a requirement on the
-// workspace context.
-function seedWorkspaceRequirement(impl: ObserverImpl, gatekeeperId: number, subresource: string): void {
-  impl.observerLedger.recordObservation({
-    gatekeeperId, caller: { from: "user" }, createdAt: new Date(), state: "approved",
-    type: "observation",
-    description: { title: "Read", description: "A read reporting subresources.",
-                   subresources: [subresource] },
-  });
-}
-
-// A vendor's verifier for one account: answers which of `ids` it cannot read, through a
-// vendor-specific method only its gatekeeper calls.
-type VendorVerifier = { deniedSubresources(ids: string[]): Promise<string[]> };
-
-// Facets for every seeded connection: each registers observers through `hooks`, and verifies
-// recorded requirements by admitting each observer whose verifier denies none of the IDs.
+// Facets for every seeded connection, each registering observers through `hooks`.
 function setObserverFacets(impl: ObserverImpl, hooks: {
-  addObserver?(id: number, observerId: string): Promise<void>;
+  addObserver?(id: number): Promise<void>;
   removeObserver?(id: number): Promise<void>;
 } = {}): void {
   const getFacet = async (id: number) => ({
-    describe: async () => ({}),
-    addObserver: async (observerId: string) => { await hooks.addObserver?.(id, observerId); },
+    addObserver: async () => { await hooks.addObserver?.(id); },
     removeObserver: async () => { await hooks.removeObserver?.(id); },
-    verifyObserverAccess: async (observers: {id: string, verifier: VendorVerifier}[],
-                                 ids: string[]) => {
-      let denied = await Promise.all(
-          observers.map(observer => observer.verifier.deniedSubresources(ids)));
-      return { allowedObserverIds: observers.filter((_, i) => denied[i].length === 0)
-          .map(observer => observer.id) };
-    },
   });
   // These direct-DO tests exercise only the observer methods admission calls, not the full RPC
   // facet.
@@ -267,39 +243,6 @@ describe("a binding that fails verification", () => {
     });
   });
 
-  it("removes a first-ever observer's registration when a recorded requirement denies her",
-      async () => {
-    let stub = env.TEST_OVERSEER.getByName("observer-verify-first-ever-requirement");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = instance["impl"];
-      seedOwner(impl);
-      seedGatekeepers(impl);
-      seedWorkspaceRequirement(impl, 2, "secret/read");
-      let registered: number[] = [];
-      let removed: number[] = [];
-      setObserverFacets(impl, {
-        addObserver: async id => { registered.push(id); },
-        removeObserver: async id => { removed.push(id); },
-      });
-      const clientUser = {
-        getVerifier: async (): Promise<VendorVerifier> => ({
-          deniedSubresources: async (ids: string[]) => ids,
-        }),
-        describeConnectedAccount: async () => null,
-      } as unknown as ObserverClientUser;
-
-      await expect(impl.ensureObserver("alice", clientUser, "build", configureAll))
-          .rejects.toThrow(/could not confirm/);
-
-      // addObserver() accepted her on both connections (on each pass, the re-prompt included),
-      // but connection 2's recorded read is one she cannot see, so every registration this call
-      // made is removed and nothing persists.
-      expect([...new Set(registered)].toSorted()).toEqual([1, 2]);
-      expect(removed.toSorted()).toEqual([1, 2]);
-      expect(impl.storage.observers.get("alice")).toBeUndefined();
-    });
-  });
-
   it("rolls back registrations from earlier repaired attempts after a later failure", async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-repaired-rollback");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
@@ -326,59 +269,6 @@ describe("a binding that fails verification", () => {
       expect(attempts.get(2)).toBe(2);
       expect(removed.toSorted()).toEqual([1, 2]);
       expect(impl.storage.observers.get("alice")).toBeUndefined();
-    });
-  });
-
-  it("admits against live requirements when an observed connection is removed during its prompt", async () => {
-    let stub = env.TEST_OVERSEER.getByName("observer-verify-removed-during-prompt");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = instance["impl"];
-      seedOwner(impl);
-      seedGatekeepers(impl);
-      seedWorkspaceRequirement(impl, 2, "live/read");
-      let checkedAccounts: number[] = [];
-      let checks: string[][] = [];
-      const clientUser = {
-        getVerifier: async (accountId: number): Promise<VendorVerifier> => {
-          checkedAccounts.push(accountId);
-          if (accountId === 10) throw new Error("Removed connection must not be checked");
-          return {
-            deniedSubresources: async (ids: string[]) => {
-              checks.push(ids);
-              return ids.filter(id => id !== "live/read");
-            },
-          };
-        },
-        describeConnectedAccount: async () => null,
-      } as unknown as ObserverClientUser;
-      let removed: number[] = [];
-      setObserverFacets(impl, { removeObserver: async id => { removed.push(id); } });
-      let release!: () => void;
-      let reached!: () => void;
-      let parked = new Promise<void>(resolve => { release = resolve; });
-      let prompted = new Promise<void>(resolve => { reached = resolve; });
-      // This local callback keeps the real admission parked across the connection removal.
-      const config = {
-        configure: async (needs: {gatekeeperId: number}[]) => {
-          reached();
-          await parked;
-          return configureAll.configure(needs);
-        },
-      } as unknown as ObserverConfigureCallback;
-
-      let admission = impl.ensureObserver("alice", clientUser, "build", config);
-      await prompted;
-      impl.removeGatekeeper(1);
-      release();
-
-      await admission;
-      expect(impl.storage.observers.get("alice")?.accountChoices[2]).toBe(20);
-      expect(checkedAccounts).toContain(20);
-      expect(checkedAccounts).not.toContain(10);
-      expect(checks.length).toBeGreaterThan(0);
-      expect(checks.every(ids => ids.length === 1 && ids[0] === "live/read")).toBe(true);
-      expect(impl.listObserverRequirements("build").map(need => need.gatekeeperId)).toEqual([2]);
-      expect(removed).toEqual([]);
     });
   });
 });

@@ -1393,11 +1393,6 @@ class OverseerImpl implements AgentHooks {
     return this.defaultGadgetId === id ? "gadget" : `gadget${id}`;
   }
 
-  // Facet name for the given gatekeeper.
-  gatekeeperFacetName(id: WorkpieceId): string {
-    return `gatekeeper${id}`;
-  }
-
   // Resolve an agent tool's optional workpiece reference. Absent means the workspace's default
   // gadget; the error when there is none tells the agent how to proceed. When `mustExist` is
   // set, the workpiece must currently exist in the registry (used by live file tools; history
@@ -4900,7 +4895,7 @@ class OverseerImpl implements AgentHooks {
   // The bare facet stub behind getGatekeeperFacet(): a request made on it leaves the facet unable
   // to call its own ctx.restore().
   #getGatekeeperFacetRaw(id: number, cls?: GatekeeperClass): Fetcher<Gatekeeper<any>> {
-    return this.ctx.facets.get(this.gatekeeperFacetName(id), async () => {
+    return this.ctx.facets.get(`gatekeeper${id}`, async () => {
       let resolved = cls ?? this.storage.gatekeepers.get(id)?.class;
       if (!resolved) {
         throw new Error("no such gatekeeper?");
@@ -5015,7 +5010,7 @@ class OverseerImpl implements AgentHooks {
     }
     if (gatekeeperRecord) {
       // Restart the facet on the new class before anything else reaches it.
-      this.ctx.facets.abort(this.gatekeeperFacetName(id),
+      this.ctx.facets.abort(`gatekeeper${id}`,
           new Error("Connection restarted because its resource was created."));
       // Minting skipped addGatekeeper's restart: collaborators had no real resource to be
       // verified against until now (see createExternalResource).
@@ -5184,7 +5179,7 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    this.ctx.facets.delete(this.gatekeeperFacetName(id));
+    this.ctx.facets.delete(`gatekeeper${id}`);
     this.storage.gatekeepers.delete(id);
     this.#rebroadcastChatMeta(affectedChats);
   }
@@ -5354,7 +5349,9 @@ class OverseerImpl implements AgentHooks {
       let baseline = sharing && !this.storage.ownerInvitesOnly.get()
           ? sharing.computeEffectiveRoles() : undefined;
 
-      let actionIds = this.storage.transaction(() => {
+      // One transaction: a failed audit write must not leave a policy flag latched without the
+      // revocation below, nor an action ID spent.
+      let actionId = this.storage.transaction(() => {
         if (description.containsRestrictedData) {
           this.storage.containsRestrictedData.put(true);
         }
@@ -5362,11 +5359,16 @@ class OverseerImpl implements AgentHooks {
           this.storage.ownerInvitesOnly.put(true);
         }
 
+        let actionId = this.storage.nextActionId.get();
+        this.storage.nextActionId.put(actionId + 1);
+
+        let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+
         // Only an observation whose subresources were verified keeps them, which makes it an
         // observer requirement (see ActionRecord); a pending creation's simulated read must not.
         let {subresources: _, ...untracked} = description;
-        let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
-        return this.observerLedger.recordObservation({
+        this.storage.actions.put({
+          id: actionId,
           gatekeeperId,
           caller,
           resourceTitle: gatekeeper?.resourceTitle,
@@ -5376,8 +5378,9 @@ class OverseerImpl implements AgentHooks {
           type: "observation",
           description: subresources ? {...untracked, subresources} : untracked,
         });
+        return actionId;
       });
-      for (let actionId of actionIds) this.#associateAction(caller, actionId);
+      this.#associateAction(caller, actionId);
 
       if (sharing && baseline) {
         let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
@@ -10114,8 +10117,7 @@ class OverseerImpl implements AgentHooks {
         //    re-run the pass rather than admit against them. This check and the publication below
         //    share one synchronous block, so nothing recorded after it can be missed: an
         //    observation checks every published observer.
-        let current =
-            this.observerLedger.observerScope(role, this.#inScopeGatekeepers(role), scope);
+        let current = this.observerLedger.observerScope(role, this.#inScopeGatekeepers(role));
         if (!observerScopeCovers(scope, current)) {
           if (++scopePasses > MAX_VERIFICATION_PASSES) {
             throw new Error(

@@ -345,8 +345,9 @@ Notes:
 
 #### Restarting when verification scope widens
 
-Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
-scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
+Per-connection verification runs only at `open()` (only reads that report `subresources` are also
+checked as they happen, see §10), so a live session is only ever as verified as the scope that
+existed when it opened. When that scope **widens**, the overseer restarts the workspace
 rather than trying to re-verify sessions in place: `#restartIfSessionsAffected(reason,
 affectedRole?)` delegates to `scheduleAccessRestart(reason)` — the same DO abort used to revoke a
 collaborator (see `docs/sharing.md`) — so every client's browser reconnects and re-runs
@@ -911,9 +912,11 @@ contract (ID rules and limits, `verifyObserverAccess()` answers, what `addObserv
 enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, and
 `plans/kernel-observer-tracking.md` records why it is shaped this way.
 
-- **Validation.** At most 10,000 IDs per observation, each a string of 1–512 characters of
-  well-formed Unicode; duplicates are dropped.
-- **The audit log is the requirement store.** An observation's audit records keep the
+- **Validation.** At most 10,000 IDs per observation, totalling at most 500,000 UTF-16 code
+  units, each a string of 1–512 characters of well-formed Unicode; duplicates are dropped. The
+  total keeps a read's audit record well inside Durable Object storage's 2 MB value limit, so
+  every read is exactly one record.
+- **The audit log is the requirement store.** An observation's audit record keeps the
   `subresources` it reported, so keeping them is what marks a requirement. The record's `caller`
   attributes it (`observerContextOf`): the agent's chat, the calling gadget, the chat a slash
   command runs in, the gadget a firing hook wakes, or the workspace context for a hook naming no
@@ -924,14 +927,15 @@ enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, 
   gadgets). Admission lists only the distinct keys a role reaches through each connection, never
   the records under them, so repeated reads of the same data add no admission work. Nothing else
   stores requirements, so the action log is append-only: deleting an entry would drop its checks.
-  Client action-log entries omit `subresources`.
+  Client action-log entries omit `subresources`. The record, its action ID and the read's
+  workspace policy flags commit in one transaction, so a failed write latches nothing.
 - **Admission is additive.** For every in-scope connection the overseer mints the chosen
   account's verifier once and calls `addObserver()`, as above. Then, only if requirements were
   recorded through that connection that the role reaches, it asks `verifyObserverAccess()` about
   them. A collaborator must pass both; a connection with no recorded requirements is never asked
   `verifyObserverAccess()` at admission. `addObserver()` therefore keeps enforcing whatever the
-  gatekeeper tracks itself: reads that omit `subresources`, and everything it recorded before it
-  began reporting them.
+  gatekeeper tracks itself: any binding-wide requirement its reads rely on, reads that omit
+  `subresources`, and everything it recorded before it began reporting them.
 - **Checks.** Connections enter each role's verification scope as above: "build" at creation,
   "use" while a gadget binds it or an enabled hook feeds it. Within that scope, admission checks
   every requirement the role reaches: "build" reaches every context, "use" the workspace and
@@ -944,19 +948,11 @@ enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, 
   batches of 10,000 IDs for admission, stopping at the first batch that denies. A denial, missing
   method, failed call, or malformed answer fails closed for every observer in the call, with no
   permission cached between operations.
-- **Bounded persistence.** A read's IDs are split across audit records with a conservative 4 MiB
-  ID-array budget (two bytes per UTF-16 code unit plus per-ID overhead), leaving room for
-  metadata below SQLite's row limit. Each record preserves the original caller and metadata;
-  admission unions every chunk. A read verifies all IDs before committing all chunks and
-  workspace policy flags in one transaction. A failed write rolls everything back, including
-  action IDs; chat notifications happen only after the transaction commits.
 - **Races.** After verifying, admission recomputes what it must verify and runs the pass again
   (at most three times) if a connection in its scope appeared or disappeared, or a requirement
-  it did not check was recorded through one; reads through
-  connections outside its scope don't count. It rereads requirements only if its connections
-  changed or an action was recorded meanwhile (only a new action record can add a requirement),
-  so an admission nothing disturbed reads them once. An observation recomputes who it reaches
-  after its checks and checks whoever it gained (at most three times). Both decisions are
+  it did not check was recorded through one; reads through connections outside its scope don't
+  count. An observation recomputes who it reaches after its checks and checks whoever it gained
+  (at most three times). Both decisions are
   confirmed in the same synchronous block that publishes them (the observer record; the audit
   record), so neither can miss the other.
 - **Pending creations.** While a `createExternalResource` creation is pending, its simulated
@@ -988,8 +984,7 @@ enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, 
   only while something else still binds or hooks the connection.
 
 The integration fixture's "reports subresources" mode exercises this end to end in
-`packages/integration-tests/__tests__/observer-tracking.test.ts`; its legacy `addObserver()`
-keeps enforcing what it recorded before.
+`packages/integration-tests/__tests__/observer-tracking.test.ts`.
 
 ---
 

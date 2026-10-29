@@ -26,9 +26,9 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import type {
   AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
-  Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier,
-  HookController, HookInitiator, HookTargetMetadata, ResourceDescription,
-  ResourceConfiguratorFrame, SupportedResource, VendorDescription,
+  Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
+  HookInitiator, HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame,
+  SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
@@ -130,9 +130,7 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Makes the binding at `resourceUrl` report its reads' subresources. Read on every observation,
-   * so this converts an existing legacy binding in place; its legacy history stays enforced by
-   * addObserver().
+   * Makes the binding at `resourceUrl` report its reads' subresources. Read on every observation.
    */
   enableSubresourceReporting(resourceUrl: string): void {
     this.ctx.storage.kv.put(`report-subresources:${resourceUrl}`, true);
@@ -140,15 +138,6 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
 
   reportsSubresources(resourceUrl: string): boolean {
     return this.ctx.storage.kv.get<boolean>(`report-subresources:${resourceUrl}`) ?? false;
-  }
-
-  /**
-   * The subresources legacy hook deliveries about `resourceUrl` depended on. Deliveries run here,
-   * outside the binding's facet, so this object keeps them, keyed by resource URL like the rest of
-   * this fixture's per-binding state: every binding of the URL enforces them, which only restricts.
-   */
-  getLegacyHookHistory(resourceUrl: string): string[] {
-    return this.ctx.storage.kv.get<string[]>(`legacy-hook-history:${resourceUrl}`) ?? [];
   }
 
   recordObserverEvent(event: ObserverEvent): void {
@@ -303,9 +292,8 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   /**
    * Delivers `value` as an event about the binding at `resourceUrl`, as a provider's event names
    * its resource: whether it reports `subresources` comes from that binding's current mode, never
-   * from the hook's registration, so hooks registered while the binding was legacy keep firing
-   * after it converts. Without `resourceUrl`, the delivery is a legacy observation that depends
-   * on nothing.
+   * from the hook's registration. Without `resourceUrl`, the delivery is a legacy observation that
+   * depends on nothing.
    */
   async fireHook(key: string, value: number, resourceUrl?: string, subresources?: string[])
       : Promise<{ fired: true } | { error: string }> {
@@ -314,21 +302,14 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     try {
       const { callback, approvalQueue } = await initiator.startHook();
       try {
-        const qualified = (subresources ?? []).map(id => JSON.stringify([resourceUrl, id]));
         const description = {
           title: `Hook ${key} requested ${value}`,
           description: "The integration test fired this hook.",
         };
         if (resourceUrl !== undefined && this.reportsSubresources(resourceUrl)) {
+          const qualified = (subresources ?? []).map(id => JSON.stringify([resourceUrl, id]));
           await approvalQueue.authorizeObservation({ ...description, subresources: qualified });
         } else {
-          // Recorded before authorizing, so an addObserver() that runs while authorization is
-          // pending already enforces it; a refused delivery only over-restricts.
-          if (resourceUrl !== undefined && qualified.length > 0) {
-            const history = this.getLegacyHookHistory(resourceUrl);
-            this.ctx.storage.kv.put(
-                `legacy-hook-history:${resourceUrl}`, [...new Set([...history, ...qualified])]);
-          }
           await approvalQueue.authorizeObservation(description);
         }
         await callback.onValueRequested(value);
@@ -654,9 +635,9 @@ export interface TestSession {
   /**
    * `restricted` marks the observation `containsRestrictedData`; `ownerInvitesOnly` marks it
    * `ownerInvitesOnly`. `excludeObservers` lists observer ids (from `/control/observer-events`)
-   * that must not see it. `subresources` are local IDs the read depends on, qualified with the
-   * resource URL: a binding that reports subresources reports them on the observation (`[]` if
-   * omitted); a legacy binding keeps them in its history, which its addObserver() enforces.
+   * that must not see it. `subresources` are local IDs the read depends on: a binding that reports
+   * subresources reports them on the observation, qualified with the resource URL (`[]` if
+   * omitted); a legacy binding ignores them.
    */
   readValue(restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[],
             subresources?: string[]): Promise<number>;
@@ -691,8 +672,6 @@ class TestSessionTarget extends RpcTarget implements TestSession {
       restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[],
       subresources?: string[]): Promise<number> {
     const reporting = await this.state.reportsSubresources(this.resourceUrl);
-    // JSON tuples preserve both resource scope and arbitrary local IDs without delimiter collisions.
-    const qualified = (subresources ?? []).map(id => JSON.stringify([this.resourceUrl, id]));
     const description = {
       title: "Read the test value",
       description: "Read the deterministic value exposed by the integration-test gatekeeper.",
@@ -701,14 +680,11 @@ class TestSessionTarget extends RpcTarget implements TestSession {
       ...(excludeObservers ? { excludeObservers } : {}),
     };
     if (reporting) {
+      // JSON tuples preserve both resource scope and arbitrary local IDs without delimiter
+      // collisions.
+      const qualified = (subresources ?? []).map(id => JSON.stringify([this.resourceUrl, id]));
       await this.approvalQueue.authorizeObservation({ ...description, subresources: qualified });
     } else {
-      // Recorded before authorizing, so an addObserver() that runs while authorization is pending
-      // already enforces it; a refused read only over-restricts.
-      if (qualified.length > 0) {
-        const history = this.ctx.storage.kv.get<string[]>(HISTORY_KEY) ?? [];
-        this.ctx.storage.kv.put(HISTORY_KEY, [...new Set([...history, ...qualified])]);
-      }
       await this.approvalQueue.authorizeObservation(description);
     }
     return 42;
@@ -757,13 +733,6 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 }
 
 const SET_VALUE_ACTION_KIND: ActionKind = { tag: "set-value", label: "Set value" };
-
-/**
- * Where a legacy binding keeps the subresources its reads depended on, in its own storage, for
- * addObserver() to enforce. Its hooks' deliveries keep theirs in TestControl
- * (getLegacyHookHistory()). A binding that reports subresources adds nothing here.
- */
-const HISTORY_KEY = "observer-history";
 
 /** Polls rather than parks a promise: the release arrives on another request to TestControl. */
 async function waitForApplyRelease(state: DurableObjectStub<TestControl>, label: string) {
@@ -849,29 +818,19 @@ export class TestGatekeeper
    *
    * Asks the verifier who it speaks for, then consults the control state for that account. Throwing
    * is how a gatekeeper reports "this user may not observe what the gadget has read", and it's the
-   * behaviour the overseer's failure handling is built around. A non-ambient binding then enforces
-   * the legacy history its reads and hook deliveries recorded, whether or not it has since begun
-   * reporting subresources: the Workshop checks only what was reported.
+   * behaviour the overseer's failure handling is built around.
    */
   async addObserver(id: string, user: Fetcher<TestVerifierApi>): Promise<void> {
-    const { resourceUrl } = this.ctx.props;
-    const state = control(this.ctx.exports);
     const label = await user.identify();
+    const { resourceUrl } = this.ctx.props;
     if (this.ctx.props.ambient) {
-      await state.recordAmbientVerification(label);
+      await control(this.ctx.exports).recordAmbientVerification(label);
     } else {
-      const outcome = await state.getVerifyOutcome(label, resourceUrl);
+      const outcome = await control(this.ctx.exports).getVerifyOutcome(label, resourceUrl);
       if (!outcome.allow) throw new Error(outcome.reason);
-      const history = [
-        ...this.ctx.storage.kv.get<string[]>(HISTORY_KEY) ?? [],
-        ...await state.getLegacyHookHistory(resourceUrl),
-      ];
-      if (history.length > 0 && (await user.deniedSubresources(history)).length > 0) {
-        throw new Error("This account can't read data the test binding recorded in its history.");
-      }
     }
     this.ctx.storage.kv.put(`observer:${id}`, label);
-    await state.recordObserverEvent({ resourceUrl, type: "add", id });
+    await control(this.ctx.exports).recordObserverEvent({ resourceUrl, type: "add", id });
   }
 
   async removeObserver(id: string): Promise<void> {
@@ -980,8 +939,7 @@ export default {
 
     // Set what addObserver() should do for one account, either everywhere or (when `resourceUrl`
     // is given) at one binding only. With `subresource` too, it sets whether the account may read
-    // that one subresource: checked by verifyObserverAccess() where it was reported, and by
-    // addObserver() where it is in the binding's legacy history.
+    // that one subresource, as checked by verifyObserverAccess() where it was reported.
     // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "...",
     //        "subresource": "..."}
     if (url.pathname === "/control/verify-outcome" && req.method === "POST") {
@@ -1009,7 +967,7 @@ export default {
     }
 
     // Make the binding at `resourceUrl` report its reads' subresources. Set before connecting for
-    // a binding that reports them from creation, or after to convert a legacy one in place.
+    // a binding that reports them from creation.
     // Body: {"resourceUrl": "..."}
     if (url.pathname === "/control/report-subresources" && req.method === "POST") {
       const { resourceUrl } = body as Record<string, unknown>;

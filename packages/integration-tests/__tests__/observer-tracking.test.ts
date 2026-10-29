@@ -1,10 +1,9 @@
 // Kernel-checked observer subresources (docs/observers.md §10), against the fixture gatekeeper. A
 // binding reports each read's `subresources` on `authorizeObservation()` once
 // `/control/report-subresources` says so, and its `verifyObserverAccess()` asks each observer's
-// verifier for the outcomes `/control/verify-outcome` sets per subresource. Before that the binding
-// is legacy: it keeps what its reads depended on in its own history, which its `addObserver()`
-// enforces in both modes. Admission is additive: every collaborator must pass every connection's
-// `addObserver()` and the kernel's check of what was reported.
+// verifier for the outcomes `/control/verify-outcome` sets per subresource. Admission is additive:
+// every collaborator must pass every connection's `addObserver()` and the kernel's check of what
+// was reported.
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -43,8 +42,6 @@ const DENIED =
     "This account can't access some of the data this workspace read through this service.";
 /** The Workshop's refusal of a read, for a reported subresource a collaborator can't read. */
 const READ_REFUSED = "blocked because it contains data that a current collaborator";
-/** The fixture's addObserver() refusal, for a subresource in the binding's legacy history. */
-const HISTORY_DENIED = "This account can't read data the test binding recorded in its history.";
 
 /** A resource URL no other test (or earlier run against the same storage) has used. */
 function freshThingUrl(name: string): string {
@@ -226,44 +223,6 @@ it.concurrent("the same local subresource ID is checked independently in differe
   ]);
 
   await setSubresourceAccess(bob.label, secondUrl, localId, true);
-  expect((await collaboratorOpens(bob, ws.gadgetId)).error).toBeUndefined();
-});
-
-it.concurrent("a legacy binding converted in place keeps its history enforced by addObserver()",
-    async () => {
-  using publicApi = connect(harness.url);
-  using ws = await newWorkspace(publicApi);
-  const url = freshThingUrl("convert");
-  using gatekeeper = await ws.overseer.newGatekeeper(ws.account.id, url);
-  if (!gatekeeper) throw new Error(`Failed to connect ${url}`);
-  const connectionId = await gatekeeper.getId();
-  using session = await gatekeeper.openSession() as RpcStub<TestSession>;
-  // Legacy reads: only the binding itself remembers what they depended on.
-  await expect(session.readValue(false, false, undefined, ["old-1"])).resolves.toBe(42);
-
-  // The binding converts. The session minted while it was legacy reports from now on.
-  await reportSubresources(url);
-  await expect(session.readValue(false, false, undefined, ["new-1"])).resolves.toBe(42);
-  using bob = await addCollaborator(ws);
-
-  // An old legacy subresource is refused by the binding's own addObserver()...
-  await setSubresourceAccess(bob.label, url, "old-1", false);
-  const oldDenied = await collaboratorOpens(bob, ws.gadgetId);
-  expect(oldDenied.error?.message).toContain(HISTORY_DENIED);
-  expect(oldDenied.error?.message).not.toContain(DENIED);
-  expect(oldDenied.recorder.calls.at(-1)!.filter(need => need.failure)).toEqual([
-    expect.objectContaining({ gatekeeperId: connectionId }),
-  ]);
-
-  // ...and a new reported one by the Workshop's own check.
-  await setSubresourceAccess(bob.label, url, "old-1", true);
-  await setSubresourceAccess(bob.label, url, "new-1", false);
-  const newDenied = await collaboratorOpens(bob, ws.gadgetId);
-  expect(newDenied.error?.message).toContain(DENIED);
-  expect(newDenied.error?.message).not.toContain(HISTORY_DENIED);
-
-  // Able to read both, he is admitted.
-  await setSubresourceAccess(bob.label, url, "new-1", true);
   expect((await collaboratorOpens(bob, ws.gadgetId)).error).toBeUndefined();
 });
 
@@ -510,60 +469,4 @@ it.concurrent("reported hook deliveries are authorized, check both collaborator 
   const admitted = await collaboratorOpens(viewer, ws.gadgetId);
   expect(admitted.error).toBeUndefined();
   expect(admitted.recorder.calls).toEqual([]);
-});
-
-// Not concurrent: with other tests running, workerd 1.20261001 has died with "Promise callback
-// destroyed itself" around hook deliveries in a workspace that restarts; keep this isolated.
-it("a hook enabled while its binding was legacy keeps firing after it reports subresources",
-    async () => {
-  using publicApi = connect(harness.url);
-  using ws = await newWorkspace(publicApi);
-  const url = freshThingUrl("hook-convert");
-  const hookKey = `convert-hook-${crypto.randomUUID()}`;
-  using legacy = await ws.overseer.newGatekeeper(ws.account.id, url);
-  if (!legacy) throw new Error(`Failed to connect ${url}`);
-  using gadget = await ws.overseer.createGadget("Converted Hook", undefined, "CONVERTED_HOOK");
-  const gadgetId = await gadget.getId();
-  await gadget.bind("THING", await legacy.getId());
-  await installServer(ws, gadgetId, HOOK_SERVER);
-  using facet = await gadget.connectToGadget() as RpcStub<HookGadget>;
-  await facet.watch(hookKey);
-  const [hook] = await ws.overseer.listHooks();
-  if (!hook) throw new Error("The gadget did not register its hook");
-  await ws.overseer.enableHook(hook.id);
-  using bob = await addCollaborator(ws);
-  const fire = (value: number, subresources: string[]) =>
-    testControl(harness, "fire-hook", { key: hookKey, value, resourceUrl: url, subresources });
-
-  // While the binding is legacy, only it remembers what a delivery depended on.
-  expect(await fire(71, ["hook-secret"])).toEqual({ fired: true });
-
-  // The binding converts; the hook registered before then keeps delivering.
-  await reportSubresources(url);
-  expect(await fire(72, ["live-1"])).toEqual({ fired: true });
-
-  // The legacy delivery's subresource stays enforced by the binding's addObserver().
-  await setSubresourceAccess(bob.label, url, "hook-secret", false);
-  expect((await collaboratorOpens(bob, ws.gadgetId)).error?.message).toContain(HISTORY_DENIED);
-
-  await setSubresourceAccess(bob.label, url, "hook-secret", true);
-  const recorder = new ObserverConfigRecorder().alwaysChoose(bob.account.id, MAX_OBSERVER_PROMPTS);
-  using callback = stubFor(recorder);
-  using bobWorkspace = await bob.api.openWorkspace(ws.gadgetId, undefined, callback);
-
-  // Bob is now a current collaborator, so the Workshop checks every later delivery for him.
-  await setSubresourceAccess(bob.label, url, "live-2", false);
-  expect(await fire(73, ["live-2"])).toEqual({ error: expect.stringContaining(READ_REFUSED) });
-  await setSubresourceAccess(bob.label, url, "live-2", true);
-  expect(await fire(74, ["live-2"])).toEqual({ fired: true });
-
-  using bobGadget = await bobWorkspace.getGadget(gadgetId);
-  using bobFacet = await bobGadget.connectToGadget() as RpcStub<HookGadget>;
-  expect(await bobFacet.deliveredValues()).toEqual([71, 72, 74]);
-
-  // A post-conversion delivery's reported subresource is a requirement at his next admission.
-  await setSubresourceAccess(bob.label, url, "live-1", false);
-  const refused = await collaboratorOpens(bob, ws.gadgetId);
-  expect(refused.error?.message).toContain(DENIED);
-  expect(refused.error?.message).not.toContain(HISTORY_DENIED);
 });

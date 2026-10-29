@@ -20,8 +20,8 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   connectionVendorId, observerContextOf, observerRequirementPrefix, observerRequirementSubresource,
-  type ActionRecord, type GatekeeperCaller, type GatekeeperRecord, type ObserverContext,
-  type ObserverRecord, type OverseerStorage,
+  type GatekeeperCaller, type GatekeeperRecord, type ObserverContext, type ObserverRecord,
+  type OverseerStorage,
 } from "./storage-schema/overseer-storage";
 import type { SharingManager } from "./sharing";
 import type { UserDurableObject } from "./user";
@@ -37,18 +37,17 @@ const MAX_SUBRESOURCES = 10_000;
 /** Longest subresource ID accepted. */
 const MAX_SUBRESOURCE_LENGTH = 512;
 
-// Budget only the ID array: two bytes per UTF-16 code unit plus serialization overhead per
-// element. Leave ample room for the action's metadata below SQLite's 8 MiB row limit.
-const SUBRESOURCE_CHUNK_BYTES = 4 * 1024 * 1024;
+/**
+ * Most UTF-16 code units one observation's subresource IDs may total, so its audit record stays
+ * well inside Durable Object storage's 2 MB value limit (at most two bytes per code unit).
+ */
+const MAX_SUBRESOURCES_TOTAL_LENGTH = 500_000;
 
 /**
  * Most observers sent to `verifyObserverAccess()` in one call, bounding the verifier fan-out each
  * call asks of the gatekeeper (gatekeeper-kit caps a binding's per-read fan-out the same way).
  */
 const CHECK_OBSERVER_BATCH_SIZE = 10;
-
-/** Most verifier lookups, or `verifyObserverAccess()` calls, in flight at once for one check. */
-const CHECK_CONCURRENCY = 4;
 
 /**
  * How many times an admission or an observation re-runs its checks because what it must verify
@@ -82,31 +81,22 @@ type ObserverVerifier = {id: string, verifier: Fetcher<GatekeeperUserVerifier>};
 export type ObserverScope = {
   gatekeepers: GatekeeperRecord[];
   requirements: Map<WorkpieceId, string[]>;
-  /**
-   * `nextActionId` when `requirements` was read. The append-only action log is the only
-   * requirement store and only a new record adds one, so while this is unchanged, so are the
-   * requirements of unchanged connections.
-   */
-  nextActionId: number;
 };
-
-// Whether two scopes hold the same connections.
-function sameConnections(a: GatekeeperRecord[], b: GatekeeperRecord[]): boolean {
-  let ids = new Set(a.map(gk => gk.id));
-  return b.length === ids.size && b.every(gk => ids.has(gk.id));
-}
 
 /**
  * Whether a verification pass over `verified` also covers `current`: the same connections, and no
  * requirement the pass did not check.
  */
 export function observerScopeCovers(verified: ObserverScope, current: ObserverScope): boolean {
-  if (!sameConnections(verified.gatekeepers, current.gatekeepers)) return false;
-  return current.requirements === verified.requirements ||
-      Array.from(current.requirements).every(([id, subresources]) => {
-        let checked = new Set(verified.requirements.get(id));
-        return subresources.every(subresource => checked.has(subresource));
-      });
+  let verifiedIds = new Set(verified.gatekeepers.map(gk => gk.id));
+  if (current.gatekeepers.length !== verifiedIds.size ||
+      !current.gatekeepers.every(gk => verifiedIds.has(gk.id))) {
+    return false;
+  }
+  return Array.from(current.requirements).every(([id, subresources]) => {
+    let checked = new Set(verified.requirements.get(id));
+    return subresources.every(subresource => checked.has(subresource));
+  });
 }
 
 /**
@@ -149,13 +139,19 @@ export function normalizeSubresources(ids: string[]): string[] {
   if (ids.length > MAX_SUBRESOURCES) {
     throw new Error(`An observation may report at most ${MAX_SUBRESOURCES} subresources.`);
   }
-  // for...of visits a sparse array's holes as undefined, which this refuses too.
+  let totalLength = 0;
   for (let id of ids) {
-    if (typeof id !== "string" || id.length === 0 || id.length > MAX_SUBRESOURCE_LENGTH) {
+    if (id.length === 0 || id.length > MAX_SUBRESOURCE_LENGTH) {
       throw new Error(
           `Subresource IDs must be strings 1 to ${MAX_SUBRESOURCE_LENGTH} characters long.`);
     }
     if (!id.isWellFormed()) throw new Error("Subresource IDs must be well-formed Unicode.");
+    totalLength += id.length;
+  }
+  if (totalLength > MAX_SUBRESOURCES_TOTAL_LENGTH) {
+    throw new Error(
+        `An observation's subresource IDs may total at most ${MAX_SUBRESOURCES_TOTAL_LENGTH} ` +
+        "characters.");
   }
   return [...new Set<string>(ids)];
 }
@@ -169,46 +165,14 @@ export class ObserverLedger {
 
   get #storage() { return this.host.storage; }
 
-  /**
-   * Persists an observation as byte-bounded requirement records, returning their action IDs.
-   * The caller must include this and any policy changes in one storage transaction, and publish
-   * notifications only after it commits. Verification must already cover the complete read.
-   */
-  recordObservation(record: Omit<Extract<ActionRecord, {type: "observation"}>, "id">): number[] {
-    let subresources = record.description.subresources;
-    let count = subresources?.length ?? 0;
-    let actionIds: number[] = [];
-    let start = 0;
-    do {
-      let end = start;
-      let bytes = 0;
-      while (end < count) {
-        let size = 2 * subresources![end].length + 8;
-        if (bytes + size > SUBRESOURCE_CHUNK_BYTES) break;
-        bytes += size;
-        end++;
-      }
-      let id = this.#storage.nextActionId.get();
-      this.#storage.nextActionId.put(id + 1);
-      this.#storage.actions.put({
-        ...record, id,
-        description: subresources && (start !== 0 || end !== subresources.length)
-            ? {...record.description, subresources: subresources.slice(start, end)}
-            : record.description,
-      });
-      actionIds.push(id);
-      start = end;
-    } while (start < count);
-    return actionIds;
-  }
-
   // ---------------------------------------------------------------------------------------
   // Observation
 
   /**
-   * The ledger half of Overseer.authorizeObservation(). An observation omitting `subresources`,
-   * or made while its resource's creation is pending (so simulated), is checked by nothing here:
-   * it commits with undefined, recording no requirement. Otherwise this attributes the read to
+   * The ledger half of Overseer.authorizeObservation(). Every observation through a removed
+   * connection, or one held back pending a restart, is refused. One omitting `subresources`, or
+   * made while its resource's creation is pending (so simulated), is otherwise checked by nothing
+   * here: it commits with undefined, recording no requirement. Otherwise this attributes the read to
    * its caller's context and checks the reported IDs for everyone that context reaches, then
    * recomputes that audience after the awaits and checks whoever it gained: sharing changes,
    * newly published observers, and changed account choices. Calls `commit` synchronously with the
@@ -254,11 +218,11 @@ export class ObserverLedger {
       let denied: string[];
       try {
         // Looked up for every observer even when one would do: a disconnected account is refused.
-        let observers: ObserverVerifier[] = [];
-        await boundedAll(unverified, async ({profileId, observerId, accountId}) => {
-          let user = this.host.users.get(this.host.users.idFromName(profileId));
-          observers.push({id: observerId, verifier: await requireVerifier(user, accountId, vendorId)});
-        });
+        let observers = await Promise.all(unverified.map(async observer => {
+          let user = this.host.users.get(this.host.users.idFromName(observer.profileId));
+          let verifier = await requireVerifier(user, observer.accountId, vendorId);
+          return {id: observer.observerId, verifier};
+        }));
         denied = await this.#deniedObservers(connection, observers, subresources);
       } catch (error) {
         this.host.logger.warn("observer check refused an observation", {
@@ -325,45 +289,28 @@ export class ObserverLedger {
   // Admission
 
   /**
-   * The deduplicated subresources a collaborator holding `role` must be able to read through each
-   * connection in `connections`, the role's verification scope: a "build" collaborator reaches
-   * every context, a "use" collaborator the workspace and every gadget. Reads only the distinct
-   * requirement keys, never the observations recorded under them. `connections` are live
-   * records, so nothing through a connection since removed is read. Connections with no
-   * requirements are left out.
+   * Everything a collaborator holding `role` is verified against: `gatekeepers`, the role's
+   * verification scope, and the deduplicated subresources recorded through each of them that the
+   * role reaches: a "build" collaborator reaches every context, a "use" collaborator the workspace
+   * and every gadget. Reads only the distinct requirement keys, never the observations recorded
+   * under them. `gatekeepers` are live records, so nothing through a connection since removed is
+   * read. Connections with no requirements are left out of `requirements`.
    */
-  requiredSubresources(role: CollaboratorRole,
-                       connections: GatekeeperRecord[]): Map<WorkpieceId, string[]> {
+  observerScope(role: CollaboratorRole, gatekeepers: GatekeeperRecord[]): ObserverScope {
     let index = this.#storage.actions.byObserverRequirement;
     let contexts: ObserverContext["type"][] =
         role === "build" ? ["workspace", "chat", "gadget"] : ["workspace", "gadget"];
-    let required = new Map<WorkpieceId, string[]>();
-    for (let connection of connections) {
+    let requirements = new Map<WorkpieceId, string[]>();
+    for (let connection of gatekeepers) {
       let ids = new Set<string>();
       for (let type of contexts) {
         for (let key of index.listKeys({prefix: observerRequirementPrefix(connection.id, type)})) {
           ids.add(observerRequirementSubresource(key));
         }
       }
-      if (ids.size > 0) required.set(connection.id, [...ids]);
+      if (ids.size > 0) requirements.set(connection.id, [...ids]);
     }
-    return required;
-  }
-
-  /**
-   * Everything a collaborator holding `role` is verified against: `gatekeepers`, the role's
-   * verification scope, and the requirements recorded through them that the role reaches (see
-   * requiredSubresources()). Reuses `previous`'s requirements while neither its connections nor
-   * `nextActionId` have changed, so an admission nothing disturbs reads them once.
-   */
-  observerScope(role: CollaboratorRole, gatekeepers: GatekeeperRecord[],
-                previous?: ObserverScope): ObserverScope {
-    let nextActionId = this.#storage.nextActionId.get();
-    let requirements = previous?.nextActionId === nextActionId &&
-        sameConnections(previous.gatekeepers, gatekeepers)
-        ? previous.requirements
-        : this.requiredSubresources(role, gatekeepers);
-    return {gatekeepers, requirements, nextActionId};
+    return {gatekeepers, requirements};
   }
 
   /**
@@ -395,9 +342,9 @@ export class ObserverLedger {
     let denied = new Set<string>();
     for (let i = 0; i < subresources.length && denied.size === 0; i += MAX_SUBRESOURCES) {
       let batch = subresources.slice(i, i + MAX_SUBRESOURCES);
-      await boundedAll(chunks, async chunk => {
+      await Promise.all(chunks.map(async chunk => {
         for (let id of await askGatekeeper(facet, chunk, batch)) denied.add(id);
-      });
+      }));
     }
     return [...denied];
   }
@@ -407,12 +354,7 @@ export class ObserverLedger {
 // answer omits. A failed call or malformed answer throws, which denies every observer in it.
 async function askGatekeeper(facet: VerifyingGatekeeper, observers: ObserverVerifier[],
                              subresources: string[]): Promise<string[]> {
-  let result: unknown;
-  try {
-    result = await facet.verifyObserverAccess(observers, subresources);
-  } catch (error) {
-    throw new Error("This service could not confirm the account's access.", {cause: error});
-  }
+  let result: unknown = await facet.verifyObserverAccess(observers, subresources);
   let allowed = typeof result === "object" && result !== null && "allowedObserverIds" in result
       ? result.allowedObserverIds : undefined;
   if (!Array.isArray(allowed)) throw new Error("This service returned an invalid access check.");
@@ -426,23 +368,4 @@ async function askGatekeeper(facet: VerifyingGatekeeper, observers: ObserverVeri
     granted.add(id);
   }
   return [...asked].filter(id => !granted.has(id));
-}
-
-// Promise.all over `items` with at most CHECK_CONCURRENCY in flight; rejects with the first
-// failure (the rest still settle, their results unused).
-async function boundedAll<T>(items: T[], fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  let failure: {error: unknown} | undefined;
-  let worker = async () => {
-    while (next < items.length && failure === undefined) {
-      let item = items[next++];
-      try {
-        await fn(item);
-      } catch (error) {
-        failure ??= {error};
-      }
-    }
-  };
-  await Promise.all(Array.from({length: Math.min(CHECK_CONCURRENCY, items.length)}, worker));
-  if (failure !== undefined) throw failure.error;
 }
