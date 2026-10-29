@@ -333,9 +333,9 @@ function gatekeeperApi(initialGrants: string[] | null, secondAccountGrants?: str
       if (!subscriber) throw new Error('account subscriber is not ready')
       subscriber.add(7, googleAccount(7, grants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
     },
-    addAccount(id: number, grants: string[]) {
+    addAccount(id: number, grants: string[], supportedResources = [CALENDAR_RESOURCE]) {
       if (!subscriber) throw new Error('account subscriber is not ready')
-      subscriber.add(id, googleAccount(id, grants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+      subscriber.add(id, googleAccount(id, grants), GOOGLE_VENDOR, supportedResources, true, 'google')
     },
     removeAccount(id: number) {
       if (!subscriber) throw new Error('account subscriber is not ready')
@@ -505,6 +505,32 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     await act(async () => findButton('Connect Google')!.click())
 
     expect(harness.connectAccount).toHaveBeenCalledExactlyOnceWith('google', [CALENDAR_PATTERN])
+  })
+
+  it('explains why a newly connected account that cannot serve the binding is not listed', async () => {
+    // A gatekeeper may offer an account fewer resource types than its vendor, and the chooser lists
+    // only accounts offering the binding's type, so without a message the account the user just
+    // connected silently never appears.
+    const harness = gatekeeperApi(null)
+    await render(harness)
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(findButton('Connect Google')).toBeDefined())
+
+    await act(async () => harness.addAccount(7, [GMAIL_PATTERN], [{
+      urlPattern: GMAIL_PATTERN,
+      title: 'Gmail',
+      description: 'Read and send mail.',
+      grantable: true,
+    }]))
+
+    expect(document.body.textContent).toContain("Your connected Google account can't be used for Google Calendar")
+    expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+
+    await vi.waitFor(() => expect(harness.startResourceConfigurator)
+      .toHaveBeenCalledExactlyOnceWith(8, CALENDAR_PATTERN))
+    expect(document.body.textContent).not.toContain("can't be used for Google Calendar")
   })
 
   it('unblocks configuration when the server says the resource is already granted', async () => {
