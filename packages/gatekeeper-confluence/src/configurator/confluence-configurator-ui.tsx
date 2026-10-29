@@ -4,9 +4,10 @@ import {
   type ConfiguratorUIHierarchyPage as Page, type ConfiguratorUIHierarchyRequest as PickerRequest,
   type ConfiguratorUIHierarchyTab as Tab, type ConfiguratorUIRenderContext, type ConfiguratorUISpec,
 } from "@gadgets/configurator-ui";
+import type { RpcStub } from "capnweb";
 import type {
   ConfluenceBrowseRequest as Request,
-  ConfluenceConfiguratorRpc as Rpc,
+  ConfluenceConfiguratorRpc,
   ConfluenceConfiguratorStatus as Status,
   ConfluenceConfiguratorValues as Values,
   ConfluenceCrumb as Crumb,
@@ -14,6 +15,9 @@ import type {
   ConfluenceNodeKind as Kind,
   ConfluenceSite as Site,
 } from "./confluence-configurator-types";
+
+/** The gatekeeper as the frame holds it: a Cap'n Web stub, so one call's result can feed the next unawaited. */
+type Rpc = RpcStub<ConfluenceConfiguratorRpc>;
 
 // Must equal the urlPatterns of SITE_RESOURCE, SPACE_RESOURCE and PAGE_RESOURCE in confluence.ts;
 // __tests__/configurator-patterns.test.ts keeps the copies in step.
@@ -279,7 +283,7 @@ async function loadPage({ ui, acceptedResourceUrlPatterns: accepted }: Context, 
 /** The node a value names, with where it lives, from what was listed or else from Confluence. */
 async function loadNode({ ui, acceptedResourceUrlPatterns: accepted }: Context, ref: string): Promise<Item | null> {
   let node = nodes.get(ref);
-  if (node?.path === undefined) node = (await ui.locate(await ui.resourceUrlFor(ref))) ?? undefined;
+  if (node?.path === undefined) node = (await ui.locate(ui.resourceUrlFor(ref))) ?? undefined;
   if (!node) return null;
   requestAvatars(ui, [node, ...node.path ?? []]);
   return toItem(node, accepted);

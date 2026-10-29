@@ -210,6 +210,18 @@ describe("loadItems", () => {
     expect(page.items[0]).toMatchObject({ subtitle: "Space home", meta: "Oct 20" });
   });
 
+  it("heads a space with its home page when the home page isn't among the first pages without a parent", async () => {
+    route(/^\/wiki\/api\/v2\/spaces\?keys=MFS/, { results: [MFS] });
+    route(/^\/wiki\/api\/v2\/spaces\/[^/]+\/pages\?/, { results: [pageJson("200", "Stray")], _links: { next: "/wiki/api/v2/spaces/1/pages?cursor=r2" } });
+    route(/^\/wiki\/api\/v2\/pages\/100$/, pageJson("100", "My first space"));
+    route(/^\/wiki\/api\/v2\/blogposts\?/, { results: [] });
+    route(/^\/wiki\/api\/v2\/pages\/100\/(direct-children|descendants)/, { results: [] });
+
+    const page = await ui().loadItems({ parent: `space:${CLOUD}/MFS` });
+
+    expect(page.items.map(item => [item.kind, item.title])).toEqual([["overview", "My first space"], ["page", "Stray"]]);
+  });
+
   it("pages through the home page's children, then the pages without a parent", async () => {
     route(/^\/wiki\/api\/v2\/spaces\?keys=MFS/, { results: [MFS] });
     route(/^\/wiki\/api\/v2\/spaces\/[^/]+\/pages\?/, (url: URL) => url.searchParams.get("cursor") === "r2"

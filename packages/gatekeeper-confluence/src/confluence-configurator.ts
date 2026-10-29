@@ -377,23 +377,15 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
 
   async #recent(site: AccessibleResource): Promise<ConfluenceBrowsePage> {
     const cql = `id in recentlyViewedContent(${RECENT_COUNT}) AND type in (page, blogpost)`;
-    try {
-      const hits = await this.#api(site).searchWithContext(cql, { limit: RECENT_COUNT });
-      return { items: hits.results.flatMap(hit => this.#hitNode(site, hit) ?? []) };
-    } catch {
-      // Recently viewed is a convenience; a site that won't answer it still lists its spaces.
-      return { items: [] };
-    }
+    // Recently viewed is a convenience; a site that won't answer it still lists its spaces. Only
+    // the most recent are shown, so there is no next page.
+    const { items } = await this.#hits(site, cql, { limit: RECENT_COUNT }).catch(() => ({ items: [] }));
+    return { items };
   }
 
   /** What the user starred in Confluence: spaces, pages and blog posts, as its own Starred page lists them. */
-  async #starred(site: AccessibleResource, cursor: string | undefined): Promise<ConfluenceBrowsePage> {
-    const cql = "type in (space, page, blogpost) AND favourite = currentUser()";
-    const hits = await this.#api(site).searchWithContext(cql, { cursor, limit: PAGE_SIZE });
-    return {
-      items: hits.results.flatMap(hit => this.#hitNode(site, hit) ?? []),
-      ...(hits.nextCursor ? { nextCursor: hits.nextCursor } : {}),
-    };
+  #starred(site: AccessibleResource, cursor: string | undefined): Promise<ConfluenceBrowsePage> {
+    return this.#hits(site, "type in (space, page, blogpost) AND favourite = currentUser()", { cursor, limit: PAGE_SIZE });
   }
 
   async #children(ref: Ref, cursor: string | undefined): Promise<ConfluenceBrowsePage> {
@@ -450,7 +442,9 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
       api.listBlogPostsInSpace({ spaceId: space.id, limit: 1 }).catch(() => ({ results: [] })),
       space.homepageId ? this.#treeChildren(site, "pages", space.homepageId, undefined) : Promise.resolve(undefined),
     ]);
-    const homePage = roots.results.find(page => page.id === space.homepageId);
+    // The home page is usually the space's first page, so in the first batch; read it alone if not.
+    const homePage = roots.results.find(page => page.id === space.homepageId)
+      ?? (space.homepageId ? await api.getPage(space.homepageId, { body: false }).catch(() => undefined) : undefined);
     const orphans = orphanRows(roots);
     const items: ConfluenceNode[] = [];
     if (homePage) {
@@ -542,7 +536,12 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
     if (query.length > MAX_QUERY_LENGTH) throw new Error("That search is too long.");
     if (/[\p{Cc}]/u.test(query)) throw new Error("A search can't contain line breaks or control characters.");
     const cql = `type in (space, page, blogpost) AND siteSearch ~ ${escapeCqlString(query)}`;
-    const hits = await this.#api(site).searchWithContext(cql, { cursor, limit: SEARCH_PAGE_SIZE });
+    return await this.#hits(site, cql, { cursor, limit: SEARCH_PAGE_SIZE });
+  }
+
+  /** One page of a CQL search's results as rows. */
+  async #hits(site: AccessibleResource, cql: string, page: { cursor?: string; limit: number }): Promise<ConfluenceBrowsePage> {
+    const hits = await this.#api(site).searchWithContext(cql, page);
     return {
       items: hits.results.flatMap(hit => this.#hitNode(site, hit) ?? []),
       ...(hits.nextCursor ? { nextCursor: hits.nextCursor } : {}),
