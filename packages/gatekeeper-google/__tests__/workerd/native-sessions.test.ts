@@ -108,10 +108,6 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
     this.observations.push(description);
   }
 
-  async authorizeTrackedObservation(): Promise<void> {
-    throw new Error("Unexpected tracked observation");
-  }
-
   async getGitCache(): Promise<GitCache> {
     throw new Error("Unexpected git cache access");
   }

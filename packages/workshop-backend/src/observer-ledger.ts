@@ -1,5 +1,5 @@
-// Kernel-owned observer tracking for connections that advertise
-// ResourceDescription.supportsObserverTracking. docs/observers.md §10 describes the behavior and
+// Kernel-owned observer requirements: the subresources observations report through
+// ObservationDescription.subresources. docs/observers.md §10 describes the behavior and
 // plans/kernel-observer-tracking.md the reasons for it; this comment covers only what the code
 // here must keep true:
 //
@@ -8,18 +8,15 @@
 //   its record, nor a record land without its check.
 // - Every check fails closed, and no permission is cached between operations.
 // - Each decision is confirmed synchronously before its caller publishes it: an observation's
-//   audience before the audit record is written (authorizeTrackedObservation), and an admission's
+//   audience before the audit record is written (authorizeObservation), and an admission's
 //   scope before the observer record is (OverseerImpl.ensureObserver, via observerScope()).
-// - Legacy connections never reach these checks: their addObserver()/removeObserver()/
-//   excludeObservers protocol is untouched, and a workspace may mix both.
-// - A connection switches to tracking before its legacy history is imported, so no read through
-//   it goes unchecked; until that import commits (observerHistoryPending), admission waits for it
-//   rather than verify anyone against an incomplete history. Reads never wait for it.
+// - These checks add to the legacy addObserver()/removeObserver()/excludeObservers protocol and
+//   never replace it: an observation omitting `subresources` is checked by nothing here, and
+//   admission runs every connection's addObserver() as well as the checks here.
 
 import type { CollaboratorRole, WorkpieceId } from "@gadgets/workshop-shared/api";
 import type {
-  Gatekeeper, GatekeeperUserVerifier, ObservationDescription, ResourceDescription,
-  TrackedObservationDescription,
+  Gatekeeper, GatekeeperUserVerifier, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   connectionVendorId, observerContextOf, observerRequirementPrefix, observerRequirementSubresource,
@@ -31,8 +28,9 @@ import type { UserDurableObject } from "./user";
 import type { WorkshopLogger } from "./observability";
 
 /**
- * Most subresource IDs one observation or one `verifyObserverAccess()` call may carry; accumulated
- * history has no count cap, so admission checks it in batches of this size.
+ * Most subresource IDs one observation or one `verifyObserverAccess()` call may carry; a
+ * connection's accumulated requirements have no count cap, so admission checks them in batches of
+ * this size.
  */
 const MAX_SUBRESOURCES = 10_000;
 
@@ -63,11 +61,11 @@ const OBSERVATION_REFUSED =
     "This was blocked because it contains data that a current collaborator could not be " +
     "confirmed to have access to.";
 
-// The gatekeeper as an opted-in connection promises it (see
-// ResourceDescription.supportsObserverTracking). RPC stubs can't report method presence, and
-// their typing makes an optional method uncallable, hence this narrowed view.
-type TrackingGatekeeper = Fetcher<Gatekeeper<any> &
-    Required<Pick<Gatekeeper<any>, "getHistoricalSubresources" | "verifyObserverAccess">>>;
+// A gatekeeper whose observations report subresources promises it (see
+// ObservationDescription.subresources). RPC stubs can't report method presence, and their typing
+// makes an optional method uncallable, hence this narrowed view.
+type VerifyingGatekeeper =
+    Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "verifyObserverAccess">>>;
 
 /** The observer identity and selected account reached by one observation. */
 type ObservationRecipient = Pick<ObserverRecord, "profileId" | "observerId"> & {
@@ -77,12 +75,8 @@ type ObservationRecipient = Pick<ObserverRecord, "profileId" | "observerId"> & {
   key: string;
 };
 
-/** One observer to check, with the account they chose for the connection being checked. */
-type ObserverAccount = {
-  observerId: string;
-  user: DurableObjectStub<UserDurableObject>;
-  accountId: number;
-};
+/** One observer to check, with the verifier for the account they chose for the connection. */
+type ObserverVerifier = {id: string, verifier: Fetcher<GatekeeperUserVerifier>};
 
 /** What a collaborator holding some role is verified against (see ObserverLedger.observerScope). */
 export type ObserverScope = {
@@ -96,25 +90,18 @@ export type ObserverScope = {
   nextActionId: number;
 };
 
-// A connection's observer protocol as admission verifies it: legacy, tracked while its history is
-// still being imported, or tracked.
-function observerProtocol(gk: GatekeeperRecord): string {
-  if (!gk.observerTracking) return "legacy";
-  return gk.observerHistoryPending ? "importing" : "tracked";
-}
-
-// Whether two scopes hold the same connections, each on the same observer protocol.
-function sameObserverConnections(a: GatekeeperRecord[], b: GatekeeperRecord[]): boolean {
-  let protocols = new Map(a.map(gk => [gk.id, observerProtocol(gk)]));
-  return b.length === protocols.size && b.every(gk => protocols.get(gk.id) === observerProtocol(gk));
+// Whether two scopes hold the same connections.
+function sameConnections(a: GatekeeperRecord[], b: GatekeeperRecord[]): boolean {
+  let ids = new Set(a.map(gk => gk.id));
+  return b.length === ids.size && b.every(gk => ids.has(gk.id));
 }
 
 /**
- * Whether a verification pass over `verified` also covers `current`: the same connections, each
- * on the same observer protocol, and no tracked requirement the pass did not check.
+ * Whether a verification pass over `verified` also covers `current`: the same connections, and no
+ * requirement the pass did not check.
  */
 export function observerScopeCovers(verified: ObserverScope, current: ObserverScope): boolean {
-  if (!sameObserverConnections(verified.gatekeepers, current.gatekeepers)) return false;
+  if (!sameConnections(verified.gatekeepers, current.gatekeepers)) return false;
   return current.requirements === verified.requirements ||
       Array.from(current.requirements).every(([id, subresources]) => {
         let checked = new Set(verified.requirements.get(id));
@@ -127,7 +114,6 @@ export function observerScopeCovers(verified: ObserverScope, current: ObserverSc
  * (as with OverseerMigrationHost).
  */
 export interface ObserverLedgerHost {
-  ctx: DurableObjectState;
   storage: OverseerStorage;
   logger: WorkshopLogger;
   users: DurableObjectNamespace<UserDurableObject>;
@@ -140,9 +126,6 @@ export interface ObserverLedgerHost {
 
   /** Whether `executionId` is the executeCode invocation still running for `chatId`. */
   isLiveExecution(chatId: number, executionId: string): boolean;
-
-  /** Best-effort removal of every legacy observer registration on `gatekeeperId`. */
-  retireLegacyObserverRegistrations(gatekeeperId: WorkpieceId): Promise<void>;
 }
 
 /**
@@ -157,152 +140,34 @@ export async function requireVerifier(user: DurableObjectStub<UserDurableObject>
 }
 
 /**
- * Validates one observation's, or a historical export's, reported subresource IDs (the RPC layer
- * has checked an observation's are strings, but not an export's), at most `max` of them, and
- * deduplicates them without interpreting them. Each must be well-formed Unicode: requirement keys
- * hold them, and storage would replace a lone surrogate, merging distinct IDs and checking a
- * different one at admission.
+ * Validates one observation's reported subresource IDs (the RPC layer has checked they form a
+ * string array), and deduplicates them without interpreting them. Each must be well-formed
+ * Unicode: requirement keys hold them, and storage would replace a lone surrogate, merging
+ * distinct IDs and checking a different one at admission.
  */
-export function normalizeSubresources(ids: unknown, max = Infinity): string[] {
-  if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) {
-    throw new Error("Subresources must be a list of strings.");
+export function normalizeSubresources(ids: string[]): string[] {
+  if (ids.length > MAX_SUBRESOURCES) {
+    throw new Error(`An observation may report at most ${MAX_SUBRESOURCES} subresources.`);
   }
-  if (ids.length > max) {
-    throw new Error(`An observation may report at most ${max} subresources.`);
-  }
+  // for...of visits a sparse array's holes as undefined, which this refuses too.
   for (let id of ids) {
-    if (id.length === 0 || id.length > MAX_SUBRESOURCE_LENGTH) {
+    if (typeof id !== "string" || id.length === 0 || id.length > MAX_SUBRESOURCE_LENGTH) {
       throw new Error(
-          `Subresource IDs must be 1 to ${MAX_SUBRESOURCE_LENGTH} characters long.`);
+          `Subresource IDs must be strings 1 to ${MAX_SUBRESOURCE_LENGTH} characters long.`);
     }
     if (!id.isWellFormed()) throw new Error("Subresource IDs must be well-formed Unicode.");
   }
   return [...new Set<string>(ids)];
 }
 
-/** The observer ledger of one workspace. See the module comment. */
+/**
+ * The Overseer's observer requirements: the subresources observations reported, checked against
+ * each read's audience before it commits and against each collaborator at admission.
+ */
 export class ObserverLedger {
-  // In-flight switches to tracking, one per connection (see switchToTracking()).
-  #switching = new Map<WorkpieceId, Promise<boolean>>();
-
-  // In-flight historical imports, one per connection (see importHistory()).
-  #importing = new Map<WorkpieceId, Promise<void>>();
-
   constructor(private host: ObserverLedgerHost) {}
 
   get #storage() { return this.host.storage; }
-
-  /** Whether the Workshop tracks this existing connection's observations itself. */
-  isTracked(gatekeeperId: WorkpieceId): boolean {
-    return this.#storage.gatekeepers.get(gatekeeperId)?.observerTracking === true;
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // Connection lifecycle
-
-  /**
-   * Called by addGatekeeper() with a connection's first description, before its record is
-   * published: a connection advertising support from creation has read nothing yet, so it starts
-   * tracked with no history. Mutates `record`; the caller puts it.
-   */
-  adoptCreatedConnection(record: GatekeeperRecord, description: ResourceDescription): void {
-    if (!description.supportsObserverTracking) return;
-    if (!connectionVendorId(record)) {
-      throw new Error("Only a vendor's connections can opt into observer tracking.");
-    }
-    record.observerTracking = true;
-  }
-
-  /**
-   * Describe a legacy connection and, if it now advertises support, switch it to tracking at once,
-   * with its history pending (see importHistory(), started here in the background). Called when a
-   * read through it calls authorizeTrackedObservation() and when its addObserver() refuses a
-   * collaborator (see OverseerImpl.ensureObserver), both of which an upgraded gatekeeper does.
-   * Single-flight per connection. Returns whether the connection is tracked afterwards: false for
-   * a vendorless one, a pending creation (simulated, so nothing to track until it is approved), or
-   * one still legacy. Throws if it can't be described or has been removed, so a failed discovery
-   * never leaves it to the legacy protocol it has upgraded from.
-   */
-  switchToTracking(gatekeeperId: WorkpieceId): Promise<boolean> {
-    if (this.isTracked(gatekeeperId)) return Promise.resolve(true);
-    let pending = this.#switching.get(gatekeeperId);
-    if (pending === undefined) {
-      pending = this.#switch(gatekeeperId).finally(() => this.#switching.delete(gatekeeperId));
-      this.#switching.set(gatekeeperId, pending);
-    }
-    return pending;
-  }
-
-  async #switch(gatekeeperId: WorkpieceId): Promise<boolean> {
-    let record = this.#storage.gatekeepers.get(gatekeeperId);
-    if (!connectionVendorId(record) || this.host.creationPending(gatekeeperId)) return false;
-
-    let description: ResourceDescription;
-    try {
-      description = await (await this.host.getGatekeeperFacet(gatekeeperId)).describe();
-    } catch (error) {
-      throw new Error(
-          "This connection could not confirm its observer tracking protocol, so it can't be " +
-          "used right now. Please retry.", {cause: error});
-    }
-    if (!description.supportsObserverTracking) return false;
-
-    record = this.#storage.gatekeepers.get(gatekeeperId);
-    if (!record) throw new Error("This connection has been removed from the workspace.");
-    // From here every observation through it is checked and recorded here, and the legacy
-    // protocol refuses it; the history import covers everything read before.
-    this.#storage.gatekeepers.put({...record, observerTracking: true, observerHistoryPending: true});
-    this.host.logger.info("switched connection to observer tracking", {
-      event: "observer.ledger.switch.completed", gatekeeperId,
-    });
-    this.host.ctx.waitUntil(this.importHistory(gatekeeperId).catch(error => {
-      this.host.logger.warn("failed to import connection history", {
-        event: "observer.ledger.import.failed", gatekeeperId, error,
-      });
-    }));
-    return true;
-  }
-
-  /**
-   * Import the history of a connection that switched to tracking after creation: the
-   * requirements its gatekeeper recorded under the legacy protocol. Single-flight per connection;
-   * resolves at once when none is pending. Observations through the connection carry on
-   * meanwhile, recording their own requirements, so the import only adds records. A failure
-   * commits nothing and leaves the history pending, so the next admission that needs it exports
-   * again; after the commit, the export is never asked for again.
-   */
-  importHistory(gatekeeperId: WorkpieceId): Promise<void> {
-    if (!this.#storage.gatekeepers.get(gatekeeperId)?.observerHistoryPending) {
-      return Promise.resolve();
-    }
-    let pending = this.#importing.get(gatekeeperId);
-    if (pending === undefined) {
-      pending = this.#import(gatekeeperId).finally(() => this.#importing.delete(gatekeeperId));
-      this.#importing.set(gatekeeperId, pending);
-    }
-    return pending;
-  }
-
-  async #import(gatekeeperId: WorkpieceId): Promise<void> {
-    let facet = await this.host.getGatekeeperFacet(gatekeeperId) as TrackingGatekeeper;
-    // Unlike an observation, the export has no count cap: one RPC result bounds it.
-    let subresources = normalizeSubresources(await facet.getHistoricalSubresources());
-
-    let record = this.#storage.gatekeepers.get(gatekeeperId);
-    if (!record) throw new Error("This connection has been removed from the workspace.");
-    let {observerHistoryPending: _, ...imported} = record;
-    this.#storage.transaction(() => {
-      this.#storage.gatekeepers.put(imported);
-      if (subresources.length > 0) this.#recordImportedHistory(record, subresources);
-    });
-    this.host.logger.info("imported connection history into the observer ledger", {
-      event: "observer.ledger.import.completed", gatekeeperId, size: subresources.length,
-    });
-
-    // Admission no longer registers anyone with this connection; retire the registrations the
-    // legacy protocol made, best-effort.
-    this.host.ctx.waitUntil(this.host.retireLegacyObserverRegistrations(gatekeeperId));
-  }
 
   /**
    * Persists an observation as byte-bounded requirement records, returning their action IDs.
@@ -337,84 +202,29 @@ export class ObserverLedger {
     return actionIds;
   }
 
-  // No session read the imported history, so its records belong to the workspace, not a chat.
-  #recordImportedHistory(record: GatekeeperRecord, subresources: string[]): void {
-    this.recordObservation({
-      gatekeeperId: record.id,
-      caller: {from: "user"},
-      resourceTitle: record.resourceTitle,
-      resourceUrl: record.resourceUrl,
-      createdAt: new Date(),
-      state: "approved",
-      type: "observation",
-      description: {
-        title: "Imported earlier reads",
-        description: "The Workshop took over observer tracking for this connection and recorded " +
-            "what it had read before.",
-        subresources,
-      },
-    });
-  }
-
   // ---------------------------------------------------------------------------------------
   // Observation
 
   /**
-   * The ledger half of Overseer.authorizeObservation(), for the legacy protocol: calls `commit`
-   * synchronously, recording no requirement. Each observation is held to the connection's
-   * protocol when it arrives, whichever protocol its session was minted under: once tracked, every
-   * observation through this method is refused. So is one carrying `subresources`, which only
-   * authorizeTrackedObservation() enforces.
-   */
-  authorizeObservation(gatekeeperId: WorkpieceId, description: ObservationDescription,
-                       commit: () => undefined): void {
-    this.#assertUsable(gatekeeperId);
-    // RPC validation forwards properties the method doesn't declare, and recording these
-    // unchecked would let the read through without checking anyone.
-    if ("subresources" in description) {
-      throw new Error(
-          "This observation was blocked: subresources must be reported through " +
-          "authorizeTrackedObservation().");
-    }
-    if (this.isTracked(gatekeeperId)) {
-      throw new Error(
-          "This observation was blocked: the connection must report its subresources through " +
-          "authorizeTrackedObservation().");
-    }
-    return commit();
-  }
-
-  /**
-   * The ledger half of Overseer.authorizeTrackedObservation(). Through a legacy connection, the
-   * call shows that its gatekeeper upgraded, so this first switches the connection to tracking
-   * (see switchToTracking()), whose history import doesn't hold up the read. Then attributes the
-   * read to its caller's context and checks the reported IDs for everyone that context reaches,
-   * then recomputes that audience after the awaits and checks whoever it gained: sharing changes,
+   * The ledger half of Overseer.authorizeObservation(). An observation omitting `subresources`,
+   * or made while its resource's creation is pending (so simulated), is checked by nothing here:
+   * it commits with undefined, recording no requirement. Otherwise this attributes the read to
+   * its caller's context and checks the reported IDs for everyone that context reaches, then
+   * recomputes that audience after the awaits and checks whoever it gained: sharing changes,
    * newly published observers, and changed account choices. Calls `commit` synchronously with the
    * validated IDs at the final decision, so no admission can publish between the audience check
    * and the audit write; resolving a promise first would let one publish before the caller writes
-   * the requirement. The callback must not await. A pending creation commits with undefined,
-   * recording no requirement.
+   * the requirement. The callback must not await.
    */
-  async authorizeTrackedObservation(
-      gatekeeperId: WorkpieceId, description: TrackedObservationDescription,
+  async authorizeObservation(
+      gatekeeperId: WorkpieceId, description: ObservationDescription,
       caller: GatekeeperCaller, executionId: string | undefined,
       commit: (subresources: string[] | undefined) => undefined): Promise<void> {
     this.#assertUsable(gatekeeperId);
-    if (this.host.creationPending(gatekeeperId)) return commit(undefined);
-    // Only an upgraded gatekeeper calls this, so switch a legacy connection to tracking, then
-    // check this read like any other; the switch imports the connection's history meanwhile.
-    if (!this.isTracked(gatekeeperId) && !await this.switchToTracking(gatekeeperId)) {
-      throw new Error(
-          "This observation was blocked: the connection does not advertise observer tracking.");
+    if (description.subresources === undefined || this.host.creationPending(gatekeeperId)) {
+      return commit(undefined);
     }
 
-    // RPC validation forwards properties the method doesn't declare.
-    if ("excludeObservers" in description && description.excludeObservers !== undefined) {
-      throw new Error(
-          "This observation was blocked: a connection tracked by the Workshop cannot exclude " +
-          "observers.");
-    }
     // Attributed to the trusted binding authorizer's caller, not its holder or a gatekeeper-
     // supplied ID: passing that capability elsewhere does not change its context. A hook firing
     // is attributed to the gadget its record says it wakes.
@@ -422,13 +232,14 @@ export class ObserverLedger {
     if (context === undefined) {
       throw new Error("This observation has no attributable chat or gadget.");
     }
-    let subresources = normalizeSubresources(description.subresources, MAX_SUBRESOURCES);
+    let subresources = normalizeSubresources(description.subresources);
     if (subresources.length === 0) {
       this.#assertLive(gatekeeperId, caller, executionId);
       return commit(subresources);
     }
 
     let connection = this.#storage.gatekeepers.get(gatekeeperId)!;
+    let vendorId = connectionVendorId(connection)!;
     let sharing = await this.host.getSharingManager();
     let verified = new Set<string>();
     for (let pass = 0; ; pass++) {
@@ -442,10 +253,13 @@ export class ObserverLedger {
       }
       let denied: string[];
       try {
-        denied = await this.#deniedObservers(connection, unverified.map(observer => ({
-          observerId: observer.observerId, accountId: observer.accountId,
-          user: this.host.users.get(this.host.users.idFromName(observer.profileId)),
-        })), subresources);
+        // Looked up for every observer even when one would do: a disconnected account is refused.
+        let observers: ObserverVerifier[] = [];
+        await boundedAll(unverified, async ({profileId, observerId, accountId}) => {
+          let user = this.host.users.get(this.host.users.idFromName(profileId));
+          observers.push({id: observerId, verifier: await requireVerifier(user, accountId, vendorId)});
+        });
+        denied = await this.#deniedObservers(connection, observers, subresources);
       } catch (error) {
         this.host.logger.warn("observer check refused an observation", {
           event: "observer.ledger.observation.refused", gatekeeperId, error,
@@ -512,10 +326,11 @@ export class ObserverLedger {
 
   /**
    * The deduplicated subresources a collaborator holding `role` must be able to read through each
-   * tracked connection in `connections`, the role's verification scope: a "build" collaborator
-   * reaches every context, a "use" collaborator the workspace and every gadget. Reads only the
-   * distinct requirement keys, never the observations recorded under them. `connections` are live
-   * records, so nothing through a connection since removed is read.
+   * connection in `connections`, the role's verification scope: a "build" collaborator reaches
+   * every context, a "use" collaborator the workspace and every gadget. Reads only the distinct
+   * requirement keys, never the observations recorded under them. `connections` are live
+   * records, so nothing through a connection since removed is read. Connections with no
+   * requirements are left out.
    */
   requiredSubresources(role: CollaboratorRole,
                        connections: GatekeeperRecord[]): Map<WorkpieceId, string[]> {
@@ -524,7 +339,6 @@ export class ObserverLedger {
         role === "build" ? ["workspace", "chat", "gadget"] : ["workspace", "gadget"];
     let required = new Map<WorkpieceId, string[]>();
     for (let connection of connections) {
-      if (connection.observerTracking !== true) continue;
       let ids = new Set<string>();
       for (let type of contexts) {
         for (let key of index.listKeys({prefix: observerRequirementPrefix(connection.id, type)})) {
@@ -538,31 +352,29 @@ export class ObserverLedger {
 
   /**
    * Everything a collaborator holding `role` is verified against: `gatekeepers`, the role's
-   * verification scope, and the requirements recorded through the tracked ones that the role
-   * reaches (see requiredSubresources()). Reuses `previous`'s requirements while neither its
-   * connections nor `nextActionId` have changed, so an admission nothing disturbs reads them once.
+   * verification scope, and the requirements recorded through them that the role reaches (see
+   * requiredSubresources()). Reuses `previous`'s requirements while neither its connections nor
+   * `nextActionId` have changed, so an admission nothing disturbs reads them once.
    */
   observerScope(role: CollaboratorRole, gatekeepers: GatekeeperRecord[],
                 previous?: ObserverScope): ObserverScope {
     let nextActionId = this.#storage.nextActionId.get();
     let requirements = previous?.nextActionId === nextActionId &&
-        sameObserverConnections(previous.gatekeepers, gatekeepers)
+        sameConnections(previous.gatekeepers, gatekeepers)
         ? previous.requirements
         : this.requiredSubresources(role, gatekeepers);
     return {gatekeepers, requirements, nextActionId};
   }
 
   /**
-   * Check that `accountId` (in `user`'s own User DO) can read `subresources` through
-   * `connection`, asking the connection about observer `observerId`. Throws, with a reason for
-   * the user, on any refusal: account gone, wrong vendor, missing method, failed call, malformed
-   * result, or denial.
+   * Check that the account `verifier` stands for can read `subresources` through `connection`,
+   * asking the connection about observer `observerId`. Throws, with a reason for the user, on any
+   * refusal: missing method, failed call, malformed result, or denial.
    */
-  async checkAccess(user: DurableObjectStub<UserDurableObject>, accountId: number,
-                    observerId: string, connection: GatekeeperRecord,
-                    subresources: string[]): Promise<void> {
+  async checkAccess(verifier: Fetcher<GatekeeperUserVerifier>, observerId: string,
+                    connection: GatekeeperRecord, subresources: string[]): Promise<void> {
     let denied = await this.#deniedObservers(
-        connection, [{observerId, user, accountId}], subresources);
+        connection, [{id: observerId, verifier}], subresources);
     if (denied.length > 0) {
       throw new Error(
           "This account can't access some of the data this workspace read through this " +
@@ -570,27 +382,16 @@ export class ObserverLedger {
     }
   }
 
-  // Looks up each observer's verifier for their chosen account (always, so a disconnected account
-  // is refused even with nothing to check), then asks the connection's verifyObserverAccess()
-  // about `subresources` in bounded batches. Returns the IDs of the observers denied by the first
-  // batch that denies anyone. Throws if a verifier can't be found (getVerifier's own reason), or
-  // if the gatekeeper fails to answer or answers malformed.
-  async #deniedObservers(connection: GatekeeperRecord, observers: ObserverAccount[],
+  // Asks the connection's verifyObserverAccess() about `subresources` for `observers`, in bounded
+  // batches. Returns the IDs of the observers denied by the first batch that denies anyone.
+  // Throws if the gatekeeper fails to answer or answers malformed.
+  async #deniedObservers(connection: GatekeeperRecord, observers: ObserverVerifier[],
                          subresources: string[]): Promise<string[]> {
-    let vendorId = connectionVendorId(connection)!;
-    let verifiers = new Map<string, Fetcher<GatekeeperUserVerifier>>();
-    await boundedAll(observers, async ({observerId, user, accountId}) => {
-      verifiers.set(observerId, await requireVerifier(user, accountId, vendorId));
-    });
-    if (subresources.length === 0) return [];
-
-    let chunks: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[][] = [];
+    let chunks: ObserverVerifier[][] = [];
     for (let i = 0; i < observers.length; i += CHECK_OBSERVER_BATCH_SIZE) {
-      chunks.push(observers.slice(i, i + CHECK_OBSERVER_BATCH_SIZE).map(({observerId}) => ({
-        id: observerId, verifier: verifiers.get(observerId)!,
-      })));
+      chunks.push(observers.slice(i, i + CHECK_OBSERVER_BATCH_SIZE));
     }
-    let facet = await this.host.getGatekeeperFacet(connection.id) as TrackingGatekeeper;
+    let facet = await this.host.getGatekeeperFacet(connection.id) as VerifyingGatekeeper;
     let denied = new Set<string>();
     for (let i = 0; i < subresources.length && denied.size === 0; i += MAX_SUBRESOURCES) {
       let batch = subresources.slice(i, i + MAX_SUBRESOURCES);
@@ -604,8 +405,7 @@ export class ObserverLedger {
 
 // One verifyObserverAccess() call, returning the IDs of the observers it denied: every one its
 // answer omits. A failed call or malformed answer throws, which denies every observer in it.
-async function askGatekeeper(facet: TrackingGatekeeper,
-                             observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
+async function askGatekeeper(facet: VerifyingGatekeeper, observers: ObserverVerifier[],
                              subresources: string[]): Promise<string[]> {
   let result: unknown;
   try {

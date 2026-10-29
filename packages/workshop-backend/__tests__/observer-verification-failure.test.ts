@@ -44,18 +44,14 @@ function seedGatekeepers(impl: ObserverImpl, ids: number[] = [1, 2]): void {
   }
 }
 
-function seedTrackedGatekeeper(impl: ObserverImpl, id: number): void {
-  seedGatekeepers(impl, [id]);
-  impl.storage.gatekeepers.put({ ...impl.storage.gatekeepers.get(id)!, observerTracking: true });
-}
-
-// A tracked read of `subresource` by a user outside any chat, which puts it on the workspace
-// context.
+// A read of `subresource` reported by a user outside any chat, which records a requirement on the
+// workspace context.
 function seedWorkspaceRequirement(impl: ObserverImpl, gatekeeperId: number, subresource: string): void {
   impl.observerLedger.recordObservation({
     gatekeeperId, caller: { from: "user" }, createdAt: new Date(), state: "approved",
     type: "observation",
-    description: { title: "Read", description: "A tracked read.", subresources: [subresource] },
+    description: { title: "Read", description: "A read reporting subresources.",
+                   subresources: [subresource] },
   });
 }
 
@@ -63,8 +59,8 @@ function seedWorkspaceRequirement(impl: ObserverImpl, gatekeeperId: number, subr
 // vendor-specific method only its gatekeeper calls.
 type VendorVerifier = { deniedSubresources(ids: string[]): Promise<string[]> };
 
-// Facets for every seeded connection: a legacy one registers through `hooks`, and a tracked one
-// admits each observer whose verifier denies none of the IDs.
+// Facets for every seeded connection: each registers observers through `hooks`, and verifies
+// recorded requirements by admitting each observer whose verifier denies none of the IDs.
 function setObserverFacets(impl: ObserverImpl, hooks: {
   addObserver?(id: number, observerId: string): Promise<void>;
   removeObserver?(id: number): Promise<void>;
@@ -274,6 +270,39 @@ describe("a binding that fails verification", () => {
     });
   });
 
+  it("removes a first-ever observer's registration when a recorded requirement denies her",
+      async () => {
+    let stub = env.TEST_OVERSEER.getByName("observer-verify-first-ever-requirement");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = instance["impl"];
+      seedOwner(impl);
+      seedGatekeepers(impl);
+      seedWorkspaceRequirement(impl, 2, "secret/read");
+      let registered: number[] = [];
+      let removed: number[] = [];
+      setObserverFacets(impl, {
+        addObserver: async id => { registered.push(id); },
+        removeObserver: async id => { removed.push(id); },
+      });
+      const clientUser = {
+        getVerifier: async (): Promise<VendorVerifier> => ({
+          deniedSubresources: async (ids: string[]) => ids,
+        }),
+        describeConnectedAccount: async () => null,
+      } as unknown as ObserverClientUser;
+
+      await expect(impl.ensureObserver("alice", clientUser, "build", configureAll))
+          .rejects.toThrow(/could not confirm/);
+
+      // addObserver() accepted her on both connections (on each pass, the re-prompt included),
+      // but connection 2's recorded read is one she cannot see, so every registration this call
+      // made is removed and nothing persists.
+      expect([...new Set(registered)].toSorted()).toEqual([1, 2]);
+      expect(removed.toSorted()).toEqual([1, 2]);
+      expect(impl.storage.observers.get("alice")).toBeUndefined();
+    });
+  });
+
   it("rolls back registrations from earlier repaired attempts after a later failure", async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-repaired-rollback");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
@@ -303,24 +332,22 @@ describe("a binding that fails verification", () => {
     });
   });
 
-  it.each(["legacy-only", "mixed"])(
+  it.each(["without requirements", "with recorded requirements"])(
       "reuses one observer identity for first-ever concurrent successful opens in %s workspaces",
       async workspace => {
-    let stub = env.TEST_OVERSEER.getByName(`observer-verify-first-concurrent-${workspace}`);
+    let stub = env.TEST_OVERSEER.getByName(
+        `observer-verify-first-concurrent-${workspace.replaceAll(" ", "-")}`);
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = instance["impl"];
       seedOwner(impl);
       seedGatekeepers(impl);
-      if (workspace === "mixed") {
-        seedTrackedGatekeeper(impl, 2);
-        seedWorkspaceRequirement(impl, 2, "read");
-      }
+      if (workspace === "with recorded requirements") seedWorkspaceRequirement(impl, 2, "read");
       let registrations: {id: number, observerId: string}[] = [];
       setObserverFacets(impl, {
         addObserver: async (id, observerId) => { registrations.push({id, observerId}); },
       });
       let checks: {accountId: number, ids: string[]}[] = [];
-      // The same direct-DO user double supports both legacy and tracked verification.
+      // The same direct-DO user double serves registration and requirement checks.
       const clientUser = {
         getVerifier: async (accountId: number): Promise<VendorVerifier> => ({
           deniedSubresources: async (ids: string[]) => {
@@ -373,12 +400,14 @@ describe("a binding that fails verification", () => {
       expect(secondPrompts).toBe(0);
       expect(alice.accountChoices).toEqual({ 1: 10, 2: 20 });
       expect(aliceRegistrations.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(aliceRegistrations.map(entry => entry.id))).toEqual(new Set([1, 2]));
       expect(aliceRegistrations.every(entry => entry.observerId === alice.observerId)).toBe(true);
-      if (workspace === "mixed") {
-        expect(aliceRegistrations.every(entry => entry.id === 1)).toBe(true);
+      if (workspace === "with recorded requirements") {
         expect(checks.length).toBeGreaterThanOrEqual(2);
         expect(checks.every(check => check.accountId === 20 && check.ids.join() === "read"))
             .toBe(true);
+      } else {
+        expect(checks).toEqual([]);
       }
     });
   });
@@ -415,13 +444,12 @@ describe("a binding that fails verification", () => {
     });
   });
 
-  it("admits against live requirements when an observed legacy connection is removed during its prompt", async () => {
+  it("admits against live requirements when an observed connection is removed during its prompt", async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-removed-during-prompt");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = instance["impl"];
       seedOwner(impl);
-      seedGatekeepers(impl, [1]);
-      seedTrackedGatekeeper(impl, 2);
+      seedGatekeepers(impl);
       seedWorkspaceRequirement(impl, 2, "live/read");
       let checkedAccounts: number[] = [];
       let checks: string[][] = [];

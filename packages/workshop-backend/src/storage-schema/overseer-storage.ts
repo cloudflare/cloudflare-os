@@ -63,19 +63,6 @@ export type GatekeeperRecord = {
   bindings?: Record<string, BindingRecord>;
 
   /**
-   * Set once the Workshop tracks this connection's observations itself (see observer-ledger.ts):
-   * created advertising ResourceDescription.supportsObserverTracking, or switched when it was
-   * later seen advertising it. Never cleared.
-   */
-  observerTracking?: true;
-
-  /**
-   * Set with `observerTracking` by a switch after creation, until the history the connection
-   * recorded under the legacy protocol is imported: admission waits for that import.
-   */
-  observerHistoryPending?: true;
-
-  /**
    * OBSOLETE: Before we had support for multiple gadgets per workspace, the binding name and
    * blueprint annotation information lived on the GatekeeperRecord. These properties continue
    * to be declared only to support migrating them away. The version 0 -> 1 migration copies
@@ -484,15 +471,14 @@ export type ActionRecord = {
   type: "observation";
 
   /**
-   * `subresources` is kept only on observations authorized through a connection the Workshop
-   * tracks itself (and on the history it imported when tracking began): the Workshop writes the
-   * validated list and strips the field from every other observation. Kept, it makes the record an
-   * observer requirement, attributed by `caller` (see observerContextOf and
+   * `subresources` is kept only on an observation the Workshop verified them for: it writes the
+   * validated list, and strips the field from a pending creation's simulated read. Kept, it makes
+   * the record an observer requirement, attributed by `caller` (see observerContextOf and
    * ObserverLedger.requiredSubresources). Nothing else stores requirements, which is why the
    * action log is append-only: deleting such a record would silently drop checks while its
    * connection still exists.
    */
-  description: StoredObservationDescription;
+  description: ObservationDescription;
 } | {
   type: "bindHook";
 
@@ -511,13 +497,6 @@ export type ActionRecord = {
   /** Denormalized for display purposes. */
   enabled: boolean;
 });
-
-/**
- * An observation's description as the action log stores it: one authorized through a connection
- * the Workshop tracks keeps the validated `TrackedObservationDescription.subresources` (see
- * ActionRecord).
- */
-export type StoredObservationDescription = ObservationDescription & {subresources?: string[]};
 
 /**
  * Key of the actions `byLastChanged` index: last state-change time, id-disambiguated because the
@@ -1466,8 +1445,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "id",
 
         // The first three indexes are backfilled by the version-3 migration;
-        // byObserverRequirement needs none: a Workshop without it had no
-        // authorizeTrackedObservation(), so none of its observations is a requirement.
+        // byObserverRequirement needs none: no gatekeeper reported subresources before the
+        // Workshop enforced them, so no earlier observation is a requirement.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
