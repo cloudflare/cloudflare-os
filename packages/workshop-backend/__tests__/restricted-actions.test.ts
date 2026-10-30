@@ -61,6 +61,7 @@ const POKE: ActionDescription = {
   // What a real gatekeeper asserts when its text shows everything the action will send.
   descriptionIsComplete: true,
   implementsRevert: false,
+  autoApprovable: false,
   actionKind: { tag: "poke", label: "Pokes" },
 };
 

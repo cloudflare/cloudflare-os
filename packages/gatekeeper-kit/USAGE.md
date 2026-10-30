@@ -544,6 +544,10 @@ Use `defineActions` and `stageAction` for externally visible side effects. They 
 submit, approve, apply, and retire lifecycle, including retryable versus terminal failure,
 dependency stranding, and connection fences.
 
+Every definition declares a `kind` and an `autoApprovable` verdict: `true` unless the
+`write-gatekeeper` skill's opt-out policy applies
+([Action kinds and auto-approval](../../.agents/skills/write-gatekeeper/SKILL.md#action-kinds-and-auto-approval)).
+
 `retainApplied: true` opts out of retirement: applied records move to a retained tier the kit never
 bounds. Enforce the binding's retention policy inside `runExclusive()`: walk storage-bounded pages
 with `journal.listRetained({ limit, cursor })`, pass each `nextCursor` back until it is absent, and

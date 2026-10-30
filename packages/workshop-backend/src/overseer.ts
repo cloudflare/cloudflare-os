@@ -559,7 +559,9 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         appliedAt: record.appliedAt,
         state: record.state,
         type: "action",
-        description: record.description,
+        description: {
+          ...record.description, autoApprovable: record.description.autoApprovable === true,
+        },
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,

@@ -48,9 +48,12 @@ const EVENT_VERSION_PREFIX = "eventVersion:";
 /** Which action tags each access level can submit, for the auto-approval catalog. */
 const LEVEL_TAGS: Record<CalendarAccessLevel, readonly string[]> = {
   read: [],
-  edit: ["calendar.events"],
-  schedule: ["calendar.events"],
+  edit: ["calendar.events", "calendar.shared-events"],
+  schedule: ["calendar.events", "calendar.shared-events", "calendar.responses"],
 };
+
+/** The tag of the kinds a calendar someone else owns is changed under; the others are the user's own calendar's. */
+const SHARED_EVENTS_TAG = "calendar.shared-events";
 
 type Session = CalendarReader | CalendarSession;
 
@@ -124,7 +127,11 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     const tags = LEVEL_TAGS[await this.#access()];
-    return this.#actions.autoApprovableKinds().filter(kind => tags.includes(kind.tag));
+    // One calendar is either the user's own or someone else's; every calendar can hold both.
+    const scope = this.ctx.props.scope;
+    const shared = scope.kind === "calendar" ? scope.owner.kind === "shared" : undefined;
+    return this.#actions.autoApprovableKinds()
+      .filter(kind => tags.includes(kind.tag) && (shared === undefined || (kind.tag === SHARED_EVENTS_TAG) === shared));
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<Session> {

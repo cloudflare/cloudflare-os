@@ -23,6 +23,13 @@ export type PathBase = {
   itemId?: string;
 };
 
+/** A pending action that adds an item: a new folder, an upload or a copy. */
+type Creation = Extract<SharePointAction, { kind: "createFolder" | "uploadFile" | "copyFile" | "copyFileAcrossLibraries" }>;
+
+function isCreation(action: SharePointAction): action is Creation {
+  return action.kind === "createFolder" || action.kind === "uploadFile" || action.kind === "copyFile" || action.kind === "copyFileAcrossLibraries";
+}
+
 /** The item's own drive-relative path. */
 export function drivePath(item: Pick<GraphDriveItem, "isRoot" | "parentPath" | "name">): string | undefined {
   if (item.isRoot) return "";
@@ -229,7 +236,7 @@ export class Overlay {
   addedTo(folderId: string, folderPath: string, libraryId: string, siteId: string | undefined): DriveEntry[] {
     const added: DriveEntry[] = [];
     for (const { action } of this.#pending) {
-      if ((action.kind === "createFolder" || action.kind === "uploadFile" || action.kind === "copyFile") && this.#folderId(action.payload.parent) === folderId) {
+      if (isCreation(action) && this.#folderId(action.payload.parent) === folderId) {
         // Once applied, the real item is listed by Graph and this stand-in is gone with the action.
         added.push(this.#created(action, folderPath, libraryId, siteId));
       }
@@ -246,7 +253,7 @@ export class Overlay {
   /** A pending creation by its temporary ID, as an entry. */
   created(id: string): DriveEntry | undefined {
     for (const { action } of this.#pending) {
-      if ((action.kind === "createFolder" || action.kind === "uploadFile" || action.kind === "copyFile") && action.payload.ref === id) {
+      if (isCreation(action) && action.payload.ref === id) {
         return this.#created(action, action.payload.parent.path, action.payload.parent.driveId, undefined);
       }
     }
@@ -269,7 +276,7 @@ export class Overlay {
   /** The file a pending copy copies, by the copy's temporary ID: what reading the copy reads. */
   copySource(id: string): ItemRef | undefined {
     for (const { action } of this.#pending) {
-      if (action.kind === "copyFile" && action.payload.ref === id) return action.payload.source.ref;
+      if ((action.kind === "copyFile" || action.kind === "copyFileAcrossLibraries") && action.payload.ref === id) return action.payload.source.ref;
     }
     return undefined;
   }
@@ -290,7 +297,7 @@ export class Overlay {
     return this.#changes.get(id)?.deleted === true;
   }
 
-  #created(action: Extract<SharePointAction, { kind: "createFolder" | "uploadFile" | "copyFile" }>, folderPath: string, libraryId: string,
+  #created(action: Creation, folderPath: string, libraryId: string,
            siteId: string | undefined): DriveEntry {
     const { payload } = action;
     const resolvedId = this.#resolve(payload.ref);
@@ -304,7 +311,7 @@ export class Overlay {
       libraryId,
       ...(siteId ? { siteId } : {}),
       ...(action.kind === "uploadFile" ? { size: action.payload.file.size, mimeType: action.payload.mimeType }
-        : action.kind === "copyFile" ? { ...(action.payload.size !== undefined ? { size: action.payload.size } : {}), ...(action.payload.mimeType ? { mimeType: action.payload.mimeType } : {}) }
+        : action.kind === "copyFile" || action.kind === "copyFileAcrossLibraries" ? { ...(action.payload.size !== undefined ? { size: action.payload.size } : {}), ...(action.payload.mimeType ? { mimeType: action.payload.mimeType } : {}) }
         : { childCount: 0 }),
       createdAt: new Date(payload.submittedAt).toISOString(),
       modifiedAt: new Date(payload.submittedAt).toISOString(),

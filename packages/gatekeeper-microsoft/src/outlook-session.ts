@@ -21,7 +21,7 @@ import { DownloadTooLargeError, GraphApiError, type GraphApi } from "./graph-api
 import { graphInstant } from "./calendar-time";
 import { organizationDomains } from "./directory";
 import type { StoredIdentity } from "./microsoft-credentials";
-import { MAX_BATCH, replaceOwnPart, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
+import { MAX_BATCH, moveKind, replaceOwnPart, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
 import {
   MAX_SUBJECT_CHARS, attachmentBytes, checkBody, checkSubject, mailToMarkdown, markdownToMailHtml, parseRecipients, senderKind,
 } from "./outlook-content";
@@ -315,6 +315,26 @@ export class OutlookContext implements Disposable {
     }
     throw new Error(`Mail can't be moved into ${target.name ? `"${target.name}"` : "that folder"} from here. Choose a folder you see in Outlook` +
       " (use delete to move mail to Deleted Items).");
+  }
+
+  /**
+   * Whether a folder is Junk Email or under it, a pending `~N` folder too: Exchange's Junk Email
+   * retention reaches its subfolders, so mail moved there is on its way out as well. A chain the
+   * walk can't finish, too deep or through a folder it can't find, counts as under Junk Email, so
+   * such a move waits for a person.
+   */
+  async inJunkEmail(folderId: string): Promise<boolean> {
+    const known = await this.wellKnown();
+    const junk = known.junkemail;
+    if (junk === undefined) return false;
+    let current: string | undefined = this.host.resolve(folderId);
+    for (let depth = 0; depth < 32 && current !== undefined; depth++) {
+      if (current === junk) return true;
+      if (current === known.msgfolderroot) return false;
+      const at: string = current;
+      current = isProvisional(at) ? this.overlay().folders.find(folder => folder.id === at)?.parentId : (await this.folder(at))?.parentId;
+    }
+    return true;
   }
 
   // -- messages ------------------------------------------------------------------------------
@@ -1210,7 +1230,8 @@ export class OutlookSessionImpl extends OutlookReaderImpl implements OutlookSess
       return from === undefined ? target : { ...target, folderId: from, folder: await ctx.folderPath(from) };
     }));
     await this.#shown(messages, await ctx.infos(messages));
-    await ctx.host.submit(ctx.queue, "moveMessages", { mailbox: ctx.scope.mailbox, messages: targets, to, as, submittedAt: Date.now() });
+    const kind = moveKind(as, await ctx.inJunkEmail(to.id));
+    await ctx.host.submit(ctx.queue, kind, { mailbox: ctx.scope.mailbox, messages: targets, to, as, submittedAt: Date.now() });
     return as === "delete" ? [] : await ctx.infos(messages);
   }
 

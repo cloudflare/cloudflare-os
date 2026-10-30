@@ -17,7 +17,7 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
+import { codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
@@ -83,6 +83,7 @@ import type {
   UsageLimit,
   ZoomInfoSession,
 } from "./types";
+import { AUTO_APPROVABLE_KINDS, enrichmentActionDescription } from "./zoominfo-actions";
 import TYPES_CODE from "./types.txt";
 import ZOOMINFO_LOGO_SVG from "./zoominfo-logo.svg";
 import ZOOMINFO_ACCOUNT_CONFIGURATOR_HTML from "./generated/account-configurator-ui.txt";
@@ -689,7 +690,7 @@ export class ZoomInfoGatekeeperImpl extends DurableObject<Env, ZoomInfoGatekeepe
   }
 
   async getAutoApprovableActions() {
-    return [];
+    return AUTO_APPROVABLE_KINDS;
   }
 
   #makeApi(account: DurableObjectStub<UserAccount>): ZoomInfoApi {
@@ -1107,23 +1108,8 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     const store = new EnrichmentStore(this.#kv);
     const id = store.submit({ kind, summary, attributes, page });
     try {
-      await this.#approvalQueue.submitAction(id, {
-        title: `ZoomInfo: ${summary}`,
-        // The request body is what leaves the workspace (names, emails, company identifiers), so
-        // the approver sees it exactly, after the summary and the cost.
-        ...buildDescription(
-          `${summary}\n\n**Credit cost:** up to **${worstCaseCredits}** ZoomInfo bulk-data ` +
-          `credit${worstCaseCredits === 1 ? "" : "s"} (fewer if records are already under ` +
-          `management; none for no-match/error results). Charged only on approval.`)
-          .json("Request", attributes)
-          .json("Page", page ?? {})
-          .finish(),
-        // Spent credits can't be refunded, so there is no automatic revert.
-        implementsRevert: false,
-        // No simulation: suspend the agent until the user decides rather than letting it read back
-        // un-enriched state.
-        awaitDecision: true,
-      });
+      await this.#approvalQueue.submitAction(
+        id, enrichmentActionDescription(summary, attributes, worstCaseCredits, page));
     } catch (error) {
       store.removePending(id);
       throw error;

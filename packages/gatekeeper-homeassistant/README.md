@@ -62,7 +62,14 @@ See `src/types.d.ts` for the complete API and `@example` blocks for every method
 
 ## Approval & simulation
 
-Every read calls `authorizeObservation` and every write goes through `submitAction`. Writes do **not** execute against HA until the user approves them.
+Every read calls `authorizeObservation` and every write goes through `submitAction`. Writes do **not** execute against HA until the user approves them, or until an always-approve rule the user enabled covers them.
+
+Two kinds can be auto-approved, each only once the user enables a rule for it (`src/auto-approval.ts` holds the verdicts):
+
+- **Control devices** (`control-devices`): allow-listed device services such as `light.turn_on`, `switch.toggle`, `climate.set_temperature`, `media_player.volume_set` or `cover.close_cover`, when every entity the call reaches, through `target` or target keys in `data`, is known to the registry and is not a config or diagnostic entity. Entities of script-backed integrations (template, command_line, wake_on_lan, rest, group, universal, switch_as_x) are excluded, since turning one on runs whatever it was configured to do. Automations the user wired to an ordinary device's state still run when it changes; enabling the kind accepts that. Covers must be blinds, curtains, shades, shutters, awnings or dampers, named by entity id; door, garage, gate and window covers, and covers of unknown class, are excluded. A capability scoped to an entity, device, area or label cannot widen its target through `data`, and an entity binding whose domain has no allow-listed service (a lock, for instance) does not offer this kind.
+- **Edit dashboards** (`edit-dashboards`): `Dashboard.saveConfig`, which reverts to the exact previous configuration. A configuration that could make the browser load an address off the Home Assistant origin always needs manual approval: absolute or scheme-relative URLs (including `https:host` with no slashes), backslashes, HTML character references, Jinja or JavaScript templates, `javascript:` links and `custom:` cards or strategies. Only a whole-instance binding reaches dashboards, so only it offers this kind.
+
+Everything else always needs manual approval: other service calls (locks, alarm panels, `notify`, `tts`, scenes, scripts, automations, helpers, `homeassistant.*`, custom integrations) under **Call Home Assistant services**, and `fireEvent` under **Fire events**.
 
 Until approval, reads reflect a **simulated post-action world**: e.g. after `entity.turnOn()`, an immediate `entity.getState()` shows `state: "on"` even though HA hasn't been touched. This lets agents chain reads and writes without waiting for user approval. Simulation predicts final states only — no transition timing, and unrecognized service calls (custom integrations, scenes, scripts, templates) leave state untouched.
 
@@ -86,6 +93,7 @@ src/
 ├── homeassistant.ts        # main: Vendor, UserAccount, User, GatekeeperImpl, Session impls
 ├── homeassistant-api.ts    # REST + WS clients (incl. timeouts and error-body sanitization)
 ├── approvals.ts            # describeAction, executeAction, applyRevertForEntity, ...
+├── auto-approval.ts        # action kinds and the per-call auto-approval verdict
 ├── simulation.ts           # pure overlay-at-read-time helpers
 ├── registry-utils.ts       # shared resolveTargets helper
 ├── types.d.ts              # public Session/Area/Label/Device/Entity/Dashboard interfaces

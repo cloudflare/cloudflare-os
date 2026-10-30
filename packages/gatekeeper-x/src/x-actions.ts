@@ -672,6 +672,8 @@ const postId = (host: XActionHost, target: PostTarget) => host.refs.requireResol
 export const actions = defineActions<XActionHost, XActions>({
   createPost: {
     kind: { tag: "x.post.create", label: "Publish X posts" },
+    // X's developer policy forbids automating posts.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     // Non-idempotent at X: a lost activation must not replay a post.
     claimBeforeApply: true,
@@ -707,6 +709,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   reply: {
     kind: { tag: "x.post.reply", label: "Reply to X posts" },
+    // A reply is a public post, and X requires prior approval for AI-generated replies.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: async (payload, host) => {
@@ -736,6 +740,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   deletePost: {
     kind: { tag: "x.post.delete", label: "Delete X posts" },
+    // A deleted post can't be restored.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -756,6 +762,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   like: {
     kind: { tag: "x.post.like", label: "Like X posts" },
+    // X's developer policy requires likes to be the user's own; unliking shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -781,6 +789,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   repost: {
     kind: { tag: "x.post.repost", label: "Repost X posts" },
+    // X's developer policy forbids automating reposts; undoing one shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -856,6 +866,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   follow: {
     kind: { tag: "x.user.follow", label: "Follow X accounts" },
+    // X's developer policy forbids automating follows; unfollowing shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -911,6 +923,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   createList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // Lists can be public, and the kind also covers List deletion and privacy changes.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: async (payload, host) => {
@@ -966,6 +980,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   updateList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // Can make a private List public.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => {
       const builder = buildDescription("Change this List's details.");
@@ -1001,6 +1017,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   deleteList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // A deleted List can't be restored.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => ({
       title: sanitizeTitle(`Delete the X List "${payload.list.info.name}"`),
@@ -1022,6 +1040,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   listMember: {
     kind: { tag: "x.list.members", label: "Manage X List members" },
+    // Changes List membership, and X may notify someone added to a public List.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => {
       const builder = buildDescription(payload.add

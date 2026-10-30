@@ -102,6 +102,8 @@ export type OutlookActions = {
     submittedAt: number;
     appliedAt?: number;
   };
+  /** A move that removes mail (see `moveKind`): the same change, never auto-approved. */
+  deleteMessages: OutlookActions["moveMessages"];
   updateMessages: {
     mailbox: OutlookMailboxRef;
     messages: (MessageTarget & { before: MessageState })[];
@@ -512,8 +514,17 @@ function repliesJson(replies: OutlookActions["setAutomaticReplies"]["replies"]):
 
 const ORGANIZE = { tag: "outlook.organize", label: "Organize Outlook mail" } as const;
 
-/** Each kind's definition, by itself for tests; `actions` is the set the facet binds. */
-export const definitions = {
+/**
+ * The kind a move is proposed as. Mail moved to Deleted Items, or into Junk Email or a folder under
+ * it (`intoJunk`), which Exchange empties on a schedule, is on its way out of the mailbox, so that
+ * move is never auto-approved; any other move or an archive is.
+ */
+export function moveKind(as: OutlookActions["moveMessages"]["as"], intoJunk: boolean): "moveMessages" | "deleteMessages" {
+  return as === "delete" || intoJunk ? "deleteMessages" : "moveMessages";
+}
+
+/** Every kind's definition but `deleteMessages`, which is `moveMessages`'s. */
+const ownDefinitions = {
   moveMessages: {
     kind: ORGANIZE,
     autoApprovable: true,
@@ -734,7 +745,8 @@ export const definitions = {
 
   deleteDraft: {
     kind: { tag: "outlook.drafts", label: "Write Outlook drafts" },
-    autoApprovable: true,
+    // Never: the draft goes to Deleted Items, and the user may have worked on it in Outlook since.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: payload => {
       const builder = buildDescription(`Delete the draft ${named(payload.subject)}${mailboxNote(payload.mailbox)}. It goes to Deleted Items, from where it can be restored.`);
@@ -861,6 +873,12 @@ export const definitions = {
       return { action: { ...payload, appliedAt: Date.now() } };
     },
   },
+} satisfies { [K in Exclude<keyof OutlookActions, "deleteMessages">]: ActionDefinition<OutlookActions[K], OutlookActionHost> };
+
+/** Each kind's definition, by itself for tests; `actions` is the set the facet binds. */
+export const definitions = {
+  ...ownDefinitions,
+  deleteMessages: { ...ownDefinitions.moveMessages, autoApprovable: false },
 } satisfies { [K in keyof OutlookActions]: ActionDefinition<OutlookActions[K], OutlookActionHost> };
 
 /** The action set the gatekeeper binds to its journal. */
@@ -895,7 +913,8 @@ async function leftBinding(host: OutlookActionHost, check: Parameters<OutlookAct
  */
 export async function revert(action: OutlookAction, host: OutlookActionHost): Promise<RevertOutcome> {
   switch (action.kind) {
-    case "moveMessages": {
+    case "moveMessages":
+    case "deleteMessages": {
       const { payload } = action;
       // The move itself may have taken the messages out of the binding (a deletion or archive from
       // an Inbox-only one does), so what is undone is that move: each message is put back only if

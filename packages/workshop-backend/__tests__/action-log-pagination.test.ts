@@ -169,6 +169,23 @@ describe("listActions", () => {
     expect(page.nextBeforeId).toBeUndefined();
   });
 
+  it("reports a stored description that predates the verdict as not auto-approvable", async () => {
+    let storage = makeActionStorage();
+    storage.actions.put({
+      id: 0, gatekeeperId: 1, caller: { from: "agent", chatId: 1 },
+      createdAt: new Date(FIXTURE_EPOCH), state: "pending", type: "action", action: 0,
+      description: { title: "Edit", description: "Edits.", implementsRevert: false },
+    });
+    putAction(storage, 1);
+    let client = await openFakeOverseer(storage);
+
+    let { entries } = await client.listActions();
+    expect(entries).toMatchObject([
+      { id: 1, type: "action", description: { autoApprovable: true } },
+      { id: 0, type: "action", description: { autoApprovable: false } },
+    ]);
+  });
+
   it("pages without overlap or gaps", async () => {
     let storage = makeActionStorage();
     let expected: number[] = [];

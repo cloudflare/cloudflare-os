@@ -119,9 +119,10 @@ without a second read.
 - Draft: `createDraft`, `createReplyDraft`, `createForwardDraft`, `updateDraft`, `deleteDraft`.
   Bodies are Markdown, written as Outlook HTML. Drafts land in the user's Drafts folder, where they
   can finish and send them themselves. `updateDraft` and `deleteDraft` take only drafts the binding
-  wrote (`ownDraft:` in the gatekeeper's storage): their actions can be auto-approved, and a change to
-  a draft the user is about to send from Outlook would go out unseen. The user's own drafts can be
-  read, and sent with `send`, which is never auto-approved and shows the draft whole.
+  wrote (`ownDraft:` in the gatekeeper's storage): creating and updating can be auto-approved
+  (deleting cannot), and a change to a draft the user is about to send from Outlook would go out
+  unseen. The user's own drafts can be read, and sent with `send`, which is never auto-approved and
+  shows the draft whole.
 - Send: `send(draftId)`, `sendMail`, `reply`, `forward`. A reply's `to`, `cc` and `bcc` add to the
   reply's own recipients, never replace them.
 - Automatic replies, whole-mailbox bindings only: `getAutomaticReplies()` (draft) and
@@ -146,8 +147,8 @@ Exchange allows. Every action is fenced on the connection's `(tenantId, objectId
 
 | Tag | Actions | Auto-approvable | Revert |
 |---|---|---|---|
-| `outlook.organize` | move, archive, delete (to Deleted Items), mark read, flag, categorize, create folder | Yes | moves back; restores read state, flag and categories; deletes the folder if still empty |
-| `outlook.drafts` | create a draft; update or delete one the binding wrote | Yes | create: moves the draft to Deleted Items (refused once sent); update: restores text and recipients (fenced on the key the update left), not removed attachments; delete: moves it back to Drafts |
+| `outlook.organize` | move, archive, delete (to Deleted Items), mark read, flag, categorize, create folder | Yes, except `deleteMessages`: a delete, or a move into Junk Email or a folder under it, which Exchange empties on a schedule (chosen by `moveKind`) | moves back; restores read state, flag and categories; deletes the folder if still empty |
+| `outlook.drafts` | create a draft; update or delete one the binding wrote | Yes, except `deleteDraft` | create: moves the draft to Deleted Items (refused once sent); update: restores text and recipients (fenced on the key the update left), not removed attachments; delete: moves it back to Drafts |
 | `outlook.send` | send a draft, a new message, a reply, a forward | **Never** | can't be unsent |
 | `outlook.settings` | automatic replies | **Never** | restores the previous setting |
 

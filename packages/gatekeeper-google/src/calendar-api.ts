@@ -80,6 +80,24 @@ type GoogleCalendarEvent = {
   transparency?: "opaque" | "transparent";
   visibility?: "default" | "public" | "private" | "confidential";
   recurringEventId?: string;
+  eventType?: string;
+  attendeesOmitted?: boolean;
+  organizer?: { self?: boolean };
+  etag?: string;
+};
+
+/**
+ * An event as one read reports it, with the fields that decide whether changing it reaches anyone
+ * but the bound calendar: who organizes it, whether Google left attendees out of the list, and its
+ * type (an out-of-office event can decline invitations on the user's behalf). The agent-facing
+ * `CalendarEvent` omits them. `etag` identifies this version of the event, so a write can be made
+ * conditional on nothing having changed since.
+ */
+export type LiveCalendarEvent = CalendarEvent & {
+  eventType?: string;
+  attendeesOmitted?: boolean;
+  organizer?: { self?: boolean };
+  etag?: string;
 };
 
 export function encodeCalendarId(calendarId: string): string {
@@ -193,7 +211,7 @@ export function validateCalendarTimeWindow(timeMin: Date, timeMax: Date, maxDays
   }
 }
 
-class GoogleCalendarApiError extends Error {
+export class GoogleCalendarApiError extends Error {
   constructor(readonly status: number, body: string) {
     super(`Google Calendar API request failed: ${status} ${body}`);
   }
@@ -376,24 +394,39 @@ export class GoogleCalendarApi {
     return calendarEventFromGoogle(created, { includeDescriptions: true });
   }
 
+  /**
+   * Applies `patch` to the event. With `ifMatch`, Google applies it only while the event is still
+   * at that etag and answers 412 otherwise.
+   */
   async patchEvent(
     calendarId: string,
     eventId: string,
     patch: Partial<GoogleCalendarEvent>,
     sendUpdates: CalendarSendUpdates = "all",
+    ifMatch?: string,
   ): Promise<CalendarEvent> {
     let updated = await this.#fetch<GoogleCalendarEvent>(
       `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+        ...(ifMatch ? { headers: { "If-Match": ifMatch } } : {}),
+      },
     );
     return calendarEventFromGoogle(updated, { includeDescriptions: true });
   }
 
-  async getEvent(calendarId: string, eventId: string): Promise<CalendarEvent> {
+  async getEvent(calendarId: string, eventId: string): Promise<LiveCalendarEvent> {
     let event = await this.#fetch<GoogleCalendarEvent>(
       `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}`,
     );
-    return calendarEventFromGoogle(event, { includeDescriptions: true });
+    return {
+      ...calendarEventFromGoogle(event, { includeDescriptions: true }),
+      ...(event.eventType ? { eventType: event.eventType } : {}),
+      ...(event.attendeesOmitted ? { attendeesOmitted: true } : {}),
+      ...(event.organizer ? { organizer: { self: event.organizer.self === true } } : {}),
+      ...(event.etag ? { etag: event.etag } : {}),
+    };
   }
 
   async deleteEvent(

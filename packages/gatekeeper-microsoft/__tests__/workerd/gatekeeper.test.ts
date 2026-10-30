@@ -11,7 +11,7 @@ import {
   BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, GRAPH, NOTES, OTHER, OTHER_FILE, PHILLIP, READ_SCOPES, ROOT, SARAH, SITE_ID, SPECS,
   accountStub, facet, failure, folderProps, hooks, identityOf, json, props, ref, seedAccount, unwrap,
 } from "./fake-graph";
-import type { GatekeeperProps, Outcome, Step } from "./worker";
+import type { AnyGatekeeperProps, GatekeeperProps, Outcome, Step } from "./worker";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -144,6 +144,42 @@ describe("read-only access", () => {
     for (const [scope, tags] of cases) {
       const kinds = unwrap<Array<{ tag: string }>>(await hooks().autoApprovable(facet(`auto-${scope.kind}`), props(id, scope)));
       expect(kinds.map(kind => kind.tag).toSorted(), scope.kind).toEqual(tags.toSorted());
+    }
+  });
+});
+
+describe("Outlook and Calendar's automatic approval", () => {
+  it("offers Outlook organizing and drafts for automatic approval, never sending or automatic replies", async () => {
+    const graph = new FakeGraph().install();
+    const mail = ["Mail.ReadWrite", "Mail.ReadWrite.Shared", "Mail.Send", "MailboxSettings.ReadWrite", "People.Read", "User.ReadBasic.All"];
+    const id = await seedAccount(graph, PHILLIP, { scopes: [...mail.map(scope => `https://graph.microsoft.com/${scope}`), "openid"] });
+    for (const [access, tags] of [["read", []], ["draft", ["outlook.drafts", "outlook.organize"]], ["send", ["outlook.drafts", "outlook.organize"]]] as const) {
+      const binding = { userObjectId: id, scope: { mailbox: { kind: "me" }, access } } satisfies AnyGatekeeperProps;
+      const kinds = unwrap<Array<{ tag: string }>>(await hooks().autoApprovable(facet(`outlook-auto-${access}`), binding));
+      expect(kinds.map(kind => kind.tag).toSorted(), access).toEqual(tags);
+    }
+  });
+
+  it("offers Calendar events, events in others' calendars and silent responses for automatic approval, as each binding can submit them", async () => {
+    const graph = new FakeGraph().install();
+    const calendar = ["Calendars.ReadWrite", "Calendars.ReadWrite.Shared", "User.ReadBasic.All"];
+    const id = await seedAccount(graph, PHILLIP, { scopes: [...calendar.map(scope => `https://graph.microsoft.com/${scope}`), "openid"] });
+    const one = (owner: { kind: "me" } | { kind: "shared"; id: string; address: string }) => ({
+      kind: "calendar", owner, calendar: { id: "AAMkCal", entryId: "ENTRY", name: "Team" }, details: "full", privateEvents: "busy", access: "schedule",
+    }) as const;
+    const cases = [
+      [{ kind: "all", access: "read" }, []],
+      [{ kind: "all", access: "edit" }, ["calendar.events", "calendar.shared-events"]],
+      [{ kind: "all", access: "schedule" }, ["calendar.events", "calendar.responses", "calendar.shared-events"]],
+      [{ kind: "availability", access: "schedule" }, []],
+      // One calendar is either the user's own or someone else's, never both.
+      [one({ kind: "me" }), ["calendar.events", "calendar.responses"]],
+      [one({ kind: "shared", id: SARAH.oid, address: SARAH.upn }), ["calendar.shared-events"]],
+    ] as const;
+    for (const [index, [scope, tags]] of cases.entries()) {
+      const binding = { userObjectId: id, scope } satisfies AnyGatekeeperProps;
+      const kinds = unwrap<Array<{ tag: string }>>(await hooks().autoApprovable(facet(`calendar-auto-${index}`), binding));
+      expect(kinds.map(kind => kind.tag).toSorted(), `${scope.kind} ${scope.access}`).toEqual(tags);
     }
   });
 });
@@ -348,6 +384,17 @@ describe("the configurator", () => {
 });
 
 describe("changes", () => {
+  it("tells the overseer which changes may be auto-approved: a copy within the library, never a deletion", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const binding = folderProps(id);
+    const name = facet("verdicts");
+    unwrap(await hooks().run(name, binding, [["copyFile", ref(NOTES), ref(SPECS), "notes (copy).txt"]]));
+    unwrap(await hooks().run(name, binding, [["delete", ref(BRIEF)]]));
+    const verdicts = (await hooks().queueLog(name)).submitted.map(({ description }) => [description.actionKind?.tag, description.autoApprovable]);
+    expect(verdicts).toEqual([["sharepoint.files.create", true], ["sharepoint.files.delete", false]]);
+  });
+
   it("refuses a second change to a file's content while one awaits approval", async () => {
     const graph = new FakeGraph().install();
     graph.on("GET", /\/content$/, () => new Response("old text\n", { headers: { "content-type": "text/plain" } }));

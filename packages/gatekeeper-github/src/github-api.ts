@@ -1371,6 +1371,29 @@ export class GitHubApi {
     }
   }
 
+  /**
+   * Whether GitHub reports a branch as protected; false for a branch that does not exist. An
+   * unconditional, uncached read, since it decides whether a push may apply without a person. A
+   * renamed branch's old name redirects to the new branch, which is not followed, so it counts
+   * as protected: the branch it names may be.
+   */
+  async isBranchProtected(owner: string, repo: string, branch: string): Promise<boolean> {
+    try {
+      const result = await this.#request<GitHubBranchResponse>(
+        "GET",
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
+          validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
+      );
+      return result.data.protected === true;
+    } catch (error) {
+      if (!(error instanceof GitHubApiError)) throw error;
+      if (isRedirect(error.status)) return true;
+      // 409 is GitHub's answer for an empty repository, which has no branches at all.
+      if (error.status === 404 || error.status === 409) return false;
+      throw error;
+    }
+  }
+
   async listTagsConditional(
     owner: string,
     repo: string,

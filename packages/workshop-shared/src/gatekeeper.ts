@@ -698,7 +698,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * account to reach the provider through, though it may still be asked to describe() itself.
    * Creates nothing. The Overseer queues `action` as the creation, which applies before anything
    * else queued on the gatekeeper, through Gatekeeper.applyCreation() once a user approves it.
-   * Present only on vendors with a `creatable` resource type.
+   * Present only on vendors with a `creatable` resource type. The `action` (the creation card) sets
+   * `autoApprovable: false`: approving it means choosing the account to create the resource in.
    */
   createResource?(resourceUrlPattern: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
@@ -1004,11 +1005,12 @@ export interface Gatekeeper<Session> extends DurableObject {
   getTypeScriptTypes(): Promise<string>;
 
   /**
-   * Catalog of action kinds this gatekeeper MAY auto-apply without per-action review, for
-   * pre-approval UIs that must list them before any action has been submitted. Each entry is the
-   * {tag, label} an action of that kind carries on its ActionDescription.actionKind. This is the
-   * *potential* set; the per-action `autoApprovable` verdict is still the binding gate at apply
-   * time. Gatekeepers with no auto-approvable actions return [].
+   * Catalog of action kinds whose actions may carry `autoApprovable: true`, for pre-approval UIs
+   * that let a user enable a rule for a kind before any such action has been submitted. Each entry
+   * is the {tag, label} an action of that kind carries on its ActionDescription.actionKind. The
+   * catalog approves nothing by itself: the user must enable a rule for the kind, and each submitted
+   * action's own `autoApprovable` verdict still gates it. Gatekeepers with no auto-approvable
+   * actions return [].
    */
   getAutoApprovableActions(): Promise<ActionKind[]>;
 
@@ -1649,7 +1651,8 @@ export type ActionDescription = {
    * Author's verdict that this specific action is safe to auto-apply without human review, IF the
    * user has opted in to auto-approving this action's kind (see `actionKind`). Only the gatekeeper
    * author knows whether a given edit is benign vs. destructive, so this gate is set per-action.
-   * Absent -> never auto-approvable, even if a matching rule exists.
+   * `true` is the norm; the `write-gatekeeper` skill lists when an action must be `false`, and
+   * prefers computing the verdict from the payload over a blanket `false`.
    *
    * TODO: A single opaque boolean isn't the ideal long-term shape. Eventually the gatekeeper should
    * describe the *nature* of the action -- e.g. destructive vs. additive, reversible vs. not,
@@ -1657,7 +1660,7 @@ export type ActionDescription = {
    * policy decide whether auto-approval is allowed, rather than the gatekeeper author hard-coding
    * that judgement here.
    */
-  autoApprovable?: boolean;
+  autoApprovable: boolean;
 
   // ----------------------------------------------------------------------------
   // Policy hints
@@ -1681,8 +1684,9 @@ export type ActionDescription = {
 
   /**
    * The action's kind (stable tag + display label), or absent for actions that can't be matched by
-   * any tag-keyed rule -- those always require manual approval. `actionKind.tag` is what auto-
-   * approval rules and the future policy engine key on; `actionKind.label` is shown in the UI.
+   * any tag-keyed rule -- those always require manual approval. Required when `autoApprovable` is
+   * true. `actionKind.tag` is what auto-approval rules and the future policy engine key on; users'
+   * rules are stored under it, so a tag is never renamed. `actionKind.label` is shown in the UI.
    */
   actionKind?: ActionKind;
 }

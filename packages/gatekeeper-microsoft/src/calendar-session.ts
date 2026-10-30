@@ -22,7 +22,7 @@ import { organizationDomains } from "./directory";
 import type { StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
-import { type CalendarAction, type CalendarActions, type CalendarRef, type EventTarget, type EventWrite, type InviteNote } from "./calendar-actions";
+import { respondKind, updateKind, type CalendarAction, type CalendarActions, type CalendarRef, type EventTarget, type EventWrite, type InviteNote } from "./calendar-actions";
 import { CalendarApi, isCalendarId, type GraphCalendar, type GraphEvent, type GraphSchedule, type Weekday } from "./calendar-graph";
 import { checkRecurrence, eventInfo, eventTimes, hidesDetails, isPrivate, recurrenceWords, searchable, type EventView } from "./calendar-events";
 import { freeTimes, type Attendance } from "./calendar-free";
@@ -906,7 +906,10 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       calendar: ctx.calendarRef(calendar), ref, transactionId: crypto.randomUUID(), event, zone, submittedAt: Date.now(),
     };
     await ctx.host.submit(ctx.queue, meeting ? "createMeeting" : await ctx.owns(calendar) ? "createEvent" : "createSharedEvent", payload);
-    return ctx.info(ctx.overlay().pendingEvent(ref, me)!.event, calendar, await ctx.view(calendar), ctx.overlay());
+    // An auto-approval can apply the creation before submit returns; then show the event it made.
+    const pending = ctx.overlay().pendingEvent(ref, me);
+    const created = pending?.event ?? (await ctx.guarded(ref)).event;
+    return ctx.info(created, calendar, await ctx.view(calendar), ctx.overlay());
   }
 
   async updateEvent(eventId: string, changes: EventChanges, options?: EventChangeOptions): Promise<EventInfo> {
@@ -971,11 +974,16 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
     } else {
       // A pending invitation would make this a change to a meeting, told to everyone on it.
       ctx.requireInvitesSettled(event);
-      await ctx.host.submit(ctx.queue, await ctx.owns(calendar) ? "updateEvent" : "updateSharedEvent", payload);
+      const pending = (ctx.overlay().changes.get(event.id) ?? []).map(change => change.changes.sensitivity);
+      await ctx.host.submit(ctx.queue, updateKind(payload, await ctx.owns(calendar), pending), payload);
     }
     const overlay = ctx.overlay();
-    const shown = isProvisional(event.id) ? overlay.pendingEvent(event.id, me)!.event : event;
-    return ctx.info(shown, calendar, view, overlay);
+    // An auto-approval may have applied this change (and the creation) already; then read back the
+    // event it left rather than show the one fetched before it.
+    const pending = isProvisional(event.id)
+      ? overlay.pendingEvent(event.id, me)?.event
+      : (overlay.changes.get(event.id)?.length ?? 0) > 0 ? event : undefined;
+    return ctx.info(pending ?? (await ctx.guarded(event.id)).event, calendar, view, overlay);
   }
 
   async deleteEvent(eventId: string, options?: EventChangeOptions): Promise<void> {
@@ -1045,11 +1053,14 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       propose = { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
     }
     await ctx.observeEvent(event, calendar, view);
-    await ctx.host.submit(ctx.queue, "respond", {
-      calendar: ctx.calendarRef(calendar), target: await ctx.target(event), response, ...(message ? { message } : {}), notify,
+    const target = await ctx.target(event);
+    await ctx.host.submit(ctx.queue, respondKind({ response, notify }, await ctx.owns(calendar)), {
+      calendar: ctx.calendarRef(calendar), target, response, ...(message ? { message } : {}), notify,
       ...(propose ? { propose } : {}), zone, submittedAt: Date.now(),
     });
-    return ctx.info(event, calendar, view, ctx.overlay());
+    // An auto-approval may have applied the response already; then read back the event it left.
+    const overlay = ctx.overlay();
+    return ctx.info(overlay.responses.has(target.id) ? event : (await ctx.guarded(event.id)).event, calendar, view, overlay);
   }
 }
 

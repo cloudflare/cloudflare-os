@@ -32,7 +32,12 @@ import {
   type ActionDescriptionBuilder,
   buildDescription,
 } from "@gadgets/gatekeeper-kit/action-description";
-import type { ActionDescription, ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription,
+  ActionKind,
+  ApprovalQueue,
+  ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import type {
   NotionComment,
   NotionDatabaseSchema,
@@ -689,12 +694,71 @@ function onPage(intro: string, pageId: string, label = "Page ID"): ActionDescrip
     : builder;
 }
 
+const EDIT_PAGES: ActionKind = { tag: "edit-pages", label: "Edit page titles, properties and icons" };
+
+/**
+ * The kind of each action, which users' auto-approval rules key on, so a tag must never change.
+ * Appending is kept apart from edits that overwrite, and restoring apart from trashing.
+ */
+const ACTION_KINDS: Record<NotionAction["type"], ActionKind> = {
+  appendContent: { tag: "append-content", label: "Add content to pages" },
+  setTitle: EDIT_PAGES,
+  setProperties: EDIT_PAGES,
+  setIcon: EDIT_PAGES,
+  createPage: { tag: "create-pages", label: "Create pages and database rows" },
+  archive: { tag: "trash-pages", label: "Move pages to trash" },
+  restore: { tag: "restore-pages", label: "Restore pages from trash" },
+  addComment: { tag: "post-comments", label: "Comment on pages" },
+};
+
+// Moving a page to trash removes it (and its sub-pages) from every member's view, so it is never
+// auto-approvable.
+const NEVER_AUTO_APPROVABLE: NotionAction["type"] = "archive";
+
+// Every action may be applied without a person once the user has enabled its kind, except moving
+// a page to trash and storing an agent-chosen URL that Notion loads by itself: an external image
+// icon, shown wherever the page is, or a file in a files property (always external from here),
+// shown in gallery and board card previews. Either URL could carry page content to its host.
+// Emoji icons and cleared files properties stay auto-approvable.
+function isAutoApprovable(action: NotionAction): boolean {
+  switch (action.type) {
+    case NEVER_AUTO_APPROVABLE: return false;
+    case "setIcon": return !isExternalIcon(action.icon);
+    case "setProperties": return !hasExternalFiles(action.properties);
+    case "createPage": return !isExternalIcon(action.icon) && !hasExternalFiles(action.properties);
+    default: return true;
+  }
+}
+
+function isExternalIcon(icon: NotionIconInput | null | undefined): boolean {
+  return icon != null && "imageUrl" in icon;
+}
+
+function hasExternalFiles(properties: Record<string, NotionPropertyInput> | undefined): boolean {
+  return Object.values(properties ?? {}).some(input => input.type === "files" && input.files.length > 0);
+}
+
+/** The kinds an action can be auto-approved under. Every binding can submit all of them. */
+export const AUTO_APPROVABLE_KINDS: ActionKind[] = [...new Set(
+  (Object.keys(ACTION_KINDS) as NotionAction["type"][])
+    .filter(type => type !== NEVER_AUTO_APPROVABLE)
+    .map(type => ACTION_KINDS[type]),
+)];
+
 /**
  * The approver's text, built so every value the agent supplied (page bodies, comments, titles,
  * property values, icons) is shown in full in a field, and the completeness claim is
- * the builder's.
+ * the builder's; plus the action's kind and auto-approval verdict.
  */
 export function describeAction(action: NotionAction): ActionDescription {
+  return {
+    ...describeActionText(action),
+    actionKind: ACTION_KINDS[action.type],
+    autoApprovable: isAutoApprovable(action),
+  };
+}
+
+function describeActionText(action: NotionAction): Omit<ActionDescription, "actionKind" | "autoApprovable"> {
   switch (action.type) {
     case "appendContent":
       return {
@@ -1088,6 +1152,9 @@ export async function stageAction(
   try {
     await approvalQueue.submitAction(id, describeAction(action));
   } catch (err) {
+    // An auto-approval can apply the action before the reply arrives, so a lost reply on an
+    // applied action proves the overseer received it; failing would invite a repeated write.
+    if (store.getAction(id)?.state === "applied") return id;
     store.deleteAction(id);
     throw err;
   }

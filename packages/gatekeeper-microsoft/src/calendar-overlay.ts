@@ -91,6 +91,8 @@ export class CalendarOverlay {
           break;
         case "updateEvent":
         case "updateSharedEvent":
+        case "revealEvent":
+        case "revealSharedEvent":
         case "updateMeeting": {
           const id = resolve(action.payload.target.id);
           this.changes.set(id, [...(this.changes.get(id) ?? []), { changes: action.payload.changes, zone: action.payload.zone }]);
@@ -102,6 +104,7 @@ export class CalendarOverlay {
           this.deleted.add(resolve(action.payload.target.id));
           break;
         case "respond":
+        case "respondSilently":
           this.responses.set(action.payload.target.id, action.payload.response);
           break;
       }

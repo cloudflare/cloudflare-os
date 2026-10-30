@@ -6,7 +6,7 @@ import { ActionApplyError, ActionOutcomeUnknownError } from "@gadgets/gatekeeper
 import { ProvisionalIds, type SimulationKv } from "@gadgets/gatekeeper-kit/simulation";
 import { GraphApi } from "../src/graph-api";
 import {
-  definitions, revert, shownChanges, shownTexts, type FolderTarget, type ItemTarget, type SharePointActionHost, type SharePointActions,
+  copyKind, definitions, revert, shownChanges, shownTexts, type FolderTarget, type ItemTarget, type SharePointActionHost, type SharePointActions,
 } from "../src/sharepoint-actions";
 import { OutsideScopeError, type ItemRef } from "../src/sharepoint-scope";
 
@@ -412,6 +412,47 @@ describe("copying", () => {
     const { host, sent } = harness([named("report.zip")]);
     await expect(definitions.copyFile.apply({ ...payload, source: { ...NOTES, name: "report.xlsx" }, name: "copy.xlsx" }, host)).rejects.toThrow(/renamed into another format/);
     expect(sent.map(request => request.method)).toEqual(["GET"]);
+  });
+});
+
+describe("automatic approval", () => {
+  it("can auto-approve creating, editing, organizing and list edits, but never a deletion or a copy into another library", () => {
+    const verdicts = Object.fromEntries(Object.entries(definitions).map(([name, definition]) => [name, [definition.kind.tag, definition.autoApprovable]]));
+    expect(verdicts).toEqual({
+      createFolder: ["sharepoint.files.create", true],
+      uploadFile: ["sharepoint.files.create", true],
+      copyFile: ["sharepoint.files.create", true],
+      copyFileAcrossLibraries: ["sharepoint.files.create", false],
+      replaceFile: ["sharepoint.files.edit", true],
+      updateCells: ["sharepoint.files.edit", true],
+      rename: ["sharepoint.files.organize", true],
+      move: ["sharepoint.files.organize", true],
+      deleteItem: ["sharepoint.files.delete", false],
+      createListItem: ["sharepoint.lists.edit", true],
+      updateListItem: ["sharepoint.lists.edit", true],
+      deleteListItem: ["sharepoint.lists.delete", false],
+    });
+    // A copy across libraries is the same change under the same kind, so the user sees one label.
+    expect(definitions.copyFileAcrossLibraries.kind).toEqual(definitions.copyFile.kind);
+    expect(definitions.copyFileAcrossLibraries.apply).toBe(definitions.copyFile.apply);
+  });
+
+  const ONEDRIVE = "b!OneDriveOfPhillip000000000000";
+  const SHARED: FolderTarget = { id: `${ONEDRIVE}/SHARED`, driveId: ONEDRIVE, name: "Shared", location: "OneDrive › Shared", path: "Shared" };
+
+  it("proposes a copy within its library as one that can be auto-approved, and one into another library as one that can't", () => {
+    expect(copyKind(NOTES.ref, ARCHIVE)).toBe("copyFile");
+    // A folder still to be created is in the library it is created in.
+    expect(copyKind(NOTES.ref, { ...ARCHIVE, id: "~3" })).toBe("copyFile");
+    expect(copyKind(NOTES.ref, SHARED)).toBe("copyFileAcrossLibraries");
+    expect(copyKind(NOTES.ref, { ...SHARED, id: "~3" })).toBe("copyFileAcrossLibraries");
+  });
+
+  it("undoes a copy into another library as it does any copy", async () => {
+    const payload: SharePointActions["copyFile"] = { ref: "~2", source: NOTES, parent: SHARED, name: "notes.txt", cTag: "c-copy", createdId: "COPY", submittedAt: 1, appliedAt: 2 };
+    const { host, sent } = harness([{ status: 200, body: { cTag: "c-copy" } }, { status: 204 }]);
+    expect(await revert({ kind: "copyFileAcrossLibraries", payload }, host)).toBeUndefined();
+    expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: `/drives/${ONEDRIVE}/items/COPY` });
   });
 });
 

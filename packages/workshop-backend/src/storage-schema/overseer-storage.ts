@@ -415,6 +415,14 @@ export type GatekeeperCaller = {
   from: "hook";
 };
 
+/**
+ * A stored action description. Records written before the wire type required `autoApprovable` may
+ * lack it, and so may a creation card from a stale GatekeeperVendor.createResource(), whose reply
+ * is not validated; readers treat absence as `false`.
+ */
+export type StoredActionDescription =
+    Omit<ActionDescription, "autoApprovable"> & {autoApprovable?: boolean};
+
 export type ActionRecord = {
   id: number,
   gatekeeperId: WorkpieceId;
@@ -444,7 +452,7 @@ export type ActionRecord = {
    * creation queued by createExternalResource, which applies via Gatekeeper.applyCreation().
    */
   action: number | "create";
-  description: ActionDescription;
+  description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
 } | {

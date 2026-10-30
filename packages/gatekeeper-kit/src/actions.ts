@@ -162,9 +162,19 @@ export type ActionContext = {
 
 /** How one kind of action is described to the approver and carried out once approved. */
 export type ActionDefinition<Payload, Host> = {
-  kind?: ActionKind;
-  /** Whether this kind may be auto-applied when the submitted action also allows it. */
-  autoApprovable?: boolean;
+  /**
+   * Sent as `ActionDescription.actionKind`. Users' auto-approval rules are stored under its tag, so
+   * an existing tag is never renamed; definitions sharing a tag must share its label.
+   */
+  kind: ActionKind;
+  /**
+   * Sent as `ActionDescription.autoApprovable`: whether an action of this definition may be applied
+   * without review once the user enables a rule for its `kind`. `true` is the norm; the
+   * `write-gatekeeper` skill's "Action kinds and auto-approval" lists when it must be `false`. A
+   * verdict that depends on the payload is two sibling definitions sharing one `kind`, one `true`
+   * and one `false`, with the session submitting through the one that matches.
+   */
+  autoApprovable: boolean;
   /** Whether pending effects are simulated or the agent must await the decision. */
   delivery: "continue-with-simulation" | "await-decision";
   /**
@@ -396,6 +406,7 @@ function strandedBy(
  * const declared = defineActions<VendorApi, { createTask: CreateTask }>({
  *   createTask: {
  *     kind: { tag: "create-task", label: "Create a task" },
+ *     autoApprovable: true,
  *     delivery: "continue-with-simulation",
  *     claimBeforeApply: true,
  *     describe: task => ({
@@ -442,12 +453,6 @@ export function defineActions<Host, M extends Record<string, unknown>>(
       throw new Error(
         `Action "${name}" declares dependsOn, so the set needs isResolvedReference.`);
     }
-    // Auto-approval rules key on the tag, so without a kind the flag could never take effect.
-    if (definition.autoApprovable === true && !definition.kind) {
-      throw new Error(`Action "${name}" declares autoApprovable without a kind.`);
-    }
-    if (definition.kind === undefined) continue;
-
     // The catalog advertises one label per tag, so a second spelling would put a name in the
     // approval UI that does not cover everything enabling that tag authorizes.
     const { tag, label } = definition.kind;
@@ -457,7 +462,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
       throw new Error(
         `Action tag "${tag}" is declared with two labels, "${declaredLabel}" and "${label}".`);
     }
-    if (definition.autoApprovable === true) autoApprovableByTag.set(tag, definition.kind);
+    if (definition.autoApprovable) autoApprovableByTag.set(tag, definition.kind);
   }
 
   const attributed = options.vendorId ? logger.with({ vendorId: options.vendorId }) : logger;
@@ -752,16 +757,16 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             title,
             description,
             implementsRevert,
-            // Spread, so an action with no fields, no git, no kind, no awaited decision, or no claim
-            // of completeness puts no key on the wire at all. A push is never complete, whatever the
+            // Spread, so an action with no fields, no git, no awaited decision, or no claim of
+            // completeness puts no key on the wire at all. A push is never complete, whatever the
             // hook claims: the approver sees commit ids, not the bytes they carry.
             ...(fields?.length ? { fields } : {}),
             ...(pushedCommits ? { pushedCommits } : {}),
             ...(descriptionIsComplete === true && !pushedCommits?.length
               ? { descriptionIsComplete: true }
               : {}),
-            autoApprovable: definition.autoApprovable === true,
-            ...(definition.kind ? { actionKind: definition.kind } : {}),
+            autoApprovable: definition.autoApprovable,
+            actionKind: definition.kind,
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
           }, staged, () => {
             const unbound = (definition.dependsOn?.(payload) ?? [])

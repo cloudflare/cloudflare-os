@@ -68,7 +68,8 @@ Optional overrides read by the Worker:
   the per-record `creditCharged` flag is a display-only upper bound, because ZoomInfo often omits
   management status from enrich responses and so over-reports records served for free.
 - **Approvals.** Reads are logged as observations. Each `enrich*` call is submitted to the approval
-  queue and spends credits only once a human approves it; results are fetched afterward via
+  queue and spends credits only once a human approves it, and is never auto-approved because any
+  enrichment may spend credits; results are fetched afterward via
   `getEnrichmentResult(ticket)`. Enrichments are **not** simulated — the action carries
   `awaitDecision`, so the agent turn suspends until the decision rather than reading back
   un-enriched state.

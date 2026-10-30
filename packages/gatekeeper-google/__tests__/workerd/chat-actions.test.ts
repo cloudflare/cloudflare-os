@@ -7,6 +7,7 @@
 import {env} from "cloudflare:workers";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
+import type {ActionKind} from "@gadgets/workshop-shared/gatekeeper";
 import type {GoogleChatGatekeeperImpl, GoogleChatGatekeeperImplProps} from "../../src/chat";
 import type {ChatMessageInfo, ChatListMessagesOptions} from "../../src/chat-types";
 import type {ChatMessageRaw, ChatReactionRaw, ChatMembershipRaw} from "../../src/chat-api";
@@ -29,6 +30,8 @@ type TestHooks = {
   chatRejectAction(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
       actionId: number): ReturnType<GoogleChatGatekeeperImpl["rejectAction"]>;
+  chatGetAutoApprovableActions(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps): Promise<ActionKind[]>;
   failNextObservation(queueId: string, title: string): void;
   readQueue(queueId: string): Promise<{
     submissions: Array<{actionId: number; description: unknown}>;
@@ -395,6 +398,8 @@ function chatHarness(
     account: () => ready.then(() => hook.openChatAccountSession(facetName, id, props, queueId)),
     thread: () => ready.then(() => hook.openChatThreadSession(facetName, id, props, queueId)),
     describe: () => ready.then(() => hook.chatDescribe(facetName, id, props)),
+    getAutoApprovableActions: () => ready.then(() =>
+      runHook(hook, instance => instance.chatGetAutoApprovableActions(facetName, id, props))),
     addObserver: async () => {
       await ready;
       await runInDurableObject(testEnv.UserAccount.get(observerId), (_instance: unknown, state: DurableObjectState) => {
@@ -644,6 +649,31 @@ describe("Google Chat gatekeeper behaviors", () => {
       {label: "Current", kind: "text", value: "root"},
       {label: "New", kind: "text", value: text},
     ]});
+  });
+
+  it("lets a user auto-approve sends, edits and reactions", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _posted = (await space.post("hello")).message;
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("revised");
+    await message.addReaction("👍");
+    await message.removeReaction("👍");
+    const descriptions = (await chat.readQueue()).submissions.map(entry => entry.description);
+    expect(descriptions).toMatchObject([
+      {actionKind: {tag: "chatSendMessage"}, autoApprovable: true},
+      {actionKind: {tag: "chatEditMessage"}, autoApprovable: true},
+      {actionKind: {tag: "chatReaction"}, autoApprovable: true},
+      {actionKind: {tag: "chatReaction"}, autoApprovable: true},
+    ]);
+    // Starting a conversation messages people the user has no conversation with, so it's never offered.
+    expect(await chat.getAutoApprovableActions()).toEqual([
+      {tag: "chatSendMessage", label: "Send Chat messages"},
+      {tag: "chatEditMessage", label: "Edit Chat messages"},
+      {tag: "chatReaction", label: "Chat reactions"},
+    ]);
   });
 
   it("applies queued reactions in submission order and undoes them", async () => {
@@ -1693,7 +1723,8 @@ describe("Starting Google Chat conversations", () => {
     using _group = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
     const {submissions} = await chat.readQueue();
     expect(submissions.map(({description}) => description)).toMatchObject([
-      {actionKind: {tag: "chatSendMessage"}}, {actionKind: {tag: "chatSendMessage"}},
+      {actionKind: {tag: "chatSendMessage"}, autoApprovable: true},
+      {actionKind: {tag: "chatSendMessage"}, autoApprovable: true},
     ]);
     await chat.applyAction(1);
     await chat.applyAction(2);
@@ -1768,7 +1799,7 @@ describe("Starting Google Chat conversations", () => {
     expect(start.description).toMatchObject({
       title: "Start a Google Chat conversation with Bob Jones",
       actionKind: {tag: "chatStartConversation"},
-      autoApprovable: true,
+      autoApprovable: false,
       fields: [
         {label: "People", kind: "list", items: ["Bob Jones <bob@example.com>"]},
         {label: "Message", kind: "text", value: "hello"},
@@ -1859,7 +1890,7 @@ describe("Starting Google Chat conversations", () => {
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
     expect((await chat.readQueue()).submissions[0].description)
-      .toMatchObject({actionKind: {tag: "chatStartConversation"}});
+      .toMatchObject({actionKind: {tag: "chatStartConversation"}, autoApprovable: false});
     backend.state.setupOmits = [`users/${CAROL.id}`];
     await expect(chat.applyAction(1)).rejects.toThrow(/left .*Carol King.* out/);
     expect(backend.state.creates).toEqual([]);

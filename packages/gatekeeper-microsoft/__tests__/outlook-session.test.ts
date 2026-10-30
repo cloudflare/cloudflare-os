@@ -23,6 +23,7 @@ const ROOT = "AAMkRoot0000";
 const INBOX = "AAMkInbox000";
 const VENDORS = "AAMkVendors0";
 const JUNK = "AAMkJunk0000";
+const SPAM = "AAMkSpam0000";
 const DRAFTS = "AAMkDrafts00";
 const FOLDERS: Folder[] = [
   { id: ROOT, name: "", wellKnown: "msgfolderroot" },
@@ -32,6 +33,7 @@ const FOLDERS: Folder[] = [
   { id: "AAMkSent0000", name: "Sent Items", parentId: ROOT, wellKnown: "sentitems" },
   { id: "AAMkDeleted0", name: "Deleted Items", parentId: ROOT, wellKnown: "deleteditems" },
   { id: JUNK, name: "Junk Email", parentId: ROOT, wellKnown: "junkemail" },
+  { id: SPAM, name: "Spam", parentId: JUNK },
   { id: "AAMkArchive0", name: "Archive", parentId: ROOT, wellKnown: "archive" },
 ];
 
@@ -289,12 +291,45 @@ describe("a whole-mailbox binding", () => {
     expect((await reader.readMessage(USER_DRAFT)).markdown).toBe("Dear all,");
     await expect(writer.updateDraft(USER_DRAFT, { body: "Dear all, send money." })).rejects.toThrow(`That draft ${OUTSIDE}`);
     await expect(writer.deleteDraft(USER_DRAFT)).rejects.toThrow(`That draft ${OUTSIDE}`);
-    // Nor through the organizing API, which would propose the deletion for automatic approval.
+    // Nor through the organizing API, which doesn't check whose draft it is.
     await expect(writer.delete([USER_DRAFT])).rejects.toThrow(/use deleteDraft/);
     expect(submitted).toEqual([]);
     await writer.send(USER_DRAFT);
     expect(submitted.map(action => action.kind)).toEqual(["send"]);
     expect((submitted[0]!.payload as OutlookActions["send"]).draft).toEqual({ id: USER_DRAFT, changeKey: "ck-user" });
+  });
+
+  it("proposes deleting mail, or moving it into Junk Email, as a deletion, and any other move or archive as organizing", async () => {
+    const { writer, submitted } = session(whole("draft"), "draft");
+    await writer.delete([ADA]);
+    await writer.move([EVE], JUNK);
+    await writer.move([EVE_INVOICE], VENDORS);
+    await writer.archive([MANY]);
+    // Out of Junk Email is a move like any other.
+    await writer.move(["AAMkAdaJunk1"], INBOX);
+    expect(submitted.map(action => [action.kind, (action.payload as OutlookActions["moveMessages"]).as])).toEqual([
+      ["deleteMessages", "delete"], ["deleteMessages", "move"], ["moveMessages", "move"], ["moveMessages", "archive"], ["moveMessages", "move"],
+    ]);
+  });
+
+  it("proposes a move into a folder under Junk Email as a deletion, an existing one or one still pending", async () => {
+    const { writer, submitted } = session(whole("draft"), "draft");
+    await writer.move([EVE], SPAM);
+    const pending = await writer.createFolder("junkemail", "Later");
+    const nested = await writer.createFolder(pending.id, "Much later");
+    await writer.move([EVE_INVOICE], nested.id);
+    // A folder created elsewhere, pending, is organizing like any other.
+    const elsewhere = await writer.createFolder(INBOX, "Receipts");
+    await writer.move([MANY], elsewhere.id);
+    expect(submitted.filter(action => action.kind !== "createFolder").map(action => action.kind)).toEqual(["deleteMessages", "deleteMessages", "moveMessages"]);
+  });
+
+  it("proposes a move as a deletion when its pending folder chain is too deep to trace to Junk Email", async () => {
+    const { writer, submitted } = session(whole("draft"), "draft");
+    let parent = "junkemail";
+    for (let level = 0; level < 33; level++) parent = (await writer.createFolder(parent, `Level ${level}`)).id;
+    await writer.move([EVE], parent);
+    expect(submitted.filter(action => action.kind !== "createFolder").map(action => action.kind)).toEqual(["deleteMessages"]);
   });
 
   it("proposes moving a message back to where it is once a pending move has left it elsewhere", async () => {

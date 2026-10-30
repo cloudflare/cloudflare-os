@@ -52,7 +52,8 @@ Correctness is not enough. Pressure-test the agent-facing API
 (`packages/gatekeeper-*/src/*types.d.ts`): does the shape make sense, does it cover the most common
 user stories, what would you do differently? Check that the seams (resource granularities, bindings,
 sessions) partition authority along the lines users actually grant. The checklist is "Reviewing a
-gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
+gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`. Check every action's `autoApprovable`
+verdict against that skill's "Action kinds and auto-approval" policy.
 
 ## Logging, errors and secrets
 

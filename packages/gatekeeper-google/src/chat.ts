@@ -81,12 +81,10 @@ const EDIT_MESSAGE_ACTION: ActionKind = { tag: "chatEditMessage", label: "Edit C
 const REACTION_ACTION: ActionKind = { tag: "chatReaction", label: "Chat reactions" };
 
 /**
- * The kinds a user may opt into auto-approving. Starting a conversation is its own kind, so
- * replying where the user already talks can be trusted without trusting cold outreach.
+ * The kinds a user may opt into auto-approving. Starting a conversation is left out: it messages,
+ * as the user, people they have no conversation with, so it always waits for a person.
  */
-const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [
-  SEND_MESSAGE_ACTION, START_CONVERSATION_ACTION, EDIT_MESSAGE_ACTION, REACTION_ACTION,
-];
+const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [SEND_MESSAGE_ACTION, EDIT_MESSAGE_ACTION, REACTION_ACTION];
 
 /** What an applied action needs in order to be undone. */
 type ChatRevertInfo =
@@ -796,7 +794,8 @@ async function queueDirectMessage(
       .finish(),
     implementsRevert: true,
     actionKind: START_CONVERSATION_ACTION,
-    autoApprovable: true,
+    // Cold outreach as the user to people outside any conversation they have.
+    autoApprovable: false,
   });
   return pendingMessageInfo(id, action, ctx.self);
 }

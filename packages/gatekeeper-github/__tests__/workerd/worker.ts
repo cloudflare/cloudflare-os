@@ -10,9 +10,10 @@
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
-  AccountDescription, ActionDescription, ActionKind, ConnectHandoff, GatekeeperUser, GitCache, HookController,
+  AccountDescription, ActionKind, ConnectHandoff, GatekeeperUser, GitCache, HookController,
   HookDescription, GitPullHints, GitPullTransfer,
 } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionPresentation } from "@gadgets/gatekeeper-kit/actions";
 import { GitHubGatekeeperImpl, GitHubHookDriver as GitHubHookDriverImpl, type GitHubVerifierApi } from "../../src/github.js";
 import type { GitHubHookParams } from "../../src/github-hooks.js";
 import type {
@@ -173,7 +174,7 @@ type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
     : Promise<CreatePullRequestActionData>;
   prepareMergePullRequest(pullId: string, options?: GitHubPullRequestMergeOptions)
     : Promise<MergePullRequestActionData>;
-  submitActionForApproval(queue: unknown, action: GitHubActionData, description: ActionDescription): Promise<void>;
+  submitActionForApproval(queue: unknown, action: GitHubActionData, description: ActionPresentation): Promise<void>;
   getAutoApprovableActions(): Promise<ActionKind[]>;
   applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
@@ -275,7 +276,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async submitPush(
     facetName: string, props: GatekeeperProps,
-    queue: unknown, action: PushActionData, description: ActionDescription,
+    queue: unknown, action: PushActionData, description: ActionPresentation,
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
@@ -290,7 +291,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async submitCreatePullRequest(
     facetName: string, props: GatekeeperProps,
-    queue: unknown, action: CreatePullRequestActionData, description: ActionDescription,
+    queue: unknown, action: CreatePullRequestActionData, description: ActionPresentation,
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
@@ -298,7 +299,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async submitReview(
     facetName: string, props: GatekeeperProps,
-    queue: unknown, action: PostReviewActionData, description: ActionDescription,
+    queue: unknown, action: PostReviewActionData, description: ActionPresentation,
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
@@ -313,7 +314,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async submitMerge(
     facetName: string, props: GatekeeperProps,
-    queue: unknown, action: MergePullRequestActionData, description: ActionDescription,
+    queue: unknown, action: MergePullRequestActionData, description: ActionPresentation,
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
@@ -322,7 +323,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   /** Submits a hand-built `action` record, as a session does once it has prepared one. */
   async submitAction(
     facetName: string, props: GatekeeperProps,
-    queue: unknown, action: GitHubActionData, description: ActionDescription,
+    queue: unknown, action: GitHubActionData, description: ActionPresentation,
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));

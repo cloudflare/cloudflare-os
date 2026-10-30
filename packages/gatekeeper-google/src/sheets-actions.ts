@@ -38,6 +38,7 @@ import {
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { obsContext } from "./observability";
 import { SheetsWriteRefused, type GoogleSheetsApi } from "./sheets-api";
+import { callsOnlySpreadsheetFunctions } from "./sheets-formula";
 import { cellName, columnLetters, isFormula, rectName } from "./sheets-model";
 import { guardDigest, guardFits, guardOf, planSheet } from "./sheets-plan";
 import { gridOf, type PlannedChange, type SheetBatch, type SheetsActions } from "./sheets-simulation";
@@ -74,23 +75,47 @@ export type SheetsHost = {
 };
 
 // What a user may let apply without asking: a batch that only enters literal values and clears
-// cells. A formula can compute anything from the spreadsheet, so any batch with one needs approval.
+// cells. A batch with any formula is never this kind, so a rule enabling it covers no formula.
 const EDIT_SHEET_VALUES: ActionKind = { tag: "editSheetValues", label: "Sheet value edits" };
 // What a user may let apply without asking: a batch that only formats cells, leaving their
 // contents, rows, columns and sheets as they are.
 const FORMAT_SHEETS: ActionKind = { tag: "formatSheets", label: "Sheet formatting" };
+// What a user may let apply without asking: any other batch that deletes no sheet, row or column
+// and whose formulas call only functions that compute from the spreadsheet alone. A tag of its
+// own, so a rule a user enabled for either kind above covers no more than it did.
+const EDIT_SPREADSHEET: ActionKind = {
+  tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column",
+};
+// Everything else always waits for approval: deleting a sheet, rows or columns removes their
+// contents, and a formula calling any other function, which may be one of the spreadsheet's named
+// functions, can make Google fetch a URL carrying the spreadsheet's data. A change this module
+// does not classify lands here too.
+const UPDATE_SPREADSHEET: ActionKind = {
+  tag: "update-spreadsheet", label: "Spreadsheet changes that delete or run unchecked formulas",
+};
+
+// The changes an `editSpreadsheet` batch may make: none removes a sheet, row or column.
+const KEEPING_OPS: ReadonlySet<string> = new Set([
+  "writeCells", "clearRange", "formatCells", "addSheet", "renameSheet", "duplicateSheet",
+  "insertRows", "insertColumns",
+]);
 
 /**
- * The kind a batch is queued as, so approving a kind approves no more than it says: a batch mixing
- * kinds of change is `updateSpreadsheet`, which a user cannot let apply without asking.
+ * The kind a batch is queued as, so approving a kind approves no more than it says. A batch that
+ * fits none of the auto-approvable kinds is `updateSpreadsheet`, which a user cannot let apply
+ * without asking.
  */
 export function batchKind(
   changes: readonly { op: string; values?: SheetCellInput[][] }[],
 ): keyof SheetsActions {
   if (changes.every(change => change.op === "formatCells")) return "formatSheets";
-  let literal = changes.every(change => change.op === "clearRange" ||
-    (change.op === "writeCells" && change.values!.every(row => !row.some(isFormula))));
-  return literal ? "editSheetValues" : "updateSpreadsheet";
+  let formulas = changes.flatMap(change =>
+    change.op === "writeCells" ? change.values!.flat().filter(isFormula) : []);
+  let cellsOnly = changes.every(change => change.op === "clearRange" || change.op === "writeCells");
+  if (cellsOnly && formulas.length === 0) return "editSheetValues";
+  let keeps = changes.every(change => KEEPING_OPS.has(change.op)) &&
+    formulas.every(callsOnlySpreadsheetFunctions);
+  return keeps ? "editSpreadsheet" : "updateSpreadsheet";
 }
 
 // Sending a batch: the first send, and resends once an answer was lost.
@@ -389,10 +414,11 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
   }
 }
 
-/** A batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
-function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost> {
+/** A batch's definition, the same for each kind but in its `kind` and its auto-approval verdict. */
+function sheetBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition<SheetBatch, SheetsHost> {
   return {
-    ...(kind ? { kind, autoApprovable: true } : {}),
+    kind,
+    autoApprovable,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ changes, sheets }) => {
@@ -425,7 +451,8 @@ function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost>
 
 /** The Sheets change set, bound once per spreadsheet's journal. */
 export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>({
-  editSheetValues: sheetBatch(EDIT_SHEET_VALUES),
-  formatSheets: sheetBatch(FORMAT_SHEETS),
-  updateSpreadsheet: sheetBatch(),
+  editSheetValues: sheetBatch(EDIT_SHEET_VALUES, true),
+  formatSheets: sheetBatch(FORMAT_SHEETS, true),
+  editSpreadsheet: sheetBatch(EDIT_SPREADSHEET, true),
+  updateSpreadsheet: sheetBatch(UPDATE_SPREADSHEET, false),
 }, { fence: "none", vendorId: "google" });

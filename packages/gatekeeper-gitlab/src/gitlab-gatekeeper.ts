@@ -61,6 +61,7 @@ import {
   autoApprovableKinds,
   autoApprovalOf,
   escapeQuickActions,
+  protectedBranchMatches,
   referenceBearingTexts,
   replaceProvisionalReferences,
   textReferences,
@@ -183,6 +184,8 @@ const DIFF_REFS_RETRY_DELAY_MS = 1500;
 
 /** Cap on the queued-but-not-yet-pushed commits walked when simulating a branch's history. */
 const MAX_PENDING_CHAIN_COMMITS = 250;
+/** How many pages (of 100) of protected-branch rules a push reads before taking its branch as protected. */
+const MAX_PROTECTED_BRANCH_PAGES = 10;
 /** Bound on following a chain of not-yet-applied replies back to a real thread. */
 const MAX_REPLY_TARGET_HOPS = 50;
 /** The connected account: its user id, which tells its approvals and notes from others', and its actor. */
@@ -1865,20 +1868,26 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return { approvalId: this.#nextActionId(), submittedAt: Date.now(), projectPath: this.#projectPath() };
   }
 
-  /** Assignees are usernames in the API and ids on GitLab; resolving them here means a typo fails now, not at apply. */
-  async #resolveAssigneeIds(usernames: string[] | undefined): Promise<number[]> {
+  /**
+   * Assignees are usernames in the API and ids on GitLab; resolving them here means a typo fails
+   * now, not at apply. Also records whether any is a bot or service account, which keeps the
+   * create from being auto-approved.
+   */
+  async #resolveAssignees(usernames: string[] | undefined): Promise<{ assigneeIds: number[]; assigneeIsBot: boolean }> {
     const names = usernames ?? [];
     const matches = await Promise.all(names.map(username => this.#withApi(api => api.findUsersByUsername(username))));
-    return names.map((username, i) => {
+    const assigneeIds = names.map((username, i) => {
       const user = matches[i].find(u => u.username.toLowerCase() === username.toLowerCase());
       if (!user) throw new Error(`No GitLab user named "${username}" exists on this instance.`);
       return user.id;
     });
+    const bots = await Promise.all(assigneeIds.map(id => this.#withApi(api => api.isBotUser(id))));
+    return { assigneeIds, assigneeIsBot: bots.includes(true) };
   }
 
   async prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<CreateIssueAction> {
-    const assigneeIds = await this.#resolveAssigneeIds(options.assignees);
-    return { type: "createIssue", ...this.#base(), provisionalId: this.#nextProvisionalResourceId(), options, assigneeIds };
+    const assignees = await this.#resolveAssignees(options.assignees);
+    return { type: "createIssue", ...this.#base(), provisionalId: this.#nextProvisionalResourceId(), options, ...assignees };
   }
 
   async prepareCreateMergeRequest(options: GitLabCreateMergeRequestOptions): Promise<CreateMergeRequestAction> {
@@ -1894,8 +1903,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           : `Cannot create a merge request into branch "${branch}": the target branch does not exist in ${this.#projectPath()}.`);
       }
     }
-    const assigneeIds = await this.#resolveAssigneeIds(options.assignees);
-    return { type: "createMergeRequest", ...this.#base(), provisionalId: this.#nextProvisionalResourceId(), options, assigneeIds };
+    const assignees = await this.#resolveAssignees(options.assignees);
+    return { type: "createMergeRequest", ...this.#base(), provisionalId: this.#nextProvisionalResourceId(), options, ...assignees };
   }
 
   async #detailsOf(kind: EntityKind, targetId: string) {
@@ -2688,9 +2697,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * exempt (no old head to fast-forward from; the zero-id compare-and-swap at apply protects
    * against a branch appearing in the interim), and `force` skips only this policy check -- it
    * does not loosen the old-sha match at apply.
+   *
+   * Also records whether the target is the default or a protected branch (`targetProtected`),
+   * which keeps the push from being auto-approved: GitLab reports it for a branch it has, and
+   * `#newBranchProtected` works it out for one the push creates.
    */
   async preparePush(branch: string, commitId: GitOid, force: boolean, gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
-    const realHead = (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null;
+    const remote = await this.#withApi(api => api.getBranch(this.#projectPath(), branch));
+    const realHead = remote?.commit.id ?? null;
     const expectedOldSha = this.#simulateBranchHead(branch, realHead) ?? ZERO_OID;
     if (expectedOldSha === commitId) return null;
     if (!force && expectedOldSha !== ZERO_OID && !(await gitCache.isAncestor(expectedOldSha, commitId))) {
@@ -2699,7 +2713,36 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         `${commitId}, so this push is not a fast-forward -- the branch has moved past the head this work ` +
         `was based on. Pull the branch's new head and rebase onto it, or pass force: true to overwrite the branch.`);
     }
-    return { type: "push", ...this.#base(), branch, expectedOldSha, newSha: commitId, force };
+    // Anything but a reported `false` on both reads as protected.
+    const targetProtected = remote === null ? await this.#newBranchProtected(branch)
+      : !(remote.protected === false && remote.default === false);
+    return { type: "push", ...this.#base(), branch, expectedOldSha, newSha: commitId, force, targetProtected };
+  }
+
+  /**
+   * Whether a branch GitLab does not have would be the default or a protected branch once a push
+   * creates it: it is the default branch's name, the repository is empty (its first branch becomes
+   * the default), or a protected-branch rule's name or wildcard covers it. Read live, like the
+   * branch itself. A lookup that fails, or rules too many to read, count as protected.
+   */
+  async #newBranchProtected(branch: string): Promise<boolean> {
+    const projectPath = this.#projectPath();
+    try {
+      const project = await this.#withApi(api => api.getProject(projectPath));
+      if (project.empty_repo !== false || !project.default_branch || project.default_branch === branch) return true;
+      let page: number | null = 1;
+      for (let read = 0; page !== null; read++) {
+        if (read === MAX_PROTECTED_BRANCH_PAGES) return true;
+        const current: number = page;
+        const rules = await this.#withApi(api => api.listProtectedBranches(projectPath, current, 100));
+        if (rules.items.some(rule => protectedBranchMatches(rule.name, branch))) return true;
+        page = rules.nextPage;
+      }
+      return false;
+    } catch (error) {
+      logger.warn("failed to read whether a new branch is protected", { event: "push.branch.protection.read.failed", error });
+      return true;
+    }
   }
 
   /** Whether GitLab knows this commit (the anchor test for pending-chain walks). */

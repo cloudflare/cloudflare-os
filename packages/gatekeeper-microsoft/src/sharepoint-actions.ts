@@ -196,6 +196,8 @@ export type SharePointActions = {
     createdId?: string;
     appliedAt?: number;
   };
+  /** A copy into another library than its source's: the same change, never auto-approved (see `copyKind`). */
+  copyFileAcrossLibraries: SharePointActions["copyFile"];
 };
 
 /** One staged action, as the journal holds it. */
@@ -426,8 +428,17 @@ function unifiedDiff(hunks: readonly GitDiffHunk[]): string {
   return hunks.map(hunk => [hunk.header, ...hunk.lines.map(line => `${marks[line.kind]}${line.text}`)].join("\n")).join("\n");
 }
 
-/** Every kind's definition. */
-export const definitions = {
+/**
+ * The kind a copy is proposed as. One into another library than its source's (from OneDrive into a
+ * site, or between sites' libraries) can reach people who couldn't open the source, so it is never
+ * auto-approved; a copy within the library is just a new file there.
+ */
+export function copyKind(source: ItemRef, parent: FolderTarget): "copyFile" | "copyFileAcrossLibraries" {
+  return parent.driveId === source.driveId ? "copyFile" : "copyFileAcrossLibraries";
+}
+
+/** Every kind's definition but `copyFileAcrossLibraries`, which is `copyFile`'s. */
+const ownDefinitions = {
   createFolder: {
     kind: { tag: "sharepoint.files.create", label: "Create SharePoint files and folders" },
     autoApprovable: true,
@@ -662,6 +673,8 @@ export const definitions = {
 
   deleteItem: {
     kind: { tag: "sharepoint.files.delete", label: "Delete SharePoint files" },
+    // Never: a recycle bin is still a deletion, and Graph can't restore from it.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: payload => {
       const builder = buildDescription(`Delete the ${payload.target.kind} ${label(payload.target.name)} from ${label(payload.target.location)}` +
@@ -860,6 +873,8 @@ export const definitions = {
 
   deleteListItem: {
     kind: { tag: "sharepoint.lists.delete", label: "Delete SharePoint list items" },
+    // Never: a recycle bin is still a deletion, and Graph can't restore from it.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: payload => {
       const builder = buildDescription(`Delete ${payload.title ? `the item ${label(payload.title)}` : `item ${payload.itemId}`} ` +
@@ -885,6 +900,12 @@ export const definitions = {
       return { action: { ...payload, appliedAt: Date.now() } };
     },
   },
+} satisfies { [K in Exclude<keyof SharePointActions, "copyFileAcrossLibraries">]: ActionDefinition<SharePointActions[K], SharePointActionHost> };
+
+/** Every kind's definition. */
+export const definitions = {
+  ...ownDefinitions,
+  copyFileAcrossLibraries: { ...ownDefinitions.copyFile, autoApprovable: false },
 } satisfies { [K in keyof SharePointActions]: ActionDefinition<SharePointActions[K], SharePointActionHost> };
 
 /** The action set, bound per binding to its journal and host. */
@@ -1047,7 +1068,8 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
       await host.graph(api => api.request("PATCH", range, { body: { formulas: payload.before.map(row => row.map(value => value ?? "")) } }), { replayable: true });
       return;
     }
-    case "copyFile": {
+    case "copyFile":
+    case "copyFileAcrossLibraries": {
       const { payload } = action;
       if (payload.createdId === undefined) return { message: "It was never copied, so there is nothing to undo.", canRetry: false };
       const parent = folderRef(host, payload.parent);
@@ -1107,6 +1129,7 @@ export function providedRefs(action: SharePointAction): string[] {
     case "createFolder":
     case "uploadFile":
     case "copyFile":
+    case "copyFileAcrossLibraries":
     case "createListItem":
       return [action.payload.ref];
     default:
@@ -1120,6 +1143,7 @@ export function dependedRefs(action: SharePointAction): string[] {
     case "createFolder":
     case "uploadFile":
     case "copyFile":
+    case "copyFileAcrossLibraries":
       return isProvisional(action.payload.parent.id) ? [action.payload.parent.id] : [];
     case "move":
       return isProvisional(action.payload.to.id) ? [action.payload.to.id] : [];

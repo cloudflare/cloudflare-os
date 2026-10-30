@@ -107,11 +107,13 @@ In `busy` mode a private event's ID still lists (for free-time math) but every r
 the busy block, and no write can touch it. Confidential events are treated as private.
 
 **Access levels.** `read`; `edit` (create, change and delete events that have no attendees:
-nothing leaves the mailbox, auto-approvable); `schedule` (meetings with attendees, changes and
-cancellations of meetings the user organizes, and responses to invitations: each sends mail, so
-**never** auto-approvable). Only a `details: "full"` binding can be `edit` or `schedule`. The
-deployment caps the level with `MICROSOFT_CALENDAR_ACCESS`, and the grant caps it too
-(`Calendars.Read` gives `read`).
+nothing leaves the mailbox, so creating and changing are auto-approvable, but deleting or making
+an event less private is not); `schedule` (meetings with attendees, changes and cancellations of
+meetings the user organizes, and responses to invitations: each sends mail or takes a meeting off
+the calendar, so is **never** auto-approvable, except accepting or tentatively accepting in the
+user's own calendar without telling the organizer). Only a `details: "full"` binding can be `edit`
+or `schedule`. The deployment caps the level with `MICROSOFT_CALENDAR_ACCESS`, and the grant caps
+it too (`Calendars.Read` gives `read`).
 
 Shared calendars need `Calendars.Read.Shared` and `User.ReadBasic.All` (and
 `Calendars.ReadWrite.Shared` to change them). A link to one is refused at binding without them; a
@@ -206,10 +208,10 @@ calendars, delegates, forwarding events, changing someone else's event.
 
 | Kind | Actions | Auto-approvable | Revert |
 |---|---|---|---|
-| `calendar.events` | create, change, delete an event without attendees | Yes | delete / restore the previous fields / recreate it |
+| `calendar.events` | create, change, delete an event without attendees | Yes, except `deleteEvent` and `revealEvent` (a change that makes the event less private, chosen by `updateKind`) | delete / restore the previous fields / recreate it |
 | `calendar.invitations` | create, change or cancel a meeting with attendees | **Never** | can't be unsent |
-| `calendar.shared-events` | create, change, delete an event in a calendar someone else owns (`createSharedEvent`, `updateSharedEvent`, `deleteSharedEvent`: the `calendar.events` definitions under a kind that is never auto-approved, since "your own events" doesn't cover them) | **Never** | as `calendar.events` |
-| `calendar.responses` | accept, tentatively accept, decline, propose a new time | **Never** | can't be unsent |
+| `calendar.shared-events` | create, change, delete an event in a calendar someone else owns (`createSharedEvent`, `updateSharedEvent`, `deleteSharedEvent`, `revealSharedEvent`: the `calendar.events` definitions under their own kind, since "your own events" doesn't cover them) | Yes, except `deleteSharedEvent` and `revealSharedEvent` | as `calendar.events` |
+| `calendar.responses` | accept, tentatively accept, decline, propose a new time | Only `respondSilently`: accepting or tentatively accepting in the user's own calendar without telling the organizer (chosen by `respondKind`); the rest **never** | can't be unsent |
 
 Every action reads back as done while it waits (`calendar-overlay.ts`), with a provisional `~N` ID
 for a new event. Creation carries a `transactionId` fixed at proposal, so a replay after a crash

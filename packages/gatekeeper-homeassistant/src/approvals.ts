@@ -2,7 +2,7 @@
 //
 // Responsibilities split out from `homeassistant.ts` to keep that file manageable:
 // - `describeAction()` — produces a human-readable ActionDescription from a raw action,
-//   given a registry snapshot for name lookups.
+//   given a registry snapshot for name lookups, with its kind and verdict from `auto-approval.ts`.
 // - `canRevert()` — returns whether we know how to undo this action.
 // - `resolveTargets()` — expands an HA service-call target into the concrete set of
 //   affected entity_ids using the registry snapshot.
@@ -19,6 +19,12 @@ import {
   type RegistrySnapshot,
 } from "./homeassistant-api";
 import { resolveTargets } from "./registry-utils";
+import {
+  CALL_SERVICE_KIND,
+  dashboardVerdict,
+  FIRE_EVENT_KIND,
+  serviceCallVerdict,
+} from "./auto-approval";
 import type { HATarget, HomeAssistantAction } from "./homeassistant";
 
 export { resolveTargets };
@@ -127,6 +133,8 @@ function describeCallService(
         `This indicates a programming error in the gadget that called callService(); ` +
         `it likely passed a single options object instead of positional arguments.`,
       implementsRevert: false,
+      actionKind: CALL_SERVICE_KIND,
+      autoApprovable: false,
     };
   }
 
@@ -257,6 +265,7 @@ function describeCallService(
     title: sanitizeTitle(title),
     ...builder.finish(),
     implementsRevert: canRevert(action),
+    ...serviceCallVerdict(action, registry),
   };
 }
 
@@ -268,6 +277,8 @@ function describeFireEvent(action: HomeAssistantAction & { type: "fireEvent" }):
     title: sanitizeTitle(`Fire event: ${action.eventType}`),
     ...builder.finish(),
     implementsRevert: false,
+    actionKind: FIRE_EVENT_KIND,
+    autoApprovable: false,
   };
 }
 
@@ -289,6 +300,7 @@ function describeSaveDashboard(
       .json("Dashboard configuration", action.config)
       .finish(),
     implementsRevert: true,
+    ...dashboardVerdict(action.config),
   };
 }
 

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionApplyError, ActionOutcomeUnknownError } from "@gadgets/gatekeeper-kit/actions";
 import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
-  definitions, replaceOwnPart, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
+  definitions, moveKind, replaceOwnPart, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
 } from "../src/outlook-actions";
 import { MailApi, parseMessage } from "../src/outlook-graph";
 import { OutlookHookDeliveryImpl, OutlookHookDriver, handleOutlookNotification } from "../src/outlook-hooks";
@@ -234,6 +234,16 @@ describe("overlay", () => {
     expect(overlay.folders).toEqual([{ id: "~1", name: "Acme", parentId: "inbox" }]);
   });
 
+  it("reads a pending deletion of messages back as moved to Deleted Items, as a delete through moveMessages did", () => {
+    const deleted = { id: "deleteditems", name: "Deleted Items", path: "Deleted Items" };
+    const overlay = new OutlookOverlay([
+      entry(1, "deleteMessages", { mailbox: ME, messages: [target("m1")], to: deleted, as: "delete", submittedAt: 0 }),
+      entry(2, "moveMessages", { mailbox: ME, messages: [target("m2")], to: deleted, as: "delete", submittedAt: 0 }),
+    ], id => id);
+    expect([...overlay.deleted]).toEqual(["m1", "m2"]);
+    expect(overlay.moved.get("m1")).toBe("deleteditems");
+  });
+
   it("lists pending drafts, without the ones a later action deletes", () => {
     const overlay = new OutlookOverlay([
       entry(1, "createDraft", { mailbox: ME, ref: "~1", origin: { kind: "new" }, message: composed(), submittedAt: 0 }),
@@ -296,9 +306,29 @@ describe("what the approver is shown", () => {
     expect(moved.description).not.toContain("**");
   });
 
-  it("sends and settings are never auto-approvable", () => {
-    expect(definitions.send.autoApprovable).toBe(false);
-    expect(definitions.setAutomaticReplies.autoApprovable).toBe(false);
+  it("can auto-approve organizing and writing drafts, never a deletion, a send or automatic replies", () => {
+    const verdicts = Object.fromEntries(Object.entries(definitions).map(([name, definition]) => [name, [definition.kind.tag, definition.autoApprovable]]));
+    expect(verdicts).toEqual({
+      moveMessages: ["outlook.organize", true],
+      deleteMessages: ["outlook.organize", false],
+      updateMessages: ["outlook.organize", true],
+      createFolder: ["outlook.organize", true],
+      createDraft: ["outlook.drafts", true],
+      updateDraft: ["outlook.drafts", true],
+      deleteDraft: ["outlook.drafts", false],
+      send: ["outlook.send", false],
+      setAutomaticReplies: ["outlook.settings", false],
+    });
+    expect(definitions.deleteMessages.kind).toEqual(definitions.moveMessages.kind);
+    expect(definitions.deleteMessages.apply).toBe(definitions.moveMessages.apply);
+    expect(requiredAccess({ kind: "deleteMessages", payload: {} } as never)).toBe("draft");
+  });
+
+  it("proposes a move to Deleted Items or into Junk Email as a deletion, and any other move or archive as organizing", () => {
+    expect(moveKind("delete", false)).toBe("deleteMessages");
+    expect(moveKind("move", true)).toBe("deleteMessages");
+    expect(moveKind("move", false)).toBe("moveMessages");
+    expect(moveKind("archive", false)).toBe("moveMessages");
   });
 });
 
@@ -968,6 +998,15 @@ describe("organizing at apply", () => {
     const moved = host([json({ parentFolderId: "ELSEWHERE" })]);
     expect(await revert(undone, moved.host)).toEqual({ message: expect.stringMatching(/moved again since/), canRetry: false });
     expect(moved.calls).toHaveLength(1);
+  });
+
+  it("applies and undoes a deletion of messages as the move it is", async () => {
+    const { host: h, calls } = host([json({ parentFolderId: "DEL" })]);
+    const applied = await definitions.deleteMessages.apply({ mailbox: ME, messages: [target("m1")], to: { id: "deleteditems", name: "Deleted Items", path: "Deleted Items" }, as: "delete", submittedAt: 0 }, h);
+    expect(calls).toEqual(["POST /v1.0/me/messages/m1/move"]);
+    const back = host([json({ parentFolderId: "DEL" }), json({})]);
+    expect(await revert({ kind: "deleteMessages", payload: applied.action }, back.host)).toBeUndefined();
+    expect(back.calls.map(call => call.replace("/v1.0/me", ""))).toEqual(["GET /messages/m1", "POST /messages/m1/move"]);
   });
 
   it("proves an undo's messages, and the folders they came from, still covered before moving them back", async () => {

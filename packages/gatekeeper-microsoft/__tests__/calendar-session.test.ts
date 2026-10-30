@@ -65,6 +65,13 @@ function seed(): Seeded[] {
     // A series that isn't private with an exception that is; outside the listing window.
     seedEvent("AAMkEvTeamSeries", TEAM, "2026-10-22T16:00:00", "2026-10-22T16:30:00", { type: "seriesMaster", subject: "Weekly" }),
     seedEvent("AAMkEvTeamSeriesOcc", TEAM, "2026-10-22T16:00:00", "2026-10-22T16:30:00", { type: "exception", seriesMasterId: "AAMkEvTeamSeries", sensitivity: "private", subject: "Doctor" }),
+    // In Sarah's calendar, outside the listing window: an event nobody else is on, and an invitation to her.
+    seedEvent("AAMkEvSarahs", SARAHS, "2026-10-23T16:00:00", "2026-10-23T16:30:00", { organizer: { emailAddress: { address: "sarah@contoso.com", name: "Sarah" } } }),
+    seedEvent("AAMkEvSarahsInvite", SARAHS, "2026-10-23T17:00:00", "2026-10-23T18:00:00", {
+      subject: "Board prep", isOrganizer: false, organizer: { emailAddress: { address: "ada@fabrikam.com", name: "Ada" } },
+      attendees: [{ emailAddress: { address: "sarah@contoso.com" }, type: "required", status: { response: "notResponded" } }],
+      responseStatus: { response: "notResponded" }, responseRequested: true,
+    }),
     seedEvent("AAMkEvTeams", DEFAULT, "2026-10-21T18:00:00", "2026-10-21T18:30:00", {
       subject: "Design review", isOnlineMeeting: true, onlineMeeting: { joinUrl: "https://teams.microsoft.com/l/meetup-join/x" },
       attendees: [{ emailAddress: { address: "sarah@contoso.com", name: "Sarah" }, type: "required", status: { response: "accepted" } }],
@@ -151,8 +158,12 @@ function fakeGraph(events: Seeded[], options: { leak?: { into: string; event: Se
 }
 
 /** A session over a scope, recording what it observes and proposes. */
-function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}) {
-  const graph = fakeGraph(seed(), options);
+// `appliedOnSubmit` maps a provisional ref to the event its creation made, for a creation an
+// auto-approval applies before submit returns: it never shows as pending. `updatesApplyOnSubmit`
+// does the same for changes and responses to real events, writing them into the seeded mailbox.
+function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}, appliedOnSubmit: Record<string, string> = {}, updatesApplyOnSubmit = false) {
+  const events = seed();
+  const graph = fakeGraph(events, options);
   const observations: ObservationDescription[] = [];
   const prepared: string[][] = [];
   const submitted: { kind: keyof CalendarActions; payload: CalendarActions[keyof CalendarActions] }[] = [];
@@ -163,9 +174,19 @@ function session(scope: CalendarScope, access: CalendarAccessLevel = "read", opt
     read: op => op(graph.api),
     cached: (_key, _ttl, load) => load(),
     pending: () => submitted.map((action, index) => ({ id: index + 1, action: action as CalendarAction })) as never,
-    resolve: id => id,
+    resolve: id => appliedOnSubmit[id] ?? id,
     allocate: () => `~${++sequence}`,
     submit: async (_queue, kind, payload) => {
+      if ("ref" in payload && payload.ref in appliedOnSubmit) return 0;
+      if (updatesApplyOnSubmit && "changes" in payload) {
+        Object.assign(events.find(event => event.id === payload.target.id)!.fields, payload.changes);
+        return 0;
+      }
+      if (updatesApplyOnSubmit && "response" in payload) {
+        const accepted = { accept: "accepted", tentative: "tentativelyAccepted", decline: "declined" }[payload.response];
+        Object.assign(events.find(event => event.id === payload.target.id)!.fields, { responseStatus: { response: accepted }, showAs: payload.response === "accept" ? "busy" : "tentative" });
+        return 0;
+      }
       submitted.push({ kind, payload });
       return submitted.length;
     },
@@ -502,6 +523,66 @@ describe("an all-calendars binding", () => {
     expect(answered).toMatchObject({ response: "tentativelyAccepted", showAs: "tentative", pending: "respond" });
     expect(submitted.at(-1)).toMatchObject({ kind: "respond", payload: { response: "tentative", notify: true, propose: { start: "2026-10-19T17:00:00.000Z" } } });
   });
+
+  it("proposes a silent acceptance in the user's own calendar as one that can be auto-approved, and anything else as one that can't", async () => {
+    const { writer, submitted } = session(scope(), "schedule");
+    await writer.respond("AAMkEvInvite", "accept", { notify: false });
+    await writer.respond("AAMkEvInvite", "tentative", { notify: false });
+    await writer.respond("AAMkEvInvite", "decline", { notify: false });
+    // The invitation asks for a response, so the organizer is told unless notify is turned off.
+    await writer.respond("AAMkEvInvite", "accept");
+    await writer.respond("AAMkEvSarahsInvite", "accept", { notify: false });
+    expect(submitted.map(action => [action.kind, (action.payload as CalendarActions["respond"]).notify])).toEqual([
+      ["respondSilently", false], ["respondSilently", false], ["respond", false], ["respond", true], ["respond", false],
+    ]);
+  });
+
+  it("proposes making an event less private as a change that is never auto-approved", async () => {
+    const { writer, submitted } = session(scope("edit"), "edit");
+    await writer.updateEvent("AAMkEvDoctor", { sensitivity: "normal" });
+    await writer.updateEvent("AAMkEvDoctor", { sensitivity: "confidential" });
+    await writer.updateEvent("AAMkEvStandup", { sensitivity: "private" });
+    expect(submitted.map(action => action.kind)).toEqual(["revealEvent", "updateEvent", "updateEvent"]);
+    expect(submitted[0]!.payload).toMatchObject({ before: { sensitivity: "private" } });
+    expect(submitted.map(action => definitions[action.kind].autoApprovable)).toEqual([false, true, true]);
+  });
+
+  it("returns the event a creation made when it was applied before submit returned", async () => {
+    const { writer } = session(scope("edit"), "edit", {}, { "~1": "AAMkEvSarahs" });
+    const created = await writer.createEvent({ subject: "Focus", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: SARAHS.id });
+    expect(created).toMatchObject({ id: "AAMkEvSarahs" });
+    expect(created.pending).toBeUndefined();
+  });
+
+  it("returns the invitation as answered when a silent acceptance was applied before submit returned", async () => {
+    const { writer } = session(scope("schedule"), "schedule", {}, {}, true);
+    const answered = await writer.respond("AAMkEvInvite", "accept", { notify: false });
+    expect(answered).toMatchObject({ id: "AAMkEvInvite", response: "accepted", showAs: "busy" });
+    expect(answered.pending).toBeUndefined();
+  });
+
+  it("returns the event as changed when the change was applied before submit returned", async () => {
+    const { writer } = session(scope("edit"), "edit", {}, {}, true);
+    const updated = await writer.updateEvent("AAMkEvSarahs", { subject: "Updated subject" });
+    expect(updated).toMatchObject({ id: "AAMkEvSarahs", subject: "Updated subject" });
+    expect(updated.pending).toBeUndefined();
+  });
+
+  it("judges a change against the sensitivity a queued change will leave, not only the live one", async () => {
+    const { writer, submitted } = session(scope("edit"), "edit");
+    await writer.updateEvent("AAMkEvSarahs", { subject: "Secret", sensitivity: "private" });
+    await writer.updateEvent("AAMkEvSarahs", { sensitivity: "normal" });
+    expect(submitted.map(action => action.kind)).toEqual(["updateSharedEvent", "revealSharedEvent"]);
+    expect(submitted.map(action => definitions[action.kind].autoApprovable)).toEqual([true, false]);
+  });
+
+  it("proposes a change to an event in someone else's calendar under its own kind, and deleting one never auto-approved", async () => {
+    const { writer, submitted } = session(scope("edit"), "edit");
+    await writer.updateEvent("AAMkEvSarahs", { location: "Room 2" });
+    await writer.deleteEvent("AAMkEvSarahs");
+    expect(submitted.map(action => action.kind)).toEqual(["updateSharedEvent", "deleteSharedEvent"]);
+    expect(submitted.map(action => definitions[action.kind].autoApprovable)).toEqual([true, false]);
+  });
 });
 
 describe("a calendar binding that can change events", () => {
@@ -539,12 +620,23 @@ describe("what the approver sees", () => {
     expect(presentation.description).toContain("can't be called back");
   });
 
-  it("never offers mail-sending kinds for automatic approval", () => {
+  it("never offers mail-sending kinds or a deletion for automatic approval", () => {
     expect(definitions.createMeeting.autoApprovable).toBe(false);
     expect(definitions.updateMeeting.autoApprovable).toBe(false);
     expect(definitions.cancelMeeting.autoApprovable).toBe(false);
     expect(definitions.respond.autoApprovable).toBe(false);
+    expect(definitions.deleteEvent.autoApprovable).toBe(false);
     expect(definitions.createEvent.autoApprovable).toBe(true);
+    expect(definitions.respondSilently.autoApprovable).toBe(true);
+  });
+
+  it("tells the approver a silent acceptance changes only the user's calendar", () => {
+    const presentation = definitions.respondSilently.describe({
+      calendar: { owner: { kind: "me" }, id: DEFAULT.id, name: "Calendar" },
+      target: { id: "x", subject: "Vendor sync", start: "2026-10-19T17:00:00.000Z", end: "2026-10-19T18:00:00.000Z", allDay: false, changeKey: "k", organizer: "Ada" },
+      response: "accept", notify: false, zone: "America/Los_Angeles", submittedAt: 0,
+    });
+    expect(presentation.description).toContain("The organizer isn't told; only your calendar changes.");
   });
 });
 

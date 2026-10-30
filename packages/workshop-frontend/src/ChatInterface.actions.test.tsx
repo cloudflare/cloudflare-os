@@ -167,7 +167,10 @@ const longDescription = [
 
 function pendingLog(over: Partial<Record<string, unknown>> = {}) {
   return entry(1, {
-    description: { title: 'Send email', description: longDescription, implementsRevert: false, ...over },
+    description: {
+      title: 'Send email', description: longDescription, implementsRevert: false,
+      autoApprovable: false, ...over,
+    },
   })
 }
 

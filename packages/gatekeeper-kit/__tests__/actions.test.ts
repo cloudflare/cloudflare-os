@@ -29,6 +29,9 @@ type Sql = { sql: string; rows?: number };
 
 const presentation = { title: "Run SQL", description: "…", implementsRevert: false };
 
+// The kind and verdict every definition declares, for definitions whose tests are about neither.
+const policy = { kind: { tag: "sql", label: "Run SQL" }, autoApprovable: false };
+
 // Keep recorded submissions typed to the real RPC signature.
 function submitSpy() {
   return vi.fn<ApprovalQueue["submitAction"]>(async () => {});
@@ -577,13 +580,15 @@ describe("ActionJournal", () => {
 });
 
 describe("stageAction", () => {
+  const description = { ...presentation, autoApprovable: false };
+
   it("submits the allocated id, then marks the action pending", async () => {
     const journal = new ActionJournal<Sql>(makeKv(), { namespace: "pending" });
     const submitAction = submitSpy();
 
-    const id = await stageAction(journal, fakeQueue(submitAction), { sql: "one" }, presentation);
+    const id = await stageAction(journal, fakeQueue(submitAction), { sql: "one" }, description);
 
-    expect(submitAction).toHaveBeenCalledWith(id, presentation);
+    expect(submitAction).toHaveBeenCalledWith(id, description);
     expect(journal.listPending()).toEqual([{ id, action: { sql: "one" } }]);
   });
 
@@ -593,7 +598,7 @@ describe("stageAction", () => {
       throw new Error("queue unavailable");
     });
 
-    await expect(stageAction(journal, fakeQueue(submitAction), { sql: "one" }, presentation))
+    await expect(stageAction(journal, fakeQueue(submitAction), { sql: "one" }, description))
       .rejects.toThrow("queue unavailable");
     expect(journal.get(1)).toBeUndefined();
     expect(journal.listPending()).toEqual([]);
@@ -607,7 +612,7 @@ describe("stageAction", () => {
       throw new Error("session torn down");
     });
 
-    const id = await stageAction(journal, fakeQueue(submitAction), { sql: "one" }, presentation);
+    const id = await stageAction(journal, fakeQueue(submitAction), { sql: "one" }, description);
     expect(journal.get(id)).toEqual({ state: "applied", action: { sql: "one" } });
   });
 
@@ -619,7 +624,7 @@ describe("stageAction", () => {
     });
 
     // A gone record is a resolved one: nothing but a resolution removes it mid-submission.
-    const id = await stageAction(journal, fakeQueue(submitAction), { sql: "one" }, presentation);
+    const id = await stageAction(journal, fakeQueue(submitAction), { sql: "one" }, description);
     expect(journal.get(id)).toBeUndefined();
     expect(journal.listPending()).toEqual([]);
   });
@@ -632,7 +637,7 @@ describe("stageAction", () => {
     const queue = fakeQueue(submitAction);
 
     const results = await Promise.allSettled(
-      ["a", "b", "c", "d"].map(sql => stageAction(journal, queue, { sql }, presentation)));
+      ["a", "b", "c", "d"].map(sql => stageAction(journal, queue, { sql }, description)));
 
     // One staged and submitted; the rest refused at capacity. Nothing reported success for a
     // record that no longer exists.
@@ -680,6 +685,7 @@ describe("defineActions", () => {
       publish: {
         // Same tag as `execute`, so necessarily the same label: one tag is one approval group.
         kind: { tag: "sql", label: "Run SQL" },
+        autoApprovable: false,
         delivery: "await-decision",
         describe: () => presentation,
         apply: async (payload, target) => void target.ran.push(payload.page),
@@ -923,22 +929,12 @@ describe("defineActions", () => {
     expect(outcomes).toEqual(["applied"]);
   });
 
-  it("refuses a definition that claims auto-approval without declaring a kind", () => {
-    expect(() => defineActions<Host, { execute: Sql }>({
-      execute: {
-        autoApprovable: true,
-        delivery: "continue-with-simulation",
-        describe: () => presentation,
-        apply: async () => {},
-      },
-    }, { fence: "none" })).toThrow(/autoApprovable without a kind/);
-  });
-
   it("refuses a set that declares dependsOn with no way to resolve the reference", () => {
     // Without a resolver apply hands the provider the provisional string, and the strand cascade
     // reads every reference as dead. Both are silent, so the declaration is refused instead.
     const definitions = {
       execute: {
+        ...policy,
         delivery: "continue-with-simulation" as const,
         describe: () => presentation,
         dependsOn: (payload: Sql) => [payload.sql],
@@ -956,12 +952,14 @@ describe("defineActions", () => {
     expect(() => defineActions<Host, { execute: Sql; publish: { page: string } }>({
       execute: {
         kind: { tag: "sql", label: "Run SQL" },
+        autoApprovable: false,
         delivery: "continue-with-simulation",
         describe: () => presentation,
         apply: async () => {},
       },
       publish: {
         kind: { tag: "sql", label: "Publish" },
+        autoApprovable: false,
         delivery: "continue-with-simulation",
         describe: () => presentation,
         apply: async () => {},
@@ -974,7 +972,7 @@ describe("defineActions", () => {
     const submitAction = submitSpy();
     const queue = fakeQueue(submitAction);
 
-    // `publish` shares `execute`'s tag and label but does not declare auto-approval, so an opt-in
+    // `publish` shares `execute`'s tag and label but declares `autoApprovable: false`, so an opt-in
     // the user granted the tag must not carry it.
     await actions.submit(queue, "execute", { sql: "one" });
     await actions.submit(queue, "publish", { page: "p" });
@@ -1116,6 +1114,19 @@ describe("defineActions", () => {
   it("lists auto-approvable kinds only, deduped by tag", () => {
     const { actions } = bind();
     expect(actions.autoApprovableKinds()).toEqual([{ tag: "sql", label: "Run SQL" }]);
+  });
+
+  it("leaves out a tag none of whose definitions is auto-approvable", () => {
+    const set = defineActions<Host, { execute: Sql }>({
+      execute: {
+        ...policy,
+        delivery: "continue-with-simulation",
+        describe: () => presentation,
+        apply: async () => {},
+      },
+    }, { fence: "none" });
+    expect(set.bind(new ActionJournal(makeKv(), { namespace: "pending" }), { ran: [] })
+      .autoApprovableKinds()).toEqual([]);
   });
 
   it("serializes concurrent resolutions of one id into a single provider effect", async () => {
@@ -1438,6 +1449,7 @@ describe("defineActions", () => {
     const journal = new ActionJournal<TaggedAction<{ 7: Sql }>>(makeKv(), { namespace: "pending" });
     const actions = defineActions<Host, { 7: Sql }>({
       7: {
+        ...policy,
         delivery: "await-decision",
         describe: () => presentation,
         apply: async (payload, target) => void target.ran.push(payload.sql),
@@ -1456,6 +1468,7 @@ describe("defineActions", () => {
     const journal = new ActionJournal<TaggedAction<{ execute: Sql }>>(makeKv(), { namespace: "pending" });
     const set = defineActions<Host, { execute: Sql }>({
       execute: {
+        ...policy,
         delivery: "await-decision",
         describe: () => presentation,
         apply: async (payload, target) => void target.ran.push(payload.sql),
@@ -1531,6 +1544,7 @@ describe("defineActions", () => {
     // silently staging the action unfenced.
     const set = defineActions<{ ran: string[] }, { toString: Sql }>({
       toString: {
+        ...policy,
         delivery: "await-decision",
         describe: () => presentation,
         apply: async () => {},
@@ -1622,11 +1636,13 @@ describe("defineActions", () => {
     const journal = new ActionJournal<TaggedAction<Actions>>(makeKv(), { namespace: "pending" });
     const actions = defineActions<Host, Actions>({
       execute: {
+        ...policy,
         delivery: "continue-with-simulation",
         describe: () => presentation,
         apply: async (payload, target) => void target.ran.push(payload.sql),
       },
       publish: {
+        ...policy,
         delivery: "await-decision",
         describe: () => presentation,
         apply: async (payload, target) => void target.ran.push(payload.page),
@@ -1712,6 +1728,7 @@ describe("dependent actions", () => {
     const journal = new ActionJournal<TaggedAction<Actions>>(makeKv(), { namespace: "pending" });
     const set = defineActions<Host, Actions>({
       create: {
+        ...policy,
         delivery: "continue-with-simulation",
         describe: () => presentation,
         // A creation both stands for the entity it will make and may target an earlier one.
@@ -1721,6 +1738,7 @@ describe("dependent actions", () => {
         reject: async payload => void host.ran.push(`released ${payload.ref}`),
       },
       edit: {
+        ...policy,
         delivery: "continue-with-simulation",
         describe: () => presentation,
         dependsOn: payload => [payload.target],

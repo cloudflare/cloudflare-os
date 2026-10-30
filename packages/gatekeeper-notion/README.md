@@ -44,6 +44,13 @@ performed in `applyAction()`. Reads simulate pending (unapproved) writes so a Ga
 changes immediately — including provisional IDs for created pages. Page/database/data-source/user
 responses are cached in DO storage with short TTLs.
 
+Every write carries a kind (`append-content`, `edit-pages`, `create-pages`, `restore-pages`,
+`post-comments`, `trash-pages`) that the user can choose to auto-approve, except moving a page to
+trash, setting or creating a page with an external image icon, and writing a file into a files
+property (Notion loads those URLs by itself, so they could carry page content out), which always
+wait for a person. `describeAction` in `src/notion-actions.ts` assigns them;
+tags are never renamed, because stored rules key on them.
+
 ## Data sources
 
 Notion's newer model splits a database into one or more **data sources**. Database `query`,

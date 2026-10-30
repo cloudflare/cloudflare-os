@@ -149,6 +149,17 @@ describe("Overlay over files", () => {
     expect(overlay.pendingContent("~2")).toEqual({ file: FILE, mimeType: "text/markdown", name: "plan.md" });
   });
 
+  it("reads a pending copy into another library back as made, and as its source's content", () => {
+    const ONEDRIVE = "b!OneDriveOfPhillip000000000000";
+    const shared: FolderTarget = { id: `${ONEDRIVE}/SHARED`, driveId: ONEDRIVE, name: "Shared", location: "OneDrive › Shared", path: "Shared" };
+    const overlay = new Overlay(pending(
+      { kind: "copyFileAcrossLibraries", payload: { ref: "~3", source: target("A", "a.txt", "a.txt"), parent: shared, name: "a.txt", size: 12, mimeType: "text/plain", submittedAt: AT } },
+    ), identity);
+    expect(overlay.addedTo(`${ONEDRIVE}/SHARED`, "Shared", ONEDRIVE, undefined)).toMatchObject([{ id: "~3", path: "Shared/a.txt", size: 12, mimeType: "text/plain", pending: "create" }]);
+    expect(overlay.created("~3")).toMatchObject({ name: "a.txt", libraryId: ONEDRIVE });
+    expect(overlay.copySource("~3")).toEqual({ driveId: DRIVE, itemId: "A" });
+  });
+
   it("follows a temporary folder to its real ID once its creation applied", () => {
     const real = `${DRIVE}/REALDRAFTS`;
     const overlay = new Overlay(pending(

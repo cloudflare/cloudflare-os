@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
 import { ProvisionalIds, type SimulationKv } from "@gadgets/gatekeeper-kit/simulation";
 import {
-  definitions, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type CalendarActions, type CalendarRef, type EventTarget, type EventVersion,
+  definitions, requiredAccess, respondKind, revealsEvent, revert, updateKind, type CalendarAction, type CalendarActionHost, type CalendarActions, type CalendarRef, type EventTarget, type EventVersion,
 } from "../src/calendar-actions";
 import { GraphApi } from "../src/graph-api";
 
@@ -147,6 +147,28 @@ describe("changing and deleting", () => {
     expect(sent.filter(request => request.method !== "GET")).toHaveLength(0);
   });
 
+  it("won't make an event less private after a later-proposed change, approved first, made it more private", async () => {
+    // Proposed while the event was normal, so proposed as no reveal; meanwhile `private` applied.
+    const lower = { ...updatePayload, changes: { sensitivity: "normal" as const }, before: { sensitivity: "normal" as const }, submittedAt: 1 };
+    const { host, sent } = harness([placed(), { status: 200, body: { sensitivity: "private" } }]);
+    host.noteEventVersion(TARGET.id, "ckAfterPrivate");
+    await expect(definitions.updateSharedEvent.apply(lower, host)).rejects.toThrow(/made more private after this was proposed/);
+    expect(sent.filter(request => request.method !== "GET")).toHaveLength(0);
+    // A person who approved it as a reveal saw that it is one.
+    const approved = harness([placed(), { status: 200, body: { changeKey: "ckB" } }]);
+    approved.host.noteEventVersion(TARGET.id, "ckAfterPrivate");
+    await definitions.revealSharedEvent.apply(lower, approved.host);
+    expect(approved.sent.at(-1)).toMatchObject({ method: "PATCH", body: { sensitivity: "normal" } });
+  });
+
+  it("applies a change of sensitivity that still reveals nothing after a later change applied first", async () => {
+    const lower = { ...updatePayload, changes: { sensitivity: "private" as const }, before: { sensitivity: "normal" as const }, submittedAt: 1 };
+    const { host, sent } = harness([placed(), { status: 200, body: { sensitivity: "private" } }, { status: 200, body: { changeKey: "ckB" } }]);
+    host.noteEventVersion(TARGET.id, "ckAfterPrivate");
+    await definitions.updateEvent.apply(lower, host);
+    expect(sent.at(-1)).toMatchObject({ method: "PATCH", body: { sensitivity: "private" } });
+  });
+
   it("won't change or delete an event it created once a later-approved invitation made it a meeting, whatever version that left", async () => {
     const invited = placed({ attendees: [{ emailAddress: { address: "sarah@contoso.com" } }] });
     const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, invited, invited]);
@@ -207,6 +229,12 @@ describe("changing and deleting", () => {
     const noCalendar = harness([placed(), { status: 404, body: { error: { code: "ErrorItemNotFound", message: "x" } } }]);
     expect(await revert({ kind: "createEvent", payload: { ...createPayload, createdId: "AAMkNew", createdChangeKey: "ckA" } }, noCalendar.host)).toEqual({ message: expect.stringContaining("no longer in the calendar"), canRetry: false });
     expect(noCalendar.sent.map(request => request.method)).toEqual(["GET", "GET"]);
+  });
+
+  it("reverts a change that made an event less private like any other change", async () => {
+    const { host, sent } = harness([placed(), boundCalendar, { status: 200, body: {} }]);
+    await revert({ kind: "revealEvent", payload: { ...undoable, changes: { sensitivity: "normal" }, before: { sensitivity: "private" } } }, host);
+    expect(sent[2]).toMatchObject({ method: "PATCH", ifMatch: 'W/"ckB"', body: { sensitivity: "private" } });
   });
 
   it("still reverts the user's own fields on someone else's invitation, which tells nobody", async () => {
@@ -336,16 +364,89 @@ describe("what tells other people", () => {
     expect(unread.versions.has("AAMkEv")).toBe(false);
   });
 
-  it("never auto-approves a change to someone else's calendar, whatever the user allowed for their own", () => {
-    for (const kind of ["createSharedEvent", "updateSharedEvent", "deleteSharedEvent"] as const) {
-      expect(definitions[kind]).toMatchObject({ autoApprovable: false, kind: { tag: "calendar.shared-events" } });
-    }
-    expect(definitions.createEvent.kind.tag).toBe("calendar.events");
+  it("can auto-approve events nobody else is on and silent acceptances, never a deletion, a reveal or anything that mails someone", () => {
+    const verdicts = Object.fromEntries(Object.entries(definitions).map(([name, definition]) => [name, [definition.kind.tag, definition.autoApprovable]]));
+    expect(verdicts).toEqual({
+      createEvent: ["calendar.events", true],
+      updateEvent: ["calendar.events", true],
+      deleteEvent: ["calendar.events", false],
+      // Someone else's calendar is its own kind, which "your own events" doesn't cover.
+      createSharedEvent: ["calendar.shared-events", true],
+      updateSharedEvent: ["calendar.shared-events", true],
+      deleteSharedEvent: ["calendar.shared-events", false],
+      createMeeting: ["calendar.invitations", false],
+      updateMeeting: ["calendar.invitations", false],
+      cancelMeeting: ["calendar.invitations", false],
+      respond: ["calendar.responses", false],
+      respondSilently: ["calendar.responses", true],
+      // Less private: shown to everyone the calendar is shared with.
+      revealEvent: ["calendar.events", false],
+      revealSharedEvent: ["calendar.shared-events", false],
+    });
+    expect(definitions.respondSilently.kind).toEqual(definitions.respond.kind);
+    expect(definitions.respondSilently.apply).toBe(definitions.respond.apply);
+    expect(definitions.revealSharedEvent.apply).toBe(definitions.revealEvent.apply);
+  });
+
+  it("proposes a change that makes an event less private as one that can't be auto-approved", () => {
+    const change = (changes: Partial<CalendarActions["updateEvent"]["changes"]>, before: Partial<CalendarActions["updateEvent"]["before"]>, series?: true): CalendarActions["updateEvent"] => ({
+      calendar: CALENDAR, target: { ...TARGET, ...(series ? { series } : {}) }, changes, before, zone: ZONE, submittedAt: 1,
+    });
+    expect(revealsEvent(change({ sensitivity: "normal" }, { sensitivity: "private" }))).toBe(true);
+    expect(revealsEvent(change({ sensitivity: "personal" }, { sensitivity: "confidential" }))).toBe(true);
+    expect(revealsEvent(change({ sensitivity: "normal" }, { sensitivity: "personal" }))).toBe(true);
+    // Hiding more, or as much, shows nobody anything new.
+    expect(revealsEvent(change({ sensitivity: "private" }, { sensitivity: "normal" }))).toBe(false);
+    expect(revealsEvent(change({ sensitivity: "confidential" }, { sensitivity: "private" }))).toBe(false);
+    expect(revealsEvent(change({ sensitivity: "normal" }, { sensitivity: "normal" }))).toBe(false);
+    expect(revealsEvent(change({ subject: "Renamed" }, { subject: "Standup" }))).toBe(false);
+    // A series' occurrences can be more private than its master.
+    expect(revealsEvent(change({ sensitivity: "normal" }, { sensitivity: "normal" }, true))).toBe(true);
+    expect(revealsEvent(change({ sensitivity: "private" }, { sensitivity: "normal" }, true))).toBe(false);
+
+    const reveal = change({ sensitivity: "normal" }, { sensitivity: "private" });
+    const plain = change({ location: "Room 2" }, { location: "Room 1" });
+    expect([updateKind(reveal, true), updateKind(reveal, false), updateKind(plain, true), updateKind(plain, false)])
+      .toEqual(["revealEvent", "revealSharedEvent", "updateEvent", "updateSharedEvent"]);
+  });
+
+  it("counts a queued change that makes the event more private when judging a later one", () => {
+    const change = (changes: Partial<CalendarActions["updateEvent"]["changes"]>): CalendarActions["updateEvent"] => ({
+      calendar: CALENDAR, target: TARGET, changes, before: { sensitivity: "normal" }, zone: ZONE, submittedAt: 1,
+    });
+    // Queued `private`, then `normal`: the second shows whatever was written while it was private.
+    expect(revealsEvent(change({ sensitivity: "normal" }), ["private"])).toBe(true);
+    expect(updateKind(change({ sensitivity: "normal" }), false, [undefined, "confidential"])).toBe("revealSharedEvent");
+    expect(revealsEvent(change({ sensitivity: "private" }), ["private"])).toBe(false);
+    expect(revealsEvent(change({ subject: "Renamed" }), ["private"])).toBe(false);
+    expect(updateKind(change({ sensitivity: "normal" }), true, [undefined])).toBe("updateEvent");
+  });
+
+  it("shows the approver a change of sensitivity, even to normal, and what it was", () => {
+    const presentation = definitions.revealEvent.describe({
+      calendar: CALENDAR, target: TARGET, changes: { sensitivity: "normal" }, before: { sensitivity: "private" }, zone: ZONE, submittedAt: 1,
+    });
+    const fields = JSON.stringify(presentation.fields);
+    expect(fields).toMatch(/Sensitivity.*normal/);
+    expect(fields).toContain("Sensitivity: private");
+  });
+
+  it("proposes only a silent acceptance in the user's own calendar as a response that can be auto-approved", () => {
+    expect(respondKind({ response: "accept", notify: false }, true)).toBe("respondSilently");
+    expect(respondKind({ response: "tentative", notify: false }, true)).toBe("respondSilently");
+    // The organizer is told.
+    expect(respondKind({ response: "accept", notify: true }, true)).toBe("respond");
+    expect(respondKind({ response: "tentative", notify: true }, true)).toBe("respond");
+    // A decline takes the meeting off the calendar, told or not.
+    expect(respondKind({ response: "decline", notify: false }, true)).toBe("respond");
+    expect(respondKind({ response: "decline", notify: true }, true)).toBe("respond");
+    // Someone else's calendar: the response is theirs.
+    expect(respondKind({ response: "accept", notify: false }, false)).toBe("respond");
   });
 
   it("says what can't be undone, and that retrying won't help", async () => {
     const host = harness().host;
-    for (const kind of ["createMeeting", "updateMeeting", "cancelMeeting", "respond"] as const) {
+    for (const kind of ["createMeeting", "updateMeeting", "cancelMeeting", "respond", "respondSilently"] as const) {
       expect(await revert({ kind, payload: {} } as never, host)).toMatchObject({ message: expect.any(String), canRetry: false });
     }
   });
@@ -380,10 +481,10 @@ describe("what the approver reads", () => {
 });
 
 describe("required access", () => {
-  it("is schedule for what mails other people, and edit for the rest", () => {
+  it("is schedule for meetings and responses, even a silent one, and edit for the rest", () => {
     const kinds = Object.keys(definitions) as (keyof CalendarActions)[];
     const schedule = kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as CalendarAction) === "schedule");
-    expect(schedule.toSorted()).toEqual(["cancelMeeting", "createMeeting", "respond", "updateMeeting"]);
-    expect(kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as CalendarAction) === "edit")).toHaveLength(kinds.length - 4);
+    expect(schedule.toSorted()).toEqual(["cancelMeeting", "createMeeting", "respond", "respondSilently", "updateMeeting"]);
+    expect(kinds.filter(kind => requiredAccess({ kind, payload: {} } as unknown as CalendarAction) === "edit")).toHaveLength(kinds.length - 5);
   });
 });

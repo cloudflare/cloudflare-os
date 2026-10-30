@@ -16,6 +16,7 @@ import {
   HookTargetMetadata,    // Remove if no hooks
   ResourceDescription,
   ApprovalQueue,
+  ActionKind,
   ObservationDescription,
   VendorDescription,
   GatekeeperConnectCallback,
@@ -72,6 +73,11 @@ const MY_RESOURCE: SupportedResource = {
   title: "My Resource",
   description: "Access a specific resource.",
 };
+
+// Every action declares a kind and an auto-approval verdict (SKILL.md "Action kinds and
+// auto-approval"). The user's "always approve" rule is stored under the tag, so never rename it
+// once shipped; the label is what the user sees.
+const MY_EDIT_KIND: ActionKind = { tag: "edit-data", label: "Edit data" };
 
 // ---------------------------------------------------------------------------
 // HTTP handler — serves the browser-based auth flow.
@@ -377,6 +383,13 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
     return TYPES_CODE;
   }
 
+  // The kinds this binding can submit with `autoApprovable: true`, offered to the user to enable.
+  // Approves nothing by itself. With gatekeeper-kit, return `autoApprovableKinds()` filtered to
+  // this binding; return [] if every action opts out.
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return [MY_EDIT_KIND];
+  }
+
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<MySession> {
     return new MySessionImpl(
       approvalQueue.dup(),  // Always dup() before storing
@@ -522,6 +535,11 @@ class MySessionImpl extends RpcTarget implements MySession {
       title: "Update data",
       description: `Update value to: ${newValue}`,
       implementsRevert: true,
+      actionKind: MY_EDIT_KIND,
+      // `true` unless the action falls under the opt-out policy in SKILL.md. Where it depends on
+      // the payload, compute it, with a comment naming the rule:
+      //   autoApprovable: !removesContent(newValue),  // rule 1: deletes or removes content
+      autoApprovable: true,
     });
 
     // TODO: Update cache/simulation state so subsequent reads reflect this
