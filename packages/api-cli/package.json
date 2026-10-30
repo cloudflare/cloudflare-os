@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "test:run": "node --test 'src/**/*.test.ts' 'generator/**/*.test.ts'"
+    "test:run": "node ../api-schema/scripts/generate.ts --if-stale && node --test 'src/**/*.test.ts' 'generator/**/*.test.ts'"
   },
   "dependencies": {
     "capnweb": "catalog:",

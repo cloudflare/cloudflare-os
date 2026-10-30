@@ -11,7 +11,7 @@
 // one) without the format knowing each tag.
 //
 // The schema is deterministic: services, shapes, methods, properties and union branches are
-// sorted, so the same declarations always serialize to the same bytes, and a committed schema
+// sorted, so the same declarations always serialize to the same bytes, and a generated schema
 // moves only when the API does. Consumers (a declaration file, a tool catalog, a command-line
 // client) are generated from it without reading TypeScript themselves.
 //

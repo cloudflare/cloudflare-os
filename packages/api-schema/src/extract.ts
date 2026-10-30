@@ -8,7 +8,7 @@
 // capnweb-validate, the output keeps names, JSDoc (of services and their members, of named types
 // and of object properties) and its tags (`@deprecated` and `@mutates` as fields, the others in
 // `tags`), records which side implements each service, and is deterministic: services, shapes,
-// properties and union branches are sorted, so the committed schema does not move with
+// properties and union branches are sorted, so the generated schema does not move with
 // TypeScript's internal type ordering.
 //
 // typescript6 = npm:typescript@6.0.3: the TypeScript 7 package ships no JS compiler API.
@@ -62,6 +62,15 @@ export function isInstalledRuntime(fileName: string): boolean {
 
 /** Loads `entry` and extracts the schema of everything reachable from `entryName`. */
 export function extractSchema(options: ExtractOptions): Schema {
+  return extractSchemaAndSources(options).schema;
+}
+
+/**
+ * {@link extractSchema}, with the path of every source file its program loaded: the entry, what it
+ * imports, the TypeScript libs and the installed packages' declarations. A caller that keeps the
+ * schema on disk hashes them to tell when it is stale.
+ */
+export function extractSchemaAndSources(options: ExtractOptions): { schema: Schema; sources: string[] } {
   const compilerOptions = loadCompilerOptions(options);
   const program = ts.createProgram({ rootNames: [options.entry], options: compilerOptions, host: cachingHost(compilerOptions) });
   const source = program.getSourceFile(options.entry);
@@ -98,13 +107,14 @@ export function extractSchema(options: ExtractOptions): Schema {
     };
     return [name, service];
   }));
-  return {
+  const schema: Schema = {
     format: FORMAT,
     entry,
     constants,
     services: sortKeys(services),
     shapes: sortKeys(extractor.shapes),
   };
+  return { schema, sources: program.getSourceFiles().map((file) => file.fileName) };
 }
 
 /**

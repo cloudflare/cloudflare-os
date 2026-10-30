@@ -1,5 +1,7 @@
 /**
- * Vite+ settings for `@gadgets/api-cli`: a hand-declared `test` task.
+ * Vite+ settings for `@gadgets/api-cli`: a hand-declared `test` task, and the `build` (the type
+ * check). Both read `generated/`, which is not committed, so both depend on
+ * `@gadgets/api-schema#generate`, which writes it when it is stale.
  *
  * `node --test`, not vitest: the CLI's suites are written for the platform test runner, as
  * `scripts/`' are, and need nothing vitest adds. So this cannot use the shared `vitestTask()`, which
@@ -15,6 +17,10 @@ import { TESTS_WITH_TIMEOUT_ENV, withTestTimeout } from "@gadgets/scripts/vitest
 export default {
   run: {
     tasks: {
+      build: {
+        command: "tsc",
+        dependsOn: ["@gadgets/api-schema#generate"],
+      },
       test: {
         command: withTestTimeout("node --test 'src/**/*.test.ts' 'generator/**/*.test.ts'"),
         cache: {
@@ -28,6 +34,7 @@ export default {
           // No artifacts: the terminal output is still replayed on a hit.
           output: [],
         },
+        dependsOn: ["@gadgets/api-schema#generate"],
       },
     },
   },

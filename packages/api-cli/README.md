@@ -6,7 +6,8 @@ Gatekeeper sessions without a browser. Run it from the repository root (`pnpm -w
 from a package directory). Its commands are not written by hand: they are generated from
 `packages/workshop-shared/src/api.ts` through [`packages/api-schema`](../api-schema/README.md)
 ([cloudflare/cloudflare-os#860](https://github.com/cloudflare/cloudflare-os/pull/860)), so they are
-always this commit's API.
+always this checkout's API: `pnpm cf-os` generates them first when api.ts or the generator has
+changed since it last did ([Generated files](#generated-files)).
 
 [cloudflare-os-starter](https://github.com/cloudflare/cloudflare-os-starter)'s own `cf-os api` is
 to run this same CLI from its submodule, in place of the copy it ships today (see
@@ -294,7 +295,9 @@ pnpm prints its `$ node ...` line on stderr, and adds an `[ELIFECYCLE] Command f
 after a failure, the short `pnpm -s` included (pnpm 11, whose long `--silent` adds neither), so read
 stdout as a result only on exit 0. For a stdout that holds the result alone, and a stderr that holds
 only the CLI's messages, run the entry directly: `node packages/api-cli/src/main.ts api ...` from
-the repository root (in a cloudflare-os-starter, `pnpm exec cf-os api ...`).
+the repository root, once `pnpm cf-os` (or `node packages/api-schema/scripts/generate.ts
+--if-stale`) has generated its commands for this checkout's API (in a cloudflare-os-starter,
+`pnpm exec cf-os api ...`).
 
 ## Answers (`--answer`)
 
@@ -486,12 +489,16 @@ it.
 
 `generated/commands.ts` (the command table, the gatekeeper app UIs' nodes included) and
 `generated/agent-types.ts` (a copy of the agent declarations and the app UIs', for `types`) are
-committed and never edited. `pnpm api-schema:generate` writes them
-in the same step as `packages/api-schema/generated/`, rendered by `generator/emit.ts`, which is pure:
-every per-method decision is made there. `pnpm api-schema:check` (part of `pnpm lint`, and CI) fails
-while they are stale. An API change the CLI cannot represent fails the generation, naming the
-method: an untyped capability parameter, a `WritableStream`, a callback method returning a
-capability or a stream, or a required function returning a value.
+not committed, and never edited. `packages/api-schema/scripts/generate.ts` writes them in the same
+step as `packages/api-schema/generated/`, rendered by `generator/emit.ts`, which is pure: every
+per-method decision is made there. Everything that runs the CLI or reads them generates them first
+with `--if-stale`, which does so only when api.ts, a gatekeeper app UI or the generator has changed
+since the last generation ([api-schema's Generating](../api-schema/README.md#generating)): the root
+`pnpm cf-os`, this package's `build` and `test` tasks (through `@gadgets/api-schema#generate`) and
+its `test:run`. An API change the CLI cannot represent fails the generation, naming the method: an
+untyped capability parameter, a `WritableStream`, a callback method returning a capability or a
+stream, or a required function returning a value. `pnpm build` and `pnpm lint` run the generation,
+so CI fails on one.
 
 ## Tests
 
@@ -514,7 +521,12 @@ its own copy. Any caller follows the same contract:
 
 - **Entry.** `node <checkout>/packages/api-cli/src/main.ts api <tokens>`, in the starter
   `cloudflare-os/packages/api-cli/src/main.ts`, run with the caller's Node and stdio inherited. It
-  is spawned, never imported, and needs no build step: Node runs the TypeScript sources.
+  is spawned, never imported, and needs no build step: Node runs the TypeScript sources. Its
+  commands are generated, though, and not committed: before every run the caller spawns
+  `node <checkout>/packages/api-schema/scripts/generate.ts --if-stale` the same way, which writes
+  them when the checkout has none or they are stale, prints nothing on stdout, and returns at once
+  otherwise. On a nonzero exit the caller stops with that exit code, the generator having said why
+  on stderr.
 - **Before spawning**, the caller checks that the entry exists. A pin from before this package has
   none: say that the pin predates `cf-os api` upstream, and name `cf-os update`. It also checks
   that the checkout's workspace is installed for this pin, as the starter's `cf-os install --check`
@@ -545,5 +557,7 @@ its own copy. Any caller follows the same contract:
   Messages say `cf-os api ...`.
 - **Requirements.** Node >= 24.19 and the checkout's workspace install, nothing else. The runtime
   imports only node builtins, capnweb and hash-wasm (`src/main.test.ts` checks), so a caller's
-  published package never reaches `@gadgets/*`.
-- **Commands.** Always the checkout's: `generated/` is committed with the API it describes.
+  published package never reaches `@gadgets/*`; the generator also needs the workspace's
+  `typescript6`, which that install holds.
+- **Commands.** Always the checkout's: the generator writes `generated/` from the checkout's API
+  before the run.

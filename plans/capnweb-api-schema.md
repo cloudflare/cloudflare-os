@@ -140,7 +140,7 @@ finite; a `stub` names its service instead of inlining it; a `function` keeps it
 result; and a stream keeps its `element` type. Optional fields are omitted when absent, so a
 reader that does not know one ignores it. Everything is sorted (services, shapes, methods,
 properties, union branches), so the same declarations serialize to the same bytes, and a
-committed schema moves only when the API does. One method of the Workshop API, as the schema has it:
+generated schema moves only when the API does. One method of the Workshop API, as the schema has it:
 
 ```json
 {
@@ -339,7 +339,7 @@ build-time schema and that method should be the same data:
   caller receives, supplies or both) come from the walk of the whole graph from the root, which
   keeps the fragments of one root consistent with one another and with the full `.d.ts`. An agent
   that starts from such fragments and later asks a stub gets the same services, methods and shapes,
-  not always the same text. The fragments committed here are rendered from `AuthenticatedApi` and
+  not always the same text. The fragments generated here are rendered from `AuthenticatedApi` and
   leave out the credential methods (`changePassword` among them, which the stub still has), a
   product's choice of what to show an agent, so a runtime answer matches them only if the method
   applies the same omission.
@@ -394,9 +394,9 @@ Security:
 
 ## 9. Rollout
 
-1. **This package**: the format, the extractor, the committed schema of the Workshop API, and the
+1. **This package**: the format, the extractor, the generated schema of the Workshop API, and the
    generic `.d.ts` and tool-catalog emitters. The starter's `cf-os api` reads
-   `workshop-api.schema.json` from the pin instead of extracting it itself.
+   `workshop-api.schema.json`, generated in the pin, instead of extracting it itself.
 2. **An audited Admin API**: `@mutates`, which the schema records (§3), on every Admin API
    method that changes state.
 3. **An admin Gatekeeper**: an agent's access to the Admin API, proxied, with mutating calls routed
@@ -413,7 +413,7 @@ Long-term homes:
 | The format specification and the extractor | capnweb |
 | The IR and the generic plugins (`.d.ts`, tool catalog and MCP, docs) | forge |
 | Product plugins and runtime (the `cf-os api` table, auth, the admin Gatekeeper proxy) | The product |
-| The API and its committed schema | cloudflare-os |
+| The API and its generated schema | cloudflare-os |
 
 `packages/api-schema` is the interim home of the first two rows. Its `src/schema.ts` and
 `src/extract.ts` move to capnweb unchanged, and `src/emit/dts.ts` and `src/emit/tools.ts` to
@@ -421,4 +421,4 @@ forge, inside a plugin wrapper that names the files, supplies the options and ha
 `Schema`, rebuilt from the IR or passed through as the frontend's document (§6): none of them
 imports anything from Cloudflare OS or names its API. `scripts/generate.ts`, the one
 file that names `api.ts`, `PublicApi`, `SERVICE_SALT` and `AuthenticatedApi`, stays, with the
-committed `generated/` files it writes.
+`generated/` files it writes.
