@@ -1,7 +1,7 @@
 import { env, type RpcStub } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AiChatAuthorInfo, UserNotification } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, AiChatMessageBody, UserNotification } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { openFakeOverseer } from "./fixtures";
@@ -74,7 +74,7 @@ function decide(impl: Impl, kind: Kind) {
   }
 }
 
-async function scenario(kind: Kind = "connection", active = false, initiator: AiChatAuthorInfo = USER) {
+async function scenario(kind: Kind | null = "connection", active = false, initiator: AiChatAuthorInfo = USER) {
   const stub = env.TEST_OVERSEER.getByName(crypto.randomUUID());
   const user = env.TEST_USER.getByName(crypto.randomUUID());
   await runInDurableObject(user, instance => {
@@ -89,7 +89,7 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
       ...(active ? {activeAgent: MODEL.profile} : {})});
     impl.storage.chatContext.put({chatId: CHAT, bindings: {}, alwaysAvailableCapsuleIds: []});
     impl.addChatMessages(CHAT, USER, [{type: "message", message: "Do the work"}]);
-    request(impl, kind);
+    if (kind) request(impl, kind);
     impl.storage.activeAgents.put({chatId: CHAT, modelId: MODEL.profile.id,
       initiatorUserId: user.id.toString(), initiator, callbackInitiated: initiator.type === "gadget"});
   });
@@ -705,5 +705,55 @@ describe("decision handoff using the existing execution row", () => {
       await impl.waitForAllAgentsToComplete();
     });
     expect(requests()).toBe(1);
+  });
+});
+
+// An agent step whose executeCode showed a view, "Spending", beside a call that read data or, when
+// `failed`, threw.
+function viewStep(failed = false): AiChatMessageBody {
+  return {type: "message", message: "", toolCalls: [{
+    toolCallId: "show", toolName: "executeCode", input: {code: "export default async function() {}"},
+    output: "Showed the user a view: Spending.", views: [{title: "Spending", html: "<p>$420</p>"}],
+  }, {
+    toolCallId: "read", toolName: "executeCode", input: {code: "export default async function() {}"},
+    output: failed ? "Uncaught exception: Error: x" : "42", ...failed ? {failed: true} : {},
+  }]};
+}
+
+// A step whose executeCode showed a view with embedView is the turn's answer (plans/live-views.md).
+describe("a step that answered with a view", () => {
+  it.each([false, true])("recovers as the final response unless a call failed (failed: %s)", async failed => {
+    const requests = inference(), s = await scenario(null, true);
+    await s.visit(impl => { impl.addChatMessages(CHAT, MODEL.profile, [viewStep(failed)]); });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+    expect(requests()).toBe(failed ? 1 : 0);
+  });
+
+  it.each([{earlier: []}, {earlier: ["Let me look."]}])(
+      "gives a chat gateway the view's note as the answer, after $earlier", async ({earlier}) => {
+    const requests = inference(), s = await scenario(null, true), name = crypto.randomUUID();
+    await s.visit(async impl => {
+      using target: RpcStub<FakeChatResponseTarget> = await impl.ctx.restore({type: "test-response-target", name});
+      await target.setAvailable(true);
+      const prompt = [...impl.storage.chats.list()].find(m => m.type === "message" && m.author.type === "user");
+      if (prompt === undefined) throw new Error("Missing prompt");
+      impl.storage.gadgetResponseDeliveries.put({idempotencyKey: "external-response", chatId: CHAT,
+        promptSequence: prompt.sequence, createdAt: Date.now(), status: "waiting",
+        chatGatewayRpcTarget: target});
+      for (const text of earlier) impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: text}]);
+      impl.addChatMessages(CHAT, MODEL.profile, [viewStep()]);
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      using target: RpcStub<FakeChatResponseTarget> = await impl.ctx.restore({type: "test-response-target", name});
+      await vi.waitFor(async () => expect(await target.texts()).toEqual(["[View in the chat: Spending]"]));
+    });
+    expect(requests()).toBe(0);
   });
 });

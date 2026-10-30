@@ -263,3 +263,143 @@ describe("spawned agent tools", () => {
          "requestConnection"]));
   }));
 });
+
+// An executeCode call that shows `count` views.
+function showViews(count: number) {
+  return fauxToolCall("executeCode", {
+    code: `export default async function() {
+      for (let i = 0; i < ${count}; i++) embedView({ title: "View " + i, html: "<p>hi</p>" });
+    }`,
+  });
+}
+
+// An executeCode call that shows a view whose html is `length` code units, one past Latin-1.
+function showWideView(length: number) {
+  return fauxToolCall("executeCode", {
+    code: `export default async function() {
+      embedView({ title: "Wide", html: "é" + "x".repeat(${length - 1}) });
+    }`,
+  });
+}
+
+// withImpl, in a regular chat, 1, with the user's prompt, unless `open` is false. executeCode
+// looks its caller up by name.
+function withChat(fn: Parameters<typeof withImpl>[0], { open = true } = {}) {
+  return withImpl(async impl => {
+    impl.users = { ...impl.users, idFromName: (name: string) => name };
+    if (open) {
+      impl.storage.chatMeta.put({ id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+      impl.storage.chats.put({
+        chatId: 1, sequence: impl.nextChatSequence(1), timestamp: new Date(0), author: OWNER,
+        type: "message", message: "Chart it.",
+      });
+    }
+    await fn(impl);
+  });
+}
+
+// embedView (plans/live-views.md): a step that showed a view is the answer, unless an executeCode
+// call in it failed. Only chats a person reads have it.
+describe("embedView", () => {
+  it("asks the model nothing more after a step that showed a view", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([showViews(1)], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Here it is.")),
+    ]);
+    expect(offered).toHaveLength(1);
+    expect(toolCalls(impl, 1)[0]?.views).toEqual([{ title: "View 0", html: "<p>hi</p>" }]);
+  }));
+
+  it("ends a step that read data in one call and showed a view in another", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([
+        fauxToolCall("executeCode", { code: `export default async function() { console.log(42); }` }),
+        showViews(1),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Here it is.")),
+    ]);
+    expect(offered).toHaveLength(1);
+  }));
+
+  it("goes on after a step in which another call threw, so the agent can fix it", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([
+        showViews(1),
+        fauxToolCall("executeCode", { code: `export default async function() { throw new Error("x"); }` }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Fixed.")),
+    ]);
+    expect(offered).toHaveLength(2);
+    expect(toolCalls(impl, 1)[1]).toMatchObject({ failed: true });
+  }));
+
+  it("goes on after a step in which another executeCode call's input was refused", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([showViews(1), fauxToolCall("executeCode", { source: "x" })],
+          { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Fixed.")),
+    ]);
+    expect(offered).toHaveLength(2);
+    expect(toolCalls(impl, 1)[1]?.error).toBeDefined();
+  }));
+
+  it("fails a call past the step's 4 views or with an empty view, and goes on", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([showViews(3), showViews(2)], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("executeCode", {
+        code: `export default async function() { embedView({ title: "Empty", html: "" }); }`,
+      })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([showViews(4)], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Unreached.")),
+    ]);
+    expect(offered).toHaveLength(3);
+    let [three, overBudget, empty, four] = toolCalls(impl, 1);
+    expect(three.views).toHaveLength(3);
+    expect(overBudget).toMatchObject({ failed: true });
+    expect(overBudget.views).toBeUndefined();
+    expect(empty).toMatchObject({ failed: true });
+    expect(empty.views).toBeUndefined();
+    expect(four.views).toHaveLength(4);
+  }));
+
+  it("measures views as their record stores them, a character past Latin-1 at 2 bytes per code unit",
+      () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      // Each under 256 KiB as UTF-8 JSON, and over it as stored.
+      fauxAssistantMessage(Array.from({ length: 4 }, () => showWideView(200 * 1024)), { stopReason: "toolUse" }),
+      fauxAssistantMessage(Array.from({ length: 4 }, () => showWideView(120 * 1024)), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Unreached.")),
+    ]);
+    expect(offered).toHaveLength(2);
+    let calls = toolCalls(impl, 1);
+    expect(calls).toHaveLength(8);
+    for (let refused of calls.slice(0, 4)) {
+      expect(refused).toMatchObject({ failed: true });
+      expect(refused.views).toBeUndefined();
+    }
+    let shown = calls.slice(4).flatMap(call => call.views ?? []);
+    expect(shown).toHaveLength(4);
+    // As V8 stores them: a string past Latin-1 at 2 bytes per code unit.
+    expect(shown.reduce((bytes, view) => bytes + 2 * (view.title.length + view.html.length), 0))
+        .toBeLessThanOrEqual(1024 * 1024);
+  }));
+
+  it.each(["spawned", "callable"])("is not in a %s agent's code", kind => withChat(async impl => {
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+    if (kind === "callable") {
+      impl.storage.chatContext.put({ ...impl.getChatAgentContext(chatId), spawnerTypes: {
+        types: "/** Drafts replies. */\ninterface Drafter { composeEmail(to: string): void; }",
+        mainType: "Drafter",
+      } });
+    }
+    let offered = await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([showViews(1)], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+    expect(offered).toHaveLength(2);
+    let [call] = toolCalls(impl, chatId);
+    expect(call).toMatchObject({ failed: true });
+    expect(call.views).toBeUndefined();
+    expect(call.output).toContain("ReferenceError");
+  }, { open: false }));
+});

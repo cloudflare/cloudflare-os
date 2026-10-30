@@ -35,6 +35,10 @@
       "types": "./src/gadget-ui-blocks.ts",
       "import": "./src/gadget-ui-blocks.ts"
     },
+    "./embedded-views": {
+      "types": "./src/embedded-views.ts",
+      "import": "./src/embedded-views.ts"
+    },
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
