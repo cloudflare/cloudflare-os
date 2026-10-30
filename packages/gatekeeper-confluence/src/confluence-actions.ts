@@ -543,6 +543,9 @@ export async function stageAction(
   try {
     await approvalQueue.submitAction(id, { ...describeAction(action), ...autoApprovalOf(action) });
   } catch (err) {
+    // An auto-approval can apply the action before the reply arrives, so a lost reply on an
+    // applied action proves the overseer received it; failing would invite a repeated write.
+    if (store.getAction(id)?.state === "applied") return id;
     store.deleteAction(id);
     throw err;
   }
