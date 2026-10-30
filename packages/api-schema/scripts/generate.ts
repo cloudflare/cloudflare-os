@@ -13,20 +13,20 @@
 // depend on, the CLI's and the integration tests' direct `test:run`, and the root `cf-os` script.
 //
 // It does the same for each gatekeeper app UI: a gatekeeper whose management app's capability (the
-// `ui` of `getGatekeeperApp(<vendor>)`) has a declared interface names it in its package.json,
-// `"cloudflareOs": {"appApi": "src/context-types.ts#ContextApi"}`, and this script extracts that
-// interface's schema under the package's own tsconfig and writes it, with its declarations, to
+// `ui` of `getGatekeeperApp(<vendor>)`) has a declared interface exports it as `AppApi` from its
+// `src/app-api.ts` (`export type { ContextApi as AppApi } from "./context-types.ts"`), and this
+// script extracts that interface's schema under the package's own tsconfig and writes it, with its
+// declarations, to
 // `generated/gatekeeper-apps/<vendor>.schema.json` and `.d.ts`, and hands it to the CLI's generator,
 // which types the `ui` by vendor id. The declaration lives with the gatekeeper, so the Workshop API
 // (and workshop-shared) still depends on no gatekeeper, and no list of them is kept here.
 //
 // With --if-stale it generates only when something it would write has changed. Each generation
 // records, in `generated/.inputs.json`, a SHA-256 of every file it read (the tsconfigs, with what they
-// extend, and the sources the extractions read outside `node_modules`, this script's own modules,
-// each gatekeeper's package.json, and `pnpm-lock.yaml` for everything installed) and of every file
-// it wrote. --if-stale generates
-// when one of them differs or is gone, or a gatekeeper package is new; reading the hashes loads no
-// TypeScript, so a current checkout pays only for that.
+// extend, and the sources the extractions read outside `node_modules`, gatekeepers' `src/app-api.ts`
+// among them, this script's own modules, and `pnpm-lock.yaml` for everything installed) and of every
+// file it wrote. --if-stale generates when one of them differs or is gone, or a gatekeeper has a new
+// `src/app-api.ts`; reading the hashes loads no TypeScript, so a current checkout pays only for that.
 //
 // stdout is one JSON object for scripts, `{"files": [...]}`: the repo-relative paths written or
 // removed. With --if-stale stdout stays empty, so `pnpm cf-os`'s is the CLI's alone. Everything
@@ -76,11 +76,17 @@ const DTS_HEADER =
 /** Where the gatekeeper app UIs' files go, from the repository root. */
 export const GATEKEEPER_APPS_DIR = "packages/api-schema/generated/gatekeeper-apps";
 
-/** A gatekeeper whose package.json names its app UI's interface (`cloudflareOs.appApi`). */
+/** Where a gatekeeper declares its app UI's interface, from its package: as {@link APP_API_EXPORT}. */
+export const APP_API_FILE = "src/app-api.ts";
+
+/** The name a gatekeeper's {@link APP_API_FILE} exports its app UI's interface as. */
+export const APP_API_EXPORT = "AppApi";
+
+/** A gatekeeper with an {@link APP_API_FILE}, which declares its app UI's interface. */
 export interface GatekeeperAppSource {
   /** Its vendor id: `context` for `packages/gatekeeper-context`. */
   vendor: string;
-  /** The file declaring the interface, from the repository root, `/`-separated. */
+  /** Its {@link APP_API_FILE}, from the repository root, `/`-separated. */
   file: string;
   /** What to extract: the interface, under the package's own tsconfig. */
   source: ExtractOptions;
@@ -92,8 +98,8 @@ export interface GatekeeperApp extends GatekeeperAppSource {
 }
 
 /**
- * Every `packages/gatekeeper-*` package whose package.json has `cloudflareOs.appApi`, a
- * `<file>#<Interface>` relative to the package, by vendor id. The vendor id is the backend's: its
+ * Every `packages/gatekeeper-*` package with an {@link APP_API_FILE}, by vendor id. The vendor id is
+ * the backend's: its
  * `GATEKEEPER_<NAME>` binding (which `scripts/run-dev-server.ts` names after the package's directory,
  * `gatekeeper-context` as `GATEKEEPER_CONTEXT`) without the prefix, lowercased
  * (`workshop-backend/src/auth/auth-vendors.ts`).
@@ -101,19 +107,13 @@ export interface GatekeeperApp extends GatekeeperAppSource {
 export function findGatekeeperApps(root = ROOT): GatekeeperAppSource[] {
   const packages = join(root, "packages");
   return readdirSync(packages).filter((name) => name.startsWith("gatekeeper-")).toSorted().flatMap((name) => {
-    const manifest = join(packages, name, "package.json");
-    if (!existsSync(manifest)) return [];
-    const appApi: unknown = (JSON.parse(readFileSync(manifest, "utf8")) as { cloudflareOs?: { appApi?: unknown } })
-      .cloudflareOs?.appApi;
-    if (appApi === undefined) return [];
-    const match = typeof appApi === "string" ? /^([^#]+\.ts)#([A-Za-z_$][\w$]*)$/.exec(appApi) : null;
-    if (!match) throw new Error(`packages/${name}/package.json: cloudflareOs.appApi needs "<file>.ts#<Interface>", not ${JSON.stringify(appApi)}`);
-    const [, file, entryName] = match as unknown as [string, string, string];
+    const entry = join(packages, name, APP_API_FILE);
+    if (!existsSync(entry)) return [];
     const vendor = name.toUpperCase().replaceAll("-", "_").slice("GATEKEEPER_".length).toLowerCase();
     return [{
       vendor,
-      file: `packages/${name}/${file}`,
-      source: { entry: join(packages, name, file), tsconfig: join(packages, name, "tsconfig.json"), entryName },
+      file: `packages/${name}/${APP_API_FILE}`,
+      source: { entry, tsconfig: join(packages, name, "tsconfig.json"), entryName: APP_API_EXPORT },
     }];
   });
 }
@@ -137,7 +137,7 @@ export function renderApiSchema(schema: Schema, apps: GatekeeperApp[] = []): Gen
     .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   const appDeclarations = Object.fromEntries(apps.map((app) => [app.vendor, emitDeclarations(app.schema, {
     root: app.schema.entry,
-    header: `Generated from ${app.file} (${app.schema.entry}, named by its package.json's cloudflareOs.appApi) by\n` +
+    header: `Generated from ${app.file} (${app.schema.entry}, exported as ${APP_API_EXPORT}) by\n` +
       "packages/api-schema/scripts/generate.ts -- do not edit.\n" +
       `The app UI of the ${app.vendor} gatekeeper: the \`ui\` of getGatekeeperApp("${app.vendor}").\n` +
       "Change that file and run `pnpm api-schema:generate`.",
@@ -177,10 +177,9 @@ function hashFile(path: string): string | undefined {
 /** `file`, absolute, from the repository root and `/`-separated. */
 const fromRoot = (file: string) => relative(ROOT, file).split(sep).join("/");
 
-/** Every gatekeeper's package.json, which can name an app UI, from the repository root. */
-function gatekeeperManifests(): string[] {
-  return readdirSync(join(ROOT, "packages")).filter((name) => name.startsWith("gatekeeper-"))
-    .map((name) => `packages/${name}/package.json`).filter((path) => existsSync(join(ROOT, path)));
+/** Every gatekeeper's {@link APP_API_FILE}, from the repository root. */
+function gatekeeperAppFiles(): string[] {
+  return findGatekeeperApps().map((app) => app.file);
 }
 
 /**
@@ -192,7 +191,8 @@ function generatorModules(): string[] {
   const visit = (file: string) => {
     if (seen.has(file)) return;
     seen.add(file);
-    for (const [, specifier] of readFileSync(file, "utf8").matchAll(/\bfrom\s+"(\.\.?\/[^"]+\.ts)"/g)) {
+    // A statement's `from`, at the start of its line or after a multi-line import's `}`: not one in a comment.
+    for (const [, specifier] of readFileSync(file, "utf8").matchAll(/^\s*(?:import|export|\})[^\n]*?\bfrom\s+"(\.\.?\/[^"]+\.ts)"/gm)) {
       visit(join(dirname(file), specifier!));
     }
   };
@@ -208,7 +208,7 @@ export function staleness(): string | undefined {
   for (const [path, hash] of Object.entries(outputs)) {
     if (hashFile(path) !== hash) return `${path} is gone or was changed`;
   }
-  for (const path of gatekeeperManifests()) {
+  for (const path of gatekeeperAppFiles()) {
     if (!(path in inputs)) return `${path} is new`;
   }
   for (const [path, hash] of Object.entries(inputs)) {
@@ -252,7 +252,7 @@ export async function generateApiSchema(): Promise<string[]> {
   }
   // Recorded last, so a generation that fails or is interrupted leaves the next --if-stale to run.
   const read = [...sources].map(fromRoot).filter((path) => !path.startsWith("../") && !path.split("/").includes("node_modules"));
-  const inputs = Object.fromEntries([...new Set([...read, ...generatorModules(), ...gatekeeperManifests(), "pnpm-lock.yaml"])]
+  const inputs = Object.fromEntries([...new Set([...read, ...generatorModules(), "pnpm-lock.yaml"])]
     .toSorted().map((path) => [path, hashFile(path)!]));
   const outputs = Object.fromEntries(files.map(({ path, contents }) => [path, sha256(contents)]));
   writeFileSync(join(ROOT, INPUTS_PATH), json({ inputs, outputs } satisfies Inputs));

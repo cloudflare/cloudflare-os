@@ -100,8 +100,8 @@ that capability, by naming the property in kebab-case, read on the result in the
 call.
 
 A gatekeeper's app UI is one, and typed: `get-gatekeeper-app <vendor> ui` goes on with the commands
-of the interface the gatekeeper's package.json names (`"cloudflareOs": {"appApi":
-"src/context-types.ts#ContextApi"}`), checked, with help, as any command is
+of the interface the gatekeeper exports as `AppApi` from its `src/app-api.ts`, checked, with help,
+as any command is
 ([`packages/api-schema`](../api-schema/README.md#gatekeeper-app-uis)). Today that is `context`
 (Skills, the Context gatekeeper: `ContextApi`) and `scheduler` (Scheduled Tasks:
 `ScheduleManagementApi`). Both are ambient: an account has one once it opts in, and until then
