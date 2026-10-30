@@ -31,6 +31,7 @@ export interface CreateAccountArgs {
   /** Empty only with `help`. */
   username: string;
   displayName: string;
+  /** `--url` as given; createAccount prints it, so it is passed the origin it resolved to. */
   url?: string;
   /** `access` or `token`: how to pass Access's edge, as for a public command; inferred when unset. */
   auth?: string;

@@ -179,8 +179,10 @@ export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = def
       return 0;
     }
     const hash = await accountHash(account.username, deps.env, table.constants.SERVICE_SALT);
-    return createAccount(account, hash,
-      () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: false }, deps), ctx.out);
+    // Its hint names --url as connected to: the origin alone, without credentials, path or query.
+    return createAccount({ ...account, url: account.url === undefined ? undefined : target.origin }, hash,
+      () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: false, timeoutMs: millis(account.timeout) },
+        deps), ctx.out);
   }
   const invocation = parseInvocation(table, tokens);
   if (invocation.help) {
@@ -259,5 +261,9 @@ export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = def
     onInterrupt: deps.onInterrupt,
   };
   return execute(table, invocation, decoded,
-    () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: !invocation.public }, deps), io);
+    () => connect(target, auth,
+      { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: !invocation.public, timeoutMs: millis(flags.timeout) }, deps), io);
 }
+
+/** `--timeout`'s seconds as milliseconds. connect() is called as the run's timer starts, so it is what is left. */
+const millis = (seconds: number | undefined) => seconds === undefined ? undefined : seconds * 1000;
