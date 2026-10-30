@@ -443,6 +443,26 @@ export const createAuthError = authErrors.create;
 /** Reads the machine-readable code from an authentication failure. */
 export const getAuthErrorCode = authErrors.getCode;
 
+/** Stable error codes attached to expected failures from `Overseer.waitForAgent()`. */
+export const WAIT_FOR_AGENT_ERROR_CODES = {
+  timedOut: "AGENT_WAIT_TIMED_OUT",
+} as const;
+
+/** An expected failure code from `Overseer.waitForAgent()`. */
+export type WaitForAgentErrorCode =
+    typeof WAIT_FOR_AGENT_ERROR_CODES[keyof typeof WAIT_FOR_AGENT_ERROR_CODES];
+
+const waitForAgentErrors = codedErrorFamily<WaitForAgentErrorCode>({
+  [WAIT_FOR_AGENT_ERROR_CODES.timedOut]:
+      "The agent was still running when the wait timed out. Wait again, or stop it.",
+});
+
+/** Creates an expected `waitForAgent()` error with a machine-readable code. */
+export const createWaitForAgentError = waitForAgentErrors.create;
+
+/** Reads the machine-readable code from an expected `waitForAgent()` error. */
+export const getWaitForAgentErrorCode = waitForAgentErrors.getCode;
+
 /**
  * One user as listed in the deployment-wide user directory (see
  * `AuthenticatedApi.searchUsers`).
@@ -3282,6 +3302,30 @@ export interface Overseer extends RpcTarget {
    * Throws if an agent is already running on the chat.
    */
   retryAgent(chatId: number, modelId: string): Promise<void>;
+
+  /**
+   * Wait for the agent's turn in a chat to end, and return the latest message the agent wrote in
+   * it. This is the way to wait for the turn `newChat()`, `sendChatMessage()` or `retryAgent()`
+   * starts: the message is then its reply, the error that ended it, or what it stopped to wait on.
+   * Returns at once if no turn is running, and null if the agent has written nothing in the chat.
+   * Control notes the chat does not show (`agentNudge`) are not messages the agent wrote.
+   *
+   * The wait ends when the chat's `AiChatMetadata.activeAgent` clears: the turn finished, failed
+   * or was stopped, or paused for the user's decision on an action. A turn that hands straight on
+   * to the next (to read the steers sent, or the calls made to the agent, while it ran) is waited
+   * through; one that starts after the wait has ended is not. A `sendChatMessage()` or `retryAgent()` call this session made
+   * before this one, pipelined rather than awaited, is waited for first, so the wait covers the
+   * turn it starts. That holds only once the call is delivered: a call with a promise among its
+   * arguments (an `uploadBlob()` result, say) is delivered when the promise resolves, which may
+   * be after this one, so await such a call before waiting.
+   *
+   * `timeoutMs` bounds the wait: at most an hour, which is also the default, and 0 checks without
+   * waiting. If it runs out with the agent still running, this throws an error whose code is
+   * `WAIT_FOR_AGENT_ERROR_CODES.timedOut`. The wait is held in the workspace's memory, so if the
+   * workspace restarts meanwhile the call fails as the connection does; the turn resumes by
+   * itself, and a new connection can wait again. Requires the same access as `getChatHistory()`.
+   */
+  waitForAgent(chatId: number, timeoutMs?: number): Promise<AiChatMessage | null>;
 
   /**
    * Subscribe to the gadget worker's console logs. This allows the user to observe console logs

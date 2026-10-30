@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createWaitForAgentError, WAIT_FOR_AGENT_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -493,6 +493,10 @@ const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 // that budget is exhausted; model-lookup retries have their own per-execution budget below.
 const ALARM_MAX_RETRIES = 6;
 const AGENT_RESUME_MAX_ATTEMPTS = 4;
+
+// The longest Overseer.waitForAgent() waits, and how long it waits when given no timeout. A
+// longer turn is waited for by calling it again.
+const MAX_WAIT_FOR_AGENT_MS = 60 * 60 * 1000;
 
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
@@ -5060,6 +5064,56 @@ class OverseerImpl implements AgentHooks {
 
   waitForChatMessagePreparation(chatId: number): Promise<void> | undefined {
     return this.#preparingChatMessages.get(chatId);
+  }
+
+  // Resolves true once no agent turn is running or being prepared for the chat (at once if none
+  // is), or false if `timeoutMs` runs out first; rejects if `signal` aborts. It watches the chat's
+  // metadata, whose `activeAgent` every turn sets and clears, so the turn code needs no hook of
+  // its own. A change is re-read a microtask later: a turn that ends by starting the next in the
+  // same synchronous step (queued steers, see #finishAgentTurn) is then still running. A drain of
+  // calls to the agent counts as a turn starting: the one a turn kicks as it ends awaits the user
+  // DO before it sets `activeAgent` again. `after`, the calls that may yet start a turn, is waited
+  // for first, within the same timeout and `signal`.
+  async waitForAgentIdle(chatId: number, timeoutMs: number, signal: AbortSignal,
+                         after?: Promise<unknown>): Promise<boolean> {
+    let wake = () => {};
+    let timedOut = false;
+    let starting = after !== undefined;
+    after?.finally(() => { starting = false; wake(); }).catch(() => {});
+    let watcher = {
+      add() {},
+      update(_old: StoredChatMetadata, meta: StoredChatMetadata) {
+        if (meta.id === chatId) wake();
+      },
+      remove(meta: StoredChatMetadata) {
+        if (meta.id === chatId) wake();
+      },
+    };
+    let onAbort = () => wake();
+    let timer = setTimeout(() => { timedOut = true; wake(); }, timeoutMs);
+    this.storage.chatMeta.subscribe(watcher);
+    signal.addEventListener("abort", onAbort);
+    try {
+      for (;;) {
+        signal.throwIfAborted();
+        let preparing = this.waitForChatMessagePreparation(chatId);
+        let draining = this.#pendingCallDrains.get(chatId);
+        if (!starting && !preparing && !draining &&
+            !this.storage.chatMeta.get(chatId)?.activeAgent) {
+          return true;
+        }
+        if (timedOut) return false;
+        await new Promise<void>(resolve => {
+          wake = resolve;
+          preparing?.then(resolve);
+          draining?.then(resolve, resolve);
+        });
+      }
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      this.storage.chatMeta.unsubscribe(watcher);
+    }
   }
 
   // `joinAs` counts the returned client toward #hasCollaboratorSession for its lifetime; passed by
@@ -11149,12 +11203,40 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   #leavePresence: () => void;
   #leaveOutputsFanout: () => void;
 
+  // Aborted when the session is disposed (its client let it go, or disconnected), ending the
+  // waitForAgent() calls still waiting.
+  #closed = new AbortController();
+
+  // This session's sendChatMessage() and retryAgent() calls still running, by chat. Cap'n Web
+  // delivers a session's calls in order, but each awaits the caller's user DO before its turn is
+  // recorded, so a waitForAgent() pipelined after one waits for these first. A call is counted
+  // only once its body runs, which Cap'n Web delays until its promised arguments resolve: such a
+  // call can be missed, as the waitForAgent() doc says.
+  #startingTurns = new Map<number, Set<Promise<void>>>();
+
   [Symbol.dispose]() {
+    this.#closed.abort(new Error("The workspace session was closed."));
     this.#leaveSession();
     this.#leavePresence();
     this.#leaveOutputsFanout();
     this.notifyClosed();
     this.notifyClosed[Symbol.dispose]();
+  }
+
+  // Counts a call toward #startingTurns until the returned object is disposed.
+  #startingTurn(chatId: number): Disposable {
+    let {promise, resolve} = Promise.withResolvers<void>();
+    let starting = this.#startingTurns.get(chatId) ?? new Set();
+    this.#startingTurns.set(chatId, starting.add(promise));
+    return {
+      [Symbol.dispose]: () => {
+        resolve();
+        starting.delete(promise);
+        if (starting.size === 0 && this.#startingTurns.get(chatId) === starting) {
+          this.#startingTurns.delete(chatId);
+        }
+      },
+    };
   }
 
   // Per-session caller identity for the SharingManager.
@@ -12193,6 +12275,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       chatId: number, message: string | SlashCommandRequest, chosenModelId: string | null,
       capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
       formats?: MessageFormatRef[]): Promise<void> {
+    using _starting = this.#startingTurn(chatId);
     // A steer runs on the running turn's model, so it is queued before the sender's model is
     // looked up: a collaborator need not have that model.
     let author = await this.#getClientProfile();
@@ -12315,6 +12398,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async retryAgent(chatId: number, modelId: string): Promise<void> {
+    using _starting = this.#startingTurn(chatId);
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(modelId), this.impl.logger);
 
@@ -12336,6 +12420,29 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     this.impl.startAgent(chatId, userMeta.aiModel, userMeta.profile,
                          this.#clientUser.id.toString());
+  }
+
+  async waitForAgent(chatId: number, timeoutMs = MAX_WAIT_FOR_AGENT_MS)
+      : Promise<AiChatMessage | null> {
+    if (!(timeoutMs >= 0)) {
+      throw new Error("timeoutMs must be a number of milliseconds, 0 or more.");
+    }
+    this.impl.getChatMetaOrThrow(chatId);
+    let starting = this.#startingTurns.get(chatId);
+    if (!await this.impl.waitForAgentIdle(
+        chatId, Math.min(timeoutMs, MAX_WAIT_FOR_AGENT_MS), this.#closed.signal,
+        starting && Promise.all(starting))) {
+      throw createWaitForAgentError(WAIT_FOR_AGENT_ERROR_CODES.timedOut);
+    }
+    this.impl.getChatMetaOrThrow(chatId);
+    for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
+      // An agentNudge logged under the agent (as Stop logs one) is a control note the chat does
+      // not show, not something the agent wrote.
+      if (msg.author.type === "agent" && msg.type !== "agentNudge") {
+        return this.#getChatMessageForClient(msg);
+      }
+    }
+    return null;
   }
 
   async finalizeChatDraft(chatId: number): Promise<void> {
@@ -12865,6 +12972,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async deleteChat(_chatId: number): Promise<void> { this.#deny(); }
   async stopAgent(_chatId: number): Promise<void> { this.#deny(); }
   async retryAgent(_chatId: number, _modelId: string): Promise<void> { this.#deny(); }
+  async waitForAgent(_chatId: number, _timeoutMs?: number): Promise<AiChatMessage | null> {
+    this.#deny();
+  }
   async subscribeToConsoleLogs(_subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>> {
     // Inert: "use" sessions never receive console logs. The inbound subscriber stub is left
     // undup'd, so the RPC system disposes it when this call returns.
