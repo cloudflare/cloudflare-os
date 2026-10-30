@@ -1267,7 +1267,7 @@ export interface Overseer {
    * two are changed in the chat even where none of the chat's code changes touch them.
    */
   listChangedPaths(fromCommit: Awaitable<string>, toCommit: Awaitable<string>): Promise<string[]>;
-  /** List past AI chats. */
+  /** List past AI chats, with each one's id and title. */
   listChats(): Promise<AiChatMetadata[]>;
   /**
    * List who this workspace is shared with: its collaborators, the owner aside. Available to owner
