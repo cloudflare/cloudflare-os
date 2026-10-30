@@ -180,14 +180,14 @@ pnpm cf-os api open-workspace <id> list-models                                 #
 pnpm cf-os api open-workspace <id> new-chat "What is 17 times 23?" <modelId>   # prints the chat id
 pnpm cf-os api open-workspace <id> wait-for-agent <chatId>                     # prints the reply
 pnpm cf-os api open-workspace <id> send-chat-message <chatId> "And 17 times 24?" <modelId>
-pnpm cf-os api open-workspace <id> wait-for-agent <chatId> --timeout-ms 600000
+pnpm cf-os api open-workspace <id> wait-for-agent <chatId> --timeout-ms 120000
 pnpm cf-os api open-workspace <id> get-chat-history <chatId>                   # the whole chat
 ```
 
 On a chat with no turn running, `wait-for-agent` returns at once, so it can run as its own
 command: by the time `send-chat-message` returns, the turn it started is recorded. It waits at most
-an hour, or `--timeout-ms`; when that runs out with the agent still running it fails, exit 1
-(`The agent was still running when the wait timed out.`), and the turn goes on: wait again, or
+ten minutes, or `--timeout-ms` if shorter; when that runs out with the agent still running it fails,
+exit 1 (`The agent was still running when the wait timed out.`), and the turn goes on: wait again, or
 `stop-agent <chatId>`. A turn that paused on an action (`list-actions --options '{"filter":
 "pending"}'`) goes on once the action is approved or rejected; wait again then. If the workspace
 restarts during the wait, the call fails as a lost connection does, exit 1, and the turn resumes
