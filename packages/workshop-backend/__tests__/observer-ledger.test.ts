@@ -223,7 +223,8 @@ function rows(impl: ObserverImpl, context: ObserverContext): string[] {
 // What admission requires of a "build" collaborator, or of one opening a gadget reaching
 // `reach`'s gadgets, through every connection in the workspace.
 function requirements(impl: ObserverImpl, reach: "build" | number[]): Map<number, string[]> {
-  return impl.observerLedger.requiredSubresources(reach, Array.from(impl.storage.gatekeepers.list()));
+  return impl.observerLedger.observerScope(reach, Array.from(impl.storage.gatekeepers.list()))
+      .requirements;
 }
 
 // One observer-protocol call a fake facet received.
@@ -935,6 +936,40 @@ describe("admission against recorded requirements", () => {
 
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["driven"] }]);
     expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+  }));
+
+  it("re-verifies against a scope that shrank mid-admission rather than keep a stale denial", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    impl.storage.gatekeepers.put({
+      id: 7, resourceTitle: "Spawner", class: fakeGatekeeperClass,
+      creationSpec: { type: "agentSpawner", config: { displayName: "S", modelId: null } },
+      bindings: { DESK: { target: GADGET + 1 } },
+    });
+    seedGadget(impl, GADGET, { C: CONN, SPAWN: 7 });
+    seedGadget(impl, GADGET + 1, { C: CONN });
+    addRows(impl, gadget(GADGET), CONN, ["a"]);
+    addRows(impl, gadget(GADGET + 1), CONN, ["driven"]);
+    fakeFacets(impl);
+    world.roles.set("carol", "use");
+    // Her account can't read what B read. While that is being checked, the owner unbinds the
+    // spawner, so opening A no longer reaches B -- through a connection A still binds.
+    let unbound = false;
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => {
+      if (ids.includes("driven") && !unbound) {
+        unbound = true;
+        impl.unbindWorkpiece(GADGET, "SPAWN");
+      }
+      return ids.filter(id => id === "driven");
+    }));
+
+    await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, configureAll);
+
+    expect(world.checks).toEqual([
+      { profileId: "carol", ids: ["a", "driven"] },
+      { profileId: "carol", ids: ["a"] },
+    ]);
   }));
 
   it("keeps a recorded producer in its gadget's scope after the binding is gone", () =>

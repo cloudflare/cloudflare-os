@@ -1480,9 +1480,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           // Sparse index over the observer requirements: one key per subresource of each
           // observation through a real connection that kept `subresources` (see ActionRecord),
           // led by the connection and the context its caller attributes it to. Admission lists
-          // only the distinct keys of the contexts what it opens reaches (see
-          // ObserverLedger.requiredSubresources), never the records under them, so its cost
-          // follows distinct requirements, not repeated reads.
+          // only the distinct keys (see ObserverLedger.observerScope), never the records
+          // under them, so its cost follows distinct requirements, not repeated reads.
           byObserverRequirement(record: ActionRecord): string[] {
             let subresources = record.type === "observation" && record.gatekeeperId >= 0
                 ? record.description.subresources : undefined;

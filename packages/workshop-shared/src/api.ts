@@ -3344,7 +3344,7 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Add a collaborator by username/email, or grant an existing one more access. The caller must be
-   * the owner or an existing collaborator, and may not grant access they don't have themselves.
+   * the owner or a "build" collaborator, since only their grants confer anything.
    * A grant the caller already gave them covers (e.g. a gadget, after "build") changes nothing but
    * the note; one that covers the caller's earlier grants to them replaces those. Returns the
    * collaborator's info, or null if the username doesn't correspond to an existing account.
@@ -3387,7 +3387,7 @@ export interface Overseer extends RpcTarget {
    * Create a share link. The server generates a random 128-bit key, stores its HMAC-SHA-256
    * hash, and returns the raw key (hex-encoded) along with the id of the link it created. The
    * caller constructs a URL from the key. The raw key is never stored server-side. Anyone who
-   * redeems the link receives `grant`, which the caller may not exceed their own access with.
+   * redeems the link receives `grant`. The caller must be the owner or a "build" collaborator.
    */
   createShareLink(grant: CollaboratorGrant, note?: string)
       : Promise<{ key: string; linkId: string }>;

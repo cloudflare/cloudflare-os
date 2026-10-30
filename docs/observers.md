@@ -981,7 +981,7 @@ enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, 
   requirements through them, since its state may hold what it read. Within that scope, admission
   checks every requirement what is opened reaches: "build" reaches every context; a gadget, the
   workspace context and the contexts of the gadgets it reaches
-  (`requiredSubresources(gadgetIds, connections)`), never an unrelated gadget's. Two gadgets
+  (`ObserverLedger.observerScope`), never an unrelated gadget's. Two gadgets
   reporting different subresources through one connection have those requirements checked
   independently, but must still pass the connection-wide `addObserver()` check above.
   Each observation checks its IDs for every configured observer the data reaches, online or not:
@@ -994,14 +994,13 @@ enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, 
   stopping at the first batch that denies. A denial, missing method, failed call, or malformed
   answer fails closed for every observer in the call, with no permission cached between operations.
 - **Races.** After verifying, admission recomputes what it must verify and runs the pass again
-  (at most three times) if a connection in its scope appeared or disappeared, the gadgets it
-  reaches changed, or a requirement it did not check was recorded through one; reads through
-  connections outside its scope don't count. It rereads requirements only if its connections or
-  the gadgets it reaches changed or an action was recorded meanwhile (only a new action record
-  can add a requirement), so an admission nothing disturbed reads them once. An observation
-  recomputes who it reaches after its checks and checks whoever it gained (at most three times).
-  Both decisions are confirmed in the same synchronous block that publishes them (the observer
-  record; the audit record), so neither can miss the other.
+  (at most three times) if a connection in its scope appeared or disappeared, or its requirements
+  changed: one recorded meanwhile, one a gadget it newly reaches had recorded, or one dropped
+  because a gadget is no longer reached (a failure may have been about it, so it is not reported
+  against the narrower scope); reads through connections outside its scope don't count. An
+  observation recomputes who it reaches after its checks and checks whoever it gained (at most
+  three times). Both decisions are confirmed in the same synchronous block that publishes them
+  (the observer record; the audit record), so neither can miss the other.
 - **Pending creations.** While a `createExternalResource` creation is pending, its simulated
   reads are audited and enforce workspace policy but record no requirements, even if they report
   subresources.

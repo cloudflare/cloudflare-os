@@ -79,7 +79,7 @@ import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
 import {
-  MAX_VERIFICATION_PASSES, ObserverLedger, observerScopeCovers, requireVerifier, type ObserverScope,
+  MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
@@ -10250,12 +10250,13 @@ class OverseerImpl implements AgentHooks {
         }));
 
         // 6. What this open must verify can change while it awaits: a requirement recorded, a
-        //    connection added, removed, or approved, or a gadget newly reached. Successes and
-        //    failures alike may be stale, so re-run the pass rather than admit against them. This
-        //    check and the publication below share one synchronous block, so nothing recorded
-        //    after it can be missed: an observation checks every published observer.
+        //    connection added, removed, or approved, or a gadget newly reached or no longer
+        //    reached. Successes and failures alike may be stale, so re-run the pass rather than
+        //    admit or refuse against them. This check and the publication below share one
+        //    synchronous block, so nothing recorded after it can be missed: an observation checks
+        //    every published observer.
         let current = this.#observerScope(grant);
-        if (!observerScopeCovers(scope, current)) {
+        if (!sameObserverScope(scope, current)) {
           if (++scopePasses > MAX_VERIFICATION_PASSES) {
             throw new Error(
                 "What this workspace must verify kept changing while you were being verified. " +

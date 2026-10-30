@@ -80,32 +80,26 @@ type ObserverVerifier = {id: string, verifier: Fetcher<GatekeeperUserVerifier>};
 /** What a collaborator holding some grant is verified against (see ObserverLedger.observerScope). */
 export type ObserverScope = {
   gatekeepers: GatekeeperRecord[];
-  /**
-   * The gadgets whose contexts `requirements` were read from, for a gadget grant; undefined for
-   * "build", which reads every context.
-   */
-  gadgetIds?: ReadonlySet<WorkpieceId>;
   requirements: Map<WorkpieceId, string[]>;
 };
 
 /**
- * Whether a verification pass over `verified` also covers `current`: the same connections, and no
- * requirement the pass did not check.
+ * Whether a verification pass over `verified` still answers for `current`: the same connections
+ * and the same requirements. A requirement the pass did not check may be unmet, and one no longer
+ * required (a gadget stopped reaching another, say) may be the one it failed on.
  */
-export function observerScopeCovers(verified: ObserverScope, current: ObserverScope): boolean {
-  if (verified.gadgetIds?.size !== current.gadgetIds?.size ||
-      (current.gadgetIds && [...current.gadgetIds].some(id => !verified.gadgetIds?.has(id)))) {
-    return false;
-  }
+export function sameObserverScope(verified: ObserverScope, current: ObserverScope): boolean {
   let verifiedIds = new Set(verified.gatekeepers.map(gk => gk.id));
   if (current.gatekeepers.length !== verifiedIds.size ||
       !current.gatekeepers.every(gk => verifiedIds.has(gk.id))) {
     return false;
   }
-  return Array.from(current.requirements).every(([id, subresources]) => {
-    let checked = new Set(verified.requirements.get(id));
-    return subresources.every(subresource => checked.has(subresource));
-  });
+  return current.requirements.size === verified.requirements.size &&
+      Array.from(current.requirements).every(([id, subresources]) => {
+        let checked = new Set(verified.requirements.get(id));
+        return subresources.length === checked.size &&
+            subresources.every(subresource => checked.has(subresource));
+      });
 }
 
 /**
@@ -316,21 +310,22 @@ export class ObserverLedger {
   // Admission
 
   /**
-   * The deduplicated subresources a collaborator must be able to read through each connection
-   * in `connections`, their verification scope: a "build" collaborator reaches every context;
-   * one opening a gadget, the workspace and the gadgets `reach` names (see
-   * OverseerImpl.#gadgetReach). Reads only distinct requirement keys, never the observations
-   * recorded under them. `connections` are live records, so nothing through a removed connection
-   * is read.
+   * Everything a collaborator is verified against: `gatekeepers`, their verification scope, and
+   * the deduplicated subresources recorded through each of them in the contexts `reach` names: a
+   * "build" collaborator reaches every context; one opening a gadget, the workspace and the
+   * gadgets it reaches (see OverseerImpl.#gadgetReach). Reads only the distinct requirement keys,
+   * never the observations recorded under them. `gatekeepers` are live records, so nothing through
+   * a connection since removed is read. Connections with no requirements are left out of
+   * `requirements`.
    */
-  requiredSubresources(reach: "build" | Iterable<WorkpieceId>,
-                       connections: GatekeeperRecord[]): Map<WorkpieceId, string[]> {
+  observerScope(reach: "build" | Iterable<WorkpieceId>,
+                gatekeepers: GatekeeperRecord[]): ObserverScope {
     let index = this.#storage.actions.byObserverRequirement;
     let contexts: (ObserverContext | ObserverContext["type"])[] = reach === "build"
         ? ["workspace", "chat", "gadget"]
         : ["workspace", ...Array.from(reach, gadgetId => ({type: "gadget" as const, gadgetId}))];
     let requirements = new Map<WorkpieceId, string[]>();
-    for (let connection of connections) {
+    for (let connection of gatekeepers) {
       let ids = new Set<string>();
       for (let context of contexts) {
         let prefix = observerRequirementPrefix(connection.id, context);
@@ -338,18 +333,7 @@ export class ObserverLedger {
       }
       if (ids.size > 0) requirements.set(connection.id, [...ids]);
     }
-    return requirements;
-  }
-
-  /**
-   * Everything a collaborator is verified against: `gatekeepers`, their verification scope,
-   * and the requirements recorded through them in the contexts `reach` names (see
-   * requiredSubresources()).
-   */
-  observerScope(reach: "build" | ReadonlySet<WorkpieceId>,
-                gatekeepers: GatekeeperRecord[]): ObserverScope {
-    let gadgetIds = reach === "build" ? undefined : reach;
-    return {gatekeepers, gadgetIds, requirements: this.requiredSubresources(reach, gatekeepers)};
+    return {gatekeepers, requirements};
   }
 
   /**
