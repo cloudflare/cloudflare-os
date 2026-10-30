@@ -78,11 +78,15 @@ export function createRateLimitedCapability(
     }
   }
 
+  // A Cap'n Web stub keeps some members to itself (dup, onRpcBroken, ...). Forwarding one would run
+  // it here, in the Workshop: dup() would hand the frame the stub itself, outside these limits.
+  const stubMembers: object = Object.getPrototypeOf(capability) ?? Object.prototype
+
   const proxy = new Proxy(new (class extends RpcTarget {})(), {
     get(_target, property) {
       if (property === 'then') return undefined
       if (property === Symbol.dispose) return undefined
-      if (typeof property !== 'string') return undefined
+      if (typeof property !== 'string' || property in stubMembers) return undefined
       return (...args: unknown[]) => new Promise((resolve, reject) => {
         if (queue.length + inFlight >= options.maxPendingCalls) {
           reject(new Error(`${options.label} has too many pending requests.`))
