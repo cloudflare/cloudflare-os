@@ -351,7 +351,7 @@ describe("env.GIT presence", () => {
 
     impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Conn", class: {} as any });
     expect(impl.getEnvForAgent(1, { GIT: { type: "workpiece", id: 1 } }, "exec-1"))
-        .toEqual({ GIT: { type: "gatekeeper", id: 1 } });
+        .toEqual({ GIT: { type: "gatekeeper", id: 1, executionId: "exec-1" } });
   }));
 
   it("reserves the name for new gadget bindings", () => withImpl(async impl => {

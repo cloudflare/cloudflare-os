@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -15,17 +16,24 @@ declare module "cloudflare:workers" {
   }
 }
 
+type ObserverImpl = OverseerDurableObject["impl"];
+type ObserverClientUser = Parameters<ObserverImpl["ensureObserver"]>[1];
+type ObserverConfigureCallback = NonNullable<Parameters<ObserverImpl["ensureObserver"]>[3]>;
+
+// Tests replace the facet factory, so the stored class is never instantiated.
+const fakeGatekeeperClass = {} as unknown as GatekeeperRecord["class"];
+
 // Seed the owner profile id, so the sharing manager needs no User DO round trip.
-function seedOwner(impl: any): void {
+function seedOwner(impl: ObserverImpl): void {
   impl.ownerProfileId = "owner";
 }
 
-function seedGatekeepers(impl: any, ids: number[] = [1, 2]): void {
+function seedGatekeepers(impl: ObserverImpl, ids: number[] = [1, 2]): void {
   for (let id of ids) {
     impl.storage.gatekeepers.put({
       id,
       resourceTitle: `Connection ${id}`,
-      class: {} as any,
+      class: fakeGatekeeperClass,
       creationSpec: {
         type: "gatekeeper",
         vendorId: "testvendor",
@@ -36,17 +44,37 @@ function seedGatekeepers(impl: any, ids: number[] = [1, 2]): void {
   }
 }
 
+// Facets for every seeded connection, each registering observers through `hooks`.
+function setObserverFacets(impl: ObserverImpl, hooks: {
+  addObserver?(id: number): Promise<void>;
+  removeObserver?(id: number): Promise<void>;
+} = {}): void {
+  const getFacet = async (id: number) => ({
+    addObserver: async () => { await hooks.addObserver?.(id); },
+    removeObserver: async () => { await hooks.removeObserver?.(id); },
+  });
+  // These direct-DO tests exercise only the observer methods admission calls, not the full RPC
+  // facet.
+  impl.getGatekeeperFacet = getFacet as unknown as ObserverImpl["getGatekeeperFacet"];
+}
+
+// Direct-DO test doubles supply only the RPC methods admission exercises.
+const configureAll = {
+  configure: async (needs: {gatekeeperId: number}[]) =>
+      needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 })),
+} as unknown as ObserverConfigureCallback;
+
 // A client User DO that always has the account and always mints a verifier.
 const fakeClientUser = {
   getVerifier: async () => ({}),
   describeConnectedAccount: async () => null,
-} as any;
+} as unknown as ObserverClientUser;
 
 describe("a binding that fails verification", () => {
   it("reports a verifier rejection as a denial, not as the raw RPC error", async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-getverifier");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = (instance as unknown as { impl: any }).impl;
+      let impl = instance["impl"];
       seedOwner(impl);
       seedGatekeepers(impl);
       // Already-configured coverage for both gatekeepers, as a previous successful open left it.
@@ -54,10 +82,7 @@ describe("a binding that fails verification", () => {
           { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10, 2: 20 } });
 
       let removed: number[] = [];
-      impl.getGatekeeperFacet = (id: number) => ({
-        addObserver: async () => {},
-        removeObserver: async () => { removed.push(id); },
-      });
+      setObserverFacets(impl, { removeObserver: async id => { removed.push(id); } });
 
       // Gatekeeper 1's verifier never materializes: the client's User DO *rejects* (the
       // deterministic vendor-mismatch throw, or any cross-worker transport failure) rather than
@@ -68,7 +93,7 @@ describe("a binding that fails verification", () => {
           return {};
         },
         describeConnectedAccount: async () => null,
-      } as any;
+      } as unknown as ObserverClientUser;
 
       // The rejection is caught per binding like any other refusal, so with no repair channel the
       // open is denied with the descriptive message that names what to fix -- rather than the
@@ -95,7 +120,7 @@ describe("a binding that fails verification", () => {
       async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-keeps-registration");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = (instance as unknown as { impl: any }).impl;
+      let impl = instance["impl"];
       seedOwner(impl);
       seedGatekeepers(impl);
       // Alice's previous open covered gatekeeper 1 only; gatekeeper 2 is a binding added since,
@@ -104,17 +129,13 @@ describe("a binding that fails verification", () => {
           { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
 
       let removed: number[] = [];
-      impl.getGatekeeperFacet = (id: number) => ({
-        // Gatekeeper 1 has revoked her access upstream: the binding she *was* admitted for is the
-        // one that now refuses, which is exactly the case that used to drop her registration.
-        addObserver: async () => { if (id === 1) throw new Error("access revoked upstream"); },
-        removeObserver: async () => { removed.push(id); },
+      setObserverFacets(impl, {
+        // The connection Alice was already admitted for has now revoked her access upstream.
+        addObserver: async id => { if (id === 1) throw new Error("access revoked upstream"); },
+        removeObserver: async id => { removed.push(id); },
       });
 
-      let configureCb = { configure: async (needs: {gatekeeperId: number}[]) =>
-          needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: 20 })) } as any;
-
-      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureCb))
+      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureAll))
           .rejects.toThrow(/could not confirm/);
 
       // Gatekeeper 1's registration predates this call and survives, so it keeps naming her in
@@ -129,7 +150,7 @@ describe("a binding that fails verification", () => {
   it("a failed open does not roll back registrations a concurrent open persisted", async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-concurrent");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = (instance as unknown as { impl: any }).impl;
+      let impl = instance["impl"];
       seedOwner(impl);
       seedGatekeepers(impl, [1, 2, 3]);
       // Alice's record predates connections 2 and 3, so both opens must register her with both --
@@ -148,33 +169,31 @@ describe("a binding that fails verification", () => {
       let reached!: () => void;
       let verifierReached = new Promise<void>(resolve => { reached = resolve; });
       let gk3Verifiers = 0;
+      // A local stand-in for the client's User DO, supplying only the methods admission calls.
       let parkingClientUser = {
         getVerifier: async (accountId: number) => {
           if (accountId === 30 && ++gk3Verifiers === 1) { reached(); await verifierParked; }
           return {};
         },
         describeConnectedAccount: async () => null,
-      } as any;
+      } as unknown as ObserverClientUser;
       let gk3Adds = 0;
-      impl.getGatekeeperFacet = (id: number) => ({
-        addObserver: async () => {
+      setObserverFacets(impl, {
+        addObserver: async id => {
           if (id === 3 && ++gk3Adds > 1) throw new Error("no access");
         },
-        removeObserver: async () => { removed.push(id); },
+        removeObserver: async id => { removed.push(id); },
       });
-      let configureCb = { configure: async (needs: {gatekeeperId: number}[]) =>
-          needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 }))
-      } as any;
 
       // Call A registers her with connection 2, then parks before registering with connection 3.
-      let callA = impl.ensureObserver("alice", parkingClientUser, "build", configureCb);
+      let callA = impl.ensureObserver("alice", parkingClientUser, "build", configureAll);
       callA.catch(() => {});  // asserted below; not unhandled in the meantime
       await verifierReached;
 
       // Call B -- the same returning observer opening concurrently -- verifies everything and
       // persists the record asserting all three registrations.
-      await impl.ensureObserver("alice", fakeClientUser, "build", configureCb);
-      expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
+      await impl.ensureObserver("alice", fakeClientUser, "build", configureAll);
+      expect(impl.storage.observers.get("alice")?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
 
       // Now connection 3 refuses call A terminally.
       releaseVerifier();
@@ -185,34 +204,69 @@ describe("a binding that fails verification", () => {
       // one call B just made -- while B's persisted record asserts it exists, breaking every
       // future exclusion that names her.
       expect(removed).toEqual([]);
-      expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
+      expect(impl.storage.observers.get("alice")?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
     });
   });
 
-  it("a first-ever verification failure still rolls its registrations back", async () => {
-    let stub = env.TEST_OVERSEER.getByName("observer-verify-first-ever");
+  it.each(["verifier rejection", "disconnected account", "registration refusal"])(
+      "rolls back a first-ever observer after %s", async failure => {
+    let stub = env.TEST_OVERSEER.getByName(`observer-verify-first-ever-${failure}`);
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = (instance as unknown as { impl: any }).impl;
+      let impl = instance["impl"];
       seedOwner(impl);
       seedGatekeepers(impl);
-      // No observer record: Alice has never been admitted, so the observerId minted for this call
-      // is discarded with the unpersisted record and anything registered under it would linger
-      // unresolvable.
       let removed: number[] = [];
-      impl.getGatekeeperFacet = (id: number) => ({
-        addObserver: async () => { if (id === 2) throw new Error("no access"); },
-        removeObserver: async () => { removed.push(id); },
+      setObserverFacets(impl, {
+        addObserver: async id => {
+          if (id === 2 && failure === "registration refusal") throw new Error("no access");
+        },
+        removeObserver: async id => { removed.push(id); },
       });
+      let clientUser = {
+        getVerifier: async (accountId: number) => {
+          if (accountId === 20) {
+            if (failure === "verifier rejection") throw new Error("verifier unavailable");
+            if (failure === "disconnected account") return null;
+          }
+          return {};
+        },
+        describeConnectedAccount: async () => null,
+      } as unknown as ObserverClientUser;
 
-      let configureCb = { configure: async (needs: {gatekeeperId: number}[]) =>
-          needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 }))
-      } as any;
-
-      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureCb))
+      await expect(impl.ensureObserver("alice", clientUser, "build", configureAll))
           .rejects.toThrow(/could not confirm/);
 
       // Both the one that verified and the one that refused are rolled back, and no record is
       // persisted.
+      expect(removed.toSorted()).toEqual([1, 2]);
+      expect(impl.storage.observers.get("alice")).toBeUndefined();
+    });
+  });
+
+  it("rolls back registrations from earlier repaired attempts after a later failure", async () => {
+    let stub = env.TEST_OVERSEER.getByName("observer-verify-repaired-rollback");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = instance["impl"];
+      seedOwner(impl);
+      seedGatekeepers(impl);
+      let attempts = new Map<number, number>();
+      let removed: number[] = [];
+      setObserverFacets(impl, {
+        addObserver: async id => {
+          let attempt = (attempts.get(id) ?? 0) + 1;
+          attempts.set(id, attempt);
+          if ((id === 1 && attempt === 1) || (id === 2 && attempt === 2)) {
+            throw new Error("no access");
+          }
+        },
+        removeObserver: async id => { removed.push(id); },
+      });
+
+      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureAll))
+          .rejects.toThrow(/could not confirm/);
+
+      expect(attempts.get(1)).toBe(2);
+      expect(attempts.get(2)).toBe(2);
       expect(removed.toSorted()).toEqual([1, 2]);
       expect(impl.storage.observers.get("alice")).toBeUndefined();
     });

@@ -345,8 +345,9 @@ Notes:
 
 #### Restarting when verification scope widens
 
-Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
-scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
+Per-connection verification runs only at `open()` (only reads that report `subresources` are also
+checked as they happen, see §10), so a live session is only ever as verified as the scope that
+existed when it opened. When that scope **widens**, the overseer restarts the workspace
 rather than trying to re-verify sessions in place: `#restartIfSessionsAffected(reason,
 affectedRole?)` delegates to `scheduleAccessRestart(reason)` — the same DO abort used to revoke a
 collaborator (see `docs/sharing.md`) — so every client's browser reconnects and re-runs
@@ -888,6 +889,102 @@ This is why the broad bindings split the way they do:
   reaches the owner's direct messages, where "can this collaborator open it too" has no useful
   answer, and one stray DM read under C would lock the workspace for everyone anyway. Sharing is
   done by binding a single conversation, which is the B row above.
+
+---
+
+## 10. Kernel-checked subresources (per observation)
+
+An observation may report the IDs it depends on as `ObservationDescription.subresources`, and the
+Workshop then checks and records them itself (`src/observer-ledger.ts`). There is no
+per-connection protocol, flag, or switch: each call to `authorizeObservation()` decides.
+
+- **Absent:** the Workshop checks nothing for that read and records no requirement; the
+  gatekeeper's own `addObserver()` / `excludeObservers` must cover it, exactly as above.
+- **Present:** the read is attributed to its caller's context, every collaborator who can see
+  that context is checked through the connection's `verifyObserverAccess()`, and the IDs are
+  recorded as requirements on the audit record. A denial or failed check refuses the read and
+  records nothing.
+- **`[]`:** an explicit "nothing restricts this read": no check, and no requirement recorded.
+
+`excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
+runs first). No shipping gatekeeper reports subresources yet. The gatekeeper's side of the
+contract (ID rules and limits, `verifyObserverAccess()` answers, what `addObserver()` must still
+enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, and
+`plans/kernel-observer-tracking.md` records why it is shaped this way.
+
+- **Validation.** At most 10,000 IDs per observation, totalling at most 500,000 UTF-16 code
+  units, each a string of 1–512 characters of well-formed Unicode; duplicates are dropped. The
+  total keeps a read's audit record well inside Durable Object storage's 2 MB value limit, so
+  every read is exactly one record.
+- **The audit log is the requirement store.** An observation's audit record keeps the
+  `subresources` it reported, so keeping them is what marks a requirement. The record's `caller`
+  attributes it (`observerContextOf`): the agent's chat, the calling gadget, the chat a slash
+  command runs in, the gadget a firing hook wakes, or the workspace context for a hook naming no
+  gadget or a user acting outside any chat (a session opened from the connection itself, a new
+  chat's first slash command). A gadget caller persisted without a `gadgetId` is refused. The
+  sparse multi-key `actions.byObserverRequirement` index holds one key per subresource,
+  `<connection>:<context><id>:<subresource>` (context `w` for workspace, `c` for chats, `g` for
+  gadgets). Admission lists only the distinct keys a role reaches through each connection, never
+  the records under them, so repeated reads of the same data add no admission work. Nothing else
+  stores requirements, so the action log is append-only: deleting an entry would drop its checks.
+  Client action-log entries omit `subresources`. The record, its action ID and the read's
+  workspace policy flags commit in one transaction, so a failed write latches nothing.
+- **Admission is additive.** For every in-scope connection the overseer mints the chosen
+  account's verifier once and calls `addObserver()`, as above. Then, only if requirements were
+  recorded through that connection that the role reaches, it asks `verifyObserverAccess()` about
+  them. A collaborator must pass both; a connection with no recorded requirements is never asked
+  `verifyObserverAccess()` at admission. `addObserver()` therefore keeps enforcing whatever the
+  gatekeeper tracks itself: any binding-wide requirement its reads rely on, reads that omit
+  `subresources`, and everything it recorded before it began reporting them.
+- **Checks.** Connections enter each role's verification scope as above: "build" at creation,
+  "use" while a gadget binds it or an enabled hook feeds it. Within that scope, admission checks
+  every requirement the role reaches: "build" reaches every context, "use" the workspace and
+  every gadget. Requirements through a connection outside a "use" collaborator's scope (one
+  nothing binds or hooks) are not checked against them. Each observation checks its IDs for every
+  configured observer the data reaches, online or not; a collaborator who lost access is skipped.
+  Either way the Workshop looks up each observer's verifier for their chosen account
+  (`getVerifier()` refuses a disconnected or wrong-vendor account even when there is nothing to
+  check) and asks `verifyObserverAccess()`: one call per 10 observers for a read's audience, and
+  batches of 10,000 IDs for admission, stopping at the first batch that denies. A denial, missing
+  method, failed call, or malformed answer fails closed for every observer in the call, with no
+  permission cached between operations.
+- **Races.** After verifying, admission recomputes what it must verify and runs the pass again
+  (at most three times) if a connection in its scope appeared or disappeared, or a requirement
+  it did not check was recorded through one; reads through connections outside its scope don't
+  count. An observation recomputes who it reaches after its checks and checks whoever it gained
+  (at most three times). Both decisions are
+  confirmed in the same synchronous block that publishes them (the observer record; the audit
+  record), so neither can miss the other.
+- **Pending creations.** While a `createExternalResource` creation is pending, its simulated
+  reads are audited and enforce workspace policy but record no requirements, even if they report
+  subresources.
+- **Removal.** A disconnected connection's audit records stay, but admission ignores them: its
+  checks go with it, even when data it read survives (edge case 8).
+- **Direct contexts only.** A chat binding read records requirements only on that chat, checked
+  against "build" collaborators; a gadget binding read only on that gadget, checked against
+  "build" and "use" collaborators. Gadget session access, root RPC calls, forged restore stubs,
+  callbacks, spawned chats, code edits, merges, arguments and persistent writes transfer nothing
+  between contexts. This deliberately permits indirect disclosure, such as chat-derived data
+  reaching a gadget without checking its "use" collaborators against the chat's requirements.
+  Attribution follows the original authorizer, not wherever its capability is passed.
+- **Execution fence.** Agent gatekeeper loopbacks carry their `executionId`; a session that
+  outlives its executeCode call cannot authorize an observation that reports subresources. Reads
+  that omit them are unaffected, as before.
+- **Hooks.** A firing's observations are attributed to the gadget the hook wakes, recorded as
+  `{from: "hook", gadgetId}` from the hook record's `gadgetId` (or `defaultGadgetId`), and to the
+  workspace when neither names one.
+  That `gadgetId` is trusted even though an agent-bound hook's is inferred and its callback
+  carries its own restore target. While the hook is enabled, both "build" and "use"
+  collaborators must pass verification before delivery, and later admission checks the recorded
+  subresources. Firings revalidate that the hook exists, is enabled, and its connection is usable
+  on each call and synchronously before the observation's audit/policy commit, after asynchronous
+  verification. A racing disable/delete prevents delivery. Disabling or deleting a hook stops
+  future events and leaves delivered data's requirements in the action log, including across
+  workspace restarts; "build" collaborators stay verified against them, and "use" collaborators
+  only while something else still binds or hooks the connection.
+
+The integration fixture's "reports subresources" mode exercises this end to end in
+`packages/integration-tests/__tests__/observer-tracking.test.ts`.
 
 ---
 
