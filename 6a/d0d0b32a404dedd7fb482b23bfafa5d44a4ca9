@@ -1,0 +1,22 @@
+packages/gatekeeper-spotify/__tests__/submit-race.test.ts
+  s_1e2c74fa3cab0c::t_8c9dd1c79bf5cf 1-4,11-14,22-34,36-46,48-78,80-85
+  s_1e2c74fa3cab0c::t_59ef094a524074 5-10,15-21,35,47,79,86-87
+packages/gatekeeper-spotify/src/spotify.ts
+  s_1e2c74fa3cab0c::t_458d98e8a7833a 1820-1822,1826-1829
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6ad0d0b32a404dedd7fb482b23bfafa5d44a4ca9",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
