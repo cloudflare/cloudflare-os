@@ -1,0 +1,22 @@
+// Type-checks the package as the Node program it is: the `cf-os api` runtime (`src/`), its
+// committed command table and agent declarations (`generated/`), the command-table emitter
+// (`generator/`), the tests, and the Vite+ config.
+//
+// Nothing here is compiled: `node` runs these modules directly, stripping the types, so the root
+// `cf-os` script and the starter that delegates to this CLI need no build step. `erasableSyntaxOnly`
+// keeps that a guarantee, and `nodenext` resolution is what `node` actually does with the imports:
+// the same settings as `packages/api-schema`, for the same reason. The `build` script (`tsc`, run by
+// `pnpm build` and `pnpm lint`) is the type check.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "generated/**/*.ts", "generator/**/*.ts", "vite.config.ts"]
+}

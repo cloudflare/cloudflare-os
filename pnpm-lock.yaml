@@ -82,6 +82,28 @@ importers:
         specifier: 'catalog:'
         version: 4.147.0(@cloudflare/workers-types@5.20261005.1)(@types/node@26.1.0)
 
+  packages/api-cli:
+    dependencies:
+      capnweb:
+        specifier: 'catalog:'
+        version: 0.12.0
+      hash-wasm:
+        specifier: ^4.12.0
+        version: 4.12.0
+    devDependencies:
+      '@gadgets/api-schema':
+        specifier: workspace:*
+        version: link:../api-schema
+      '@gadgets/scripts':
+        specifier: workspace:*
+        version: link:../../scripts
+      '@types/node':
+        specifier: 26.1.0
+        version: 26.1.0
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
   packages/api-schema:
     devDependencies:
       '@cloudflare/workers-types':

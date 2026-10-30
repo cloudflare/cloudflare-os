@@ -40,13 +40,14 @@ means, so a reader that predates them can ignore them.
 
 `generated/` is committed. Nothing in it is edited by hand.
 
-Nothing reads these files yet; the last column is who each is written for.
+The last column is who each is for. `pnpm cf-os api` renders its command table from the schema
+and copies the agent declarations; nothing else reads these files yet.
 
 | File | What it is | Meant for |
 | --- | --- | --- |
-| `workshop-api.schema.json` | The capnweb-schema of everything reachable from `PublicApi`. | The starter's `cf-os api` ([cloudflare-os-starter](https://github.com/cloudflare/cloudflare-os-starter)), which extracts its own schema today and is to render its command table from this file instead. The starter's extractor predates `format`, `direction`, properties, stream elements, `deprecated` and `mutates`, so the two files are no longer byte-identical; its command table reads only the fields they share. |
-| `workshop-api.agent.d.ts` | One self-contained declaration file of what a holder of an `AuthenticatedApi` stub can call, without the credential methods (`authenticate`, `login`, `changePassword`, ...). | Gatekeepers and code-mode agents, to write code against. The agent's `describeBinding` still writes its own description. |
-| `workshop-api.fragments.json` | The same declarations split per service, each fragment readable on its own, other services referred to by name. | Agents that fetch one service at a time instead of the whole surface. Shaped like the answer a live introspection method would give ([capnweb#177](https://github.com/cloudflare/capnweb/issues/177)), but rendered from `AuthenticatedApi`'s point of view, so a shape's name or position can differ from what one stub alone would report, and without the credential methods, which such a method would list unless it left them out too. |
+| `workshop-api.schema.json` | The capnweb-schema of everything reachable from `PublicApi`. | `pnpm cf-os api` ([`packages/api-cli`](../api-cli/README.md)), whose command table, `packages/api-cli/generated/commands.ts`, `pnpm api-schema:generate` renders from it in the same step, reading its services' methods, not their properties. [cloudflare-os-starter](https://github.com/cloudflare/cloudflare-os-starter)'s `cf-os api` is to run that CLI from its submodule, in place of its own copy. |
+| `workshop-api.agent.d.ts` | One self-contained declaration file of what a holder of an `AuthenticatedApi` stub can call, without the credential methods (`authenticate`, `login`, `changePassword`, ...). | Gatekeepers and code-mode agents, to write code against. The agent's `describeBinding` still writes its own description. It is also copied into `packages/api-cli/generated/agent-types.ts`, for `cf-os api types`. |
+| `workshop-api.fragments.json` | The same declarations split per service, each fragment readable on its own, other services referred to by name. | Agents that fetch one service at a time instead of the whole surface. Shaped like the answer a live introspection method would give ([capnweb#177](https://github.com/cloudflare/capnweb/issues/177)), but rendered from `AuthenticatedApi`'s point of view, so a shape's name or position can differ from what one stub alone would report, and without the credential methods, which such a method would list unless it left them out too. It is also copied into `packages/api-cli/generated/agent-types.ts`, for `cf-os api types <service>`. |
 | `workshop-api.tools.json` | **Experimental.** One tool per method callable from `AuthenticatedApi`, each with a JSON Schema for its arguments and result, `continuesOn` where the result is a capability, and the method's `deprecated` and `mutates` where it has them. | A base for MCP and tool search; its shape may change. |
 
 The declarations use the web platform's globals (`ReadableStream`), as a Worker has them, and
@@ -67,9 +68,11 @@ After changing `packages/workshop-shared/src/api.ts`, run:
 pnpm api-schema:generate
 ```
 
-and commit the regenerated files with the change. `pnpm api-schema:check`, part of `pnpm lint`
-and CI, writes nothing and fails naming any file that is out of date. Both print
-`{"files": [...]}` on stdout, the files written or stale; everything else goes to stderr.
+and commit the regenerated files with the change. It also rewrites `packages/api-cli/generated/`,
+`pnpm cf-os api`'s command table and its copy of the agent declarations. `pnpm api-schema:check`,
+part of `pnpm lint` and CI, writes nothing and fails naming any file that is out of date, those
+included. Both print `{"files": [...]}` on stdout, the files written or stale; everything else goes
+to stderr.
 
 ## What is generic, and what is not
 
@@ -92,4 +95,5 @@ and CI, writes nothing and fails naming any file that is out of date. Both print
 
 `scripts/generate.ts` is the only product-specific file: it names `api.ts` and its tsconfig, the
 entry `PublicApi`, the constant `SERVICE_SALT`, the agent root `AuthenticatedApi` and the
-credential methods an agent never calls, and it is the only part that writes to disk.
+credential methods an agent never calls. It also renders the CLI's files, through
+`packages/api-cli/generator/emit.ts`, and it is still the only part that writes to disk.
