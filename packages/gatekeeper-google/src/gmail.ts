@@ -1,7 +1,7 @@
 import {DurableObject, RpcStub, RpcTarget, restore} from "cloudflare:workers";
 import {skipRpcValidation, validateRpc} from "capnweb-validate";
 import type {
-  ActionDescription, ActionKind, ApprovalQueue, Cursor, Gatekeeper, GatekeeperUserVerifier,
+  ActionKind, ApprovalQueue, Cursor, Gatekeeper, GatekeeperUserVerifier,
   GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -280,21 +280,35 @@ const RESOURCE_ACTION_LABELS = {
   labelDelete: "Delete labels",
 } satisfies Record<GmailResourceActionType, string>;
 
-function actionKinds(labels: Record<string, string>): ActionKind[] {
-  return Object.entries(labels).map(([tag, label]) => ({tag, label}));
+/**
+ * Kinds that are never auto-approved, because each removes content: Gmail purges trash after 30
+ * days, and deleting a draft or a label is permanent (a label is stripped from every message).
+ */
+const NEVER_AUTO_APPROVED_KINDS: ReadonlySet<string> = new Set<
+  GmailMutationOperation | GmailResourceActionType>(["trash", "draftDelete", "labelDelete"]);
+
+/** The kinds in `labels` that can be auto-approved, as `getAutoApprovableActions` reports them. */
+function autoApprovableKinds(labels: Record<string, string>): ActionKind[] {
+  return Object.entries(labels)
+    .filter(([tag]) => !NEVER_AUTO_APPROVED_KINDS.has(tag))
+    .map(([tag, label]) => ({tag, label}));
 }
 
 function gmailAutoApprovalMetadata(
     action: GmailAction,
-): Partial<Pick<ActionDescription, "actionKind" | "autoApprovable">> {
+): {actionKind?: ActionKind; autoApprovable: boolean} {
   switch (action.type) {
   case "send":
   case "draftSend":
-    return {};
+    // Delivers mail as the user to people outside the mailbox, so it always waits for a decision.
+    return {autoApprovable: false};
   case "messageMutation":
     return {
       actionKind: {tag: action.operation, label: MESSAGE_MUTATION_LABELS[action.operation]},
-      autoApprovable: true,
+      // Mail marked as spam is purged after 30 days, like trash. A system label's logical id is its
+      // Gmail id, and custom labels' ids never collide with it.
+      autoApprovable: !NEVER_AUTO_APPROVED_KINDS.has(action.operation)
+        && !(action.operation === "applyLabel" && action.labelId === "SPAM"),
     };
   case "draftCreate":
   case "draftUpdate":
@@ -304,7 +318,7 @@ function gmailAutoApprovalMetadata(
   case "labelDelete":
     return {
       actionKind: {tag: action.type, label: RESOURCE_ACTION_LABELS[action.type]},
-      autoApprovable: true,
+      autoApprovable: !NEVER_AUTO_APPROVED_KINDS.has(action.type),
     };
   default:
     action satisfies never;
@@ -4858,7 +4872,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [...actionKinds(MESSAGE_MUTATION_LABELS), ...actionKinds(RESOURCE_ACTION_LABELS)];
+    return [
+      ...autoApprovableKinds(MESSAGE_MUTATION_LABELS), ...autoApprovableKinds(RESOURCE_ACTION_LABELS),
+    ];
   }
 
   async startSession(

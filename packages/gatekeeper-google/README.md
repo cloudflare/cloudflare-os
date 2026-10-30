@@ -81,7 +81,7 @@ Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for direct Google Docs reads, edits, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
+- `documents` for direct Google Docs reads, edits, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings. Appending and replacing text in a bound Doc can be auto-approved ("Document edits").
 - `drive.metadata.readonly` so the Drive picker can browse to a Doc, spreadsheet or presentation connected on its own. Google classifies this as a restricted scope. Docs, Sheets and Slides share the Google Drive connect card with the Drive resources, and the Workshop asks for every type on a card together, so connecting any of them also asks for the other types' scopes, `drive.readonly` among them.
 - `drive.readonly` for account-wide, folder, and exact-file Drive bindings: the Drive picker, discovery, file metadata, folder descendant proofs, native-file scope checks, and downloading a PDF to read its text with `readPdf()`. Google classifies this as a restricted scope too, so every Drive resource here needs restricted-scope verification.
 - `drive.readonly` and `drive.file` for the Office import grant (`https://docs.google.com/import`), which converts an Office file into a Google Docs, Sheets or Slides copy (see [Office files](#office-files)). Only the connect dialog's **Convert** button asks for it, by incremental consent, the first time an account converts a file; using a copy made before reads only metadata and asks for nothing. Once held, it is part of the account's recorded grants, so a reconnect asks for it again. `drive.readonly` lets the gatekeeper see a source file this OAuth client did not create, which `drive.file` alone cannot, and `drive.file` lets it create the copy. The grant is private to the gatekeeper: it is not a resource, so it is never offered on connect, listed, bound, or shown among an account's granted resources, and admins cannot turn it off separately from Docs, Sheets and Slides. Once held, `drive.readonly` lets the account's token read any Drive file, so bindings stay limited by the gatekeeper's code rather than by the token. A verified OAuth app must add both scopes to its consent screen, and `drive.readonly` is a restricted scope.
@@ -90,9 +90,9 @@ Across all resource types, the gatekeeper can request:
 - `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
-- `calendar.events` to read and manage the selected calendar.
+- `calendar.events` to read and manage the selected calendar. Creating or changing an event nobody else is on can be auto-approved ("Add and change calendar events"). A change waits for approval when it would make the event public or otherwise widen who can see it, or when the event is an out-of-office, focus-time or other special event. Anything Google would tell attendees about, meaning an event that has or gains attendees, one organized by someone else, or one whose guest list Google hides, is "Send event invitations and updates" and always waits. An auto-approvable change is checked again when it applies, and fails without changing anything if the event has gained guests or the change would now widen its visibility; the write is conditional on the version it checked, so a change made in between also fails it.
 - `calendar.events.freebusy` to check availability, which `calendar.events` does not cover. Adding it retracted every existing Calendar grant that lacks a whole-calendar scope: owners re-consent the next time they connect a calendar, and an existing binding checks availability only after its account reconnects or grants Calendar again.
-- `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
+- `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Sending, editing and reacting in an existing conversation can be auto-approved, but starting a conversation always waits for approval because it messages people the user has no conversation with; people outside the organization can't be added to a new conversation.
 - `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
 
 ### Step 4: Test Users
@@ -158,6 +158,16 @@ User — see Step 4.)
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
+
+## Gmail approvals
+
+Every Gmail change is queued for approval. A user may let these kinds apply without asking:
+archiving, marking read or unread, starring or unstarring, applying or removing a label, creating
+or updating a draft, and creating or renaming a label. Sending mail (a new message, reply, forward
+or draft send), trashing, deleting a draft or a label, and applying the Spam label always wait for
+approval, because they deliver mail to other people or remove content: Gmail purges trash and spam
+after 30 days, and deleting a draft or a label cannot be undone. Removing the Trash or Spam label
+restores mail and counts as removing a label.
 
 ## Gmail attachments
 
@@ -296,10 +306,10 @@ with a title slide, which queues changes as usual. Of the default theme's layout
 five (title slide, section header, title and body, title only, and blank); the others become
 available once the presentation exists. Nothing reaches Google and no account is involved.
 
-The approver picks which of their connected Google accounts to create the file in; it lands in
-that account's My Drive, and the binding switches to the real file. Doc edits queued against the
-simulation then apply to the created document like any other edit, and Slides changes apply to the
-created presentation unchanged.
+A creation is never auto-approved. The approver picks which of their connected Google accounts to
+create the file in; it lands in that account's My Drive, and the binding switches to the real file.
+Doc edits queued against the simulation then apply to the created document like any other edit,
+and Slides changes apply to the created presentation unchanged.
 
 That works for Slides because Google gives every new presentation the same object IDs (master
 `simple-light-2`, title slide `p`, and layouts `p2` to `p12`, seen both on a personal account
@@ -433,13 +443,19 @@ with their master and background, but not their elements; each slide reports its
 and a background of its own. The Slides API cannot change which layout an existing slide is made
 from.
 
-A batch is queued as one of three action kinds, which share everything but which ones a user may
-let apply without asking: "Slide text edits" (only text edits), "Slide formatting and arrangement"
-(only formatting text, setting no link or font, since Google keeps their whole strings; formatting
-paragraphs and shapes; moving or stacking elements; and setting slides' backgrounds to a colour,
-`"none"` or `null`), and every other batch, mixed ones included, which always waits for approval.
-A picture background, any change to a layout or master, and theme colours therefore always wait:
-they change slides the user is not looking at, or make Google fetch a URL.
+A batch is queued as the first of four action kinds that fits it; they share everything but their
+names and whether a user may let them apply without asking. A user may let three apply without
+asking: "Slide text edits" (only text edits); "Slide formatting and arrangement" (only formatting
+text, setting no link or font, since Google keeps their whole strings; formatting paragraphs and
+shapes; moving or stacking elements; and setting slides' backgrounds to a colour, `"none"` or
+`null`); and "Slide edits that keep every element, table row and column and download no images"
+(every other batch that deletes no element, table row or column and downloads no image: mixed
+batches, links, fonts, alt text, new shapes and tables, table rows, columns and cell fills, and
+changes to layouts, masters and theme colours, which reach every slide made from them). The
+fourth, "Slide changes that delete elements, table rows or columns, or download images", always
+waits for approval. It holds a batch that deletes an element or a table's rows or columns, or has
+Google download an image, added, replaced or set as a picture background, from a URL the agent
+chose, which can carry whatever it encoded there.
 
 `createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
 after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
@@ -458,8 +474,11 @@ refuses one that has lost a placeholder the slide was to get. Google deletes a m
 layouts with the last slide on it, unless it is the presentation's first master, as a live probe
 showed, so reads drop a master whose last slide a queued deletion removes, with its layouts, and
 a slide queued after it on one of those layouts is refused. Google names a new slide's speaker notes
-only as it creates the slide, so they cannot be edited until it is approved. Adding a slide always
-waits for approval.
+only as it creates the slide, so they cannot be edited until it is approved.
+
+Adding, duplicating and moving slides are the "Adding, copying and reordering slides" kind, which a
+user may let apply without asking. Deleting a slide always waits for approval, since it takes the
+slide's content and notes, and can take its master and layouts.
 
 `setSlidesSkipped()` skips slides, leaving them out when presenting, or shows them again. It is
 the "Skipping slides" kind, which a user may let apply without asking: it destroys nothing, and
@@ -516,12 +535,28 @@ numbers and booleans are entered as such, and `null` clears a cell. A date is en
 serial number in a cell formatted as a date, as `formatCells` can format it. Text starting with
 `=` cannot be written as text, and formula-mode reads show it exactly as a formula, so writing
 back what was read can turn it into one. A batch of only literal values and clears is queued as
-"Sheet value edits", which a user may let apply without asking; a batch with any formula always waits for approval.
-A formula naming `IMPORTRANGE`, which reads another spreadsheet and so escapes the binding, or
-`IMPORTDATA`, `IMPORTHTML`, `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a URL, is
-refused in any letter case, outside string literals. Formulas the spreadsheet already holds are
-not inspected, and one of its named functions could wrap a refused function, which is why every
-formula needs approval.
+"Sheet value edits", which a user may let apply without asking; a batch with any formula is never
+that kind. A formula naming `IMPORTRANGE`, which reads another spreadsheet and so escapes the
+binding, or `IMPORTDATA`, `IMPORTHTML`, `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google
+fetch a URL, is refused in any letter case, outside string literals. Formulas the spreadsheet
+already holds are not inspected, and one of its named functions could wrap a refused function, so
+a batch with a formula may apply without asking, as "Spreadsheet edits that keep every sheet, row
+and column" (below), only when every function its formulas call is a built-in the gatekeeper
+knows computes from the spreadsheet alone, such as `SUM`, `IF`, `VLOOKUP` or `FILTER`. The batch
+waits for approval as "Spreadsheet changes that delete or run unchecked formulas" when a formula
+has any of these:
+
+- a call to any other name, including `HYPERLINK`, whose link carries what the formula puts in it
+  to the site a click opens, and `LET` and `LAMBDA`, whose names can take a listed function's name
+  and stand for a named function;
+- a name that is not called, other than `TRUE` and `FALSE`, such as a named range, since a named
+  function can be passed by name;
+- a call on a parenthesized expression or on another call's result;
+- apostrophe-quoted text that names no sheet.
+
+Letting any of these kinds apply without asking trusts the formulas the spreadsheet already holds:
+a value written into a cell an existing `IMAGE` or `IMPORTXML` formula reads makes Google fetch
+whatever URL that formula builds from it.
 
 Reads show queued changes as entered and never guess what Google computes. Formula-mode reads are
 exact, and raw reads are exact for literal values. A queued formula's result, and in formatted
@@ -539,7 +574,13 @@ and `deleteSheet` act on its sheets, and `insertRows`, `deleteRows`, `insertColu
 `deleteColumns` on a sheet's rows and columns. A change names its sheet by title in `sheet`, as a
 range does, including a title an earlier change of the batch gives a sheet it adds, copies or
 renames, so it never needs an ID the spreadsheet has not assigned yet. The gatekeeper mints the ID
-of each sheet a batch adds. A batch with any structural change always waits for approval.
+of each sheet a batch adds. A batch that adds, copies or renames sheets or inserts rows or columns,
+alone or together with values, clears and formatting, is queued as "Spreadsheet edits that keep
+every sheet, row and column", which a user may let apply without asking unless one of its formulas
+calls a function the paragraphs above exclude. A batch that deletes a sheet, rows or columns always
+waits for approval, as "Spreadsheet changes that delete or run unchecked formulas". Each batch is
+queued as exactly one kind, so letting edits that keep every sheet, row and column apply without
+asking leaves batches of only literal values and clears, or only formatting, to their own kinds.
 Every default is sent explicitly, so the approver sees what will be made: a new sheet has Google's
 1,000 rows and 26 columns and comes last, and a copy is titled `Copy of <title>` and placed right
 after its source (Google would put it first, under a name of its own choosing). Changes are refused
@@ -568,7 +609,7 @@ number format (a type and an optional pattern in Google's syntax), horizontal an
 alignment, wrapping, and borders along the range's edges and between its rows and columns. A field
 set to `null` is reset to the default, and a border set to `null` is removed; fields left out are
 kept. A batch of only `formatCells` changes is queued as "Sheet formatting", which a user may let
-apply without asking; mixed with any other change it waits for approval. `readFormats()`, which a
+apply without asking; mixed with other changes it is queued as one of the kinds above. `readFormats()`, which a
 spreadsheet opened from a Drive binding offers too, reads the formatting set on up to 10,000 cells
 of a range, never their values, and shows queued formatting merged in queue order. Cells of rows
 and columns a queued change inserts, whose formatting Google inherits from a neighbour in ways that

@@ -556,6 +556,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return this.#chat(facetName, id, props).describe();
   }
 
+  async chatGetAutoApprovableActions(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
+  ): Promise<ActionKind[]> {
+    return this.#chat(facetName, id, props).getAutoApprovableActions();
+  }
+
   async chatAddObserver(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
       observerId: string, userObjectId: string,

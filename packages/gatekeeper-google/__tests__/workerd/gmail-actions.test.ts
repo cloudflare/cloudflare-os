@@ -1020,7 +1020,7 @@ describe("Gmail session API surface", () => {
 });
 
 describe("Gmail auto-approval eligibility", () => {
-  it("advertises and annotates distinct non-send actions", async () => {
+  it("advertises the kinds that can be auto-approved and annotates each verdict", async () => {
     const {gatekeeper} = actionHarness((url, init) => {
       if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
         return json(messageMetadata("abc123", "def456"));
@@ -1033,9 +1033,9 @@ describe("Gmail auto-approval eligibility", () => {
     const queue = approvalQueue();
     const session = await gatekeeper.startSession(queue);
 
+    // Trashing and deleting drafts or labels remove content, so they are never offered.
     expect(await gatekeeper.getAutoApprovableActions()).toEqual([
       {tag: "archive", label: "Archive messages"},
-      {tag: "trash", label: "Trash messages"},
       {tag: "markRead", label: "Mark messages as read"},
       {tag: "markUnread", label: "Mark messages as unread"},
       {tag: "star", label: "Star messages"},
@@ -1044,10 +1044,8 @@ describe("Gmail auto-approval eligibility", () => {
       {tag: "removeLabel", label: "Remove labels from messages"},
       {tag: "draftCreate", label: "Create drafts"},
       {tag: "draftUpdate", label: "Update drafts"},
-      {tag: "draftDelete", label: "Delete drafts"},
       {tag: "labelCreate", label: "Create labels"},
       {tag: "labelRename", label: "Rename labels"},
-      {tag: "labelDelete", label: "Delete labels"},
     ]);
 
     const draft = await session.createDraft({
@@ -1055,20 +1053,36 @@ describe("Gmail auto-approval eligibility", () => {
     });
     await draft.update({subject: "Updated subject"});
     await draft.delete();
-    await (await session.getMessage("abc123")).archive();
+    const message = await session.getMessage("abc123");
+    await message.archive();
+    for (const operation of ["trash", "markRead", "markUnread", "star", "unstar"]) {
+      await message.mutate(operation);
+    }
     const label = await session.createLabel("Agent label");
     const renamed = await session.renameLabel(label, "Renamed agent label");
+    // A label with pending message actions cannot be deleted, so these use a second label.
+    const applied = await session.createLabel("Applied label");
+    await message.applyLabel(applied);
+    await message.removeLabel(applied);
     await session.deleteLabel(renamed);
 
     const descriptions = (await queue.read!()).submissions.map(submission => submission.description);
     expect(descriptions).toMatchObject([
       {actionKind: {tag: "draftCreate", label: "Create drafts"}, autoApprovable: true},
       {actionKind: {tag: "draftUpdate", label: "Update drafts"}, autoApprovable: true},
-      {actionKind: {tag: "draftDelete", label: "Delete drafts"}, autoApprovable: true},
+      {actionKind: {tag: "draftDelete", label: "Delete drafts"}, autoApprovable: false},
       {actionKind: {tag: "archive", label: "Archive messages"}, autoApprovable: true},
+      {actionKind: {tag: "trash", label: "Trash messages"}, autoApprovable: false},
+      {actionKind: {tag: "markRead", label: "Mark messages as read"}, autoApprovable: true},
+      {actionKind: {tag: "markUnread", label: "Mark messages as unread"}, autoApprovable: true},
+      {actionKind: {tag: "star", label: "Star messages"}, autoApprovable: true},
+      {actionKind: {tag: "unstar", label: "Unstar messages"}, autoApprovable: true},
       {actionKind: {tag: "labelCreate", label: "Create labels"}, autoApprovable: true},
       {actionKind: {tag: "labelRename", label: "Rename labels"}, autoApprovable: true},
-      {actionKind: {tag: "labelDelete", label: "Delete labels"}, autoApprovable: true},
+      {actionKind: {tag: "labelCreate", label: "Create labels"}, autoApprovable: true},
+      {actionKind: {tag: "applyLabel", label: "Apply labels to messages"}, autoApprovable: true},
+      {actionKind: {tag: "removeLabel", label: "Remove labels from messages"}, autoApprovable: true},
+      {actionKind: {tag: "labelDelete", label: "Delete labels"}, autoApprovable: false},
     ]);
     // Later reads simulate each of these, so none stops the caller to wait for a decision.
     for (const description of descriptions) {
@@ -1169,6 +1183,30 @@ describe("Gmail auto-approval eligibility", () => {
       ]);
   });
 
+  it("never auto-approves marking mail as spam, but does unmarking it", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        return json(messageMetadata("abc123", "def456"));
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [{id: "SPAM", name: "SPAM", type: "system"}]});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage("abc123");
+
+    await message.applyLabel({id: "SPAM", name: "SPAM", type: "system"});
+    await message.removeLabel({id: "SPAM", name: "SPAM", type: "system"});
+
+    expect((await queue.read!()).submissions.map(submission => submission.description))
+      .toMatchObject([
+        {actionKind: {tag: "applyLabel"}, autoApprovable: false},
+        {actionKind: {tag: "removeLabel"}, autoApprovable: true},
+      ]);
+  });
+
   it("keeps every email delivery path ineligible", async () => {
     const sourceRaw = buildEncodedEmail({
       from: "sender@example.com",
@@ -1231,7 +1269,7 @@ describe("Gmail auto-approval eligibility", () => {
     expect(descriptions).toHaveLength(6);
     for (const index of [0, 1, 2, 3, 5]) {
       expect(descriptions[index]).not.toHaveProperty("actionKind");
-      expect(descriptions[index]).not.toHaveProperty("autoApprovable");
+      expect(descriptions[index]).toMatchObject({autoApprovable: false});
     }
     // Later reads show each message as sent, so no send stops the caller to wait for a decision.
     for (const description of descriptions) {

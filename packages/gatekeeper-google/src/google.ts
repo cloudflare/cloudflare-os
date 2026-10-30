@@ -60,8 +60,11 @@ import {
 } from "./bigquery-types";
 import {
   calendarEventOverlaps, calendarEventSortKey, eventPatchToGoogle, GoogleCalendarApi,
-  hasCalendarPrivateAccessRole, validateCalendarTimeWindow,
+  GoogleCalendarApiError, hasCalendarPrivateAccessRole, validateCalendarTimeWindow, type LiveCalendarEvent,
 } from "./calendar-api";
+import {
+  CALENDAR_EVENTS_ACTION, createEventVerdict, updateEventVerdict,
+} from "./calendar-verdict";
 import type {
   CalendarAvailabilityMode, CalendarEvent, CalendarEventDraft, CalendarEventPatch,
   CalendarListEventsOptions, CalendarSendUpdates, CalendarTime, GoogleCalendarCapabilities,
@@ -2438,6 +2441,12 @@ type GoogleCalendarUpdateAction = GoogleCalendarActionBase & {
   type: "updateEvent";
   eventId: string;
   patch: CalendarEventPatch;
+  /**
+   * The verdict it was submitted with. One judged auto-approvable is judged again against the
+   * live event when it applies, since guests may have been added in Google meanwhile. Absent on
+   * actions stored before verdicts were recorded, which were never auto-approvable.
+   */
+  autoApprovable?: boolean;
 }
 
 type GoogleCalendarAction = GoogleCalendarCreateAction | GoogleCalendarUpdateAction;
@@ -2489,7 +2498,7 @@ function pendingCalendarEventFromDraft(
 function applyCalendarPatchToEvent(
   event: CalendarEvent,
   patch: CalendarEventPatch,
-  opts: CalendarListEventsOptions,
+  opts: Pick<CalendarListEventsOptions, "includeDescriptions">,
 ): void {
   if (patch.title !== undefined) event.title = patch.title;
   if (patch.start !== undefined) event.start = patch.start;
@@ -2556,6 +2565,21 @@ function applyPendingCalendarActions(
       .toSorted((a, b) => calendarEventSortKey(a) - calendarEventSortKey(b));
 }
 
+// The event as it will be once this binding's pending updates to it apply, so a change queued
+// behind one that adds guests is judged as reaching them.
+function simulatedCalendarEvent(
+  event: LiveCalendarEvent,
+  pending: {id: number, action: GoogleCalendarAction}[],
+): LiveCalendarEvent {
+  let simulated = {...event};
+  for (let {action} of pending) {
+    if (action.type === "updateEvent" && action.eventId === event.id) {
+      applyCalendarPatchToEvent(simulated, action.patch, {includeDescriptions: true});
+    }
+  }
+  return simulated;
+}
+
 function validateEventTimes(start: CalendarTime, end: CalendarTime): void {
   if (start.kind !== end.kind) {
     throw new Error("Event start and end must both be all-day (date) or both be timed (dateTime).");
@@ -2609,7 +2633,7 @@ export class GoogleCalendarGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return [CALENDAR_EVENTS_ACTION];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
@@ -2648,10 +2672,27 @@ export class GoogleCalendarGatekeeperImpl
       }
       case "updateEvent": {
         let oldEvent = await api.getEvent(action.calendarId, action.eventId);
+        // Whoever approved it, it was approved as reaching nobody; with guests added or its
+        // visibility narrowed in Google since, applying it would now email them or expose it.
+        let changedError = new Error(
+          "The event has changed in Google Calendar since this was proposed: it now has other " +
+          "people on it, or this change would widen who can see it. Nothing was changed. Reject " +
+          "this and ask the agent to read the event again.");
+        if (action.autoApprovable && !updateEventVerdict(oldEvent, action.patch).autoApprovable) {
+          throw changedError;
+        }
         let previous = priorCalendarPatch(oldEvent, action.patch);
-        await api.patchEvent(
-          action.calendarId, action.eventId,
-          eventPatchToGoogle(action.patch), action.sendUpdates);
+        try {
+          // Conditional on the version just judged, so guests added between the read and the
+          // write cannot receive it.
+          await api.patchEvent(
+            action.calendarId, action.eventId,
+            eventPatchToGoogle(action.patch), action.sendUpdates,
+            action.autoApprovable ? oldEvent.etag : undefined);
+        } catch (error) {
+          if (error instanceof GoogleCalendarApiError && error.status === 412) throw changedError;
+          throw error;
+        }
         pendingActions.remove(actionId);
         this.ctx.storage.kv.put<GoogleCalendarRevertInfo>(this.#revertKey(actionId), {
           type: "updatedEvent",
@@ -2869,6 +2910,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Event", event)
           .finish(),
         implementsRevert: true,
+        ...createEventVerdict(event),
       });
     } catch (error) {
       this.#pendingActions.remove(actionId);
@@ -2883,18 +2925,14 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
   ): Promise<void> {
     if (!eventId.trim()) throw new Error("eventId is required.");
     if (Object.keys(patch).length === 0) throw new Error("patch must change at least one field.");
+    // Read for the verdict, which turns on who is on the event, and for the side of a start/end
+    // pair the patch leaves alone.
+    let current = await this.#api.getEvent(this.#calendarId, eventId);
     if (patch.start !== undefined || patch.end !== undefined) {
-      // Validate the resulting start/end pair. If only one side is patched, fetch the event to
-      // get the other side.
-      let start = patch.start;
-      let end = patch.end;
-      if (start === undefined || end === undefined) {
-        let current = await this.#api.getEvent(this.#calendarId, eventId);
-        start ??= current.start;
-        end ??= current.end;
-      }
-      validateEventTimes(start, end);
+      validateEventTimes(patch.start ?? current.start, patch.end ?? current.end);
     }
+    let verdict = updateEventVerdict(
+      simulatedCalendarEvent(current, this.#pendingActions.list()), patch);
     let action: GoogleCalendarAction = {
       type: "updateEvent",
       calendarId: this.#calendarId,
@@ -2902,6 +2940,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       sendUpdates: opts?.sendUpdates ?? "all",
       eventId,
       patch,
+      autoApprovable: verdict.autoApprovable,
     };
     let actionId = this.#pendingActions.submit(action);
 
@@ -2916,6 +2955,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Changes", patch)
           .finish(),
         implementsRevert: true,
+        ...verdict,
       });
     } catch (error) {
       this.#pendingActions.remove(actionId);

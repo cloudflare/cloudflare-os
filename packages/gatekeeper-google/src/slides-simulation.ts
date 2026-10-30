@@ -47,12 +47,14 @@ export type CreatedPlaceholder = {
 
 /**
  * The payload of each kind of queued change. A batch is queued as `editText` when it only edits
- * text, `formatSlides` when it only formats or moves, and `updateSlides` otherwise; they differ in
- * nothing but which kinds a user may let apply without asking.
+ * text, `formatSlides` when it only formats or moves, `updateSlides` when it deletes elements,
+ * table rows or columns or downloads an image, and `editSlides` otherwise; they differ in nothing
+ * but which kinds a user may let apply without asking.
  */
 export type SlidesActions = {
   editText: DesignBatch;
   formatSlides: DesignBatch;
+  editSlides: DesignBatch;
   updateSlides: DesignBatch;
   /** `objectIds` maps the source's element IDs to the IDs the gatekeeper minted for the copy's. */
   duplicateSlide: {
@@ -77,6 +79,20 @@ export type SlidesActions = {
 
 /** A queued change, as the journal stores it. */
 export type SlidesAction = TaggedAction<SlidesActions>;
+
+type DesignKind = {
+  [K in keyof SlidesActions]: SlidesActions[K] extends DesignBatch ? K : never;
+}[keyof SlidesActions];
+
+// Every kind an `updateSlides()` batch may be queued as; the type makes a new one join it.
+const DESIGN_KINDS: Record<DesignKind, true> = {
+  editText: true, formatSlides: true, editSlides: true, updateSlides: true,
+};
+
+/** Whether `action` is an `updateSlides()` batch, whichever kind it was queued as. */
+export function isDesignBatch(action: SlidesAction): action is Extract<SlidesAction, { kind: DesignKind }> {
+  return Object.hasOwn(DESIGN_KINDS, action.kind);
+}
 
 /**
  * What a read fetched, with queued changes applied: the slide order, the slides it fetched, and
@@ -254,6 +270,7 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
   switch (action.kind) {
     case "editText":
     case "formatSlides":
+    case "editSlides":
     case "updateSlides":
       return designDeck(deck, action.payload.changes).deck;
     case "duplicateSlide": {
@@ -343,7 +360,7 @@ export function slidesToFetch(pages: readonly string[], changes: readonly Queued
   for (let { action } of changes.toReversed()) {
     if (action.kind === "duplicateSlide" && needed.has(action.payload.newSlideId)) {
       needed.add(action.payload.slideId);
-    } else if (action.kind === "editText" || action.kind === "formatSlides" || action.kind === "updateSlides") {
+    } else if (isDesignBatch(action)) {
       let targets = action.payload.changes.map(change => pageOf(change).id);
       if (targets.some(id => needed.has(id))) for (let id of targets) needed.add(id);
     }
@@ -356,14 +373,7 @@ export function slidesToFetch(pages: readonly string[], changes: readonly Queued
  * layouts, which every read holds; none for other changes.
  */
 export function batchSlides(action: SlidesAction): string[] {
-  switch (action.kind) {
-    case "editText":
-    case "formatSlides":
-    case "updateSlides":
-      return action.payload.changes.flatMap(change => slideIdOf(change) ?? []);
-    default:
-      return [];
-  }
+  return isDesignBatch(action) ? action.payload.changes.flatMap(change => slideIdOf(change) ?? []) : [];
 }
 
 /** The reason a read shows only some queued changes: the first that no longer applies. */

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  STRUCTURE_SENSITIVE_FUNCTIONS, canonicalFormula, compactFormula, refusedFunction, rewriteFormula,
-  structureSensitive, tokenize, type FormulaReference, type RewriteStep,
+  REFUSED_FUNCTIONS, SPREADSHEET_ONLY_FUNCTIONS, STRUCTURE_SENSITIVE_FUNCTIONS, callsOnlySpreadsheetFunctions,
+  canonicalFormula, compactFormula, refusedFunction, rewriteFormula, structureSensitive, tokenize,
+  type FormulaReference, type RewriteStep,
 } from "../src/sheets-formula";
 import { columnNumber, findSheet } from "../src/sheets-model";
 import {
@@ -366,6 +367,8 @@ describe("Sheets structure-sensitive formulas", () => {
     expect(structureSensitive("=MyRange * 2")).toBe(true);
     expect(structureSensitive("=SUM(Totals)")).toBe(true);
     expect(structureSensitive("=Sales!Totals")).toBe(true);
+    // Only ASCII letters fold, so `ſum` is not the argument-only `SUM` but a named function.
+    expect(structureSensitive("=\u017Fum(A1)")).toBe(true);
   });
 
   it("leaves calls, constants, references, error literals and strings alone", () => {
@@ -386,5 +389,59 @@ describe("Sheets structure-sensitive formulas", () => {
     expect(structureSensitive("=SUM(B1:INDEX(A5:A10, 1))")).toBe(true);
     expect(structureSensitive('=QUERY(Data!A1:C10, "select B where A > 1")')).toBe(true);
     expect(structureSensitive('="A1 : A3" & SUM(A1:A3)')).toBe(false);
+  });
+});
+
+describe("Sheets formulas calling only spreadsheet functions", () => {
+  it("accepts calls to listed built-ins in any case, references, constants and strings", () => {
+    expect(callsOnlySpreadsheetFunctions("=SUM(A1:B2) + if(TRUE, 1, 2) + NORM.DIST(1, 0, 1, TRUE)")).toBe(true);
+    expect(callsOnlySpreadsheetFunctions("=log10 (A1) & Sales!B2:B & #REF!")).toBe(true);
+    expect(callsOnlySpreadsheetFunctions("=SUM(A1) * (B1 + 2) + ROW() + INDIRECT(\"A1\")")).toBe(true);
+    // Names in string literals and in the sheet titles of references are not calls.
+    expect(callsOnlySpreadsheetFunctions('="IMPORTXML(" & \'IMAGE (x)\'!A1')).toBe(true);
+  });
+
+  it("accepts every listed function and nothing reaching outside the spreadsheet", () => {
+    for (let name of SPREADSHEET_ONLY_FUNCTIONS) {
+      expect(callsOnlySpreadsheetFunctions(`=${name}(A1)`), name).toBe(true);
+    }
+    for (let name of [...REFUSED_FUNCTIONS.keys(), "HYPERLINK", "GOOGLEFINANCE", "GOOGLETRANSLATE",
+      "DETECTLANGUAGE", "ENCODEURL", "AI", "NOW", "RAND"]) {
+      expect(SPREADSHEET_ONLY_FUNCTIONS.has(name), name).toBe(false);
+      expect(callsOnlySpreadsheetFunctions(`=SUM(A1) + ${name.toLowerCase()} (A1)`), name).toBe(false);
+    }
+  });
+
+  it("refuses a call to any other name, which may be a named function wrapping a fetch", () => {
+    expect(callsOnlySpreadsheetFunctions("=MYFETCH(A1)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=SUM(A1) + myfetch ()")).toBe(false);
+    // A prefixed name is judged whole, so `_xlfn.` cannot dress up a call as a listed one.
+    expect(callsOnlySpreadsheetFunctions("=_xlfn.SUM(A1)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=Sales!MYFETCH(A1)")).toBe(false);
+    // Only ASCII letters fold, so a name whose Unicode upper case is a listed one is another name.
+    expect(callsOnlySpreadsheetFunctions("=\u017Fum(Secrets!A1)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=\u0131f(TRUE, Secrets!A1, 1)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=\uFB01lter(A1:A2, TRUE)")).toBe(false);
+    // A LET or LAMBDA name bound to a function is called by that name.
+    expect(callsOnlySpreadsheetFunctions("=LET(f, LAMBDA(x, x), f(A1))")).toBe(false);
+  });
+
+  it("refuses names that are not called, and calls on computed values, which may be named functions", () => {
+    // A bound name can take a listed function's name and stand for a named function passed by name.
+    expect(callsOnlySpreadsheetFunctions("=LET(SUM, MYFETCH, SUM(Secrets!A1))")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=LAMBDA(SUM, SUM(A1))(MYFETCH)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=CHOOSE(1, MYFETCH)(A1)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=LET(x, A1, x * 2)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=SUM(Totals)")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=sum")).toBe(false);
+    // Even with no name bound or passed, a call on a computed value does not qualify.
+    expect(callsOnlySpreadsheetFunctions("=LAMBDA(SUM(A1))()")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("=(A1) (B1)")).toBe(false);
+    for (let name of ["LET", "LAMBDA"]) expect(SPREADSHEET_ONLY_FUNCTIONS.has(name), name).toBe(false);
+  });
+
+  it("refuses apostrophe-quoted text that prefixes no reference, which could hide the rest", () => {
+    expect(callsOnlySpreadsheetFunctions("=SUM(A1) + 'stray")).toBe(false);
+    expect(callsOnlySpreadsheetFunctions("='Sales' + 1")).toBe(false);
   });
 });
