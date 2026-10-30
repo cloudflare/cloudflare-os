@@ -1,0 +1,25 @@
+packages/integration-tests/__tests__/cli-admins-only.test.ts
+  s_34892ac5042fc9::t_ba04dcceb46bc4 1-2,40,59,63
+packages/api-cli/README.md
+  s_34892ac5042fc9::t_ba04dcceb46bc4 437-439
+packages/api-cli/src/session.ts
+  s_34892ac5042fc9::t_ba04dcceb46bc4 377
+packages/integration-tests/README.md
+  s_34892ac5042fc9::t_ba04dcceb46bc4 21-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f12438aa54dd8f428fd1749daee5cc333463dd5c",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
