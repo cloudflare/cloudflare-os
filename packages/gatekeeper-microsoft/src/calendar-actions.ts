@@ -342,10 +342,39 @@ async function requireStillPersonal(host: CalendarActionHost, calendar: Calendar
   }
 }
 
+/**
+ * A change proposed as not revealing the event can apply after a change of this binding's own that
+ * made the event more private, approved first (approvals can run out of order), which the version
+ * fence lets through. Lowering the sensitivity then is a reveal nobody approved, so it is refused.
+ */
+async function requireNoReveal(host: CalendarActionHost, payload: CalendarActions["updateEvent"], id: string): Promise<void> {
+  const version = host.eventVersion(id);
+  if (payload.changes.sensitivity === undefined || !(version !== undefined && version.at > payload.submittedAt)) return;
+  const current = await host.graph(api => calendarApi(api, payload.calendar).find<{ sensitivity?: unknown }>(`/events/${idPath(id)}`, { $select: "sensitivity" }), { replayable: true });
+  // One Outlook reports in a form not known here counts as the most private.
+  const live = typeof current?.sensitivity === "string" && current.sensitivity in SENSITIVITY_RANK
+    ? current.sensitivity as keyof typeof SENSITIVITY_RANK : "confidential";
+  if (revealsEvent({ ...payload, before: { sensitivity: live } })) {
+    throw new ActionApplyError("The event was made more private after this was proposed, so making it less private now needs its own approval. Ask the agent to propose it again.");
+  }
+}
+
 async function update<P extends CalendarActions["updateEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
+  return await applyUpdate(payload, host, false);
+}
+
+/** `update` for a change proposed as revealing the event, whose approver saw that it does. */
+async function reveal<P extends CalendarActions["updateEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
+  return await applyUpdate(payload, host, true);
+}
+
+async function applyUpdate<P extends CalendarActions["updateEvent"]>(payload: P, host: CalendarActionHost, reveals: boolean): Promise<{ action: P }> {
   const id = realId(host.refs, payload.target.id, "The event");
   const ifMatch = etag(expectedVersion(host, payload.target, id, payload.submittedAt));
-  if (!("notified" in payload)) await requireStillPersonal(host, payload.calendar, payload.target, id, payload.submittedAt);
+  if (!("notified" in payload)) {
+    await requireStillPersonal(host, payload.calendar, payload.target, id, payload.submittedAt);
+    if (!reveals) await requireNoReveal(host, payload, id);
+  }
   let appliedChangeKey: string | undefined;
   try {
     const updated = await host.graph(api => calendarApi(api, payload.calendar).request<{ changeKey?: unknown }>("PATCH", `/events/${idPath(id)}`,
@@ -604,8 +633,8 @@ export const definitions = {
   deleteSharedEvent: { ...ownDefinitions.deleteEvent, kind: SHARED_EVENTS, autoApprovable: false },
   respondSilently: { ...ownDefinitions.respond, autoApprovable: true },
   // Never: the event's details become visible to everyone the calendar is shared with.
-  revealEvent: { ...ownDefinitions.updateEvent, autoApprovable: false },
-  revealSharedEvent: { ...ownDefinitions.updateEvent, kind: SHARED_EVENTS, autoApprovable: false },
+  revealEvent: { ...ownDefinitions.updateEvent, autoApprovable: false, apply: reveal },
+  revealSharedEvent: { ...ownDefinitions.updateEvent, kind: SHARED_EVENTS, autoApprovable: false, apply: reveal },
 } satisfies { [K in keyof CalendarActions]: ActionDefinition<CalendarActions[K], CalendarActionHost> };
 
 /** The Calendar action set. */

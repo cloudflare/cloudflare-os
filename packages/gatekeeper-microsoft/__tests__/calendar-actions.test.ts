@@ -147,6 +147,28 @@ describe("changing and deleting", () => {
     expect(sent.filter(request => request.method !== "GET")).toHaveLength(0);
   });
 
+  it("won't make an event less private after a later-proposed change, approved first, made it more private", async () => {
+    // Proposed while the event was normal, so proposed as no reveal; meanwhile `private` applied.
+    const lower = { ...updatePayload, changes: { sensitivity: "normal" as const }, before: { sensitivity: "normal" as const }, submittedAt: 1 };
+    const { host, sent } = harness([placed(), { status: 200, body: { sensitivity: "private" } }]);
+    host.noteEventVersion(TARGET.id, "ckAfterPrivate");
+    await expect(definitions.updateSharedEvent.apply(lower, host)).rejects.toThrow(/made more private after this was proposed/);
+    expect(sent.filter(request => request.method !== "GET")).toHaveLength(0);
+    // A person who approved it as a reveal saw that it is one.
+    const approved = harness([placed(), { status: 200, body: { changeKey: "ckB" } }]);
+    approved.host.noteEventVersion(TARGET.id, "ckAfterPrivate");
+    await definitions.revealSharedEvent.apply(lower, approved.host);
+    expect(approved.sent.at(-1)).toMatchObject({ method: "PATCH", body: { sensitivity: "normal" } });
+  });
+
+  it("applies a change of sensitivity that still reveals nothing after a later change applied first", async () => {
+    const lower = { ...updatePayload, changes: { sensitivity: "private" as const }, before: { sensitivity: "normal" as const }, submittedAt: 1 };
+    const { host, sent } = harness([placed(), { status: 200, body: { sensitivity: "private" } }, { status: 200, body: { changeKey: "ckB" } }]);
+    host.noteEventVersion(TARGET.id, "ckAfterPrivate");
+    await definitions.updateEvent.apply(lower, host);
+    expect(sent.at(-1)).toMatchObject({ method: "PATCH", body: { sensitivity: "private" } });
+  });
+
   it("won't change or delete an event it created once a later-approved invitation made it a meeting, whatever version that left", async () => {
     const invited = placed({ attendees: [{ emailAddress: { address: "sarah@contoso.com" } }] });
     const { host, sent } = harness([{ status: 201, body: { id: "AAMkNew", changeKey: "ckA" } }, invited, invited]);
@@ -363,8 +385,7 @@ describe("what tells other people", () => {
     });
     expect(definitions.respondSilently.kind).toEqual(definitions.respond.kind);
     expect(definitions.respondSilently.apply).toBe(definitions.respond.apply);
-    expect(definitions.revealEvent.apply).toBe(definitions.updateEvent.apply);
-    expect(definitions.revealSharedEvent.apply).toBe(definitions.updateEvent.apply);
+    expect(definitions.revealSharedEvent.apply).toBe(definitions.revealEvent.apply);
   });
 
   it("proposes a change that makes an event less private as one that can't be auto-approved", () => {
