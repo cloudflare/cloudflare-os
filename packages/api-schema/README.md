@@ -67,7 +67,8 @@ shape's `propertyDocs`, and `tags`, which `capnweb-schema/1` added to `/0`: a re
 
 ## Generated files
 
-`generated/` is committed. Nothing in it is edited by hand.
+`generated/` is not committed: it is generated on demand ([Generating](#generating)), and nothing
+in it is edited by hand.
 
 The last column is who each is for. `pnpm cf-os api` renders its command table from the schema
 and copies the agent declarations; nothing else reads these files yet.
@@ -112,21 +113,28 @@ directory (`gatekeeper-context` is `context`). Today `context` (`ContextApi`) an
 (`ScheduleManagementApi`) declare one. A configurator's `ui` (`startResourceConfigurator`) has
 none: its methods are its vendor's `*ConfiguratorUI` class in `packages/gatekeeper-<vendor>/src/`.
 
-## Regenerating
+## Generating
 
-After changing `packages/workshop-shared/src/api.ts`, run:
+Whatever reads the generated files generates them first, with
+`node packages/api-schema/scripts/generate.ts --if-stale`: the `@gadgets/api-schema#generate` task,
+which `@gadgets/api-cli`'s `build` and `test` and the integration tests depend on (so `pnpm build`,
+`pnpm lint` and `pnpm test` run it), the CLI's and the integration tests' direct `test:run`, and the
+root `pnpm cf-os`. A change to `packages/workshop-shared/src/api.ts`, to a gatekeeper app UI's
+interface or to its package.json's `appApi` needs no step of its own, and nothing to commit.
+
+Each generation writes this directory and `packages/api-cli/generated/`, `pnpm cf-os api`'s command
+table and its copy of the agent declarations, removes the `gatekeeper-apps/` files of a gatekeeper
+that no longer declares an app UI, and records in `generated/.inputs.json` a SHA-256 of every file
+it read and wrote. `--if-stale` generates only when one of those differs or is gone, or a gatekeeper
+package is new; checking costs a read of each file, and no TypeScript is loaded unless it
+generates. It prints nothing on stdout, so `pnpm cf-os`'s stdout is the CLI's.
 
 ```sh
 pnpm api-schema:generate
 ```
 
-and commit the regenerated files with the change, and likewise after changing a gatekeeper app UI's
-interface or its package.json's `appApi`. It also rewrites `packages/api-cli/generated/`,
-`pnpm cf-os api`'s command table and its copy of the agent declarations, and removes the
-`gatekeeper-apps/` files of a gatekeeper that no longer declares an app UI. `pnpm api-schema:check`,
-part of `pnpm lint` and CI, writes and removes nothing and fails naming any file that is out of
-date or left over, those included. Both print `{"files": [...]}` on stdout, the files written or
-stale; everything else goes to stderr.
+generates unconditionally and prints `{"files": [...]}` on stdout, the files written or removed;
+everything else goes to stderr. A method the CLI cannot represent fails either, naming it.
 
 ## What is generic, and what is not
 

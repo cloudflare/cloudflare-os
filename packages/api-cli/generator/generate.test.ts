@@ -1,6 +1,7 @@
 // The CLI's generated files and `pnpm api-schema:generate`: the script renders them with api-schema's
-// own files and the gatekeeper app UIs', so `pnpm api-schema:check` covers them, and the committed
-// ones are what it renders. Scratch files go under the OS temp directory.
+// own files and the gatekeeper app UIs', so every generation writes them, and the ones on disk (which
+// the `test` task and `test:run` generate first) are what it renders. Scratch files go under the OS
+// temp directory.
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -14,12 +15,12 @@ import { renderAgentTypes, type Schema } from "./emit.ts";
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 const CLI_FILES = ["packages/api-cli/generated/commands.ts", "packages/api-cli/generated/agent-types.ts"];
 
-/** A committed schema, by its path from the repository root. */
+/** A generated schema, by its path from the repository root. */
 const read = (path: string) => JSON.parse(readFileSync(join(ROOT, path), "utf8")) as Schema;
 
-test("pnpm api-schema:generate renders the CLI's files, and the committed ones are what it renders", () => {
-  // generateApiSchema writes, or with --check compares, exactly these files: that is what makes
-  // `pnpm api-schema:check` cover the CLI's.
+test("pnpm api-schema:generate renders the CLI's files, and the files on disk are what it renders", () => {
+  // generateApiSchema writes exactly these files, and --if-stale regenerates when one differs from
+  // what it wrote: that is what keeps the CLI's in step with api.ts.
   const schema = read("packages/api-schema/generated/workshop-api.schema.json");
   const apps = findGatekeeperApps().map((app) => ({ ...app, schema: read(`${GATEKEEPER_APPS_DIR}/${app.vendor}.schema.json`) }));
   const files = renderApiSchema(schema, apps);

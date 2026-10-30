@@ -141,6 +141,3 @@ contributor to broaden scope, add refactors, or take on adjacent cleanup.
 - `packages/*/wrangler.jsonc`, generated from the `cloudflare.config.ts` beside it and checked by
   `pnpm configs:check`; review the config instead.
 - `packages/*/worker-configuration.d.ts`, which is `wrangler types` output.
-- `packages/api-cli/generated/`, `pnpm cf-os api`'s command table and its copy of the agent
-  declarations: `pnpm api-schema:generate` writes them and `pnpm api-schema:check` keeps them in
-  step with `api.ts`, so review `packages/api-cli/generator/emit.ts` instead.

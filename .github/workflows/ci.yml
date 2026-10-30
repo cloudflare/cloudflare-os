@@ -55,9 +55,6 @@ jobs:
       - name: Check generated worker configs
         run: pnpm configs:check
 
-      - name: Check the generated API schema
-        run: pnpm api-schema:check
-
       # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases
       # this). It runs even when a step above failed, so a lint error does not hide a type error.
       - name: Build
