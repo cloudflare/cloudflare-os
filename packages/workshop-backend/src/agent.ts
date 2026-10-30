@@ -1,5 +1,5 @@
 import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
-import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
+import { applyCodeChange, changedGadgets, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -3823,14 +3823,16 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {code}) => {
         try {
-          // Step-transactionality guard: buffered edits are durable only at the step's
-          // barrier, so code must not run against content the persisted history doesn't yet
-          // hold -- a crash would lose the edits the execution observed. Editing code and then
-          // executing it in one step never worked; the error is retryable and tells the model
-          // to split them. (Deliberately coarse: no per-gadget touched-set -- worktrees keep
-          // the same rule.)
-          if (stepBuffer.changes.length > 0) {
-            throw new Error("This step already made code changes, which take effect when the " +
+          // Step-transactionality guard: buffered edits become durable only at the step's
+          // barrier, and a gadget runs the code the persisted chat history holds (see
+          // loadGadgetWorker), so code run after this step edited a gadget would run the
+          // gadget's pre-edit code. The error is retryable and tells the model to split them.
+          // Worktree edits are exempt: worktree bindings read the turn's session content (see
+          // WorktreeTurnAccess), so the execution sees them, and the barrier persists them with
+          // this call's record.
+          if (stepBuffer.changes.some(({change}) =>
+              changedGadgets(change).some(id => worktreeBase(id) === undefined))) {
+            throw new Error("This step already changed Gadget code, which takes effect when the " +
                 "step ends. End this response and call executeCode again in your next step.");
           }
 
