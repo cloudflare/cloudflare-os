@@ -21,9 +21,10 @@
 // (and workshop-shared) still depends on no gatekeeper, and no list of them is kept here.
 //
 // With --if-stale it generates only when something it would write has changed. Each generation
-// records, in `generated/.inputs.json`, a SHA-256 of every file it read (the sources the extraction
-// programs loaded outside `node_modules`, this script's own modules, each gatekeeper's package.json,
-// and `pnpm-lock.yaml` for everything installed) and of every file it wrote. --if-stale generates
+// records, in `generated/.inputs.json`, a SHA-256 of every file it read (the tsconfigs, with what they
+// extend, and the sources the extractions read outside `node_modules`, this script's own modules,
+// each gatekeeper's package.json, and `pnpm-lock.yaml` for everything installed) and of every file
+// it wrote. --if-stale generates
 // when one of them differs or is gone, or a gatekeeper package is new; reading the hashes loads no
 // TypeScript, so a current checkout pays only for that.
 //

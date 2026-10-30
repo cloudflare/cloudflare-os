@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript6";
 import { afterAll, describe, expect, test } from "vitest";
-import { type ExtractOptions, extractSchema, normalizeDoc } from "../src/extract.ts";
+import { type ExtractOptions, extractSchema, extractSchemaAndSources, normalizeDoc } from "../src/extract.ts";
 import { type ApiShape, FORMAT, type Schema, type SchemaService } from "../src/schema.ts";
 
 const PACKAGE = join(import.meta.dirname, "..");
@@ -182,6 +182,24 @@ describe("the fixture", () => {
 test("normalizes doc text", () => {
   expect(normalizeDoc("  first  \r\nsecond\t\r\n\r\n\r\n\n third\n")).toBe("first\nsecond\n\n third");
   expect(normalizeDoc("")).toBe("");
+});
+
+// What the generator hashes to tell when its files are stale: a config the tsconfig extends can change
+// the schema (`strictNullChecks` drops a result's `null`) as surely as a source can.
+test("reports the files it read: the tsconfig, the configs it extends, and every source loaded", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "api-schema-sources-")));
+  try {
+    writeFileSync(join(dir, "base.json"), JSON.stringify({ compilerOptions: { strict: true, skipLibCheck: true } }));
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ extends: "./base.json", compilerOptions: { types: [] } }));
+    writeFileSync(join(dir, "names.ts"), "export type Name = string;\n");
+    writeFileSync(join(dir, "api.ts"), 'import type { Name } from "./names";\nexport interface Api { name(): Promise<Name | null>; }\n');
+    const { sources } = extractSchemaAndSources({ entry: join(dir, "api.ts"), tsconfig: join(dir, "tsconfig.json"), entryName: "Api" });
+    const own = sources.filter((path) => path.startsWith(dir)).map((path) => path.slice(dir.length + 1));
+    expect(own.toSorted()).toEqual(["api.ts", "base.json", "names.ts", "tsconfig.json"]);
+    expect(sources.some((path) => /[\\/]lib\.[\w.]*\.d\.ts$/.test(path))).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("refuses what the schema cannot describe, naming it", () => {

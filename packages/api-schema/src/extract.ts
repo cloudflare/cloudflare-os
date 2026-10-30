@@ -66,12 +66,13 @@ export function extractSchema(options: ExtractOptions): Schema {
 }
 
 /**
- * {@link extractSchema}, with the path of every source file its program loaded: the entry, what it
- * imports, the TypeScript libs and the installed packages' declarations. A caller that keeps the
- * schema on disk hashes them to tell when it is stale.
+ * {@link extractSchema}, with the path of every file it read: the tsconfig and the configs it
+ * extends, then every source file its program loaded (the entry, what it imports, the TypeScript libs
+ * and the installed packages' declarations). A caller that keeps the schema on disk hashes them to
+ * tell when it is stale.
  */
 export function extractSchemaAndSources(options: ExtractOptions): { schema: Schema; sources: string[] } {
-  const compilerOptions = loadCompilerOptions(options);
+  const { compilerOptions, configFiles } = loadCompilerOptions(options);
   const program = ts.createProgram({ rootNames: [options.entry], options: compilerOptions, host: cachingHost(compilerOptions) });
   const source = program.getSourceFile(options.entry);
   if (!source) throw new Error(`${options.entry}: not found`);
@@ -114,7 +115,7 @@ export function extractSchemaAndSources(options: ExtractOptions): { schema: Sche
     services: sortKeys(services),
     shapes: sortKeys(extractor.shapes),
   };
-  return { schema, sources: program.getSourceFiles().map((file) => file.fileName) };
+  return { schema, sources: [...configFiles, ...program.getSourceFiles().map((file) => file.fileName)] };
 }
 
 /**
@@ -141,17 +142,29 @@ function cachingHost(options: ts.CompilerOptions): ts.CompilerHost {
   return host;
 }
 
-function loadCompilerOptions(options: ExtractOptions): ts.CompilerOptions {
-  if (!options.tsconfig) return { ...options.compilerOptions, noEmit: true };
+/** The compiler options `options` asks for, and the config files they were read from (`extends` included). */
+function loadCompilerOptions(options: ExtractOptions): { compilerOptions: ts.CompilerOptions; configFiles: string[] } {
+  if (!options.tsconfig) return { compilerOptions: { ...options.compilerOptions, noEmit: true }, configFiles: [] };
+  const configFiles = [options.tsconfig];
+  // Reads go through it only for the config files: the `extends` chain.
+  const host: ts.ParseConfigHost = {
+    useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
+    readDirectory: ts.sys.readDirectory,
+    fileExists: ts.sys.fileExists,
+    readFile: (path) => {
+      configFiles.push(path);
+      return ts.sys.readFile(path);
+    },
+  };
   const read = ts.readConfigFile(options.tsconfig, ts.sys.readFile);
   if (read.error) throw new Error(ts.flattenDiagnosticMessageText(read.error.messageText, "\n"));
-  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(options.tsconfig), undefined,
+  const parsed = ts.parseJsonConfigFileContent(read.config, host, dirname(options.tsconfig), undefined,
     options.tsconfig);
   // A config written for TypeScript 7 may carry options (`singleThreaded`) that 6.x reports as
   // unknown, and nothing here depends on them. Any other problem with the config is fatal.
   const errors = parsed.errors.filter((error) => error.code !== UNKNOWN_COMPILER_OPTION);
   if (errors.length) throw new Error(`${options.tsconfig}:\n${formatDiagnostics(errors)}`);
-  return { ...parsed.options, ...options.compilerOptions, noEmit: true };
+  return { compilerOptions: { ...parsed.options, ...options.compilerOptions, noEmit: true }, configFiles };
 }
 
 /** "Unknown compiler option '{0}'." */
