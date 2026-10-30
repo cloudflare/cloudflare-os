@@ -2,11 +2,11 @@
 // `workshop-shared/src/api.ts`, whose generated declarations are type-checked against the real API
 // as a caller holds it.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript6";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { AWAITABLE, emitDeclarations, PIPELINED, UNTYPED_STUB } from "../src/emit/dts.ts";
 import { extractSchema } from "../src/extract.ts";
 import { type ApiShape, FORMAT, type Schema, type SchemaMethod, type SchemaService, type SchemaShape } from "../src/schema.ts";
@@ -42,8 +42,8 @@ const parsedLibs = new Map<string, ts.SourceFile | undefined>();
 /**
  * Type-checks in-memory files (`.d.ts`, or `.ts` that imports them as `./name.js`, and `capnweb`),
  * fully (`skipLibCheck` off), under the Web platform's globals, and returns every diagnostic in
- * them, with the file's name. capnweb's own declarations do not pass a full check, so theirs are
- * left out.
+ * them, with the file's name. Only they are checked: capnweb's own declarations do not pass a full
+ * check.
  */
 function diagnose(files: Record<string, string>): { file: string; code: number; text: string }[] {
   const options: ts.CompilerOptions = {
@@ -69,13 +69,16 @@ function diagnose(files: Record<string, string>): { file: string; code: number; 
   host.readFile = (name) => paths[name] ?? readFile.call(host, name);
   host.directoryExists = (name) => name === "/virtual" || (directoryExists?.call(host, name) ?? true);
   const program = ts.createProgram({ rootNames: Object.keys(paths), options, host });
-  return ts.getPreEmitDiagnostics(program)
-    .filter((diagnostic) => !diagnostic.file || diagnostic.file.fileName in paths)
-    .map((diagnostic) => ({
-      file: diagnostic.file?.fileName.replace("/virtual/", "") ?? "",
-      code: diagnostic.code,
-      text: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
-    }));
+  const sources = Object.keys(paths).map((name) => program.getSourceFile(name)!);
+  return [
+    ...program.getOptionsDiagnostics(),
+    ...program.getGlobalDiagnostics(),
+    ...sources.flatMap((source) => [...program.getSyntacticDiagnostics(source), ...program.getSemanticDiagnostics(source)]),
+  ].map((diagnostic) => ({
+    file: diagnostic.file?.fileName.replace("/virtual/", "") ?? "",
+    code: diagnostic.code,
+    text: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+  }));
 }
 
 describe("shapes", () => {
@@ -1022,14 +1025,33 @@ describe("workshop-shared's API", () => {
   // `skipLibCheck` is off for the probe and the generated file, so the generated file is fully
   // checked, and their diagnostics are the ones collected: capnweb's own declarations do not
   // pass a full check.
-  function probe(declarations: string, usage = ""): string[] {
-    const generated = join(dir, "workshop-api.d.ts");
-    const stubView = join(dir, "workshop-api-stub-view.d.ts");
-    const file = join(dir, "probe.ts");
-    writeFileSync(generated, declarations);
-    const awaitable = `export type ${AWAITABLE}<T> = T | Promise<T>;`;
-    expect(declarations).toContain(awaitable);
-    writeFileSync(stubView, declarations.replace(awaitable, `export type ${AWAITABLE}<T> = T & Promise<T>;`));
+  //
+  // Every probe is checked in one program, each in its own directory, because capnweb's
+  // instantiation of the real stub dominates the cost; each probe's types are distinct, so no
+  // result carries over between probes.
+  const AWAITABLE_DECLARATION = `export type ${AWAITABLE}<T> = T | Promise<T>;`;
+  const probes: { declarations: string; usage: string }[] = [];
+  let probeDiagnostics: string[][] | undefined;
+
+  /** Registers a probe of `declarations`, with `usage` appended, and returns its index in `probeResults()`. */
+  function probe(declarations: string, usage = ""): number {
+    if (probeDiagnostics) throw new Error("a probe registered after the probes were checked");
+    expect(declarations).toContain(AWAITABLE_DECLARATION);
+    return probes.push({ declarations, usage }) - 1;
+  }
+
+  /** Each registered probe's diagnostics, from checking them all once. */
+  function probeResults(): string[][] {
+    probeDiagnostics ??= checkProbes();
+    return probeDiagnostics;
+  }
+  // The one check, ~2 s locally and ten times that on a contended CI runner, is set-up rather than
+  // the first test to read it, which would otherwise spend its own time limit on all of them.
+  beforeAll(() => {
+    probeResults();
+  }, 60_000);
+
+  function checkProbes(): string[][] {
     const branded = parameterServices(schema, ROOT, CREDENTIAL_METHODS)
       .filter((name) => extendsRpcTargetDirectly(API, name));
     const held = heldServices(schema, ROOT, CREDENTIAL_METHODS);
@@ -1055,7 +1077,7 @@ describe("workshop-shared's API", () => {
         });
         return checks;
       }));
-    writeFileSync(file, `import type { RpcStub, RpcTarget } from "capnweb";
+    const probeText = (usage: string) => `import type { RpcStub, RpcTarget } from "capnweb";
 import type { ${ROOT} } from ${JSON.stringify(API.replace(/\.ts$/, ".js"))};
 import type * as Real from ${JSON.stringify(API.replace(/\.ts$/, ".js"))};
 import type * as Generated from "./workshop-api.js";
@@ -1092,11 +1114,22 @@ ${[...callers, ...callbacks].map((service) =>
 export type Extra_${service} = NoKeys<Exclude<Methods<Generated.${service}>, keyof Real_${service}>>;`).join("\n")}
 
 ${usage}
-`);
+`;
+    const files = probes.map(({ declarations, usage }, i) => {
+      const probeDir = join(dir, String(i));
+      mkdirSync(probeDir);
+      const generated = join(probeDir, "workshop-api.d.ts");
+      const stubView = join(probeDir, "workshop-api-stub-view.d.ts");
+      const file = join(probeDir, "probe.ts");
+      writeFileSync(generated, declarations);
+      writeFileSync(stubView, declarations.replace(AWAITABLE_DECLARATION, `export type ${AWAITABLE}<T> = T & Promise<T>;`));
+      writeFileSync(file, probeText(usage));
+      return [file, generated, stubView] as const;
+    });
     const read = ts.readConfigFile(TSCONFIG, ts.sys.readFile);
     const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, SHARED, undefined, TSCONFIG);
     const program = ts.createProgram({
-      rootNames: [file],
+      rootNames: files.map(([file]) => file),
       options: {
         ...parsed.options,
         noEmit: true,
@@ -1105,42 +1138,45 @@ ${usage}
         paths: { capnweb: [join(SHARED, "node_modules", "capnweb", "dist", "index.d.ts")] },
       },
     });
-    const sources = [file, generated, stubView].map((name) => program.getSourceFile(name)!);
-    expect(sources.every(Boolean)).toBe(true);
-    const diagnostics = [
-      ...program.getOptionsDiagnostics(),
-      ...program.getGlobalDiagnostics(),
-      ...sources.flatMap((source) => [...program.getSyntacticDiagnostics(source),
-        ...program.getSemanticDiagnostics(source)]),
-    ];
-    // Each message with the probe's line it is on, which names the method checked.
-    return diagnostics.map((diagnostic) => {
-      const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
-      if (diagnostic.file?.fileName !== file || diagnostic.start === undefined) return text;
-      const { line } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
-      return `${text}\n  at: ${diagnostic.file.text.split("\n")[line]!.trim()}`;
+    const shared = [...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics()];
+    return files.map(([file, ...declarations]) => {
+      const sources = [file, ...declarations].map((name) => program.getSourceFile(name)!);
+      expect(sources.every(Boolean)).toBe(true);
+      const diagnostics = [
+        ...shared,
+        ...sources.flatMap((source) => [...program.getSyntacticDiagnostics(source),
+          ...program.getSemanticDiagnostics(source)]),
+      ];
+      // Each message with the probe's line it is on, which names the method checked.
+      return diagnostics.map((diagnostic) => {
+        const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+        if (diagnostic.file?.fileName !== file || diagnostic.start === undefined) return text;
+        const { line } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+        return `${text}\n  at: ${diagnostic.file.text.split("\n")[line]!.trim()}`;
+      });
     });
   }
 
+  const holds = probe(emitted.full);
   test("what a caller holds, RpcStub<AuthenticatedApi>, is assignable to the generated declaration", () => {
-    expect(probe(emitted.full)).toEqual([]);
+    expect(probeResults()[holds]).toEqual([]);
   });
 
+  const callback = probe(emitted.full, `declare const overseer: Generated.Overseer;
+void overseer.subscribeToMetadata((metadata) => {
+  const title: string = metadata.title;
+  void title;
+});`);
   test("a synchronous callback type-checks against the generated declaration", () => {
     const subscribe = schema.services.Overseer!.methods.find((m) => m.name === "subscribeToMetadata")!;
     expect(subscribe.params[0]!.type.kind).toBe("function");
     expect(emitted.full).toContain("subscribeToMetadata(callback: (metadata: WorkspaceMetadata) => Awaitable<void>)");
-    expect(probe(emitted.full, `declare const overseer: Generated.Overseer;
-void overseer.subscribeToMetadata((metadata) => {
-  const title: string = metadata.title;
-  void title;
-});`)).toEqual([]);
+    expect(probeResults()[callback]).toEqual([]);
   });
 
   // A subscriber written to `api.ts`'s interface, its methods synchronous, implements the generated
   // one; and one call's result is passed to the next unawaited, as capnweb resolves it first.
-  test("a synchronous subscriber, and a promised argument, type-check against the generated declaration", () => {
-    expect(probe(emitted.full, `declare const api: Generated.AuthenticatedApi;
+  const syncSubscriber = probe(emitted.full, `declare const api: Generated.AuthenticatedApi;
 class Accounts implements Generated.ConnectedAccountsSubscriber {
   readonly ids = new Set<number>();
   add(id: number) {
@@ -1156,12 +1192,13 @@ export async function rename(id: string, from: number, to: number): Promise<void
   void subscription;
   const overseer = api.openWorkspace(id);
   await overseer.getGadget(to).setTitle(overseer.getGadget(from).getTitle());
-}`)).toEqual([]);
+}`);
+  test("a synchronous subscriber, and a promised argument, type-check against the generated declaration", () => {
+    expect(probeResults()[syncSubscriber]).toEqual([]);
   });
 
   // Disposal is how a caller cancels a subscription, and pipelining sends a chain of calls at once.
-  test("a returned handle disposes, and a returned capability pipelines, against the generated declaration", () => {
-    expect(probe(emitted.full, `declare const api: Generated.AuthenticatedApi;
+  const disposes = probe(emitted.full, `declare const api: Generated.AuthenticatedApi;
 export async function use(id: string): Promise<number> {
   const chats = await api.openWorkspace(id).listChats();
   using subscription = await api.openWorkspace(id).subscribeToMetadata(() => {});
@@ -1170,7 +1207,9 @@ export async function use(id: string): Promise<number> {
   handle[Symbol.dispose]();
   api[Symbol.dispose]();
   return chats.length;
-}`)).toEqual([]);
+}`);
+  test("a returned handle disposes, and a returned capability pipelines, against the generated declaration", () => {
+    expect(probeResults()[disposes]).toEqual([]);
   });
 
   // The negative controls: the probe catches a wrong result on the root, one on a service two
@@ -1180,10 +1219,18 @@ export async function use(id: string): Promise<number> {
   // and a branch added to a nullable capability; and a parameter narrowed to a literal or widened
   // to `unknown`, on the root and on a subscriber a caller implements; and a method dropped, one
   // with neither a data parameter nor a data result from the root, and one from a subscriber.
+  // Each edit is made, and its probe registered, as the tests are collected; a test reads its
+  // probe's diagnostics.
   function corrupt(edit: (copy: Schema) => string) {
     const copy = structuredClone(schema);
     const target = edit(copy);
-    return { target, diagnostics: probe(emitDeclarations(copy, { root: ROOT, omit: CREDENTIAL_METHODS }).full) };
+    const index = probe(emitDeclarations(copy, { root: ROOT, omit: CREDENTIAL_METHODS }).full);
+    return {
+      target,
+      get diagnostics() {
+        return probeResults()[index]!;
+      },
+    };
   }
   /** `GatekeeperUiFrame`, data beside a capability, as a root method returns it. */
   function frame(copy: Schema) {
@@ -1201,162 +1248,176 @@ export async function use(id: string): Promise<number> {
   }
   describe("fails on a corrupted declaration", () => {
 
+    const rootResult = corrupt((copy) => {
+      const m = firstMethod(copy, ROOT, "boolean");
+      m.returns = { kind: "string" };
+      return m.name;
+    });
     test("a root method's result", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        const m = firstMethod(copy, ROOT, "boolean");
-        m.returns = { kind: "string" };
-        return m.name;
-      });
+      const { target, diagnostics } = rootResult;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`'${target}\\b`));
     });
 
+    const twoHops = corrupt((copy) => {
+      const m = firstMethod(copy, "GadgetClient", "string");
+      m.returns = { kind: "number" };
+      return m.name;
+    });
     test("a result two hops away", () => {
       expect(schema.services.Overseer!.methods.find((m) => m.name === "getGadget")!.returns)
         .toEqual({ kind: "stub", service: "GadgetClient" });
-      const { target, diagnostics } = corrupt((copy) => {
-        const m = firstMethod(copy, "GadgetClient", "string");
-        m.returns = { kind: "number" };
-        return m.name;
-      });
+      const { target, diagnostics } = twoHops;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`'${target}\\b`));
     });
 
+    const shapeProperty = corrupt((copy) => {
+      for (const m of copy.services[ROOT]!.methods) {
+        const shape = m.returns.kind === "ref" ? copy.shapes[m.returns.name] : undefined;
+        if (shape?.kind !== "object") continue;
+        const property = Object.entries(shape.properties).find(([, value]) => value.kind === "string");
+        if (!property) continue;
+        shape.properties[property[0]] = { kind: "number" };
+        return property[0];
+      }
+      throw new Error("no returned object shape with a string property");
+    });
     test("a property of a returned shape", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        for (const m of copy.services[ROOT]!.methods) {
-          const shape = m.returns.kind === "ref" ? copy.shapes[m.returns.name] : undefined;
-          if (shape?.kind !== "object") continue;
-          const property = Object.entries(shape.properties).find(([, value]) => value.kind === "string");
-          if (!property) continue;
-          shape.properties[property[0]] = { kind: "number" };
-          return property[0];
-        }
-        throw new Error("no returned object shape with a string property");
-      });
+      const { target, diagnostics } = shapeProperty;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`'${target}\\b`));
     });
 
+    const services = [ROOT, ...heldServices(schema, ROOT, CREDENTIAL_METHODS).map(({ service }) => service)];
+    const deepest = deepestShape(schema, services, CREDENTIAL_METHODS);
+    expect(deepest.depth, deepest.name).toBeGreaterThanOrEqual(4);
+    const deepestProperty = corrupt((copy) => {
+      const shape = copy.shapes[deepest.name] as Extract<ApiShape, { kind: "object" }>;
+      const property = Object.keys(shape.properties).find((key) => shape.properties[key]!.kind === "string")!;
+      shape.properties[property] = { kind: "number" };
+      return property;
+    });
     test("a property of the shape nested deepest in any result", () => {
-      const services = [ROOT, ...heldServices(schema, ROOT, CREDENTIAL_METHODS).map(({ service }) => service)];
-      const { name, depth } = deepestShape(schema, services, CREDENTIAL_METHODS);
-      expect(depth, name).toBeGreaterThanOrEqual(4);
-      const { target, diagnostics } = corrupt((copy) => {
-        const shape = copy.shapes[name] as Extract<ApiShape, { kind: "object" }>;
-        const property = Object.keys(shape.properties).find((key) => shape.properties[key]!.kind === "string")!;
-        shape.properties[property] = { kind: "number" };
+      const { target, diagnostics } = deepestProperty;
+      expect(diagnostics.join("\n")).toMatch(new RegExp(`'${target}\\b`));
+    });
+
+    const droppedProperty = corrupt((copy) => {
+      for (const m of copy.services[ROOT]!.methods) {
+        const shape = m.returns.kind === "ref" ? copy.shapes[m.returns.name] : undefined;
+        if (shape?.kind !== "object" || !isData(copy, shape)) continue;
+        const property = Object.keys(shape.properties).find((key) => {
+          const value = shape.properties[key]!;
+          const branches = value.kind === "union" ? value.branches : [value];
+          return !branches.some((branch) => branch.kind === "undefined");
+        });
+        if (!property) continue;
+        delete shape.properties[property];
         return property;
-      });
-      expect(diagnostics.join("\n")).toMatch(new RegExp(`'${target}\\b`));
+      }
+      throw new Error("no returned data shape with a required property");
     });
-
     test("a property dropped from a returned shape", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        for (const m of copy.services[ROOT]!.methods) {
-          const shape = m.returns.kind === "ref" ? copy.shapes[m.returns.name] : undefined;
-          if (shape?.kind !== "object" || !isData(copy, shape)) continue;
-          const property = Object.keys(shape.properties).find((key) => {
-            const value = shape.properties[key]!;
-            const branches = value.kind === "union" ? value.branches : [value];
-            return !branches.some((branch) => branch.kind === "undefined");
-          });
-          if (!property) continue;
-          delete shape.properties[property];
-          return property;
-        }
-        throw new Error("no returned data shape with a required property");
-      });
+      const { target, diagnostics } = droppedProperty;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`'${target}\\b`));
     });
 
+    const widenedResult = corrupt((copy) => {
+      const m = firstMethod(copy, ROOT, "boolean");
+      m.returns = { kind: "any" };
+      return m.name;
+    });
     test("a result widened to unknown", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        const m = firstMethod(copy, ROOT, "boolean");
-        m.returns = { kind: "any" };
-        return m.name;
-      });
+      const { target, diagnostics } = widenedResult;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"`));
     });
 
     // `GatekeeperUiFrame` is data beside a capability (`ui`), so the stub's direction alone would
     // let its data be widened or dropped.
     describe("a data property beside a capability in a result", () => {
+      const widened = corrupt((copy) => {
+        frame(copy).properties.iframeHtml = { kind: "any" };
+        return "iframeHtml";
+      });
       test("widened to unknown", () => {
-        const { diagnostics } = corrupt((copy) => {
-          frame(copy).properties.iframeHtml = { kind: "any" };
-          return "iframeHtml";
-        });
+        const { diagnostics } = widened;
         expect(diagnostics.join("\n")).toMatch(/\["iframeHtml"\]/);
       });
+      const dropped = corrupt((copy) => {
+        delete frame(copy).properties.iframeHtml;
+        return "iframeHtml";
+      });
       test("dropped", () => {
-        const { diagnostics } = corrupt((copy) => {
-          delete frame(copy).properties.iframeHtml;
-          return "iframeHtml";
-        });
+        const { diagnostics } = dropped;
         expect(diagnostics.join("\n")).toMatch(/'iframeHtml'/);
       });
     });
 
+    const addedBranch = corrupt((copy) => {
+      const m = copy.services[ROOT]!.methods.find((candidate) => candidate.name === "getAdminApi")!;
+      expect(m.returns).toEqual({ kind: "union", branches: [{ kind: "null" }, { kind: "stub", service: "AdminApi" }] });
+      (m.returns as Extract<ApiShape, { kind: "union" }>).branches.push({ kind: "string" });
+      return m.name;
+    });
     test("a branch added to a result that is null or a capability", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        const m = copy.services[ROOT]!.methods.find((candidate) => candidate.name === "getAdminApi")!;
-        expect(m.returns).toEqual({ kind: "union", branches: [{ kind: "null" }, { kind: "stub", service: "AdminApi" }] });
-        (m.returns as Extract<ApiShape, { kind: "union" }>).branches.push({ kind: "string" });
-        return m.name;
-      });
+      const { target, diagnostics } = addedBranch;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"`));
     });
 
+    const narrowedParameter = corrupt((copy) => {
+      const m = copy.services[ROOT]!.methods.find((candidate) => !CREDENTIAL_METHODS.includes(candidate.name)
+        && candidate.params.some((param) => param.type.kind === "string"))!;
+      expect(m, "a root method with a string parameter").toBeDefined();
+      m.params.find((param) => param.type.kind === "string")!.type = { kind: "literal", value: "only-this" };
+      return m.name;
+    });
     test("a parameter narrowed to a literal", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        const m = copy.services[ROOT]!.methods.find((candidate) => !CREDENTIAL_METHODS.includes(candidate.name)
-          && candidate.params.some((param) => param.type.kind === "string"))!;
-        expect(m, "a root method with a string parameter").toBeDefined();
-        m.params.find((param) => param.type.kind === "string")!.type = { kind: "literal", value: "only-this" };
-        return m.name;
-      });
+      const { target, diagnostics } = narrowedParameter;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"`));
     });
 
+    const widenedParameter = corrupt((copy) => {
+      const m = copy.services[ROOT]!.methods.find((candidate) => !CREDENTIAL_METHODS.includes(candidate.name)
+        && candidate.params.some((param) => param.type.kind === "string"))!;
+      expect(m, "a root method with a string parameter").toBeDefined();
+      m.params.find((param) => param.type.kind === "string")!.type = { kind: "any" };
+      return m.name;
+    });
     test("a parameter widened to unknown", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        const m = copy.services[ROOT]!.methods.find((candidate) => !CREDENTIAL_METHODS.includes(candidate.name)
-          && candidate.params.some((param) => param.type.kind === "string"))!;
-        expect(m, "a root method with a string parameter").toBeDefined();
-        m.params.find((param) => param.type.kind === "string")!.type = { kind: "any" };
-        return m.name;
-      });
+      const { target, diagnostics } = widenedParameter;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"`));
     });
 
+    const droppedRootMethod = corrupt((copy) => {
+      copy.services[ROOT]!.methods = copy.services[ROOT]!.methods.filter((m) => m.name !== "newWorkspace");
+      return "newWorkspace";
+    });
     test("a method dropped from the root", () => {
       const newWorkspace = schema.services[ROOT]!.methods.find((m) => m.name === "newWorkspace")!;
       expect(newWorkspace.params).toEqual([]);
       expect(newWorkspace.returns).toEqual({ kind: "stub", service: "Overseer" });
-      const { target, diagnostics } = corrupt((copy) => {
-        copy.services[ROOT]!.methods = copy.services[ROOT]!.methods.filter((m) => m.name !== "newWorkspace");
-        return "newWorkspace";
-      });
+      const { target, diagnostics } = droppedRootMethod;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"[\\s\\S]*Missing_${ROOT}`));
     });
 
+    const droppedSubscriberMethod = corrupt((copy) => {
+      const subscriber = copy.services.ConnectedAccountsSubscriber!;
+      subscriber.methods = subscriber.methods.filter((m) => m.name !== "add");
+      return "add";
+    });
     test("a method dropped from a subscriber", () => {
-      const { target, diagnostics } = corrupt((copy) => {
-        const subscriber = copy.services.ConnectedAccountsSubscriber!;
-        subscriber.methods = subscriber.methods.filter((m) => m.name !== "add");
-        return "add";
-      });
+      const { target, diagnostics } = droppedSubscriberMethod;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"[\\s\\S]*Missing_ConnectedAccountsSubscriber`));
     });
 
+    const widenedSubscriberParameter = corrupt((copy) => {
+      const m = copy.services.ConnectedAccountsSubscriber!.methods.find((candidate) => candidate.name === "add")!;
+      const param = m.params.find((candidate) => candidate.name === "vendorId")!;
+      expect(param.type).toEqual({ kind: "string" });
+      param.type = { kind: "any" };
+      return m.name;
+    });
     test("a subscriber's parameter widened to unknown", () => {
       expect(parameterServices(schema, ROOT, CREDENTIAL_METHODS)).toContain("ConnectedAccountsSubscriber");
-      const { target, diagnostics } = corrupt((copy) => {
-        const m = copy.services.ConnectedAccountsSubscriber!.methods.find((candidate) => candidate.name === "add")!;
-        const param = m.params.find((candidate) => candidate.name === "vendorId")!;
-        expect(param.type).toEqual({ kind: "string" });
-        param.type = { kind: "any" };
-        return m.name;
-      });
+      const { target, diagnostics } = widenedSubscriberParameter;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`ConnectedAccountsSubscriber\\["${target}"\\]`));
     });
   });
