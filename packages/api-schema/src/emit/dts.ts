@@ -2,18 +2,21 @@
 // against: the surface a Gatekeeper or a code-mode agent holds as a stub of one root service.
 //
 // `full` is one self-contained `.d.ts`: the root service, and every service and named shape
-// reachable from it through method parameters and results, each declared once. `fragments` holds
-// the same declarations split per service, for an agent that cannot hold the whole surface at
-// once: a service's interface with the named shapes it reaches without crossing into another
-// service, which appears by name only, to be fetched as its own fragment. A live introspection
-// method on a stub (github.com/cloudflare/capnweb/issues/177) would answer with that stub's
-// service's fragment rendered with it as the root and without `omit`. Every fragment is rendered
-// from `root`'s point of view instead: declaration names (the suffix of a rewritten one) and
-// positions (whether a shape is one the caller receives, supplies or both) come from the walk of
-// the whole graph from the root, so the fragments of one root agree with one another and with
-// `full`, but a service's fragment from another root can differ from the stub's own answer in
-// those names and positions. With `omit`, they are a narrower view still, which such a method
-// would have to apply the same omission to.
+// reachable from it through method parameters and results and property types, each declared once.
+// `fragments` holds the same declarations split per service, for an agent that cannot hold the
+// whole surface at once: a service's interface with the named shapes it reaches without crossing
+// into another service, which appears by name only, to be fetched as its own fragment. A live
+// introspection method on a stub (github.com/cloudflare/capnweb/issues/177) would answer with
+// that stub's service's fragment rendered with it as the root and without `omit`. Every fragment
+// is rendered from `root`'s point of view instead: declaration names (the suffix of a rewritten
+// one) and positions (whether a shape is one the caller receives, supplies or both) come from the
+// walk of the whole graph from the root, so the fragments of one root agree with one another and
+// with `full`, but a service's fragment from another root can differ from the stub's own answer
+// in those names and positions. With `omit`, they are a narrower view still, which such a method
+// would have to apply the same omission to. For the same reason the positions are not the
+// schema's `direction`, which is relative to the schema's entry: walked by the same rule, they
+// agree with it (`"out"` the server's, `"in"` the client's) when the root is the entry and
+// nothing is omitted, and where they differ the root's view is what these declarations describe.
 //
 // The declarations describe what a holder of a stub sees:
 //
@@ -26,6 +29,12 @@
 //   promise argument before delivering the call: `root.set(root.get())` sends both calls at once.
 //   Only a parameter as a whole: capnweb also resolves a promise nested inside an argument, which
 //   is left to its own types, as is a promise for a capability (`Pipelined<T>` is already a `T`).
+// - A property is a `readonly` member. On a stub, reading it is a call (`root.version`,
+//   `root.child.list()`), so it is typed as a method's result is: a promise, or `Pipelined<Service>`
+//   for a capability, as capnweb's `RpcStub` types it, and an optional one is always there, a
+//   promise of `undefined` when the implementation has none. An implementation supplies the value
+//   itself, which capnweb sends as it is rather than awaiting it, from a getter (capnweb refuses to
+//   read an `RpcTarget`'s instance property), and may leave an optional one out.
 // - A service the caller holds (the root, or one it receives) has `[Symbol.dispose]()`, the one
 //   member of capnweb's stubs these declarations carry: disposing a stub releases the capability,
 //   and is how an API cancels what a returned handle stands for (a subscription), with `using` or
@@ -52,6 +61,11 @@
 //   name elsewhere.
 // - A value the schema calls `any` (an `any` or `unknown`) is `unknown`, so that code using it
 //   narrows or casts on purpose; an `unsupported` shape is `unknown` with the reason in a comment.
+// - A stream is a `ReadableStream<T>` or `WritableStream<T>` of its element type, or of any chunk
+//   when the schema has none. A readable stream's chunks travel as the stream does, a writable
+//   one's the other way: the holder of a writable stream supplies them.
+// - The `@deprecated` and `@mutates` tags are in the JSDoc, from the schema's fields when its doc
+//   text does not already carry them.
 //
 // The schema's names are kept where they are TypeScript identifiers. The others (the extractor
 // names a second instantiation of a generic by its printed form, `Foo<Bar>`, or `Name#2`, and an
@@ -63,10 +77,10 @@
 //
 // Pure, as a forge plugin is (github.com/cloudflare/forge): no `node:` imports, no file
 // system, clock, randomness or environment. Declarations are sorted by name (the root service
-// first, the helper aliases last) and members follow the schema's sorted order, `[Symbol.dispose]()`
-// last, so the same schema always yields the same text.
+// first, the helper aliases last) and members follow the schema's sorted order, properties before
+// methods and `[Symbol.dispose]()` last, so the same schema always yields the same text.
 
-import type { ApiShape, ApiShapeParam, Schema, SchemaMethod, SchemaService } from "../schema.ts";
+import type { ApiShape, ApiShapeParam, Schema, SchemaMethod, SchemaProperty, SchemaService } from "../schema.ts";
 
 /** What to emit. */
 export interface DeclarationOptions {
@@ -161,10 +175,10 @@ function flip(position: Position): Position {
 
 /**
  * The services and named shapes reachable from `roots` (each walked in the position its capability
- * is in) through their (non-omitted) methods: across every capability when `crossServices`, or
- * stopping at another service's name when not. A service's results travel in the position of its
- * capability, its parameters the other way: a held service's results are received, a subscriber's
- * are supplied.
+ * is in) through their (non-omitted) methods and their properties: across every capability when
+ * `crossServices`, or stopping at another service's name when not. A service's results and property
+ * values travel in the position of its capability, its parameters the other way: a held service's
+ * results are received, a subscriber's are supplied.
  */
 function reach(schema: Schema, roots: { service: string; position: Position }[],
   methodsOf: (service: string) => SchemaMethod[], crossServices: boolean): Reached {
@@ -198,6 +212,12 @@ function reach(schema: Schema, roots: { service: string; position: Position }[],
         return each([...Object.values(shape.properties), ...shape.index ? [shape.index] : []]);
       case "union":
         return each(shape.branches);
+      case "readableStream":
+        if (shape.element) visit(shape.element, position);
+        return;
+      case "writableStream":
+        if (shape.element) visit(shape.element, flip(position));
+        return;
       case "ref": {
         const positions = reached.positions.get(shape.name) ?? new Set();
         if (positions.has(position)) return;
@@ -221,6 +241,7 @@ function reach(schema: Schema, roots: { service: string; position: Position }[],
       method.params.forEach((param) => visit(param.type, flip(next.position)));
       visit(method.returns, next.position);
     }
+    for (const property of serviceOf(schema, next.service).properties ?? []) visit(property.type, next.position);
   }
   return reached;
 }
@@ -306,16 +327,11 @@ const RESERVED_TYPE_NAMES = [
   "Uint32Array", "Uint8Array", "Uint8ClampedArray", "WritableStream", AWAITABLE, PIPELINED, UNTYPED_STUB,
 ];
 
-/**
- * The global type each built-in shape kind renders as. A stream's chunk type is not in the schema,
- * so a stream is a `ReadableStream` or `WritableStream` of any chunk.
- */
+/** The global type each built-in shape kind without parameters renders as. */
 const BUILTIN_TYPES: Record<string, string> = {
   date: "Date",
   bytes: "Uint8Array",
   error: "Error",
-  readableStream: "ReadableStream",
-  writableStream: "WritableStream",
   arrayBuffer: "ArrayBuffer",
   dataView: "DataView",
   regexp: "RegExp",
@@ -372,11 +388,34 @@ class Renderer {
   }
 
   #service(name: string): string {
+    const service = this.#schema.services[name]!;
     const position = positionOf(this.#reached.servicePositions, name);
-    const members = this.#methodsOf(name).map((method) => this.#method(method, position));
+    const members = [
+      ...(service.properties ?? []).map((property) => this.#property(property, position)),
+      ...this.#methodsOf(name).map((method) => this.#method(method, position)),
+    ];
     if (position !== "in") members.push(position === "out" ? DISPOSE : DISPOSE_OPTIONAL);
     const body = members.length ? `{\n${members.join("")}}` : "{}";
-    return `${docComment(this.#schema.services[name]!.doc, "")}export interface ${this.#names.service(name)} ${body}\n`;
+    const doc = withTags(service.doc, [], { deprecated: service.deprecated });
+    return `${docComment(doc, "")}export interface ${this.#names.service(name)} ${body}\n`;
+  }
+
+  /**
+   * A property of a service whose capability is in `position`: on a held one a call's result,
+   * there whether or not it is optional; on an implemented one the value itself, which an
+   * implementation may leave out when it is optional; on one reached both ways either, an
+   * `Awaitable<T>` that a caller reading it awaits.
+   */
+  #property(property: SchemaProperty, position: Position): string {
+    const doc = docComment(withTags(property.doc, [], { deprecated: property.deprecated }), "  ");
+    const key = propertyKey(property.name);
+    if (position === "out") {
+      const type = property.optional ? orUndefined(property.type) : property.type;
+      return `${doc}  readonly ${key}: ${this.#result(type, "  ")};\n`;
+    }
+    const type = position === "in" ? this.#type(property.type, "  ", position)
+      : this.#awaitableOf(property.type, "  ", position);
+    return `${doc}  readonly ${key}${property.optional ? "?" : ""}: ${type};\n`;
   }
 
   /** A method of a service whose capability is in `position`. */
@@ -384,7 +423,8 @@ class Renderer {
     const names = paramNames(method.params);
     const extra = method.params.flatMap((param, i) =>
       param.doc && !documentsParam(method.doc, param.name) ? [`@param ${names[i]} ${param.doc}`] : []);
-    const doc = [method.doc, ...extra].filter((part) => part).join("\n");
+    const doc = withTags(method.doc, extra,
+      { deprecated: method.deprecated, mutates: method.mutates ? "" : undefined });
     const returns = position === "out" ? this.#result(method.returns, "  ")
       : this.#awaitableOf(method.returns, "  ", position);
     const params = this.#params(method.params, "  ", flip(position), position !== "in");
@@ -465,6 +505,10 @@ class Renderer {
         return this.#function(shape, indent, position);
       case "unsupported":
         return `unknown /* ${inlineComment(shape.reason)} */`;
+      case "readableStream":
+        return shape.element ? `ReadableStream<${this.#type(shape.element, indent, position)}>` : "ReadableStream";
+      case "writableStream":
+        return shape.element ? `WritableStream<${this.#type(shape.element, indent, flip(position))}>` : "WritableStream";
       default:
         return BUILTIN_TYPES[shape.kind]!;
     }
@@ -571,6 +615,13 @@ function withoutUndefined(shape: ApiShape): ApiShape | undefined {
   return branches.length === 0 ? undefined : branches.length === 1 ? branches[0] : { kind: "union", branches };
 }
 
+/** `shape` or `undefined`. */
+function orUndefined(shape: ApiShape): ApiShape {
+  const branches = shape.kind === "union" ? shape.branches : [shape];
+  if (branches.some((branch) => branch.kind === "undefined")) return shape;
+  return { kind: "union", branches: [...branches, { kind: "undefined" }] };
+}
+
 /** Parameter names as identifiers, a reserved word prefixed with `_`, each distinct. */
 function paramNames(params: ApiShapeParam[]): string[] {
   const used = new Set<string>();
@@ -582,6 +633,18 @@ function paramNames(params: ApiShapeParam[]): string[] {
     used.add(name);
     return name;
   });
+}
+
+/**
+ * A doc's text, then the `extra` lines, then a line for each tag in `tags` whose text is defined
+ * (`""` for a bare tag) and which the doc does not already carry, so a tag is neither lost nor
+ * repeated.
+ */
+function withTags(doc: string, extra: string[], tags: Record<string, string | undefined>): string {
+  const present = new Set(doc.split(/\r\n?|\n/).map((line) => /^@(\S+)/.exec(line.trim())?.[1]));
+  const missing = Object.entries(tags).flatMap(([name, text]) =>
+    text === undefined || present.has(name) ? [] : [text ? `@${name} ${text}` : `@${name}`]);
+  return [doc, ...extra, ...missing].filter((part) => part).join("\n");
 }
 
 /** Whether a method's doc already carries an `@param` line for `name`. */

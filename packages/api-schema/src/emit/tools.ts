@@ -3,15 +3,21 @@
 // result: the input an MCP server, a tool search index or any other function-calling host needs.
 // Nothing consumes it yet, and its shape may change; the catalog says so (`experimental: true`).
 //
-// A tool is a method of a service reachable from the root by calling: the root's own methods, and
-// those of every service a method returns as a capability, transitively. A service that appears
-// only as a parameter is implemented by the client (a subscriber, a callback), so it has no tools.
+// A tool is a method of a service reachable from the root: the root's own methods, and those of
+// every service a method returns as a capability, or a property holds as one, transitively. A
+// property is not a tool: the host reads it by pipelining (`stub.foo.bar()`, the schema's
+// `properties`), and the methods of what it holds are tools like any other. A service implemented
+// by the client (`direction: "client"`: a subscriber, a callback) has no tools: the caller
+// implements it rather than calls it. An extracted schema marks every capability a server
+// service's methods return or properties hold as the server's, so only a hand-written schema can
+// reach a client service this way, and it is skipped.
 //
 // Values that cannot travel as JSON keep a JSON Schema that says what they are, through the
 // `x-capnweb-*` annotations: a capability, function or stream is marked so a host knows it must
-// supply (or receive) a live reference rather than a value, and a `Date`, `Uint8Array` or `bigint`
-// is given its usual JSON spelling (an ISO date-time, base64, a decimal string) marked so the host
-// can convert it.
+// supply (or receive) a live reference rather than a value, a stream with what it carries as
+// `x-capnweb-element` when that is declared, and a `Date`, `Uint8Array` or `bigint` is given its
+// usual JSON spelling (an ISO date-time, base64, a decimal string) marked so the host can convert
+// it.
 //
 // Pure, as a forge plugin is (github.com/cloudflare/forge): no `node:` imports, no file
 // system, clock, randomness or environment. Tools are sorted by ID, `$defs` by name, and every
@@ -54,6 +60,10 @@ export interface Tool {
   method: string;
   /** The method's doc comment. */
   description: string;
+  /** The method's `@deprecated` text (`""` when bare), when it has one. */
+  deprecated?: string;
+  /** `true` when the method is declared to change state (`@mutates`). */
+  mutates?: true;
   /** The arguments, as one object keyed by parameter name, in declaration order. */
   inputSchema: ToolInputSchema;
   /** The awaited result, self-contained like `inputSchema`. */
@@ -101,6 +111,8 @@ export interface JsonSchema {
   "x-capnweb-service"?: string;
   /** A stream's direction. */
   "x-capnweb-stream"?: "readable" | "writable";
+  /** What a stream carries, when declared. */
+  "x-capnweb-element"?: JsonSchema;
   /** A typed array's constructor (`Int32Array`, ...). */
   "x-capnweb-type"?: string;
   /** Why the extractor could not represent the type. */
@@ -109,25 +121,32 @@ export interface JsonSchema {
 
 /** Emits the tool catalog of everything callable from `options.root`. */
 export function emitToolCatalog(schema: Schema, options: ToolCatalogOptions): ToolCatalog {
-  if (!own(schema.services, options.root)) throw new Error(`${options.root}: not a service of the schema`);
+  const root = own(schema.services, options.root);
+  if (!root) throw new Error(`${options.root}: not a service of the schema`);
+  if (root.direction === "client") throw new Error(`${options.root}: implemented by the client, so it has no tools`);
   const omit = new Set(options.omit ?? []);
   const omitted = (service: string, method: string) => omit.has(method) || omit.has(`${service}.${method}`);
 
-  // Breadth-first from the root over the capabilities methods return.
+  // Breadth-first from the root over the capabilities methods return and properties hold.
   const reached: { service: string; method: SchemaMethod }[] = [];
   const seen = new Set([options.root]);
   const queue = [options.root];
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-    for (const method of own(schema.services, next)!.methods) {
+    const { methods, properties = [] } = own(schema.services, next)!;
+    const links: { via: string; shape: ApiShape }[] = [];
+    for (const method of methods) {
       if (omitted(next, method.name)) continue;
       reached.push({ service: next, method });
-      for (const service of returnedServices(schema, method.returns)) {
-        if (seen.has(service)) continue;
-        if (!own(schema.services, service)) {
-          throw new Error(`${service}: returned by ${next}.${method.name}, but not a service of the schema`);
-        }
-        seen.add(service);
-        queue.push(service);
+      links.push({ via: `returned by ${next}.${method.name}`, shape: method.returns });
+    }
+    for (const property of properties) links.push({ via: `held by ${next}.${property.name}`, shape: property.type });
+    for (const { via, shape } of links) {
+      for (const name of returnedServices(schema, shape)) {
+        if (seen.has(name)) continue;
+        const service = own(schema.services, name);
+        if (!service) throw new Error(`${name}: ${via}, but not a service of the schema`);
+        seen.add(name);
+        if (service.direction !== "client") queue.push(name);
       }
     }
   }
@@ -142,6 +161,8 @@ export function emitToolCatalog(schema: Schema, options: ToolCatalogOptions): To
       inputSchema: inputSchema(schema, method),
       returns: closed(schema, (refs) => toJsonSchema(method.returns, refs)),
     };
+    if (method.deprecated !== undefined) tool.deprecated = method.deprecated;
+    if (method.mutates) tool.mutates = true;
     const continuesOn = capabilityOf(schema, method.returns);
     if (continuesOn !== undefined && withTools.has(continuesOn)) tool.continuesOn = continuesOn;
     return tool;
@@ -258,9 +279,14 @@ function toJsonSchema(shape: ApiShape, refs: Set<string>): JsonSchema {
     case "function":
       return { "x-capnweb-kind": "function" };
     case "readableStream":
-      return { "x-capnweb-kind": "stream", "x-capnweb-stream": "readable" };
-    case "writableStream":
-      return { "x-capnweb-kind": "stream", "x-capnweb-stream": "writable" };
+    case "writableStream": {
+      const stream: JsonSchema = {
+        "x-capnweb-kind": "stream",
+        "x-capnweb-stream": shape.kind === "readableStream" ? "readable" : "writable",
+      };
+      if (shape.element) stream["x-capnweb-element"] = toJsonSchema(shape.element, refs);
+      return stream;
+    }
     case "typedArray":
       return { "x-capnweb-kind": "typedArray", "x-capnweb-type": shape.name };
     case "unsupported":
@@ -290,9 +316,10 @@ function withoutUndefined(shape: ApiShape): ApiShape | undefined {
 }
 
 /**
- * The services of the capabilities a result carries, wherever they sit in it: the result itself, a
- * union branch, an element or a property, through named shapes. A function's parameters and
- * result are the function's business, not the caller's, so they are not followed.
+ * The services of the capabilities a result or property value carries, wherever they sit in it:
+ * the value itself, a union branch, an element or an object's property, through named shapes. A
+ * function's parameters and result are the function's business, not the caller's, so they are not
+ * followed.
  */
 function returnedServices(schema: Schema, shape: ApiShape, visited = new Set<string>()): string[] {
   switch (shape.kind) {

@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { emitToolCatalog, type JsonSchema, type Tool, type ToolCatalog } from "../src/emit/tools.ts";
 import { extractSchema } from "../src/extract.ts";
-import type { ApiShape, Schema, SchemaMethod, SchemaService } from "../src/schema.ts";
+import { FORMAT, type ApiShape, type Schema, type SchemaMethod, type SchemaProperty, type SchemaService }
+  from "../src/schema.ts";
 
 const PACKAGE = join(import.meta.dirname, "..");
 
@@ -17,9 +18,11 @@ const method = (name: string, params: [string, ApiShape, boolean?, string?][], r
   params: params.map(([param, type, optional = false, paramDoc = ""]) => ({ name: param, type, optional, doc: paramDoc })),
   returns,
 });
-const service = (...methods: SchemaMethod[]): SchemaService => ({ doc: "", methods });
+const service = (...methods: SchemaMethod[]): SchemaService => ({ doc: "", direction: "server", methods });
+const clientService = (...methods: SchemaMethod[]): SchemaService => ({ ...service(...methods), direction: "client" });
+const schemaProperty = (name: string, type: ApiShape): SchemaProperty => ({ name, doc: "", type, optional: false });
 const schemaOf = (services: Record<string, SchemaService>, shapes: Record<string, ApiShape> = {}): Schema =>
-  ({ entry: Object.keys(services)[0]!, constants: {}, services, shapes });
+  ({ format: FORMAT, entry: Object.keys(services)[0]!, constants: {}, services, shapes });
 const stub = (name?: string): ApiShape => name === undefined ? { kind: "stub" } : { kind: "stub", service: name };
 const ref = (name: string): ApiShape => ({ kind: "ref", name });
 const toolOf = (catalog: ToolCatalog, id: string): Tool => {
@@ -142,6 +145,21 @@ describe("maps each shape to JSON Schema", () => {
       .toEqual({ "x-capnweb-kind": "unsupported", "x-capnweb-reason": "a symbol" });
   });
 
+  test("streams with what they carry, when declared", () => {
+    expect(paramSchema({ kind: "readableStream", element: { kind: "bytes" } })).toEqual({
+      "x-capnweb-kind": "stream",
+      "x-capnweb-stream": "readable",
+      "x-capnweb-element": { type: "string", contentEncoding: "base64", "x-capnweb-kind": "bytes" },
+    });
+    // A named element is one of the tool's `$defs`, like any other reference.
+    const input = emitToolCatalog(schemaOf({ Api: service(method("m", [["x", { kind: "writableStream",
+      element: ref("Line") }]])) }, { Line: { kind: "string" } }), { root: "Api" }).tools[0]!.inputSchema;
+    expect(input.properties.x).toEqual({ "x-capnweb-kind": "stream", "x-capnweb-stream": "writable",
+      "x-capnweb-element": { $ref: "#/$defs/Line" } });
+    expect(input.$defs).toEqual({ Line: { type: "string" } });
+    expect(structuralErrors(input)).toEqual([]);
+  });
+
   test("parameters: declaration order, docs, required, closed", () => {
     const catalog = emitToolCatalog(schemaOf({
       Api: service(method("m", [["z", { kind: "string" }, false, "The first."], ["a", { kind: "number" }, true],
@@ -163,6 +181,24 @@ describe("maps each shape to JSON Schema", () => {
     });
     expect(tool.returns).toEqual({ type: "null", "x-capnweb-kind": "undefined" });
   });
+
+  test("deprecated and mutates, as the method has them", () => {
+    const catalog = emitToolCatalog(schemaOf({
+      Api: service(
+        { ...method("bare", []), deprecated: "" },
+        { ...method("old", []), deprecated: "Use plain." },
+        { ...method("write", []), mutates: true },
+        method("plain", []),
+      ),
+    }), { root: "Api" });
+    expect(toolOf(catalog, "Api.bare").deprecated).toBe("");
+    expect(toolOf(catalog, "Api.old").deprecated).toBe("Use plain.");
+    expect(toolOf(catalog, "Api.old")).not.toHaveProperty("mutates");
+    expect(toolOf(catalog, "Api.write").mutates).toBe(true);
+    expect(toolOf(catalog, "Api.write")).not.toHaveProperty("deprecated");
+    expect(toolOf(catalog, "Api.plain")).not.toHaveProperty("deprecated");
+    expect(toolOf(catalog, "Api.plain")).not.toHaveProperty("mutates");
+  });
 });
 
 describe("reachability", () => {
@@ -177,8 +213,8 @@ describe("reachability", () => {
       method("admin", [], stub("Admin")),
     ),
     Door: service(method("admin", []), method("close", [])),
-    Listener: service(method("heard", [["what", { kind: "string" }]], stub("Hidden"))),
-    Hidden: service(method("secret", [])),
+    Listener: clientService(method("heard", [["what", { kind: "string" }]], stub("Hidden"))),
+    Hidden: clientService(method("secret", [])),
     Inner: service(method("knock", [], stub("Door"))),
     Admin: service(method("settings", [], stub("Settings"))),
     Settings: service(method("read", [], { kind: "string" })),
@@ -223,6 +259,42 @@ describe("reachability", () => {
       "Root.subscribe",
     ]);
     expect(toolOf(byId, "Root.admin")).not.toHaveProperty("continuesOn");
+  });
+
+  test("follows capabilities properties hold, without making properties tools", () => {
+    const catalog = emitToolCatalog(schemaOf({
+      Root: {
+        ...service(method("ping", [])),
+        properties: [schemaProperty("count", { kind: "number" }), schemaProperty("meta", ref("Meta")),
+          schemaProperty("vault", stub("Vault"))],
+      },
+      Vault: { ...service(method("open", [])), properties: [schemaProperty("nested", stub("Nested"))] },
+      Nested: service(method("deep", [])),
+      Inner: service(method("knock", [])),
+    }, { Meta: { kind: "object", properties: { inner: stub("Inner") } } }), { root: "Root" });
+    expect(catalog.tools.map((tool) => tool.id)).toEqual(["Inner.knock", "Nested.deep", "Root.ping", "Vault.open"]);
+    expect(() => emitToolCatalog(schemaOf({ Api: { ...service(), properties: [schemaProperty("p", stub("Gone"))] } }),
+      { root: "Api" })).toThrow(/Gone: held by Api.p, but not a service/);
+  });
+
+  test("client-implemented services have no tools, even where a schema returns one", () => {
+    const catalog = emitToolCatalog(schemaOf({
+      Root: {
+        ...service(method("callback", [], stub("Callback")), method("both", [], stub("Both"))),
+        properties: [schemaProperty("sink", stub("Sink")), schemaProperty("dual", stub("Dual"))],
+      },
+      Callback: clientService(method("call", [], stub("Behind"))),
+      Sink: clientService(method("write", [])),
+      Behind: service(method("hidden", [])),
+      Both: { ...service(method("go", [], stub("Further"))), direction: "both" },
+      Dual: { ...service(method("act", [])), direction: "both" },
+      Further: service(method("far", [])),
+    }), { root: "Root" });
+    expect(catalog.tools.map((tool) => tool.id))
+      .toEqual(["Both.go", "Dual.act", "Further.far", "Root.both", "Root.callback"]);
+    expect(toolOf(catalog, "Root.callback")).not.toHaveProperty("continuesOn");
+    expect(() => emitToolCatalog(schemaOf({ Callback: clientService(method("call", [])) }), { root: "Callback" }))
+      .toThrow(/Callback: implemented by the client, so it has no tools/);
   });
 
   test("refuses an unknown root, a dangling reference and a dangling capability", () => {
@@ -302,11 +374,24 @@ test("the extractor's fixture, from its authenticated API", () => {
   expect(toolOf(catalog, "FixtureAuthedApi.getAdmin").continuesOn).toBe("FixtureAdmin");
   expect(toolOf(catalog, "FixtureAuthedApi.openNotebook").inputSchema.properties.id)
     .toEqual({ type: "string", description: "The notebook's ID." });
+  expect(toolOf(catalog, "Notebook.file").mutates).toBe(true);
+  expect(toolOf(catalog, "FixtureAuthedApi.importArchive").inputSchema.properties.archive).toEqual({
+    "x-capnweb-kind": "stream",
+    "x-capnweb-stream": "readable",
+    "x-capnweb-element": { type: "string", contentEncoding: "base64", "x-capnweb-kind": "bytes" },
+  });
   expect(toolOf(catalog, "Notebook.move").returns).toEqual({
     anyOf: [{ $ref: "#/$defs/Mood" }, { type: "null", "x-capnweb-kind": "undefined" }],
     $defs: { Mood: { enum: ["busy", "calm"] } },
   });
   expect(JSON.stringify(emitToolCatalog(schema, { root: "FixtureAuthedApi" }))).toBe(JSON.stringify(catalog));
+  // From the entry: deprecated methods keep their tag, and its properties are not tools.
+  const entry = emitToolCatalog(schema, { root: "FixturePublicApi" });
+  expect(toolOf(entry, "FixturePublicApi.legacy").deprecated).toBe("Use authenticate.");
+  expect(toolOf(entry, "LegacyNotes.list").deprecated).toBe("");
+  for (const name of ["version", "build"]) {
+    expect(entry.tools.some((tool) => tool.id === `FixturePublicApi.${name}`), name).toBe(false);
+  }
 });
 
 test("workshop-shared's API: every tool schema is structurally valid JSON Schema", () => {
@@ -329,6 +414,7 @@ test("workshop-shared's API: every tool schema is structurally valid JSON Schema
   for (const name of ["PublicApi", "ActionsSubscriber", "AiChatSubscriber", "NotificationSubscriber"]) {
     expect(services.has(name), name).toBe(false);
   }
+  for (const name of services) expect(schema.services[name]!.direction, name).not.toBe("client");
   for (const tool of catalog.tools) {
     expect(tool.inputSchema.type).toBe("object");
     expect(structuralErrors(tool.inputSchema), `${tool.id} inputSchema`).toEqual([]);
@@ -354,9 +440,9 @@ const KEYWORDS = new Set(["$ref", "$defs", "description", "type", "const", "enum
 
 /**
  * What makes `root` not a structurally valid JSON Schema (draft 2020-12) of the subset the catalog
- * writes: an unknown keyword, a keyword of the wrong type, `$defs` below the root, a `required`
- * name with no property, a `$ref` that does not resolve in the root's `$defs`, or a `$defs` entry
- * nothing refers to.
+ * writes (a stream's `x-capnweb-element` is checked as a schema too): an unknown keyword, a keyword
+ * of the wrong type, `$defs` below the root, a `required` name with no property, a `$ref` that does
+ * not resolve in the root's `$defs`, or a `$defs` entry nothing refers to.
  */
 function structuralErrors(root: JsonSchema): string[] {
   const errors: string[] = [];
@@ -369,7 +455,9 @@ function structuralErrors(root: JsonSchema): string[] {
     }
     for (const [key, value] of Object.entries(node)) {
       const at = `${path}/${key}`;
-      if (key.startsWith("x-capnweb-")) {
+      if (key === "x-capnweb-element") {
+        check(value, at);
+      } else if (key.startsWith("x-capnweb-")) {
         if (typeof value !== "string") errors.push(`${at}: not a string`);
       } else if (!KEYWORDS.has(key)) {
         errors.push(`${at}: unknown keyword`);

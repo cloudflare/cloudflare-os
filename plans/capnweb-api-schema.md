@@ -53,8 +53,8 @@ extracted at the time of writing:
 | Services (capability interfaces reachable from `PublicApi`) | 16 |
 | Methods | 219 |
 | Named shapes | 123 |
-| `workshop-api.schema.json` | 361,408 bytes |
-| `workshop-api.agent.d.ts` (rooted at `AuthenticatedApi`) | 123,408 bytes, 3,089 lines, ~30.9k tokens |
+| `workshop-api.schema.json` | 362,441 bytes |
+| `workshop-api.agent.d.ts` (rooted at `AuthenticatedApi`) | 123,432 bytes, 3,089 lines, ~30.9k tokens |
 | Largest per-service fragment (`Overseer`) | 55,927 bytes, ~14.0k tokens |
 | Tools callable from `AuthenticatedApi` | 187, across 5 services |
 
@@ -115,22 +115,30 @@ capnweb-schema is JSON. The format today is the `Schema` type in `packages/api-s
 
 ```ts
 interface Schema {
+  format: "capnweb-schema/0";                 // so a reader can refuse a format it does not know
   entry: string;                              // the entry interface: a key of `services`
   constants: Record<string, number[]>;        // exported byte constants, by name
   services: Record<string, {                  // every capability interface reached
     doc: string;
-    methods: { name: string; doc: string; params: { name; type; optional; doc }[]; returns }[];
+    direction: "server" | "client" | "both";  // the side that implements it
+    methods: {
+      name: string; doc: string; params: { name; type; optional; doc }[]; returns;
+      deprecated?: string; mutates?: true;
+    }[];
+    properties?: { name: string; doc: string; type; optional: boolean; deprecated?: string }[];
+    deprecated?: string;
   }>;
   shapes: Record<string, ApiShape>;           // named object and union types
 }
 ```
 
-`ApiShape` is capnweb-validate's `TypeShape` with three differences: named object and union types
+`ApiShape` is capnweb-validate's `TypeShape` with four differences: named object and union types
 are hoisted into `shapes` and referred to as `{kind: "ref", name}`, so a recursive type stays
-finite; a `stub` names its service instead of inlining it; and a `function` keeps its parameters
-and result. Everything is sorted (services, shapes, methods, properties, union branches), so the
-same declarations serialize to the same bytes, and a committed schema moves only when the API
-does. One method of the Workshop API, as the schema has it:
+finite; a `stub` names its service instead of inlining it; a `function` keeps its parameters and
+result; and a stream keeps its `element` type. Optional fields are omitted when absent, so a
+reader that does not know one ignores it. Everything is sorted (services, shapes, methods,
+properties, union branches), so the same declarations serialize to the same bytes, and a
+committed schema moves only when the API does. One method of the Workshop API, as the schema has it:
 
 ```json
 {
@@ -148,20 +156,38 @@ does. One method of the Workshop API, as the schema has it:
 It takes a callback the client implements and returns a capability to pipeline on: the two things
 an HTTP API cannot say.
 
-Proposed additions for the first versioned release:
+The additions for the first versioned release, and where each stands in this package:
 
-| Addition | Why |
-| --- | --- |
-| A top-level `format: "capnweb-schema/0"` | So a reader can refuse a format it does not know. |
-| Per service, `direction: "server" \| "client"` | A subscriber or callback (`ObserverConfigCallback`) is implemented by the client; today a consumer infers that from where the service appears. |
-| Stream element types | `ReadableStream<T>` and `WritableStream<T>` carry `T`; today a stream is only its direction. |
-| `deprecated` and availability, from `@deprecated` and a tag | As forge's methods have them (`deprecated`, `availability`). |
-| Property members | Cap'n Web pipelines property access (`stub.foo.bar()`), and capnweb-validate already models getters (`isGetter`); today only methods are recorded. |
-| Handle disposal semantics | Every stub must be disposed; the schema should say which results are stubs the caller owns and must dispose. |
-| A `@mutates` tag | Which methods change state, so a Gatekeeper can route those through user approval and let reads through. It plays the part of MCP's `readOnlyHint` and forge's `x-forge-require-confirmation`. |
+| Addition | Why | Status |
+| --- | --- | --- |
+| A top-level `format: "capnweb-schema/0"` | So a reader can refuse a format it does not know. | Implemented: the schema's first field. |
+| Per service, `direction: "server" \| "client" \| "both"` | A subscriber or callback (`ObserverConfigCallback`) is implemented by the client; without it a consumer infers that from where the service appears. | Implemented. The entry is the server's; a capability in a service's results or property values is its implementer's, one in its parameters the other side's, a function and a `WritableStream`'s element swapping sides the same way; `"both"` is a service reached each way. The Workshop API has 8 server and 8 client services, none both. |
+| Stream element types | `ReadableStream<T>` and `WritableStream<T>` carry `T`, which a stream's kind alone does not say. | Implemented: a stream's `element`, absent when undeclared or `any`. The Workshop API's three streams are `ReadableStream<Uint8Array>`, `element: {kind: "bytes"}`. |
+| `deprecated` and availability, from `@deprecated` and a tag | As forge's methods have them (`deprecated`, `availability`). | `deprecated` implemented, on services, methods and properties: the tag's text, `""` when bare (`doc` keeps the tag too). One Workshop method has it (`ActionsSubscriber.ready`). Availability is not: no tag is chosen for it yet. |
+| Property members | Cap'n Web pipelines property access (`stub.foo.bar()`), and capnweb-validate already models getters (`isGetter`). | Implemented: a service's non-method members, as `properties` with each one's type and whether it is optional. The Workshop API has none. |
+| Handle disposal semantics | Every stub must be disposed; the schema should say which results are stubs the caller owns and must dispose. | Proposed; see below. |
+| A `@mutates` tag | Which methods change state, so a Gatekeeper can route those through user approval and let reads through. It plays the part of MCP's `readOnlyHint` and forge's `x-forge-require-confirmation`. | Implemented: `mutates: true` on a method whose doc has the tag; absent means undeclared, not read-only. No Workshop method has it yet (§9 step 2). |
 
-At this commit none of the additions is implemented; they land next, in this package, before the
-format is proposed to capnweb.
+The emitters carry the additions through: the `.d.ts` declares a stream's element type and a
+property as a `readonly` member, and keeps `@deprecated` and `@mutates` in the JSDoc; the tool
+catalog skips client services, follows capabilities a property holds as it does those a method
+returns, gives a stream's element as `x-capnweb-element`, and copies a method's `deprecated` and
+`mutates` onto its tool.
+
+**Handle disposal stays a proposal.** Every Cap'n Web stub is disposable, and every stub a caller
+receives is its own to dispose, so "this result is a stub the caller must dispose" is already said
+by the `stub` kind. What is not said is what disposing one *means*, and that lives in its docs
+today, when it is said at all: the Workshop API's eight `subscribe*` methods all return an
+`RpcStub<{}>`; five of their docs say disposing it cancels the subscription,
+`subscribeToNotifications` says to dispose it when the page is hidden so the backend falls back to
+mobile push, and `subscribeToChat` and `subscribeToPresence` say nothing. `LoginAttempt`'s doc says
+to dispose it to abandon the sign-in.
+Because those subscriptions share one empty service, the meaning belongs to the method that
+returns the stub more than to the service. A tag could carry it later, the way `@deprecated` is
+carried: say `@disposes <what disposing the result does>` on such a method (or on a service whose
+every stub means the same), recorded as a string beside `deprecated` and rendered into the JSDoc
+and tool descriptions, so a CLI or agent can tell a subscription to keep open from a handle to
+release at once. Until one API needs it beyond what its docs say, it is not specified.
 
 A frontend emits this JSON, and forge reads it. forge never needs a TypeScript compiler, just as
 OpenAPI JSON is its input today.
@@ -171,8 +197,9 @@ OpenAPI JSON is its input today.
 The reference implementation is `packages/api-schema/src/extract.ts` in Cloudflare OS. It loads
 the entry file under its tsconfig with the TypeScript compiler API, refuses a program that does not
 type-check (an unresolved type silently becomes `any`, turning capabilities into values), walks the
-capability graph from the entry interface with capnweb-validate's classification rules, and keeps
-names and JSDoc. It imports nothing but the compiler and `node:path`, and takes its inputs as
+capability graph from the entry interface with capnweb-validate's classification rules, keeps
+names, JSDoc and the `@deprecated` and `@mutates` tags, and marks which side implements each
+service. It imports nothing but the compiler and `node:path`, and takes its inputs as
 options:
 
 ```ts
@@ -195,21 +222,31 @@ and schema then cannot disagree, and ours becomes a thin adapter, or nothing.
 
 Relative to `forge:plugin@0.3.0`, the next version of the WIT would need:
 
-- **A service part.** `service-info { name, description, direction, methods }`, with
-  `direction: server | client`, and the forge's list of services next to its groups.
+- **A service part.** `service-info { name, description, direction, deprecated, methods,
+  properties }`, with `direction: server | client | both` (the schema's `direction`),
+  `deprecated: bool` as `field-info` and `method-info` have it, and the forge's list of services
+  next to its groups. A property is a `field-info`: its name, `required = !optional`, its type,
+  description and `deprecated`.
 - **A transport on methods.** `method-info` has `http-method` and `path` as mandatory fields
   today, with `request`, `headers`, `body`, `responses` and `errors` beside them. They move into
   `transport: variant { http(http-info), rpc(rpc-info) }`, where `rpc-info { service, params,
   returns }` names the method's service, its parameters in order, and its result type.
+- **Method metadata.** The rest of `method-info` is transport-neutral and stays. A schema
+  method's `deprecated` sets its `deprecated: bool`; the tag's text stays in the description,
+  where the schema's `doc` already keeps it. `mutates` becomes a new `mutates: bool` beside
+  `confirmation`: `confirmation` is the sentence to show before a call
+  (`x-forge-require-confirmation`), which `@mutates` does not supply; `mutates` only says the
+  method changes state, which a host may route through approval.
 - **New types.** `type-info` gains `capability(option<service-id>)` (none for an untyped stub),
-  `function { params, returns }` and `stream { element, direction }`. A map today is an object
-  with no fields and an `extra` type, which allows only string keys, and there is no set or tuple
-  (a `prefixItems` tuple is `unknown`), so the IR gains `map { key, value }`, `set` and `tuple`.
-  `scalar` gains the values Cap'n Web passes by value and the IR has no scalar for: `bigint`,
-  `error`, `url`, `headers`, `request`, `response`, `regexp`, `blob`, `array-buffer`, `data-view`
-  and `typed-array(name)` (`Float64Array`, say). Existing types cover `Date` (`date-time`),
-  `Uint8Array` (`binary`: raw bytes, as `binary` already means), a literal (a one-value `enum`) and
-  `any` (`unknown`).
+  `function { params, returns }` and `stream { element: option<type-id>, direction }`, the
+  element none when the schema has none and `direction` readable or writable. A map today is an
+  object with no fields and an `extra` type, which allows only string keys, and there is no set or
+  tuple (a `prefixItems` tuple is `unknown`), so the IR gains `map { key, value }`, `set` and
+  `tuple`. `scalar` gains the values Cap'n Web passes by value and the IR has no scalar for:
+  `bigint`, `error`, `url`, `headers`, `request`, `response`, `regexp`, `blob`, `array-buffer`,
+  `data-view` and `typed-array(name)` (`Float64Array`, say). Existing types cover `Date`
+  (`date-time`), `Uint8Array` (`binary`: raw bytes, as `binary` already means), a literal (a
+  one-value `enum`) and `any` (`unknown`).
 - **No result, and `undefined`.** The IR has neither `void` nor `undefined`, and Cap'n Web keeps
   `undefined` apart from `null`. In the Workshop API's schema, 100 method results are `void`, and
   so is the result of one callback a method takes; 302 union branches are `undefined`, 300 of them
@@ -225,11 +262,12 @@ Relative to `forge:plugin@0.3.0`, the next version of the WIT would need:
   `unsupported` with a reason. It lowers to `unknown` with the reason as its description, as the
   `.d.ts` emitter renders it.
 - **Entry and opaque constants.** `forge-info` gains the entry service and the schema's constants,
-  kept as values forge does not read, as it keeps extensions as `json` today.
-- **Pipelining semantics.** A method whose result is a `capability` continues the chain on that
-  service. The IR states only that; each plugin derives its own chain syntax from it:
-  `open-gadget <id> list-chats` for a CLI, `api.openGadget(id).listChats()` for TypeScript,
-  `continuesOn` for a tool catalog.
+  kept as values forge does not read, as it keeps extensions as `json` today. The schema's
+  `format` stays in the frontend, which refuses one it does not know.
+- **Pipelining semantics.** A method whose result is a `capability`, or a property holding one,
+  continues the chain on that service. The IR states only that; each plugin derives its own
+  chain syntax from it: `open-gadget <id> list-chats` for a CLI, `api.openGadget(id).listChats()`
+  for TypeScript, `continuesOn` for a tool catalog.
 
 **Rejected: tunnelling Cap'n Web through OpenAPI `x-capnweb-*` extensions.** A frontend could write
 each method as a synthetic `POST /<Service>/<method>` with its schema in extensions, and forge
@@ -353,7 +391,8 @@ Security:
 1. **This package**: the format, the extractor, the committed schema of the Workshop API, and the
    generic `.d.ts` and tool-catalog emitters. The starter's `cf-os api` reads
    `workshop-api.schema.json` from the pin instead of extracting it itself.
-2. **An audited Admin API**: the additions of §3 implemented, `@mutates` on every Admin API method.
+2. **An audited Admin API**: `@mutates`, which the schema records (§3), on every Admin API
+   method that changes state.
 3. **An admin Gatekeeper**: an agent's access to the Admin API, proxied, with mutating calls routed
    through approval.
 4. **forge IR**: the changes of §5.

@@ -2,7 +2,10 @@
 // thing the extractor tells apart: a capability hop, a method-only capability behind a nullable
 // stub, an optional middle parameter, string-literal and object unions, a nullable scalar, a
 // callback interface, a bare-function callback, an optional callback, a stream each way, a `{}`
-// handle, a recursive named type and an `any` tail.
+// handle, a recursive named type and an `any` tail; and the members and tags the format records
+// beside methods: properties, `@deprecated` services and methods, a `@mutates` method, a server
+// capability passed back as a parameter, and server capabilities reached through a callback
+// interface's and a function's parameters.
 //
 // Its doc comments are part of the expected schema (`schema.json`), so they stay byte for byte as
 // they are, including the ones that speak of a command-line client: the same fixture tests the
@@ -45,6 +48,23 @@ export interface FixturePublicApi extends RpcTarget {
 
   /** A stream result. */
   download(id: number): Promise<ReadableStream<Uint8Array>>;
+
+  /**
+   * The notes API from before accounts.
+   *
+   * @deprecated Use authenticate.
+   */
+  legacy(): Promise<RpcStub<LegacyNotes>>;
+
+  /** A property, read by pipelining. */
+  readonly version: string;
+
+  /**
+   * An optional property.
+   *
+   * @deprecated Read version.
+   */
+  build?: number;
 }
 
 /** The authenticated API, as upstream's AuthenticatedApi. */
@@ -74,7 +94,11 @@ export interface FixtureAuthedApi extends RpcTarget {
 
 /** A capability reached by a hop. */
 export interface Notebook extends RpcTarget {
-  /** An object and an object union. */
+  /**
+   * An object and an object union.
+   *
+   * @mutates
+   */
   file(note: Note, destination: Destination): Promise<void>;
 
   /** Named unions joined with `undefined`, as an optional parameter and in a result: still by name. */
@@ -105,6 +129,25 @@ export interface NotesSubscriber {
   added(note: Note): void;
   removed(id: number): void;
   ready(): void;
+  /** A parameter of a client-implemented method: a capability the server implements. */
+  edited(id: number, cursor: RpcStub<Cursor>): void;
+}
+
+/** Reached only through parameters of client-implemented callbacks, so the server's. */
+export interface Cursor extends RpcTarget {
+  position(): Promise<number>;
+}
+
+/** @deprecated Kept for clients from before accounts. */
+export interface LegacyNotes extends RpcTarget {
+  /** @deprecated */
+  list(): Promise<Note[]>;
+
+  /** A handle the server returned, passed back, so one that travels both ways. */
+  release(handle: RpcStub<{}>): Promise<void>;
+
+  /** A function whose parameter is a capability the server implements. */
+  watch(callback: RpcStub<(cursor: RpcStub<Cursor>) => void>): Promise<RpcStub<{}>>;
 }
 
 /** Method-only, extending nothing, as upstream's AdminApi. */

@@ -1,4 +1,5 @@
 {
+  "format": "capnweb-schema/0",
   "entry": "PublicApi",
   "constants": {
     "SERVICE_SALT": [
@@ -23,6 +24,7 @@
   "services": {
     "ActionsSubscriber": {
       "doc": "Interface implemented by the client to receive action-log upserts.",
+      "direction": "client",
       "methods": [
         {
           "name": "entry",
@@ -48,12 +50,14 @@
           "params": [],
           "returns": {
             "kind": "void"
-          }
+          },
+          "deprecated": "Fires after the subscription has caught up to the current time. However, this is\nonly a useful signal when a subscription is being used to enumerate past actions using a\ndistant-past `startAfter`. This is not the correct way to use `subscribeToActions()`; use\n`listActions()` instead."
         }
       ]
     },
     "AdminApi": {
       "doc": "Capability for managing deployment-wide admin settings, obtained via\nAuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the\ncapability is minted, so these methods don't re-check. Covers branding, agent instructions,\nwhich gatekeeper connectors/resources are offered, and the models an AI Gateway deployment\nprovides — NOT authentication config (that's env-var driven). Each setter throws on invalid\ninput.",
+      "direction": "server",
       "methods": [
         {
           "name": "addGatewayModel",
@@ -803,6 +807,7 @@
     },
     "AiChatSubscriber": {
       "doc": "Interface implemented by the client to receive callback notifications whenever there is new\nchat activity. Use Overseer.subscribeToChat() to register a subscriber.",
+      "direction": "client",
       "methods": [
         {
           "name": "changeApplied",
@@ -971,6 +976,7 @@
     },
     "AuthenticatedApi": {
       "doc": "Top-level API exposed to the user after they have authenticated.",
+      "direction": "server",
       "methods": [
         {
           "name": "addBlueprintToLibrary",
@@ -1479,7 +1485,10 @@
             {
               "name": "archive",
               "type": {
-                "kind": "readableStream"
+                "kind": "readableStream",
+                "element": {
+                  "kind": "bytes"
+                }
               },
               "optional": false,
               "doc": ""
@@ -2226,6 +2235,7 @@
     },
     "ConnectedAccountsSubscriber": {
       "doc": "Subscription callback for AuthenticatedApi.subscribeConnectedAccounts().",
+      "direction": "client",
       "methods": [
         {
           "name": "add",
@@ -2319,6 +2329,7 @@
     },
     "ConsoleLogSubscriber": {
       "doc": "Interface implemented by the client to receive callback notifications about console logs written\nby the gadget.",
+      "direction": "client",
       "methods": [
         {
           "name": "event",
@@ -2361,6 +2372,7 @@
     },
     "GadgetClient": {
       "doc": "Capability representing one gadget workpiece within a workspace. Obtained from\nOverseer.createGadget() or Overseer.getGadget(). Workspace-level concerns (code sync, chats,\nsharing, actions, blueprint listing) stay on Overseer; this covers the per-gadget surface.",
+      "direction": "server",
       "methods": [
         {
           "name": "applyBlueprint",
@@ -2544,7 +2556,10 @@
             }
           ],
           "returns": {
-            "kind": "readableStream"
+            "kind": "readableStream",
+            "element": {
+              "kind": "bytes"
+            }
           }
         },
         {
@@ -2780,6 +2795,7 @@
     },
     "GatekeeperClient": {
       "doc": "Capability representing one gatekeeper (connection) workpiece. Note that binding-edge\noperations -- binding names and blueprint annotations -- live on GadgetClient, since a\ngatekeeper may be bound by several gadgets under different names.",
+      "direction": "server",
       "methods": [
         {
           "name": "describe",
@@ -2852,6 +2868,7 @@
     },
     "LoginAttempt": {
       "doc": "A pending gatekeeper sign-in attempt, returned by `PublicApi.startGatekeeperLogin()`. Holding this\nstub is the capability to receive the resulting session token; dispose it to abandon the attempt.",
+      "direction": "server",
       "methods": [
         {
           "name": "receive",
@@ -2873,6 +2890,7 @@
     },
     "NotificationSubscriber": {
       "doc": "Callback used by `AuthenticatedApi.subscribeToNotifications()`.",
+      "direction": "client",
       "methods": [
         {
           "name": "notify",
@@ -2896,6 +2914,7 @@
     },
     "ObserverConfigCallback": {
       "doc": "Provided by the client when opening a gadget. Invoked by the overseer ONLY if the opening user\nmust choose connected accounts for one or more gatekeeper bindings before they can observe the\ngadget. In the common case (owner, or an already-configured observer) this is never called and\nopen() resolves without an extra round trip. The overseer does not resolve open() until this\nreturns. If the user cannot or will not provide the needed accounts, the callback should reject,\nand the overseer denies the open.\n\n`configure()` may be called a second time within one open, for the subset of bindings that failed\nverification (each carrying an ObserverBindingNeed.failure). This lets the user repair a binding --\ntypically by re-authenticating the account whose credentials expired -- without leaving the flow.\nThe overseer bounds the number of such re-prompts, so a client that resubmits an account that\nkeeps failing eventually gets a denial rather than an endless loop.",
+      "direction": "client",
       "methods": [
         {
           "name": "configure",
@@ -2926,6 +2945,7 @@
     },
     "Overseer": {
       "doc": "Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that\nworkspace. Workspace-level concerns live here: the gadget registry, committed code (git\ncommits in the workspace's shared object store, each gadget's head recorded in\nWorkpieceSummary.commitId), per-chat uncommitted changes (a revisioned stream of code changes per\nchat, applied on top of commits; see ChatCodeBase), chats, actions/hooks, sharing, and\nblueprint listing. Per-gadget operations live on the GadgetClient sub-capability (see\ncreateGadget()/getGadget()).",
+      "direction": "server",
       "methods": [
         {
           "name": "acceptConnectionRequest",
@@ -4575,6 +4595,7 @@
     },
     "PresenceSubscriber": {
       "doc": "`init` delivers the full roster once on subscribe.\n`add`/`remove` (keyed by `key`) report changes thereafter.",
+      "direction": "client",
       "methods": [
         {
           "name": "add",
@@ -4636,6 +4657,7 @@
     },
     "PublicApi": {
       "doc": "Public API exposed to the internet.",
+      "direction": "server",
       "methods": [
         {
           "name": "authenticate",
@@ -4744,7 +4766,10 @@
             }
           ],
           "returns": {
-            "kind": "readableStream"
+            "kind": "readableStream",
+            "element": {
+              "kind": "bytes"
+            }
           }
         },
         {
@@ -4856,6 +4881,7 @@
     },
     "WorkpiecesSubscriber": {
       "doc": "Callback interface used to receive workpiece-list updates. See Overseer.subscribeToWorkpieces().",
+      "direction": "client",
       "methods": [
         {
           "name": "entry",
@@ -4904,6 +4930,7 @@
     },
     "{}": {
       "doc": "",
+      "direction": "server",
       "methods": []
     }
   },

@@ -5,14 +5,24 @@
 // Types are classified with capnweb-validate's rules (its `transform/type-introspector.ts`):
 // values versus capabilities (`RpcStub<X>`, `RpcPromise<X>`, interfaces extending `RpcTarget`,
 // method-only interfaces), functions, streams and `any` tails. Unlike capnweb-validate, the output
-// keeps names and JSDoc, and is deterministic: services, shapes, properties and union branches are
-// sorted, so the committed schema does not move with TypeScript's internal type ordering.
+// keeps names, JSDoc and the `@deprecated` and `@mutates` tags, records which side implements each
+// service, and is deterministic: services, shapes, properties and union branches are sorted, so the
+// committed schema does not move with TypeScript's internal type ordering.
 //
 // typescript6 = npm:typescript@6.0.3: the TypeScript 7 package ships no JS compiler API.
 
 import { dirname } from "node:path";
 import ts from "typescript6";
-import type { ApiShape, ApiShapeParam, Schema, SchemaMethod, SchemaParam, SchemaService } from "./schema.ts";
+import {
+  type ApiShape,
+  type ApiShapeParam,
+  FORMAT,
+  type Schema,
+  type SchemaMethod,
+  type SchemaParam,
+  type SchemaProperty,
+  type SchemaService,
+} from "./schema.ts";
 
 /** What to extract. */
 export interface ExtractOptions {
@@ -69,10 +79,22 @@ export function extractSchema(options: ExtractOptions): Schema {
   const entry = extractor.service(entryType);
   const constants: Record<string, number[]> = {};
   for (const name of options.constants ?? []) constants[name] = byteConstant(exports, name, options.entry);
+  const sides = directions(entry, extractor.services, extractor.shapes);
+  const services = new Map([...extractor.services].map(([name, { doc, methods, properties, deprecated }]) => {
+    const service: SchemaService = {
+      doc,
+      direction: sides.get(name)!,
+      methods,
+      ...(properties.length ? { properties } : {}),
+      ...(deprecated === undefined ? {} : { deprecated }),
+    };
+    return [name, service];
+  }));
   return {
+    format: FORMAT,
     entry,
     constants,
-    services: sortKeys(extractor.services),
+    services: sortKeys(services),
     shapes: sortKeys(extractor.shapes),
   };
 }
@@ -136,6 +158,12 @@ function docOf(checker: ts.TypeChecker, symbol: ts.Symbol | undefined, withTags 
   return normalizeDoc(parts.filter((part) => part.trim()).join("\n"));
 }
 
+/** The text of the symbol's first `@name` JSDoc tag, normalized (`""` when bare), or undefined. */
+function tagOf(checker: ts.TypeChecker, symbol: ts.Symbol | undefined, name: string): string | undefined {
+  const tag = symbol?.getJsDocTags(checker).find((t) => t.name === name);
+  return tag && normalizeDoc(ts.displayPartsToString(tag.text));
+}
+
 /**
  * Trims the end of every line (keeping indentation, which marks code blocks) and the whole, unifies
  * newlines, and folds runs of blank lines into one.
@@ -179,9 +207,17 @@ for (const name of ["Int8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array
 
 const MAX_DEPTH = 64;
 
+/** A service as the walk records it, before its direction is known and its empty fields dropped. */
+interface WalkedService {
+  doc: string;
+  methods: SchemaMethod[];
+  properties: SchemaProperty[];
+  deprecated: string | undefined;
+}
+
 /** One walk of the graph: the services and named shapes found so far, by name. */
 class Extractor {
-  readonly services = new Map<string, SchemaService>();
+  readonly services = new Map<string, WalkedService>();
   readonly shapes = new Map<string, ApiShape>();
   readonly #checker: ts.TypeChecker;
   /** Whether a declaration is Cap'n Web's or the Workers runtime's, not the API author's. */
@@ -189,6 +225,8 @@ class Extractor {
   /** The name each service or named shape type was given, so a revisit is a reference. */
   readonly #names = new Map<ts.Type, string>();
   readonly #taken = new Set<string>();
+  /** The first service recorded, the entry: a value position may hold it (`self: Entry`) as a stub. */
+  #entry: string | undefined;
 
   constructor(checker: ts.TypeChecker, isRuntime: (declaration: ts.Declaration) => boolean) {
     this.#checker = checker;
@@ -198,11 +236,25 @@ class Extractor {
   /** Records the capability interface `type` (once) and returns its name. */
   service(type: ts.Type): string {
     const known = this.#names.get(type);
+    if (known && !this.services.has(known)) {
+      throw new Error(`${known}: a value elsewhere in the graph, so it cannot also be a capability`);
+    }
     if (known) return known;
     const name = this.#nameFor(type);
-    const service: SchemaService = { doc: docOf(this.#checker, type.aliasSymbol ?? type.getSymbol()), methods: [] };
+    this.#entry ??= name;
+    const symbol = type.aliasSymbol ?? type.getSymbol();
+    const service: WalkedService = {
+      doc: docOf(this.#checker, symbol),
+      methods: [],
+      properties: [],
+      deprecated: tagOf(this.#checker, symbol, "deprecated"),
+    };
     this.services.set(name, service);
-    for (const prop of this.#members(type)) service.methods.push(this.#method(name, prop));
+    for (const prop of this.#members(type)) {
+      const signatures = this.#memberType(prop).getCallSignatures();
+      if (signatures.length === 0) service.properties.push(this.#property(prop));
+      else service.methods.push(this.#method(name, prop, signatures));
+    }
     return name;
   }
 
@@ -217,23 +269,42 @@ class Extractor {
     }).toSorted((a, b) => compare(a.getName(), b.getName()));
   }
 
-  #method(service: string, prop: ts.Symbol): SchemaMethod {
+  /** A member's type, `undefined` removed when it is optional (`x?: T` is `T | undefined`). */
+  #memberType(prop: ts.Symbol): ts.Type {
+    const type = this.#checker.getTypeOfSymbol(prop);
+    return prop.flags & ts.SymbolFlags.Optional ? this.#checker.getNonNullableType(type) : type;
+  }
+
+  #method(service: string, prop: ts.Symbol, signatures: readonly ts.Signature[]): SchemaMethod {
     const where = `${service}.${prop.getName()}`;
-    let type = this.#checker.getTypeOfSymbol(prop);
-    if (prop.flags & ts.SymbolFlags.Optional) type = this.#checker.getNonNullableType(type);
-    const signatures = type.getCallSignatures();
-    if (signatures.length === 0) throw new Error(`${where}: a property, not a method; the schema describes methods only`);
     if (signatures.length > 1) throw new Error(`${where}: overloaded; the schema records one signature per method`);
     const signature = signatures[0]!;
     const params = signature.getParameters().map((param): SchemaParam => {
       const { name, type: shape, optional } = this.#param(param, where);
       return { name, type: shape, optional, doc: docOf(this.#checker, param, false) };
     });
+    const deprecated = tagOf(this.#checker, prop, "deprecated");
     return {
       name: prop.getName(),
       doc: docOf(this.#checker, prop),
       params,
       returns: this.#shape(this.#awaited(signature.getReturnType()), 0),
+      ...(deprecated === undefined ? {} : { deprecated }),
+      ...(tagOf(this.#checker, prop, "mutates") === undefined ? {} : { mutates: true as const }),
+    };
+  }
+
+  /** A non-method member, which a stub reads by pipelining. */
+  #property(prop: ts.Symbol): SchemaProperty {
+    const optional = (prop.flags & ts.SymbolFlags.Optional) !== 0;
+    const shape = this.#shape(this.#checker.getTypeOfSymbol(prop), 0);
+    const deprecated = tagOf(this.#checker, prop, "deprecated");
+    return {
+      name: prop.getName(),
+      doc: docOf(this.#checker, prop),
+      type: optional ? withoutUndefined(shape) : shape,
+      optional,
+      ...(deprecated === undefined ? {} : { deprecated }),
     };
   }
 
@@ -386,6 +457,11 @@ class Extractor {
     const arg = (i: number): ApiShape => args[i] ? this.#shape(args[i], depth + 1) : { kind: "any" };
     if (name === "Map" || name === "ReadonlyMap") return { kind: "map", key: arg(0), value: arg(1) };
     if (name === "Set" || name === "ReadonlySet") return { kind: "set", element: arg(0) };
+    if (name === "ReadableStream" || name === "WritableStream") {
+      const kind = name === "ReadableStream" ? "readableStream" : "writableStream";
+      const element = arg(0);
+      return element.kind === "any" ? { kind } : { kind, element };
+    }
     return BUILTINS[name];
   }
 
@@ -434,12 +510,21 @@ class Extractor {
 
   /**
    * A named object or union type (an interface, or an alias declared outside TypeScript's lib)
-   * resolved once into {@link shapes} and referred to by name; an anonymous one inline.
+   * resolved once into {@link shapes} and referred to by name; an anonymous one inline. The entry,
+   * a capability whatever its members, is a stub of it; any other named service here is refused, as
+   * {@link service} refuses a value, so the outcome does not depend on which is reached first. An
+   * anonymous type is inlined even when it is also a stub's target (`RpcStub<{}>` and a value `{}`
+   * are one type to TypeScript): it is never recorded as a shape, so {@link service} has nothing to
+   * collide with either.
    */
   #named(type: ts.Type, resolve: () => ApiShape): ApiShape {
     const known = this.#names.get(type);
-    if (known) return { kind: "ref", name: known };
+    if (known && known === this.#entry) return { kind: "stub", service: known };
     if (!userName(type)) return resolve();
+    if (known && this.services.has(known)) {
+      throw new Error(`${known}: a capability elsewhere in the graph, so it cannot also be a value`);
+    }
+    if (known) return { kind: "ref", name: known };
     // Named before resolving, so a recursive reference finds the name.
     const name = this.#nameFor(type);
     this.shapes.set(name, resolve());
@@ -459,6 +544,87 @@ class Extractor {
     this.#names.set(type, name);
     return name;
   }
+}
+
+type Side = "server" | "client";
+
+const OTHER: Record<Side, Side> = { server: "client", client: "server" };
+
+/**
+ * Which side implements each service, by {@link SchemaService.direction}'s rule: every service and
+ * named shape is walked once per side it is reached for, from the entry as the server's, so the
+ * result is the same whatever order the graph was found in.
+ */
+function directions(entry: string, services: Map<string, WalkedService>, shapes: Map<string, ApiShape>):
+  Map<string, SchemaService["direction"]> {
+  const reached = new Map<string, Set<Side>>();
+  const walked = new Set<string>();
+  const queue: { of: "service" | "shape"; name: string; side: Side }[] = [
+    { of: "service", name: entry, side: "server" },
+  ];
+  // `side` implements `shape`'s value: it supplies capabilities and results, the other side parameters.
+  const visit = (shape: ApiShape, side: Side): void => {
+    switch (shape.kind) {
+      case "stub":
+        if (shape.service !== undefined) queue.push({ of: "service", name: shape.service, side });
+        return;
+      case "ref":
+        queue.push({ of: "shape", name: shape.name, side });
+        return;
+      case "function":
+        for (const param of shape.params) visit(param.type, OTHER[side]);
+        visit(shape.returns, side);
+        return;
+      case "array":
+      case "set":
+        visit(shape.element, side);
+        return;
+      case "map":
+        visit(shape.key, side);
+        visit(shape.value, side);
+        return;
+      case "tuple":
+        for (const element of shape.elements) visit(element, side);
+        if (shape.rest) visit(shape.rest, side);
+        return;
+      case "object":
+        for (const property of Object.values(shape.properties)) visit(property, side);
+        if (shape.index) visit(shape.index, side);
+        return;
+      case "union":
+        for (const branch of shape.branches) visit(branch, side);
+        return;
+      // A readable stream's elements come from its implementer, a writable one's from its holder.
+      case "readableStream":
+      case "writableStream":
+        if (shape.element) visit(shape.element, shape.kind === "readableStream" ? side : OTHER[side]);
+        return;
+      default:
+        return;
+    }
+  };
+  for (let next = queue.pop(); next; next = queue.pop()) {
+    const { of, name, side } = next;
+    const key = JSON.stringify([of, name, side]);
+    if (walked.has(key)) continue;
+    walked.add(key);
+    if (of === "shape") {
+      visit(shapes.get(name)!, side);
+      continue;
+    }
+    reached.set(name, (reached.get(name) ?? new Set<Side>()).add(side));
+    const service = services.get(name)!;
+    for (const method of service.methods) {
+      for (const param of method.params) visit(param.type, OTHER[side]);
+      visit(method.returns, side);
+    }
+    for (const property of service.properties) visit(property.type, side);
+  }
+  return new Map([...services.keys()].map((name) => {
+    const sides = reached.get(name);
+    if (!sides) throw new Error(`${name}: recorded but not reached from ${entry}`);
+    return [name, sides.size === 2 ? "both" : [...sides][0]!];
+  }));
 }
 
 const PRIMITIVE = ts.TypeFlags.String | ts.TypeFlags.Number | ts.TypeFlags.Boolean | ts.TypeFlags.BigInt

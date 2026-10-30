@@ -10,7 +10,7 @@ import { join } from "node:path";
 import ts from "typescript6";
 import { afterAll, describe, expect, test } from "vitest";
 import { type ExtractOptions, extractSchema, normalizeDoc } from "../src/extract.ts";
-import type { ApiShape, Schema, SchemaService } from "../src/schema.ts";
+import { type ApiShape, FORMAT, type Schema, type SchemaService } from "../src/schema.ts";
 
 const PACKAGE = join(import.meta.dirname, "..");
 const FIXTURES = join(import.meta.dirname, "__fixtures__");
@@ -55,13 +55,14 @@ describe("the fixture", () => {
     expect(method("Notebook", "lock").returns).toEqual({ kind: "stub", service: "{}" });
     expect(schema.services["{}"]!.methods).toEqual([]);
     expect(method("Notebook", "connect").returns).toEqual({ kind: "stub" });
-    expect(method("FixturePublicApi", "download").returns).toEqual({ kind: "readableStream" });
-    expect(method("FixtureAuthedApi", "importArchive").params[0]!.type).toEqual({ kind: "readableStream" });
+    expect(method("FixturePublicApi", "download").returns).toEqual({ kind: "readableStream", element: { kind: "bytes" } });
+    expect(method("FixtureAuthedApi", "importArchive").params[0]!.type)
+      .toEqual({ kind: "readableStream", element: { kind: "bytes" } });
     // The client-implemented interface is recorded with every method, and the bare function with
     // its signature.
     expect(method("Notebook", "subscribe").params[0]!.type).toEqual({ kind: "stub", service: "NotesSubscriber" });
     expect(schema.services.NotesSubscriber!.methods.map((m) => [m.name, m.params.map((p) => p.name)]))
-      .toEqual([["added", ["note"]], ["ready", []], ["removed", ["id"]]]);
+      .toEqual([["added", ["note"]], ["edited", ["id", "cursor"]], ["ready", []], ["removed", ["id"]]]);
     expect(method("Notebook", "watchTitle").params[0]!.type).toEqual({
       kind: "function",
       params: [{ name: "title", type: { kind: "string" }, optional: false }],
@@ -104,6 +105,51 @@ describe("the fixture", () => {
     expect(schema.services.FixtureAuthedApi!.doc).toBe("The authenticated API, as upstream's AuthenticatedApi.");
   });
 
+  test("names its format first", () => {
+    const schema = extractSchema(FIXTURE);
+    expect(schema.format).toBe(FORMAT);
+    expect(Object.keys(schema)).toEqual(["format", "entry", "constants", "services", "shapes"]);
+  });
+
+  test("marks which side implements each service", () => {
+    const { services } = extractSchema(FIXTURE);
+    expect(Object.fromEntries(Object.entries(services).map(([name, service]) => [name, service.direction]))).toEqual({
+      // Reached through the parameters of a client-implemented interface and of a function.
+      Cursor: "server",
+      FixtureAdmin: "server",
+      FixtureAuthedApi: "server",
+      FixturePublicApi: "server",
+      LegacyNotes: "server",
+      Notebook: "server",
+      NotesSubscriber: "client",
+      // Returned as a handle, and passed back to `LegacyNotes.release`.
+      "{}": "both",
+    });
+  });
+
+  test("records properties, @deprecated and @mutates, and omits them when absent", () => {
+    const { services } = extractSchema(FIXTURE);
+    const method = (service: string, name: string) => services[service]!.methods.find((m) => m.name === name)!;
+    expect(services.FixturePublicApi!.properties).toEqual([
+      { name: "build", doc: "An optional property.\n@deprecated Read version.", type: { kind: "number" }, optional: true,
+        deprecated: "Read version." },
+      { name: "version", doc: "A property, read by pipelining.", type: { kind: "string" }, optional: false },
+    ]);
+    expect(services.FixturePublicApi!.methods.map((m) => m.name)).not.toContain("version");
+    expect("properties" in services.Notebook!).toBe(false);
+
+    expect(services.LegacyNotes!.deprecated).toBe("Kept for clients from before accounts.");
+    expect(services.LegacyNotes!.doc).toBe("@deprecated Kept for clients from before accounts.");
+    expect(method("FixturePublicApi", "legacy").deprecated).toBe("Use authenticate.");
+    expect(method("FixturePublicApi", "legacy").doc).toBe("The notes API from before accounts.\n@deprecated Use authenticate.");
+    expect(method("LegacyNotes", "list").deprecated).toBe("");
+    expect("deprecated" in services.Notebook!).toBe(false);
+    expect("deprecated" in method("LegacyNotes", "release")).toBe(false);
+
+    expect(method("Notebook", "file").mutates).toBe(true);
+    expect("mutates" in method("Notebook", "upload")).toBe(false);
+  });
+
   test("is deterministic across separate programs", () => {
     expect(JSON.stringify(extractSchema(FIXTURE))).toBe(JSON.stringify(extractSchema(FIXTURE)));
   });
@@ -130,9 +176,6 @@ describe("refuses what the schema cannot describe, naming it", () => {
   test("a rest parameter", () => {
     expect(extract("export interface Api { a(...xs: string[]): void; }")).toThrow(/Api\.a: rest parameter xs/);
   });
-  test("a property", () => {
-    expect(extract("export interface Api { a(): void; b: string; }")).toThrow(/Api\.b: a property/);
-  });
   test("a tuple element after the variadic one", () => {
     expect(extract("export interface Api { a(): Promise<[...string[], number]>; }"))
       .toThrow(/\[\.\.\.string\[\], number\]: an element after the variadic one/);
@@ -149,6 +192,120 @@ describe("refuses what the schema cannot describe, naming it", () => {
   test("an API that does not type-check", () => {
     expect(extract('import type { Missing } from "./nowhere.ts";\nexport interface Api { a(): Promise<Missing>; }'))
       .toThrow(/does not type-check[\s\S]*nowhere/);
+  });
+});
+
+describe("members, tags and streams", () => {
+  const dir = mkdtempSync(join(tmpdir(), "api-schema-members-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  let files = 0;
+  const extract = (source: string) => {
+    const entry = join(dir, `api-${files++}.ts`);
+    writeFileSync(entry, source);
+    return extractSchema({ entry, compilerOptions: { strict: true }, entryName: "Api", constants: [] });
+  };
+
+  test("a non-method member is a property, an optional method still a method", () => {
+    const { services } = extract(`export interface Sub { ping(): void; }
+export interface Api { a(): void; b?(): void; readonly c: string; d?: Sub | null; get e(): number; }
+`);
+    expect(services.Api!.methods.map((m) => m.name)).toEqual(["a", "b"]);
+    expect(services.Api!.properties).toEqual([
+      { name: "c", doc: "", type: { kind: "string" }, optional: false },
+      { name: "d", doc: "", type: { kind: "union", branches: [{ kind: "null" }, { kind: "stub", service: "Sub" }] },
+        optional: true },
+      { name: "e", doc: "", type: { kind: "number" }, optional: false },
+    ]);
+    // A property's value comes from the side implementing the service.
+    expect(services.Sub!.direction).toBe("server");
+  });
+
+  test("the entry reached again is a stub of it, whatever its members", () => {
+    for (const member of ["b: string;", "b?(): void;"]) {
+      const { services, shapes } = extract(`export interface Api { a(): Promise<Api>; ${member} }\n`);
+      expect(services.Api!.methods[0]!.returns).toEqual({ kind: "stub", service: "Api" });
+      expect(shapes).toEqual({});
+    }
+  });
+
+  test("a stream's element type, absent when undeclared or any", () => {
+    const { services } = extract(`export interface Api {
+  a(): Promise<ReadableStream<string>>; b(): Promise<ReadableStream>; c(): Promise<ReadableStream<any>>;
+  d(): Promise<WritableStream<Uint8Array>>;
+}
+`);
+    expect(services.Api!.methods.map((m) => m.returns)).toEqual([
+      { kind: "readableStream", element: { kind: "string" } },
+      { kind: "readableStream" },
+      { kind: "readableStream" },
+      { kind: "writableStream", element: { kind: "bytes" } },
+    ]);
+  });
+
+  test("@mutates and @deprecated, read from the tag wherever it is in the comment", () => {
+    const method = extract(`export interface Api {
+  /**
+   * Saves.
+   * @deprecated Use
+   * saveAll.
+   * @mutates
+   */
+  save(): void;
+}
+`).services.Api!.methods[0]!;
+    expect(method).toEqual({ name: "save", doc: "Saves.\n@deprecated Use\nsaveAll.\n@mutates", params: [],
+      returns: { kind: "void" }, deprecated: "Use\nsaveAll.", mutates: true });
+  });
+});
+
+describe("which side implements each service", () => {
+  const dir = mkdtempSync(join(tmpdir(), "api-schema-direction-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  let files = 0;
+  const directions = (source: string) => {
+    const entry = join(dir, `api-${files++}.ts`);
+    writeFileSync(entry, source);
+    const { services } = extractSchema({ entry, compilerOptions: { strict: true }, entryName: "Api", constants: [] });
+    return Object.fromEntries(Object.entries(services).map(([name, service]) => [name, service.direction]));
+  };
+  // Method-only interfaces are capabilities, so these need no capnweb.
+  const SERVICES = `export interface Handle { close(): void; }
+export interface Reply { send(text: string): void; }
+`;
+
+  test("a result is the implementer's, a parameter the other side's, swapped across a client service", () => {
+    expect(directions(`${SERVICES}export interface Sub { event(handle: Handle): Promise<Reply>; }
+export interface Api { open(): Promise<Handle>; subscribe(sub: Sub): void; }
+`)).toEqual({ Api: "server", Handle: "server", Reply: "client", Sub: "client" });
+  });
+
+  test("a function swaps the same way, as a parameter or as a result", () => {
+    expect(directions(`${SERVICES}export interface Api { watch(callback: (handle: Handle) => Reply): void; }
+`)).toEqual({ Api: "server", Handle: "server", Reply: "client" });
+    expect(directions(`${SERVICES}export interface Api { sender(): Promise<(reply: Reply) => Handle>; }
+`)).toEqual({ Api: "server", Handle: "server", Reply: "client" });
+  });
+
+  test("through named shapes, collections and writable streams' elements", () => {
+    expect(directions(`${SERVICES}export type Wrapped = { handles: Map<string, Handle[]>; replies?: [Reply] };
+export interface Api {
+  give(wrapped: Wrapped): void; take(): Promise<Wrapped>; feed(): Promise<WritableStream<Reply>>;
+  drain(): Promise<ReadableStream<Handle>>;
+}
+`)).toEqual({ Api: "server", Handle: "both", Reply: "both" });
+    expect(directions(`${SERVICES}export interface Api { feed(): Promise<WritableStream<Reply>>; }
+`)).toEqual({ Api: "server", Reply: "client" });
+  });
+
+  // Whichever way it is reached first, a service reached both ways is walked as each side's, so what
+  // it reaches is too.
+  test("a service reached both ways, and what it reaches", () => {
+    const thing = "export interface Thing { listen(reply: Reply): void; open(): Promise<Handle>; }\n";
+    const expected = { Api: "server", Handle: "both", Reply: "both", Thing: "both" };
+    expect(directions(`${SERVICES}${thing}export interface Api { a(thing: Thing): void; b(): Promise<Thing>; }
+`)).toEqual(expected);
+    expect(directions(`${SERVICES}${thing}export interface Api { a(): Promise<Thing>; b(thing: Thing): void; }
+`)).toEqual(expected);
   });
 });
 
@@ -192,6 +349,39 @@ export interface Api extends RpcTarget { any(): Promise<RpcStub<RpcTarget>>; sub
   test("an RpcTarget from a copy not named is taken for the API's own, an empty service", () => {
     const schema = extract("./checkout/capnweb/dist/index.js");
     expect(schema.services.Api!.methods[0]!.returns).toEqual({ kind: "stub", service: "RpcTarget" });
+  });
+  // capnweb accepts RpcStub<X> for an unbranded X, which the graph may already hold as a value.
+  test("a value type also used as a capability, refused naming it", () => {
+    const entry = join(dir, "api-value-stub.ts");
+    writeFileSync(entry, `import type { RpcStub, RpcTarget } from "capnweb";
+export interface X { a(): void; b: string; }
+export interface Api extends RpcTarget { get(): Promise<X>; stub(): Promise<RpcStub<X>>; }
+`);
+    expect(() => extractSchema({ entry, entryName: "Api", compilerOptions: options }))
+      .toThrow(/X: a value elsewhere in the graph, so it cannot also be a capability/);
+  });
+  test("a capability also used as a value, refused whichever is reached first", () => {
+    const entry = join(dir, "api-stub-value.ts");
+    writeFileSync(entry, `import type { RpcStub, RpcTarget } from "capnweb";
+export interface X { a(): void; b: string; }
+export interface Api extends RpcTarget { get(): Promise<RpcStub<X>>; stub(): Promise<X>; }
+`);
+    expect(() => extractSchema({ entry, entryName: "Api", compilerOptions: options }))
+      .toThrow(/X: a capability elsewhere in the graph, so it cannot also be a value/);
+  });
+  // `RpcStub<{}>` and a value `{}` are one type to TypeScript.
+  test("an anonymous type both a stub's target and a value, inlined whichever is reached first", () => {
+    const entry = join(dir, "api-anonymous-stub-value.ts");
+    writeFileSync(entry, `import type { RpcStub, RpcTarget } from "capnweb";
+export interface Api extends RpcTarget { a(): Promise<RpcStub<{}>>; b(): Promise<{ input: {} }>; }
+export interface Api2 extends RpcTarget { a(): Promise<{ input: {} }>; b(): Promise<RpcStub<{}>>; }
+`);
+    for (const [entryName, stub, value] of [["Api", 0, 1], ["Api2", 1, 0]] as const) {
+      const methods = extractSchema({ entry, entryName, compilerOptions: options }).services[entryName]!.methods;
+      expect(methods[stub]!.returns).toEqual({ kind: "stub", service: "{}" });
+      expect(methods[value]!.returns)
+        .toEqual({ kind: "object", properties: { input: { kind: "object", properties: {} } } });
+    }
   });
   // An API's own augmentation of capnweb merges into its interfaces, but its members are the API's.
   test("an augmentation of the runtime module, whose members are the API's own", () => {
@@ -267,6 +457,7 @@ test("workshop-shared's API: the whole graph, and every subscriber's full method
   expect(method("Overseer", "getGadget")?.returns).toEqual({ kind: "stub", service: "GadgetClient" });
   expect(method("GadgetClient", "connectToGadget")?.returns).toEqual({ kind: "stub" });
   expect(schema.constants.SERVICE_SALT?.length).toBe(16);
+  for (const name of ["PublicApi", "AuthenticatedApi", "Overseer"]) expect(schema.services[name]?.direction, name).toBe("server");
 
   const methods = Object.values(schema.services).reduce((n, service: SchemaService) => n + service.methods.length, 0);
   expect(methods, `${methods} methods`).toBeGreaterThan(150);
@@ -294,6 +485,7 @@ test("workshop-shared's API: the whole graph, and every subscriber's full method
   // from the schema alone.
   for (const name of subscribers.values()) {
     expect(schema.services[name]!.methods.map((m) => m.name), name).toEqual(declaredMethods(WORKSHOP_API.entry, name));
+    expect(schema.services[name]!.direction, name).toBe("client");
   }
   expect(schema.services.AiChatSubscriber!.methods.some((m) => m.name === "changeApplied")).toBe(true);
 });
