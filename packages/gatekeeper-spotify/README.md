@@ -82,6 +82,12 @@ You can see and manage connected accounts in settings (via the account menu in t
   performed on Spotify until approved. Reads optimistically reflect your own pending edits (e.g. a
   pending playlist add shows in `listTracks`) so a gadget can keep working before approvals land.
   Playback commands are gated but **not** simulated — `getState()` always shows real device state.
+- **Auto-approval.** A user may let some kinds of write apply without review: saving tracks, albums
+  and playlists to the library, following artists, creating private playlists, adding and
+  reordering playlist tracks, editing playlist names and descriptions, and playback control (which
+  takes effect on the device at once and cannot be reverted). Removing anything from the library or
+  a playlist, unfollowing or deleting a playlist, replacing a playlist's contents, and any change
+  that makes a playlist public or collaborative, or undoes that, always need a manual approval.
 - **Non-owned playlists.** Spotify withholds track contents for playlists you don't own/collaborate
   on, so `listTracks()` returns an empty list (metadata via `getDetails()` still works).
 - **Spotify Connect quirks.** Some third-party Connect endpoints (e.g. Music Assistant) can be
