@@ -160,7 +160,7 @@ function fakeGraph(events: Seeded[], options: { leak?: { into: string; event: Se
 /** A session over a scope, recording what it observes and proposes. */
 // `appliedOnSubmit` maps a provisional ref to the event its creation made, for a creation an
 // auto-approval applies before submit returns: it never shows as pending. `updatesApplyOnSubmit`
-// does the same for changes to real events, writing them straight into the seeded mailbox.
+// does the same for changes and responses to real events, writing them into the seeded mailbox.
 function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}, appliedOnSubmit: Record<string, string> = {}, updatesApplyOnSubmit = false) {
   const events = seed();
   const graph = fakeGraph(events, options);
@@ -180,6 +180,11 @@ function session(scope: CalendarScope, access: CalendarAccessLevel = "read", opt
       if ("ref" in payload && payload.ref in appliedOnSubmit) return 0;
       if (updatesApplyOnSubmit && "changes" in payload) {
         Object.assign(events.find(event => event.id === payload.target.id)!.fields, payload.changes);
+        return 0;
+      }
+      if (updatesApplyOnSubmit && "response" in payload) {
+        const accepted = { accept: "accepted", tentative: "tentativelyAccepted", decline: "declined" }[payload.response];
+        Object.assign(events.find(event => event.id === payload.target.id)!.fields, { responseStatus: { response: accepted }, showAs: payload.response === "accept" ? "busy" : "tentative" });
         return 0;
       }
       submitted.push({ kind, payload });
@@ -547,6 +552,13 @@ describe("an all-calendars binding", () => {
     const created = await writer.createEvent({ subject: "Focus", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: SARAHS.id });
     expect(created).toMatchObject({ id: "AAMkEvSarahs" });
     expect(created.pending).toBeUndefined();
+  });
+
+  it("returns the invitation as answered when a silent acceptance was applied before submit returned", async () => {
+    const { writer } = session(scope("schedule"), "schedule", {}, {}, true);
+    const answered = await writer.respond("AAMkEvInvite", "accept", { notify: false });
+    expect(answered).toMatchObject({ id: "AAMkEvInvite", response: "accepted", showAs: "busy" });
+    expect(answered.pending).toBeUndefined();
   });
 
   it("returns the event as changed when the change was applied before submit returned", async () => {

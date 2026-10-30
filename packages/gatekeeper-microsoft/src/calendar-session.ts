@@ -1053,11 +1053,14 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       propose = { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
     }
     await ctx.observeEvent(event, calendar, view);
+    const target = await ctx.target(event);
     await ctx.host.submit(ctx.queue, respondKind({ response, notify }, await ctx.owns(calendar)), {
-      calendar: ctx.calendarRef(calendar), target: await ctx.target(event), response, ...(message ? { message } : {}), notify,
+      calendar: ctx.calendarRef(calendar), target, response, ...(message ? { message } : {}), notify,
       ...(propose ? { propose } : {}), zone, submittedAt: Date.now(),
     });
-    return ctx.info(event, calendar, view, ctx.overlay());
+    // An auto-approval may have applied the response already; then read back the event it left.
+    const overlay = ctx.overlay();
+    return ctx.info(overlay.responses.has(target.id) ? event : (await ctx.guarded(event.id)).event, calendar, view, overlay);
   }
 }
 
