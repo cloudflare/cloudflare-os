@@ -730,6 +730,14 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]>;
 
+  /**
+   * List the user's provisional workspaces (see newWorkspace()), which listWorkspaces() hides: one
+   * made and then left, such as by a client that lost the Overseer newWorkspace() returned before
+   * reading its id, is found here by when it was created, to open with openWorkspace() or delete
+   * with Overseer.deleteSelf().
+   */
+  listProvisionalWorkspaces(): Promise<(WorkspaceMetadata & {created: Date})[]>;
+
   /** Pin or unpin this workspace in the user's list. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
 

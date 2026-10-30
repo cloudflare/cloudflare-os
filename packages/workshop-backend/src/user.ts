@@ -948,6 +948,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
+  /** The workspaces listWorkspaces() hides: created (newWorkspace()) but never yet active. */
+  async listProvisionalWorkspaces(): Promise<GadgetRecord[]> {
+    return [...this.storage.gadgets.list()].filter(workspace => !isFullyCreated(workspace));
+  }
+
   async updateTitle(workspaceId: string, title: string) {
     let record = this.storage.gadgets.get(workspaceId);
     if (!record) {

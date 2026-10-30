@@ -53,6 +53,8 @@ it.concurrent("lists workspace metadata after activity and removes it after dele
   using workspace = await authenticated.newWorkspace();
   const { id } = await workspace.getMetadata();
   expect(await authenticated.listWorkspaces()).not.toContainEqual(expect.objectContaining({ id }));
+  expect(await authenticated.listProvisionalWorkspaces())
+      .toContainEqual(expect.objectContaining({ id, created: expect.any(Date) }));
 
   await workspace.setTitle("Renamed Workspace");
   await authenticated.setWorkspacePinned(id, true);
@@ -67,6 +69,7 @@ it.concurrent("lists workspace metadata after activity and removes it after dele
     title: "Renamed Workspace",
     pinned: true,
   }));
+  expect(await authenticated.listProvisionalWorkspaces()).not.toContainEqual(expect.objectContaining({ id }));
 
   await workspace.deleteSelf();
   // Deleting restarts the workspace DO about 100ms out (Overseer.scheduleAccessRestart), severing
