@@ -35,7 +35,8 @@ resolving and reopening diff threads, `requestChanges` reviews and force pushes 
 `gitlab.forcePush` kind). **Merging a merge request** and **an approving review** always wait for
 a person: an approval shares the `gitlab.postReview` kind with the other reviews but is never
 auto-approvable. Each binding advertises through `getAutoApprovableActions()` only the eligible
-kinds its session can submit.
+kinds its session can submit: a merge request binding lists pushes but not force pushes, since its
+push only fast-forwards.
 
 ## Setting up GitLab OAuth credentials
 

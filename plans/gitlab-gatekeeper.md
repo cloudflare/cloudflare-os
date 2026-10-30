@@ -663,9 +663,9 @@ queue, no caching, no OAuth.
 Everything else — `Cursor<T>`, page options, `listBranches`/`listTags`/`resolveRef`/`getCommit`/
 `listCommits`/`push` on the project, `getDetails`/`setTitle`/`setBody`/`addLabels`/
 `removeLabels`/`reopen`/`readDiscussion`/`postComment` on issues, `readDiff`/`readDiffThreads`/
-`postReview`/`listCommits`/`getMergeBase` on MRs, the worktree-oriented JSDoc ("mount a commit as
-a worktree", "push then createMergeRequest back to back") — is GitHub's text with the nouns
-swapped.
+`postReview`/`listCommits`/`getMergeBase`/`push` on MRs, the worktree-oriented JSDoc ("mount a
+commit as a worktree", "push then createMergeRequest back to back") — is GitHub's text with the
+nouns swapped.
 
 ### 6. Gatekeeper DO: caching, actions, simulation (GitLabGatekeeperImpl)
 

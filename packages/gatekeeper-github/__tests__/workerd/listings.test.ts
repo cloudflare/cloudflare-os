@@ -15,6 +15,8 @@ import type { GatekeeperProps, ListingMethod, Outcome } from "./worker";
 const OWNER = "acme";
 const REPO = "widgets";
 const API_BASE = `https://api.github.com/repos/${OWNER}/${REPO}`;
+/** The bound repository in a pull request branch's REST shape. */
+const REST_REPO = { owner: { login: OWNER }, name: REPO };
 
 /** A REST response row, as JSON. */
 type Row = Record<string, unknown>;
@@ -44,8 +46,8 @@ function pull(number: number, overrides: Row = {}): Row {
     title: `PR ${number}`,
     draft: false,
     merged_at: null,
-    head: { ref: `feature-${number}`, sha: "b".repeat(40), repo: null },
-    base: { ref: "main", sha: "a".repeat(40), repo: null },
+    head: { ref: `feature-${number}`, sha: "b".repeat(40), repo: REST_REPO },
+    base: { ref: "main", sha: "a".repeat(40), repo: REST_REPO },
     ...overrides,
   });
   return row;

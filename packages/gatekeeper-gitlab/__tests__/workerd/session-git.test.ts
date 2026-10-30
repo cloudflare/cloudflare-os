@@ -218,6 +218,24 @@ describe("GitLabMergeRequestImpl advertising", () => {
     expect(queue.observations).toEqual([]);
     expect(submitted).toEqual([{ title: "Merge merge request !7", implementsRevert: false }]);
   });
+
+  it("pushes to its own merge request, declares the commit, and queues nothing once it is there", async () => {
+    const queue = new TestApprovalQueue();
+    const prepared: string[][] = [];
+    const submitted: unknown[] = [];
+    let action: object | null = { type: "push", branch: "feature" };
+    const session = mrSession(queue, "7", {
+      prepareMergeRequestPush: async (id: string, commitId: string) => { prepared.push([id, commitId]); return action; },
+      submitActionForApproval: async (_q: unknown, _action: unknown, presentation: unknown) => { submitted.push(presentation); },
+    });
+    await session.push(oid(1));
+    action = null; // the source branch is already at the commit
+    await session.push(oid(1));
+    await expect(session.push("abc123")).rejects.toThrow(/full 40-character commit id/);
+    expect(prepared).toEqual([["7", oid(1)], ["7", oid(1)]]);
+    expect(submitted).toMatchObject([{ pushedCommits: [oid(1)], implementsRevert: true }]);
+    expect(queue.observations).toEqual([]);
+  });
 });
 
 function prepare(type: string) {

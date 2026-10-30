@@ -2688,18 +2688,55 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * exempt (no old head to fast-forward from; the zero-id compare-and-swap at apply protects
    * against a branch appearing in the interim), and `force` skips only this policy check -- it
    * does not loosen the old-sha match at apply.
+   *
+   * `mergeRequest` names the merge request whose source branch this push is for
+   * (`prepareMergeRequestPush`): the branch must then exist, since recreating it would not restore
+   * the merge request.
    */
-  async preparePush(branch: string, commitId: GitOid, force: boolean, gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
+  async preparePush(branch: string, commitId: GitOid, force: boolean, gitCache: RpcStub<GitCache>,
+                    mergeRequest?: string): Promise<PushAction | null> {
+    const target = mergeRequest === undefined ? `branch "${branch}"` : `merge request ${mergeRequest}`;
     const realHead = (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null;
-    const expectedOldSha = this.#simulateBranchHead(branch, realHead) ?? ZERO_OID;
+    const head = this.#simulateBranchHead(branch, realHead);
+    if (head === null && mergeRequest !== undefined) {
+      throw new Error(`Cannot push to ${target}: its source branch "${branch}" no longer exists.`);
+    }
+    const expectedOldSha = head ?? ZERO_OID;
     if (expectedOldSha === commitId) return null;
     if (!force && expectedOldSha !== ZERO_OID && !(await gitCache.isAncestor(expectedOldSha, commitId))) {
       throw new Error(
-        `Cannot push to branch "${branch}": its current head ${expectedOldSha} is not an ancestor of ` +
-        `${commitId}, so this push is not a fast-forward -- the branch has moved past the head this work ` +
-        `was based on. Pull the branch's new head and rebase onto it, or pass force: true to overwrite the branch.`);
+        `Cannot push to ${target}: its current head ${expectedOldSha} is not an ancestor of ${commitId}, so this push ` +
+        `is not a fast-forward -- it has moved past the head this work was based on. Pull its new head and rebase ` +
+        `onto it, ${mergeRequest === undefined ? "or pass force: true to overwrite the branch." : "or merge it in."}`);
     }
     return { type: "push", ...this.#base(), branch, expectedOldSha, newSha: commitId, force };
+  }
+
+  /**
+   * `GitLabMergeRequest.push()`: `preparePush` to the merge request's source branch, never forced.
+   * Refused for a merged merge request, which no push can reach, and for one from a fork, whose
+   * source branch is in a project this connection does not reach.
+   */
+  async prepareMergeRequestPush(mergeRequestId: string, commitId: GitOid, gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
+    const label = mergeRequestId.startsWith("~") ? mergeRequestId : `!${mergeRequestId}`;
+    const realId = this.#realIdOf(mergeRequestId);
+    let branch: string;
+    if (realId === undefined) {
+      const create = this.#findCreateAction(mergeRequestId, "mergeRequest");
+      if (!create) throw new Error(`Provisional merge request ${mergeRequestId} is no longer available.`);
+      branch = create.options.sourceBranch;
+    } else {
+      const mr = await this.#getRawMergeRequest(realId);
+      if (mr.state === "merged") {
+        throw new Error(`Cannot push to merge request ${label}: it has been merged, so a push would not reach it. ` +
+          `Push to a new branch and open a merge request instead.`);
+      }
+      if (mr.source_project_id !== mr.target_project_id) {
+        throw new Error(`Cannot push to merge request ${label}: its source branch is in a fork, and pushing to a fork is not supported.`);
+      }
+      branch = mr.source_branch;
+    }
+    return await this.preparePush(branch, commitId, false, gitCache, label);
   }
 
   /** Whether GitLab knows this commit (the anchor test for pending-chain walks). */
