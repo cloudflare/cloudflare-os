@@ -977,7 +977,7 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
       messagePages(this.ctx, this.#spaceName, { ...options, order: options.order ?? "newestFirst" }),
       "Read Google Chat messages",
       count => `Read ${count} message(s) from ${this.#spaceName}, including sender, text, ` +
-        "attachments, and reactions.");
+        "cards, attachments, and reactions.");
   }
 
   async searchMessages(query: ChatSpaceMessageSearch): Promise<Cursor<ChatMessageEntry>> {
@@ -1200,7 +1200,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     await observe(
       this.ctx,
       "Read a Google Chat message",
-      `Read the sender, text, attachments, and reactions of message ${info.id} in ` +
+      `Read the sender, text, cards, attachments, and reactions of message ${info.id} in ` +
       `${info.spaceId}.`);
     return info;
   }
@@ -1400,7 +1400,7 @@ class ChatHookDeliveryImpl extends RpcTarget implements ChatHookDelivery {
     try {
       await observe(ctx, "Receive a new Google Chat message",
         `Read a new message from ${userLabel(info.sender)} in ${threadName ?? spaceName}, ` +
-        "including its text, attachments, and reactions.");
+        "including its text, cards, attachments, and reactions.");
     } catch (error) {
       message[Symbol.dispose]();
       conversation[Symbol.dispose]();

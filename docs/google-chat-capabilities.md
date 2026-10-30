@@ -174,7 +174,13 @@ declared filters, so the field is dropped even if an agent sends it. Thread capa
 Writes use `space.post(text)`, `thread.post(text)`, `message.reply(text)`, and
 `message.edit(text)`. Memberships, users, and reactions are plain records. A message's
 metadata already lists its attachments; `message.getAttachment(id)` returns the capability that
-reads one. Event history, explicit message deletion, outgoing uploads, and generic
+reads one. It also carries `cards`, what a Chat app's cards show (current `cardsV2` and legacy
+`cards` alike): each card's header title and subtitle, its section headers, labels and text items
+as one `text` string, and the http(s) links its buttons, chips, images and clickable text open,
+with their labels. Card text keeps the app's own markup. This content never appears in `text` or
+`formattedText`, which keep their meaning. Cards are read-only data: form inputs, action
+callbacks, and other links are dropped, and the gatekeeper never fetches a card's links or runs
+its actions. Event history, explicit message deletion, outgoing uploads, and generic
 drafts/patches are absent. Undo-send remains supported internally.
 
 `space.post(text)` posts a top-level message, which in a threaded conversation starts a new
@@ -306,9 +312,11 @@ single-thread bindings, pending posts/replies/edits, edit ownership, rejection, 
 already-deleted sends), the apply/reject race, and retrieving temporary IDs after restart.
 Attenuation regressions cover every message creation path and its thread, attachment, and
 reaction descendants. Pure tests cover provider thread support, search keywords and mentions,
-conversation references, time bounds, scope filtering, and overlays. Durable `spawnCallable`
-handoff uses the existing gadget restoration mechanism; it is not exercised end-to-end by the
-Chat gatekeeper suite. Hook tests drive signed Pub/Sub pushes through the worker: push
+conversation references, time bounds, scope filtering, overlays, and card extraction (`cardsV2`
+and legacy cards, card-only messages, and malformed or unsupported widgets); workerd tests check
+that card content reaches history, `getMessage()`, metadata, and hook deliveries without its links
+being fetched. Durable `spawnCallable` handoff uses the existing gadget restoration mechanism; it
+is not exercised end-to-end by the Chat gatekeeper suite. Hook tests drive signed Pub/Sub pushes through the worker: push
 authentication, per-account and per-thread delivery, self-authored and duplicate messages,
 delivery and renewal retries, disable, the authority check, and a hook's reply applying as an
 action. An identity regression checks that Chat-provided names reach message,

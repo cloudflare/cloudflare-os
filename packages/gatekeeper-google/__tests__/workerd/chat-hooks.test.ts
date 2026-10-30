@@ -265,6 +265,28 @@ it("delivers the account's Google Chat posts only to hooks that ask, never what 
   expect((await others.hooks.readHook()).received.map(info => info.id)).toEqual([bobs.name]);
 });
 
+it("delivers a Chat app's card content with its message", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+
+  const alert: ChatMessageRaw = {
+    ...chatMessage("app"), sender: {name: "users/app", type: "BOT"}, text: "",
+    cardsV2: [{card: {
+      header: {title: "example alert"},
+      sections: [{widgets: [
+        {buttonList: {buttons: [{text: "Runbook", onClick: {openLink: {url: "https://runbook.example/r"}}}]}},
+      ]}],
+    }}],
+  };
+  await push("ada", [alert]);
+  await deliver();
+
+  expect((await ada.hooks.readHook()).received.map(info => info.cards)).toEqual([[{
+    title: "example alert", text: "", links: [{label: "Runbook", url: "https://runbook.example/r"}],
+  }]]);
+});
+
 it("lets a hook answer through the conversation it watches, where messages have no threads", async () => {
   const google = mockGoogle();
   google.unthreaded = true;
