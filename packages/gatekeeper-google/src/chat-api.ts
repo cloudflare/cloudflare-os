@@ -12,6 +12,7 @@
 // user could reach in the Chat UI.
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { chatCardsFromRaw } from "./chat-cards";
 import { readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
@@ -290,6 +291,10 @@ export type ChatMessageRaw = {
   thread?: { name?: string };
   space?: { name?: string };
   attachment?: ChatAttachmentRaw[];
+  /** Cards a Chat app attached: untrusted and loosely shaped, so read only by `chatCardsFromRaw`. */
+  cardsV2?: { cardId?: string; card?: unknown }[];
+  /** The legacy card format, which older Chat apps still send. */
+  cards?: unknown[];
   emojiReactionSummaries?: { emoji?: ChatEmojiRaw; reactionCount?: number }[];
   threadReply?: boolean;
   deletionMetadata?: { deletionType?: string };
@@ -429,6 +434,7 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
     ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
     isReply: raw.threadReply === true,
     attachments: (raw.attachment ?? []).map(chatAttachmentInfoFromRaw),
+    cards: chatCardsFromRaw(raw),
     reactions: (raw.emojiReactionSummaries ?? []).map(summary => ({
       emoji: chatEmojiFromRaw(summary.emoji),
       count: summary.reactionCount ?? 0,
