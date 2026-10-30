@@ -1,4 +1,4 @@
-import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, type EmbeddedView, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
@@ -544,13 +544,17 @@ export interface AgentHooks {
   /**
    * Run one executeCode tool call. `worktreeTurn` is the turn's worktree state (see
    * WorktreeTurnAccess): the overseer registers it for the duration of the execution so the
-   * chat's worktree env bindings can resolve against the running turn.
+   * chat's worktree env bindings can resolve against the running turn. With `showsViews`, the
+   * code can show views with `embedView`; without it, it has no `embedView`. Returns the code's
+   * log, the views it showed, and whether it failed: it threw, or showed views the kernel refused,
+   * in which case `views` is empty and the log says why.
    */
   executeCodeMode(chatId: number, code: string,
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
                    onOutputText?: (delta: string) => void,
-                   worktreeTurn?: WorktreeTurnAccess): Promise<string>;
+                   worktreeTurn?: WorktreeTurnAccess,
+                   showsViews?: boolean): Promise<{log: string, views: EmbeddedView[], failed: boolean}>;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
@@ -674,6 +678,33 @@ export interface AgentHooks {
   }>;
 }
 
+/** The most views one `executeCode` call may show with `embedView` (see plans/live-views.md). */
+export const MAX_EMBEDDED_VIEWS = 4;
+/** The largest view `embedView` may show, measured as UTF-8 JSON. */
+export const MAX_EMBEDDED_VIEW_BYTES = 256 * 1024;
+
+// The most the views of a step's executeCode calls may add to its message, which one storage
+// record holds with the rest of the step; it bounds nothing else in the message, such as the
+// code's logs. A call within its own limits fits in a step on its own, unless its titles and log
+// run to hundreds of kilobytes.
+const MAX_STEP_VIEWS_SIZE = MAX_CODE_CHANGE_SIZE / 2;
+
+// An upper bound on the bytes a call's views add to its stored tool call, measured as
+// codeChangeSerializedSize measures a change: two bytes per code unit of every string, plus a
+// generous share per node. They add themselves and the output `lines` naming them, and a title
+// outside Latin-1 stores the whole output, the code's `log` with it, at two bytes per code unit.
+function embeddedViewsSerializedSize(
+    views: readonly EmbeddedView[], lines: readonly string[], log: string): number {
+  if (views.length === 0) return 0;
+  let bytes = log.length;
+  for (let {title, html, css = "", script = "", data = ""} of views) {
+    // The view, its five strings, and its share of the array.
+    bytes += 7 * 32 + 2 * (title.length + html.length + css.length + script.length + data.length);
+  }
+  for (let line of lines) bytes += 32 + 2 * line.length;
+  return bytes;
+}
+
 // =======================================================================================
 // Agent system prompt and tool descriptions
 
@@ -702,9 +733,13 @@ Note that users rarely ask for "a Gadget" in those words. They ask for a thing: 
 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
 
-# Live views in your answers
+# Live views
 
-You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
+You can show the user an interactive view in the chat in two ways. When you already have what the view shows, write it inline in your answer. When its data comes from code, such as a Gadget, a connection or values you work out, show it from \`executeCode\` with \`embedView\`, so the data reaches the view without you retyping it. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
+
+## Inline views
+
+You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams.
 
 \`\`\`
 Spending on food rose 18% in October, mostly eating out.
@@ -728,7 +763,34 @@ Spending on food rose 18% in October, mostly eating out.
 
 * Put the opening and closing tags on lines of their own, with no indent, outside code fences. The \`<title>\` names the view but is not shown. The body is the whole view, and it sits in your answer with no border or padding around it, so draw any heading or box yourself. A block with nothing but a title shows an error.
 * Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`.
-* A view shows only what you write into it: it has no \`env\` and no network. To show data from Gadgets, connections or the web, read it with \`executeCode\` first, then write the values into the view's code. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
+
+## Views from code
+
+You can show a view by calling \`embedView\` in code you run with the \`executeCode\` tool. Read or work out the data the view needs in the same code, and pass it as \`data\`: the view gets it as it is, so never retype values into the view's code. Call the tool; never paste its code into your answer. The view is your answer: once the step that showed it is done, your turn ends. Write anything you want to say before the tool call, and do any other work first.
+
+\`\`\`
+export default async function(self, env) {
+  embedView({
+    title: "Food spending by week",
+    html: '<h3>Food spending by week</h3><div id="weeks"></div>',
+    data: { limit: 120, weeks: [[1, 96], [2, 132], [3, 88], [4, 141]] },
+    script: data => {
+      const list = document.getElementById("weeks");
+      for (const [week, total] of data.weeks) {
+        const bar = list.appendChild(document.createElement("button"));
+        bar.textContent = \`Week \${week}: \${total} of \${data.limit}\`;
+        bar.onclick = () => agent.send(\`Show me week \${week} in detail.\`);
+      }
+    },
+  });
+}
+\`\`\`
+
+* \`embedView({ title, html, css, data, script })\`: \`title\` names the view but is not shown. \`html\` is the whole view, and it sits in the chat with no border or padding around it, so draw any heading or box yourself. \`css\` is its style. \`data\` is any JSON value. \`script\` is a function that runs in the view after its markup, called with \`data\`: it sees only \`data\` and the view's globals, such as \`document\` and \`agent\`, not the variables in the code around it. Only \`title\` and \`html\` are required. One \`executeCode\` call shows at most ${MAX_EMBEDDED_VIEWS} views, each up to ${MAX_EMBEDDED_VIEW_BYTES / 1024} KiB.
+
+## Every view
+
+* A view has no \`env\` and no network: an inline view shows only what you write into it, and a view from code shows its \`data\` and what its code draws. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
 * The view's code runs again each time the view scrolls into sight, and for each person viewing the chat.
 * \`agent.send(message)\` asks the user to send you \`message\`, e.g. after they click a bar. The Workshop shows the message under the view and sends it as the user's own chat message only when they click Send. Write it in the user's words, as in the example.
 * For colours, use the CSS variables \`--color-kumo-base\`, \`--color-kumo-elevated\`, \`--color-kumo-line\`, \`--text-color-kumo-default\`, \`--text-color-kumo-subtle\`, \`--color-kumo-brand\`, \`--color-kumo-success\`, \`--color-kumo-warning\` and \`--color-kumo-danger\`, so the view reads well in light and dark themes. The page background is transparent, and text already has the chat's font, size and colour.
@@ -1336,6 +1398,8 @@ Note that this differs from the \`env\` a Gadget's own code sees: a Gadget's ser
 
 When the user asks you to just do a task that can be done with these bindings, you should use executeCode to perform the task, instead of adding code to a gadget to do it.
 
+The code can also call the global \`embedView(spec)\` to show the user a live view (see "Live views").
+
 ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
 
@@ -1548,6 +1612,59 @@ export async function runAgent(
     if (isCompactionTurn(history.chatMessages)) return undefined;
     abortSignal.throwIfAborted();
   }
+}
+
+/**
+ * The tool-call log of one completed model step: each call the message made, with its result's
+ * success notes (pi `details`) or its error, then the error-path `notes` the tools recorded (see
+ * toolCallNotes). The turn_end barrier persists it, and finishTurn reads it first.
+ */
+function stepToolCalls(message: AssistantMessage, toolResults: ToolResultMessage[],
+                       notes: ReadonlyMap<string, Partial<AiToolCall>>): AiToolCall[] {
+  let resultsById = new Map(toolResults.map(r => [r.toolCallId, r]));
+  return message.content.flatMap(block => {
+    if (block.type !== "toolCall") return [];
+    let result = <AiToolCall>{
+      toolCallId: block.id,
+      toolName: block.name,
+      input: block.arguments,
+    };
+    let toolResultMsg = resultsById.get(block.id);
+    if (!toolResultMsg) {
+      // A cancellation broke the tool batch before this call could run (the only way a completed
+      // turn's tool call lacks a result). Record the same error pi reports for a call an abort
+      // pre-empted, so replay shows the model an honest failure rather than a fabricated success
+      // (or a missing tool result, which providers reject).
+      result.error = "Operation aborted";
+    } else if (toolResultMsg.isError) {
+      // The result text is pi's rendering of the failure (thrown tool errors, schema validation
+      // failures, unknown tools). Our own tools' catch blocks record the same text via
+      // toolCallNotes (merged below), along with extra bookkeeping like observedCodeVersion.
+      result.error = toolResultMsg.content
+          .map(part => part.type === "text" ? part.text : "").join("") ||
+          "Tool call failed.";
+    } else if (toolResultMsg.details) {
+      // Success notes (observedCodeVersion, recorded output) ride the result's details.
+      Object.assign(result, toolResultMsg.details);
+    }
+    let note = notes.get(block.id);
+    if (note) {
+      Object.assign(result, note);
+    }
+    return [result];
+  });
+}
+
+/**
+ * Whether a step answered with a view, which ends the turn (see plans/live-views.md): some
+ * executeCode call in it showed one with `embedView`, and no executeCode call failed -- refused
+ * by pi (a schema rejection, an abort), thrown, or its views refused -- so the agent can fix one
+ * that did. finishTurn asks it of each step, and the overseer of the last stored step on resume.
+ */
+export function answeredWithView(toolCalls: readonly AiToolCall[]): boolean {
+  let code = toolCalls.filter(call => call.toolName === "executeCode");
+  return code.some(call => call.views !== undefined) &&
+      !code.some(call => call.error !== undefined || call.failed);
 }
 
 async function runAgentPass(
@@ -2921,8 +3038,10 @@ async function runAgentPass(
   // together -- and the resumed model re-runs it cleanly. Turn-owned and passed explicitly
   // where needed (the barrier now; executeCodeMode once worktree writes join it). `bytes` is
   // the buffered changes' summed codeChangeSerializedSize, checked against MAX_CODE_CHANGE_SIZE
-  // at each write call (see appendAgentEdit).
-  let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0};
+  // at each write call (see appendAgentEdit). `viewBytes` is the same measure of the views the
+  // step's executeCode calls showed, which its message record holds, checked against
+  // MAX_STEP_VIEWS_SIZE at each call that shows some.
+  let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0, viewBytes: 0};
 
   // (A crashed predecessor leaves no stranded state to recover here: each step's rows, pins,
   // creation/binding stamps and messages are committed in one barrier transaction, so replay of
@@ -3897,15 +4016,39 @@ async function runAgentPass(
                 "step ends. End this response and call executeCode again in your next step.");
           }
 
-          let output = await hooks.executeCodeMode(
+          let {log, views, failed} = await hooks.executeCodeMode(
               chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
               delta => emitStreamEvent({
                 type: "toolOutputDelta",
                 toolCallId,
                 delta,
               }),
-              worktreeTurnAccess);
-          return toolResult(`${output}`, {output: `${output}`} as Partial<AiToolCall>);
+              worktreeTurnAccess,
+              // A spawned or callable agent's chat has no person reading it to see a view.
+              !agentContext.spawnerConfig);
+          // Every call's views are stored in the step's one message, so a call that would
+          // overfill it is refused as the kernel refuses views past a call's own limits.
+          // The model reads which views the user now sees; replay reads `output` back as is.
+          let lines = views.map(view => `Showed the user a view: ${view.title}.`);
+          let viewsSize = embeddedViewsSerializedSize(views, lines, log);
+          if (stepBuffer.viewBytes + viewsSize > MAX_STEP_VIEWS_SIZE) {
+            let refused = "embedView: this step's views are too large to save together, so none " +
+                "of this call's was shown. The rest of the code ran; in your next step, show " +
+                "these views again without repeating it.";
+            emitStreamEvent({type: "toolOutputDelta", toolCallId, delta: `\n\n${refused}`});
+            log = `${log}\n\n${refused}`;
+            views = [];
+            lines = [];
+            failed = true;
+          } else {
+            stepBuffer.viewBytes += viewsSize;
+          }
+          let output = [log, ...lines].join("\n");
+          return toolResult(output, {
+            output,
+            ...views.length > 0 ? {views} : {},
+            ...failed ? {failed: true} : {},
+          });
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
@@ -4168,41 +4311,9 @@ async function runAgentPass(
           if (reasoning) {
             msg.reasoning = reasoning;
           }
-          let toolCallBlocks = message.content.filter(block => block.type === "toolCall");
-          if (toolCallBlocks.length > 0) {
-            let resultsById = new Map(event.toolResults.map(r => [r.toolCallId, r]));
-            msg.toolCalls = toolCallBlocks.map(block => {
-              let result = <AiToolCall>{
-                toolCallId: block.id,
-                toolName: block.name as AiToolCall["toolName"],
-                input: block.arguments,
-              };
-              let toolResultMsg = resultsById.get(block.id);
-              if (!toolResultMsg) {
-                // A cancellation broke the tool batch before this call could run (the only way
-                // a completed turn's tool call lacks a result). Record the same error pi reports
-                // for a call an abort pre-empted, so replay shows the model an honest failure
-                // rather than a fabricated success (or a missing tool result, which providers
-                // reject).
-                result.error = "Operation aborted";
-              } else if (toolResultMsg.isError) {
-                // The result text is pi's rendering of the failure (thrown tool errors, schema
-                // validation failures, unknown tools). Our own tools' catch blocks record the
-                // same text via toolCallNotes (merged below), along with extra bookkeeping like
-                // observedCodeVersion.
-                result.error = toolResultMsg.content
-                    .map(part => part.type === "text" ? part.text : "").join("") ||
-                    "Tool call failed.";
-              } else if (toolResultMsg.details) {
-                // Success notes (observedCodeVersion, recorded output) ride the result's details.
-                Object.assign(result, toolResultMsg.details);
-              }
-              let notes = toolCallNotes.get(block.id);
-              if (notes) {
-                Object.assign(result, notes);
-              }
-              return result;
-            });
+          let toolCalls = stepToolCalls(message, event.toolResults, toolCallNotes);
+          if (toolCalls.length > 0) {
+            msg.toolCalls = toolCalls;
           }
 
           // The model-facing snapshot rides along for the overseer to persist beside the display
@@ -4237,6 +4348,7 @@ async function runAgentPass(
           let stepChanges = stepBuffer.changes;
           stepBuffer.changes = [];
           stepBuffer.bytes = 0;
+          stepBuffer.viewBytes = 0;
           let createdGadgets = pendingCreatedGadgets;
           pendingCreatedGadgets = [];
           let createdWorktrees = pendingCreatedWorktrees;
@@ -4414,6 +4526,8 @@ async function runAgentPass(
           // requestConnection (e.g. unresolvable resource) leaves this false so the agent can fix
           // the request and retry in the same turn.
           decisionRequested ||
+          // A view the agent showed is its answer.
+          answeredWithView(stepToolCalls(message, toolResults, toolCallNotes)) ||
           // Wait for approval before continuing against state that may not reflect the action.
           awaitingActionDecision) {
         return {action: "end"};
