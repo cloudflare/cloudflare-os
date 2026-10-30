@@ -14783,7 +14783,7 @@
       "id": "Overseer.listChats",
       "service": "Overseer",
       "method": "listChats",
-      "description": "List past AI chats.",
+      "description": "List past AI chats, with each one's id and title.",
       "inputSchema": {
         "type": "object",
         "properties": {},

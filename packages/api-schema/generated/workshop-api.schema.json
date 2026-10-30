@@ -3692,7 +3692,7 @@
         },
         {
           "name": "listChats",
-          "doc": "List past AI chats.",
+          "doc": "List past AI chats, with each one's id and title.",
           "params": [],
           "returns": {
             "kind": "array",

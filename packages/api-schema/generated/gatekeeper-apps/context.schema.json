@@ -1109,6 +1109,17 @@
         "path": {
           "kind": "string"
         },
+        "skillError": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
         "skillName": {
           "kind": "union",
           "branches": [
@@ -1119,6 +1130,14 @@
               "kind": "undefined"
             }
           ]
+        }
+      },
+      "propertyDocs": {
+        "skillError": {
+          "doc": "Set when this document is a SKILL.md whose frontmatter fails validation; says why."
+        },
+        "skillName": {
+          "doc": "Set when this document is a valid skill."
         }
       }
     },

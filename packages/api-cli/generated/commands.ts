@@ -2237,7 +2237,7 @@ export const table: ApiTable = {
         },
         "list-chats": {
           method: "listChats",
-          doc: "List past AI chats.",
+          doc: "List past AI chats, with each one's id and title.",
           args: [],
           returns: {
             kind: "value",
@@ -3454,7 +3454,7 @@ export const table: ApiTable = {
           ],
           returns: {
             kind: "value",
-            type: "ContextDocumentSummary[], where ContextDocumentSummary = { contentType: string; description: string; lastUpdated: Date; name: string; path: string; skillName?: string }",
+            type: "ContextDocumentSummary[], where ContextDocumentSummary = { contentType: string; description: string; lastUpdated: Date; name: string; path: string; skillError?: string; skillName?: string }",
           },
         },
         "list-enabled-context-collections": {
