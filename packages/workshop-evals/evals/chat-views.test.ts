@@ -106,10 +106,28 @@ async function failedThrough(
   return (await verifier.collect(verify)).filter(check => !check.pass).map(check => check.id);
 }
 
-/** The IDs of the checks `verify` fails on an answer made of `views`. */
+/** An answer whose `executeCode` call showed `views` with `embedView`. */
+function shownFromCode(...views: string[]): AiChatMessage[] {
+  return [{
+    chatId: 1, sequence: 5, timestamp: new Date(), type: "message", message: "",
+    author: { type: "agent", id: "agent", name: "agent" },
+    toolCalls: [{
+      toolCallId: "show", toolName: "executeCode", input: { code: "export default async function() {}" },
+      output: views.map(() => "Showed the user a view: Spending.").join("\n"),
+      views: views.map(html => ({ title: "Spending", html })),
+    }],
+  }];
+}
+
+/** The IDs of the checks `verify` fails on an answer made of `views`, or on `messages`. */
 function failed(
     verify: (verifier: EvalVerifier) => Promise<void>, ...views: string[]): Promise<string[]> {
-  return failedThrough(new EvalVerifier(session, [LOG], answer(...views)), verify);
+  return failedOn(verify, answer(...views));
+}
+
+function failedOn(
+    verify: (verifier: EvalVerifier) => Promise<void>, messages: AiChatMessage[]): Promise<string[]> {
+  return failedThrough(new EvalVerifier(session, [LOG], messages), verify);
 }
 
 // A turn that creates the Expense Log and writes its code.
@@ -126,7 +144,7 @@ const BUILT: AiChatMessage[] = [{
 /**
  * The IDs of the checks the Expense Log's turn fails on the Log `connect` makes, before and after
  * its changes are accepted, as the harness runs them, then those the spending view's turn fails on
- * an answer of `view`.
+ * `view` shown from code.
  */
 async function failedLog(connect: () => ExpenseLog, view: string): Promise<string[]> {
   const logSession = connectingTo(connect);
@@ -134,7 +152,7 @@ async function failedLog(connect: () => ExpenseLog, view: string): Promise<strin
   return [
     ...await failedThrough(new EvalVerifier(logSession, [LOG], BUILT, chat), verifyExpenseLog),
     ...await failedThrough(new EvalVerifier(logSession, [LOG], BUILT, chat), verifyExpenseLogKept),
-    ...await failedThrough(new EvalVerifier(logSession, [LOG], answer(view)), verifySpendingView),
+    ...await failedThrough(new EvalVerifier(logSession, [LOG], shownFromCode(view)), verifySpendingView),
   ];
 }
 
@@ -476,8 +494,14 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
   });
 
   describe("the spending view", () => {
+    const spendingFailed = (view: string) => failedOn(verifySpendingView, shownFromCode(view));
+
     it("passes a view of each category's total, with its share beside it", async ({ expect }) => {
-      expect(await failed(verifySpendingView, spending(TOTALS))).toEqual([]);
+      expect(await spendingFailed(spending(TOTALS))).toEqual([]);
+    });
+
+    it("fails the view written in the answer rather than shown from code", async ({ expect }) => {
+      expect(await failed(verifySpendingView, spending(TOTALS))).toEqual(["shows-gadget-data-from-code"]);
     });
 
     it("passes the totals of an Expense Log that stores its entries", async ({ expect }) => {
@@ -499,17 +523,17 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
         <script type="module">
           document.querySelector("button").addEventListener("click", () => agent.send("Tell me about travel"));
         </script>`;
-      expect(await failed(verifySpendingView, line(420, 185, 96))).toEqual([]);
-      expect(await failed(verifySpendingView, line(185, 96, 420))).toEqual(["shows-each-category-total"]);
+      expect(await spendingFailed(line(420, 185, 96))).toEqual([]);
+      expect(await spendingFailed(line(185, 96, 420))).toEqual(["shows-each-category-total"]);
     });
 
     it("fails totals shown against the wrong categories", async ({ expect }) => {
-      expect(await failed(verifySpendingView, spending({ Food: 185, Travel: 96, Books: 420 }, " ")))
+      expect(await spendingFailed(spending({ Food: 185, Travel: 96, Books: 420 }, " ")))
         .toEqual(["shows-each-category-total"]);
     });
 
     it("fails a message sent as the view loads, from a button that does nothing", async ({ expect }) => {
-      expect(await failed(verifySpendingView, spending(TOTALS).replace(
+      expect(await spendingFailed(spending(TOTALS).replace(
           `button.onclick = () => agent.send("Tell me about my " + button.dataset.category + " spending");`,
           `if (button.dataset.category === "Travel") button.onclick = agent.send("What about travel?");`)))
         .toEqual(["asks-about-a-category"]);
