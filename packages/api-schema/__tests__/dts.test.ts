@@ -665,12 +665,35 @@ describe("properties", () => {
       },
       Both: { properties: [{ name: "tag", doc: "", type: { kind: "string" }, optional: true }] },
     });
-    expect(emitDeclarations(both, { root: "Api" }).full).toContain(`export interface Both {
-  readonly tag?: Awaitable<string>;
+    const declarations = emitDeclarations(both, { root: "Api" }).full;
+    expect(declarations).toContain(`export interface Both {
+  readonly tag?: Awaitable<string | undefined>;
   /** Disposes of this stub, releasing the capability it holds. Absent on an implementation. */
   [Symbol.dispose]?(): void;
 }
 `);
+    expect(diagnose({
+      "api.d.ts": declarations,
+      "caller.ts": `import type { RpcStub, RpcTarget } from "capnweb";
+import type * as Generated from "./api.js";
+interface Both extends RpcTarget {
+  tag?: string;
+}
+interface Api extends RpcTarget {
+  swap(both: RpcStub<Both>): Promise<RpcStub<Both>>;
+}
+declare const held: RpcStub<Api>;
+declare const both: RpcStub<Both>;
+export const generated: Generated.Both = both;
+export async function swapped(): Promise<Generated.Both> {
+  return await held.swap(both);
+}
+export const implemented: Generated.Both = { tag: "x" };
+export async function read(b: Generated.Both): Promise<string | undefined> {
+  return await b.tag;
+}
+`,
+    })).toEqual([]);
   });
 
   // capnweb types reading a property of a stub as an `RpcPromise` of its value, which pipelines, and

@@ -404,7 +404,8 @@ class Renderer {
    * A property of a service whose capability is in `position`: on a held one a call's result,
    * there whether or not it is optional; on an implemented one the value itself, which an
    * implementation may leave out when it is optional; on one reached both ways either, an
-   * `Awaitable<T>` that a caller reading it awaits.
+   * `Awaitable<T>` that a caller reading it awaits, of `T | undefined` when it is optional, as a
+   * held one's promise is.
    */
   #property(property: SchemaProperty, position: Position): string {
     const doc = docComment(withTags(property.doc, [], { deprecated: property.deprecated }), "  ");
@@ -414,7 +415,7 @@ class Renderer {
       return `${doc}  readonly ${key}: ${this.#result(type, "  ")};\n`;
     }
     const type = position === "in" ? this.#type(property.type, "  ", position)
-      : this.#awaitableOf(property.type, "  ", position);
+      : this.#awaitableOf(property.optional ? orUndefined(property.type) : property.type, "  ", position);
     return `${doc}  readonly ${key}${property.optional ? "?" : ""}: ${type};\n`;
   }
 
