@@ -556,7 +556,16 @@ export type GatekeeperUiFrame = {
   /** Complete HTML for the UI. Workshop hosts it in a sandboxed iframe. */
   iframeHtml: string;
 
-  /** Capability exposed to the iframe for any RPCs needed by the UI. */
+  /**
+   * Capability exposed to the iframe for any RPCs needed by the UI. A gatekeeper app's (see
+   * AuthenticatedApi.getGatekeeperApp()) implements the interface its package.json names as
+   * `cloudflareOs.appApi`; a configurator's, that vendor's `*ConfiguratorUI` class in
+   * `packages/gatekeeper-<vendor>/src/`, which helps look up what fills the URL the configurator
+   * yields: for a resource configurator, the resource URL Overseer.newGatekeeper() takes (see
+   * AuthenticatedApi.startResourceConfigurator()); for a creation configurator, the
+   * CreationApproval.configuration Overseer.approveAction() takes (see
+   * AuthenticatedApi.startCreationConfigurator()).
+   */
   ui: RpcStub<RpcTarget>;
 }
 
@@ -1417,6 +1426,7 @@ export interface ApprovalQueue extends ObservationAuthorizer {
         description: HookDescription): Promise<void>;
 }
 
+/** What a gadget is about to read from an external service, for `authorizeObservation()`. */
 export type ObservationDescription = {
   /** Brief one-line summary of the observation, like an email subject line, to display in a list. */
   title: string;
