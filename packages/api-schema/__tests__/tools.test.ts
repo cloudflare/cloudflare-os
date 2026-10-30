@@ -277,6 +277,16 @@ describe("reachability", () => {
       { root: "Api" })).toThrow(/Gone: held by Api.p, but not a service/);
   });
 
+  test("follows capabilities a readable stream carries, not a writable one's", () => {
+    const catalog = emitToolCatalog(schemaOf({
+      Root: service(method("handles", [], { kind: "readableStream", element: stub("Handle") }),
+        method("sink", [], { kind: "writableStream", element: stub("Sent") })),
+      Handle: service(method("close", [])),
+      Sent: service(method("hidden", [])),
+    }), { root: "Root" });
+    expect(catalog.tools.map((tool) => tool.id)).toEqual(["Handle.close", "Root.handles", "Root.sink"]);
+  });
+
   test("client-implemented services have no tools, even where a schema returns one", () => {
     const catalog = emitToolCatalog(schemaOf({
       Root: {

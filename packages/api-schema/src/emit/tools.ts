@@ -317,9 +317,9 @@ function withoutUndefined(shape: ApiShape): ApiShape | undefined {
 
 /**
  * The services of the capabilities a result or property value carries, wherever they sit in it:
- * the value itself, a union branch, an element or an object's property, through named shapes. A
- * function's parameters and result are the function's business, not the caller's, so they are not
- * followed.
+ * the value itself, a union branch, an element (a readable stream's too) or an object's property,
+ * through named shapes. A function's parameters and result are the function's business, not the
+ * caller's, so they are not followed, nor is a writable stream's element: the caller sends it.
  */
 function returnedServices(schema: Schema, shape: ApiShape, visited = new Set<string>()): string[] {
   switch (shape.kind) {
@@ -336,6 +336,8 @@ function returnedServices(schema: Schema, shape: ApiShape, visited = new Set<str
     case "array":
     case "set":
       return returnedServices(schema, shape.element, visited);
+    case "readableStream":
+      return shape.element ? returnedServices(schema, shape.element, visited) : [];
     case "map":
       return [...returnedServices(schema, shape.key, visited), ...returnedServices(schema, shape.value, visited)];
     case "tuple":
