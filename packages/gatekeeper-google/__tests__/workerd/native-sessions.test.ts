@@ -99,6 +99,7 @@ async function getAccessToken(): Promise<string> {
 }
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
+  async getAgentContext() { return null; }
   readonly observations: ObservationDescription[] = [];
   /** Titles this queue refuses to authorize. */
   readonly refuse = new Set<string>();

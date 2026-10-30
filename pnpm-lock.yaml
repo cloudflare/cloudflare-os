@@ -1269,6 +1269,9 @@ importers:
       '@gadgets/error-reporting':
         specifier: workspace:*
         version: link:../error-reporting
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
       '@gadgets/observability':
         specifier: workspace:*
         version: link:../observability

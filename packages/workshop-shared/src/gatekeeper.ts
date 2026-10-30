@@ -17,6 +17,7 @@
 // `Adapter` type is the root interface implemented by the service binding.
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import type { AgentContext } from "./agent-integration";
 
 /**
  * A pagination cursor.
@@ -282,6 +283,8 @@ export type AccountDescription = {
 
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
 export type ResourceDescription = {
+  /** HTTPS clone URL when this binding grants read access to the whole Git repository. */
+  gitRepositoryUrl?: string;
   /**
    * The resource's canonical URL. This can differ from the one passed to `newGatekeeper()`, if the
    * resource has more than one possible URL. Visiting this URL in a browser should actually open
@@ -1092,33 +1095,25 @@ export interface Gatekeeper<Session> extends DurableObject {
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   /**
-   * Stream a self-contained Git pack containing the requested objects and related objects
-   * selected by `options`. The stream contains raw PACK bytes, not Git protocol framing, and
-   * must not require delta bases from an earlier fetch.
+   * Read this resource's Git repository through smart HTTP (protocol v2). Accept only
+   * GET /info/refs?service=git-upload-pack and POST /git-upload-pack; the request URL must
+   * never select the upstream repository. Return the streamed Git protocol response.
    *
-   * The overseer will only ever pull objects that it knows the gatekeeper has, for one of the
-   * following reasons:
+   * Without observer, the overseer requests only objects already observed from this binding:
    * * The object is a commit this gatekeeper advertised via `GitCache.advertiseCommit()`.
    * * The object was referenced by another object populated by this gatekeeper (e.g. it is the
    *   parent of another commit from this gatekeeper).
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * Each requested object must be included or the stream must fail. The returned RPC capability
-   * also reports the terminal status: Workers RPC can replace a stream's original exception with
-   * a generic disconnect, so consumers must check `status()` after ingestion fails to recover
-   * the producer's error. After draining the stream, require `complete` before accepting the
-   * transfer. Dispose the capability when finished. A requested blob suppressed by
-   * `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
-   *
-   * With no filters, the pack must contain the complete trees and blobs for the requested
-   * commits. This supports native Git hydration as well as lazy cache population. Consumers own
-   * their storage/transfer limits: a full checkout must not inherit the DO cache's size limit.
+   * With observer, this is a new repository observation: require whole-repository access
+   * (describe().gitRepositoryUrl) and await observer.authorizeObservation before returning data.
+   * The overseer, not the guest, selects whether observer is required. Credentials stay here.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
    */
-  gitPull?(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer>;
+  gitPull?(request: Request, observer?: RpcStub<ObservationAuthorizer>): Promise<Response>;
 
   // ---------------------------------------------------------------------------
   // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
@@ -1303,6 +1298,8 @@ export interface SlashCommandProvider extends RpcTarget {
  * called before applying them.
  */
 export interface ApprovalQueue extends ObservationAuthorizer {
+  /** Original agent context for an explicitly granted integration; null for other callers. */
+  getAgentContext(): Promise<AgentContext | null>;
   // TODO: Method to indicate that the gadget tried to perform an action that the gatekeeper itself
   //   hasn't been authorized to do (e.g. the user hasn't authorized the right OAuth scopes). The
   //   system should direct the user to the right UI to authorize the action.
@@ -1910,10 +1907,10 @@ export interface GitCache extends RpcTarget {
 }
 
 /**
- * Hints provided to `Gatekeeper.gitPull()` which may help the gatekeeper decide how much to pull.
+ * Hints the cache's Git fetch composer uses to decide how much to pull.
  *
- * Filters may over-fetch, but must not omit objects when no filter is requested. See
- * `Gatekeeper.gitPull()` for the complete-tree and self-contained-pack requirements.
+ * Filters may over-fetch, but must not omit objects when no filter is requested. Cache pulls
+ * request self-contained packs (no haves); native Git consumers negotiate their own packs.
  *
  * The options are designed with the details of the standard git protocol in mind.
  */

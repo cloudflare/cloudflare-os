@@ -3,6 +3,7 @@ import { deflate } from "pako";
 import {
   applyGitDelta,
   buildPackBytes,
+  buildPackStream,
   concatBytes,
   decodeLooseObject,
   decodePackStream,
@@ -59,6 +60,20 @@ const X_BLOB = "587be6b4c3f93f93c489c0111bba5596147a26cb";
 
 /** `git mktree </dev/null` */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+it("streams a Git pack lazily with the same objects and trailer as the buffered codec", async () => {
+  const objects = [fixture(COMMIT_1), fixture(TREE_1), {type: "blob" as const, payload: new TextEncoder().encode("x\n")}];
+  let read = 0;
+  async function* next() { for (const object of objects) { ++read; yield object; } }
+  const stream = buildPackStream(objects.length, next());
+  expect(read).toBe(0);
+  const decoded = [];
+  for await (const object of decodePackStream(stream, {
+    maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024, resolveBase: () => undefined,
+  })) decoded.push({type: object.type, payload: object.payload});
+  expect(read).toBe(objects.length);
+  expect(decoded).toEqual(objects);
+});
 
 /** A tree entry for a file named `file`, but for the fields given. */
 function entry(fields: Partial<GitTreeEntry>): GitTreeEntry {

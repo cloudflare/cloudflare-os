@@ -317,21 +317,11 @@ export function findCompactionBoundary(
   return boundary > compactedTo ? boundary : undefined;
 }
 
-/**
- * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed
- * layer. `previous` already contains it, apart from the always-available resources the chat gained
- * since.
- */
-export function buildCompactionState(
-    messages: AiChatMessage[], compactedTo: number,
-    initialBindings: [string, ChatBindingEntry][],
-    previous: CompactionCheckpoint | undefined)
-    : Omit<CompactionCheckpoint, "chatId" | "compactedTo" | "summary"> {
-  let compacted = messages.filter(message => message.sequence < compactedTo);
-  let chatBindings = new Map([...initialBindings, ...previous?.chatBindings ?? []]);
-  let nextChangeId = previous?.nextChangeId ?? 0;
-
-  for (let message of compacted) {
+/** Replay the stamped binding layer shared by compaction and stored integration scope. */
+export function replayChatBindings(messages: Iterable<AiChatMessage>,
+    initialBindings: Iterable<[string, ChatBindingEntry]>): Map<string, ChatBindingEntry> {
+  let chatBindings = new Map(initialBindings);
+  for (let message of messages) {
     if (message.type === "message") {
       for (let capsule of message.capsules ?? []) {
         if (capsule.bindingName !== undefined && !chatBindings.has(capsule.bindingName)) {
@@ -372,9 +362,25 @@ export function buildCompactionState(
           chatBindings.set(bindingName, {type: "workpiece", id: worktreeId});
         }
       }
-      ++nextChangeId;
     }
   }
+
+  return chatBindings;
+}
+
+/**
+ * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's frozen seed
+ * layer, which `previous` already contains once a chat has compacted before.
+ */
+export function buildCompactionState(
+    messages: AiChatMessage[], compactedTo: number,
+    initialBindings: [string, ChatBindingEntry][],
+    previous: CompactionCheckpoint | undefined)
+    : Omit<CompactionCheckpoint, "chatId" | "compactedTo" | "summary"> {
+  let compacted = messages.filter(message => message.sequence < compactedTo);
+  let chatBindings = replayChatBindings(compacted, [...initialBindings, ...previous?.chatBindings ?? []]);
+  let nextChangeId = (previous?.nextChangeId ?? 0) +
+    compacted.filter(message => message.type === "changes").length;
 
   return {
     chatBindings: [...chatBindings],

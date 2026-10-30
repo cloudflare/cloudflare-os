@@ -10,6 +10,7 @@
 import { CredentialsExpiredError } from "@gadgets/gatekeeper-kit/credentials";
 import { hexEncode } from "@gadgets/gatekeeper-kit/connect-nonce";
 import { readBytesCapped, readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
+import { gitPullPath } from "@gadgets/gatekeeper-kit/git-transport";
 
 /** A grant returned by the token endpoint. GitLab's documented response carries no `scope`. */
 export type GitLabOAuthGrant = {
@@ -1152,12 +1153,13 @@ export class GitLabApi {
    * on a 3xx or non-git content type, which means Access or a login page answered rather than
    * GitLab.
    */
-  async fetchGitUploadPack(projectPath: string, requestBody: Uint8Array): Promise<Response> {
-    return await this.#gitPost(projectPath, "git-upload-pack", requestBody, {
+  async fetchGitUploadPack(projectPath: string, request: Request): Promise<Response> {
+    const path = gitPullPath(request);
+    return await this.#gitPost(projectPath, path, request.method === "POST" ? await readBytesCapped(request) : undefined, {
       "Content-Type": "application/x-git-upload-pack-request",
-      Accept: "application/x-git-upload-pack-result",
+      Accept: request.method === "GET" ? "application/x-git-upload-pack-advertisement" : "application/x-git-upload-pack-result",
       "Git-Protocol": "version=2",
-    }, "fetch");
+    }, "fetch", request.method, request.signal);
   }
 
   /**
@@ -1174,25 +1176,27 @@ export class GitLabApi {
 
   async #gitPost(
     projectPath: string,
-    service: "git-upload-pack" | "git-receive-pack",
-    body: Uint8Array | ReadableStream<Uint8Array>,
+    service: "git-upload-pack" | "git-receive-pack" | "info/refs?service=git-upload-pack",
+    body: Uint8Array | ReadableStream<Uint8Array> | undefined,
     headers: Record<string, string>,
     verb: "fetch" | "push",
+    method = "POST",
+    signal?: AbortSignal,
   ): Promise<Response> {
     const url = `${this.#instance.apiOrigin}/${gitRepoPath(projectPath)}.git/${service}`;
     const token = await this.#credentials();
     const response = await fetch(url, {
-      method: "POST",
+      method,
       headers: {
         ...headers,
         "User-Agent": USER_AGENT,
         Authorization: `Basic ${encodeBasicAuth("oauth2", token)}`,
         ...this.#instance.headers,
       },
-      body,
+      ...(method === "POST" ? {body} : {}),
       redirect: "manual",
       // Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming the pack.
-      signal: AbortSignal.timeout(GIT_TIMEOUT_MS),
+      signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(GIT_TIMEOUT_MS)]),
     });
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel().catch(() => {});

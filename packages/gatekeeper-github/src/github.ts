@@ -17,8 +17,7 @@ import {
   type GatekeeperVendor as GatekeeperVendorIface,
   type GitCache,
   type GitOid,
-  type GitPullHints,
-  type GitPullTransfer,
+  type ObservationAuthorizer,
   type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
@@ -75,7 +74,7 @@ import {
   isCommitOid,
   parseGitCommitPayload,
 } from "@gadgets/gatekeeper-kit/git-objects";
-import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
+import { gitPullPath } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   GitRefUpdateRejectedError,
   ZERO_OID,
@@ -3678,6 +3677,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const repo = await this.#getRepoMetadata();
         return {
           url: repo.url,
+          gitRepositoryUrl: `https://github.com/${encodeURIComponent(this.ctx.props.owner)}/${encodeURIComponent(this.ctx.props.repo)}.git`,
           title: repo.fullName,
           snippet: repo.description ?? `GitHub repository ${repo.fullName}`,
           suggestedBindingName: "GITHUB_REPO",
@@ -3990,13 +3990,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   /**
-   * Stream a self-contained raw pack through this resource's authenticated transport.
-   * No new observation: the kernel only requests objects from previously observed commits.
-   * Cache ingestion and native checkout share this path; credentials never enter the guest.
+   * One repository-bound transport for cache hydration and command-originated Git reads.
+   * Only the kernel can omit observer, for previously observed object pulls.
    */
-  async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
-    return this.#withApi(api => startGitPull(
-      body => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, body), oids, options));
+  async gitPull(request: Request, observer?: RpcStub<ObservationAuthorizer>): Promise<Response> {
+    gitPullPath(request);
+    if (observer) {
+      if (this.ctx.props.resourceKind !== "repo") throw new Error("Git fetch requires a repository connection.");
+      await observer.authorizeObservation({title: "Fetch Git repository",
+        description: `Read Git refs and objects from ${this.ctx.props.owner}/${this.ctx.props.repo}.`});
+    }
+    return this.#withApi(api => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, request));
   }
 
   async applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void> {

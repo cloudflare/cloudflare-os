@@ -18,13 +18,12 @@ import {
   type GatekeeperUserVerifier,
   type GitCache,
   type GitOid,
-  type GitPullHints,
-  type GitPullTransfer,
+  type ObservationAuthorizer,
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
-import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
+import { gitPullPath } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
@@ -1229,6 +1228,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const project = await this.#getProjectMetadata();
         return {
           url: project.url,
+          gitRepositoryUrl: `${project.url.replace(/\/$/, "")}.git`,
           title: project.path,
           snippet: project.description ?? `GitLab project ${project.path}`,
           suggestedBindingName: "GITLAB_PROJECT",
@@ -2667,13 +2667,16 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   // -- git: pull, push, and the simulation of queued pushes -------------------------------
 
   /**
-   * Stream a self-contained raw pack through this resource's authenticated transport.
-   * No new observation: the kernel only requests objects from previously observed commits.
-   * Cache ingestion and native checkout share this path; credentials never enter the guest.
+   * Repository-bound smart HTTP; the kernel supplies observer for new command reads.
    */
-  async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
-    return this.#withApi(api => startGitPull(
-      body => api.fetchGitUploadPack(this.#projectPath(), body), oids, options));
+  async gitPull(request: Request, observer?: RpcStub<ObservationAuthorizer>): Promise<Response> {
+    gitPullPath(request);
+    if (observer) {
+      if (this.#props().resourceKind !== "project") throw new Error("Git fetch requires a project connection.");
+      await observer.authorizeObservation({title: "Fetch Git repository",
+        description: `Read Git refs and objects from ${this.#projectPath()}.`});
+    }
+    return this.#withApi(api => api.fetchGitUploadPack(this.#projectPath(), request));
   }
 
   /**

@@ -7,11 +7,13 @@
 // serializable, TestHooks cannot hand the facet to the test; it forwards each call instead, and
 // results ride back as plain data.
 
-import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
-import type { RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcTarget, RpcStub, WorkerEntrypoint } from "cloudflare:workers";
+import {startGitPull} from "@gadgets/gatekeeper-kit/git-pull-transfer";
+import {gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser, GitCache, GitPullHints,
   GitPullTransfer,
+  ObservationAuthorizer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabAction } from "../../src/gitlab-action-types.js";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
@@ -309,7 +311,22 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async gitPull(facetName: string, props: GatekeeperProps, oids: string[], options: GitPullHints):
       Promise<Outcome<GitPullTransfer>> {
-    return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, options));
+    return await outcome(() => startGitPull(body =>
+      this.#gatekeeper(facetName, props).gitPull(gitObjectRequest(body)), oids, options));
+  }
+  async gitRequest(facetName: string, props: GatekeeperProps, request: Request, refuse = false) {
+    const observations: string[] = [];
+    using observer = new RpcStub<ObservationAuthorizer>(new class extends RpcTarget implements ObservationAuthorizer {
+      async authorizeObservation(description: {title: string}) {
+        if (refuse) throw new Error("Observation refused");
+        observations.push(description.title);
+      }
+      async getGitCache(): Promise<GitCache> { throw new Error("Unexpected cache access"); }
+    }());
+    return outcome(async () => {
+      const response = await this.#gatekeeper(facetName, props).gitPull(request, observer);
+      return {body: new Uint8Array(await response.arrayBuffer()), observations};
+    });
   }
 
   /** `addObserver` with a verifier minted for `observerUserObjectId`'s account. */

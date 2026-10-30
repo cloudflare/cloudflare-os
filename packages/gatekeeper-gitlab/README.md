@@ -16,16 +16,19 @@ merge request), the same worktree integration (commit ids advertised, `gitPull()
 smart-HTTP, `push()` as a queued action), and the same review and merge flows expressed in GitLab's
 own terms. See `plans/gitlab-gatekeeper.md` for the design record.
 
-`gitPull(oids, options)` returns a `GitPullTransfer`: a one-shot raw PACK stream and a separate
-terminal status. Lazy DO reads consume it through the bounded object cache. The same capability
-supports native Git hydration, but does not enable it here: the container consumer ships in a
-separate kernel worktree-replica bootstrap change. That consumer must bind the bootstrap to an
-authorized immutable commit, request its complete tree at depth one, and import the pack without
-populating the DO cache. `gitPull` is kernel-facing, not a gadget-facing arbitrary Git proxy;
-the kernel selects objects from recorded provenance, not a provider-side advertisement validator.
-No encoded Git commands, ref discovery, or arbitrary clone URLs cross this interface. OAuth and
-optional Cloudflare Access credentials remain in the gatekeeper's transport, including on
-self-hosted instances.
+`gitPull(request, observer?)` returns a streaming Git smart-HTTP `Response`. It permits protocol-v2
+ref discovery and upload-pack requests only; the provider selects the bound project URL and
+credentials, never a guest-supplied upstream. For lazy DO reads and initial hydration, the kernel
+selects immutable objects from recorded provenance and demultiplexes the response with
+`startGitPull()`. Lazy reads ingest those objects through the bounded DO cache; container bootstrap
+instead streams a complete shallow base pack without filling that cache.
+
+During an authorized container command, native Git can also discover refs and fetch objects through
+an already-connected whole-project binding. The kernel supplies `observer` for those new reads;
+the provider checks project-level scope and authorizes the observation. An issue or merge-request
+connection does not grant whole-project native fetch. The command's final writeback closes its Git
+capability. This does not add push or arbitrary URL forwarding. OAuth and optional Cloudflare
+Access credentials stay in the gatekeeper, including on self-hosted instances.
 
 ## Auto-approval
 
