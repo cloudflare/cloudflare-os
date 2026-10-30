@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
+import { embeddedViewHtml } from "@gadgets/workshop-shared/embedded-views";
 import { closeViewBrowser, RenderedView } from "./view-host.js";
 
 afterAll(() => closeViewBrowser());
@@ -69,6 +70,23 @@ describe("RenderedView", { timeout: 60_000 }, () => {
       </script>`);
     await view.click("Piranesi", ["Dune"]);
     expect(view.messages).toEqual(["Read Piranesi"]);
+  });
+
+  it("runs an embedded view with its data as data, even text that would end a script element", async () => {
+    await using view = await RenderedView.open(embeddedViewHtml({
+      title: "Notes", html: '<p id="a"></p><p id="b"></p><p id="c"></p>',
+      script: `(data => {
+        a.textContent = data.note;
+        b.textContent = "</script> in code";
+        c.textContent = Object.keys(data).join(",") + " " + Object.getPrototypeOf(data).constructor.name;
+      })`,
+      data: JSON.stringify({ note: "</script><!-- in data", ["__proto__"]: { polluted: true } }),
+    }));
+    const text = await view.text();
+    expect(text).toContain("</script><!-- in data");
+    expect(text).toContain("</script> in code");
+    expect(text).toContain("note,__proto__ Object");
+    expect(view.errors).toEqual([]);
   });
 
   it("changes a value through the control holding it, or its stepper", async () => {

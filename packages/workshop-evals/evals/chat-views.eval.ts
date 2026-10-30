@@ -7,11 +7,11 @@ import {
   mentions, showsAmount,
 } from "./views.js";
 
-// How the agent answers in one chat (agent.ts, "Workspaces" and "Live views in your answers"): an
-// explanation is prose; a chart, a choice and a one-off tool are views in the answer; data that
-// must last is a Gadget; and a look at that Gadget's data is a view whose values the agent read
-// with `executeCode` first, since a view has no `env`. Each view must also run, keep the view
-// rules, and do what the user asked of it.
+// How the agent answers in one chat (agent.ts, "Workspaces" and "Live views"): an explanation is
+// prose; a chart, a choice and a one-off tool are views; data that must last is a Gadget; and a
+// look at that Gadget's data is a view its `executeCode` shows with `embedView`, so the values go
+// from the Gadget to the view without the agent retyping them. Each view must also run, keep the
+// view rules, and do what the user asked of it.
 
 const USAGE = [
   ["Jan", 410], ["Feb", 380], ["Mar", 340], ["Apr", 300], ["May", 290], ["Jun", 360],
@@ -132,6 +132,10 @@ async function verifySpendingView(verifier: EvalVerifier): Promise<void> {
   const view = await checkAnswersWithView(verifier);
   await checkMakesNoGadget(verifier, "makes-no-new-gadget");
   if (view === undefined) return;
+  await verifier.check("shows-gadget-data-from-code", async () => ({
+    pass: view.fromCode,
+    evidence: asEvidence({ fromCode: view.fromCode }),
+  }));
   await checkView(verifier, view, async rendered => {
     await verifier.check("shows-each-category-total", async () => {
       using api = await verifier.connect<ExpenseApi>(LOG);
