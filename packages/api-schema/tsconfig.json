@@ -1,0 +1,28 @@
+// Type-checks the package as the Node programs it is: the schema format and extractor (`src/`), the
+// generator that runs them on this repository's API (`scripts/`), the tests, and the Vite+ and
+// Vitest configs. Build tooling, so Node's types and no Workers types.
+//
+// Nothing here is compiled: `node` runs these modules directly, stripping the types, which is also
+// why the `exports` map points at the `.ts` sources. `erasableSyntaxOnly` is what keeps that a
+// guarantee, and `nodenext` resolution is what `node` actually does with the imports. Same settings
+// as the repo's `scripts/tsconfig.json`, for the same reason.
+//
+// The extractor imports `typescript6` (TypeScript 7 ships no JS compiler API); tsgo reads its
+// declarations like any other package's.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "__tests__/**/*.ts", "vite.config.ts", "vitest.config.ts"],
+  // The fixtures are the extractor's input, not this package's code: the tests compile each one as
+  // a program of its own, under the options they pass, and the extractor refuses one that does not
+  // type-check. A fixture may also be deliberately unlike the code here.
+  "exclude": ["__tests__/__fixtures__"]
+}

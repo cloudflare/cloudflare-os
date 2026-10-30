@@ -176,17 +176,19 @@ export default defineConfig({
         },
       },
       {
-        files: ['scripts/**/*.ts'],
+        // Node programs: the repo's scripts, and the `cf-os api` CLI (packages/api-cli), which Node
+        // runs from its TypeScript sources.
+        files: ['scripts/**/*.ts', 'packages/api-cli/**/*.ts'],
         env: {
           node: true,
           es2024: true,
         },
       },
       {
-        // `scripts/` tests run under `node --test`, not vitest, so they must not pick up the
-        // vitest override above (which would supply vitest globals and drop `env: node`). Ordered
-        // last so it wins over that entry.
-        files: ['scripts/**/*.test.ts'],
+        // `scripts/` and `packages/api-cli` tests run under `node --test`, not vitest, so they must
+        // not pick up the vitest override above (which would supply vitest globals and drop
+        // `env: node`). Ordered last so it wins over that entry.
+        files: ['scripts/**/*.test.ts', 'packages/api-cli/**/*.test.ts'],
         plugins: ['typescript', 'unicorn', 'oxc', 'import'],
         env: {
           node: true,

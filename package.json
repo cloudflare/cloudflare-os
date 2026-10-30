@@ -16,6 +16,7 @@
     "preview:sweep": "node scripts/preview/preview.ts sweep",
     "dev-client": "cd packages/workshop-frontend && pnpm run dev",
     "dev-server": "node scripts/run-dev-server.ts",
+    "cf-os": "node packages/api-schema/scripts/generate.ts --if-stale && node packages/api-cli/src/main.ts",
     "clean": "node scripts/vp/run.ts --filter=!cloudflare-os clean",
     "lint:check": "vp lint",
     "lint:fix": "vp lint --fix",
@@ -24,7 +25,8 @@
     "lint": "pnpm run lint:check && pnpm run types:scripts && pnpm run configs:check && pnpm run types:check",
     "configs:generate": "node scripts/generate-worker-configs.ts",
     "configs:check": "node scripts/generate-worker-configs.ts --check",
-    "types:generate": "node scripts/generate-worker-configs.ts && node scripts/generate-worker-types.ts"
+    "types:generate": "node scripts/generate-worker-configs.ts && node scripts/generate-worker-types.ts",
+    "api-schema:generate": "node packages/api-schema/scripts/generate.ts"
   },
   "devDependencies": {
     "@gadgets/scripts": "workspace:*",
