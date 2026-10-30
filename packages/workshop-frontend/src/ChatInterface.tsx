@@ -122,6 +122,7 @@ import {
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { GadgetUiBlockCard, type GadgetUiBlockCardProps } from "./features/chat/GadgetUiBlockCard";
 import { parseGadgetUiBlocks } from "@gadgets/workshop-shared/gadget-ui-blocks";
+import { embeddedViewHtml } from "@gadgets/workshop-shared/embedded-views";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
 
@@ -1324,6 +1325,16 @@ const AgentAnswer = (
     }
   });
 };
+
+/** The views a step's `executeCode` calls showed with `embedView`, drawn under its tool calls. */
+const EmbeddedViews = ({ groups, blocks }: { groups: ToolCallGroup[]; blocks: AnswerBlocks }): ReactNode =>
+  groups.flatMap(group => group.calls).flatMap(call =>
+    call.toolName === "executeCode" && call.views !== undefined
+      ? call.views.map((view, i) => (
+        <GadgetUiBlockCard key={`${call.toolCallId}-${i}`} {...blocks}
+          block={{ kind: "block", html: embeddedViewHtml(view), title: view.title }} />
+      ))
+      : []);
 
 // Build a temporary object URL for inlined attachment bytes, revoking it when no longer needed.
 function useAttachmentObjectUrl(content: Uint8Array | undefined, mimeType: string): string | null {
@@ -5690,6 +5701,10 @@ function ChatInterface({
     </div>
   );
 
+  const viewCards: AnswerBlocks = {
+    onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef,
+  };
+
   // ─── main render ─────────────────────────────────────────────────────────────
   return (
     <div
@@ -6099,6 +6114,7 @@ function ChatInterface({
                                 onOpen={() => onOpenGadget(created.workpieceId)}
                               />
                             ))}
+                            <EmbeddedViews groups={entry.toolCallGroups} blocks={viewCards} />
                           </div>
                         );
                       }
@@ -6225,7 +6241,7 @@ function ChatInterface({
                                       message={msg.message}
                                       capsules={msg.capsules}
                                       formats={msg.formats}
-                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef }}
+                                      blocks={viewCards}
                                       streaming={entry.streaming === true}
                                     />
                                   ) : (
@@ -6329,6 +6345,7 @@ function ChatInterface({
                                 ))}
                               </div>
                             )}
+                            {messageToolGroups && <EmbeddedViews groups={messageToolGroups} blocks={viewCards} />}
                           </div>
                             );
                           })()

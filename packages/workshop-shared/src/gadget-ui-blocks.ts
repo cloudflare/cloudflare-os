@@ -79,11 +79,20 @@ function splitTitle(html: string): {title: string | undefined; rest: string} {
   };
 }
 
+/**
+ * Whether a view's HTML has no content: nothing but whitespace once its `<title>` is taken out.
+ * Such a block shows an error, and the kernel refuses such a view from `embedView` unless a script
+ * draws it.
+ */
+export function isEmptyViewHtml(html: string): boolean {
+  return splitTitle(html).rest.trim() === "";
+}
+
 function closedBlock(html: string): GadgetUiBlock {
   let block: GadgetUiBlock = {kind: "block", html};
-  let {title, rest} = splitTitle(html);
+  let {title} = splitTitle(html);
   if (title !== undefined) block.title = title;
-  if (rest.trim() === "") block.error = "This view has no content.";
+  if (isEmptyViewHtml(html)) block.error = "This view has no content.";
   return block;
 }
 

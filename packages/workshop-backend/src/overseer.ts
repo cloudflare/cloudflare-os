@@ -44,7 +44,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, MAX_EMBEDDED_VIEW_BYTES, MAX_VIEWS_PER_STEP, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, answeredWithView, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -83,8 +83,9 @@ import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
-import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
-import { gadgetUiAnswerAsText } from "@gadgets/workshop-shared/gadget-ui-blocks";
+import type { CreationApproval, EmbeddedView, GadgetExportFormat } from "@gadgets/workshop-shared/api";
+import { gadgetUiAnswerAsText, isEmptyViewHtml } from "@gadgets/workshop-shared/gadget-ui-blocks";
+import { z } from "zod";
 import {
   assertChatAttachmentSize,
   decodeChatAttachmentText,
@@ -103,13 +104,82 @@ import {
 const logger = createWorkshopLogger("workshop.overseer");
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
+// A view's title is copied into the call's output, once per view and in any refusal, so it is kept
+// short enough not to count against the step's record.
+const MAX_VIEW_TITLE_LENGTH = 200;
+
+// The structure share of one view in embeddedViewStoredSize: as codeChangeSerializedSize grants,
+// 32 bytes for the view object and for each of its five fields.
+const SERIALIZED_VIEW_OVERHEAD = 6 * 32;
+
+// The bytes a view adds to its step's V8-serialized message record, as codeChangeSerializedSize
+// measures a change: V8 writes a string at one byte per UTF-16 code unit, or two once it holds a
+// character past Latin-1, so two bytes per code unit plus a structure share never undercounts.
+function embeddedViewStoredSize(view: EmbeddedView): number {
+  return SERIALIZED_VIEW_OVERHEAD + 2 * (view.title.length + view.html.length +
+      (view.css?.length ?? 0) + (view.script?.length ?? 0) + (view.data?.length ?? 0));
+}
+
 let CODE_MODE_HARNESS =
 `import { WorkerEntrypoint, restore } from "cloudflare:workers";
 import agent from "agent.js";
 
+// embedView(spec) shows a live view in the chat, and ends the turn once the step is done (see
+// plans/live-views.md). run() installs it only when the kernel passes the views the step has
+// left. It keeps a JSON copy of each spec that passes its checks; a spec that fails one throws in
+// the agent's code, so the error reaches the model. These checks run in the agent's realm, so they
+// only give clear errors early: the kernel checks what run() returns (see checkEmbeddedViews).
+//
+// The view's script is a function in the agent's own code, so it parses with that code and nothing
+// in it is escaped. Its source goes to the view as an expression. Only forms that can be rebuilt as
+// one are taken: an arrow, a function, or a method with a plain name, such as "script(data) { ... }",
+// which is read back out of an object literal. Anything else (a generator, a class, a native
+// function, a quoted or computed method name) is refused, so the model can write it again. An
+// "async" prefix is stripped only from an async function, and the method form is checked first,
+// so a method named "async" or "function" is read as a method.
+function scriptSource(script) {
+  const source = Function.prototype.toString.call(script);
+  const isAsync = Object.getPrototypeOf(script) === Object.getPrototypeOf(async function () {});
+  const unprefixed = isAsync ? source.replace(/^async\\s*/, "") : source;
+  const native = /^function\\s*[\\w$]*\\s*\\(\\)\\s*\\{\\s*\\[native code\\]\\s*\\}$/.test(source);
+  const generator = /^function\\s*\\*/.test(unprefixed) || unprefixed.startsWith("*");
+  if (!native && !generator && !/^class\\b/.test(source)) {
+    const name = script.name;
+    if (/^[A-Za-z_$][\\w$]*$/.test(name) && unprefixed.startsWith(name) && /^\\s*\\(/.test(unprefixed.slice(name.length))) {
+      return "({" + source + "})[" + JSON.stringify(name) + "]";
+    }
+    if (/^function\\b/.test(unprefixed) || unprefixed.startsWith("(") || /^[A-Za-z_$][\\w$]*\\s*=>/.test(unprefixed)) {
+      return "(" + source + ")";
+    }
+  }
+  throw new TypeError("embedView's script must be an arrow function, a function or a method written in your code, such as script: data => { ... }");
+}
+
+function makeEmbedView(views, viewsLeft) {
+  return spec => {
+    if (views.length >= viewsLeft) throw new RangeError("embedView: the executeCode calls of one step show at most ${MAX_VIEWS_PER_STEP} views in all");
+    if (typeof spec !== "object" || spec === null) throw new TypeError("embedView takes { title, html, css?, script?, data? }");
+    const { title, html, css, script, data } = spec;
+    if (typeof title !== "string" || title.trim() === "") throw new TypeError("embedView needs a title, a non-empty string");
+    if (title.length > ${MAX_VIEW_TITLE_LENGTH}) throw new RangeError("embedView: a view's title is at most ${MAX_VIEW_TITLE_LENGTH} characters");
+    if (typeof html !== "string") throw new TypeError("embedView needs html, a string");
+    if (css !== undefined && typeof css !== "string") throw new TypeError("embedView's css must be a string");
+    if (script !== undefined && typeof script !== "function") throw new TypeError("embedView's script must be a function, data => { ... }, which runs in the view");
+    const view = JSON.parse(JSON.stringify({
+      title, html, css,
+      script: script === undefined ? undefined : scriptSource(script),
+      data: data === undefined ? undefined : JSON.stringify(data),
+    }));
+    // As embeddedViewStoredSize measures it.
+    const size = ${SERIALIZED_VIEW_OVERHEAD} + 2 * Object.values(view).reduce((length, field) => length + field.length, 0);
+    if (size > ${MAX_EMBEDDED_VIEW_BYTES}) throw new RangeError("embedView: a view is at most ${MAX_EMBEDDED_VIEW_BYTES / 1024} KiB, at 2 bytes per character, and this one is " + Math.ceil(size / 1024) + " KiB");
+    views.push(view);
+  };
+}
+
 export default class extends WorkerEntrypoint {
   verify() {}
-  async run(self, restoreForger) {
+  async run(self, restoreForger, viewsLeft) {
     let env = this.env;
     if (restoreForger) {
       // Graft the well-known \`restore\` symbol onto each service-binding stub in env -- for a
@@ -130,8 +200,11 @@ export default class extends WorkerEntrypoint {
         }
       }
     }
+    const views = [];
+    if (viewsLeft !== undefined) globalThis.embedView = makeEmbedView(views, viewsLeft);
     let result = await agent(self, env, this.ctx);
     if (result !== undefined) console.log("Return value:", result);
+    return { views };
   }
 }
 `;
@@ -203,7 +276,53 @@ let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
 
 interface CodeModeEntrypoint extends WorkerEntrypoint {
   verify(): void;
-  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+  // Returns what CODE_MODE_HARNESS's run() does, `{views}`, unless the agent's code changed it.
+  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>, viewsLeft?: number): Promise<unknown>;
+}
+
+// A string of one view, capped at what a whole view may hold before any later check reads it, so
+// checking whatever the agent's code returned costs at most the step's budget. The array's cap
+// likewise comes before its items are read.
+const VIEW_STRING_SCHEMA = z.string().max(MAX_EMBEDDED_VIEW_BYTES / 2, {abort: true});
+
+const HARNESS_RESULT_SCHEMA = z.object({
+  views: z.array(z.object({
+    title: z.string().max(MAX_VIEW_TITLE_LENGTH, {abort: true}).regex(/\S/),
+    html: VIEW_STRING_SCHEMA,
+    css: VIEW_STRING_SCHEMA.optional(),
+    // The source the harness read from a function, which is well formed. The view's document
+    // URL-encodes it, which throws on a lone surrogate.
+    script: VIEW_STRING_SCHEMA.refine(script => script.isWellFormed()).optional(),
+    data: VIEW_STRING_SCHEMA.optional(),
+  })).max(MAX_VIEWS_PER_STEP),
+});
+
+// The views a code-mode run showed, as the kernel takes them: its harness ran in the agent's realm,
+// so the kernel checks each view and the step's budget itself (see MAX_VIEWS_PER_STEP), or says
+// why it shows none.
+function checkEmbeddedViews(returned: unknown, viewsLeft: number)
+    : {views: EmbeddedView[]} | {refused: string} {
+  let parsed = HARNESS_RESULT_SCHEMA.safeParse(returned);
+  if (!parsed.success) {
+    return {refused: "embedView: the code changed the views embedView keeps, so none was shown."};
+  }
+  let {views} = parsed.data;
+  if (views.length > viewsLeft) {
+    return {refused: `embedView: the executeCode calls of one step show at most ${MAX_VIEWS_PER_STEP} ` +
+        `views in all, and this call showed ${views.length} with ${viewsLeft} left, so none was shown.`};
+  }
+  for (let view of views) {
+    if (view.script === undefined && isEmptyViewHtml(view.html)) {
+      return {refused: `embedView: the view "${view.title}" has no content, so none was shown. ` +
+          "Give it html, or a script that draws it."};
+    }
+    let size = embeddedViewStoredSize(view);
+    if (size > MAX_EMBEDDED_VIEW_BYTES) {
+      return {refused: `embedView: a view is at most ${MAX_EMBEDDED_VIEW_BYTES / 1024} KiB, at 2 ` +
+          `bytes per character, and "${view.title}" is ${Math.ceil(size / 1024)} KiB, so none was shown.`};
+    }
+  }
+  return {views};
 }
 
 interface RestoreForgerEntrypoint extends WorkerEntrypoint {
@@ -6888,16 +7007,20 @@ class OverseerImpl implements AgentHooks {
     let messagesInSameTurn = nextUserMessageIndex === -1
       ? messagesAfterPrompt
       : messagesAfterPrompt.slice(0, nextUserMessageIndex);
-    // Prefer the final agent message or terminal agent error in this turn.
+    // Prefer the final agent message or terminal agent error in this turn. The gateway shows only
+    // text, so an answer gets a note in place of each view, inline or shown with embedView.
     for (let message of messagesInSameTurn.toReversed()) {
-      if (
-        (message.type === "error" ||
-          (message.type === "message" && message.author.type === "agent")) &&
-        message.message.trim()
-      ) {
-        // The gateway shows only text, so an answer gets a note in place of each view.
-        this.deliverExternalMessageResponse(response, message.type === "message"
-            ? gadgetUiAnswerAsText(message.message) : message.message);
+      if (message.type === "error" && message.message.trim()) {
+        this.deliverExternalMessageResponse(response, message.message);
+        return;
+      }
+      if (message.type !== "message" || message.author.type !== "agent") continue;
+      let notes = (message.toolCalls ?? []).flatMap(call => call.toolName === "executeCode"
+          ? (call.views ?? []).map(view => `[View in the chat: ${view.title}]`) : []);
+      if (message.message.trim() || notes.length > 0) {
+        let answer = message.message.trim() ? gadgetUiAnswerAsText(message.message) : "";
+        this.deliverExternalMessageResponse(response,
+            [answer, notes.join("\n")].filter(part => part !== "").join("\n\n"));
         return;
       }
     }
@@ -9023,8 +9146,9 @@ class OverseerImpl implements AgentHooks {
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
                         bindings: Record<string, ChatBindingEntry>,
                         onOutputText?: (delta: string) => void,
-                        worktreeTurn?: WorktreeTurnAccess)
-      : Promise<string> {
+                        worktreeTurn?: WorktreeTurnAccess,
+                        viewsLeft?: number)
+      : Promise<{log: string, views: EmbeddedView[], failed: boolean}> {
     let bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     let executionId: string = bytes.toBase64();
@@ -9087,10 +9211,11 @@ class OverseerImpl implements AgentHooks {
       }});
 
       let error: string | undefined;
+      let returned: unknown;
       try {
         // The forger is a transient stub argument, so the capability to forge persistent
         // gadget-restore stubs lives exactly as long as this run() call.
-        await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings));
+        returned = await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings), viewsLeft);
       } catch (err) {
         if (err instanceof Error && err.stack) {
           error = err.stack;
@@ -9099,6 +9224,9 @@ class OverseerImpl implements AgentHooks {
         }
         onOutputText?.(`\n\nUncaught exception: ${error}`);
       }
+      // Code that threw shows no views.
+      let checked = error === undefined ? checkEmbeddedViews(returned, viewsLeft ?? 0) : {views: []};
+      if ("refused" in checked) onOutputText?.(`\n\n${checked.refused}`);
 
       let timeout = scheduler.wait(5000).then(() => { return null; })
       let trace = await Promise.race([tracePromise, timeout])
@@ -9117,11 +9245,15 @@ class OverseerImpl implements AgentHooks {
 
       if (error !== undefined) {
         log += `\n\nUncaught exception: ${error}`;
+      } else if ("refused" in checked) {
+        log = log === "" ? checked.refused : `${log}\n\n${checked.refused}`;
       } else if (log === "") {
         log = "(function succeeded with no output)";
       }
 
-      return log;
+      return "refused" in checked
+          ? {log, views: [], failed: true}
+          : {log, views: checked.views, failed: error !== undefined};
     } finally {
       // Guarded by executionId so this cleanup can never clobber a newer registration.
       if (this.#activeWorktreeTurns.get(chatId)?.executionId === executionId) {
@@ -9189,11 +9321,14 @@ class OverseerImpl implements AgentHooks {
           isTurnPrompt(msg)) {
         break;
       }
-      // Null means a committed final response, not an interrupted segment to run again.
-      // It also consumed any earlier inline approvals without suspending. A steer the agent read
-      // after that response still needs an answer, so the turn is unfinished, waiting on nothing.
+      // Null means a committed final response, not an interrupted segment to run again: an answer
+      // with no tool calls, or a step that answered with a view (see answeredWithView). It also
+      // consumed any earlier inline approvals without suspending. A steer the agent read after
+      // that response still needs an answer, so the turn is unfinished, waiting on nothing.
       if (!actionIds.length && !requestIds.length && msg.type === "message" &&
-          msg.author.type === "agent" && !msg.toolCalls?.length) return steered ? undefined : null;
+          msg.author.type === "agent" && (!msg.toolCalls?.length || answeredWithView(msg.toolCalls))) {
+        return steered ? undefined : null;
+      }
       steered ||= msg.type === "message" && msg.steered === true;
       if (msg.author.type === "agent") agent ??= msg.author;
       if (msg.type === "connectionRequest" && msg.author.type === "agent") {

@@ -1,15 +1,18 @@
 import type { AiChatMessage } from "@gadgets/workshop-shared/api";
+import { embeddedViewHtml } from "@gadgets/workshop-shared/embedded-views";
 import { parseGadgetUiBlocks } from "@gadgets/workshop-shared/gadget-ui-blocks";
 import { asEvidence } from "../src/task.js";
 import type { EvalVerifier } from "../src/verifier.js";
 import type { RenderedView } from "../src/view-host.js";
 
-// Checks for the tasks that test how the agent answers: with a `<gadget-ui>` view, a Gadget, or
-// prose (agent.ts, "Workspaces" and "Live views in your answers"), and whether its views keep the
-// rules there.
+// Checks for the tasks that test how the agent answers: with a live view, a Gadget, or prose
+// (agent.ts, "Workspaces" and "Live views"), and whether its views keep the rules there.
 
-/** A closed view the agent wrote this turn, and the sequence of the message it is in. */
-export type TurnView = { sequence: number; html: string };
+/**
+ * A view the agent showed this turn: its HTML as its frame runs it, the sequence of the message it
+ * is in, and whether `executeCode` showed it with `embedView` rather than the answer's text.
+ */
+export type TurnView = { sequence: number; html: string; fromCode: boolean };
 
 function agentMessages(messages: readonly AiChatMessage[]) {
   return messages.flatMap(message =>
@@ -20,14 +23,24 @@ function turnToolCalls(messages: readonly AiChatMessage[]) {
   return agentMessages(messages).flatMap(message => message.toolCalls ?? []);
 }
 
-/** This turn's closed views, oldest first, and the start of each view it never closed. */
+/**
+ * This turn's views, oldest first: closed `<gadget-ui>` blocks and the views its `executeCode`
+ * calls showed with `embedView`, as their frames run them. Also the start of each block it never
+ * closed.
+ */
 function turnViews(verifier: EvalVerifier): { views: TurnView[]; open: string[] } {
   const views: TurnView[] = [];
   const open: string[] = [];
   for (const message of agentMessages(verifier.messages)) {
     for (const segment of parseGadgetUiBlocks(message.message)) {
-      if (segment.kind === "block") views.push({ sequence: message.sequence, html: segment.html });
+      if (segment.kind === "block") views.push({ sequence: message.sequence, html: segment.html, fromCode: false });
       else if (segment.kind === "open") open.push(segment.text.slice(0, 200));
+    }
+    for (const call of message.toolCalls ?? []) {
+      if (call.toolName !== "executeCode") continue;
+      for (const view of call.views ?? []) {
+        views.push({ sequence: message.sequence, html: embeddedViewHtml(view), fromCode: true });
+      }
     }
   }
   return { views, open };
