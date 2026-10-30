@@ -1,0 +1,571 @@
+{
+  "entry": "FixturePublicApi",
+  "constants": {
+    "SERVICE_SALT": [
+      1,
+      2,
+      254,
+      255
+    ]
+  },
+  "services": {
+    "FixtureAdmin": {
+      "doc": "Method-only, extending nothing, as upstream's AdminApi.",
+      "methods": [
+        {
+          "name": "setBanner",
+          "doc": "",
+          "params": [
+            {
+              "name": "text",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    },
+    "FixtureAuthedApi": {
+      "doc": "The authenticated API, as upstream's AuthenticatedApi.",
+      "methods": [
+        {
+          "name": "findNotes",
+          "doc": "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
+          "params": [
+            {
+              "name": "query",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "limit",
+              "type": {
+                "kind": "number"
+              },
+              "optional": true,
+              "doc": ""
+            },
+            {
+              "name": "url",
+              "type": {
+                "kind": "string"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "array",
+            "element": {
+              "kind": "ref",
+              "name": "Note"
+            }
+          }
+        },
+        {
+          "name": "getAdmin",
+          "doc": "A nullable capability over a method-only interface.",
+          "params": [],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "null"
+              },
+              {
+                "kind": "stub",
+                "service": "FixtureAdmin"
+              }
+            ]
+          }
+        },
+        {
+          "name": "importArchive",
+          "doc": "A stream parameter.",
+          "params": [
+            {
+              "name": "archive",
+              "type": {
+                "kind": "readableStream"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "openNotebook",
+          "doc": "A capability hop, with an optional callback that is never passed.\n@param id The notebook's ID.",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": "The notebook's ID."
+            },
+            {
+              "name": "observer",
+              "type": {
+                "kind": "stub",
+                "service": "NotesSubscriber"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "Notebook"
+          }
+        },
+        {
+          "name": "setMood",
+          "doc": "A string-literal union.",
+          "params": [
+            {
+              "name": "mood",
+              "type": {
+                "kind": "ref",
+                "name": "Mood"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "setNickname",
+          "doc": "A nullable scalar.",
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "union",
+                "branches": [
+                  {
+                    "kind": "null"
+                  },
+                  {
+                    "kind": "string"
+                  }
+                ]
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    },
+    "FixturePublicApi": {
+      "doc": "The entry interface, as upstream's PublicApi.",
+      "methods": [
+        {
+          "name": "authenticate",
+          "doc": "Exchanges a token for the authenticated API: the table's root.",
+          "params": [
+            {
+              "name": "token",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "FixtureAuthedApi"
+          }
+        },
+        {
+          "name": "download",
+          "doc": "A stream result.",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "readableStream"
+          }
+        },
+        {
+          "name": "login",
+          "doc": "A credential method: not a command.",
+          "params": [
+            {
+              "name": "username",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "passwordHash",
+              "type": {
+                "kind": "bytes"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "null"
+              },
+              {
+                "kind": "string"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ping",
+          "doc": "Round trip.",
+          "params": [],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    },
+    "Notebook": {
+      "doc": "A capability reached by a hop.",
+      "methods": [
+        {
+          "name": "connect",
+          "doc": "An `any` tail.",
+          "params": [],
+          "returns": {
+            "kind": "stub"
+          }
+        },
+        {
+          "name": "file",
+          "doc": "An object and an object union.",
+          "params": [
+            {
+              "name": "note",
+              "type": {
+                "kind": "ref",
+                "name": "Note"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "destination",
+              "type": {
+                "kind": "ref",
+                "name": "Destination"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "lock",
+          "doc": "A handle.",
+          "params": [],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        },
+        {
+          "name": "move",
+          "doc": "Named unions joined with `undefined`, as an optional parameter and in a result: still by name.",
+          "params": [
+            {
+              "name": "destination",
+              "type": {
+                "kind": "ref",
+                "name": "Destination"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "ref",
+                "name": "Mood"
+              },
+              {
+                "kind": "undefined"
+              }
+            ]
+          }
+        },
+        {
+          "name": "outline",
+          "doc": "A recursive named result.",
+          "params": [],
+          "returns": {
+            "kind": "ref",
+            "name": "Outline"
+          }
+        },
+        {
+          "name": "subscribe",
+          "doc": "A callback interface.",
+          "params": [
+            {
+              "name": "subscriber",
+              "type": {
+                "kind": "stub",
+                "service": "NotesSubscriber"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "since",
+              "type": {
+                "kind": "date"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        },
+        {
+          "name": "upload",
+          "doc": "Bytes, and an optional boolean.",
+          "params": [
+            {
+              "name": "content",
+              "type": {
+                "kind": "bytes"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "pinned",
+              "type": {
+                "kind": "boolean"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "watchTitle",
+          "doc": "A bare-function callback.",
+          "params": [
+            {
+              "name": "callback",
+              "type": {
+                "kind": "function",
+                "params": [
+                  {
+                    "name": "title",
+                    "type": {
+                      "kind": "string"
+                    },
+                    "optional": false
+                  }
+                ],
+                "returns": {
+                  "kind": "void"
+                }
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        }
+      ]
+    },
+    "NotesSubscriber": {
+      "doc": "Implemented by the client, as upstream's subscribers.",
+      "methods": [
+        {
+          "name": "added",
+          "doc": "A note was added.",
+          "params": [
+            {
+              "name": "note",
+              "type": {
+                "kind": "ref",
+                "name": "Note"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "ready",
+          "doc": "",
+          "params": [],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "removed",
+          "doc": "",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    },
+    "{}": {
+      "doc": "",
+      "methods": []
+    }
+  },
+  "shapes": {
+    "Destination": {
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "object",
+          "properties": {
+            "kind": {
+              "kind": "literal",
+              "value": "folder"
+            },
+            "path": {
+              "kind": "string"
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "kind": {
+              "kind": "literal",
+              "value": "inbox"
+            }
+          }
+        }
+      ]
+    },
+    "Mood": {
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "literal",
+          "value": "busy"
+        },
+        {
+          "kind": "literal",
+          "value": "calm"
+        }
+      ]
+    },
+    "Note": {
+      "kind": "object",
+      "properties": {
+        "body": {
+          "kind": "bytes"
+        },
+        "created": {
+          "kind": "date"
+        },
+        "id": {
+          "kind": "number"
+        },
+        "size": {
+          "kind": "bigint"
+        },
+        "tags": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "array",
+              "element": {
+                "kind": "string"
+              }
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "title": {
+          "kind": "string"
+        }
+      }
+    },
+    "Outline": {
+      "kind": "object",
+      "properties": {
+        "children": {
+          "kind": "array",
+          "element": {
+            "kind": "ref",
+            "name": "Outline"
+          }
+        },
+        "title": {
+          "kind": "string"
+        }
+      }
+    }
+  }
+}
