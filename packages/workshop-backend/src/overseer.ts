@@ -84,6 +84,7 @@ import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
+import { gadgetUiAnswerAsText } from "@gadgets/workshop-shared/gadget-ui-blocks";
 import {
   assertChatAttachmentSize,
   decodeChatAttachmentText,
@@ -6894,7 +6895,9 @@ class OverseerImpl implements AgentHooks {
           (message.type === "message" && message.author.type === "agent")) &&
         message.message.trim()
       ) {
-        this.deliverExternalMessageResponse(response, message.message);
+        // The gateway shows only text, so an answer gets a note in place of each view.
+        this.deliverExternalMessageResponse(response, message.type === "message"
+            ? gadgetUiAnswerAsText(message.message) : message.message);
         return;
       }
     }
