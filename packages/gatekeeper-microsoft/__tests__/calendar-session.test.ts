@@ -159,9 +159,11 @@ function fakeGraph(events: Seeded[], options: { leak?: { into: string; event: Se
 
 /** A session over a scope, recording what it observes and proposes. */
 // `appliedOnSubmit` maps a provisional ref to the event its creation made, for a creation an
-// auto-approval applies before submit returns: it never shows as pending.
-function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}, appliedOnSubmit: Record<string, string> = {}) {
-  const graph = fakeGraph(seed(), options);
+// auto-approval applies before submit returns: it never shows as pending. `updatesApplyOnSubmit`
+// does the same for changes to real events, writing them straight into the seeded mailbox.
+function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}, appliedOnSubmit: Record<string, string> = {}, updatesApplyOnSubmit = false) {
+  const events = seed();
+  const graph = fakeGraph(events, options);
   const observations: ObservationDescription[] = [];
   const prepared: string[][] = [];
   const submitted: { kind: keyof CalendarActions; payload: CalendarActions[keyof CalendarActions] }[] = [];
@@ -176,6 +178,10 @@ function session(scope: CalendarScope, access: CalendarAccessLevel = "read", opt
     allocate: () => `~${++sequence}`,
     submit: async (_queue, kind, payload) => {
       if ("ref" in payload && payload.ref in appliedOnSubmit) return 0;
+      if (updatesApplyOnSubmit && "changes" in payload) {
+        Object.assign(events.find(event => event.id === payload.target.id)!.fields, payload.changes);
+        return 0;
+      }
       submitted.push({ kind, payload });
       return submitted.length;
     },
@@ -541,6 +547,13 @@ describe("an all-calendars binding", () => {
     const created = await writer.createEvent({ subject: "Focus", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: SARAHS.id });
     expect(created).toMatchObject({ id: "AAMkEvSarahs" });
     expect(created.pending).toBeUndefined();
+  });
+
+  it("returns the event as changed when the change was applied before submit returned", async () => {
+    const { writer } = session(scope("edit"), "edit", {}, {}, true);
+    const updated = await writer.updateEvent("AAMkEvSarahs", { subject: "Updated subject" });
+    expect(updated).toMatchObject({ id: "AAMkEvSarahs", subject: "Updated subject" });
+    expect(updated.pending).toBeUndefined();
   });
 
   it("judges a change against the sensitivity a queued change will leave, not only the live one", async () => {

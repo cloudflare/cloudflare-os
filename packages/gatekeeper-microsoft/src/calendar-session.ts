@@ -978,11 +978,12 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       await ctx.host.submit(ctx.queue, updateKind(payload, await ctx.owns(calendar), pending), payload);
     }
     const overlay = ctx.overlay();
-    // The creation and this change may both have been auto-approved and applied by now.
-    const shown = isProvisional(event.id)
-      ? overlay.pendingEvent(event.id, me)?.event ?? (await ctx.guarded(event.id)).event
-      : event;
-    return ctx.info(shown, calendar, view, overlay);
+    // An auto-approval may have applied this change (and the creation) already; then read back the
+    // event it left rather than show the one fetched before it.
+    const pending = isProvisional(event.id)
+      ? overlay.pendingEvent(event.id, me)?.event
+      : (overlay.changes.get(event.id)?.length ?? 0) > 0 ? event : undefined;
+    return ctx.info(pending ?? (await ctx.guarded(event.id)).event, calendar, view, overlay);
   }
 
   async deleteEvent(eventId: string, options?: EventChangeOptions): Promise<void> {
