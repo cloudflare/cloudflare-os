@@ -1,5 +1,5 @@
-// `cf-os api`, the real CLI (packages/api-cli), against the Workshop: on a local dev instance it may
-// act as anyone; redeployed as a deployment (no LOCAL_DEV_INSTANCE), only as a deployment admin,
+// `cf-os api`, the real CLI (packages/api-cli), against the Workshop: on a local instance it may act
+// as anyone; redeployed as a deployment (no WORKSHOP_ENVIRONMENT), only as a deployment admin,
 // while a browser's session is unaffected.
 
 import { execFile } from "node:child_process";
@@ -37,7 +37,7 @@ function cfOsApi(args: string[], env: Record<string, string> = {})
   });
 }
 
-describe("on a local dev instance", () => {
+describe("on a local instance", () => {
   it("lets the CLI make accounts, read the public API and sign in as anyone", async () => {
     for (const username of [ADMIN_USERNAME, bob!]) {
       const made = await cfOsApi(["create-account", username], { CFOS_API_PASSWORD: PASSWORD });
@@ -56,11 +56,11 @@ describe("on a local dev instance", () => {
 describe("on a deployment", () => {
   beforeAll(async () => {
     await harness.redeployWorkshop(config => {
-      delete config.vars!.LOCAL_DEV_INSTANCE;
+      delete config.vars!.WORKSHOP_ENVIRONMENT;
     });
     // The redeploy resolves at the first reload, which may still be the Workshop's earlier build.
     await waitFor("the Workshop to run as a deployment", async () =>
-      (await harness.server.getWorker("workshop-backend").getEnv()).LOCAL_DEV_INSTANCE === undefined
+      (await harness.server.getWorker("workshop-backend").getEnv()).WORKSHOP_ENVIRONMENT === undefined
         ? true : null);
   });
 

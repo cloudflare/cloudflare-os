@@ -434,8 +434,9 @@ fails, exit 1, with
 The browser and every other client are unaffected. To use the CLI on a deployment, sign in as one of
 its admins: behind Access, `cloudflared access login <origin>` as an admin's identity.
 
-A local dev instance is one whose backend has `LOCAL_DEV_INSTANCE` set, which only `pnpm dev-server`
-and the integration harness set; a deployment must never set it. There the CLI may sign in as
+A local instance is one whose backend has `WORKSHOP_ENVIRONMENT` set to `development` (by
+`pnpm dev-server`) or `test` (by the integration harness); a deployment must never set it, and any
+other value is a deployment. There the CLI may sign in as
 anyone, but that lifts only this check: a user is a deployment admin, for `am-i-admin` and
 `get-admin-api`, only when `ADMINS` names them, and `pnpm dev-server` (`scripts/run-dev-server.ts`)
 sets it to `["admin"]`. So to act as an admin there, make that account and sign in as it:
