@@ -35,7 +35,10 @@ type Chip = { message: string; sending: boolean }
 const clampHeight = (height: number) =>
   Math.min(Math.max(height, MIN_HEIGHT), Math.min(MAX_HEIGHT, window.innerHeight - 120))
 
-/** A live `<inline-html>` block of an agent answer, drawn in place in a sandboxed frame. */
+/**
+ * A live view in the chat, drawn in place in a sandboxed frame: an `<inline-html>` block of an
+ * agent answer, or a view from `embedView`.
+ */
 export const UiBlockCard = ({
   block, onSendMessage, sendBlockedReason, onHeightChange, scrollRoot,
 }: UiBlockCardProps) => {
