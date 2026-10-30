@@ -663,7 +663,9 @@ function walk(table: ApiTable, tokens: string[], refuseMisread: boolean): Invoca
       i = flag.end;
       continue;
     }
-    const continues = current.kind === "call" ? escapedToken || token !== "call" : current.positionals.length < current.needed;
+    // A `call` segment's first positional is its method, even one named `call`.
+    const continues = current.kind === "call" ? escapedToken || token !== "call" || current.positionals.length === 0
+      : current.positionals.length < current.needed;
     if (continues) {
       if (escapedToken) literal.push(path.length);
       current.positionals.push(token);
@@ -698,9 +700,6 @@ function walk(table: ApiTable, tokens: string[], refuseMisread: boolean): Invoca
       position = { kind: "node", node: table.public };
       current = { kind: "prefix", options: { ...RUNTIME_OPTIONS }, flagTokens: [], positionals: [], needed: 0, at: path.length };
       continue;
-    }
-    if (current.kind === "call" && current.positionals.length === 0) {
-      throw new UsageError("call needs a method name: `call <method> [json-args...]`.");
     }
     if (position.kind === "result") {
       const capabilities = capabilitiesOf(position.returns);
@@ -1470,7 +1469,8 @@ export async function decodeCalls(table: ApiTable, invocation: Invocation, sourc
   const answers = new Map<string, unknown>();
   const answerSecrets = new Map<string, SecretPath[]>();
   for (const raw of invocation.flags.answers) {
-    const match = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)=([^]*)$/.exec(raw);
+    // A gatekeeper app UI's callback is named after its vendor: `context:Decision.accept`.
+    const match = /^((?:[a-z0-9_]+:)?[A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)=([^]*)$/.exec(raw);
     if (!match) throw new UsageError(`--answer needs <Callback>.<method>=<json|@file|->; got "${raw}".`);
     const [, callback, name, value] = match;
     const key = `${callback}.${name}`;

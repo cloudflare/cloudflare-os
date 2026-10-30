@@ -58,6 +58,9 @@ test("`call` segments continue an untyped capability, taking every token up to t
   assert.deepEqual(invocation.end, { kind: "result", returns: { kind: "call" } });
   assert.throws(() => parseInvocation(table, ["open-notebook", "n", "connect", "outline"]), /continue with `call <method>/);
   assert.throws(() => parseInvocation(table, ["open-notebook", "n", "connect", "call"]), /call needs a method name/);
+  // A method may be named `call`: a segment's first positional is its method, whatever it is.
+  assert.deepEqual(parseInvocation(table, ["open-notebook", "n", "connect", "call", "call", "1", "call", "call"]).hops.slice(2),
+    [{ kind: "call", method: "call", args: ["1"] }, { kind: "call", method: "call", args: [] }]);
 });
 
 test("a capability in a property of a value result continues the chain, named as a segment of runtime flags only", () => {
@@ -682,6 +685,14 @@ test("--answer is decoded before connecting, against its method's result shape",
     `--answer ${key}[0].gatekeeperId must be number; got "x".`);
   await fails(decode([`${key}=1`], [], noFiles, table),
     `--answer ${key}: no callback method of the API by that name returns a value, and none does.`);
+});
+
+test("--answer names a gatekeeper app UI's callback with its vendor prefix, as the table does", async () => {
+  const key = "demo_app:ObserverConfigCallback.configure";
+  const prefixed = { ...realTable, callbacks: { ...realTable.callbacks, "demo_app:ObserverConfigCallback": realTable.callbacks.ObserverConfigCallback! } };
+  const { answers } = await decodeCalls(prefixed,
+    parseInvocation(prefixed, ["open-workspace", "g", "get-metadata", "--answer", `${key}=[]`]), noFiles);
+  assert.deepEqual(answers.get(key), []);
 });
 
 test("an --answer read from stdin shares the one stdin with the arguments", async () => {

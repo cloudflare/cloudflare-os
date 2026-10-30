@@ -264,6 +264,18 @@ export interface Api { a(): void; b?(): void; readonly c: string; d?: Sub | null
     ]);
   });
 
+  test("a tuple's rest element, an array of arrays as one, a variadic type parameter as its element", () => {
+    const { services } = extract(`export interface Api {
+  a(): [string, ...number[]]; b(): [string, ...number[][]]; c<T extends boolean[]>(): [string, ...T];
+}
+`);
+    expect(services.Api!.methods.map((m) => m.returns)).toEqual([
+      { kind: "tuple", elements: [{ kind: "string" }], rest: { kind: "number" } },
+      { kind: "tuple", elements: [{ kind: "string" }], rest: { kind: "array", element: { kind: "number" } } },
+      { kind: "tuple", elements: [{ kind: "string" }], rest: { kind: "boolean" } },
+    ]);
+  });
+
   test("@mutates and @deprecated, read from the tag wherever it is in the comment", () => {
     const method = extract(`export interface Api {
   /**
@@ -420,6 +432,23 @@ export interface Api extends RpcTarget { any(): Promise<RpcStub<RpcTarget>>; sub
   test("an RpcTarget from a copy not named is taken for the API's own, an empty service", () => {
     const schema = extract("./checkout/capnweb/dist/index.js");
     expect(schema.services.Api!.methods[0]!.returns).toEqual({ kind: "stub", service: "RpcTarget" });
+  });
+  // capnweb types a declared RpcPromise<X> result as it does Promise<X>: X's own shape.
+  test("an RpcPromise result, the shape of what it resolves to", () => {
+    const entry = join(dir, "api-rpc-promise.ts");
+    writeFileSync(entry, `import type { RpcPromise, RpcTarget } from "capnweb";
+export interface Sub extends RpcTarget { ping(): Promise<void>; }
+export interface Api extends RpcTarget {
+  count(): RpcPromise<number>; record(): RpcPromise<{ title: string }>; sub(): RpcPromise<Sub>;
+}
+`);
+    const schema = extractSchema({ entry, entryName: "Api", compilerOptions: options });
+    expect(Object.keys(schema.services)).toEqual(["Api", "Sub"]);
+    expect(schema.services.Api!.methods.map((m) => m.returns)).toEqual([
+      { kind: "number" },
+      { kind: "object", properties: { title: { kind: "string" } } },
+      { kind: "stub", service: "Sub" },
+    ]);
   });
   // capnweb accepts RpcStub<X> for an unbranded X, which the graph may already hold as a value.
   test("a value type also used as a capability, refused naming it", () => {
