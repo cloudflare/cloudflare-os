@@ -5440,8 +5440,8 @@ function ChatInterface({
                           </button>
                         )}
                         {!isRenaming && chat.activeAgent ? (
-                          <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-brand">
-                            <span className="h-1.5 w-1.5 rounded-full bg-kumo-brand animate-pulse" />
+                          <span role="status" className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-brand">
+                            <span className="h-1.5 w-1.5 rounded-full bg-kumo-brand animate-pulse" aria-hidden="true" />
                             Working
                           </span>
                         ) : !isRenaming && chatHasProposedChanges(chat) ? (
@@ -5705,6 +5705,8 @@ function ChatInterface({
                   </div>
                 ) : (
                   <div
+                    role="log"
+                    aria-label="Conversation"
                     className={`flex flex-col px-3 pt-5 sm:px-6 sm:pt-8 ${pendingConsoleLogCount > 0 ? "pb-16" : "pb-8"} ${useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}`}
                   >
                     {isLoadingEarlier && (

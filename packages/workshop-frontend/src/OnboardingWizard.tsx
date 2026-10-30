@@ -459,6 +459,7 @@ export default function OnboardingWizard({
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
+                    aria-label={avatarPreview ? 'Change profile photo' : 'Add profile photo'}
                     onDrop={handleDrop}
                     onDragOver={(e) => e.preventDefault()}
                     className={`

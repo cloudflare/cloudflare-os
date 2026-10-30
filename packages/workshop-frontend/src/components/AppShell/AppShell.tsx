@@ -123,6 +123,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           />
           <div
             ref={drawerRef}
+            id="mobile-navigation-drawer"
             role="dialog"
             aria-modal="true"
             aria-label="Primary navigation"
@@ -149,6 +150,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             ref={menuButtonRef}
             onClick={() => setMobileOpen((o) => !o)}
             aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-navigation-drawer"
             className="flex h-11 w-11 items-center justify-center rounded-md text-kumo-default transition-colors hover:bg-kumo-tint md:hidden"
           >
             {mobileOpen ? <X size={16} /> : <List size={16} />}
