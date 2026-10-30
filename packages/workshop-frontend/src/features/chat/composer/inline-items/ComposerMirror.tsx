@@ -236,6 +236,8 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
       <Tooltip
         key={start}
         open={!disabled && token.start === tooltipToken}
+        // `open` is controlled, so Escape and other dismissals must clear it here to take effect.
+        onOpenChange={(open) => { if (!open) updateHoveredToken(null); }}
         delay={0}
         side="top"
         align="start"
