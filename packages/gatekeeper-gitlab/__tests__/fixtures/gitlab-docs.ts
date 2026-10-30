@@ -68,6 +68,20 @@ export const usersByUsernameResponse = docs("api/users", [
   },
 ]);
 
+/** `GET /users/:id` -- api/users "Retrieve a single user", as a user who is not an administrator sees it. Trailing fields trimmed. */
+export const singleUserResponse = docs("api/users", {
+  id: 1,
+  username: "john_smith",
+  name: "John Smith",
+  state: "active",
+  locked: false,
+  avatar_url: "http://localhost:3000/uploads/user/avatar/1/cd8.jpeg",
+  web_url: "http://localhost:3000/john_smith",
+  created_at: "2012-05-23T08:00:58Z",
+  bio: "",
+  bot: false,
+});
+
 /** `GET /projects/:id` -- api/projects "Retrieve a project", the fields this gatekeeper reads. */
 export const projectResponse = docs("api/projects", {
   id: 3,

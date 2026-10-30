@@ -30,12 +30,24 @@ self-hosted instances.
 ## Auto-approval
 
 As in the GitHub gatekeeper, every queued action carries a stable kind (`gitlab.<action>`), and
-every one may be auto-approved once the user opts in to its kind, including closing and reopening,
-resolving and reopening diff threads, `requestChanges` reviews and force pushes (under their own
-`gitlab.forcePush` kind). **Merging a merge request** and **an approving review** always wait for
-a person: an approval shares the `gitlab.postReview` kind with the other reviews but is never
-auto-approvable. Each binding advertises through `getAutoApprovableActions()` only the eligible
-kinds its session can submit.
+most may be auto-approved once the user opts in to their kind, including closing and reopening,
+resolving and reopening diff threads, `requestChanges` reviews and pushes to other branches. These
+always wait for a person, because they pass a gate or drop commits:
+
+- **merging a merge request**;
+- **an approving review**, which shares the `gitlab.postReview` kind with the other reviews;
+- **a force push** (`gitlab.forcePush`);
+- **a push to the default or a protected branch**, which shares the `gitlab.push` kind with other
+  pushes. For a branch the push creates, the gatekeeper reads the project's protected-branch rules,
+  wildcards included. A push into an empty repository creates its default branch, so it waits too,
+  and so does any push whose protection could not be read.
+
+An issue or merge request created with a bot or service account among its assignees waits too,
+under the same `gitlab.createIssue` or `gitlab.createMergeRequest` kind as other creates, because
+the assignment can start an agent run (a GitLab Duo flow) that spends the namespace's credits.
+
+Each binding advertises through `getAutoApprovableActions()` only the kinds its session can submit
+that may be auto-approved, so `gitlab.mergeMergeRequest` and `gitlab.forcePush` never appear.
 
 ## Setting up GitLab OAuth credentials
 
