@@ -5,9 +5,11 @@ cross-Worker harness and its isolation rules, see [integration testing](integrat
 
 ## Entry points
 
-- `pnpm --filter <package> test:run`: direct Vitest route, useful while iterating.
+- `pnpm --filter <package> test:run`: the direct route, useful while iterating: Vitest, or `node --test`
+  for `packages/api-cli`.
 - `pnpm exec vp run -F <package> test`: cached task route; unchanged results may replay.
-- `pnpm test`: workspace verification, including `scripts/` suites under `node --test`.
+- `pnpm test`: workspace verification, including the `scripts/` and `packages/api-cli` suites, which
+  run under `node --test` rather than Vitest.
 - `pnpm lint`: lint, script types, generated-config checks, and workspace build/type-checks.
 
 A direct `test:run` script does not execute a task's `dependsOn`. When tests import generated files,

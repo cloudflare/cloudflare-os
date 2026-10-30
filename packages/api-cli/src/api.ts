@@ -1,0 +1,214 @@
+// `cf-os api [public] <command> [arguments] [<command> [arguments]]... [options]`
+// `cf-os api search "<task>"`
+// `cf-os api types [<service>]`
+// `cf-os api create-account <username> [--display-name <name>]`
+//
+// Drives a running Cloudflare OS instance through its Cap'n Web API, the one the browser uses. The
+// commands are not written here: they are the generated table (generated/commands.ts), which
+// `pnpm api-schema:generate` writes from packages/workshop-shared/src/api.ts. This module reads the
+// instance's address and the sign-in to use, then hands the walk to run.ts, or, for `search`, ranks
+// the table's commands against the task, or, for `types`, prints the API's agent declarations
+// (types.ts), or, for `create-account`, makes a password account, which no generated command may,
+// since its password comes from the environment (create-account.ts). Without `--url`, the instance
+// is the one the environment names (session.ts resolveTarget), which cloudflare-os-starter's `cf-os`
+// sets when it runs this CLI.
+//
+// main.ts hands every token after `api` here, so the flags of each segment are parsed here, against
+// that segment's command in the table.
+
+import { accessSync, constants, createReadStream } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { Readable } from "node:stream";
+import { table as generatedTable } from "../generated/commands.ts";
+import { encodeValue, type ArgSource } from "./codec.ts";
+import { accountHash, createAccount, createAccountHelp, DRY_RUN_HASH, parseCreateAccount } from "./create-account.ts";
+import { UsageError, type Output } from "./output.ts";
+import {
+  commandHelp,
+  decodeCalls,
+  dryRunChain,
+  execute,
+  incompleteChain,
+  nodeHelp,
+  parseInvocation,
+  parseSearch,
+  parseTypes,
+  searchCommands,
+  searchHelp,
+  untypedHelp,
+  type RunIo,
+} from "./run.ts";
+import { connect, defaultInstance, defaultSessionDeps, resolveAuth, resolveTarget, type SessionDeps } from "./session.ts";
+import type { ApiTable } from "./table.ts";
+import { agentTypes, typesHelp } from "./types.ts";
+
+/** Where `cf-os api` runs, as main.ts gives it. */
+export interface ApiContext {
+  /** Where relative paths resolve. */
+  cwd: string;
+  out: Output;
+}
+
+/** Everything `cf-os api` touches besides the context, so tests can stand in for each. */
+export interface ApiDeps extends SessionDeps {
+  /** The command table: the generated one. */
+  table: ApiTable;
+  /** Raw stdout: help, NDJSON events and stream bytes. */
+  stdout: NodeJS.WritableStream & { isTTY?: boolean };
+  /** Read for `-` arguments. */
+  stdin: NodeJS.ReadableStream;
+  /** Calls `listener` on SIGINT; returns the function that stops listening. */
+  onInterrupt(listener: () => void): () => void;
+}
+
+/** The process's own. */
+export function defaultDeps(): ApiDeps {
+  return {
+    ...defaultSessionDeps(),
+    table: generatedTable,
+    stdout: process.stdout,
+    // Read only for a `-` argument: touching process.stdin sooner would set it up for nothing.
+    get stdin() {
+      return process.stdin;
+    },
+    onInterrupt: (listener) => {
+      process.on("SIGINT", listener);
+      return () => process.off("SIGINT", listener);
+    },
+  };
+}
+
+/** A Node byte stream as a web one of plain `Uint8Array` chunks, the type capnweb sends as bytes. */
+function webBytes(stream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
+  return (Readable.toWeb(Readable.from(stream)) as unknown as ReadableStream<Uint8Array | string>).pipeThrough(
+    new TransformStream<Uint8Array | string, Uint8Array>({
+      transform: (chunk, controller) => controller.enqueue(typeof chunk === "string"
+        ? new TextEncoder().encode(chunk)
+        : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)),
+    }));
+}
+
+/** `cf-os api`, given every token after `api`. Resolves to the exit code; a failure is thrown. */
+export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = defaultDeps()): Promise<number> {
+  const { table } = deps;
+  // `types` prints declarations, the result itself, as plain text, as a byte stream's result is
+  // written raw: wrapped in JSON, TypeScript would have to be unescaped before it could be read.
+  const types = parseTypes(tokens);
+  if (types) {
+    // The declarations outgrow a pipe's buffer, so `| head` closes it mid-write: that EPIPE is the
+    // reader being done, not a failure. Any other error is still thrown, as with no listener.
+    deps.stdout.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE") throw error;
+    });
+    deps.stdout.write(types.help ? `${typesHelp()}\n` : agentTypes(types.service));
+    return 0;
+  }
+  // `search` finds commands in the table, before any walk: it connects to nothing.
+  const search = parseSearch(tokens);
+  if (search?.help) {
+    deps.stdout.write(`${searchHelp()}\n`);
+    return 0;
+  }
+  if (search) {
+    if (!search.query.trim()) throw new UsageError('search needs a task: `cf-os api search "<describe the task>"`.');
+    const matches = searchCommands(table, search.query);
+    if (matches.length === 0) ctx.out.log("No command matches. `cf-os api --help` lists the first ones.");
+    ctx.out.json(matches);
+    return 0;
+  }
+  const account = parseCreateAccount(tokens);
+  if (account?.help) {
+    deps.stdout.write(`${createAccountHelp(defaultInstance(deps.env))}\n`);
+    return 0;
+  }
+  if (account) {
+    const target = resolveTarget(account.url, deps.env);
+    // A public call: the inferred mode only says whether Access's edge needs its token.
+    const auth = resolveAuth({ auth: account.auth }, deps.env, target.origin);
+    if (account.dryRun) {
+      ctx.out.json({
+        url: target.url,
+        auth: { mode: auth.mode },
+        on: table.public,
+        chain: [{ method: "createAccount", args: [account.username, account.displayName, DRY_RUN_HASH] }],
+      });
+      return 0;
+    }
+    const hash = await accountHash(account.username, deps.env, table.constants.SERVICE_SALT);
+    return createAccount(account, hash,
+      () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: false }, deps), ctx.out);
+  }
+  const invocation = parseInvocation(table, tokens);
+  if (invocation.help) {
+    const target = invocation.help;
+    const help = target.kind === "node" ? nodeHelp(table, target.node, invocation.path, defaultInstance(deps.env))
+      : target.kind === "command" ? commandHelp(table, target.node, target.name, invocation.path, target.at)
+      : untypedHelp(invocation.path);
+    deps.stdout.write(`${help}\n`);
+    return 0;
+  }
+  // Nothing to call yet: a usage error, saying that nothing was sent and how to finish the chain.
+  if (invocation.end.kind === "node" || invocation.end.kind === "untyped") {
+    throw new UsageError(incompleteChain(table, invocation));
+  }
+
+  const { flags } = invocation;
+  let stdinRead = false;
+  const readStdin = async (): Promise<Uint8Array> => {
+    stdinRead = true;
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of deps.stdin) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    return new Uint8Array(Buffer.concat(chunks));
+  };
+  const source: ArgSource = {
+    readFile: async (path) => {
+      try {
+        return new Uint8Array(await readFile(resolve(ctx.cwd, path)));
+      } catch (error) {
+        throw new UsageError(`could not read @${path}: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}.`);
+      }
+    },
+    readStdin,
+  };
+  // Only a run that needs an instance gets here, help, search and types having returned: without
+  // --url, its environment's default (CFOS_API_URL, or CFOS_API_URL_UNAVAILABLE's reason) is read
+  // now, before any argument is decoded, so a run with no instance fails, dry runs included, and a
+  // run with --url never reads it.
+  const target = resolveTarget(flags.url, deps.env);
+  const auth = resolveAuth(flags, deps.env, target.origin);
+  const decoded = await decodeCalls(table, invocation, source);
+  const { calls, answers } = decoded;
+  if (flags.dryRun) {
+    ctx.out.json({
+      url: target.url,
+      auth: auth.username === undefined ? { mode: auth.mode } : { mode: auth.mode, username: auth.username },
+      on: invocation.public ? table.public : table.root,
+      chain: dryRunChain(calls),
+      ...answers.size ? { answers: Object.fromEntries([...answers].map(([key, value]) => [key, encodeValue(value)])) } : {},
+    });
+    return 0;
+  }
+
+  const io: RunIo = {
+    out: ctx.out,
+    stdout: deps.stdout,
+    openStream: (path) => {
+      if (path === "-") {
+        if (stdinRead) throw new UsageError("Only one argument can read stdin (-).");
+        return webBytes(deps.stdin);
+      }
+      const file = resolve(ctx.cwd, path);
+      try {
+        accessSync(file, constants.R_OK);
+      } catch (error) {
+        throw new UsageError(`could not read ${path}: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}.`);
+      }
+      return webBytes(createReadStream(file));
+    },
+    outputPath: (path) => resolve(ctx.cwd, path),
+    onInterrupt: deps.onInterrupt,
+  };
+  return execute(table, invocation, decoded,
+    () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: !invocation.public }, deps), io);
+}

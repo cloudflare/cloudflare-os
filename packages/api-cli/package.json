@@ -1,0 +1,20 @@
+{
+  "name": "@gadgets/api-cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test:run": "node --test 'src/**/*.test.ts' 'generator/**/*.test.ts'"
+  },
+  "dependencies": {
+    "capnweb": "catalog:",
+    "hash-wasm": "^4.12.0"
+  },
+  "devDependencies": {
+    "@gadgets/api-schema": "workspace:*",
+    "@gadgets/scripts": "workspace:*",
+    "@types/node": "26.1.0",
+    "typescript": "catalog:"
+  }
+}
