@@ -49,6 +49,10 @@ export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
 const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and arrangement" };
 const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
+// Every other batch, and adding, copying, reordering and deleting slides, always waits for approval.
+const UPDATE_SLIDES: ActionKind = { tag: "update-slides", label: "Other slide changes" };
+const ARRANGE_SLIDES: ActionKind = { tag: "arrange-slides", label: "Adding, copying and reordering slides" };
+const DELETE_SLIDES: ActionKind = { tag: "delete-slides", label: "Deleting slides" };
 
 function isFormatting(change: DesignChange): boolean {
   switch (change.op) {
@@ -509,10 +513,11 @@ function slideIdsOf(changes: readonly DesignChange[]): string[] {
   return [...new Set(changes.flatMap(change => slideIdOf(change) ?? []))];
 }
 
-/** A design batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
-function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHost> {
+/** A design batch's definition, the same for each kind but in its `kind` and its auto-approval verdict. */
+function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition<DesignBatch, SlidesHost> {
   return {
-    ...(kind ? { kind, autoApprovable: true } : {}),
+    kind,
+    autoApprovable,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: batch => {
@@ -552,11 +557,13 @@ function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHos
 
 /** The Slides change set, bound once per presentation's journal. */
 export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
-  editText: designBatch(EDIT_SLIDES_TEXT),
-  formatSlides: designBatch(FORMAT_SLIDES),
-  updateSlides: designBatch(),
+  editText: designBatch(EDIT_SLIDES_TEXT, true),
+  formatSlides: designBatch(FORMAT_SLIDES, true),
+  updateSlides: designBatch(UPDATE_SLIDES, false),
 
   duplicateSlide: {
+    kind: ARRANGE_SLIDES,
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slide }) => ({
@@ -580,6 +587,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   },
 
   deleteSlide: {
+    kind: DELETE_SLIDES,
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slide }) => ({
@@ -598,6 +607,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   },
 
   moveSlides: {
+    kind: ARRANGE_SLIDES,
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slides, afterSlide }) => {
@@ -628,6 +639,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   },
 
   createSlide: {
+    kind: ARRANGE_SLIDES,
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ layout, after, afterSlide }) => {

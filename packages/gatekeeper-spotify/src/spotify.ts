@@ -1812,7 +1812,9 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     this.ctx.storage.kv.put<StoredActionRecord>(this.#actionKey(action.approvalId), { action, state: "staged" });
     try {
       // The text comes from the prepared payload, not the caller, so it always shows what applies.
-      await queue.submitAction(action.approvalId, { ...presentation, ...describeSpotifyAction(action) });
+      await queue.submitAction(action.approvalId, {
+        ...presentation, ...describeSpotifyAction(action), autoApprovable: false,
+      });
     } catch (error) {
       this.ctx.storage.kv.delete(this.#actionKey(action.approvalId));
       throw error;

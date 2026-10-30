@@ -79,6 +79,8 @@ const EDIT_SHEET_VALUES: ActionKind = { tag: "editSheetValues", label: "Sheet va
 // What a user may let apply without asking: a batch that only formats cells, leaving their
 // contents, rows, columns and sheets as they are.
 const FORMAT_SHEETS: ActionKind = { tag: "formatSheets", label: "Sheet formatting" };
+// Every other batch always waits for approval.
+const UPDATE_SPREADSHEET: ActionKind = { tag: "update-spreadsheet", label: "Other spreadsheet changes" };
 
 /**
  * The kind a batch is queued as, so approving a kind approves no more than it says: a batch mixing
@@ -389,10 +391,11 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
   }
 }
 
-/** A batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
-function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost> {
+/** A batch's definition, the same for each kind but in its `kind` and its auto-approval verdict. */
+function sheetBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition<SheetBatch, SheetsHost> {
   return {
-    ...(kind ? { kind, autoApprovable: true } : {}),
+    kind,
+    autoApprovable,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ changes, sheets }) => {
@@ -425,7 +428,7 @@ function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost>
 
 /** The Sheets change set, bound once per spreadsheet's journal. */
 export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>({
-  editSheetValues: sheetBatch(EDIT_SHEET_VALUES),
-  formatSheets: sheetBatch(FORMAT_SHEETS),
-  updateSpreadsheet: sheetBatch(),
+  editSheetValues: sheetBatch(EDIT_SHEET_VALUES, true),
+  formatSheets: sheetBatch(FORMAT_SHEETS, true),
+  updateSpreadsheet: sheetBatch(UPDATE_SPREADSHEET, false),
 }, { fence: "none", vendorId: "google" });

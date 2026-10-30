@@ -43,7 +43,7 @@ async function renderPending(
     entries: [entry(1, {
       description: {
         title: 'Send email', description: longDescription, implementsRevert: false,
-        descriptionIsComplete, fields,
+        autoApprovable: false, descriptionIsComplete, fields,
       },
     })],
   })

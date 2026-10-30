@@ -2096,7 +2096,7 @@ describe("Google Sheets formatting", () => {
       { op: "formatCells", range: "Sales!A5", format: { italic: true, verticalAlignment: "MIDDLE" } },
     ]);
     expect(mixed.action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: false });
-    expect(mixed.action!.actionKind).toBeUndefined();
+    expect(mixed.action!.actionKind).toEqual({ tag: "update-spreadsheet", label: "Other spreadsheet changes" });
     expect(mixed.action!.description).toContain(
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", set A5 to the values below\n' +

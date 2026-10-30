@@ -511,6 +511,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
         description: `Create a test thing titled **${title}**.`,
         descriptionIsComplete: true,
         implementsRevert: false,
+        autoApprovable: false,
       },
     };
   }
@@ -629,7 +630,8 @@ export class TestVerifier
 /**
  * A live session against a Test Thing, opened via `GatekeeperClient.openSession()`. `readValue()`
  * records an observation (optionally `containsRestrictedData`); `writeValue()` submits a
- * `set-value` action whose `autoApprovable` verdict and warnings the caller chooses.
+ * `set-value` action whose `autoApprovable` verdict (false unless the caller opts in) and warnings
+ * the caller chooses.
  */
 export interface TestSession {
   /**
@@ -702,7 +704,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
         implementsRevert: false,
         awaitDecision: true,
         actionKind: SET_VALUE_ACTION_KIND,
-        ...(opts?.autoApprovable ? { autoApprovable: true } : {}),
+        autoApprovable: opts?.autoApprovable === true,
       });
       return id;
     } catch (error) {

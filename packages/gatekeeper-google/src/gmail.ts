@@ -313,11 +313,11 @@ function actionKinds(labels: Record<string, string>): ActionKind[] {
 
 function gmailAutoApprovalMetadata(
     action: GmailAction,
-): Partial<Pick<ActionDescription, "actionKind" | "autoApprovable">> {
+): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
   switch (action.type) {
   case "send":
   case "draftSend":
-    return {};
+    return {autoApprovable: false};
   case "messageMutation":
     return {
       actionKind: {tag: action.operation, label: MESSAGE_MUTATION_LABELS[action.operation]},

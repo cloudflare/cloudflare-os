@@ -412,10 +412,11 @@ describe("agent tracing", () => {
       await impl.drainAutoApprovals(7);
       await impl.submitAction(7, 2, {
         title: `Send ${SECRET}`, description: SECRET, implementsRevert: false,
+        autoApprovable: false,
       }, { from: "agent", chatId: CHAT_ID });
       // Actions a user submits are not the agent's.
       await impl.submitAction(7, 3, {
-        title: "Mine", description: "", implementsRevert: false,
+        title: "Mine", description: "", implementsRevert: false, autoApprovable: false,
       }, { from: "user" });
 
       let records = [...impl.storage.actions.list()];
@@ -509,6 +510,7 @@ describe("turn notifications", () => {
       });
       await impl.submitAction(7, 1, {
         title: "Send", description: "", implementsRevert: false, awaitDecision: true,
+        autoApprovable: false,
       }, { from: "agent", chatId: CHAT_ID });
       let [record] = impl.storage.actions.list();
       let decide = () => impl.storage.actions.put({ ...record, state });
