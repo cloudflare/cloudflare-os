@@ -155,7 +155,9 @@ describe("editDocx: keeping everything else", () => {
     expect(after.entries().map(entry => entry.name)).toEqual(before.entries().map(entry => entry.name));
     for (const entry of before.entries()) {
       if (entry.name === "word/document.xml") continue;
-      expect(await after.readBytes(entry.name), entry.name).toEqual(await before.readBytes(entry.name));
+      // `toEqual` walks a typed array element by element, and styles.xml and stylesWithEffects.xml are
+      // nearly 800 KB between them; that alone took this test past its timeout on a loaded runner.
+      expect(Buffer.compare(await after.readBytes(entry.name), await before.readBytes(entry.name)), entry.name).toBe(0);
     }
     const original = await before.readText("word/document.xml");
     const edited = await after.readText("word/document.xml");
