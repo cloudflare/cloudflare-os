@@ -115,7 +115,13 @@ function workshopConfig(
 
   // No CF_ACCESS_AUD, so /api takes the unauthenticated path and password signup is available.
   // PUBLIC_BASE_URL mirrors run-dev-server.ts; only connect handoffs read it, as their target origin.
-  config.vars = { ...config.vars, ADMINS: [ADMIN_USERNAME], PUBLIC_BASE_URL: "http://workshop.test" };
+  // WORKSHOP_ENVIRONMENT "test" makes it a local instance, where `cf-os api` may act as anyone, as
+  // on `pnpm dev-server`. A suite deletes it in `patchWorkshop` to run as a deployment, where the
+  // CLI is for admins only.
+  config.vars = {
+    ...config.vars, ADMINS: [ADMIN_USERNAME], PUBLIC_BASE_URL: "http://workshop.test",
+    WORKSHOP_ENVIRONMENT: "test",
+  };
 
   // Most integration tests need no Gadget execution. Keep the loader only for tests that exercise
   // executeCode or a generated Gadget server.

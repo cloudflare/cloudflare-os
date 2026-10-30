@@ -11,6 +11,11 @@ import {
   serializeArchive,
 } from "../packages/bundled-blueprints/__tests__/archives.ts";
 
+// Keeps the git commands this suite runs, and those of the scripts it spawns, out of any trace2
+// listener in the user's git config (one that writes into a repository's .git can race the cleanup
+// below, failing it with ENOTEMPTY). The environment variable overrides trace2.eventTarget.
+process.env.GIT_TRACE2_EVENT = "0";
+
 const temporaryDirectories: string[] = [];
 const workspaceRoot = join(import.meta.dirname, "..");
 const packageRoot = join(workspaceRoot, "packages/workshop-backend");

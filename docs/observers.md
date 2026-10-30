@@ -215,9 +215,10 @@ Add to the RPC API (`packages/workshop-shared/src/api.ts`) and thread through
 `server.ts` `openWorkspace` → `overseer.open()`:
 
 ```ts
-// Provided by the client when opening a gadget. Invoked by the overseer only if the opening
-// user must choose connected accounts for one or more gatekeeper bindings before they can
-// observe the gadget. The overseer does not resolve open() until this returns.
+// Provided by the client when opening a workspace with openWorkspace(). Invoked by the overseer
+// only if the opening user must choose connected accounts for one or more gatekeeper bindings
+// before they can observe the workspace. The overseer does not resolve openWorkspace() until
+// this returns.
 interface ObserverConfigCallback extends RpcTarget {
   configure(needs: ObserverBindingNeed[]): Promise<ObserverAccountChoice[]>;
 }

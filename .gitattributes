@@ -5,3 +5,6 @@
 # `types:generate --check` diffs each committed worker-configuration.d.ts against freshly generated
 # output.
 * text=auto eol=lf
+
+# Written by `pnpm types:generate` (`wrangler types`) and checked by `types:generate --check`.
+**/worker-configuration.d.ts linguist-generated

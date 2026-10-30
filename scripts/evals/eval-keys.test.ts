@@ -6,6 +6,11 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+// Keeps the git commands this suite runs, and those of the scripts it spawns, out of any trace2
+// listener in the user's git config (one that writes into a repository's .git can race the cleanup
+// below, failing it with ENOTEMPTY). The environment variable overrides trace2.eventTarget.
+process.env.GIT_TRACE2_EVENT = "0";
+
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "eval-keys.ts");
 
 type Output = {

@@ -153,14 +153,17 @@ export interface PublicApi extends RpcTarget {
       : Promise<string | null>;
 
   /**
-   * Fetch blueprint metadata by ID. Returns null if the blueprint doesn't exist. No
-   * authentication required (knowing the ID is sufficient, since a blueprint is "just data").
+   * Fetch blueprint metadata by ID, whose current release says if an update is available. A gadget
+   * following the blueprint has one when that release differs from the release it last took (see
+   * GadgetUpstream). Returns null if the blueprint doesn't exist. No authentication required
+   * (knowing the ID is sufficient, since a blueprint is "just data").
    */
   getBlueprint(id: string): Promise<BlueprintPublicInfo | null>;
 
   /**
-   * Download a blueprint as a `.gadget` archive stream. The archive contains only
-   * BlueprintMetadata plus the current blueprint code snapshot, not the full KV record.
+   * Export a blueprint: download it as a `.gadget` archive stream. Another Workshop instance takes
+   * the archive in with AuthenticatedApi.importBlueprint(). It contains only BlueprintMetadata plus
+   * the current blueprint code snapshot, not the full KV record.
    */
   downloadBlueprint(id: string): Promise<ReadableStream<Uint8Array>>;
 }
@@ -361,12 +364,12 @@ export type ObserverAccountChoice = {
 };
 
 /**
- * Provided by the client when opening a gadget. Invoked by the overseer ONLY if the opening user
- * must choose connected accounts for one or more gatekeeper bindings before they can observe the
- * gadget. In the common case (owner, or an already-configured observer) this is never called and
- * open() resolves without an extra round trip. The overseer does not resolve open() until this
- * returns. If the user cannot or will not provide the needed accounts, the callback should reject,
- * and the overseer denies the open.
+ * Provided by the client when opening a workspace with openWorkspace(). Invoked by the overseer
+ * ONLY if the opening user must choose connected accounts for one or more gatekeeper bindings
+ * before they can observe the workspace. In the common case (owner, or an already-configured
+ * observer) this is never called and openWorkspace() resolves without an extra round trip. The
+ * overseer does not resolve openWorkspace() until this returns. If the user cannot or will not
+ * provide the needed accounts, the callback should reject, and the overseer denies the open.
  *
  * `configure()` may be called a second time within one open, for the subset of bindings that failed
  * verification (each carrying an ObserverBindingNeed.failure). This lets the user repair a binding --
@@ -443,6 +446,26 @@ export const createAuthError = authErrors.create;
 /** Reads the machine-readable code from an authentication failure. */
 export const getAuthErrorCode = authErrors.getCode;
 
+/** Stable error codes attached to expected failures from `Overseer.waitForAgent()`. */
+export const WAIT_FOR_AGENT_ERROR_CODES = {
+  timedOut: "AGENT_WAIT_TIMED_OUT",
+} as const;
+
+/** An expected failure code from `Overseer.waitForAgent()`. */
+export type WaitForAgentErrorCode =
+    typeof WAIT_FOR_AGENT_ERROR_CODES[keyof typeof WAIT_FOR_AGENT_ERROR_CODES];
+
+const waitForAgentErrors = codedErrorFamily<WaitForAgentErrorCode>({
+  [WAIT_FOR_AGENT_ERROR_CODES.timedOut]:
+      "The agent was still running when the wait timed out. Wait again, or stop it.",
+});
+
+/** Creates an expected `waitForAgent()` error with a machine-readable code. */
+export const createWaitForAgentError = waitForAgentErrors.create;
+
+/** Reads the machine-readable code from an expected `waitForAgent()` error. */
+export const getWaitForAgentErrorCode = waitForAgentErrors.getCode;
+
 /**
  * One user as listed in the deployment-wide user directory (see
  * `AuthenticatedApi.searchUsers`).
@@ -466,7 +489,10 @@ export type DeviceSessionHandoffStart = {
   ticket: string;
 };
 
-/** Top-level API exposed to the user after they have authenticated. */
+/**
+ * Top-level API exposed to the user after they have authenticated, from which they reach their
+ * workspaces and the gadgets in them.
+ */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
@@ -669,7 +695,7 @@ export interface AuthenticatedApi extends RpcTarget {
   getAvatar(userId: string): Promise<Uint8Array | null>;
 
   /**
-   * Open an existing workspace.
+   * Open an existing workspace, or join one shared with you by redeeming its share link's key.
    *
    * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
    * collaborator. If the key is invalid or expired, the call throws an exception. If the workspace
@@ -693,22 +719,38 @@ export interface AuthenticatedApi extends RpcTarget {
    * Create a new workspace. It will start out titled "Untitled Workspace".
    *
    * Note: A workspace is considered "provisional" until it has some sort of activity, such as a
-   *   chat message or code edit. Provisional workspaces do not appear on the home page and will be
-   *   automatically deleted after some time. Note in particular that calling
-   *   new*Gatekeeper() will not clear the provisional bit (as long as the gatekeeper isn't bound
-   *   into a gadget), so provisional workspaces are useful to allow the user to write an initial
-   *   chat message without explicitly creating a new workspace.
+   *   chat message or code edit. Provisional workspaces do not appear on the home page
+   *   (listWorkspaces() leaves them out, listProvisionalWorkspaces() lists them), and nothing
+   *   deletes them but Overseer.deleteSelf(). Note in particular that calling new*Gatekeeper() will
+   *   not clear the provisional bit (as long as the gatekeeper isn't bound into a gadget), so
+   *   provisional workspaces are useful to allow the user to write an initial chat message without
+   *   explicitly creating a new workspace.
+   *
+   * A client that does not keep the returned Overseer, such as a one-shot command, reads the
+   * workspace's id with Overseer.getMetadata() before letting it go, and later opens the workspace
+   * with openWorkspace().
+   *
+   * @reportsId workspace getMetadata().id
    */
   newWorkspace(): Promise<RpcStub<Overseer>>;
 
   /**
-   * List metadata about all the user's workspaces. Used to display the front-page listing.
+   * List metadata about all the user's workspaces, which hold their gadgets. Used to display the
+   * front-page listing.
    *
    * Provisional workspaces are hidden.
    *
    * TODO: Pagination, sort options.
    */
   listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]>;
+
+  /**
+   * List the user's provisional workspaces (see newWorkspace()), which listWorkspaces() hides: one
+   * made and then left, such as by a client that lost the Overseer newWorkspace() returned before
+   * reading its id, is found here by when it was created, to open with openWorkspace() or delete
+   * with Overseer.deleteSelf().
+   */
+  listProvisionalWorkspaces(): Promise<(WorkspaceMetadata & {created: Date})[]>;
 
   /** Pin or unpin this workspace in the user's list. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
@@ -727,23 +769,43 @@ export interface AuthenticatedApi extends RpcTarget {
   listOutputs(): Promise<ListOutputsResult>;
 
   /**
-   * The deployment's standard output formats, in the order they should be offered -- what fills a
-   * "New Document / New Slides / ..." menu. Empty when the deployment promotes none.
+   * The deployment's standard output formats, the built-in blueprints this instance ships with and
+   * any others an admin promotes, for a "New Document / New Slides / ..." menu, in the order to
+   * offer them.
+   * Empty when the deployment promotes none.
    *
-   * These are ordinary blueprints an admin has promoted.
+   * These are ordinary blueprints an admin has promoted. Each blueprint bundled with the
+   * deployment is promoted once, when it is first installed, and an admin may turn it off.
    */
   listOutputFormats(): Promise<OutputFormatOffer[]>;
 
-  /** List all third-party services that this account can connect to. */
+  /**
+   * Connectors you can connect: third-party services and MCP (Model Context Protocol) servers.
+   * The services are ones such as GitHub or Slack, and the list is those this account can add.
+   *
+   * connectAccount() connects one, giving a connected account, and Overseer.newGatekeeper() then
+   * makes one of that account's resources (a GitHub repository, an MCP server's endpoint) a
+   * gatekeeper in a workspace; that is also how a workspace answers an agent's connection request
+   * (see Overseer.acceptConnectionRequest()). Ambient gatekeepers need no connecting: see
+   * listAddableGatekeepers().
+   */
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]>;
 
   /**
-   * Connect this account to a specific account on a third-party service. Returns the URL which the
-   * Workshop opens as a disowned popup to complete the authorization, plus the flow's nonce (see
-   * `ConnectFlowStart`). When the flow finishes, the popup lands on the Workshop's own
-   * /connect/handoff page, which redeems the handoff with completeConnectHandoff() over its own
-   * session; only then is the account added to the list, which can be observed through
+   * Connect this account to an account on a connector: a third-party service or MCP server. Returns
+   * the URL which the Workshop opens as a disowned popup to complete the authorization, plus the
+   * flow's nonce (see `ConnectFlowStart`). When the flow finishes, the popup lands on the
+   * Workshop's own /connect/handoff page, which redeems the handoff with completeConnectHandoff()
+   * over its own session; only then is the account added to the list, which can be observed through
    * subscribeConnectedAccounts().
+   *
+   * Only the Workshop client that started the flow can complete it. The ticket arrives only in
+   * the URL fragment of the /connect/handoff page the flow ends on, and that page redeems it only
+   * with the nonce the Workshop stored in its popup (the native apps instead pass the ticket back
+   * to the WebView that kept the nonce). The URL opened any other way, such as in a plain browser
+   * tab, ends on a handoff page that redeems nothing, so a caller holding the nonce still never
+   * sees the ticket (see docs/connect-handoff.md). A vendor that provisions its own account
+   * (`description.autoProvisionsAccount`) needs no flow: see provisionAmbientAccount().
    *
    * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
@@ -770,27 +832,32 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
-   * on a connected account, expanding if needed. Returns a flow to open as a disowned popup (as for
-   * connectAccount()) to authorize them, or null if nothing was needed. Completion is redeemed via
-   * completeConnectHandoff(); the updated grant is then observable via subscribeConnectedAccounts().
+   * on a connected account, expanding if needed. Returns a flow to open as a disowned popup, which
+   * only the Workshop client that started it can complete (as for connectAccount()), to authorize
+   * them, or null if nothing was needed. Completion is redeemed via completeConnectHandoff(); the
+   * updated grant is then observable via subscribeConnectedAccounts().
    * Returning null also re-reads the account's description, so a list of granted resource types
    * that was out of date is corrected and observable the same way.
    */
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
 
   /**
-   * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now: those set to
-   * 'optional' by the admin that the user hasn't added yet. Rendered as an "Available" section on the
-   * Connectors page. ('enabled' ones are already provisioned; 'disabled' ones aren't offered.) Returns
-   * the same shape as listGatekeeperVendors (with no resources) so the connect UI handles both
-   * identically, routing on `description.autoProvisionsAccount`.
+   * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now. They are
+   * those set to 'optional' by the admin that the user hasn't added yet, such as Skills
+   * (`context`), Scheduled Tasks (`scheduler`) or Web Search (`websearch`). Rendered as an
+   * "Available" section on the Connectors page. ('enabled' ones are already provisioned; 'disabled'
+   * ones aren't offered.) Returns the same shape as listGatekeeperVendors (with no resources) so
+   * the connect UI handles both identically, routing on `description.autoProvisionsAccount`.
    */
   listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]>;
 
   /**
-   * Opt into an ambient gatekeeper: mint its connected account for this user (no OAuth flow). Only
-   * works while the vendor's mode is 'optional' (or 'enabled') and the user has no account yet; the
-   * new account then appears via subscribeConnectedAccounts(). Throws otherwise.
+   * Opt into an ambient gatekeeper, such as Skills (Context collections), minting its account.
+   * Ambient ones include Skills (`context`), Scheduled Tasks (`scheduler`) and Web Search
+   * (`websearch`), and the account is this user's connected account, minted with no OAuth flow.
+   * The new account appears via subscribeConnectedAccounts(); if the user already has one, the
+   * call does nothing. Throws for an unknown vendor, one whose mode is 'disabled', or one that
+   * isn't ambient.
    */
   provisionAmbientAccount(vendorId: string): Promise<void>;
 
@@ -815,6 +882,11 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * `accountId` is the user's connected account that provides this resource.
    * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   *
+   * Once the user has chosen in the frame, the Workshop asks its iframe for the resource URL
+   * (ResourceConfiguratorIframe.collectResourceUrl()) and passes it to Overseer.newGatekeeper().
+   * A caller without the iframe makes that URL itself, in the form of `resourceUrlPattern`, the
+   * frame's `ui` helping only to look up what fills it.
    */
   startResourceConfigurator(
     accountId: number,
@@ -892,6 +964,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * keyed by binding name. Throws if any are missing or if accountId/modelId are invalid.
    *
    * The returned Overseer can be used immediately (pipelining-friendly).
+   *
+   * @reportsId workspace getMetadata().id
    */
   newWorkspaceFromBlueprint(
     blueprintId: string,
@@ -912,10 +986,10 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Re-authenticate a connected account whose credentials have expired (or may be about to
-   * expire). Returns a flow to open as a disowned popup (as for connectAccount()). Once the OAuth
-   * flow completes and the popup's /connect/handoff page redeems the handoff via
-   * completeConnectHandoff(), the account is updated and subscribers are notified with
-   * credentialsValid: true.
+   * expire). Returns a flow to open as a disowned popup, which only the Workshop client that
+   * started it can complete (as for connectAccount()). Once the OAuth flow completes and the
+   * popup's /connect/handoff page redeems the handoff via completeConnectHandoff(), the account is
+   * updated and subscribers are notified with credentialsValid: true.
    */
   reconnectAccount(accountId: number): Promise<ConnectFlowStart>;
 
@@ -929,9 +1003,20 @@ export interface AuthenticatedApi extends RpcTarget {
   listGatekeeperApps(): Promise<GatekeeperAppInfo[]>;
 
   /**
-   * Get the app frame (self-contained iframe HTML + the gatekeeper's `ui` capability) for the given
-   * gatekeeper id, or null if there is no such UI-providing gatekeeper. The Workshop hosts the HTML
-   * in a sandboxed iframe and exposes `ui` to it over a MessagePort RPC session.
+   * Get the app of gatekeeper `id`, such as Skills, for creating Skills/Context collections.
+   * A UI-providing gatekeeper has one: Skills (`context`) has a `ui` that creates and manages
+   * Skills/Context collections, and Scheduled Tasks (`scheduler`) one that lists schedules. The app
+   * is the gatekeeper's frame (self-contained iframe HTML + its `ui` capability), or null if the
+   * user has no such gatekeeper. An ambient one the deployment only offers is null until the user
+   * opts in with provisionAmbientAccount(). The Workshop hosts the HTML in a sandboxed iframe and
+   * exposes `ui` to it over a MessagePort RPC session. The `ui`'s interface is the gatekeeper's own:
+   * `ContextApi` in gatekeeper-context's `context-types.ts`, `ScheduleManagementApi` in
+   * gatekeeper-scheduler's `management-types.ts`.
+   *
+   * @appApi ui id
+   * @nullWhen the user has no gatekeeper of that id with an app, as listGatekeeperApps() lists
+   *   them; for an ambient one the deployment only offers, provisionAmbientAccount() with that id
+   *   adds it
    */
   getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null>;
 
@@ -958,6 +1043,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * an admin. The access check happens once here, so the returned stub's methods need no per-call
    * checks. (Authentication config — sign-in providers, password login — is intentionally not
    * managed here; it stays env-var driven.)
+   *
+   * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
   getAdminApi(): Promise<RpcStub<AdminApi> | null>;
 
@@ -2009,6 +2096,8 @@ export type AiModelConfig = {
    * Secret API token for the respective provider, for billing purposes. For providers "anthropic",
    * "openai", and "ollama", an empty token means no key is sent at all, e.g. because a proxy
    * authenticated through `extraHeaders` supplies its own.
+   *
+   * @secret
    */
   apiToken: string;
 
@@ -2031,6 +2120,8 @@ export type AiModelConfig = {
    * headers), which is useful for proxies that require their own credentials. Like `apiToken`
    * and `apiUrl`, these are ignored when the Workshop routes requests through its own AI
    * Gateway configuration rather than contacting the provider directly.
+   *
+   * @secret
    */
   extraHeaders?: Record<string, string>;
 
@@ -2090,10 +2181,18 @@ export type AutoRouterPool = { models: string[] } | { providers: AiModelProvider
 export type RedactedAiModelConfig = Omit<AiModelConfig,
     "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike" |
     "capabilities" | "autoRouterPool"> & {
-  /** `AiModelConfig.apiToken`, or null if withheld. */
+  /**
+   * `AiModelConfig.apiToken`, or null if withheld.
+   *
+   * @secret
+   */
   apiToken: string | null;
 
-  /** `AiModelConfig.extraHeaders`, with each value null if withheld. */
+  /**
+   * `AiModelConfig.extraHeaders`, with each value null if withheld.
+   *
+   * @secret
+   */
   extraHeaders?: Record<string, string | null>;
 };
 
@@ -2570,6 +2669,10 @@ export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
+/**
+ * One entry in a workspace's action log, discriminated by `type`: an action a gadget asked a
+ * gatekeeper to take, an observation it made, or a hook it bound.
+ */
 export type ActionLogEntry = {
   /** Sequential ID number for the action. Counts up from when the workspace was created. */
   id: number;
@@ -2641,6 +2744,7 @@ export type CreationApproval = {
   configuration?: string;
 };
 
+/** A hook bound in a workspace: a gatekeeper event that wakes a gadget's code. */
 export type BoundHookInfo = {
   id: number;
 
@@ -2733,8 +2837,9 @@ export interface Overseer extends RpcTarget {
       : Promise<RpcStub<{}>>;
 
   /**
-   * Receive the current viewer roster, then incremental updates as viewers come and go.
-   * A viewer is present for the lifetime of the openWorkspace() session.
+   * Watch who is viewing the workspace: receive the viewer roster, then updates as it changes.
+   * The current roster comes first, then incremental updates as viewers come and go. A viewer is
+   * present for the lifetime of the openWorkspace() session.
    */
   subscribeToPresence(subscriber: RpcStub<PresenceSubscriber>): Promise<RpcStub<{}>>;
 
@@ -2750,7 +2855,7 @@ export interface Overseer extends RpcTarget {
   deleteSelf(): Promise<void>;
 
   /**
-   * Subscribe to the workspace's workpiece list.
+   * Subscribe to the workspace's workpiece list, which lists its gadgets, each by ID and title.
    *
    * The subscriber receives one entry() per existing workpiece, followed by ready(), then
    * incremental entry()/removed() calls as workpieces are created, renamed, or deleted, and
@@ -2848,9 +2953,9 @@ export interface Overseer extends RpcTarget {
   getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]>;
 
   /**
-   * Submit one code change on a chat's branch. This is the only way to edit code: committed code
-   * cannot be written directly -- gadget heads only advance when a chat's changes are accepted
-   * (see mergeChanges()).
+   * Submit one code change on a chat's branch: how a client edits files.
+   * This is the only way to edit code: committed code cannot be written directly -- gadget heads
+   * only advance when a chat's changes are accepted (see mergeChanges()).
    *
    * `submission.change` is expressed against the chat's content as of
    * `(submission.generation, submission.revision)` -- that is, the submitter has applied every
@@ -2907,14 +3012,17 @@ export interface Overseer extends RpcTarget {
   getGatekeeperById(id: WorkpieceId): Promise<GatekeeperClient<any>>;
 
   /**
-   * Try to create a new gatekeeper for this URL.
+   * Try to create a new gatekeeper for this resource URL, such as a repository or MCP server.
+   * The gatekeeper is a connection to that one resource of a connected account, such as a GitHub
+   * repository or an MCP server's endpoint.
    *
    * `accountId` is the user's connected account to use to access this resource. To determine an
    * appropriate account, use `subscribeConnectedAccounts()` with a `filter` for this URL, then
    * let the user choose one.
    *
    * The new gatekeeper is a workspace-level workpiece; it is not bound into any gadget's `env` by
-   * default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget.
+   * default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget, or pass
+   * its id to acceptConnectionRequest() to hand it to the agent that asked for it.
    */
   newGatekeeper(accountId: number, resourceUrl: string): Promise<GatekeeperClient<any> | null>;
 
@@ -2958,20 +3066,35 @@ export interface Overseer extends RpcTarget {
   rejectAction(id: number): Promise<void>;
 
   /**
-   * List information about bound hooks (which could wake up a gadget asynchronously).
+   * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.
+   * A hook is a callback through which a gatekeeper wakes a gadget: for a scheduled task (the
+   * scheduler gatekeeper), or for an incoming email or GitHub event.
+   *
+   * A gatekeeper binds a hook disabled, when the gadget or an agent registers for it, and it
+   * delivers nothing until enableHook(). The scheduler offers no way to unregister a schedule:
+   * stopping or removing one is disabling or deleting its hook (disableHook(), deleteHook()).
    *
    * The list spans the whole workspace; each entry names the gadget it wakes (see
    * BoundHookInfo.gadgetId), so a per-gadget view must filter on that.
    */
   listHooks(): Promise<BoundHookInfo[]>;
 
-  /** Enable the hook with the given ID. Callbacks will begin flowing. */
+  /**
+   * Enable the hook with the given ID, so callbacks begin flowing: a scheduled task needs it.
+   * Until then the task does not run.
+   */
   enableHook(id: number): Promise<void>;
 
-  /** Disable the hook with the given ID. Callbacks will stop. */
+  /**
+   * Disable the hook with the given ID: callbacks stop, and a scheduled task is removed. Enabling
+   * the hook again re-creates the task's schedule from its original timing, so a one-time task
+   * whose time has passed meanwhile never runs.
+   */
   disableHook(id: number): Promise<void>;
 
-  /** Permanently delete the hook. Implies disabling it. */
+  /**
+   * Permanently delete the hook, disabling it first, which removes a scheduled task for good.
+   */
   deleteHook(id: number): Promise<void>;
 
   /**
@@ -3041,7 +3164,7 @@ export interface Overseer extends RpcTarget {
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
 
-  /** List past AI chats. */
+  /** List past AI chats, with each one's id and title. */
   listChats(): Promise<AiChatMetadata[]>;
 
   /**
@@ -3067,7 +3190,7 @@ export interface Overseer extends RpcTarget {
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
 
   /**
-   * Subscribe to all new chat messages (across all threads).
+   * Subscribe to all new chat messages (across all threads), the agent's replies among them.
    *
    * If `startAt` is given, it must be a date in the past. All messages starting from that date
    * will be sent upfront. This is intended to allow resubscribing after being disconnected. If
@@ -3092,18 +3215,20 @@ export interface Overseer extends RpcTarget {
   viewChat(chatId: number): Promise<RpcStub<{}>>;
 
   /**
-   * Lists slash commands available from Gatekeepers currently attached to this Gadget, including
-   * ambient ones.
+   * Lists the slash commands available in this workspace: the built-in ones, and those of the
+   * Gatekeepers currently attached to it, including ambient ones.
    */
   listSlashCommands(): Promise<SlashCommandChoice[]>;
 
   /**
-   * Starts a new chat with the given initial message or slash-command request. A slash command
-   * always creates a visible chat event, even when it does not produce a message for the agent.
+   * Starts a new chat in this workspace with an initial message or slash-command request.
+   * A slash command always creates a visible chat event, even when it does not produce a message
+   * for the agent.
    * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
-   * (useful when using chat to talk between humans).
+   * (useful when using chat to talk between humans). Returns the new chat's id without waiting
+   * for the agent's turn; `waitForAgent()` waits for it to end.
    *
    * `formats` records where the message names one of the deployment's standard output formats, so
    * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
@@ -3125,7 +3250,8 @@ export interface Overseer extends RpcTarget {
    * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
-   * (useful when using chat to talk between humans).
+   * (useful when using chat to talk between humans). Returns without waiting for the agent's
+   * turn; `waitForAgent()` waits for it to end.
    *
    */
   sendChatMessage(chatId: number, message: string | SlashCommandRequest, modelId: string | null,
@@ -3133,11 +3259,11 @@ export interface Overseer extends RpcTarget {
                   formats?: MessageFormatRef[]): Promise<void>;
 
   /**
-   * Store raw bytes as an immutable Git blob and return its OID after durable storage.
-   * Retrying identical bytes returns the same OID. This does not change any worktree or message.
-   * Use the OID in a chat attachment, or in a worktree's whole-file `setBytes` change together
-   * with the payload's byte length. The blob must be present in this workspace's Git store.
-   * Limited to 8,000,000 bytes; larger-file support is deferred.
+   * Store raw bytes, such as a file to attach, as an immutable Git blob and return its OID. The OID
+   * comes back after durable storage. Retrying identical bytes returns the same OID. This does not
+   * change any worktree or message. Use the OID in a chat attachment, or in a worktree's whole-file
+   * `setBytes` change together with the payload's byte length. The blob must be present in this
+   * workspace's Git store. Limited to 8,000,000 bytes; larger-file support is deferred.
    */
   uploadBlob(content: Uint8Array): Promise<GitOid>;
 
@@ -3184,6 +3310,12 @@ export interface Overseer extends RpcTarget {
    * AiChatMessageBody.blueprintMerges) is accepted with the rest: the gadget's new head gains
    * the release as a parent, unless its history already holds it, and the gadget follows that
    * blueprint from then on.
+   *
+   * Each file is taken as it stands, conflict markers included. A caller should first resolve
+   * the conflicts that the chat's still-proposed `changes` messages list
+   * (AiChatMessageBody.blueprintMerges[].conflictPaths and mainlineMerge.gadgets[].conflictPaths),
+   * as the Workshop UI does before accepting: it looks for a `<<<<<<< ` or `>>>>>>> ` line left
+   * in each of those files, and asks the user whether to accept them as they are.
    */
   mergeChanges(chatId: number): Promise<MergeChangesResult>;
 
@@ -3284,6 +3416,33 @@ export interface Overseer extends RpcTarget {
   retryAgent(chatId: number, modelId: string): Promise<void>;
 
   /**
+   * Wait for the agent's turn in a chat to end, and return the latest message the agent wrote in
+   * it. This is the way to wait for the turn `newChat()`, `sendChatMessage()` or `retryAgent()`
+   * starts: the message is then its reply (`message`), the `error` that ended it, or what it stopped
+   * to wait on (an `action` or a `connectionRequest`). Returns at once if no turn is running, and
+   * null if the agent has written nothing in the chat. The other records logged under the agent,
+   * such as the `changes` a step records after its reply, are not messages it wrote.
+   *
+   * The wait ends when the chat's `AiChatMetadata.activeAgent` clears: the turn finished, failed
+   * or was stopped, or paused for the user's decision on an action. A turn that hands straight on
+   * to the next (to read the steers sent, or the calls made to the agent, while it ran) is waited
+   * through; one that starts after the wait has ended is not. A `sendChatMessage()` or `retryAgent()` call this session made
+   * before this one, pipelined rather than awaited, is waited for first, so the wait covers the
+   * turn it starts. That holds only once the call is delivered: a call with a promise among its
+   * arguments (an `uploadBlob()` result, say) is delivered when the promise resolves, which may
+   * be after this one, so await such a call before waiting.
+   *
+   * `timeoutMs` bounds the wait: at most ten minutes, which is also the default, and 0 checks
+   * without waiting. If it runs out with the agent still running, this throws an error whose code
+   * is `WAIT_FOR_AGENT_ERROR_CODES.timedOut`; wait again for a longer turn. The wait is held in the
+   * workspace's memory, so if the workspace restarts meanwhile the call fails as the connection
+   * does; the turn resumes by itself, and a new connection can wait again. A client that
+   * disconnects or lets the workspace go while waiting still counts as present in the workspace
+   * until the wait ends. Requires the same access as `getChatHistory()`.
+   */
+  waitForAgent(chatId: number, timeoutMs?: number): Promise<AiChatMessage | null>;
+
+  /**
    * Subscribe to the gadget worker's console logs. This allows the user to observe console logs
    * being produced by the gadget.
    *
@@ -3341,20 +3500,23 @@ export interface Overseer extends RpcTarget {
    */
   listObserverRequirements(role: CollaboratorRole): Promise<ObserverBindingNeed[]>;
 
-  /** List all collaborators. Available to owner and all collaborators. */
+  /**
+   * List who this workspace is shared with: its collaborators, the owner aside. Available to owner
+   * and all collaborators.
+   */
   listCollaborators(): Promise<CollaboratorInfo[]>;
 
   /**
-   * Add a collaborator by username/email. The caller must be the owner or an existing
-   * collaborator. `role` is the access level to grant; the caller may not grant a role higher
-   * than their own effective role. Returns the new collaborator's info, or null if the username
-   * doesn't correspond to an existing account.
+   * Share this workspace with another user, inviting them by username/email as a collaborator.
+   * `role` is the access to grant. The caller must be the owner or an existing collaborator, and
+   * may not grant a role higher than their own effective role. Returns the new collaborator's info,
+   * or null if the username doesn't correspond to an existing account.
    */
   addCollaborator(username: string, role: CollaboratorRole,
                   note?: string): Promise<CollaboratorInfo | null>;
 
   /**
-   * Remove a collaborator (identified by profile.id).
+   * Stop sharing this workspace with a user (unshare it): remove a collaborator by profile.id.
    *
    * Owner can remove anyone. A non-owner collaborator can only remove their own edge(s)
    * from the target. If the target still has edges from other sources, they keep access
@@ -3386,11 +3548,14 @@ export interface Overseer extends RpcTarget {
   // mints more on demand. Renaming, revoking, and grants apply to the link.
 
   /**
-   * Create a share link. The server generates a random 128-bit key, stores its HMAC-SHA-256
-   * hash, and returns the raw key (hex-encoded) along with the id of the link it created. The
-   * caller constructs a URL from the key. The raw key is never stored server-side. `role` is the
-   * access level granted to anyone who redeems the link; the caller may not grant a role higher
-   * than their own effective role.
+   * Create a share link for this workspace. The server generates a random 128-bit key, stores its
+   * HMAC-SHA-256 hash, and returns the raw key (hex-encoded) along with the id of the link it
+   * created. The caller constructs a URL from the key. The raw key is never stored server-side.
+   * `role` is the access level granted to anyone who redeems the link; the caller may not grant a
+   * role higher than their own effective role.
+   *
+   * A signed-in user redeems the key by passing it as `shareKey` to
+   * AuthenticatedApi.openWorkspace(), which adds them as a collaborator and opens the workspace.
    */
   createShareLink(role: CollaboratorRole, note?: string)
       : Promise<{ key: string; linkId: string }>;
@@ -3426,6 +3591,7 @@ export interface Overseer extends RpcTarget {
   previewRevokeShareLink(linkId: string): Promise<AffectedCollaborator[]>;
 }
 
+/** Metadata about one chat in a workspace. */
 export type AiChatMetadata = {
   id: number,
   title: string,
@@ -3797,6 +3963,7 @@ export type ActionHistoryPage = {
   nextBeforeId?: number;
 };
 
+/** Who wrote a chat message, or is responding to a chat: a user, an agent's model, or a gadget. */
 export type AiChatAuthorInfo = {
   /**
    * Is the author a human, AI, or Gadget?
@@ -3832,6 +3999,7 @@ export type AiChatAuthorInfo = {
   // `AuthenticatedApi.getAvatar(userId)`.
 };
 
+/** One message in a chat: where it is in the chat, when and by whom it was written, and its body. */
 export type AiChatMessage = {
   chatId: number;
   sequence: number;
@@ -4982,6 +5150,7 @@ export interface ConsoleLogSubscriber {
   event(chatId: number | null, logs: ConsoleLogEvent[]): Promise<void>;
 }
 
+/** One console call made by a gadget's code. */
 export type ConsoleLogEvent = {
   timestamp: Date;
 
@@ -5443,6 +5612,7 @@ export type BlueprintBinding = {
   env: Record<string, SpawnerEnvTarget>;
 });
 
+/** A screenshot image uploaded with a blueprint, which stores it apart from its metadata. */
 export type BlueprintScreenshotUpload = {
   mimeType: "image/jpeg" | "image/png";
   content: Uint8Array;
@@ -5590,7 +5760,7 @@ export interface WorkpieceClient extends RpcTarget {
   getTitle(): Promise<string>;
 
   /**
-   * Change the workpiece's title.
+   * Rename this workpiece (a gadget or a gatekeeper): change its title.
    *
    * (Note gatekeeper titles are initially based on the title of the underlying resource, but this
    * method does not change the remote resource, only the display name used locally within this
@@ -5599,7 +5769,7 @@ export interface WorkpieceClient extends RpcTarget {
   setTitle(title: string): Promise<void>;
 
   /**
-   * Permanently remove this workpiece from the workspace.
+   * Delete this workpiece (a gadget or a gatekeeper), permanently removing it from the workspace.
    *
    * For a gadget, this deletes its registry entry (including its binding map) and hooks and
    * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For
@@ -5644,13 +5814,19 @@ export interface GadgetClient extends WorkpieceClient {
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 
-  // Open an RPC interface to the gadget's server-side Durable Object facet. The frontend may pass
-  // this stub into the gadget's iframe sandbox, so that the gadget UI can communicate with its
-  // server side. It can also permit the coding agent to make direct calls.
-  //
-  // If `chatId` is specified, then the gadget will include changes currently proposed in the given
-  // chat.
-  //
+  /**
+   * Open an RPC connection to the gadget's server side, which holds its data, to call it.
+   * The server side is the gadget's Durable Object facet, and the calls are to its own methods.
+   * The frontend may pass this stub into the gadget's iframe sandbox, so that the gadget UI can
+   * communicate with its server side. It can also permit the coding agent to make direct calls.
+   *
+   * The methods are the gadget's own code, so this API does not list them: the gadget's README.md
+   * and server.js say what they are, readable through Overseer.listTree() and
+   * Overseer.readFilesAtCommit() at its head commit (GadgetSummary.commitId).
+   *
+   * If `chatId` is specified, then the gadget will include changes currently proposed in the given
+   * chat.
+   */
   // @ts-ignore - TODO: Fix type instantiation issue
   connectToGadget(chatId?: number): Promise<RpcStub<any>>;
 
@@ -5673,14 +5849,20 @@ export interface GadgetClient extends WorkpieceClient {
   // times in one gadget or by several gadgets, under independent names.
 
   /**
-   * List this gadget's bindings.
+   * List this gadget's bindings: the names it adds to its worker's `env`, besides the GADGET and
+   * GIT every one holds, with what each is bound to.
    *
    * If `chatId` is specified, bindings which have been proposed but not yet accepted in the given
    * chat thread will be included.
    */
   listBindings(chatId?: number): Promise<GadgetBindingInfo[]>;
 
-  /** Get the gatekeeper bound under the given name, or null if there is no such binding. */
+  /**
+   * Get the gatekeeper bound under the given name, or null if there is no such binding.
+   *
+   * @nullWhen this gadget has no accepted binding by that name whose gatekeeper still exists;
+   *   listBindings() also lists one whose gatekeeper is gone, and, given a chat, that chat's pending ones
+   */
   getBinding(name: string): Promise<GatekeeperClient<any> | null>;
 
   /**
@@ -5724,7 +5906,8 @@ export interface GadgetClient extends WorkpieceClient {
   setBlueprintAnnotation(name: string, annotation: BlueprintBindingAnnotation): Promise<void>;
 
   /**
-   * Create a new blueprint from this gadget's current committed code.
+   * Publish this gadget's current committed code as a new blueprint.
+   * PublicApi.downloadBlueprint() exports it as a `.gadget` archive.
    * `title` defaults to the gadget's title if omitted.
    *
    * The blueprint is always owned by the workspace owner, regardless of who calls this method.
