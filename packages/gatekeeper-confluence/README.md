@@ -129,7 +129,9 @@ and restore-from-trash.
 Every read calls `ApprovalQueue.authorizeObservation()`; every side-effecting operation
 (create/edit page or blog post, comments, labels, attachment upload, trash/restore) is recorded as
 a pending action and submitted via `submitAction()` — nothing reaches Confluence until the Overseer
-calls `applyAction()`. Reads simulate pending (unapproved) writes so the agent can keep working
+calls `applyAction()`. A user can let creates, edits, renames, comments, labels, attachment uploads
+and restores apply without review, each kind on its own; moving content to the trash always waits
+for a person. Reads simulate pending (unapproved) writes so the agent can keep working
 before approval (provisional IDs for created content, body/title/label/comment overlays, trashed
 state). `rejectAction()` / `revertAction()` discard or undo. Content responses are cached in DO
 storage with a short TTL and invalidated on write. This logic lives in `confluence-actions.ts`.

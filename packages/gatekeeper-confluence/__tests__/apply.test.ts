@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   ConfluenceStore,
   applyStoredAction,
+  autoApprovableKinds,
   rejectStoredAction,
   revertStoredAction,
   stageAction,
   type ConfluenceAction,
   type UploadAttachmentAction,
 } from "../src/confluence-actions";
+import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { ConfluenceApi } from "../src/confluence-api";
 
 type Storage = ConstructorParameters<typeof ConfluenceStore>[0];
@@ -229,6 +231,53 @@ describe("attachment files", () => {
 
     await expect(store.readAttachment(referenced)).resolves.toEqual(Uint8Array.from([1]));
     await expect(store.readAttachment(orphan)).rejects.toThrow(/incomplete or corrupted/);
+  });
+});
+
+describe("auto-approval", () => {
+  // The description each action type submits, captured from stageAction.
+  async function submitted(build: (store: ConfluenceStore) => Promise<ConfluenceAction> | ConfluenceAction) {
+    const { api } = makeApi();
+    const store = storeWith(api);
+    const descriptions: ActionDescription[] = [];
+    const queue = { submitAction: async (_id: number, d: ActionDescription) => { descriptions.push(d); } };
+    await stageAction(store, queue as never, await build(store));
+    return { tag: descriptions[0]?.actionKind?.tag, autoApprovable: descriptions[0]?.autoApprovable };
+  }
+
+  const cases: [string, (store: ConfluenceStore) => Promise<ConfluenceAction> | ConfluenceAction, string, boolean][] = [
+    ["createContent", () => ({
+      type: "createContent", provisionalId: "~new", kind: "page",
+      parent: { type: "space", spaceKey: "ENG" }, title: "New", status: "current",
+    }), "confluence.createContent", true],
+    ["setContent", () => ({ type: "setContent", contentId: "123", markdown: "b", previousMarkdown: "a" }),
+      "confluence.editContent", true],
+    ["appendContent", () => ({ type: "appendContent", contentId: "123", markdown: "more" }),
+      "confluence.editContent", true],
+    ["setTitle", () => ({ type: "setTitle", contentId: "123", title: "New", previousTitle: "Old" }),
+      "confluence.setTitle", true],
+    ["addComment", () => ({ type: "addComment", contentId: "123", text: "hi" }), "confluence.addComment", true],
+    ["addLabel", () => ({ type: "addLabel", contentId: "123", name: "x" }), "confluence.label", true],
+    ["removeLabel", () => ({ type: "removeLabel", contentId: "123", name: "x" }), "confluence.label", true],
+    ["uploadAttachment", store => uploadAction(store, Uint8Array.from([1])), "confluence.uploadAttachment", true],
+    ["trash", () => ({ type: "trash", contentId: "123" }), "confluence.trash", false],
+    ["restore", () => ({ type: "restore", contentId: "123" }), "confluence.restore", true],
+  ];
+
+  it.each(cases)("submits %s with its kind and verdict", async (_type, build, tag, autoApprovable) => {
+    expect(await submitted(build)).toEqual({ tag, autoApprovable });
+  });
+
+  it("lists exactly the auto-approvable kinds, each once, never trash", () => {
+    expect(autoApprovableKinds().map(k => k.tag).toSorted()).toEqual([
+      "confluence.addComment",
+      "confluence.createContent",
+      "confluence.editContent",
+      "confluence.label",
+      "confluence.restore",
+      "confluence.setTitle",
+      "confluence.uploadAttachment",
+    ]);
   });
 });
 
