@@ -1,0 +1,117 @@
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_34892ac5042fc9::t_e4b9f566adcb25 137
+packages/workshop-backend/__tests__/wait-for-agent.test.ts
+  s_34892ac5042fc9::t_62417350e9308d 1-221
+packages/workshop-backend/src/overseer.ts
+  s_34892ac5042fc9::t_a7518e215b8f4b 3,497-500,5069-5118,11206-11216,11218,11226-11241,12278,12401,12425-12447,12975-12977
+packages/workshop-shared/src/api.ts
+  s_34892ac5042fc9::t_26decc1ff64581 449-468,3417-3440
+  s_34892ac5042fc9::t_2b11df706fc5a8 747-754
+  s_34892ac5042fc9::t_baeb109795acdf 156-159,164-166,367-372,492-495,698,722-733,738-739,772-775,777-778,782-791,795-799,802-809,835-838,845-850,855-860,885-889,967-968,989-992,1006-1018,1045-1046,2098-2099,2122-2123,2183-2187,2190-2194,2671-2674,2746,2839-2841,2857,2955-2957,3014-3016,3023-3024,3068-3074,3081-3084,3087-3091,3094-3096,3166,3192,3217-3218,3223-3225,3229-3230,3252-3253,3261-3265,3312-3317,3499-3502,3506-3509,3515,3547-3554,3590,3962,3998,5149,5611,5759,5768,5813-5825,5848-5849,5856-5861,5905-5906
+packages/integration-tests/__tests__/workshop-lifecycle.test.ts
+  s_34892ac5042fc9::t_2175279c644688 56-57,72
+packages/workshop-backend/__tests__/provisional-workspaces.test.ts
+  s_34892ac5042fc9::t_3c89c4bfd3245a 1-40
+packages/workshop-backend/src/server.ts
+  s_34892ac5042fc9::t_ebcba3cd16d800 4,387-390
+  s_34892ac5042fc9::t_569f9ff936d349 91-115,159,749-750,755-764,767,823,839,884,913,921,1071,1073
+packages/workshop-backend/src/user.ts
+  s_34892ac5042fc9::t_c133899efd56ef 951-955
+packages/integration-tests/src/harness.ts
+  s_34892ac5042fc9::t_710eb99b1f3b84 121-122,124
+packages/workshop-backend/__tests__/cli-admins-only.test.ts
+  s_34892ac5042fc9::t_11f14902e64feb 1,4-36,39-42,44-105,114-143,145-147,150-161
+packages/workshop-backend/src/env.d.ts
+  s_34892ac5042fc9::t_ea67b680474bfb 18
+packages/gatekeeper-scheduler/src/management-types.ts
+  s_34892ac5042fc9::t_4db8646b2bdd12 24-36
+packages/workshop-shared/src/gatekeeper.ts
+  s_34892ac5042fc9::t_783ca6c8cb9bd3 559-568,1429
+packages/gatekeeper-context/src/context-types.ts
+  s_34892ac5042fc9::t_9ce93208759a6f 105-110,372-377,397-407
+packages/gatekeeper-scheduler/src/scheduler.ts
+  s_34892ac5042fc9::t_8ec2b91207f1e6 38,301,303
+docs/observers.md
+  s_34892ac5042fc9::t_a5b8ecc5655348 218-221
+scripts/evals/eval-keys.test.ts
+  s_c5f8d284ae2719::t_ba808c29c81978 9-13
+scripts/build-bundled-blueprints.test.ts
+  s_c5f8d284ae2719::t_22a6f78222204c 14-18
+packages/gatekeeper-kit/__tests__/git-bootstrap.test.ts
+  s_c5f8d284ae2719::t_132d1b0657c433 12-16
+.github/workflows/ci.yml
+  s_34892ac5042fc9::t_fd152036cbe7d4 58-60
+package.json
+  s_34892ac5042fc9::t_097a63e3772b0f 24,27-29
+packages/api-schema/README.md
+  s_34892ac5042fc9::t_e2e45127b65f70 1-79
+packages/api-schema/__tests__/__fixtures__/api.ts
+  s_34892ac5042fc9::t_eb04e6e296cb3e 1-113
+packages/api-schema/__tests__/__fixtures__/schema.json
+  s_34892ac5042fc9::t_1a4716868957cc 1-571
+packages/api-schema/__tests__/dts.test.ts
+  s_34892ac5042fc9::t_268e2a544eaa90 1-1253
+packages/api-schema/__tests__/extract.test.ts
+  s_34892ac5042fc9::t_755d524fcc7937 1-299
+packages/api-schema/__tests__/tools.test.ts
+  s_34892ac5042fc9::t_a1fbdff1751027 1-415
+packages/api-schema/generated/workshop-api.agent.d.ts
+  s_34892ac5042fc9::t_3a087cce87445d 1-3089
+packages/api-schema/generated/workshop-api.fragments.json
+  s_34892ac5042fc9::t_ffcd5fcc9d714d 1-16
+packages/api-schema/generated/workshop-api.schema.json
+  s_34892ac5042fc9::t_e805fd8f4de893 1-12648
+packages/api-schema/generated/workshop-api.tools.json
+  s_34892ac5042fc9::t_fbee43f14556b7 1-16455
+packages/api-schema/package.json
+  s_34892ac5042fc9::t_3ff4674114363d 1-27
+packages/api-schema/scripts/generate.ts
+  s_34892ac5042fc9::t_0a31f2349378d0 1-105
+packages/api-schema/src/emit/dts.ts
+  s_34892ac5042fc9::t_bae80cc17bc5b2 1-632
+packages/api-schema/src/emit/tools.ts
+  s_34892ac5042fc9::t_fe050ce0dd9b5a 1-355
+packages/api-schema/src/extract.ts
+  s_34892ac5042fc9::t_6f56eb02e559d8 1-519
+packages/api-schema/src/schema.ts
+  s_34892ac5042fc9::t_d83f12637e77f2 1-101
+packages/api-schema/tsconfig.json
+  s_34892ac5042fc9::t_a49ee209e23f69 1-28
+packages/api-schema/vite.config.ts
+  s_34892ac5042fc9::t_687ca497fc3768 1-5
+packages/api-schema/vitest.config.ts
+  s_34892ac5042fc9::t_e1d0b805c45367 1-8
+plans/capnweb-api-schema.md
+  s_34892ac5042fc9::t_da96261e8fc48e 1-379
+pnpm-lock.yaml
+  s_34892ac5042fc9::t_26c0a873ef4c87 85-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6aa2edd39370f9c1711287c4d72779877ba81f6b",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

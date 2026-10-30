@@ -1,0 +1,30 @@
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_34892ac5042fc9::t_e4b9f566adcb25 137
+packages/workshop-backend/__tests__/wait-for-agent.test.ts
+  s_34892ac5042fc9::t_62417350e9308d 1-221
+packages/workshop-backend/src/overseer.ts
+  s_34892ac5042fc9::t_a7518e215b8f4b 3,497-500,5069-5118,11206-11216,11218,11226-11241,12278,12401,12425-12447,12975-12977
+packages/workshop-shared/src/api.ts
+  s_34892ac5042fc9::t_26decc1ff64581 446-465,3306-3329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "12d058bd8af8289b4a3c74d5316812e7edb63794",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

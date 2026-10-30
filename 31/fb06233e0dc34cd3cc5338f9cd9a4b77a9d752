@@ -1,0 +1,25 @@
+packages/api-cli/src/run.test.ts
+  s_34892ac5042fc9::t_e6b076972dd835 61-63,690-697
+packages/api-cli/src/run.ts
+  s_34892ac5042fc9::t_5f779da895663b 666-668,1472-1473
+packages/api-schema/__tests__/extract.test.ts
+  s_34892ac5042fc9::t_e358346ba986a0 267-278,436-452
+packages/api-schema/src/extract.ts
+  s_34892ac5042fc9::t_d01ca721257ca6 6-12,347-350,353,357-361,393-395,428-430,512-513,735-740
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "31fb06233e0dc34cd3cc5338f9cd9a4b77a9d752",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

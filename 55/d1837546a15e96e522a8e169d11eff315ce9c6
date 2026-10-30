@@ -1,0 +1,36 @@
+packages/gatekeeper-spotify/__tests__/action-kinds.test.ts
+  s_1e2c74fa3cab0c::t_73cb300c612a9c 1-147
+packages/gatekeeper-spotify/src/action-kinds.ts
+  s_1e2c74fa3cab0c::t_b84a9f2c3cd4b1 1-79
+  s_1e2c74fa3cab0c::t_96409b454c4acc 80
+packages/gatekeeper-spotify/README.md
+  s_1e2c74fa3cab0c::t_5f09ddee76396d 85-90
+packages/gatekeeper-spotify/package.json
+  s_1e2c74fa3cab0c::t_a1860ec4ebdc56 9-10,22
+packages/gatekeeper-spotify/src/spotify.ts
+  s_1e2c74fa3cab0c::t_3a6c5363c3b90a 8,61,101,856,1180-1181,1817-1818
+packages/gatekeeper-spotify/src/types.d.ts
+  s_1e2c74fa3cab0c::t_be25888c1f45a8 488-490
+packages/gatekeeper-spotify/vite.config.ts
+  s_1e2c74fa3cab0c::t_541ceede462da0 1-3
+packages/gatekeeper-spotify/vitest.config.ts
+  s_1e2c74fa3cab0c::t_b0e9fdf4dc07f1 1-8
+pnpm-lock.yaml
+  s_1e2c74fa3cab0c::t_a512a020d8efcd 964-966
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "55d1837546a15e96e522a8e169d11eff315ce9c6",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
