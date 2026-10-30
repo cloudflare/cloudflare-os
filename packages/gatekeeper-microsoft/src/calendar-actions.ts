@@ -395,18 +395,25 @@ const SENSITIVITY_RANK = { normal: 0, personal: 1, private: 2, confidential: 2 }
 /**
  * Whether a change makes an event less private, showing its details to people the calendar is
  * shared with. A series' occurrences can be more private than its master, so a series-wide change
- * to anything below private counts.
+ * to anything below private counts. `pending` holds the sensitivities queued changes to the event
+ * will set before this one applies: a change lowering the event below any of them reveals what
+ * was written while it was more private.
  */
-export function revealsEvent(payload: Pick<CalendarActions["updateEvent"], "target" | "changes" | "before">): boolean {
+export function revealsEvent(
+  payload: Pick<CalendarActions["updateEvent"], "target" | "changes" | "before">,
+  pending: readonly EventWrite["sensitivity"][] = [],
+): boolean {
   const after = payload.changes.sensitivity;
   if (after === undefined) return false;
   const was = payload.target.series ? "confidential" : payload.before.sensitivity ?? "normal";
-  return SENSITIVITY_RANK[after] < SENSITIVITY_RANK[was];
+  return [was, ...pending].some(sensitivity => sensitivity !== undefined && SENSITIVITY_RANK[after] < SENSITIVITY_RANK[sensitivity]);
 }
 
 /** The kind a change to an event nobody else is on is proposed as, by whose calendar it is in and whether it reveals the event. */
-export function updateKind(payload: CalendarActions["updateEvent"], owned: boolean): "updateEvent" | "updateSharedEvent" | "revealEvent" | "revealSharedEvent" {
-  if (revealsEvent(payload)) return owned ? "revealEvent" : "revealSharedEvent";
+export function updateKind(
+  payload: CalendarActions["updateEvent"], owned: boolean, pending: readonly EventWrite["sensitivity"][] = [],
+): "updateEvent" | "updateSharedEvent" | "revealEvent" | "revealSharedEvent" {
+  if (revealsEvent(payload, pending)) return owned ? "revealEvent" : "revealSharedEvent";
   return owned ? "updateEvent" : "updateSharedEvent";
 }
 

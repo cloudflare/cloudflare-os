@@ -533,6 +533,14 @@ describe("an all-calendars binding", () => {
     expect(submitted.map(action => definitions[action.kind].autoApprovable)).toEqual([false, true, true]);
   });
 
+  it("judges a change against the sensitivity a queued change will leave, not only the live one", async () => {
+    const { writer, submitted } = session(scope("edit"), "edit");
+    await writer.updateEvent("AAMkEvSarahs", { subject: "Secret", sensitivity: "private" });
+    await writer.updateEvent("AAMkEvSarahs", { sensitivity: "normal" });
+    expect(submitted.map(action => action.kind)).toEqual(["updateSharedEvent", "revealSharedEvent"]);
+    expect(submitted.map(action => definitions[action.kind].autoApprovable)).toEqual([true, false]);
+  });
+
   it("proposes a change to an event in someone else's calendar under its own kind, and deleting one never auto-approved", async () => {
     const { writer, submitted } = session(scope("edit"), "edit");
     await writer.updateEvent("AAMkEvSarahs", { location: "Room 2" });

@@ -389,6 +389,18 @@ describe("what tells other people", () => {
       .toEqual(["revealEvent", "revealSharedEvent", "updateEvent", "updateSharedEvent"]);
   });
 
+  it("counts a queued change that makes the event more private when judging a later one", () => {
+    const change = (changes: Partial<CalendarActions["updateEvent"]["changes"]>): CalendarActions["updateEvent"] => ({
+      calendar: CALENDAR, target: TARGET, changes, before: { sensitivity: "normal" }, zone: ZONE, submittedAt: 1,
+    });
+    // Queued `private`, then `normal`: the second shows whatever was written while it was private.
+    expect(revealsEvent(change({ sensitivity: "normal" }), ["private"])).toBe(true);
+    expect(updateKind(change({ sensitivity: "normal" }), false, [undefined, "confidential"])).toBe("revealSharedEvent");
+    expect(revealsEvent(change({ sensitivity: "private" }), ["private"])).toBe(false);
+    expect(revealsEvent(change({ subject: "Renamed" }), ["private"])).toBe(false);
+    expect(updateKind(change({ sensitivity: "normal" }), true, [undefined])).toBe("updateEvent");
+  });
+
   it("shows the approver a change of sensitivity, even to normal, and what it was", () => {
     const presentation = definitions.revealEvent.describe({
       calendar: CALENDAR, target: TARGET, changes: { sensitivity: "normal" }, before: { sensitivity: "private" }, zone: ZONE, submittedAt: 1,

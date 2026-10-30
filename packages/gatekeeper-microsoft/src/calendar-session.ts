@@ -971,7 +971,8 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
     } else {
       // A pending invitation would make this a change to a meeting, told to everyone on it.
       ctx.requireInvitesSettled(event);
-      await ctx.host.submit(ctx.queue, updateKind(payload, await ctx.owns(calendar)), payload);
+      const pending = (ctx.overlay().changes.get(event.id) ?? []).map(change => change.changes.sensitivity);
+      await ctx.host.submit(ctx.queue, updateKind(payload, await ctx.owns(calendar), pending), payload);
     }
     const overlay = ctx.overlay();
     const shown = isProvisional(event.id) ? overlay.pendingEvent(event.id, me)!.event : event;
