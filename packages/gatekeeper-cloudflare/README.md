@@ -1,6 +1,6 @@
 # Gatekeeper Cloudflare
 
-This package provides Cloudflare OAuth integration for Gadgets. It serves three purposes:
+This package provides Cloudflare OAuth integration for Gadgets. It serves four purposes:
 
 - **Sign-in:** when `cloudflare` is in the deployment's `AUTH_GATEKEEPERS` allowlist, "Continue with
   Cloudflare" appears on the login page. The grant reads the account email (verified by Cloudflare,
@@ -17,6 +17,8 @@ This package provides Cloudflare OAuth integration for Gadgets. It serves three 
   defensively discard foreign-service events. Distributed trace summaries are account-only because
   their names, timing, services, and counts describe the whole cross-service trace; a Worker binding
   can still retrieve its own events for a known trace ID.
+- **Notifications:** account-scoped generic webhooks, approved workspace callbacks, and subscriber
+  handoff. See setup below.
 
 Observability connections request `workers-observability.read`. The OAuth client must allow that
 scope or Cloudflare will omit/reject it. Existing billing-only connections can add the grant when the
@@ -186,3 +188,165 @@ trailing slash, `http` not `https` for localhost.
 
 `CLIENT_ID` / `CLIENT_SECRET` are missing. Ensure they're set (per-package `.env` or seeded from the
 root `.dev.vars`), then restart the dev server.
+
+## Cloudflare Notifications
+
+Notifications are another resource of the **existing Cloudflare connector**, using its OAuth
+connection and incremental grants. There is no separate Notifications vendor, worker, OAuth client,
+or billing/sign-in flow. The account resource is `https://dash.cloudflare.com/<accountId>/notifications`.
+
+### Set up a subscription
+
+1. Allow **Notifications Write** (`notifications.write`) on your Cloudflare OAuth client. Make it
+   optional if that client also supports sign-in or billing. Existing connections request this grant
+   when the Notifications resource is first selected; billing-only and auth-only grants do not gain it.
+   A connection that selects no specific resources requests every resource scope, including this one,
+   so allow it on the OAuth client before upgrading a deployment.
+2. Add **Cloudflare Notifications** to a workspace and select the account.
+3. Register a persistent callback with one Cloudflare alert type, then enable the resulting hook in
+   **Connections**. Enabling creates an authenticated generic webhook destination and an enabled
+   Cloudflare notification policy for that alert type by default. Managed hooks for the same type and settings
+   share the policy; `createPolicy: false` uses only the destination.
+4. Use Cloudflare's **Save and Test** to verify ingress. `getStatus()` reports destination and policy
+   IDs, plus last test and receive times. It never returns credentials.
+
+```ts
+await env.CLOUDFLARE_NOTIFICATIONS.subscribe(callback, {
+  alertType: "incident_alert",
+});
+// callback implements: onNotification(notification): Promise<void>
+const health = await env.CLOUDFLARE_NOTIFICATIONS.getStatus();
+```
+
+Agents can supply `policy: { alertInterval, filters }`. These map to ANS `alert_interval` and
+`filters` in the [official create API](https://developers.cloudflare.com/api/resources/alerting/subresources/policies/methods/create/).
+Filters use the documented names and string-array values; applicability, required fields, and
+re-alert intervals depend on the alert type and account. There is no alert-type allowlist or
+universal threshold setting. For example:
+
+```ts
+await env.CLOUDFLARE_NOTIFICATIONS.subscribe(callback, {
+  alertType: "billing_usage_alert",
+  policy: { filters: { product: ["workers"], limit: ["100"] } },
+});
+```
+
+The agent must choose provider-supported values for the user's account. Unsupported names, invalid
+shapes, oversized settings, and authority-bearing extras are rejected before approval. The approval
+shows the exact canonical settings, selected account and alert type, and sharing/cleanup behavior.
+The gatekeeper controls the enabled state, name, ownership description, existing credentials and
+webhook destination. No provider policy is created until the user enables the approved hook.
+`createPolicy: false` cannot include policy settings.
+
+The callback receives the bound account and notification time, optional alert type,
+policy/name/text/correlation/event-state metadata, and the original product-specific `data`.
+When the provider includes `account_id`, it must match the binding. Managed hooks route only by
+their managed policy ID (dashed and undashed IDs compare equally); a supplied alert type must also
+match. External hooks (`createPolicy: false`) receive every alert of their type reaching this
+connection, including Workers Issues **Send to**. A missing identifier required by an active hook
+returns HTTP 500 instead of acknowledging a potentially lost notification.
+
+Identical alert types and canonical settings share a policy only within one connected owner/account.
+Object key order does not affect identity; array order is preserved because ANS does not specify
+that every filter array is a set. Empty settings and empty filter objects are equivalent.
+Configured policies use a SHA-256 identity and a connection-specific ownership marker. Retry
+adoption checks the exact settings, enabled state, type and sole destination, refusing changed or
+ambiguous policies. Historical empty-setting policies retain their original marker and storage key,
+including interrupted creation intents. Existing managed hooks resolve their stored policy ID
+without recreation or broadening delivery. The last managed subscriber removes that configuration's
+policy; external listeners do not retain managed policies and remain active afterward.
+
+### Delivery and lifecycle
+
+The HTTP entrypoint rejects malformed owner/account paths and missing `cf-webhook-auth` before
+calling a receiver. The receiver authenticates before writing storage and creates receipt tables
+lazily, so unknown credentials leave no persistent state. It accepts Cloudflare's documented
+`{"text":"…"}` test message and checks any reported account ID. Request bodies are capped at
+512 KiB while streaming. API keys are random 256-bit values; only their SHA-256 verifier is retained
+once setup completes. An address migration temporarily stores the pending secret to retry an
+interrupted update exactly, accepting both the old and pending credentials until it succeeds.
+Enabling a hook reconciles a changed base URL by updating the existing destination in place,
+preserving its ID and policies. The receiver accepts its stored old path during migration; both
+origins must still route to this Worker for uninterrupted delivery during a hostname change.
+Provider requests are fixed-origin, bounded,
+time-limited, and do not follow redirects.
+
+A successful event returns **204 after all matching subscribers accept it**. Callback or authorization
+failure returns **500**, allowing ANS to retry. There is no local delivery queue, retry loop, or alarm.
+Callbacks should accept events promptly, for example by creating an agent task; long-running work and
+errors after that handoff belong to the consumer. The gatekeeper waits for the real callback result
+instead of racing it against a timer that could allow overlapping retries.
+
+Successful handoffs are remembered per subscriber, so an ANS retry skips subscribers that already
+accepted the event. A SHA-256 of the JSON envelope identifies duplicates while keeping different
+policies and start/end events distinct. Receipts contain no payloads and are retained for up to 15 days,
+bounded to the newest 10,000 receipts per connection/account. Concurrent duplicates share a handoff.
+A crash or timeout after a callback commits can still cause redelivery: use `notification.id` to make
+side effects idempotent. Delivery order is not guaranteed, and delivery stops if ANS exhausts its retries.
+
+A connection supports 100 hooks. Each callback is preceded by a Cloudflare-specific Workshop
+observation describing the bound account, reported alert type, policy ID, and event state.
+Like Workers Observability reads, these observations are not marked as restricted data: that would
+permanently stop the workspace from taking actions, so an alert could never lead to a pushed fix.
+Notifications bindings are private to their owner. Disabling a hook
+stops future handoffs and removes the managed policy when no other managed-policy hook uses its configuration. The shared
+webhook remains for other policies. If that removal fails, the next hook enabled on the connection
+retries it. Disconnecting Cloudflare stops ingress and delivery, then removes this connection's
+provider resources. Transient cleanup failures retain credentials for retry. If the grant has expired
+or no longer has access to the account, provider resources cannot be removed, so disconnect completes
+locally and logs `notification.revoke.cleanup.skipped`; delete the `Cloudflare OS` destination and
+policies in the dashboard. Provider-side setup is reconciled by the exact webhook URL, allowing recovery from
+interrupted creation without taking over similarly named destinations owned by other connections.
+Policies are reconciled by a connection-specific description and matching type, settings, enabled state and sole destination.
+Existing user-created policies are not rewritten by setup.
+
+This binding exposes no gadget-initiated writes. Destination and policy creation happen only after the
+user approves and enables the hook in Connections; disabling the last managed subscriber removes its policy.
+Consequently it submits observations for status reads and deliveries, but has no action to submit
+through `ActionDescription`.
+
+### Local development
+
+Run `pnpm run-local`, then open `http://localhost:8787`. To connect a real Cloudflare account, create a
+private OAuth client in **Manage account → OAuth clients** with response type **Code**, grants
+**Authorization Code + Refresh Token**, authentication **Client Secret Basic**, and callback:
+
+```text
+http://localhost:8787/gatekeeper/cloudflare/oauth
+```
+
+Allow User Details Read, Account Settings Read, AI Gateway Read/Run, Workers Observability Read, and
+Notifications Write. Keep resource scopes optional. Put credentials in the root **gitignored**
+`.dev.vars` (do not commit it):
+
+```dotenv
+CLOUDFLARE_OAUTH_CLIENT_ID=<client ID>
+CLOUDFLARE_OAUTH_CLIENT_SECRET=<client secret>
+```
+
+### Live notification testing
+
+Use a deployed test instance with a public HTTPS address for real ANS delivery. Configure the test
+OAuth client with the deployed callback URL (`https://<test-host>/gatekeeper/cloudflare/oauth`)
+and store its credentials using the deployment's normal secret configuration. `BASE_URL` must
+resolve to this Worker's public HTTPS address. If notification ingress uses a different public
+hostname or path, set `NOTIFICATIONS_WEBHOOK_BASE_URL` to that base address and route it to the same
+Worker. The notification address must use HTTPS on port 443, without URL credentials, query, or
+fragment; Cloudflare only dispatches generic webhooks to public ports 80 or 443. If the deployment is
+behind Cloudflare Access, add a bypass for the webhook path (`<base>/webhooks/*`): ANS cannot present
+Access credentials, and each request is authenticated by `cf-webhook-auth` instead.
+
+Connect the test Cloudflare account, enable a notification subscription, and use **Save and Test** on
+its webhook destination in Cloudflare. Confirm that the test timestamp appears in the connection's
+Details. For event delivery, trigger the policy created for that alert type and verify the
+subscriber receives it. Test a failing subscriber to verify HTTP 500 and ANS redelivery, then confirm
+successful subscribers are not invoked again.
+
+Local development remains useful for UI changes and automated tests; live webhook verification runs
+against the deployed instance.
+
+References: [generic webhook schema](https://developers.cloudflare.com/notifications/reference/webhook-payload-schema/),
+[webhook setup](https://developers.cloudflare.com/notifications/get-started/configure-webhooks/),
+[OAuth clients](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/),
+[webhook API](https://developers.cloudflare.com/api/resources/alerting/subresources/destinations/subresources/webhooks/methods/create/),
+[policy API](https://developers.cloudflare.com/api/resources/alerting/subresources/policies/methods/create/).

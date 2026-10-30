@@ -1,3 +1,5 @@
+import type { RpcStub } from "cloudflare:workers";
+
 // Workers Observability provides read-only telemetry for either one Cloudflare account or one
 // Worker, depending on the binding the user granted. The binding enforces that boundary; callers do
 // not pass account IDs or Worker names, and a Worker binding never returns another Worker's events.
@@ -511,4 +513,313 @@ export interface CloudflareObservabilitySession {
    */
   calculate(query: CloudflareObservabilityCalculationQuery):
     Promise<CloudflareObservabilityCalculationResult>;
+}
+
+/** A notification from the bound Cloudflare account, across any alert type. */
+export interface CloudflareNotification {
+  /** Retry identifier. Use it to make your handler idempotent; delivery is at least once. */
+  id: string;
+  /** The account selected for this binding. */
+  accountId: string;
+  /** Cloudflare alert type, when the provider includes one. */
+  alertType?: string;
+  /** Generation time as an ISO 8601 timestamp. */
+  timestamp: string;
+  /** Notification policy identifier, when provided. */
+  policyId?: string;
+  /** Human-readable policy name, when provided. */
+  policyName?: string;
+  /** Human-readable notification name. */
+  name?: string;
+  /** Human-readable notification message. */
+  text?: string;
+  /** Groups related alerts; this is not a unique delivery identifier. */
+  correlationId?: string;
+  /** Event state, for example ALERT_STATE_EVENT_START or ALERT_STATE_EVENT_END. */
+  event?: string;
+  /** Product-specific evidence; its shape depends on the alert type. */
+  data: unknown;
+}
+
+/** ANS policy filters. Supported values and required fields depend on the chosen alert type. */
+export interface CloudflareNotificationFilters {
+  /**
+   * Usage depends on specific alert type
+   */
+  actions?: Array<string>;
+
+  /**
+   * Used for configuring radar_notification
+   */
+  affected_asns?: Array<string>;
+
+  /**
+   * Used for configuring incident_alert
+   */
+  affected_components?: Array<string>;
+
+  /**
+   * Used for configuring radar_notification
+   */
+  affected_locations?: Array<string>;
+
+  /**
+   * Used for configuring maintenance_event_notification
+   */
+  airport_code?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  alert_trigger_preferences?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  alert_trigger_preferences_value?: Array<string>;
+
+  /**
+   * Used for configuring load_balancing_pool_enablement_alert
+   */
+  enabled?: Array<string>;
+
+  /**
+   * Used for configuring pages_event_alert
+   */
+  environment?: Array<string>;
+
+  /**
+   * Used for configuring pages_event_alert
+   */
+  event?: Array<string>;
+
+  /**
+   * Used for configuring load_balancing_health_alert
+   */
+  event_source?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  event_type?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  group_by?: Array<string>;
+
+  /**
+   * Used for configuring health_check_status_notification
+   */
+  health_check_id?: Array<string>;
+
+  /**
+   * Used for configuring incident_alert
+   */
+  incident_impact?: Array<
+    'INCIDENT_IMPACT_NONE' | 'INCIDENT_IMPACT_MINOR' | 'INCIDENT_IMPACT_MAJOR' | 'INCIDENT_IMPACT_CRITICAL'
+  >;
+
+  /**
+   * Used for configuring stream_live_notifications
+   */
+  input_id?: Array<string>;
+
+  /**
+   * Used for configuring security_insights_alert
+   */
+  insight_class?: Array<string>;
+
+  /**
+   * Used for configuring billing_usage_alert
+   */
+  limit?: Array<string>;
+
+  /**
+   * Used for configuring logo_match_alert
+   */
+  logo_tag?: Array<string>;
+
+  /**
+   * Used for configuring advanced_ddos_attack_l4_alert
+   */
+  megabits_per_second?: Array<string>;
+
+  /**
+   * Used for configuring load_balancing_health_alert
+   */
+  new_health?: Array<string>;
+
+  /**
+   * Used for configuring tunnel_health_event
+   */
+  new_status?: Array<string>;
+
+  /**
+   * Used for configuring advanced_ddos_attack_l4_alert
+   */
+  packets_per_second?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  pool_id?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  pop_names?: Array<string>;
+
+  /**
+   * Used for configuring billing_usage_alert
+   */
+  product?: Array<string>;
+
+  /**
+   * Used for configuring pages_event_alert
+   */
+  project_id?: Array<string>;
+
+  /**
+   * Used for configuring advanced_ddos_attack_l4_alert
+   */
+  protocol?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  query_tag?: Array<string>;
+
+  /**
+   * Used for configuring advanced_ddos_attack_l7_alert
+   */
+  requests_per_second?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  selectors?: Array<string>;
+
+  /**
+   * Used for configuring clickhouse_alert_fw_ent_anomaly
+   */
+  services?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  slo?: Array<string>;
+
+  /**
+   * Used for configuring health_check_status_notification
+   */
+  status?: Array<string>;
+
+  /**
+   * Used for configuring advanced_ddos_attack_l7_alert
+   */
+  target_hostname?: Array<string>;
+
+  /**
+   * Used for configuring advanced_ddos_attack_l4_alert
+   */
+  target_ip?: Array<string>;
+
+  /**
+   * Used for configuring advanced_ddos_attack_l7_alert
+   */
+  target_zone_name?: Array<string>;
+
+  /**
+   * Access service token IDs to include for expiring_service_token_alert. Omit this
+   * property to include all current and future service tokens.
+   */
+  token_id?: Array<string>;
+
+  /**
+   * Used for configuring traffic_anomalies_alert
+   */
+  traffic_exclusions?: Array<'security_events'>;
+
+  /**
+   * Used for configuring tunnel_health_event
+   */
+  tunnel_id?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  tunnel_name?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  type?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  where?: Array<string>;
+
+  /**
+   * Usage depends on specific alert type
+   */
+  zones?: Array<string>;
+}
+
+/** Settings for a managed ANS policy; destination and enabled state are fixed. */
+export interface CloudflareNotificationPolicySettings {
+  /** Re-alert interval, for example "30m"; supported only by some alert types. */
+  alertInterval?: string;
+  /** Provider filter names and string-array values. Cloudflare validates applicability. */
+  filters?: CloudflareNotificationFilters;
+}
+
+/** The Cloudflare alert type and settings for this subscription. */
+export interface CloudflareNotificationSubscription {
+  /** Use an alert type available to the connected Cloudflare account; there is no fixed type list. */
+  alertType: string;
+  /** Create or share a managed policy (default true). Set false to use an existing policy or Send to. */
+  createPolicy?: boolean;
+  /** Configure a managed policy. Cannot be supplied with createPolicy: false. */
+  policy?: CloudflareNotificationPolicySettings;
+}
+
+/** Persistent notification callback implemented by a workspace or Gadget. */
+export interface CloudflareNotificationHook {
+  /** Accept an event promptly and idempotently. Throw to return HTTP 500 so ANS can retry.
+   * Start long-running work separately; ordering and exactly-once execution are not guaranteed. */
+  onNotification(notification: CloudflareNotification): Promise<void>;
+}
+
+/** Delivery health and setup identifiers for this connection. */
+export interface CloudflareNotificationStatus {
+  /** Whether webhook setup has completed. */
+  installed: boolean;
+  /** Whether delivery has been stopped during disconnect. */
+  suspended: boolean;
+  /** Webhook destination shared by this connection's policies. */
+  webhookId?: string;
+  /** Managed policies. Identical type/settings share a policy within this connection. */
+  policies: { alertType: string; policyId: string; policy?: CloudflareNotificationPolicySettings }[];
+  /** Enabled hooks for this Cloudflare account across all of the owner's workspaces (limit 100). */
+  subscribers: number;
+  /** Time the last authenticated webhook test succeeded. */
+  lastTestAt?: string;
+  /** Time the last notification was accepted. */
+  lastReceivedAt?: string;
+}
+
+/** Notification access scoped to one Cloudflare account. */
+export interface CloudflareNotificationsSession {
+  /**
+   * Subscribe a persistent callback created with ctx.restore(). Choose one Cloudflare alert type;
+   * managed subscriptions receive only their policy's alerts. External subscriptions
+   * (createPolicy: false) receive that type from any policy reaching the destination.
+   * Identical managed configurations share a policy; its last managed subscriber disabling removes it. A regular
+   * session-bound RpcStub cannot receive notifications after its session ends.
+   */
+  subscribe(callback: RpcStub<CloudflareNotificationHook>, subscription: CloudflareNotificationSubscription): Promise<void>;
+  /** Inspect setup and delivery health without exposing credentials or event content. */
+  getStatus(): Promise<CloudflareNotificationStatus>;
 }
