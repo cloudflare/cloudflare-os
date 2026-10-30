@@ -495,8 +495,10 @@ const ALARM_MAX_RETRIES = 6;
 const AGENT_RESUME_MAX_ATTEMPTS = 4;
 
 // The longest Overseer.waitForAgent() waits, and how long it waits when given no timeout. A
-// longer turn is waited for by calling it again.
-const MAX_WAIT_FOR_AGENT_MS = 60 * 60 * 1000;
+// longer turn is waited for by calling it again. It also bounds how long a wait outlives its
+// client: a native RPC call in progress keeps its target, so the session's disposer (and #closed)
+// runs only once the wait ends, even after the client let the session go or disconnected.
+const MAX_WAIT_FOR_AGENT_MS = 10 * 60 * 1000;
 
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
@@ -11203,8 +11205,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   #leavePresence: () => void;
   #leaveOutputsFanout: () => void;
 
-  // Aborted when the session is disposed (its client let it go, or disconnected), ending the
-  // waitForAgent() calls still waiting.
+  // Aborted when the session is disposed, ending the waitForAgent() calls still waiting. Not a
+  // client's leaving: while a wait is in progress the session is not disposed (see
+  // MAX_WAIT_FOR_AGENT_MS), so this ends the waits that other calls on it started.
   #closed = new AbortController();
 
   // This session's sendChatMessage() and retryAgent() calls still running, by chat. Cap'n Web
