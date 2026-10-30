@@ -90,7 +90,7 @@ test("the password hash is the frontend's argon2id over SERVICE_SALT ++ the user
 });
 
 test("the Access token comes from CF_ACCESS_TOKEN, else cloudflared, spawned without a shell", () => {
-  const calls: { command: string; args: string[]; options: object }[] = [];
+  const calls: { command: string; args: string[]; options: Parameters<SpawnCloudflared>[2] }[] = [];
   const spawn = (reply: ReturnType<SpawnCloudflared>): SpawnCloudflared => (command, args, options) => {
     calls.push({ command, args, options });
     return reply;
@@ -102,6 +102,12 @@ test("the Access token comes from CF_ACCESS_TOKEN, else cloudflared, spawned wit
   assert.equal(calls[0].command, "cloudflared");
   assert.deepEqual(calls[0].args, ["access", "token", "-app=https://os.example.com"]);
   assert.equal("shell" in calls[0].options, false);
+  assert.equal("timeout" in calls[0].options, false);
+  // The run's --timeout is cloudflared's too, and a kill for it is reported as the run timing out.
+  const killed = spawn({ status: null, stdout: "", stderr: "", error: Object.assign(new Error("spawnSync cloudflared ETIMEDOUT"), { code: "ETIMEDOUT" }) });
+  assert.throws(() => accessToken("https://os.example.com", { env: {}, spawn: killed }, 1500),
+    /^Error: timed out after 1\.5s, while cloudflared looked up the Access token for https:\/\/os\.example\.com\.$/);
+  assert.equal(calls.at(-1)!.options.timeout, 1500);
 
   assert.throws(
     () => accessToken("https://os.example.com", { env: {}, spawn: spawn({ status: 1, stdout: "", stderr: "Unable to find token" }) }),

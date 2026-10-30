@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { table as realTable } from "../generated/commands.ts";
 import { table } from "../generator/__fixtures__/generated/commands.ts";
 import { run, type ApiDeps } from "./api.ts";
 import { UsageError, type Output } from "./output.ts";
-import { passwordHash } from "./session.ts";
+import { passwordHash, type SpawnCloudflared } from "./session.ts";
 import type { ApiTable } from "./table.ts";
 import {
   callsOf, eventually, fixtureRoot, messagePortServer, serverLog, workshopRoot, type FixtureOptions, type ServerLog, type WorkshopOptions,
@@ -36,8 +37,10 @@ const flat = (text: string) => text.replace(/\s+/g, " ");
  */
 function harness(
   t: { after: (fn: () => void) => void },
-  { env, stdin = "", tty = false, options = {}, table: commands = table, root }: {
+  { env, stdin = "", tty = false, options = {}, table: commands = table, root, spawn }: {
     env?: NodeJS.ProcessEnv;
+    /** cloudflared, in place of one that is not logged in. */
+    spawn?: SpawnCloudflared;
     stdin?: string;
     tty?: boolean;
     options?: FixtureOptions;
@@ -63,9 +66,9 @@ function harness(
     table: commands,
     env: { CFOS_API_URL: "https://os.example.com", ...env ?? { CFOS_API_TOKEN: "good-token" } },
     open: server.open,
-    spawn: (command, args) => {
+    spawn: (command, args, spawnOptions) => {
       spawned.push([command, ...args]);
-      return { status: 1, stdout: "", stderr: "not logged in" };
+      return spawn ? spawn(command, args, spawnOptions) : { status: 1, stdout: "", stderr: "not logged in" };
     },
     fetch: async (url) => {
       fetched.push(url);
@@ -547,6 +550,17 @@ test("--timeout fails a call that is not a subscription, and still disposes the 
   await eventually(() => ["authed", "root"].every((name) => h.log.disposed.includes(name)), "disposal");
 });
 
+test("--timeout bounds cloudflared's Access token lookup, which blocks the run's own timer", async (t) => {
+  // A real synchronous child that outlives --timeout: without its own timeout the run waits it out.
+  const h = harness(t, { env: {}, spawn: (_command, _args, options) =>
+    spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], options) });
+  const started = Date.now();
+  await assert.rejects(h.api("set-mood", "calm", "--timeout", "0.2"),
+    /timed out after 0\.2s, while cloudflared looked up the Access token for https:\/\/os\.example\.com\./);
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
+  assert.equal(h.server.opened, 0);
+});
+
 test("ending on a capability is a usage error that says nothing was sent and how to finish the chain", async (t) => {
   const h = harness(t);
   const incomplete = async (...tokens: string[]) => {
@@ -638,6 +652,11 @@ test("create-account makes a password account on PublicApi, which --username the
   assert.deepEqual(h.json.at(-1), { username: "carol", displayName: "carol" });
   await assert.rejects(h.api("create-account", "alice", ...dev), (error: Error) =>
     !(error instanceof UsageError) && error.message.startsWith("could not create the account alice: the name is taken."));
+
+  // The hint names the origin connected to, not the credentials, path or query --url held.
+  assert.equal(await h.api("create-account", "dave", "--url", "http://dave:pw-marker@localhost:8787/x?token=query-marker"), 0);
+  assert.match(h.stderr(), /Created dave\. Act as it with `cf-os api --username dave <command>` and --url http:\/\/localhost:8787,/);
+  assert.doesNotMatch(h.stderr(), /pw-marker|query-marker/);
 });
 
 test("create-account surfaces a refusal, needs CFOS_API_PASSWORD, and --dry-run prints no secret", async (t) => {

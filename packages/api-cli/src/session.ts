@@ -56,7 +56,7 @@ export type OpenConnection = (url: string, headers: Record<string, string>) => C
 export type SpawnCloudflared = (
   command: string,
   args: string[],
-  options: { encoding: "utf8"; env: NodeJS.ProcessEnv },
+  options: { encoding: "utf8"; env: NodeJS.ProcessEnv; timeout?: number },
 ) => { status: number | null; stdout: string; stderr: string; error?: Error };
 
 /** What of `fetch` a failed handshake is diagnosed with. */
@@ -310,9 +310,11 @@ function unreachableNext(origin: string): string {
 /**
  * The Access token for `origin`: `CF_ACCESS_TOKEN`, else `cloudflared access token`, which prints
  * the one `cloudflared access login` saved. Spawned without a shell: the origin is an argument.
- * Throws {@link UsageError} for no token, and an Error when cloudflared could not reach `origin`.
+ * Throws {@link UsageError} for no token, and an Error when cloudflared could not reach `origin` or
+ * ran past `timeoutMs`. cloudflared runs synchronously, which no timer can interrupt, so `timeoutMs`
+ * (the run's `--timeout`) is its own: it is killed once that has passed.
  */
-export function accessToken(origin: string, deps: Pick<SessionDeps, "env" | "spawn">): string {
+export function accessToken(origin: string, deps: Pick<SessionDeps, "env" | "spawn">, timeoutMs?: number): string {
   const fromEnv = deps.env.CF_ACCESS_TOKEN?.trim();
   if (fromEnv) {
     // Checked here, by name only: a value no header can carry would otherwise fail in the WebSocket
@@ -320,7 +322,11 @@ export function accessToken(origin: string, deps: Pick<SessionDeps, "env" | "spa
     if (!ACCESS_JWT.test(fromEnv)) throw new UsageError("CF_ACCESS_TOKEN is not an Access token (a JWT, three dot-separated parts).");
     return fromEnv;
   }
-  const result = deps.spawn("cloudflared", ["access", "token", `-app=${origin}`], { encoding: "utf8", env: deps.env });
+  const result = deps.spawn("cloudflared", ["access", "token", `-app=${origin}`],
+    { encoding: "utf8", env: deps.env, ...timeoutMs === undefined ? {} : { timeout: timeoutMs } });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    throw new Error(`timed out after ${timeoutMs! / 1000}s, while cloudflared looked up the Access token for ${origin}.`);
+  }
   const succeeded = result.status === 0 && !result.error;
   const token = succeeded ? result.stdout.trim().split("\n").at(-1)?.trim() ?? "" : "";
   if (ACCESS_JWT.test(token)) return token;
@@ -344,9 +350,10 @@ export function accessToken(origin: string, deps: Pick<SessionDeps, "env" | "spa
  * other modes: starting the instance is the next step only when nothing is listening. A refused
  * certificate came from a TLS server that answered, so it is told at once, unprobed.
  */
-async function probedAccessToken(origin: string, deps: Pick<SessionDeps, "env" | "spawn" | "probe">): Promise<string> {
+async function probedAccessToken(origin: string, deps: Pick<SessionDeps, "env" | "spawn" | "probe">,
+    timeoutMs?: number): Promise<string> {
   try {
-    return accessToken(origin, deps);
+    return accessToken(origin, deps, timeoutMs);
   } catch (error) {
     if (!(error instanceof CloudflaredUnreachable) || NOTHING_THERE.test(error.why)) throw error;
     const http = new URL(origin);
@@ -395,18 +402,19 @@ export interface Session {
 /**
  * Opens a session to `target` signed in as `auth` chooses. For `public` chains (`authenticate` never
  * called) only the transport's credential is gathered: the Access token, which Access's edge needs
- * before the request reaches the API at all.
+ * before the request reaches the API at all. `timeoutMs`, the run's `--timeout`, bounds the Access
+ * token's lookup, which blocks the run's own timer ({@link accessToken}).
  */
 export async function connect(
   target: ApiTarget,
   auth: AuthChoice,
-  { serviceSalt, needsSignIn }: { serviceSalt: readonly number[]; needsSignIn: boolean },
+  { serviceSalt, needsSignIn, timeoutMs }: { serviceSalt: readonly number[]; needsSignIn: boolean; timeoutMs?: number },
   deps: SessionDeps,
 ): Promise<Session> {
   const headers: Record<string, string> = { Origin: target.origin, "User-Agent": USER_AGENT };
   let signIn: (main: Remote) => Promise<{ api: Remote }>;
   if (auth.mode === "access") {
-    headers["cf-access-token"] = await probedAccessToken(target.origin, deps);
+    headers["cf-access-token"] = await probedAccessToken(target.origin, deps, timeoutMs);
     signIn = async (main) => ({ api: main.authenticateFromCfAccess() });
   } else if (auth.mode === "token") {
     const token = needsSignIn
