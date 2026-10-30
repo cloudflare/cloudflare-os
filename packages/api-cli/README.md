@@ -14,6 +14,9 @@ to run this same CLI from its submodule, in place of the copy it ships today (se
 In cloudflare-os, `cf-os` has only `api`; its other commands (`init`, `check`, `deploy`, `update`,
 ...) are the starter's, and here they fail saying so (exit 1).
 
+On a deployment, the CLI is for its deployment admins only; on a local dev server anyone may use it
+(see [Deployment admins only](#deployment-admins-only)).
+
 ```sh
 pnpm cf-os api search "list chats"                         # the commands for a task, whole command lines as JSON (connects to nothing)
 pnpm cf-os api --help                                      # the commands there are once signed in (connects to nothing)
@@ -148,13 +151,14 @@ and it connects to nothing.
 
 `create-account <username> [--display-name <name>]` makes a password account through
 `PublicApi.createAccount`, as the frontend's sign-up page does, for an agent testing against a local
-or test instance that needs users to act as ("add bob to the workspace and check what he sees"); a
-deployment usually signs users in through Access, and refuses it then, or with signups or password
-sign-in off. The password is `CFOS_API_PASSWORD`, hashed as password sign-in hashes it, so
-`--username <username>` with the same `CFOS_API_PASSWORD` then signs in as the new user. The display
-name defaults to the username. It signs nothing in, prints `{"username", "displayName"}` (never the
-session token the call returns), and fails naming the instance's refusal: signups closed, password
-sign-in off, the name taken or invalid. Its default instance is the same as every command's.
+or test instance that needs users to act as ("add bob to the workspace and check what he sees"). A
+deployment refuses it from the CLI ([Deployment admins only](#deployment-admins-only)), and so does
+an instance with signups or password sign-in off. The password is `CFOS_API_PASSWORD`, hashed as
+password sign-in hashes it, so `--username <username>` with the same `CFOS_API_PASSWORD` then signs
+in as the new user. The display name defaults to the username. It signs nothing in, prints
+`{"username", "displayName"}` (never the session token the call returns), and fails naming the
+instance's refusal: signups closed, password sign-in off, the name taken or invalid.
+Its default instance is the same as every command's.
 `--url`, `--auth` (`access` or `token`; with `token`, for an `https://` instance not behind Access,
 it needs no `CFOS_API_TOKEN`, as no one signs in) and `--dry-run` work as for any command, and the
 dry run shows `{"$passwordHash": "CFOS_API_PASSWORD"}` where the hash would go. `search` finds it,
@@ -180,6 +184,26 @@ sign-in is `--auth <mode>`, or, without it, `password` when `--username` is give
 | `access` | A Cloudflare Access token: `CF_ACCESS_TOKEN`, else what `cloudflared access token -app=<origin>` prints once `cloudflared access login <origin>` has run. It is sent with the instance's own Origin, and the session signs in as the Access identity | An instance behind Access, as the starter deploys it |
 | `token` | `CFOS_API_TOKEN`, an auth token, the kind a password sign-in returns and the frontend keeps | A dev server, a test harness |
 | `password` | `--username <name>` and `CFOS_API_PASSWORD`, hashed as the frontend hashes it | A dev server, a test harness |
+
+## Deployment admins only
+
+Every request the CLI makes sends `User-Agent: cf-os-api/<version>` (`USER_AGENT` in
+`src/session.ts`, this package's version). The Workshop recognises it on `/api`, and unless the
+instance is a local dev one it lets that session act only as a deployment admin, a user its `ADMINS`
+names: a sign-in, by password, token or Access, as anyone else is refused, and so is every call that
+signs no one in (`create-account`, and the `public` commands except the sign-in steps
+`start-gatekeeper-login` and `confirm-login`, whose result `authenticate` then refuses). Each refusal
+fails, exit 1, with
+`On this deployment the cf-os CLI is limited to deployment admins (anything goes on a local dev server).`
+The browser and every other client are unaffected. To use the CLI on a deployment, sign in as one of
+its admins: behind Access, `cloudflared access login <origin>` as an admin's identity.
+
+A local dev instance is one whose backend has `LOCAL_DEV_INSTANCE` set, which only `pnpm dev-server`
+and the integration harness set; a deployment must never set it. There the CLI may do anything.
+
+This is a speed bump against casual use, not a boundary: any client can send any User-Agent, or
+none, and an admin signed in through the CLI may do no more than in a browser. What a session may do
+is decided by the API's own checks, as for every client.
 
 ## Secrets and `--dry-run`
 

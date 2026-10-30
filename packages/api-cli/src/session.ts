@@ -225,6 +225,13 @@ export function accessToken(origin: string, deps: Pick<SessionDeps, "env" | "spa
   throw new Error(`no Access token for ${origin}: ${why}. Run \`${accessLoginHint(origin)}\`, or set CF_ACCESS_TOKEN.`);
 }
 
+/**
+ * The User-Agent of every request `cf-os api` makes: `cf-os-api/<version>`, the version in this
+ * package's package.json (session.test.ts checks). Except on a local dev instance, the Workshop lets
+ * a session that sends it act only as a deployment admin, a speed bump rather than a boundary.
+ */
+export const USER_AGENT = "cf-os-api/1.0.0";
+
 /** A connected session, before and after signing in. */
 export interface Session {
   /** `PublicApi`. Disposing it closes the connection. */
@@ -249,7 +256,7 @@ export async function connect(
   { serviceSalt, needsSignIn }: { serviceSalt: readonly number[]; needsSignIn: boolean },
   deps: SessionDeps,
 ): Promise<Session> {
-  const headers: Record<string, string> = { Origin: target.origin };
+  const headers: Record<string, string> = { Origin: target.origin, "User-Agent": USER_AGENT };
   let signIn: (main: Remote) => Promise<{ api: Remote }>;
   if (auth.mode === "access") {
     headers["cf-access-token"] = accessToken(target.origin, deps);

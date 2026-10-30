@@ -1,7 +1,7 @@
 // `cf-os api create-account <username> [--display-name <name>]`: a password account on the instance,
 // made through `PublicApi.createAccount` as the frontend's sign-up page makes one, so that whoever
 // tests against a local or test instance has users to act as (`--username <name>`). A deployment
-// usually signs users in through Access instead, and refuses it.
+// refuses it from the CLI, which it limits to its admins (README.md, "Deployment admins only").
 //
 // createAccount takes a password hash, so the generated table leaves it out (generator/emit.ts's
 // CREDENTIAL_METHODS): a secret never comes from argv. This command reads the password from
@@ -79,8 +79,8 @@ export function createAccountHelp(instance: DefaultInstance = defaultInstance({}
     "Usage: cf-os api create-account <username> [--display-name <name>] [--url <origin>] [--auth access|token] [--dry-run]",
     "",
     "Creates a password account to act as, on a local or test instance (PublicApi.createAccount, as the",
-    "sign-up page calls it). A deployment behind Cloudflare Access, or with signups or password sign-in",
-    "off, refuses it.",
+    "sign-up page calls it). A deployment refuses it, as it limits the CLI to its admins, and so does an",
+    "instance with signups or password sign-in off.",
     "",
     "The password comes from CFOS_API_PASSWORD, never the command line, hashed as password sign-in",
     "hashes it. Then act as the new user with the same CFOS_API_PASSWORD and --username:",
