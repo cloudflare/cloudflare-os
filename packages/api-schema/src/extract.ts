@@ -62,7 +62,8 @@ export function isInstalledRuntime(fileName: string): boolean {
 
 /** Loads `entry` and extracts the schema of everything reachable from `entryName`. */
 export function extractSchema(options: ExtractOptions): Schema {
-  const program = ts.createProgram({ rootNames: [options.entry], options: loadCompilerOptions(options) });
+  const compilerOptions = loadCompilerOptions(options);
+  const program = ts.createProgram({ rootNames: [options.entry], options: compilerOptions, host: cachingHost(compilerOptions) });
   const source = program.getSourceFile(options.entry);
   if (!source) throw new Error(`${options.entry}: not found`);
   // A type the checker cannot resolve becomes `any`, which would quietly turn capabilities, streams
@@ -104,6 +105,30 @@ export function extractSchema(options: ExtractOptions): Schema {
     services: sortKeys(services),
     shapes: sortKeys(extractor.shapes),
   };
+}
+
+/**
+ * Declaration files already parsed, by compiler options and file name. Without it every extraction
+ * parses the TypeScript libs, Cap'n Web's and the Workers runtime's declarations again, and the
+ * generator and the tests extract many times. A file is reused only while its text is unchanged.
+ */
+const parsedDeclarations = new Map<string, { text: string; file: ts.SourceFile }>();
+
+function cachingHost(options: ts.CompilerOptions): ts.CompilerHost {
+  const host = ts.createCompilerHost(options);
+  const { getSourceFile } = host;
+  const settings = JSON.stringify(options);
+  host.getSourceFile = (fileName, languageVersion, ...rest) => {
+    if (!fileName.endsWith(".d.ts")) return getSourceFile.call(host, fileName, languageVersion, ...rest);
+    const key = `${settings}\0${JSON.stringify(languageVersion)}\0${fileName}`;
+    const text = host.readFile(fileName);
+    const cached = parsedDeclarations.get(key);
+    if (cached && cached.text === text) return cached.file;
+    const file = getSourceFile.call(host, fileName, languageVersion, ...rest);
+    if (file && text !== undefined) parsedDeclarations.set(key, { text, file });
+    return file;
+  };
+  return host;
 }
 
 function loadCompilerOptions(options: ExtractOptions): ts.CompilerOptions {

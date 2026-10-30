@@ -21,6 +21,8 @@ const FIXTURE: ExtractOptions = {
   constants: ["SERVICE_SALT"],
 };
 const EXPECTED_SCHEMA = join(FIXTURES, "schema.json");
+/** Options for a one-file API, skipping library checks as the root tsconfig the generator loads does. */
+const STRICT: ts.CompilerOptions = { strict: true, skipLibCheck: true };
 
 const SHARED = join(PACKAGE, "..", "workshop-shared");
 const WORKSHOP_API: ExtractOptions = {
@@ -189,7 +191,7 @@ describe("refuses what the schema cannot describe, naming it", () => {
   const extract = (source: string, entryName = "Api") => {
     const entry = join(dir, `api-${files++}.ts`);
     writeFileSync(entry, source);
-    return () => extractSchema({ entry, compilerOptions: { strict: true }, entryName, constants: [] });
+    return () => extractSchema({ entry, compilerOptions: STRICT, entryName, constants: [] });
   };
 
   test("an overloaded method", () => {
@@ -224,7 +226,7 @@ describe("members, tags and streams", () => {
   const extract = (source: string) => {
     const entry = join(dir, `api-${files++}.ts`);
     writeFileSync(entry, source);
-    return extractSchema({ entry, compilerOptions: { strict: true }, entryName: "Api", constants: [] });
+    return extractSchema({ entry, compilerOptions: STRICT, entryName: "Api", constants: [] });
   };
 
   test("a non-method member is a property, an optional method still a method", () => {
@@ -348,7 +350,7 @@ describe("which side implements each service", () => {
   const directions = (source: string) => {
     const entry = join(dir, `api-${files++}.ts`);
     writeFileSync(entry, source);
-    const { services } = extractSchema({ entry, compilerOptions: { strict: true }, entryName: "Api", constants: [] });
+    const { services } = extractSchema({ entry, compilerOptions: STRICT, entryName: "Api", constants: [] });
     return Object.fromEntries(Object.entries(services).map(([name, service]) => [name, service.direction]));
   };
   // Method-only interfaces are capabilities, so these need no capnweb.
