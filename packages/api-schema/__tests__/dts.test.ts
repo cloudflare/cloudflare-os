@@ -641,7 +641,7 @@ describe("properties", () => {
    * @deprecated Read version.
    */
   readonly build: Promise<number | undefined>;
-  readonly child: Pipelined<Child>;
+  readonly child: Promise<Child> & Omit<Child, typeof Symbol.dispose>;
   readonly meta: Promise<Meta>;
   readonly spare: Promise<Child | undefined>;
   /** The version. */
@@ -663,9 +663,9 @@ describe("properties", () => {
   });
 
   test("reach the shapes and services in their types, in the full file and the fragments", () => {
-    expect(declared(full)).toEqual(["Api", AWAITABLE, "Child", "Meta", PIPELINED, "Sub"]);
-    expect(declared(fragments.Api!)).toEqual(["Api", "Meta", PIPELINED]);
-    expect(missingNames(fragments)).toEqual({ Api: ["Child", "Child", "Sub"], Child: [], Sub: [] });
+    expect(declared(full)).toEqual(["Api", AWAITABLE, "Child", "Meta", "Sub"]);
+    expect(declared(fragments.Api!)).toEqual(["Api", "Meta"]);
+    expect(missingNames(fragments)).toEqual({ Api: ["Child", "Child", "Child", "Sub"], Child: [], Sub: [] });
   });
 
   test("one reached both ways is an Awaitable, which a caller reading it awaits", () => {
@@ -748,7 +748,32 @@ export async function use(api: Generated.Api): Promise<string> {
 `,
     })).toEqual([]);
   });
+
+  /** The diagnostic codes of a caller using `Api` as `body` does. */
+  const caller = (body: string) => diagnose({
+    "api.d.ts": full,
+    "caller.ts": `import type { Api } from "./api.js";
+declare const api: Api;
+export async function use(): Promise<string> {
+${body}
+}
+`,
+  }).map(({ code }) => code);
+
+  // capnweb's promise of a property has no disposer of its own, unlike a call's: the stub it is read
+  // from is disposed instead, or the capability once awaited.
+  test("a capability one pipelines, and is disposable only once awaited", () => {
+    expect(caller("  using child = await api.child;\n  return (await api.child.name()) + (await child.name());"))
+      .toEqual([]);
+    expect(caller("  api.child[Symbol.dispose]();\n  return \"\";")).toEqual([NO_SUCH_INDEX]);
+    expect(caller("  using child = api.child;\n  return await child.name();")).toEqual([NOT_DISPOSABLE]);
+  });
 });
+
+/** "Element implicitly has an 'any' type because expression of type '{0}' can't be used to index type '{1}'." */
+const NO_SUCH_INDEX = 7053;
+/** "The initializer of a 'using' declaration must be either an object with a '[Symbol.dispose]()' method, or be 'null' or 'undefined'." */
+const NOT_DISPOSABLE = 2850;
 
 describe("tags", () => {
   const params: SchemaMethod["params"] = [{ name: "x", type: { kind: "string" }, optional: false, doc: "The x." }];

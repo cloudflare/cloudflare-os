@@ -30,11 +30,13 @@
 //   Only a parameter as a whole: capnweb also resolves a promise nested inside an argument, which
 //   is left to its own types, as is a promise for a capability (`Pipelined<T>` is already a `T`).
 // - A property is a `readonly` member. On a stub, reading it is a call (`root.version`,
-//   `root.child.list()`), so it is typed as a method's result is: a promise, or `Pipelined<Service>`
-//   for a capability, as capnweb's `RpcStub` types it, and an optional one is always there, a
-//   promise of `undefined` when the implementation has none. An implementation supplies the value
-//   itself, which capnweb sends as it is rather than awaiting it, from a getter (capnweb refuses to
-//   read an `RpcTarget`'s instance property), and may leave an optional one out.
+//   `root.child.list()`), so it is typed as a method's result is: a promise, and an optional one is
+//   always there, a promise of `undefined` when the implementation has none. A capability is
+//   pipelined as a call's is, but without `[Symbol.dispose]()`: capnweb's promise of a property has
+//   no disposer of its own (the stub it is read from is disposed instead), and only the capability
+//   it resolves to does. An implementation supplies the value itself, which capnweb sends as it is
+//   rather than awaiting it, from a getter (capnweb refuses to read an `RpcTarget`'s instance
+//   property), and may leave an optional one out.
 // - A service the caller holds (the root, or one it receives) has `[Symbol.dispose]()`, the one
 //   member of capnweb's stubs these declarations carry: disposing a stub releases the capability,
 //   and is how an API cancels what a returned handle stands for (a subscription), with `using` or
@@ -325,8 +327,8 @@ const RESERVED_TYPE_NAMES = [
   ...RESERVED_WORDS, "as", "infer", "keyof", "readonly", "unique", "any", "bigint", "boolean", "never", "number",
   "object", "string", "symbol", "undefined", "unknown", "Array", "ArrayBuffer", "BigInt64Array", "BigUint64Array",
   "Blob", "DataView", "Date", "Error", "Float32Array", "Float64Array", "Headers", "Int16Array", "Int32Array",
-  "Int8Array", "Map", "Promise", "ReadableStream", "RegExp", "Request", "Response", "Set", "URL", "Uint16Array",
-  "Uint32Array", "Uint8Array", "Uint8ClampedArray", "WritableStream", AWAITABLE, PIPELINED, UNTYPED_STUB,
+  "Int8Array", "Map", "Omit", "Promise", "ReadableStream", "RegExp", "Request", "Response", "Set", "URL",
+  "Uint16Array", "Uint32Array", "Uint8Array", "Uint8ClampedArray", "WritableStream", AWAITABLE, PIPELINED, UNTYPED_STUB,
 ];
 
 /** The global type each built-in shape kind without parameters renders as. */
@@ -405,15 +407,20 @@ class Renderer {
 
   /**
    * A property of a service whose capability is in `position`: on a held one a call's result,
-   * there whether or not it is optional; on an implemented one the value itself, which an
-   * implementation may leave out when it is optional; on one reached both ways either, an
-   * `Awaitable<T>` that a caller reading it awaits, of `T | undefined` when it is optional, as a
-   * held one's promise is.
+   * there whether or not it is optional, except that a capability is pipelined without
+   * `[Symbol.dispose]()`, which capnweb's promise of a property lacks; on an implemented one the
+   * value itself, which an implementation may leave out when it is optional; on one reached both
+   * ways either, an `Awaitable<T>` that a caller reading it awaits, of `T | undefined` when it is
+   * optional, as a held one's promise is.
    */
   #property(property: SchemaProperty, position: Position): string {
     const doc = docComment(withTags(property.doc, [], { ...property.tags, deprecated: property.deprecated }), "  ");
     const key = propertyKey(property.name);
     if (position === "out") {
+      if (!property.optional && property.type.kind === "stub" && property.type.service !== undefined) {
+        const service = this.#names.service(property.type.service);
+        return `${doc}  readonly ${key}: Promise<${service}> & Omit<${service}, typeof Symbol.dispose>;\n`;
+      }
       const type = property.optional ? orUndefined(property.type) : property.type;
       return `${doc}  readonly ${key}: ${this.#result(type, "  ")};\n`;
     }
