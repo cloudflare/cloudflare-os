@@ -86,6 +86,7 @@ describe("the fixture", () => {
     const schema = extractSchema(FIXTURE);
     expect(Object.keys(schema.shapes)).toEqual(["Destination", "Mood", "Note", "Outline"]);
     expect(schema.shapes.Outline).toEqual({
+      doc: "A recursive named type.",
       kind: "object",
       properties: { children: { kind: "array", element: { kind: "ref", name: "Outline" } }, title: { kind: "string" } },
     });
@@ -94,6 +95,23 @@ describe("the fixture", () => {
       .toEqual([{ kind: "date" }, { kind: "bigint" }, { kind: "bytes" }]);
     expect(properties.tags).toEqual({ kind: "union", branches: [{ kind: "array", element: { kind: "string" } },
       { kind: "undefined" }] });
+  });
+
+  test("keeps a named type's doc and its properties' docs, with their @deprecated tags", () => {
+    const { shapes } = extractSchema(FIXTURE);
+    expect(shapes.Mood).toEqual({
+      doc: "A string-literal union.",
+      kind: "union",
+      branches: [{ kind: "literal", value: "busy" }, { kind: "literal", value: "calm" }],
+    });
+    // Only the documented properties have an entry; a deprecated one keeps its tag in `doc` too.
+    expect((shapes.Note as Extract<ApiShape, { kind: "object" }>).propertyDocs).toEqual({
+      heading: { doc: "Its first line, from before titles.\n@deprecated Read title.\n@since 1", deprecated: "Read title.",
+        tags: { since: "1" } },
+      tags: { doc: "Optional, so a union with `undefined`." },
+    });
+    expect(shapes.Outline).not.toHaveProperty("propertyDocs");
+    expect(Object.keys(shapes.Note!)).toEqual(["doc", "kind", "properties", "propertyDocs"]);
   });
 
   test("records the constants and the docs, @param text on the parameter", () => {
@@ -148,6 +166,10 @@ describe("the fixture", () => {
 
     expect(method("Notebook", "file").mutates).toBe(true);
     expect("mutates" in method("Notebook", "upload")).toBe(false);
+    // The tags the format does not model; @mutates and @param have fields of their own.
+    expect(method("Notebook", "file").tags).toEqual({ since: "2" });
+    expect("tags" in method("Notebook", "upload")).toBe(false);
+    expect("tags" in method("FixtureAuthedApi", "openNotebook")).toBe(false);
   });
 
   test("is deterministic across separate programs", () => {
@@ -255,6 +277,55 @@ export interface Api { a(): void; b?(): void; readonly c: string; d?: Sub | null
 `).services.Api!.methods[0]!;
     expect(method).toEqual({ name: "save", doc: "Saves.\n@deprecated Use\nsaveAll.\n@mutates", params: [],
       returns: { kind: "void" }, deprecated: "Use\nsaveAll.", mutates: true });
+  });
+
+  test("every other tag, by name, on services, methods, properties, named types and object properties", () => {
+    const { services, shapes } = extract(`/** @audience agents */
+export interface Api {
+  /**
+   * Opens.
+   * @param id Which.
+   * @returns The thing.
+   * @throws When it is missing.
+   * @example api.open("a")
+   * @see close
+   * @mutates
+   * @category files
+   * @beta
+   * @since 2
+   * @since and again
+   */
+  open(id: string): Promise<Config>;
+  /** @since 3 */
+  readonly version: string;
+  /** No tags. */
+  close(): void;
+}
+/** A configuration. @since 1 */
+export type Config = {
+  /**
+   * The token.
+   * @secret
+   */
+  token: string;
+  /** Plain. */
+  name: string;
+};
+`);
+    const [close, open] = services.Api!.methods;
+    expect(services.Api!.tags).toEqual({ audience: "agents" });
+    // Sorted by name; a repeated tag's texts joined; a bare one "". The doc keeps every tag.
+    expect(open!.tags).toEqual({ beta: "", category: "files", since: "2\nand again" });
+    expect(Object.keys(open!.tags!)).toEqual(["beta", "category", "since"]);
+    expect(open!.doc).toContain("@throws When it is missing.");
+    expect(open!.mutates).toBe(true);
+    expect("tags" in close!).toBe(false);
+    expect(services.Api!.properties![0]!.tags).toEqual({ since: "3" });
+    expect(shapes.Config).toMatchObject({ tags: { since: "1" } });
+    expect((shapes.Config as Extract<ApiShape, { kind: "object" }>).propertyDocs).toEqual({
+      name: { doc: "Plain." },
+      token: { doc: "The token.\n@secret", tags: { secret: "" } },
+    });
   });
 });
 
@@ -453,7 +524,7 @@ test("workshop-shared's API: the whole graph, and every subscriber's full method
   const schema = extractSchema(WORKSHOP_API);
   const method = (service: string, name: string) => schema.services[service]?.methods.find((m) => m.name === name);
   expect(method("PublicApi", "authenticate")?.returns).toEqual({ kind: "stub", service: "AuthenticatedApi" });
-  expect(method("AuthenticatedApi", "openGadget")?.returns).toEqual({ kind: "stub", service: "Overseer" });
+  expect(method("AuthenticatedApi", "openWorkspace")?.returns).toEqual({ kind: "stub", service: "Overseer" });
   expect(method("Overseer", "getGadget")?.returns).toEqual({ kind: "stub", service: "GadgetClient" });
   expect(method("GadgetClient", "connectToGadget")?.returns).toEqual({ kind: "stub" });
   expect(schema.constants.SERVICE_SALT?.length).toBe(16);

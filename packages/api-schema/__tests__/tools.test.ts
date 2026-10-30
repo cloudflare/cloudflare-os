@@ -6,8 +6,9 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { emitToolCatalog, type JsonSchema, type Tool, type ToolCatalog } from "../src/emit/tools.ts";
 import { extractSchema } from "../src/extract.ts";
-import { FORMAT, type ApiShape, type Schema, type SchemaMethod, type SchemaProperty, type SchemaService }
-  from "../src/schema.ts";
+import {
+  FORMAT, type ApiShape, type Schema, type SchemaMethod, type SchemaProperty, type SchemaService, type SchemaShape,
+} from "../src/schema.ts";
 
 const PACKAGE = join(import.meta.dirname, "..");
 
@@ -21,7 +22,7 @@ const method = (name: string, params: [string, ApiShape, boolean?, string?][], r
 const service = (...methods: SchemaMethod[]): SchemaService => ({ doc: "", direction: "server", methods });
 const clientService = (...methods: SchemaMethod[]): SchemaService => ({ ...service(...methods), direction: "client" });
 const schemaProperty = (name: string, type: ApiShape): SchemaProperty => ({ name, doc: "", type, optional: false });
-const schemaOf = (services: Record<string, SchemaService>, shapes: Record<string, ApiShape> = {}): Schema =>
+const schemaOf = (services: Record<string, SchemaService>, shapes: Record<string, SchemaShape> = {}): Schema =>
   ({ format: FORMAT, entry: Object.keys(services)[0]!, constants: {}, services, shapes });
 const stub = (name?: string): ApiShape => name === undefined ? { kind: "stub" } : { kind: "stub", service: name };
 const ref = (name: string): ApiShape => ({ kind: "ref", name });
@@ -31,7 +32,7 @@ const toolOf = (catalog: ToolCatalog, id: string): Tool => {
   return found!;
 };
 /** The single parameter `x` of the one tool of a schema with one method, `Api.m(x)`. */
-const paramSchema = (type: ApiShape, shapes: Record<string, ApiShape> = {}) =>
+const paramSchema = (type: ApiShape, shapes: Record<string, SchemaShape> = {}) =>
   emitToolCatalog(schemaOf({ Api: service(method("m", [["x", type]])) }, shapes), { root: "Api" })
     .tools[0]!.inputSchema.properties.x;
 
@@ -365,6 +366,31 @@ describe("$defs", () => {
       expect(structuralErrors(tool.returns), tool.id).toEqual([]);
     }
   });
+
+  test("describe a named shape and an object's properties with their docs, deprecated as marked", () => {
+    const docs = emitToolCatalog(schemaOf({ Api: service(method("m", [["x", ref("Role")], ["y", ref("Entry")]])) }, {
+      Role: { doc: "Who may do what.", deprecated: "", kind: "literal", value: "admin" },
+      Entry: {
+        kind: "object",
+        properties: { id: { kind: "number" }, name: { kind: "string" }, old: { kind: "string" } },
+        propertyDocs: { id: { doc: "Its ID." }, old: { doc: "@deprecated Read name.", deprecated: "Read name." } },
+      },
+    }), { root: "Api" }).tools[0]!.inputSchema;
+    expect(docs.$defs).toEqual({
+      Entry: {
+        type: "object",
+        properties: {
+          id: { type: "number", description: "Its ID." },
+          name: { type: "string" },
+          old: { type: "string", description: "@deprecated Read name.", deprecated: true },
+        },
+        required: ["id", "name", "old"],
+        additionalProperties: false,
+      },
+      Role: { const: "admin", description: "Who may do what.", deprecated: true },
+    });
+    expect(structuralErrors(docs)).toEqual([]);
+  });
 });
 
 test("the extractor's fixture, from its authenticated API", () => {
@@ -392,7 +418,7 @@ test("the extractor's fixture, from its authenticated API", () => {
   });
   expect(toolOf(catalog, "Notebook.move").returns).toEqual({
     anyOf: [{ $ref: "#/$defs/Mood" }, { type: "null", "x-capnweb-kind": "undefined" }],
-    $defs: { Mood: { enum: ["busy", "calm"] } },
+    $defs: { Mood: { enum: ["busy", "calm"], description: "A string-literal union." } },
   });
   expect(JSON.stringify(emitToolCatalog(schema, { root: "FixtureAuthedApi" }))).toBe(JSON.stringify(catalog));
   // From the entry: deprecated methods keep their tag, and its properties are not tools.
@@ -418,7 +444,7 @@ test("workshop-shared's API: every tool schema is structurally valid JSON Schema
   expect(ids).toContain("AdminApi.getSettings");
   expect(ids).toContain("GadgetClient.getTitle");
   expect(toolOf(catalog, "AuthenticatedApi.getAdminApi").continuesOn).toBe("AdminApi");
-  expect(toolOf(catalog, "AuthenticatedApi.openGadget").continuesOn).toBe("Overseer");
+  expect(toolOf(catalog, "AuthenticatedApi.openWorkspace").continuesOn).toBe("Overseer");
   // Client-implemented subscribers and the pre-authentication API are not reached by calling.
   const services = new Set(catalog.tools.map((tool) => tool.service));
   for (const name of ["PublicApi", "ActionsSubscriber", "AiChatSubscriber", "NotificationSubscriber"]) {
@@ -445,7 +471,7 @@ function isRegExp(source: string): boolean {
 }
 
 const TYPES = new Set(["string", "number", "boolean", "null", "array", "object"]);
-const KEYWORDS = new Set(["$ref", "$defs", "description", "type", "const", "enum", "anyOf", "format", "contentEncoding",
+const KEYWORDS = new Set(["$ref", "$defs", "description", "deprecated", "type", "const", "enum", "anyOf", "format", "contentEncoding",
   "pattern", "prefixItems", "items", "minItems", "properties", "required", "additionalProperties"]);
 
 /**
@@ -484,6 +510,8 @@ function structuralErrors(root: JsonSchema): string[] {
         if (typeof value !== "string" || !TYPES.has(value)) errors.push(`${at}: not a type`);
       } else if (key === "description" || key === "format" || key === "contentEncoding") {
         if (typeof value !== "string") errors.push(`${at}: not a string`);
+      } else if (key === "deprecated") {
+        if (value !== true) errors.push(`${at}: not true`);
       } else if (key === "pattern") {
         if (typeof value !== "string" || !isRegExp(value)) errors.push(`${at}: not a regular expression`);
       } else if (key === "const") {

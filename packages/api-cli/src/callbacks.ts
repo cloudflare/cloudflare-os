@@ -1,5 +1,5 @@
 // The client side of a callback the server calls (the subscriber a `subscribe*` method takes, the
-// configuration channel `openGadget` takes), built from the table so that it answers every method.
+// configuration channel `openWorkspace` takes), built from the table so that it answers every method.
 //
 // capnweb only exposes an `RpcTarget`'s prototype methods to the peer. An instance property is
 // refused ("an instance property of the RpcTarget"), and a method that is missing altogether makes

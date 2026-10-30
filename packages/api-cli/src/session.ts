@@ -10,6 +10,7 @@
 // names its deployment's, and otherwise it is the local dev server.
 
 import { spawnSync } from "node:child_process";
+import { connect as connectSocket } from "node:net";
 import { newWebSocketRpcSession } from "capnweb";
 import { UsageError } from "./output.ts";
 
@@ -64,12 +65,23 @@ export type FetchStatus = (
   init: { headers: Record<string, string>; redirect: "manual"; signal: AbortSignal },
 ) => Promise<{ status: number; headers: { get(name: string): string | null } }>;
 
+/**
+ * What a plain-text HTTP request to `host`:`port` met, within `timeoutMs`: no connection (`closed`),
+ * a connection that answered with an HTTP status line (`http`), or one that answered nothing such
+ * (`silent`), as a TLS server, or a hung one, does.
+ */
+export type PortProbe = { kind: "closed" } | { kind: "silent" } | { kind: "http"; status: number };
+
+/** Probes a port with a plain-text HTTP request ({@link PortProbe}); never rejects. Swapped out by tests. */
+export type ProbePort = (host: string, port: number, timeoutMs: number) => Promise<PortProbe>;
+
 /** What connecting needs from the world. */
 export interface SessionDeps {
   env: NodeJS.ProcessEnv;
   open: OpenConnection;
   spawn: SpawnCloudflared;
   fetch: FetchStatus;
+  probe: ProbePort;
 }
 
 /** The real transport: Node's WebSocket, which takes request headers, under capnweb. */
@@ -83,9 +95,38 @@ export const webSocketConnection: OpenConnection = (url, headers) => {
   return { main: newWebSocketRpcSession(socket), opened: () => opened };
 };
 
-/** The world as it is: process environment, real WebSocket, `cloudflared` on PATH, `fetch`. */
+/**
+ * The real probe: a TCP connection sending `HEAD /` in plain text, with no credentials, read up to
+ * its status line.
+ */
+export const probePlainHttp: ProbePort = (host, port, timeoutMs) => new Promise((resolve) => {
+  let connected = false;
+  let head = "";
+  const socket = connectSocket({ host, port });
+  const done = (probe?: PortProbe) => {
+    clearTimeout(timer);
+    socket.destroy();
+    resolve(probe ?? (connected ? { kind: "silent" } : { kind: "closed" }));
+  };
+  const timer = setTimeout(done, timeoutMs);
+  socket.on("connect", () => {
+    connected = true;
+    socket.write(`HEAD / HTTP/1.1\r\nHost: ${host.includes(":") ? `[${host}]` : host}:${port}\r\nConnection: close\r\n\r\n`);
+  });
+  socket.on("data", (chunk: Buffer) => {
+    head += chunk.toString("latin1");
+    const status = /^HTTP\/\d(?:\.\d)? (\d{3})/.exec(head);
+    if (status) done({ kind: "http", status: Number(status[1]) });
+    // Bytes that cannot start a status line (a TLS alert), or a line too long for one, are no HTTP answer.
+    else if (head.length >= 16 || !"HTTP/".startsWith(head.slice(0, 5))) done();
+  });
+  socket.on("error", () => done());
+  socket.on("close", () => done());
+});
+
+/** The world as it is: process environment, real WebSocket, `cloudflared` on PATH, `fetch`, a TCP probe. */
 export function defaultSessionDeps(): SessionDeps {
-  return { env: process.env, open: webSocketConnection, spawn: spawnSync, fetch };
+  return { env: process.env, open: webSocketConnection, spawn: spawnSync, fetch, probe: probePlainHttp };
 }
 
 /** Where cloudflare-os's `pnpm dev-server` listens: the default instance when the environment names none. */
@@ -99,10 +140,10 @@ export type DefaultInstance =
 /**
  * The instance a run without `--url` calls. `CFOS_API_URL` is how a caller names it:
  * cloudflare-os-starter's `cf-os` is to set it to its deployment's public origin, and anyone may
- * set it for a fixed instance. It is held only to what `--url` is (http:// accepted, a path
- * dropped), so a caller naming a deployment checks first that its origin is https:// and exactly an
- * origin. `CFOS_API_URL_UNAVAILABLE` is how a caller with no instance says why, in a message that
- * names `--url`: the starter's case when its deployment file is unreadable, names no origin, is not
+ * set it for a fixed instance. It is held only to what `--url` is (http:// for a local instance
+ * only, a path dropped), so a caller naming a deployment checks first that its origin is https://
+ * and exactly an origin. `CFOS_API_URL_UNAVAILABLE` is how a caller with no instance says why, in a
+ * message that names `--url`: the starter's case when its deployment file is unreadable, names no origin, is not
  * configured, or names one that is not an https:// origin. A caller sets exactly one of the two, so
  * it never falls back to the dev server. Empty values count as unset.
  */
@@ -113,7 +154,7 @@ export function defaultInstance(env: NodeJS.ProcessEnv): DefaultInstance {
 }
 
 /**
- * The API's location: `--url` when given (an `http://` one only for a local dev server), else the
+ * The API's location: `--url` when given (an `http://` one only for a local instance), else the
  * default instance ({@link defaultInstance}). With none, the caller's reason is the whole failure.
  * api.ts calls it only for a run that needs an instance, after help, search and types have
  * returned, so `CFOS_API_URL_UNAVAILABLE` fails exactly those runs.
@@ -125,18 +166,52 @@ export function resolveTarget(url: string | undefined, env: NodeJS.ProcessEnv): 
   return instance.from === "CFOS_API_URL" ? parseTarget(instance.url, "CFOS_API_URL") : targetFor(instance.url);
 }
 
-/** `url` as a target, or a usage error naming where it came from (`source`). */
+/**
+ * `url` as a target, or a usage error naming where it came from (`source`) and the URL, shown
+ * without any credentials in it. `http://` is refused but for a local instance
+ * ({@link isLocalHost}): a sign-in over it would carry its token or password hash in plain text.
+ */
 function parseTarget(url: string, source: string): ApiTarget {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    throw new UsageError(`${source} ${url} is not a URL. Give the instance's origin, such as https://os.example.com.`);
+    throw new UsageError(`${source} ${redacted(url)} is not a URL. Give the instance's origin, such as https://os.example.com.`);
   }
+  // A scheme-less `user:secret@host` parses too, as scheme `user` with no host, so a value with no
+  // host is shown as one that is not a URL: its scheme may be a credential.
+  if (!parsed.host) {
+    throw new UsageError(`${source} ${redacted(url)} is not an origin. Give the instance's scheme and host, such as https://os.example.com.`);
+  }
+  const shown = `${parsed.protocol}//${parsed.host}`;
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new UsageError(`${source} ${url} must be an https:// origin (http:// for a local dev server).`);
+    throw new UsageError(`${source} ${shown} must be an https:// origin (http:// for a local instance).`);
+  }
+  if (parsed.protocol === "http:" && !isLocalHost(parsed.hostname)) {
+    throw new UsageError(`${source} ${shown} would send credentials in plain text: use https://${parsed.host}. ` +
+      "http:// is for a local instance only (localhost, *.localhost, 127.0.0.0/8 or [::1]).");
   }
   return targetFor(parsed.origin);
+}
+
+/**
+ * `url`, a value not read as an origin, shown as far as it can be without what may be credentials:
+ * anything up to an `@`, a query or a fragment. An `@` can stand on either side of a `?` or `#` (a
+ * password holding one, a query holding an address), so when the two readings differ only the
+ * scheme is shown.
+ */
+function redacted(url: string): string {
+  const scheme = /^[a-z][\w+.-]*:\/\//i.exec(url)?.[0] ?? "";
+  const query = /[?#][^]*$/;
+  const noUser = (text: string) => text.includes("@") ? `${scheme}${text.slice(text.lastIndexOf("@") + 1)}` : text;
+  const plain = noUser(url.replace(query, ""));
+  return plain === noUser(url).replace(query, "") ? plain : `${scheme}…`;
+}
+
+/** Whether `hostname`, a URL's, is this machine: where plain `http://` reaches no network. */
+function isLocalHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "[::1]" ||
+    /^127\.\d+\.\d+\.\d+$/.test(hostname);
 }
 
 function targetFor(origin: string): ApiTarget {
@@ -202,8 +277,40 @@ export function accessLoginHint(origin: string): string {
 const ACCESS_JWT = /^[\w-]+\.[\w-]+\.[\w-]+$/;
 
 /**
+ * What cloudflared's stderr says when it could not reach the origin: Go's network errors, and its TLS
+ * ones, a handshake with a server that answered (a certificate it refused, or no TLS at all).
+ */
+const UNREACHABLE = /dial tcp|no such host|connection refused|connection reset|network is unreachable|i\/o timeout|handshake timeout|deadline exceeded|\btls: |\bx509: |server gave HTTP response to HTTPS client/i;
+
+/** What cloudflared's stderr says when the origin's TLS server sent a certificate Go refused: x509's errors. */
+const GO_CERT_REFUSED = /\bx509: /i;
+
+/** What cloudflared's stderr says when what answered its TLS handshake was no TLS record, or was HTTP. */
+const GO_NOT_TLS = /first record does not look like a TLS handshake|oversized record received|server gave HTTP response to HTTPS client/i;
+
+/** What cloudflared's stderr says when nothing is there at all: no such host, or nothing listening. */
+const NOTHING_THERE = /no such host|connection refused|network is unreachable/i;
+
+/** cloudflared's failure to reach `origin`, as {@link accessToken} throws it; `why` is what cloudflared said. */
+class CloudflaredUnreachable extends Error {
+  readonly why: string;
+  constructor(origin: string, why: string) {
+    super(`could not reach ${origin} (${why}). ${unreachableNext(origin)}`);
+    this.why = why;
+  }
+}
+
+/** The next step after `origin` could not be reached: start the dev server, or name another instance. */
+function unreachableNext(origin: string): string {
+  return isLocalHost(new URL(origin).hostname)
+    ? `Start the instance (\`pnpm dev-server\` serves ${DEV_SERVER_URL}), or name another with --url <origin>.`
+    : "Check that the instance is up and its origin right, or name another with --url <origin>.";
+}
+
+/**
  * The Access token for `origin`: `CF_ACCESS_TOKEN`, else `cloudflared access token`, which prints
  * the one `cloudflared access login` saved. Spawned without a shell: the origin is an argument.
+ * Throws {@link UsageError} for no token, and an Error when cloudflared could not reach `origin`.
  */
 export function accessToken(origin: string, deps: Pick<SessionDeps, "env" | "spawn">): string {
   const fromEnv = deps.env.CF_ACCESS_TOKEN?.trim();
@@ -222,7 +329,47 @@ export function accessToken(origin: string, deps: Pick<SessionDeps, "env" | "spa
     ? `cloudflared could not run (${result.error.message})`
     : succeeded ? "cloudflared printed no token"
     : (result.stderr.trim() || `cloudflared exited with status ${result.status}`);
-  throw new Error(`no Access token for ${origin}: ${why}. Run \`${accessLoginHint(origin)}\`, or set CF_ACCESS_TOKEN.`);
+  // cloudflared looks the origin up before it reads a saved token, so a network or TLS error of Go's
+  // is an instance that could not be reached, as diagnose says for the other modes, not a missing login.
+  if (!result.error && UNREACHABLE.test(why)) {
+    throw new CloudflaredUnreachable(origin, why);
+  }
+  // Nothing was sent: the run must wait for a login, as for a missing variable (requireEnv).
+  throw new UsageError(`no Access token for ${origin}: ${why}. Run \`${accessLoginHint(origin)}\`, or set CF_ACCESS_TOKEN.`);
+}
+
+/**
+ * {@link accessToken}, but when cloudflared could not reach `origin` and does not say nothing is
+ * there, what it says, and a probe of its port, say what is likely, as {@link diagnose} does for the
+ * other modes: starting the instance is the next step only when nothing is listening. A refused
+ * certificate came from a TLS server that answered, so it is told at once, unprobed.
+ */
+async function probedAccessToken(origin: string, deps: Pick<SessionDeps, "env" | "spawn" | "probe">): Promise<string> {
+  try {
+    return accessToken(origin, deps);
+  } catch (error) {
+    if (!(error instanceof CloudflaredUnreachable) || NOTHING_THERE.test(error.why)) throw error;
+    const http = new URL(origin);
+    const where = http.host;
+    const failed = (next: string) => new Error(`could not reach ${origin} (${error.why}): ${next}`, { cause: error });
+    if (GO_CERT_REFUSED.test(error.why)) {
+      throw failed(`${where} speaks TLS, but cloudflared refused its certificate. Check the origin; an instance Access does ` +
+        "not front, as a local one, signs in with --auth token or --username <name> instead (with NODE_EXTRA_CA_CERTS set to " +
+        "its certificate authority's PEM file, for one Node does not trust). Or name another with --url <origin>.");
+    }
+    const found = await probePort(http, deps.probe);
+    if (found.kind === "closed") throw error;
+    // A server that is known to speak no TLS and answers HTTP serves plain HTTP, whatever its status.
+    const notTls = GO_NOT_TLS.test(error.why);
+    throw failed(servesPlainHttp(http.protocol === "https:", found) || (notTls && found.kind === "http")
+      ? `${where} answers plain HTTP, not HTTPS. ${plainNext(http)}`
+      : notTls ? `something is listening at ${where} but does not speak TLS, nor answer plain HTTP: it is not an instance. ` +
+        "Check the origin's port, or name another with --url <origin>."
+      : /\btls: /i.test(error.why) ? `something is listening at ${where}, but the TLS handshake with it failed. Check the ` +
+        "origin and its TLS setup, or name another with --url <origin>."
+      : `something is listening at ${where} but did not answer as an instance does. It may be slow or hung, or another ` +
+        "server: check it, or name another with --url <origin>.");
+  }
 }
 
 /**
@@ -259,7 +406,7 @@ export async function connect(
   const headers: Record<string, string> = { Origin: target.origin, "User-Agent": USER_AGENT };
   let signIn: (main: Remote) => Promise<{ api: Remote }>;
   if (auth.mode === "access") {
-    headers["cf-access-token"] = accessToken(target.origin, deps);
+    headers["cf-access-token"] = await probedAccessToken(target.origin, deps);
     signIn = async (main) => ({ api: main.authenticateFromCfAccess() });
   } else if (auth.mode === "token") {
     const token = needsSignIn
@@ -282,41 +429,172 @@ export async function connect(
   return {
     main: connection.main,
     authenticate: () => signIn(connection.main),
-    explain: async (error) => connection.opened() ? error : diagnose(target, auth, headers, error, deps.fetch),
+    explain: async (error) => connection.opened() ? error : diagnose(target, auth, headers, error, deps),
   };
 }
 
-/** The secret in `env[name]`; unset, a failure naming `name` and what reads it (`mode`), never a value. */
+/**
+ * The secret in `env[name]`; unset, a usage error naming `name` and what reads it (`mode`), never a
+ * value: nothing has been sent, and the run must change, given the variable, before it is tried again.
+ */
 export function requireEnv(env: NodeJS.ProcessEnv, name: string, mode: string, otherwise = ""): string {
   const value = env[name];
-  if (!value) throw new Error(`${mode} reads the secret from ${name}, which is not set${otherwise}.`);
+  if (!value) throw new UsageError(`${mode} reads the secret from ${name}, which is not set${otherwise}.`);
   return value;
+}
+
+/**
+ * What made a request fail, under the wrappers: `fetch`'s "fetch failed" holds it as its `cause`, and
+ * a host with several addresses (localhost: ::1 and 127.0.0.1) as an AggregateError with no message
+ * of its own, whose first error is the first address's.
+ */
+function innermost(failure: unknown): { message?: string; code?: string } {
+  let current = failure as (Error & { code?: string }) | undefined;
+  for (let depth = 0; depth < 8; depth++) {
+    const inner: unknown = current instanceof AggregateError ? current.errors[0] : current?.cause;
+    if (!(inner instanceof Error)) break;
+    current = inner;
+  }
+  // A DOMException's code is a number (a timeout's is 23): only Node's string codes name a cause.
+  return { message: current?.message, code: typeof current?.code === "string" ? current.code : undefined };
 }
 
 /** How long the diagnosis waits for its answer: a host that blackholes the WebSocket may do the same to it. */
 const DIAGNOSE_TIMEOUT_MS = 10_000;
 
+/** How long the port probe ({@link PortProbe}) waits: a local port answers in milliseconds. */
+const PROBE_TIMEOUT_MS = 3_000;
+
+/** The codes of a request that met no server at all: no host, no route to it, or nothing listening. */
+const NO_SERVER = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
+
+/**
+ * The codes of a TLS handshake that met a server speaking something else: what it sent back was no
+ * TLS record (OpenSSL's `wrong version number`, or a record too long to be one), or was HTTP.
+ */
+const NOT_TLS = new Set(["ERR_SSL_WRONG_VERSION_NUMBER", "ERR_SSL_PACKET_LENGTH_TOO_LONG", "ERR_SSL_HTTP_REQUEST",
+  "ERR_SSL_UNKNOWN_PROTOCOL", "ERR_SSL_RECORD_LENGTH_MISMATCH"]);
+
+/**
+ * The codes of a TLS handshake that met a TLS server whose certificate Node does not accept: one
+ * self-signed or from an authority it does not trust, expired or not yet valid, or for another host.
+ */
+const CERT_REFUSED = new Set(["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "CERT_UNTRUSTED", "CERT_REJECTED", "CERT_SIGNATURE_FAILURE",
+  "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "ERR_TLS_CERT_ALTNAME_INVALID"]);
+
+/**
+ * A failure's message on one line: OpenSSL's (`80BF...:error:0A00010B:SSL routines:<function>:<reason>:<file>:<line>:`,
+ * ending in a newline) as its reason alone (`wrong version number`), any other with its whitespace collapsed.
+ */
+function oneLine(message: string): string {
+  const openSsl = /:error:[0-9A-F]+:[^:]*:[^:]*:([^:]+):/.exec(message);
+  return openSsl ? openSsl[1] : message.replace(/\s+/g, " ").trim();
+}
+
+/** {@link ProbePort} run on `http`'s host and port (an http:// or https:// URL), an IPv6 literal unbracketed. */
+function probePort(http: URL, probe: ProbePort): Promise<PortProbe> {
+  const port = Number(http.port || (http.protocol === "https:" ? 443 : 80));
+  return probe(http.hostname.replace(/^\[(.*)\]$/, "$1"), port, PROBE_TIMEOUT_MS);
+}
+
+/** What {@link diagnose}'s request came to: an answer, a failure, or, first, a port probe that found plain HTTP. */
+type Answer = { response: Awaited<ReturnType<FetchStatus>> } | { cause: unknown } | { plain: true };
+
+/** Whether `found`, a probe of an https:// origin's port (`secure`), says it serves plain HTTP, and so no TLS. */
+function servesPlainHttp(secure: boolean, found: PortProbe): boolean {
+  // A TLS server answers a plain request with 400, as Cloudflare's edge and nginx do, or redirects it
+  // to https:// (nginx's `error_page 497`): neither says the port speaks no TLS. A plain server that
+  // redirects is still told by its handshake's failure ({@link NOT_TLS}).
+  return secure && found.kind === "http" && found.status !== 400 && !(found.status >= 300 && found.status < 400);
+}
+
+/**
+ * Why `http`, the API's URL as http:// or https://, could not be reached, after `could not reach
+ * <url>`: from `answer`, the request's failure (or the probe's finding plain HTTP first), and what
+ * `probed()` finds, the next step. Starting the instance is suggested only when nothing is there.
+ */
+async function unreachable(http: URL, answer: Exclude<Answer, { response: unknown }>, probed: () => Promise<PortProbe>): Promise<string> {
+  const secure = http.protocol === "https:";
+  const where = http.host;
+  const origin = http.origin;
+  if ("plain" in answer) return `: ${where} answers plain HTTP, not HTTPS. ${plainNext(http)}`;
+  const failure = innermost(answer.cause);
+  const why = (answer.cause as Error)?.name === "TimeoutError" ? `no answer in ${DIAGNOSE_TIMEOUT_MS / 1000} s`
+    : oneLine(failure.message || failure.code || String(answer.cause));
+  if (failure.code !== undefined && NO_SERVER.has(failure.code)) {
+    return ` (${why})${failure.code === "ECONNREFUSED" ? ": nothing is listening there" : ""}. ${unreachableNext(origin)}`;
+  }
+  // A refused certificate came from a TLS server that answered: neither absent nor hung.
+  if (failure.code !== undefined && CERT_REFUSED.has(failure.code)) {
+    return ` (${why}): ${where} speaks TLS, but its certificate was refused. Check the origin; for a certificate you trust ` +
+      "that Node does not (a local instance's own), set NODE_EXTRA_CA_CERTS to its authority's PEM file. Or name another with --url <origin>.";
+  }
+  const found = await probed();
+  // A server that is known to speak no TLS and answers HTTP serves plain HTTP, whatever its status.
+  const notTls = failure.code !== undefined && NOT_TLS.has(failure.code);
+  if (servesPlainHttp(secure, found) || (notTls && found.kind === "http")) {
+    return ` (${why}): ${where} answers plain HTTP, not HTTPS. ${plainNext(http)}`;
+  }
+  if (found.kind === "closed") return ` (${why}): nothing answered at ${where}. ${unreachableNext(origin)}`;
+  if (notTls) {
+    return ` (${why}): something is listening at ${where} but does not speak TLS, nor answer plain HTTP: it is not an ` +
+      "instance. Check the origin's port, or name another with --url <origin>.";
+  }
+  if (failure.code?.startsWith("ERR_SSL_") || failure.code?.startsWith("ERR_TLS_")) {
+    return ` (${why}): something is listening at ${where}, but the TLS handshake with it failed. Check the origin and its ` +
+      "TLS setup, or name another with --url <origin>.";
+  }
+  return ` (${why}): something is listening at ${where} but did not answer as an instance's API does. It may be slow or ` +
+    "hung, or another server: check it, or name another with --url <origin>.";
+}
+
+/**
+ * The next step for an https:// origin whose port serves plain HTTP: http://, which only a local
+ * instance may use (parseTarget), on the port probed, which is named even when it is https://'s 443.
+ */
+function plainNext(http: URL): string {
+  return isLocalHost(http.hostname) ? `Use --url http://${http.hostname}:${http.port || 443}.`
+    : "Check the origin's port, or name another with --url <origin>.";
+}
+
 /**
  * Why the WebSocket did not open, from a plain request to the same URL with the same headers: Access
- * answers it with a redirect to its login or a 401/403, which a WebSocket error never says.
+ * answers it with a redirect to its login or a 401/403, which a WebSocket error never says. When
+ * that fails too, without a code that says no server is there, a plain-text probe of the port tells
+ * nothing listening (start the instance) from something listening that did not answer (a hung
+ * instance, another server, or, for an https:// origin, a server speaking plain http://). For an
+ * https:// origin the probe runs beside the request, so that last case is known without waiting for
+ * the request to time out: a port that answers plain HTTP with a status but the 400 or redirect a
+ * TLS server may give a plain request serves no TLS. A handshake whose failure says the port spoke no TLS
+ * ({@link NOT_TLS}) is told as such, at once, rather than as a hung instance, and so is one whose
+ * failure says the server's certificate was refused ({@link CERT_REFUSED}), or another TLS failure.
  */
 async function diagnose(
   target: ApiTarget,
   auth: AuthChoice,
   headers: Record<string, string>,
   error: unknown,
-  fetchStatus: FetchStatus,
+  { fetch: fetchStatus, probe }: Pick<SessionDeps, "fetch" | "probe">,
 ): Promise<Error> {
   const http = new URL(target.url);
-  http.protocol = http.protocol === "ws:" ? "http:" : "https:";
+  const secure = http.protocol === "wss:";
+  http.protocol = secure ? "https:" : "http:";
   const reason = (error as Error)?.message ?? String(error);
-  let response: Awaited<ReturnType<FetchStatus>>;
-  try {
-    response = await fetchStatus(http.href, { headers, redirect: "manual", signal: AbortSignal.timeout(DIAGNOSE_TIMEOUT_MS) });
-  } catch (cause) {
-    const detail = ((cause as Error).cause as Error | undefined)?.message ?? (cause as Error).message;
-    return new Error(`could not reach ${target.url} (${detail}).`, { cause: error });
+  let probing: Promise<PortProbe> | undefined;
+  const probed = () => probing ??= probePort(http, probe);
+  const stop = new AbortController();
+  const signal = AbortSignal.any([AbortSignal.timeout(DIAGNOSE_TIMEOUT_MS), stop.signal]);
+  const requested: Promise<Answer> = fetchStatus(http.href, { headers, redirect: "manual", signal })
+    .then((response) => ({ response }), (cause: unknown) => ({ cause }));
+  // Only an https:// origin's port may serve the wrong protocol, so only its probe runs beside the request.
+  const answer = !secure ? await requested
+    : await Promise.race([requested, probed().then((found) => servesPlainHttp(secure, found) ? { plain: true as const } : requested)]);
+  if (!("response" in answer)) {
+    stop.abort();
+    return new Error(`could not reach ${target.url}${await unreachable(http, answer, probed)}`, { cause: error });
   }
+  const { response } = answer;
   const location = response.headers.get("location") ?? "";
   const toAccess = response.status >= 300 && response.status < 400 &&
     /cloudflareaccess\.com|\/cdn-cgi\/access\//.test(location);

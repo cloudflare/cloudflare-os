@@ -51,6 +51,23 @@ test("the default instance is the local dev server, or CFOS_API_URL's", () => {
   assert.deepEqual(JSON.parse(named.stdout), { url: "wss://os.example.com/api", auth: { mode: "access" }, on: "AuthenticatedApi", chain: [{ method: "whoami", args: [] }] });
 });
 
+test("a misused option of create-account, search, types or a generated command exits 2 in the CLI's words, never node:util's", () => {
+  const cases: [string[], string][] = [
+    [["--username", "x", "create-account", "y"], "--username does not apply to create-account: create-account signs in as no one"],
+    [["create-account", "y", "--displayname", "X"], "Unknown option --displayname for create-account. Did you mean --display-name?"],
+    [["search", "x", "--limit", "3"], "Unknown option --limit for search. Run `cf-os api search --help` for its options."],
+    [["types", "--nope"], "Unknown option --nope for types. Run `cf-os api types --help` for its options."],
+    [["list-workspaces", "--help=foo"], "--help takes no value: run `cf-os api list-workspaces --help`."],
+  ];
+  for (const [args, message] of cases) {
+    const run = cfOs(["api", ...args], { CFOS_API_PASSWORD: "unused" });
+    assert.equal(run.status, 2, args.join(" "));
+    assert.equal(run.stdout, "", args.join(" "));
+    assert.ok(run.stderr.startsWith(message), `${args.join(" ")}: ${run.stderr}`);
+    assert.doesNotMatch(run.stderr, /To specify a positional|place it at the end|argument is ambiguous|does not take an argument/, args.join(" "));
+  }
+});
+
 test("with CFOS_API_URL_UNAVAILABLE, a run that needs an instance exits 2 with the reason alone; search, help and --url work", () => {
   const env = { CFOS_API_URL_UNAVAILABLE: REASON };
   const call = cfOs(["api", "--dry-run", "whoami"], env);
@@ -121,4 +138,14 @@ test("relative paths resolve where the command was typed: INIT_CWD under a packa
   assert.equal(invocationDir("/repo", { ...script, INIT_CWD: "/" }), "/repo");
   assert.equal(invocationDir("/repo", { ...script, INIT_CWD: "/elsewhere" }), "/repo");
   assert.equal(invocationDir("/repo", { INIT_CWD: "/repo/packages/x" }), "/repo");
+});
+
+test("a credential missing from the environment exits 2, nothing sent, without 'API call failed.'", () => {
+  const token = cfOs(["api", "--url", "http://localhost:1", "whoami"]);
+  assert.equal(token.status, 2, token.stderr);
+  assert.equal(token.stderr, "--auth token reads the secret from CFOS_API_TOKEN, which is not set " +
+    "(or sign in with --username <name> and CFOS_API_PASSWORD).\n");
+  const password = cfOs(["api", "--url", "http://localhost:1", "--username", "bob", "whoami"]);
+  assert.equal(password.status, 2, password.stderr);
+  assert.doesNotMatch(password.stderr, /API call failed/);
 });

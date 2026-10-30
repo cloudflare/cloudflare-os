@@ -1,7 +1,9 @@
 // An in-process Cap'n Web server for the `cf-os api` suites. It serves the generator fixture's API
 // (the one `generator/__fixtures__/generated/schema.json` describes, from the extractor fixture
-// `packages/api-schema/__tests__/__fixtures__/api.ts` before its format additions) and, for
-// `open-gadget`, a sliver of the real API, as `RpcTarget`s that record every call and every
+// `packages/api-schema/__tests__/__fixtures__/api.ts` before its format additions, with a method
+// whose argument holds secrets, one that reports the id of what it creates, and the `sketch`
+// gatekeeper app UI `getPanel` reaches) and, for
+// `open-workspace`, a sliver of the real API, as `RpcTarget`s that record every call and every
 // disposal, served over a MessageChannel through the session factory the runtime takes. Test
 // support only; not part of the build.
 
@@ -68,6 +70,8 @@ export interface FixtureOptions {
   login?: { username: string; hashHex: string };
   /** `getAdmin` returns null. */
   noAdmin?: boolean;
+  /** `getFrame` returns null. */
+  noFrame?: boolean;
   /** `setMood` never returns. */
   hang?: boolean;
   /**
@@ -101,6 +105,23 @@ export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTa
     }
     [Symbol.dispose](): void {
       log.disposed.push("untyped");
+    }
+  }
+
+  /** The `sketch` app UI (`app-sketch.schema.json`), whichever `kind` getPanel was given. */
+  class Sketch extends RpcTarget {
+    draw(...args: unknown[]): unknown {
+      record("draw", args);
+      return args[1] ?? { text: "drawn" };
+    }
+    pick(...args: unknown[]): void {
+      record("pick", args);
+    }
+    clear(): void {
+      record("clear", []);
+    }
+    [Symbol.dispose](): void {
+      log.disposed.push("sketch");
     }
   }
 
@@ -149,12 +170,34 @@ export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTa
   }
 
   class Authed extends RpcTarget {
+    newNotebook(): Notebook {
+      record("newNotebook", []);
+      return new Notebook("made");
+    }
     openNotebook(...args: unknown[]): Notebook {
       record("openNotebook", [...args, log.sent.some((message) => message.includes('"outline"'))]);
       return new Notebook(args[0] as string);
     }
     getAdmin(): Admin | null {
       return options.noAdmin ? null : new Admin();
+    }
+    // Each records whether the call on its capability had already been sent: a property hop
+    // pipelines on the result, as a capability hop does.
+    getFrame(): { html: string; ui: Untyped } | null {
+      record("getFrame", [log.sent.some((message) => message.includes('"echo"'))]);
+      return options.noFrame ? null : { html: "<p>frame</p>", ui: new Untyped() };
+    }
+    getPanel(kind: string): { html: string; ui: Sketch } {
+      record("getPanel", [kind, log.sent.some((message) => message.includes('"draw"'))]);
+      return { html: "<p>panel</p>", ui: new Sketch() };
+    }
+    getNotebookRef(): { id: string; notebook: Notebook } {
+      record("getNotebookRef", [log.sent.some((message) => message.includes('"outline"'))]);
+      return { id: "ref", notebook: new Notebook("ref") };
+    }
+    getPhoto(id: string): Uint8Array | null {
+      record("getPhoto", [id]);
+      return id === "none" ? null : new TextEncoder().encode(`photo ${id}`);
     }
     async importArchive(archive: ReadableStream<Uint8Array>): Promise<string> {
       const chunks: Uint8Array[] = [];
@@ -171,6 +214,9 @@ export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTa
     }
     setNickname(name: string | null): void {
       record("setNickname", [name]);
+    }
+    addRemote(remote: unknown): void {
+      record("addRemote", [remote]);
     }
     [Symbol.dispose](): void {
       log.disposed.push("authed");
@@ -225,9 +271,9 @@ export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTa
   return new Root();
 }
 
-/** Knobs for {@link workshopRoot}'s `openGadget`. */
+/** Knobs for {@link workshopRoot}'s `openWorkspace`. */
 export interface WorkshopOptions {
-  /** What openGadget asks configureObservers for. Without it, it asks nothing, as for the owner. */
+  /** What openWorkspace asks configureObservers for. Without it, it asks nothing, as for the owner. */
   needs?: Record<string, unknown>[];
   /**
    * Ask a second time after a valid first answer, each need carrying a `failure`, as the overseer
@@ -238,9 +284,10 @@ export interface WorkshopOptions {
 
 /**
  * A sliver of the real API's root (`PublicApi`), served with the real table: `authenticate`, then
- * `openGadget`, which asks its `configureObservers` callback for account choices as the overseer
- * does (packages/workshop-backend/src/overseer.ts, `ensureObserver`), then the gadget's
- * `getMetadata`.
+ * `openWorkspace`, which asks its `configureObservers` callback for account choices as the overseer
+ * does (packages/workshop-backend/src/overseer.ts, `ensureObserver`), or `newWorkspace`, then the
+ * workspace's `getMetadata` or `setTitle`; `getAvatar`, a byte result; and `getAdminApi`, null, as
+ * for a caller who is not a deployment admin.
  */
 export function workshopRoot(log: ServerLog, options: WorkshopOptions = {}): RpcTarget {
   const record = (method: string, args: unknown[]) => log.calls.push({ method, args });
@@ -276,6 +323,9 @@ export function workshopRoot(log: ServerLog, options: WorkshopOptions = {}): Rpc
       record("getMetadata", []);
       return { id: this.#id, title: `Workspace ${this.#id}` };
     }
+    setTitle(title: string): void {
+      record("setTitle", [title]);
+    }
     [Symbol.dispose](): void {
       log.disposed.push("overseer");
     }
@@ -283,8 +333,8 @@ export function workshopRoot(log: ServerLog, options: WorkshopOptions = {}): Rpc
 
   class Authed extends RpcTarget {
     // The callback is used only within the call, so it is not kept (no `dup()`).
-    async openGadget(id: string, shareKey?: string, configureObservers?: Remote): Promise<Overseer> {
-      record("openGadget", [id, shareKey ?? null, configureObservers !== undefined]);
+    async openWorkspace(id: string, shareKey?: string, configureObservers?: Remote): Promise<Overseer> {
+      record("openWorkspace", [id, shareKey ?? null, configureObservers !== undefined]);
       if (needs.length > 0) {
         if (configureObservers === undefined) {
           throw new Error("To open this workspace, you must choose connected accounts for the services it uses, " +
@@ -296,6 +346,18 @@ export function workshopRoot(log: ServerLog, options: WorkshopOptions = {}): Rpc
         }
       }
       return new Overseer(id);
+    }
+    newWorkspace(): Overseer {
+      record("newWorkspace", []);
+      return new Overseer("new-1");
+    }
+    getAvatar(userId: string): Uint8Array {
+      record("getAvatar", [userId]);
+      return new TextEncoder().encode(`avatar of ${userId}`);
+    }
+    getAdminApi(): null {
+      record("getAdminApi", []);
+      return null;
     }
     [Symbol.dispose](): void {
       log.disposed.push("authed");

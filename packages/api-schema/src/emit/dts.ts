@@ -64,8 +64,10 @@
 // - A stream is a `ReadableStream<T>` or `WritableStream<T>` of its element type, or of any chunk
 //   when the schema has none. A readable stream's chunks travel as the stream does, a writable
 //   one's the other way: the holder of a writable stream supplies them.
-// - The `@deprecated` and `@mutates` tags are in the JSDoc, from the schema's fields when its doc
-//   text does not already carry them.
+// - Every doc the schema keeps is a JSDoc block on what it documents: a service, member or
+//   parameter (`@param`), a named shape's `export type`, an object shape's property. Its tags are
+//   in the JSDoc, `@deprecated`, `@mutates` and the others the schema keeps in `tags`, from the
+//   schema's fields when its doc text does not already carry them.
 //
 // The schema's names are kept where they are TypeScript identifiers. The others (the extractor
 // names a second instantiation of a generic by its printed form, `Foo<Bar>`, or `Name#2`, and an
@@ -80,7 +82,7 @@
 // first, the helper aliases last) and members follow the schema's sorted order, properties before
 // methods and `[Symbol.dispose]()` last, so the same schema always yields the same text.
 
-import type { ApiShape, ApiShapeParam, Schema, SchemaMethod, SchemaProperty, SchemaService } from "../schema.ts";
+import type { ApiShape, ApiShapeParam, Schema, SchemaMethod, SchemaProperty, SchemaService, SchemaShape, ShapeDoc } from "../schema.ts";
 
 /** What to emit. */
 export interface DeclarationOptions {
@@ -252,7 +254,7 @@ function serviceOf(schema: Schema, name: string): SchemaService {
   return service;
 }
 
-function shapeOf(schema: Schema, name: string): ApiShape {
+function shapeOf(schema: Schema, name: string): SchemaShape {
   const shape = Object.hasOwn(schema.shapes, name) ? schema.shapes[name] : undefined;
   if (!shape) throw new Error(`no shape ${name} in the schema`);
   return shape;
@@ -375,8 +377,9 @@ class Renderer {
       this.#service(first),
       ...services.map((name) => this.#service(name)),
       ...byName(reached.shapes, this.#names.shape).map((name) => {
-        const type = this.#type(shapeOf(this.#schema, name), "", positionOf(this.#reached.positions, name));
-        return `export type ${this.#names.shape(name)} = ${type};\n`;
+        const shape = shapeOf(this.#schema, name);
+        const type = this.#type(shape, "", positionOf(this.#reached.positions, name));
+        return `${docComment(shapeDocText(shape), "")}export type ${this.#names.shape(name)} = ${type};\n`;
       }),
     ];
     return [
@@ -396,7 +399,7 @@ class Renderer {
     ];
     if (position !== "in") members.push(position === "out" ? DISPOSE : DISPOSE_OPTIONAL);
     const body = members.length ? `{\n${members.join("")}}` : "{}";
-    const doc = withTags(service.doc, [], { deprecated: service.deprecated });
+    const doc = withTags(service.doc, [], { ...service.tags, deprecated: service.deprecated });
     return `${docComment(doc, "")}export interface ${this.#names.service(name)} ${body}\n`;
   }
 
@@ -408,7 +411,7 @@ class Renderer {
    * held one's promise is.
    */
   #property(property: SchemaProperty, position: Position): string {
-    const doc = docComment(withTags(property.doc, [], { deprecated: property.deprecated }), "  ");
+    const doc = docComment(withTags(property.doc, [], { ...property.tags, deprecated: property.deprecated }), "  ");
     const key = propertyKey(property.name);
     if (position === "out") {
       const type = property.optional ? orUndefined(property.type) : property.type;
@@ -425,7 +428,7 @@ class Renderer {
     const extra = method.params.flatMap((param, i) =>
       param.doc && !documentsParam(method.doc, param.name) ? [`@param ${names[i]} ${param.doc}`] : []);
     const doc = withTags(method.doc, extra,
-      { deprecated: method.deprecated, mutates: method.mutates ? "" : undefined });
+      { ...method.tags, deprecated: method.deprecated, mutates: method.mutates ? "" : undefined });
     const returns = position === "out" ? this.#result(method.returns, "  ")
       : this.#awaitableOf(method.returns, "  ", position);
     const params = this.#params(method.params, "  ", flip(position), position !== "in");
@@ -553,7 +556,8 @@ class Renderer {
       const type = withoutUndefined(value);
       const optional = type !== value;
       const rendered = type ? this.#type(type, inner, position) : "undefined";
-      members.push(`${inner}${propertyKey(key)}${optional ? "?" : ""}: ${rendered};`);
+      const doc = Object.hasOwn(shape.propertyDocs ?? {}, key) ? shape.propertyDocs![key] : undefined;
+      members.push(`${docComment(shapeDocText(doc), inner)}${inner}${propertyKey(key)}${optional ? "?" : ""}: ${rendered};`);
     }
     if (shape.index) {
       const values = [shape.index, ...Object.values(shape.properties)]
@@ -646,6 +650,11 @@ function withTags(doc: string, extra: string[], tags: Record<string, string | un
   const missing = Object.entries(tags).flatMap(([name, text]) =>
     text === undefined || present.has(name) ? [] : [text ? `@${name} ${text}` : `@${name}`]);
   return [doc, ...extra, ...missing].filter((part) => part).join("\n");
+}
+
+/** A named shape's or an object property's JSDoc text, with its tags. */
+function shapeDocText(doc: ShapeDoc | undefined): string {
+  return withTags(doc?.doc ?? "", [], { ...doc?.tags, deprecated: doc?.deprecated });
 }
 
 /** Whether a method's doc already carries an `@param` line for `name`. */

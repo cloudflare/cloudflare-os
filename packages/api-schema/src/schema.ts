@@ -3,7 +3,12 @@
 // the graph reaches (`services`), server- and client-implemented alike, each marked with the side
 // that implements it, with its methods' parameters and awaited results and its properties' types,
 // and hoists named object and union types into `shapes`, which shapes elsewhere refer to by name,
-// so a recursive type stays finite. Names and JSDoc are kept.
+// so a recursive type stays finite. Names are kept, and so is the JSDoc of every service, method,
+// property and parameter, of every named shape's declaration, and of an object shape's properties.
+// Each of those but a parameter also has its JSDoc tags by name, beside its doc: `@deprecated` and
+// `@mutates` as fields of their own, and any other tag a declaration carries in `tags`, which is
+// how an API's declarations tell a consumer more about a member (`@secret` on a property holding
+// one) without the format knowing each tag.
 //
 // The schema is deterministic: services, shapes, methods, properties and union branches are
 // sorted, so the same declarations always serialize to the same bytes, and a committed schema
@@ -17,7 +22,7 @@
 // not know one can ignore it.
 
 /** The format's name and version: a schema's first field, so a reader can refuse one it does not know. */
-export const FORMAT = "capnweb-schema/0";
+export const FORMAT = "capnweb-schema/1";
 
 /** The capability graph reachable from the entry interface. */
 export interface Schema {
@@ -30,8 +35,41 @@ export interface Schema {
   /** Every capability interface reached, server- and client-implemented alike, by name. */
   services: Record<string, SchemaService>;
   /** Named object and union types, by name, which `ref` shapes refer to. */
-  shapes: Record<string, ApiShape>;
+  shapes: Record<string, SchemaShape>;
 }
+
+/**
+ * The JSDoc of a named shape's declaration or of an object shape's property. Each field is omitted
+ * when absent.
+ */
+export interface ShapeDoc {
+  /** Its JSDoc, normalized, its tags included as a service's `doc` has them. */
+  doc?: string;
+  /** The `@deprecated` tag's text (`""` when bare), when it has one; `doc` keeps the tag too. */
+  deprecated?: string;
+  /** {@link Tags}. */
+  tags?: Tags;
+}
+
+/**
+ * The JSDoc tags of a declaration that the format does not model otherwise, by tag name, sorted:
+ * each tag's text, normalized, `""` when bare, and the texts of a tag given more than once joined
+ * by a newline. `doc` keeps them too. Left out are the tags with a field of their own
+ * (`@deprecated`, `@mutates`) and those that document a signature's parts or illustrate it, whose
+ * text stays in `doc`: `@param` (a parameter's `doc`), `@returns`, `@throws`, `@template`, `@example`
+ * and `@see`, under any of their JSDoc and TSDoc spellings ({@link EXCLUDED_TAGS}). Omitted when
+ * none is left.
+ */
+export type Tags = Record<string, string>;
+
+/** The JSDoc tags {@link Tags} leaves out, as TypeScript names them, without the `@`. */
+export const EXCLUDED_TAGS: readonly string[] = [
+  "arg", "argument", "deprecated", "example", "exception", "mutates", "param", "return", "returns", "see",
+  "template", "throws", "typeParam",
+];
+
+/** A named object or union type: its shape, with its declaration's JSDoc beside `kind`. */
+export type SchemaShape = ApiShape & ShapeDoc;
 
 /** One capability interface. */
 export interface SchemaService {
@@ -58,6 +96,8 @@ export interface SchemaService {
   properties?: SchemaProperty[];
   /** The `@deprecated` tag's text (`""` when bare), when it has one; `doc` keeps the tag too. */
   deprecated?: string;
+  /** {@link Tags}. */
+  tags?: Tags;
 }
 
 /** One method. */
@@ -74,6 +114,8 @@ export interface SchemaMethod {
    * through approval. Absent means not declared, not read-only.
    */
   mutates?: true;
+  /** {@link Tags}. */
+  tags?: Tags;
 }
 
 /** One non-method member of a capability interface. */
@@ -85,6 +127,8 @@ export interface SchemaProperty {
   optional: boolean;
   /** The `@deprecated` tag's text (`""` when bare), when it has one; `doc` keeps the tag too. */
   deprecated?: string;
+  /** {@link Tags}. */
+  tags?: Tags;
 }
 
 /** One method parameter. */
@@ -118,6 +162,8 @@ export type ApiShape =
     kind: "object";
     /** Every property, by name. An optional property's shape is a union with `undefined`. */
     properties: Record<string, ApiShape>;
+    /** The JSDoc of the properties that have any, by name, sorted. Omitted when none has. */
+    propertyDocs?: Record<string, ShapeDoc>;
     /** The value type of a string or number index signature (a `Record`). */
     index?: ApiShape;
   }
