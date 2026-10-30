@@ -1,0 +1,39 @@
+packages/gatekeeper-linear/src/linear.ts
+  s_1e2c74fa3cab0c::t_3922be2c7afc74 77
+  s_1e2c74fa3cab0c::t_6c5c1011d41a36 959-962
+  s_1e2c74fa3cab0c::t_1b4162795e32de 20,963,1149-1150,1488-1489
+packages/gatekeeper-linear/__tests__/linear-auto-approval.test.ts
+  s_1e2c74fa3cab0c::t_533446d9558e49 84-99,101-105,107-108
+  s_1e2c74fa3cab0c::t_58aab1c3ea114f 120
+  s_1e2c74fa3cab0c::t_59124c6c571083 1-10,12,14-83,109-119,121-138
+  s_1e2c74fa3cab0c::t_4fa6b91261b862 11,13,100,106
+packages/gatekeeper-linear/src/linear-auto-approval.ts
+  s_1e2c74fa3cab0c::t_7170113d8c77c7 50-52,54-62,64-65,74-75,81-84,95-98
+  s_1e2c74fa3cab0c::t_e5c8d27ad068b3 1-49,53,63,66-73,76-80,85-94,99-111
+packages/gatekeeper-linear/package.json
+  s_1e2c74fa3cab0c::t_06cd93b2010dc3 9-10,23
+packages/gatekeeper-linear/src/linear-api.ts
+  s_1e2c74fa3cab0c::t_b99893859d8b63 179-180,271
+packages/gatekeeper-linear/vite.config.ts
+  s_1e2c74fa3cab0c::t_578bf67e61057b 1-3
+packages/gatekeeper-linear/vitest.config.ts
+  s_1e2c74fa3cab0c::t_e603c9a8fb3a6b 1-8
+pnpm-lock.yaml
+  s_1e2c74fa3cab0c::t_f20f2918b64c58 669-671
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4395c5c7084c641872c89111801bd7f5e72cc5eb",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
