@@ -1,0 +1,22 @@
+packages/gatekeeper-homeassistant/__tests__/apply-recheck.test.ts
+  s_1e2c74fa3cab0c::t_dca72bdf73e01b 67
+  s_1e2c74fa3cab0c::t_86e5c6b9a0cd2f 1-66,68-130
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_1e2c74fa3cab0c::t_4101c95cda6225 54,1068-1069,1202-1208,1362,1366-1368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "49af2a6f9944ebb53d46d02b5935c9b0c9afc090",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
