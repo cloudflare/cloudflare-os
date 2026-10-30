@@ -1449,7 +1449,8 @@ export type ObservationDescription = {
    * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
    *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
    *   once it has made one of these observations.
-   * - Once observed, the gadget enters a restricted mode: no public-web fetches, and every action
+   * - Once observed, the gadget enters a restricted mode: web fetches reach only the hosts the
+   *   deployment admin trusts with such data (none by default), and every action
    *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
    *   action's full `description` and is responsible for checking it contains none of the
    *   restricted data. An action whose description is not complete

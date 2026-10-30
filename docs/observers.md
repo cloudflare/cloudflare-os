@@ -34,7 +34,8 @@ The mechanism is a per-user, gatekeeper-mediated check — "this data may be sha
 people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
-puts the workspace into a restricted mode — no web fetches, and every action requires manual
+puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
+that data (`AdminConfig.restrictedWebFetchHosts`, none by default), and every action requires manual
 approval (auto-approval rules are suspended), the approver checking the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
 is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
@@ -679,9 +680,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    at every `open()`, so nobody can be in the workspace without having passed the producing
    gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
    session (see "Restarting when verification scope widens"). Setting `containsRestrictedData` also
-   puts the workspace into a restricted mode: no web fetches, and every action requires manual
-   approval (auto-approval rules are suspended), the approver checking the action text for
-   restricted data. An action whose description is not complete
+   puts the workspace into a restricted mode: web fetches reach only the hosts an admin trusts with
+   that data, and every action requires manual approval (auto-approval rules are suspended), the
+   approver checking the action text for restricted data. An action whose description is not complete
    (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
    pushes are refused.
    Verification is held to each collaborator's own role scope, because `ensureObserver` can
@@ -790,10 +791,10 @@ its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (no web fetches, and every action requires manual approval — auto-approval rules are
-  suspended — the approver checking the action text for restricted data) is available separately;
-  combined with strategy A it makes the workspace effectively private once sensitive data is
-  observed.
+  mode (web fetches reach only admin-trusted hosts, and every action requires manual approval —
+  auto-approval rules are suspended — the approver checking the action text for restricted data) is
+  available separately; combined with strategy A it makes the workspace effectively private once
+  sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
 
 - **B — ACL check (single unit).** The resource is treated as one atomic unit.

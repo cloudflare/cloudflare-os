@@ -5827,8 +5827,12 @@ class OverseerImpl implements AgentHooks {
 
   // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
   // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
-  getWebFetchEnv(): WebFetchEnv {
-    if (this.storage.containsRestrictedData.get()) {
+  async getWebFetchEnv(): Promise<WebFetchEnv> {
+    // Once the workspace has observed restricted data, a URL can carry it to whoever sees the
+    // request, so only the hosts an admin trusts with that data are reachable.
+    let allowedHosts = this.storage.containsRestrictedData.get()
+        ? new Set((await readAdminConfig(this.env)).restrictedWebFetchHosts) : undefined;
+    if (allowedHosts?.size === 0) {
       // TODO: Disallwing fetches is a bit draconian. Ideally, we would have some way to detect
       //   if a URL is well-known, and therefore not a leak problem. E.g. if the URL is already in
       //   a search index, then it's not leaking anything. If we had a search provider we could
@@ -5841,6 +5845,7 @@ class OverseerImpl implements AgentHooks {
     return {
       ai: this.env.WORKERS_AI,
       gateway: getAiGatewayConfig(this.env),
+      allowedHosts,
     };
   }
 

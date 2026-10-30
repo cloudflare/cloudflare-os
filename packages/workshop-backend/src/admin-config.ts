@@ -325,6 +325,27 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+// An exact, lowercase ASCII host name: no scheme, port, path, wildcard or trailing dot. ASCII because
+// `URL.host` always is (an IDN arrives as punycode), so any other entry could never match.
+const HOST_NAME = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
+/**
+ * An admin's `restrictedWebFetchHosts` as stored: trimmed, lowercased, without blanks or
+ * duplicates. Throws on an entry that is not an exact ASCII host name.
+ */
+export function parseRestrictedWebFetchHosts(hosts: string[]): string[] {
+  let parsed = new Set<string>();
+  for (let entry of hosts) {
+    let host = entry.trim().toLowerCase();
+    if (host === "") continue;
+    if (!HOST_NAME.test(host)) {
+      throw new Error(`"${entry}" is not a host name. Enter exact host names, such as docs.example.com.`);
+    }
+    parsed.add(host);
+  }
+  return [...parsed];
+}
+
 /**
  * Apply defaults to a partial admin config loaded from either authoritative DO
  * storage or its KV mirror.
@@ -376,6 +397,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     disabledResources,
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
+    restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
     formats: parseFormats(p.formats),
     modelModes,
     addedProviders: Array.isArray(p.addedProviders)
