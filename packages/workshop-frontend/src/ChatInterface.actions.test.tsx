@@ -5,7 +5,7 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
-  ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatSubscriber, Overseer,
+  ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, Overseer,
 } from '@gadgets/workshop-shared/api'
 
 vi.stubGlobal('ResizeObserver', class {
@@ -45,6 +45,10 @@ vi.mock('./AuthContext', () => {
     useOptionalAuthenticatedApi: () => null,
   }
 })
+vi.mock('./ThemeContext', async (importOriginal) => ({
+  ...await importOriginal() as typeof import('./ThemeContext'),
+  useTheme: () => ({ resolvedThemeMode: 'light' }),
+}))
 
 import {
   clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
@@ -83,6 +87,10 @@ function withChatApi(
     getChatMessage,
     emitMessage(message: AiChatMessage) {
       act(() => subscriber!.message(message))
+    },
+    emitStream(chatId: number, event: AiChatStreamEvent) {
+      act(() => subscriber!.stream(chatId, event))
+      flushFrames()
     },
   }
 }
@@ -525,5 +533,52 @@ describe('queued steers', () => {
     const textarea = document.querySelector<HTMLTextAreaElement>('textarea[role="combobox"]')
     expect(textarea?.value).toBe('Make it dark.\n\nAnd bigger.')
     expect(stopAgent).toHaveBeenCalledExactlyOnceWith(1)
+  })
+})
+
+describe('live views', () => {
+  const agent = { type: 'agent', id: 'model', name: 'Model' } as const
+  const view = '<gadget-ui>\n<title>Spending</title>\n<p>Food: $120</p>\n</gadget-ui>'
+  const answer = `Here it is.\n\n${view}\n\nAsk me for more.`
+
+  beforeEach(() => {
+    // Every view is near the viewport.
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private callback: IntersectionObserverCallback) {}
+      observe() { this.callback([{ isIntersecting: true } as IntersectionObserverEntry], this as never) }
+      disconnect() {}
+    })
+  })
+
+  // Streams `answer` in two parts, the first ending inside the block, then stores `stored`.
+  async function streamThenStore(stored: string) {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [{ ...openChat, activeAgent: agent }])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    const cut = answer.indexOf('<p>')
+
+    chat.emitStream(1, { type: 'textDelta', delta: answer.slice(0, cut) })
+    const streamed = document.querySelector('iframe[title="Spending"]')
+    expect(streamed).not.toBeNull()
+
+    chat.emitStream(1, { type: 'textDelta', delta: answer.slice(cut) })
+    expect(document.querySelector('iframe[title="Spending"]')).toBe(streamed)
+
+    chat.emitMessage({ type: 'message', chatId: 1, sequence: 0, timestamp: new Date(), author: agent, message: stored })
+    flushFrames()
+    expect(document.querySelectorAll('iframe')).toHaveLength(1)
+    return { streamed, stored: document.querySelector('iframe[title="Spending"]') }
+  }
+
+  it('draws a view as its block streams, and keeps the same frame as it closes and is stored', async () => {
+    const { streamed, stored } = await streamThenStore(answer)
+    expect(stored).toBe(streamed)
+  })
+
+  it('starts the view again when the stored answer is not the text this client saw stream', async () => {
+    // As for a client that lost deltas while it reconnected.
+    const { streamed, stored } = await streamThenStore(`Earlier text. ${answer}`)
+    expect(stored).not.toBeNull()
+    expect(stored).not.toBe(streamed)
   })
 })
