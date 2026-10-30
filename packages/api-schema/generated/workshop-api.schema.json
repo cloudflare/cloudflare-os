@@ -1039,6 +1039,14 @@
           }
         },
         {
+          "name": "authorizeNotificationDevice",
+          "doc": "Authorize native push enrollment as this CFOS user. The single-use central grant is bound to\nthis installation and user; it carries no provider token or Dashboard credential.",
+          "params": [],
+          "returns": {
+            "kind": "string"
+          }
+        },
+        {
           "name": "beginDeviceSessionHandoff",
           "doc": "Stage a two-minute, single-use device-session transfer for a native app. The state is an\nopaque 16–512 character URL-safe value and the key is an uncompressed P-256 public key encoded\nas unpadded base64url. The encrypted credential remains server-side until the browser POSTs\nthe returned ticket to `/api/device-session/callback`, which redirects to the fixed, claimed\nHTTPS app link. Repeating a live state reissues its ticket and invalidates the previous one.",
           "params": [
@@ -1971,8 +1979,25 @@
           }
         },
         {
+          "name": "registerAuthorizedNotificationDevice",
+          "doc": "Claim a new native registration using this user's CFOS authorization, not legacy OAuth.\nThis is separate from `registerNotificationDevice()` because legacy and authorized native\nregistrations have the same opaque string shape; only the native protocol version identifies\nwhich central exchange is valid.",
+          "params": [
+            {
+              "name": "deviceRegistrationId",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
           "name": "registerNotificationDevice",
-          "doc": "Register one of the user's devices for push: the native app's one-time central device\nregistration, or this browser's Web Push subscription. Each registered device gets push; a\ndevice that registers again replaces its own subscription. The deployment never receives an\nAPNs device token or Cloudflare account token. A browser's subscription passes through it to\nthe central notification service, which delivers to an endpoint only for its most recent\nregistration.",
+          "doc": "Register one of the user's devices for push: an older native app's one-time central device\nregistration, or this browser's Web Push subscription. Each registered device gets push; a\ndevice that registers again replaces its own subscription. The deployment never receives an\nAPNs device token or Cloudflare account token. A browser's subscription passes through it to\nthe central notification service under this user's opaque installation-local identity; the\nservice delivers to an endpoint only for its most recent registration.",
           "params": [
             {
               "name": "registration",
@@ -6448,6 +6473,17 @@
             }
           ]
         },
+        "description": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
         "id": {
           "kind": "string"
         },
@@ -6565,6 +6601,9 @@
         },
         "defaultMode": {
           "doc": "The mode the model has while the admin leaves it alone: SUGGESTED_MODELS decides it for a\nsuggested model, and an added model's is 'enabled'."
+        },
+        "description": {
+          "doc": "The line the pickers show under the name, when SUGGESTED_MODELS gives the model one."
         },
         "id": {
           "doc": "Name of the model as specified to the provider's API, which is also the ID chats and\npreferences refer to it by."
@@ -7057,6 +7096,17 @@
             }
           ]
         },
+        "description": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
         "id": {
           "kind": "string"
         },
@@ -7084,6 +7134,9 @@
       "propertyDocs": {
         "commitEmail": {
           "doc": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+        },
+        "description": {
+          "doc": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
         },
         "id": {
           "doc": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -8764,7 +8817,7 @@
               "doc": "The ID of every model the deployment provides through AI Gateway, in any mode (see\nGatewayModelMode). A user can't edit or delete these, nor add a model under one of these IDs."
             },
             "enabledProviders": {
-              "doc": "The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its\nadmin turned on (see AdminApi.setGatewayProviderEnabled). A user can add a model of their own\nunder these only."
+              "doc": "The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its\nadmin turned on (see AdminApi.setGatewayProviderEnabled), less \"cloudflare-auto-router\",\nwhose one model is the deployment's alone. A user can add a model of their own under these\nonly."
             },
             "userModelsEnabled": {
               "doc": "Whether users may add models of their own (see AdminApi.setUserModelsEnabled). When false,\naddModel() and updateModel() refuse, and the models the user added are neither listed nor\nresolved."
@@ -8783,7 +8836,7 @@
       ]
     },
     "AiModelProvider": {
-      "doc": "Supported AI providers.",
+      "doc": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway.",
       "kind": "union",
       "branches": [
         {
@@ -8793,6 +8846,10 @@
         {
           "kind": "literal",
           "value": "cloudflare"
+        },
+        {
+          "kind": "literal",
+          "value": "cloudflare-auto-router"
         },
         {
           "kind": "literal",
@@ -12934,6 +12991,17 @@
         "contextWindow": {
           "kind": "number"
         },
+        "description": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
         "id": {
           "kind": "string"
         },
@@ -12965,6 +13033,9 @@
         },
         "contextWindow": {
           "doc": "The maximum tokens one request may total."
+        },
+        "description": {
+          "doc": "The line the pickers show under the name, when SUGGESTED_MODELS gives the model one."
         },
         "id": {
           "doc": "Name of the model as specified to the provider's API, which is also the ID chats and\npreferences refer to it by."
@@ -13160,6 +13231,17 @@
                   "kind": "null"
                 }
               ]
+            },
+            "routedModel": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "string"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
             }
           }
         }
@@ -13169,6 +13251,20 @@
       "doc": "What a deployment's admin sets for one of its AI Gateway models. A field left out is unset: the\nmodel then has its built-in behaviour, or for `reasoning` the deployment's default level where\none is set.",
       "kind": "object",
       "properties": {
+        "allowedModels": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "array",
+              "element": {
+                "kind": "string"
+              }
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
         "compactionInputBudget": {
           "kind": "union",
           "branches": [
@@ -13218,6 +13314,9 @@
         }
       },
       "propertyDocs": {
+        "allowedModels": {
+          "doc": "For the Auto Router model only: the gateway models it may pick, as the gateway names them\n(`anthropic/claude-sonnet-5.5`, `openai/gpt-6-luna`, `@cf/*\\/*`; `*` matches one segment).\nUnset, it picks among every model of the enabled providers. Each name must belong to an\nenabled provider, and a name whose provider is later turned off leaves the pool. The server\nrefuses the list on any other model, and refuses an empty list or a malformed or foreign\nname; a name the gateway does not know fails each request, which the model's test reports."
+        },
         "compactionInputBudget": {
           "doc": "The prompt budget, in tokens, that a chat on the model compacts against (see\nCOMPACTION_TRIGGER_RATIO), in place of the model's built-in one. A positive whole number, at\nmost the model's AdminModelView.maxCompactionInputBudget."
         },
@@ -13227,7 +13326,7 @@
       }
     },
     "GatewayModelTest": {
-      "doc": "What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or\nAdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure\ncarries a message on one line, cut short: what the provider or the gateway answered, or why no\nanswer came. It carries the HTTP status of the response only when the model runtime reports\none, which it does not for every provider (a failed Google request has none): the message then\nsays what there is.",
+      "doc": "What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or\nAdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure\ncarries a message on one line, cut short: what the provider or the gateway answered, or why no\nanswer came. It carries the HTTP status of the response only when the model runtime reports\none, which it does not for every provider (a failed Google request has none): the message then\nsays what there is. A pass of the Auto Router model names the gateway model that answered.",
       "kind": "union",
       "branches": [
         {
@@ -13265,6 +13364,17 @@
             "ok": {
               "kind": "literal",
               "value": true
+            },
+            "routedModel": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "string"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
             }
           }
         }
@@ -14488,7 +14598,7 @@
           "doc": "If true, this resource type is independently grantable. The user can enable or disable it at\naccount-connection time, and the Workshop will request only the underlying authorization (e.g.\nOAuth scopes) needed for the resource types they enable.\n\nIf omitted/false, the resource type is not separately grantable."
         },
         "groupedWith": {
-          "doc": "The urlPattern of the type whose connect card this type appears on, instead of a card of its\nown. A card's types share one configurator, which may return a URL of any of them, so\nstartResourceConfigurator must return that configurator for each of them.\n\nEach type is still granted separately: holding a grant for one does not cover the others. The\nconfigurator offers only the types the account has granted, and the Workshop asks for the rest\nin a single consent request, so group only types that need the same authorization."
+          "doc": "The urlPattern of the type whose connect card this type appears on, instead of a card of its\nown. A card's types share one configurator, which may return a URL of any of them, so\nstartResourceConfigurator must return that configurator for each of them.\n\nEach type is still granted separately: holding a grant for one does not cover the others. The\nconfigurator offers only the types the account has granted, and the Workshop asks for the rest\nin a single consent request, so a user connecting any type on the card is asked for all of them."
         },
         "icon": {
           "doc": "Optional icon for display in Workshop UI."

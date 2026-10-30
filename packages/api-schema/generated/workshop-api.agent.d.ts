@@ -32,6 +32,11 @@ export interface AuthenticatedApi {
    */
   amIAdmin(): Promise<boolean>;
   /**
+   * Authorize native push enrollment as this CFOS user. The single-use central grant is bound to
+   * this installation and user; it carries no provider token or Dashboard credential.
+   */
+  authorizeNotificationDevice(): Promise<string>;
+  /**
    * Stage a two-minute, single-use device-session transfer for a native app. The state is an
    * opaque 16–512 character URL-safe value and the key is an uncompressed P-256 public key encoded
    * as unpadded base64url. The encrypted credential remains server-side until the browser POSTs
@@ -397,12 +402,19 @@ export interface AuthenticatedApi {
    */
   reconnectAccount(accountId: Awaitable<number>): Promise<ConnectFlowStart>;
   /**
-   * Register one of the user's devices for push: the native app's one-time central device
+   * Claim a new native registration using this user's CFOS authorization, not legacy OAuth.
+   * This is separate from `registerNotificationDevice()` because legacy and authorized native
+   * registrations have the same opaque string shape; only the native protocol version identifies
+   * which central exchange is valid.
+   */
+  registerAuthorizedNotificationDevice(deviceRegistrationId: Awaitable<string>): Promise<void>;
+  /**
+   * Register one of the user's devices for push: an older native app's one-time central device
    * registration, or this browser's Web Push subscription. Each registered device gets push; a
    * device that registers again replaces its own subscription. The deployment never receives an
    * APNs device token or Cloudflare account token. A browser's subscription passes through it to
-   * the central notification service, which delivers to an endpoint only for its most recent
-   * registration.
+   * the central notification service under this user's opaque installation-local identity; the
+   * service delivers to an endpoint only for its most recent registration.
    */
   registerNotificationDevice(registration: Awaitable<WebPushSubscription | string>): Promise<void>;
   /**
@@ -2260,6 +2272,8 @@ export type AdminModelView = {
    * suggested model, and an added model's is 'enabled'.
    */
   defaultMode: "disabled" | "enabled" | "hidden";
+  /** The line the pickers show under the name, when SUGGESTED_MODELS gives the model one. */
+  description?: string;
   /**
    * Name of the model as specified to the provider's API, which is also the ID chats and
    * preferences refer to it by.
@@ -2452,6 +2466,12 @@ export type AiChatAuthorInfo = {
    * Self-asserted and unverified: it is attribution only and must never be read as identity.
    */
   commitEmail?: string;
+  /**
+   * For a model offered by `listModels()`, a line the pickers show under its name, when the name
+   * alone doesn't say what the model does (the Auto Router's "Best model for each request").
+   * Not carried on a message's author.
+   */
+  description?: string;
   /** Unique user identifier, e.g. "kenton@cloudflare.com" or "gpt-5.1-pro". */
   id: string;
   /** Display name for author, e.g. "Kenton Varda" or "GPT" */
@@ -3167,8 +3187,9 @@ export type AiGatewayInfo = {
   enabled: true;
   /**
    * The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its
-   * admin turned on (see AdminApi.setGatewayProviderEnabled). A user can add a model of their own
-   * under these only.
+   * admin turned on (see AdminApi.setGatewayProviderEnabled), less "cloudflare-auto-router",
+   * whose one model is the deployment's alone. A user can add a model of their own under these
+   * only.
    */
   enabledProviders: AiModelProvider[];
   /**
@@ -3181,8 +3202,11 @@ export type AiGatewayInfo = {
   enabled: false;
 };
 
-/** Supported AI providers. */
-export type AiModelProvider = "anthropic" | "cloudflare" | "google" | "ollama" | "openai";
+/**
+ * Supported AI providers. "cloudflare-auto-router" is AI Gateway's Auto Router, which picks the
+ * model behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway.
+ */
+export type AiModelProvider = "anthropic" | "cloudflare" | "cloudflare-auto-router" | "google" | "ollama" | "openai";
 
 /**
  * Describes a tool call performed by an AI agent as part of a message.
@@ -4914,6 +4938,8 @@ export type GatewayModel = {
   capabilities?: GatewayModelCapabilities;
   /** The maximum tokens one request may total. */
   contextWindow: number;
+  /** The line the pickers show under the name, when SUGGESTED_MODELS gives the model one. */
+  description?: string;
   /**
    * Name of the model as specified to the provider's API, which is also the ID chats and
    * preferences refer to it by.
@@ -4955,6 +4981,7 @@ export type GatewayModelLevelTest = {
   model: string;
   ok: true;
   reasoning: "high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh" | null;
+  routedModel?: string;
 };
 
 /**
@@ -4963,6 +4990,15 @@ export type GatewayModelLevelTest = {
  * one is set.
  */
 export type GatewayModelSettings = {
+  /**
+   * For the Auto Router model only: the gateway models it may pick, as the gateway names them
+   * (`anthropic/claude-sonnet-5.5`, `openai/gpt-6-luna`, `@cf/*\/*`; `*` matches one segment).
+   * Unset, it picks among every model of the enabled providers. Each name must belong to an
+   * enabled provider, and a name whose provider is later turned off leaves the pool. The server
+   * refuses the list on any other model, and refuses an empty list or a malformed or foreign
+   * name; a name the gateway does not know fails each request, which the model's test reports.
+   */
+  allowedModels?: string[];
   /**
    * The prompt budget, in tokens, that a chat on the model compacts against (see
    * COMPACTION_TRIGGER_RATIO), in place of the model's built-in one. A positive whole number, at
@@ -4983,7 +5019,7 @@ export type GatewayModelSettings = {
  * carries a message on one line, cut short: what the provider or the gateway answered, or why no
  * answer came. It carries the HTTP status of the response only when the model runtime reports
  * one, which it does not for every provider (a failed Google request has none): the message then
- * says what there is.
+ * says what there is. A pass of the Auto Router model names the gateway model that answered.
  */
 export type GatewayModelTest = {
   message: string;
@@ -4993,6 +5029,7 @@ export type GatewayModelTest = {
 } | {
   model: string;
   ok: true;
+  routedModel?: string;
 };
 
 /**
@@ -5528,7 +5565,7 @@ export type SupportedResource = {
    *
    * Each type is still granted separately: holding a grant for one does not cover the others. The
    * configurator offers only the types the account has granted, and the Workshop asks for the rest
-   * in a single consent request, so group only types that need the same authorization.
+   * in a single consent request, so a user connecting any type on the card is asked for all of them.
    */
   groupedWith?: string;
   /** Optional icon for display in Workshop UI. */

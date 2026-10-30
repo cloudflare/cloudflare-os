@@ -24,11 +24,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           },
           "GatewayModel": {
             "type": "object",
@@ -44,6 +45,10 @@
               "contextWindow": {
                 "type": "number",
                 "description": "The maximum tokens one request may total."
+              },
+              "description": {
+                "type": "string",
+                "description": "The line the pickers show under the name, when SUGGESTED_MODELS gives the model one."
               },
               "id": {
                 "type": "string",
@@ -373,6 +378,10 @@
                 ],
                 "description": "The mode the model has while the admin leaves it alone: SUGGESTED_MODELS decides it for a\nsuggested model, and an added model's is 'enabled'."
               },
+              "description": {
+                "type": "string",
+                "description": "The line the pickers show under the name, when SUGGESTED_MODELS gives the model one."
+              },
               "id": {
                 "type": "string",
                 "description": "Name of the model as specified to the provider's API, which is also the ID chats and\npreferences refer to it by."
@@ -683,11 +692,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           },
           "AvatarImage": {
             "type": "object",
@@ -830,6 +840,13 @@
           "GatewayModelSettings": {
             "type": "object",
             "properties": {
+              "allowedModels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "For the Auto Router model only: the gateway models it may pick, as the gateway names them\n(`anthropic/claude-sonnet-5.5`, `openai/gpt-6-luna`, `@cf/*\\/*`; `*` matches one segment).\nUnset, it picks among every model of the enabled providers. Each name must belong to an\nenabled provider, and a name whose provider is later turned off leaves the pool. The server\nrefuses the list on any other model, and refuses an empty list or a malformed or foreign\nname; a name the gateway does not know fails each request, which the model's test reports."
+              },
               "compactionInputBudget": {
                 "type": "number",
                 "description": "The prompt budget, in tokens, that a chat on the model compacts against (see\nCOMPACTION_TRIGGER_RATIO), in place of the model's built-in one. A positive whole number, at\nmost the model's AdminModelView.maxCompactionInputBudget."
@@ -1322,6 +1339,13 @@
           "GatewayModelSettings": {
             "type": "object",
             "properties": {
+              "allowedModels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "For the Auto Router model only: the gateway models it may pick, as the gateway names them\n(`anthropic/claude-sonnet-5.5`, `openai/gpt-6-luna`, `@cf/*\\/*`; `*` matches one segment).\nUnset, it picks among every model of the enabled providers. Each name must belong to an\nenabled provider, and a name whose provider is later turned off leaves the pool. The server\nrefuses the list on any other model, and refuses an empty list or a malformed or foreign\nname; a name the gateway does not know fails each request, which the model's test reports."
+              },
               "compactionInputBudget": {
                 "type": "number",
                 "description": "The prompt budget, in tokens, that a chat on the model compacts against (see\nCOMPACTION_TRIGGER_RATIO), in place of the model's built-in one. A positive whole number, at\nmost the model's AdminModelView.maxCompactionInputBudget."
@@ -1374,11 +1398,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           }
         }
       },
@@ -1743,6 +1768,9 @@
                   },
                   "ok": {
                     "const": true
+                  },
+                  "routedModel": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -1752,7 +1780,7 @@
                 "additionalProperties": false
               }
             ],
-            "description": "What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or\nAdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure\ncarries a message on one line, cut short: what the provider or the gateway answered, or why no\nanswer came. It carries the HTTP status of the response only when the model runtime reports\none, which it does not for every provider (a failed Google request has none): the message then\nsays what there is."
+            "description": "What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or\nAdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure\ncarries a message on one line, cut short: what the provider or the gateway answered, or why no\nanswer came. It carries the HTTP status of the response only when the model runtime reports\none, which it does not for every provider (a failed Google request has none): the message then\nsays what there is. A pass of the Auto Router model names the gateway model that answered."
           }
         }
       }
@@ -1778,11 +1806,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           }
         }
       },
@@ -1822,6 +1851,9 @@
                   },
                   "ok": {
                     "const": true
+                  },
+                  "routedModel": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -1831,7 +1863,7 @@
                 "additionalProperties": false
               }
             ],
-            "description": "What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or\nAdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure\ncarries a message on one line, cut short: what the provider or the gateway answered, or why no\nanswer came. It carries the HTTP status of the response only when the model runtime reports\none, which it does not for every provider (a failed Google request has none): the message then\nsays what there is."
+            "description": "What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or\nAdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure\ncarries a message on one line, cut short: what the provider or the gateway answered, or why no\nanswer came. It carries the HTTP status of the response only when the model runtime reports\none, which it does not for every provider (a failed Google request has none): the message then\nsays what there is. A pass of the Auto Router model names the gateway model that answered."
           }
         }
       }
@@ -1857,11 +1889,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           },
           "GatewayModel": {
             "type": "object",
@@ -1877,6 +1910,10 @@
               "contextWindow": {
                 "type": "number",
                 "description": "The maximum tokens one request may total."
+              },
+              "description": {
+                "type": "string",
+                "description": "The line the pickers show under the name, when SUGGESTED_MODELS gives the model one."
               },
               "id": {
                 "type": "string",
@@ -2028,6 +2065,9 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "routedModel": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -2212,6 +2252,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -2241,11 +2285,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           },
           "RedactedAiModelConfig": {
             "type": "object",
@@ -2329,6 +2374,21 @@
       },
       "returns": {
         "type": "boolean"
+      }
+    },
+    {
+      "id": "AuthenticatedApi.authorizeNotificationDevice",
+      "service": "AuthenticatedApi",
+      "method": "authorizeNotificationDevice",
+      "description": "Authorize native push enrollment as this CFOS user. The single-use central grant is bound to\nthis installation and user; it carries no provider token or Dashboard credential.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "string"
       }
     },
     {
@@ -2732,7 +2792,7 @@
                     "items": {
                       "$ref": "#/$defs/AiModelProvider"
                     },
-                    "description": "The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its\nadmin turned on (see AdminApi.setGatewayProviderEnabled). A user can add a model of their own\nunder these only."
+                    "description": "The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its\nadmin turned on (see AdminApi.setGatewayProviderEnabled), less \"cloudflare-auto-router\",\nwhose one model is the deployment's alone. A user can add a model of their own under these\nonly."
                   },
                   "userModelsEnabled": {
                     "type": "boolean",
@@ -2766,11 +2826,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           }
         }
       }
@@ -2974,6 +3035,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -3003,11 +3068,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           },
           "RedactedAiModelConfig": {
             "type": "object",
@@ -3460,7 +3526,7 @@
               },
               "groupedWith": {
                 "type": "string",
-                "description": "The urlPattern of the type whose connect card this type appears on, instead of a card of its\nown. A card's types share one configurator, which may return a URL of any of them, so\nstartResourceConfigurator must return that configurator for each of them.\n\nEach type is still granted separately: holding a grant for one does not cover the others. The\nconfigurator offers only the types the account has granted, and the Workshop asks for the rest\nin a single consent request, so group only types that need the same authorization."
+                "description": "The urlPattern of the type whose connect card this type appears on, instead of a card of its\nown. A card's types share one configurator, which may return a URL of any of them, so\nstartResourceConfigurator must return that configurator for each of them.\n\nEach type is still granted separately: holding a grant for one does not cover the others. The\nconfigurator offers only the types the account has granted, and the Workshop asks for the rest\nin a single consent request, so a user connecting any type on the card is asked for all of them."
               },
               "icon": {
                 "$ref": "#/$defs/AvatarImage",
@@ -3589,6 +3655,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -4076,7 +4146,7 @@
               },
               "groupedWith": {
                 "type": "string",
-                "description": "The urlPattern of the type whose connect card this type appears on, instead of a card of its\nown. A card's types share one configurator, which may return a URL of any of them, so\nstartResourceConfigurator must return that configurator for each of them.\n\nEach type is still granted separately: holding a grant for one does not cover the others. The\nconfigurator offers only the types the account has granted, and the Workshop asks for the rest\nin a single consent request, so group only types that need the same authorization."
+                "description": "The urlPattern of the type whose connect card this type appears on, instead of a card of its\nown. A card's types share one configurator, which may return a URL of any of them, so\nstartResourceConfigurator must return that configurator for each of them.\n\nEach type is still granted separately: holding a grant for one does not cover the others. The\nconfigurator offers only the types the account has granted, and the Workshop asks for the rest\nin a single consent request, so a user connecting any type on the card is asked for all of them."
               },
               "icon": {
                 "$ref": "#/$defs/AvatarImage",
@@ -4168,6 +4238,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -4549,6 +4623,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -4682,6 +4760,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -5014,6 +5096,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -5111,6 +5197,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -5456,10 +5546,32 @@
       }
     },
     {
+      "id": "AuthenticatedApi.registerAuthorizedNotificationDevice",
+      "service": "AuthenticatedApi",
+      "method": "registerAuthorizedNotificationDevice",
+      "description": "Claim a new native registration using this user's CFOS authorization, not legacy OAuth.\nThis is separate from `registerNotificationDevice()` because legacy and authorized native\nregistrations have the same opaque string shape; only the native protocol version identifies\nwhich central exchange is valid.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "deviceRegistrationId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deviceRegistrationId"
+        ],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "null",
+        "x-capnweb-kind": "undefined"
+      }
+    },
+    {
       "id": "AuthenticatedApi.registerNotificationDevice",
       "service": "AuthenticatedApi",
       "method": "registerNotificationDevice",
-      "description": "Register one of the user's devices for push: the native app's one-time central device\nregistration, or this browser's Web Push subscription. Each registered device gets push; a\ndevice that registers again replaces its own subscription. The deployment never receives an\nAPNs device token or Cloudflare account token. A browser's subscription passes through it to\nthe central notification service, which delivers to an endpoint only for its most recent\nregistration.",
+      "description": "Register one of the user's devices for push: an older native app's one-time central device\nregistration, or this browser's Web Push subscription. Each registered device gets push; a\ndevice that registers again replaces its own subscription. The deployment never receives an\nAPNs device token or Cloudflare account token. A browser's subscription passes through it to\nthe central notification service under this user's opaque installation-local identity; the\nservice delivers to an endpoint only for its most recent registration.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6066,6 +6178,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -6095,11 +6211,12 @@
             "enum": [
               "anthropic",
               "cloudflare",
+              "cloudflare-auto-router",
               "google",
               "ollama",
               "openai"
             ],
-            "description": "Supported AI providers."
+            "description": "Supported AI providers. \"cloudflare-auto-router\" is AI Gateway's Auto Router, which picks the\nmodel behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway."
           },
           "RedactedAiModelConfig": {
             "type": "object",
@@ -6190,6 +6307,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -7289,6 +7410,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -8297,6 +8422,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -11315,6 +11444,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -13889,6 +14022,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -14554,6 +14691,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -14803,6 +14944,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -15029,6 +15174,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -15249,6 +15398,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -15452,6 +15605,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -16218,6 +16375,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -16382,6 +16543,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -16695,6 +16860,10 @@
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
               },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
+              },
               "id": {
                 "type": "string",
                 "description": "Unique user identifier, e.g. \"kenton@cloudflare.com\" or \"gpt-5.1-pro\"."
@@ -16940,6 +17109,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",
@@ -18527,6 +18700,10 @@
               "commitEmail": {
                 "type": "string",
                 "description": "The user's preferred email address for git commits they author, set via\n`AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.\nSelf-asserted and unverified: it is attribution only and must never be read as identity."
+              },
+              "description": {
+                "type": "string",
+                "description": "For a model offered by `listModels()`, a line the pickers show under its name, when the name\nalone doesn't say what the model does (the Auto Router's \"Best model for each request\").\nNot carried on a message's author."
               },
               "id": {
                 "type": "string",

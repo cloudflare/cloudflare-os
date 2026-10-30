@@ -33,7 +33,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "GatewayModel" },
-              type: "GatewayModel = { behavesLike?: string; capabilities?: GatewayModelCapabilities; contextWindow: number; id: string; name: string; outputLimit?: number; provider: AiModelProvider }",
+              type: "GatewayModel = { behavesLike?: string; capabilities?: GatewayModelCapabilities; contextWindow: number; description?: string; id: string; name: string; outputLimit?: number; provider: AiModelProvider }",
               doc: "",
               typeDocs: {
                 GatewayModel: "The description of a model a deployment provides through AI Gateway.",
@@ -256,7 +256,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "GatewayModelSettings" },
-              type: "GatewayModelSettings = { compactionInputBudget?: number; reasoning?: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" }",
+              type: "GatewayModelSettings = { allowedModels?: string[]; compactionInputBudget?: number; reasoning?: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" }",
               doc: "",
               typeDocs: {
                 GatewayModelSettings: "What a deployment's admin sets for one of its AI Gateway models.",
@@ -283,7 +283,7 @@ export const table: ApiTable = {
               name: "provider",
               index: 0,
               encoding: "string",
-              choices: ["anthropic", "cloudflare", "google", "ollama", "openai"],
+              choices: ["anthropic", "cloudflare", "cloudflare-auto-router", "google", "ollama", "openai"],
               type: "AiModelProvider",
               doc: "",
               typeDocs: { AiModelProvider: "Supported AI providers." },
@@ -427,7 +427,7 @@ export const table: ApiTable = {
           args: [{ name: "modelId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: {
             kind: "value",
-            type: "GatewayModelTest = { message: string; model: string; ok: false; status?: number } | { model: string; ok: true }",
+            type: "GatewayModelTest = { message: string; model: string; ok: false; status?: number } | { model: string; ok: true; routedModel?: string }",
           },
         },
         "test-gateway-provider": {
@@ -448,7 +448,7 @@ export const table: ApiTable = {
               name: "provider",
               index: 0,
               encoding: "string",
-              choices: ["anthropic", "cloudflare", "google", "ollama", "openai"],
+              choices: ["anthropic", "cloudflare", "cloudflare-auto-router", "google", "ollama", "openai"],
               type: "AiModelProvider",
               doc: "",
               typeDocs: { AiModelProvider: "Supported AI providers." },
@@ -456,7 +456,7 @@ export const table: ApiTable = {
           ],
           returns: {
             kind: "value",
-            type: "GatewayModelTest = { message: string; model: string; ok: false; status?: number } | { model: string; ok: true }",
+            type: "GatewayModelTest = { message: string; model: string; ok: false; status?: number } | { model: string; ok: true; routedModel?: string }",
           },
         },
         "test-new-gateway-model": {
@@ -479,7 +479,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "GatewayModel" },
-              type: "GatewayModel = { behavesLike?: string; capabilities?: GatewayModelCapabilities; contextWindow: number; id: string; name: string; outputLimit?: number; provider: AiModelProvider }",
+              type: "GatewayModel = { behavesLike?: string; capabilities?: GatewayModelCapabilities; contextWindow: number; description?: string; id: string; name: string; outputLimit?: number; provider: AiModelProvider }",
               doc: "",
               typeDocs: {
                 GatewayModel: "The description of a model a deployment provides through AI Gateway.",
@@ -488,7 +488,7 @@ export const table: ApiTable = {
           ],
           returns: {
             kind: "value",
-            type: "GatewayModelLevelTest[], where GatewayModelLevelTest = { message: string; model: string; ok: false; reasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null; status?: number } | { model: string; ok: true; reasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null }",
+            type: "GatewayModelLevelTest[], where GatewayModelLevelTest = { message: string; model: string; ok: false; reasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null; status?: number } | { model: string; ok: true; reasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null; routedModel?: string }",
           },
         },
         "update-format": {
@@ -545,7 +545,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "AiChatAuthorInfo" },
-              type: "AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+              type: "AiChatAuthorInfo = { commitEmail?: string; description?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
               doc: "",
               typeDocs: {
                 AiChatAuthorInfo: "Who wrote a chat message, or is responding to a chat: a user, an agent's model, or a gadget.",
@@ -581,6 +581,14 @@ export const table: ApiTable = {
             "the admin UI.",
           args: [],
           returns: { kind: "value", type: "boolean" },
+        },
+        "authorize-notification-device": {
+          method: "authorizeNotificationDevice",
+          doc:
+            "Authorize native push enrollment as this CFOS user. The single-use central grant is bound to\n" +
+            "this installation and user; it carries no provider token or Dashboard credential.",
+          args: [],
+          returns: { kind: "value", type: "string" },
         },
         "begin-device-session-handoff": {
           method: "beginDeviceSessionHandoff",
@@ -993,7 +1001,7 @@ export const table: ApiTable = {
           ],
           returns: {
             kind: "value",
-            type: "AiChatAuthorInfo[], where AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+            type: "AiChatAuthorInfo[], where AiChatAuthorInfo = { commitEmail?: string; description?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
           },
         },
         "list-output-formats": {
@@ -1170,15 +1178,25 @@ export const table: ApiTable = {
           args: [{ name: "accountId", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "ConnectFlowStart = { nonce: string; url: string }" },
         },
+        "register-authorized-notification-device": {
+          method: "registerAuthorizedNotificationDevice",
+          doc:
+            "Claim a new native registration using this user's CFOS authorization, not legacy OAuth.\n" +
+            "This is separate from `register-notification-device` because legacy and authorized native\n" +
+            "registrations have the same opaque string shape; only the native protocol version identifies\n" +
+            "which central exchange is valid.",
+          args: [{ name: "deviceRegistrationId", index: 0, encoding: "string", type: "string", doc: "" }],
+          returns: { kind: "value", type: "void" },
+        },
         "register-notification-device": {
           method: "registerNotificationDevice",
           doc:
-            "Register one of the user's devices for push: the native app's one-time central device\n" +
+            "Register one of the user's devices for push: an older native app's one-time central device\n" +
             "registration, or this browser's Web Push subscription. Each registered device gets push; a\n" +
             "device that registers again replaces its own subscription. The deployment never receives an\n" +
             "APNs device token or Cloudflare account token. A browser's subscription passes through it to\n" +
-            "the central notification service, which delivers to an endpoint only for its most recent\n" +
-            "registration.",
+            "the central notification service under this user's opaque installation-local identity; the\n" +
+            "service delivers to an endpoint only for its most recent registration.",
           args: [
             {
               name: "registration",
@@ -1461,7 +1479,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "AiChatAuthorInfo" },
-              type: "AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+              type: "AiChatAuthorInfo = { commitEmail?: string; description?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
               doc: "",
               typeDocs: {
                 AiChatAuthorInfo: "Who wrote a chat message, or is responding to a chat: a user, an agent's model, or a gadget.",
@@ -1488,7 +1506,7 @@ export const table: ApiTable = {
           args: [],
           returns: {
             kind: "value",
-            type: "AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+            type: "AiChatAuthorInfo = { commitEmail?: string; description?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
           },
         },
       },
@@ -2282,7 +2300,7 @@ export const table: ApiTable = {
           args: [],
           returns: {
             kind: "value",
-            type: "AiChatAuthorInfo[], where AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+            type: "AiChatAuthorInfo[], where AiChatAuthorInfo = { commitEmail?: string; description?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
           },
         },
         "list-observer-requirements": {
@@ -3891,6 +3909,7 @@ export const table: ApiTable = {
       kind: "object",
       properties: {
         commitEmail: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+        description: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
         id: { kind: "string" },
         name: { kind: "string" },
         type: {
@@ -3908,6 +3927,7 @@ export const table: ApiTable = {
       branches: [
         { kind: "literal", value: "anthropic" },
         { kind: "literal", value: "cloudflare" },
+        { kind: "literal", value: "cloudflare-auto-router" },
         { kind: "literal", value: "google" },
         { kind: "literal", value: "ollama" },
         { kind: "literal", value: "openai" },
@@ -4063,6 +4083,7 @@ export const table: ApiTable = {
           branches: [{ kind: "ref", name: "GatewayModelCapabilities" }, { kind: "undefined" }],
         },
         contextWindow: { kind: "number" },
+        description: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
         id: { kind: "string" },
         name: { kind: "string" },
         outputLimit: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
@@ -4099,6 +4120,10 @@ export const table: ApiTable = {
     GatewayModelSettings: {
       kind: "object",
       properties: {
+        allowedModels: {
+          kind: "union",
+          branches: [{ kind: "array", element: { kind: "string" } }, { kind: "undefined" }],
+        },
         compactionInputBudget: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
         reasoning: {
           kind: "union",
