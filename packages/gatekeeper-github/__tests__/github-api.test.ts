@@ -212,7 +212,45 @@ describe("GitHubApi git reads", () => {
     const api = new GitHubApi(async () => "test-token");
     await expect(api.getBranchHead("cloudflare", "workerd", "../../../../../../repos/victim/secret/git/ref/heads/main"))
       .rejects.toThrow("invalid branch name");
+    await expect(api.isBranchProtected("cloudflare", "workerd", "../../../../../../repos/victim/secret/branches/main"))
+      .rejects.toThrow("invalid branch name");
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("GitHubApi.isBranchProtected", () => {
+  const api = () => new GitHubApi(async () => "test-token");
+  const answer = (status: number, body: unknown) =>
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(body, { status })));
+
+  it("reads the branch's protected flag, encoding the name segment by segment", async () => {
+    const url = captureRequests({ name: "release/1.0", commit: { sha: "a".repeat(40) }, protected: true });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "release/1.0")).toBe(true);
+    expect(url().pathname).toBe("/repos/cloudflare/workerd/branches/release/1.0");
+  });
+
+  it("reads an unprotected branch as unprotected", async () => {
+    answer(200, { name: "feature", commit: { sha: "a".repeat(40) }, protected: false });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "feature")).toBe(false);
+  });
+
+  it("reads a missing branch, or any branch of an empty repository, as unprotected", async () => {
+    answer(404, { message: "Branch not found" });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "feature")).toBe(false);
+    answer(409, { message: "Git Repository is empty." });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "main")).toBe(false);
+  });
+
+  it("reads a renamed branch's old name, which GitHub redirects, as protected", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, {
+      status: 301, headers: { location: "https://api.github.com/repos/cloudflare/workerd/branches/main" },
+    })));
+    expect(await api().isBranchProtected("cloudflare", "workerd", "master")).toBe(true);
+  });
+
+  it("fails on any other error rather than guessing", async () => {
+    answer(502, { message: "Bad Gateway" });
+    await expect(api().isBranchProtected("cloudflare", "workerd", "main")).rejects.toMatchObject({ status: 502 });
   });
 });
 

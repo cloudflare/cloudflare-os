@@ -190,7 +190,7 @@ function pullResponse(
 }
 
 /**
- * Fakes GitHub at the fetch boundary: branches, single commits (404 for pending ids -- the
+ * Fakes GitHub at the fetch boundary: branches (none protected), single commits (404 for pending ids -- the
  * anchor probe), commit listings, compares, the pulls API (create fails 422 while the head
  * branch is missing, and merge checks `sha` and answers 405 once merged, exactly like GitHub),
  * the viewer, and git-receive-pack.
@@ -275,6 +275,15 @@ class FakeGitHub {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
       return Response.json({ ref: `refs/heads/${name}`, object: { sha: head, type: "commit" } });
+    }
+
+    if (path.startsWith(`${API_BASE}/branches/`)) {
+      const name = decodeURIComponent(path.slice(`${API_BASE}/branches/`.length));
+      const head = this.branches.get(name);
+      if (head === undefined) {
+        return Response.json({ message: "Branch not found" }, { status: 404 });
+      }
+      return Response.json({ name, commit: { sha: head }, protected: false });
     }
 
     if (path.startsWith(`${API_BASE}/compare/`)) {
