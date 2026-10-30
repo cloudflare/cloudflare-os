@@ -185,6 +185,23 @@ describe("applyStoredAction", () => {
   });
 });
 
+describe("staging an action", () => {
+  it("keeps one applied before a lost submit reply, and reports it submitted", async () => {
+    const { api, calls } = makeApi();
+    const store = storeWith(api);
+    // An auto-approval applies the action before the reply, which then never arrives.
+    const queue = { submitAction: async (id: number) => {
+      await applyStoredAction(store, id);
+      throw new Error("Network connection lost.");
+    } };
+
+    const id = await stageAction(store, queue as never, { type: "addComment", contentId: "555", text: "hi" });
+
+    expect(calls.addComment).toHaveLength(1);
+    expect(store.getAction(id)?.state).toBe("applied");
+  });
+});
+
 describe("attachment files", () => {
   it("are deleted when approval submission fails", async () => {
     const { api } = makeApi();

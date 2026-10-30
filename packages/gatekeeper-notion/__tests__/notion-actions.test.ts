@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_APPROVABLE_KINDS,
+  applyStoredAction,
   describeAction,
   findWorkspaceParentPage,
+  NotionStore,
+  stageAction,
   type NotionAction,
-  type NotionStore,
 } from "../src/notion-actions";
 
 const databaseRow = (titlePropertyName?: string) => describeAction({
@@ -193,5 +195,43 @@ describe("findWorkspaceParentPage", () => {
       sort: { direction: "descending", timestamp: "last_edited_time" },
       page_size: 1,
     }]);
+  });
+});
+
+describe("stageAction", () => {
+  function memoryStore(appended: string[]) {
+    const kv = new Map<string, unknown>();
+    const storage = {
+      get: (key: string) => structuredClone(kv.get(key)),
+      put: (key: string, value: unknown) => void kv.set(key, structuredClone(value)),
+      delete: (key: string) => kv.delete(key),
+      list: ({ prefix }: { prefix: string }) => [...kv].filter(([key]) => key.startsWith(prefix)),
+    };
+    const api = { appendBlockChildren: async (pageId: string) => { appended.push(pageId); return ["block-1"]; } };
+    return new NotionStore(storage as never, api as never);
+  }
+
+  it("keeps an action applied before a lost submit reply, and reports it submitted", async () => {
+    const appended: string[] = [];
+    const store = memoryStore(appended);
+    // An auto-approval applies the action before the reply, which then never arrives.
+    const queue = { submitAction: async (id: number) => {
+      await applyStoredAction(store, id);
+      throw new Error("Network connection lost.");
+    } };
+
+    const id = await stageAction(store, queue as never, { type: "appendContent", pageId: "page-1", markdown: "Hello" });
+
+    expect(appended).toEqual(["page-1"]);
+    expect(store.getAction(id)).toMatchObject({ state: "applied", appendedBlockIds: ["block-1"] });
+  });
+
+  it("drops the record and fails when the submit fails without applying", async () => {
+    const store = memoryStore([]);
+    const queue = { submitAction: async () => { throw new Error("queue gone"); } };
+
+    await expect(stageAction(store, queue as never, { type: "appendContent", pageId: "page-1", markdown: "Hello" }))
+      .rejects.toThrow("queue gone");
+    expect(store.getAction(1)).toBeUndefined();
   });
 });
