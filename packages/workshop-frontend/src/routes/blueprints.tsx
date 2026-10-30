@@ -23,6 +23,7 @@ function BlueprintsRoutePage() {
         </p>
       </header>
       <div className="min-h-0 flex-1">
+        <h2 className="sr-only">Your blueprints</h2>
         <BlueprintList />
       </div>
     </div>

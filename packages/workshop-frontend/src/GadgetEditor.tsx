@@ -1604,9 +1604,9 @@ export default function GadgetEditor() {
             </div>
           ) : (
             <div className="flex items-center gap-1 min-w-0">
-              <span className="text-[14px] leading-5 font-medium tracking-[-0.25px] text-kumo-default truncate">
+              <h1 className="m-0 text-[14px] leading-5 font-medium tracking-[-0.25px] text-kumo-default truncate">
                 {metadata.title}
-              </span>
+              </h1>
               <span className="hidden md:inline-flex">
                 <WorkshopIconButton
                   onClick={() => setIsEditingTitle(true)}
