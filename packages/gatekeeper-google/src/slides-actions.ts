@@ -46,9 +46,27 @@ export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 // downloads. Anything that creates or deletes, changes a table's rows, columns or cell fills, sets
 // alt text, or changes a layout or master, which reaches slides the user is not looking at, needs
 // approval.
+//
+// Unless the deployment makes every change such a kind (`slidesActionsFor`), so building a deck
+// need not ask once per call. Each kind still admits no more than its label says: any other batch
+// is "content and theme", but one that makes Google download a picture is apart from it, since the
+// URL itself carries data out of the workspace. That kind admits whatever else its batch holds too,
+// so its label says so: a batch is approved whole, and a picture must not carry along changes the
+// user left to approve. Adding, copying and reordering slides share a kind; deleting one is its own.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
 const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and arrangement" };
+const CHANGE_SLIDES: ActionKind = { tag: "changeSlides", label: "Slide content and theme changes" };
+const CHANGE_SLIDES_WITH_PICTURES: ActionKind = {
+  tag: "changeSlidesWithPictures", label: "Slide changes, including pictures from web links",
+};
+const ADD_SLIDES: ActionKind = { tag: "addSlides", label: "Adding, copying and reordering slides" };
+const DELETE_SLIDES: ActionKind = { tag: "deleteSlides", label: "Deleting slides" };
 const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
+
+function fetchesPicture(change: DesignChange): boolean {
+  return change.op === "insertImage" || change.op === "replaceImage" ||
+    change.op === "setBackground" && change.background !== null && typeof change.background === "object";
+}
 
 function isFormatting(change: DesignChange): boolean {
   switch (change.op) {
@@ -68,9 +86,12 @@ function isFormatting(change: DesignChange): boolean {
 }
 
 /** The kind a batch is queued as, so approving a kind approves no more than it says. */
-export function batchKind(changes: readonly DesignChange[]): "editText" | "formatSlides" | "updateSlides" {
+export function batchKind(
+  changes: readonly DesignChange[],
+): "editText" | "formatSlides" | "updateSlides" | "pictureSlides" {
   if (changes.every(change => change.op === "editText")) return "editText";
-  return changes.every(isFormatting) ? "formatSlides" : "updateSlides";
+  if (changes.every(isFormatting)) return "formatSlides";
+  return changes.some(fetchesPicture) ? "pictureSlides" : "updateSlides";
 }
 
 // Planning against a fresh read, and resending a batch whose response was lost.
@@ -550,11 +571,13 @@ function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHos
   };
 }
 
-/** The Slides change set, bound once per presentation's journal. */
-export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
+type SlidesDefinitions = { [K in keyof SlidesActions]: ActionDefinition<SlidesActions[K], SlidesHost> };
+
+const DEFINITIONS: SlidesDefinitions = {
   editText: designBatch(EDIT_SLIDES_TEXT),
   formatSlides: designBatch(FORMAT_SLIDES),
   updateSlides: designBatch(),
+  pictureSlides: designBatch(),
 
   duplicateSlide: {
     delivery: "continue-with-simulation",
@@ -689,4 +712,29 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
       };
     }),
   },
-}, { fence: "none", vendorId: "google" });
+};
+
+const OPTIONS = { fence: "none", vendorId: "google" } as const;
+
+/** The Slides change set, bound once per presentation's journal. */
+export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>(DEFINITIONS, OPTIONS);
+
+/** The same changes, each a kind a user may let apply without asking. */
+const ALL_AUTO_APPROVABLE = defineActions<SlidesHost, SlidesActions>({
+  ...DEFINITIONS,
+  updateSlides: designBatch(CHANGE_SLIDES),
+  pictureSlides: designBatch(CHANGE_SLIDES_WITH_PICTURES),
+  duplicateSlide: { ...DEFINITIONS.duplicateSlide, kind: ADD_SLIDES, autoApprovable: true },
+  moveSlides: { ...DEFINITIONS.moveSlides, kind: ADD_SLIDES, autoApprovable: true },
+  createSlide: { ...DEFINITIONS.createSlide, kind: ADD_SLIDES, autoApprovable: true },
+  deleteSlide: { ...DEFINITIONS.deleteSlide, kind: DELETE_SLIDES, autoApprovable: true },
+}, OPTIONS);
+
+/**
+ * The set changes are submitted through, and auto-approvable kinds listed from, under `env`, read
+ * at each use so clearing the setting takes effect on the next change. Both sets apply and reject
+ * alike, so `SLIDES_ACTIONS` resolves every change whichever submitted it.
+ */
+export function slidesActionsFor(env: { GOOGLE_SLIDES_ALL_AUTO_APPROVABLE?: string }) {
+  return env.GOOGLE_SLIDES_ALL_AUTO_APPROVABLE?.toLowerCase() === "true" ? ALL_AUTO_APPROVABLE : SLIDES_ACTIONS;
+}

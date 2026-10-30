@@ -433,13 +433,24 @@ with their master and background, but not their elements; each slide reports its
 and a background of its own. The Slides API cannot change which layout an existing slide is made
 from.
 
-A batch is queued as one of three action kinds, which share everything but which ones a user may
+By default, a batch is queued as one of three action kinds, which share everything but which ones a user may
 let apply without asking: "Slide text edits" (only text edits), "Slide formatting and arrangement"
 (only formatting text, setting no link or font, since Google keeps their whole strings; formatting
 paragraphs and shapes; moving or stacking elements; and setting slides' backgrounds to a colour,
-`"none"` or `null`), and every other batch, mixed ones included, which always waits for approval.
-A picture background, any change to a layout or master, and theme colours therefore always wait:
+`"none"` or `null`), and every other batch, mixed ones included, which waits for approval.
+A picture background, any change to a layout or master, and theme colours therefore wait:
 they change slides the user is not looking at, or make Google fetch a URL.
+
+A deployment that sets `GOOGLE_SLIDES_ALL_AUTO_APPROVABLE=true` makes every Slides change such a
+kind, so building or exporting a deck need not ask once per call. The batches above that wait
+become "Slide changes, including pictures from web links" when they insert or replace an image or
+set a picture background, since Google downloads the URL and the URL itself can carry data out of
+the workspace, and "Slide content and theme changes" otherwise. A batch is approved whole, so the
+picture kind admits whatever else its batch holds, and its label says so. `createSlide()`, `duplicateSlide()` and
+`moveSlides()` become "Adding, copying and reordering slides", and `deleteSlide()` "Deleting
+slides". Off by default. It is read at each change and never stored, so clearing it stops changes
+queued from then on from being auto-approvable, and setting it auto-applies nothing by itself: a
+user must still enable each kind, and nothing does in a workspace latched into restricted mode.
 
 `createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
 after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
@@ -458,8 +469,8 @@ refuses one that has lost a placeholder the slide was to get. Google deletes a m
 layouts with the last slide on it, unless it is the presentation's first master, as a live probe
 showed, so reads drop a master whose last slide a queued deletion removes, with its layouts, and
 a slide queued after it on one of those layouts is refused. Google names a new slide's speaker notes
-only as it creates the slide, so they cannot be edited until it is approved. Adding a slide always
-waits for approval.
+only as it creates the slide, so they cannot be edited until it is approved. Adding a slide waits for
+approval unless the deployment sets `GOOGLE_SLIDES_ALL_AUTO_APPROVABLE` (above).
 
 `setSlidesSkipped()` skips slides, leaving them out when presenting, or shows them again. It is
 the "Skipping slides" kind, which a user may let apply without asking: it destroys nothing, and
