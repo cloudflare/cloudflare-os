@@ -1,0 +1,22 @@
+packages/gatekeeper-microsoft/__tests__/calendar-session.test.ts
+  s_1e2c74fa3cab0c::t_2a0c3677d53655 161-163,175,178,539-543
+  s_1e2c74fa3cab0c::t_c1c9f61ef0c985 544-545
+packages/gatekeeper-microsoft/src/calendar-session.ts
+  s_1e2c74fa3cab0c::t_bf65ccc528d77e 909-912,981-984
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cd68bc13fbbf843a924849b8be6bca2cde5665e6",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
