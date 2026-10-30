@@ -1,0 +1,275 @@
+{
+ "meta": {
+  "revision": 5,
+  "title": "Quarterly plan",
+  "sheetOrder": [
+   "s_600c1d3d",
+   "s_sales01",
+   "s_notes01"
+  ],
+  "sheets": {
+   "s_600c1d3d": {
+    "id": "s_600c1d3d",
+    "name": "Summary",
+    "rows": 100,
+    "cols": 26,
+    "colWidths": {
+     "0": 180,
+     "1": 120,
+     "4": 60
+    },
+    "rowHeights": {
+     "0": 40,
+     "9": 64
+    },
+    "frozenRows": 1,
+    "frozenCols": 1
+   },
+   "s_sales01": {
+    "id": "s_sales01",
+    "name": "Sales Data",
+    "rows": 60,
+    "cols": 8,
+    "colWidths": {
+     "0": 140
+    },
+    "rowHeights": {},
+    "frozenRows": 1,
+    "frozenCols": 0
+   },
+   "s_notes01": {
+    "id": "s_notes01",
+    "name": "Owner's Notes",
+    "rows": 30,
+    "cols": 5,
+    "colWidths": {},
+    "rowHeights": {},
+    "frozenRows": 0,
+    "frozenCols": 0
+   }
+  },
+  "lastModified": 1792823185159
+ },
+ "cells:s_600c1d3d": {
+  "A1": {
+   "value": "Metric",
+   "fmt": {
+    "b": true,
+    "fs": 14,
+    "c": "#1d1d20",
+    "bg": "#dbe6fa"
+   },
+   "version": 1
+  },
+  "B1": {
+   "value": "Value",
+   "fmt": {
+    "b": true,
+    "a": "r"
+   },
+   "version": 1
+  },
+  "C1": {
+   "value": "Format",
+   "fmt": {
+    "i": true,
+    "u": true
+   },
+   "version": 1
+  },
+  "B2": {
+   "value": "1234.5678",
+   "fmt": {
+    "nf": "number",
+    "d": 3
+   },
+   "version": 1
+  },
+  "B3": {
+   "value": "1234.5678",
+   "fmt": {
+    "nf": "integer"
+   },
+   "version": 1
+  },
+  "B4": {
+   "value": "0.1234",
+   "fmt": {
+    "nf": "percent",
+    "d": 1
+   },
+   "version": 1
+  },
+  "B5": {
+   "value": "123456789",
+   "fmt": {
+    "nf": "scientific",
+    "d": 2
+   },
+   "version": 1
+  },
+  "B6": {
+   "value": "-1234.5",
+   "fmt": {
+    "nf": "currency"
+   },
+   "version": 1
+  },
+  "B7": {
+   "value": "45000",
+   "fmt": {
+    "nf": "date"
+   },
+   "version": 1
+  },
+  "B8": {
+   "value": "0.6659722",
+   "fmt": {
+    "nf": "time"
+   },
+   "version": 1
+  },
+  "B9": {
+   "value": "45000.6659722",
+   "fmt": {
+    "nf": "datetime"
+   },
+   "version": 1
+  },
+  "B10": {
+   "value": "00123",
+   "fmt": {
+    "nf": "text"
+   },
+   "version": 1
+  },
+  "A11": {
+   "value": "Struck",
+   "fmt": {
+    "s": true,
+    "c": "#d0473f"
+   },
+   "version": 1
+  },
+  "B11": {
+   "value": "This is a long piece of text that should wrap inside its cell because wrap is on",
+   "fmt": {
+    "wrap": true,
+    "a": "l"
+   },
+   "version": 1
+  },
+  "B12": {
+   "value": "='Sales Data'!B7*2",
+   "fmt": {
+    "nf": "currency"
+   },
+   "version": 1
+  },
+  "B13": {
+   "value": "='Owner''s Notes'!A1",
+   "fmt": null,
+   "version": 1
+  },
+  "B14": {
+   "value": "'=not a formula",
+   "fmt": null,
+   "version": 1
+  },
+  "B17": {
+   "value": "=1/0",
+   "fmt": null,
+   "version": 1
+  },
+  "A20": {
+   "value": "Font size 9",
+   "fmt": {
+    "fs": 9
+   },
+   "version": 1
+  },
+  "A21": {
+   "value": "Multi\nline",
+   "fmt": {
+    "wrap": true
+   },
+   "version": 1
+  },
+  "A23": {
+   "value": "Typed in old UI",
+   "fmt": {
+    "b": true
+   },
+   "version": 1
+  },
+  "B23": {
+   "value": "=B2*10",
+   "fmt": null,
+   "version": 1
+  }
+ },
+ "cells:s_sales01": {
+  "A1": {
+   "value": "Region",
+   "fmt": {
+    "b": true,
+    "bg": "#fff3a3"
+   },
+   "version": 1
+  },
+  "B1": {
+   "value": "Q1",
+   "fmt": {
+    "b": true,
+    "a": "c"
+   },
+   "version": 1
+  },
+  "B2": {
+   "value": "1000",
+   "fmt": {
+    "nf": "currency",
+    "d": 2
+   },
+   "version": 1
+  },
+  "C2": {
+   "value": "1100",
+   "fmt": {
+    "nf": "currency",
+    "d": 0
+   },
+   "version": 1
+  },
+  "B7": {
+   "value": "=SUM(B2:B6)",
+   "fmt": {
+    "nf": "currency",
+    "d": 2,
+    "b": true
+   },
+   "version": 1
+  }
+ },
+ "cells:s_notes01": {
+  "A1": {
+   "value": "Notes owner: Jane",
+   "fmt": {
+    "i": true
+   },
+   "version": 1
+  },
+  "A2": {
+   "value": "Unicode: café — 日本語 ✓",
+   "fmt": null,
+   "version": 1
+  },
+  "B3": {
+   "value": "",
+   "fmt": {
+    "bg": "#fbdedb"
+   },
+   "version": 1
+  }
+ }
+}

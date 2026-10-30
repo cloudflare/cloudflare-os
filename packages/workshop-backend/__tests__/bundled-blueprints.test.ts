@@ -297,7 +297,7 @@ describe("bundled blueprints", () => {
         // `const` in the source; the TypeScript build emits `var`.
         'CSV_FORMAT_PREFIX = "csv:"',
         'id: "xlsx"',
-        'label: "Excel Workbook"',
+        'label: "Excel workbook"',
         'contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"',
         'mode: "server"',
         'contentType: "text/csv"',
