@@ -5,6 +5,11 @@ import {
   WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS,
 } from '@gadgets/scripts/vitest-task'
 
+const testTask = vitestTaskWithExclusions('vitest run', [
+  ...VITEST_TOOL_SCRATCH_EXCLUSIONS,
+  ...WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS,
+])
+
 export default {
   run: {
     tasks: {
@@ -46,10 +51,10 @@ export default {
        * does write: `tmp/` (per-boot bundles) and `state/` (local DO/KV storage).
        */
       test: {
-        ...vitestTaskWithExclusions('vitest run', [
-          ...VITEST_TOOL_SCRATCH_EXCLUSIONS,
-          ...WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS,
-        ]),
+        ...testTask,
+        // The property suites' seed (src/property-runs.ts) decides which cases run, so it is
+        // passed and fingerprinted: a different seed is a cache miss, not a replayed result.
+        cache: { ...testTask.cache, env: [...testTask.cache.env, 'FAST_CHECK_SEED'] },
         // Real gatekeepers boot from prebuilt validated trees, tracked as inputs like the fixture,
         // plus the release the Google upgrade suite starts from.
         dependsOn: [
