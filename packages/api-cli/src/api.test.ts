@@ -559,6 +559,17 @@ test("--timeout bounds cloudflared's Access token lookup, which blocks the run's
     /timed out after 0\.2s, while cloudflared looked up the Access token for https:\/\/os\.example\.com\./);
   assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
   assert.equal(h.server.opened, 0);
+
+  // A fractional --timeout reaches the child as whole milliseconds: 1.001 s is not 1000.9999999999999 ms,
+  // which spawnSync refuses (ERR_OUT_OF_RANGE) before it runs anything.
+  const timeouts: unknown[] = [];
+  const quick = harness(t, { env: {}, spawn: (_command, _args, options) => {
+    timeouts.push(options.timeout);
+    return spawnSync(process.execPath, ["-e", ""], options);
+  } });
+  await assert.rejects(quick.api("set-mood", "calm", "--timeout", "1.001"),
+    (error: Error) => error instanceof UsageError && /cloudflared printed no token/.test(error.message));
+  assert.deepEqual(timeouts, [1001]);
 });
 
 test("ending on a capability is a usage error that says nothing was sent and how to finish the chain", async (t) => {
