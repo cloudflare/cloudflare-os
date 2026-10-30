@@ -7,7 +7,9 @@ import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { Collection, Singleton } from "@gadgets/typed-storage";
 import type { Overseer } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject } from "../src/overseer.js";
-import { makeOverseerStorage, type ActionRecord } from "../src/storage-schema/overseer-storage.js";
+import {
+  makeOverseerStorage, type ActionRecord, type GatekeeperCaller,
+} from "../src/storage-schema/overseer-storage.js";
 import { makeMockStorage } from "./mock-storage.js";
 
 /**
@@ -41,11 +43,11 @@ export function putAction(
     id: number,
     opts: { state?: ActionRecord["state"], type?: ActionRecord["type"], gatekeeperId?: number,
             actionTag?: string, autoApprovable?: boolean, createdAt?: Date,
-            appliedAt?: Date } = {}) {
+            appliedAt?: Date, caller?: GatekeeperCaller } = {}) {
   let base = {
     id,
     gatekeeperId: opts.gatekeeperId ?? 1,
-    caller: { from: "agent", chatId: 1 } as const,
+    caller: opts.caller ?? { from: "agent", chatId: 1 } as const,
     resourceTitle: `Resource ${id}`,
     createdAt: opts.createdAt ?? new Date(FIXTURE_EPOCH + id),
     ...(opts.appliedAt !== undefined ? { appliedAt: opts.appliedAt } : {}),

@@ -2599,6 +2599,13 @@ export type ActionLogEntry = {
    * which the resource is created.
    */
   creation?: true;
+
+  /**
+   * The chat whose context requested the action: set for the chat's agent, and for a gadget
+   * opened in that chat (its preview), whether or not the chat changed the gadget's code. Absent
+   * for hooks, the user's own sessions, and gadgets opened outside any chat.
+   */
+  chatId?: number;
 } | {
   type: "observation";
   description: ObservationDescription;

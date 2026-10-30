@@ -103,7 +103,7 @@ import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
-import { actionLogResumed, useActionEntries } from "./useActions";
+import { actionLogResumed, useActionEntries, useActions } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -119,6 +119,7 @@ import { composerDraftStorageKey } from "./features/chat/composer/draft/composer
 import {
   findUnresolvedConflicts, listConflictedFiles, type UnresolvedConflict,
 } from "./features/chat/mergeConflicts";
+import { ChatMascot, type MascotFace } from "./features/chat/ChatMascot";
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
@@ -855,9 +856,20 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Observing user changes";
     case "giveUp":
       return "Stopping";
-    default:
+    case "listBlueprints":
+      return "Listing blueprints";
+    case "listConnectableResources":
+      return "Listing connectable resources";
+    case "requestConnection":
+      return "Requesting a connection";
+    case "createExternalResource":
+      return "Creating external resource";
+    case null:
+    case undefined:
       return "Using tool";
   }
+  const _exhaustive: never = toolName;
+  return _exhaustive;
 }
 
 function getToolTarget(tc: AiToolCall): string | undefined {
@@ -2543,6 +2555,77 @@ function chatHasProposedChanges(meta: AiChatMetadata): boolean {
   return (meta.proposedChangeWorkpieces?.length ?? 0) > 0;
 }
 
+/**
+ * What a chat's agent is doing, as its mascot and its row in the chat list show it. Pending
+ * approvals are known for every chat (the action log names each action's chat); a pending
+ * connection request only from the messages this session has cached, so a chat neither opened nor
+ * active since the page loaded can't show one.
+ */
+export type ChatActivity = {
+  face: MascotFace;
+  /** The activity in words, for the chat's row and header. Absent when idle. */
+  status?: string;
+  /** The chat waits on the user's decision, whatever its agent is doing. */
+  needsYou: boolean;
+};
+
+/** What chatActivity() reads from a chat's live stream state. */
+type StreamedStep = Pick<ProvisionalChatState, "compacting" | "text" | "reasoning" | "toolCalls">;
+
+export function chatActivity(
+  meta: AiChatMetadata,
+  provisional: StreamedStep | undefined,
+  messages: readonly AiChatMessage[] | undefined,
+  pendingApprovals: number,
+): ChatActivity {
+  // Newest first, back to whatever started the turn, as the Overseer's #awaitsDecision scans. The
+  // cache is sparse below the first message this session received, so a hole ends the scan.
+  let lastMessage: AiChatMessage | undefined;
+  let awaitingConnection = false;
+  for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
+    const msg = messages?.[i];
+    if (!msg) break;
+    lastMessage ??= msg;
+    if (msg.type === "connectionRequest" && msg.state === "pending") {
+      awaitingConnection = true;
+      break;
+    }
+    if (msg.type === "agentCallback" ||
+        (msg.type === "message" && (msg.author.type === "user" || msg.author.type === "gadget"))) {
+      break;
+    }
+  }
+  const awaiting = pendingApprovals > 0 ? "Needs approval"
+      : awaitingConnection ? "Needs a connection" : undefined;
+  const needsYou = awaiting !== undefined;
+
+  if (meta.activeAgent) {
+    const { face, label } = runningActivity(provisional, lastMessage);
+    // The decision leads, so a truncated row still shows what the user owes.
+    return { face, status: awaiting ? `${awaiting} · ${label}` : label, needsYou };
+  }
+  if (awaiting) return { face: "waiting", status: awaiting, needsYou };
+  if (chatHasProposedChanges(meta)) return { face: "review", status: "Pending changes", needsYou };
+  return { face: "idle", needsYou };
+}
+
+function runningActivity(
+  provisional: StreamedStep | undefined,
+  lastMessage: AiChatMessage | undefined,
+): { face: MascotFace; label: string } {
+  if (provisional?.compacting) return { face: "working", label: "Compacting" };
+  if (provisional?.toolCalls.length) {
+    return { face: "working", label: buildProvisionalToolSummary(provisional.toolCalls).label };
+  }
+  if (provisional?.text) return { face: "working", label: "Responding" };
+  // Thinking only before the turn's first output, as the transcript's placeholder decides: once
+  // the last step lands, the chat still runs until the server clears activeAgent.
+  const awaitingFirstResponse =
+      lastMessage?.author.type === "user" || lastMessage?.author.type === "gadget";
+  if (provisional?.reasoning || awaitingFirstResponse) return { face: "thinking", label: "Thinking" };
+  return { face: "working", label: "Working" };
+}
+
 // Bucket a chat's lastActive into a time grouping for the chat list.
 type ChatTimeBucket = "today" | "yesterday" | "thisWeek" | "earlier";
 
@@ -3936,6 +4019,18 @@ function ChatInterface({
     }
     return () => { cancelled = true; };
   }, [overseer]);
+
+  // Pending approvals, counted by the chat that asked for them, for each chat's activity.
+  const { pending: pendingActions } = useActions(overseer);
+  const pendingApprovalsByChat = new Map<number, number>();
+  for (const action of pendingActions) {
+    if (action.type === "action" && action.chatId !== undefined) {
+      pendingApprovalsByChat.set(action.chatId, (pendingApprovalsByChat.get(action.chatId) ?? 0) + 1);
+    }
+  }
+  const activityOf = (chat: AiChatMetadata) => chatActivity(
+      chat, provisionalRef.current.get(chat.id), cacheRef.current.messages.get(chat.id),
+      pendingApprovalsByChat.get(chat.id) ?? 0);
 
   // Reset per-chat UI state when selectedChatId changes
   useEffect(() => {
@@ -5388,6 +5483,7 @@ function ChatInterface({
               <div key={chat.id} className="relative">
                 {(() => {
                   const isRenaming = renamingChatId === chat.id;
+                  const activity = activityOf(chat);
                   return (
                   <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
@@ -5399,6 +5495,7 @@ function ChatInterface({
                           : "cursor-pointer hover:bg-kumo-tint"
                     }`}
                   >
+                    <ChatMascot chatId={chat.id} face={activity.face} needsYou={activity.needsYou} />
                     <div className="flex-1 min-w-0">
                       <div className="flex min-w-0 items-center gap-2">
                         {isRenaming ? (
@@ -5439,19 +5536,19 @@ function ChatInterface({
                             {chat.title}
                           </button>
                         )}
-                        {!isRenaming && chat.activeAgent ? (
-                          <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-brand">
-                            <span className="h-1.5 w-1.5 rounded-full bg-kumo-brand animate-pulse" />
-                            Working
-                          </span>
-                        ) : !isRenaming && chatHasProposedChanges(chat) ? (
+                        {!isRenaming && activity.status !== undefined && (activity.face === "review" ? (
                           <Tooltip content="This conversation has pending changes" asChild>
-                            <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-warning">
-                              <span className="h-1.5 w-1.5 rounded-full bg-kumo-warning" />
-                              Pending changes
+                            <span className="max-w-[10rem] flex-shrink-0 cursor-pointer truncate text-[11px] leading-4 font-medium text-kumo-warning">
+                              {activity.status}
                             </span>
                           </Tooltip>
-                        ) : null}
+                        ) : (
+                          <span className={`max-w-[10rem] flex-shrink-0 cursor-pointer truncate text-[11px] leading-4 font-medium ${
+                            activity.needsYou ? "text-kumo-danger" : "text-kumo-brand"
+                          }`}>
+                            {activity.status}
+                          </span>
+                        ))}
                       </div>
                       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-kumo-inactive">
                         {chat.spawnerName && (
@@ -5667,6 +5764,21 @@ function ChatInterface({
                     </div>
                   ) : (
                     <>
+                      {currentChatMetadata && (() => {
+                        const activity = activityOf(currentChatMetadata);
+                        const mascot = (
+                          <ChatMascot chatId={currentChatMetadata.id} face={activity.face}
+                            needsYou={activity.needsYou} />
+                        );
+                        return activity.status === undefined ? mascot : (
+                          <Tooltip content={activity.status} asChild>
+                            <span className="inline-flex flex-shrink-0">
+                              {mascot}
+                              <span className="sr-only">{activity.status}</span>
+                            </span>
+                          </Tooltip>
+                        );
+                      })()}
                       <span className="min-w-0 flex-1 truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
                         {currentChatMetadata?.title || "Chat"}
                       </span>
