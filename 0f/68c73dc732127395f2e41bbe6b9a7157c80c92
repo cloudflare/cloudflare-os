@@ -1,0 +1,47 @@
+packages/api-schema/README.md
+  s_34892ac5042fc9::t_25fb1ee0a164da 16-17,19-37,47,50,58-60
+packages/api-schema/__tests__/__fixtures__/api.ts
+  s_34892ac5042fc9::t_35a5a99df6f5ad 5-8,51-67,97-101,132-150
+packages/api-schema/__tests__/__fixtures__/schema.json
+  s_34892ac5042fc9::t_ceb397e97951e2 2,13-26,29,52,115-118,202,236-239,242-251,293-311,314-382,385,397,420-421,554,574-599,629
+packages/api-schema/__tests__/dts.test.ts
+  s_34892ac5042fc9::t_4872aff0a59cc8 12,14-17,21,25,43-46,58,72-78,131-132,569-762
+packages/api-schema/__tests__/extract.test.ts
+  s_34892ac5042fc9::t_024ed72eb5a8e7 13,58-60,65,108-152,198-311,353-385,460,488
+packages/api-schema/__tests__/tools.test.ts
+  s_34892ac5042fc9::t_ed102b3b6a7707 9-10,21-23,25,148-162,184-201,216-217,264-299,377-382,388-394,417,443-445,458-460
+packages/api-schema/generated/workshop-api.agent.d.ts
+  s_34892ac5042fc9::t_7fda77b500f4aa 154,819
+packages/api-schema/generated/workshop-api.fragments.json
+  s_34892ac5042fc9::t_45a7198f2b2bff 5,9
+packages/api-schema/generated/workshop-api.schema.json
+  s_34892ac5042fc9::t_6f6e0cbd60e9a5 2,27,53-54,60,810,979,1488-1491,2238,2332,2375,2559-2562,2798,2871,2893,2917,2948,4598,4660,4769-4772,4884,4933
+packages/api-schema/generated/workshop-api.tools.json
+  s_34892ac5042fc9::t_391e9cdab49544 3099-3104,5921-5926
+packages/api-schema/src/emit/dts.ts
+  s_34892ac5042fc9::t_1bfbe2a32f0e95 5-19,32-37,64-68,80-81,83,178-181,215-220,244,330,391,393-396,399-418,426-427,508-511,618-624,638-649
+packages/api-schema/src/emit/tools.ts
+  s_34892ac5042fc9::t_f59e7a0eda1dd3 6-13,17-20,63-66,114-115,124-126,130,135-137,140-149,164-165,282-289,319-322
+packages/api-schema/src/extract.ts
+  s_34892ac5042fc9::t_ba094fd65e9fe6 8-10,16-25,82-92,94,97,161-166,210-217,220,228-229,239-241,244-251,253-257,272-278,286,292-307,460-464,513-518,522,524-527,549-629
+packages/api-schema/src/schema.ts
+  s_34892ac5042fc9::t_da51e54c93c08c 3-6,15-20,24-25,39-51,54-60,70-87,128-134
+plans/capnweb-api-schema.md
+  s_34892ac5042fc9::t_01bfea225be67a 56-57,118,123-129,135,137-141,159-190,200-202,225-229,234-239,241-249,265-270,394-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0f68c73dc732127395f2e41bbe6b9a7157c80c92",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

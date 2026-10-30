@@ -1,0 +1,25 @@
+packages/api-schema/__tests__/dts.test.ts
+  s_34892ac5042fc9::t_b104c87ef7034b 668-670,675-696
+packages/api-schema/__tests__/tools.test.ts
+  s_34892ac5042fc9::t_effd10202034c2 280-289
+packages/api-schema/src/emit/dts.ts
+  s_34892ac5042fc9::t_c6e8fa518742ad 407-408,418
+packages/api-schema/src/emit/tools.ts
+  s_34892ac5042fc9::t_3a7f50f0b02ff5 320-322,339-340
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7a4ce519c8350eacc31c7b56236bb43f6e89c5da",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
