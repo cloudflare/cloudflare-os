@@ -36,14 +36,10 @@ const GADGET_100: CollaboratorAccess = { role: "use", gadgetIds: [100] };
 // The slice of SharingManager the exclusion path reads.
 type FakeSharing = {
   getEffectiveAccess(profileId: string): CollaboratorAccess | undefined;
-  hasAnyShares(): boolean;
 };
 
 function fakeSharing(access: Record<string, CollaboratorAccess>): FakeSharing {
-  return {
-    getEffectiveAccess: (profileId: string) => access[profileId],
-    hasAnyShares: () => Object.keys(access).length > 0,
-  };
+  return {getEffectiveAccess: (profileId: string) => access[profileId]};
 }
 
 async function withImpl(

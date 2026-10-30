@@ -485,10 +485,8 @@ export default function GadgetEditor() {
   const knownWorkpieceIdsRef = useRef<Set<WorkpieceId> | null>(null)
   // GadgetClient stub for the currently-selected gadget workpiece. Per-gadget operations (UI
   // bundle, RPC connection, bindings, blueprints) go through this stub. Null while the workspace
-  // has no (visible) gadgets or before a use-only collaborator's first gadget admission.
-  const [gadget, setGadget] = useState<{
-    id: WorkpieceId; stub: RpcStub<GadgetClient>; admitted: boolean
-  } | null>(null)
+  // has no (visible) gadgets, and while a use-only collaborator's gadget is being admitted.
+  const [gadget, setGadget] = useState<{ id: WorkpieceId; stub: RpcStub<GadgetClient> } | null>(null)
 
   // ── title editing ────────────────────────────────────────────────────────────
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -836,8 +834,8 @@ export default function GadgetEditor() {
 
   // The stub for the selected gadget arrives via an effect; during a switch it briefly lags the
   // selection, in which case gadget-dependent views render their empty states for a frame.
-  const selectedGadgetStub = gadget !== null && gadget.id === selectedGadgetId &&
-    (!isUseOnly || gadget.admitted) ? gadget.stub : null
+  const selectedGadgetStub =
+    gadget !== null && gadget.id === selectedGadgetId ? gadget.stub : null
   // Only the selected chat's streaming drives this editor. Everything downstream then narrows it
   // further to the selected workpiece.
   const streamingActiveFile = streamingActiveFileState?.chatId === effectiveSelectedChatId
@@ -1322,43 +1320,56 @@ export default function GadgetEditor() {
   }, [overseer])
 
   // ── selected gadget stub ────────────────────────────────────────────────────────
-  // Open a GadgetClient for the selected workpiece when it is a gadget. Builders can pipeline
-  // calls immediately. Use-only collaborators wait for admission before mounting the UI: its
-  // bundle timeout must not include time spent choosing accounts. A worktree has no GadgetClient.
+  // Open a GadgetClient for the selected workpiece when it is a gadget. (A worktree has no
+  // GadgetClient -- getGadget() would throw -- so `selectedGadgetId` is null for one.) Waits for
+  // metadata, whose role decides how:
   //
-  // A collaborator given individual gadgets is verified as each one opens, so its account prompts
-  // (and repairs of failed choices) are routed to the picker; the overseer ignores the callback
-  // for everyone else, whom opening the workspace verified. A refusal is kept per gadget, since
-  // failing one leaves the others open.
+  // - Opening the workspace verified everyone but use-only collaborators, so getGadget()
+  //   pipelines on the overseer stub, which is usable immediately with no extra round trip.
+  // - A use-only collaborator is verified as each gadget opens, so its account prompts (and
+  //   repairs of failed choices) are routed to the picker, and its UI mounts only once admission
+  //   succeeds: the bundle timeout must not include time spent choosing accounts. A refusal is
+  //   kept per gadget, since failing one leaves the others open. Re-admitting the gadget on screen
+  //   (after a reconnect) leaves its UI mounted until the new stub arrives; anything else that
+  //   holds a stub disposed below is cleared, so no UI can mount on one.
   const [gadgetOpenFailure, setGadgetOpenFailure] =
     useState<{ id: WorkpieceId; message: string } | null>(null)
   const [gadgetOpenAttempt, setGadgetOpenAttempt] = useState(0)
+  const metadataLoaded = metadata !== null
   useEffect(() => {
-    if (!overseer || selectedGadgetId === null) {
+    if (!overseer || !metadataLoaded || selectedGadgetId === null) {
       setGadget(null)
       return
     }
+    if (!isUseOnly) {
+      const stub = overseer.stub.getGadget(selectedGadgetId)
+      setGadget({ id: selectedGadgetId, stub })
+      return () => {
+        stub[Symbol.dispose]()
+        // The next run sets its stub in the same effect flush, so this never unmounts a builder's
+        // UI; it keeps the admission below from retaining this stub if the role narrows.
+        setGadget(null)
+      }
+    }
+
     const abort = new AbortController()
     const configureObservers = createObserverConfigCallback(abort.signal)
     const admission = overseer.stub.getGadget(selectedGadgetId, configureObservers)
-    // Calls go through a duplicate, so awaiting the admission to learn of a refusal, and then
-    // disposing what it resolved to, leaves the stub in use intact.
     let stub: RpcStub<GadgetClient> | null = null
-    if (!isUseOnly) {
-      stub = admission.dup()
-      setGadget({ id: selectedGadgetId, stub, admitted: false })
-    }
+    setGadget(previous => previous?.id === selectedGadgetId ? previous : null)
     setGadgetOpenFailure(null)
     admission.then(
       opened => {
+        // Kept through a duplicate, which outlives disposing what the admission resolved to.
         if (!abort.signal.aborted) {
-          stub ??= opened.dup()
-          setGadget({ id: selectedGadgetId, stub, admitted: true })
+          stub = opened.dup()
+          setGadget({ id: selectedGadgetId, stub })
         }
         opened[Symbol.dispose]()
       },
       caught => {
         if (abort.signal.aborted) return
+        setGadget(null)
         setGadgetOpenFailure({
           id: selectedGadgetId,
           message: observerOpenFailureMessage(caught, 'gadget') ?? 'This gadget couldn’t be opened.',
@@ -1371,7 +1382,8 @@ export default function GadgetEditor() {
       stub?.[Symbol.dispose]()
       configureObservers[Symbol.dispose]()
     }
-  }, [overseer, selectedGadgetId, isUseOnly, createObserverConfigCallback, gadgetOpenAttempt])
+  }, [overseer, metadataLoaded, selectedGadgetId, isUseOnly, createObserverConfigCallback,
+      gadgetOpenAttempt])
 
   // ── follow the agent across gadgets ─────────────────────────────────────────────
   // When the agent starts editing a gadget other than the selected one, switch the picker to it,

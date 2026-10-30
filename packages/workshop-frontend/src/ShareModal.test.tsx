@@ -1336,17 +1336,10 @@ describe('ShareModal', () => {
     const ALL_LINKS = [SHARE_LINK, ITINERARY_LINK, BUDGET_LINK, LEGACY_LINK]
     const EVERYONE = [BUILD_MEMBER, LEGACY_COLLABORATOR, GADGET_RECIPIENT, OTHER_GADGET_RECIPIENT]
 
-    it('grants the workspace from the workspace dialog', async () => {
-      const addCollaborator = vi.fn<Overseer['addCollaborator']>(
-        async (userId, grant) => profileFor(userId, grant, 'Ada'))
+    it('creates a workspace link from the workspace dialog', async () => {
       const createShareLink = vi.fn<Overseer['createShareLink']>(
         async () => ({ key: 'secret', linkId: 'link-new' }))
-      const rendered = await render(fakeOverseer({ addCollaborator, createShareLink }))
-
-      await invite(rendered, 'ada')
-      expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
-      await click(button(rendered, 'Copy link'))
-      expect(copyToClipboard).toHaveBeenLastCalledWith(WORKSPACE_URL)
+      const rendered = await render(fakeOverseer({ createShareLink }))
 
       await createLink(rendered)
       expect(createShareLink).toHaveBeenCalledWith('build', undefined)

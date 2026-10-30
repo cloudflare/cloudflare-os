@@ -643,23 +643,6 @@ describe("hooks widen the scope of the gadget they wake", () => {
     expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
   }));
 
-  it("enabling a hook on a still-provisional gadget widens nothing",
-      () => withImpl(async (impl, restarts) => {
-    joinSession(impl, 100);
-    seedGatekeeper(impl, 1);
-    seedPendingGadget(impl, 100, 7);
-    seedHook(impl, { gadgetId: 100 });
-
-    // The gadget this hook wakes is still a proposal within a chat: "use" collaborators can't
-    // open it (getGadget refuses pending gadgets), so the hook's connection isn't reachable
-    // from their sessions and enabling it must not sever them or quarantine the connection.
-    impl.enableHookRecord(impl.storage.boundHooks.get(5));
-
-    expect(impl.storage.boundHooks.get(5).enabled).toBe(true);
-    expect(restarts).toEqual([]);
-    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
-  }));
-
   it("promoting the hook's gadget at merge widens only that gadget's scope",
       () => withImpl(async (impl, restarts) => {
     // Another gadget's session is live; nobody can hold the provisional one.
@@ -1223,23 +1206,15 @@ describe("gadget facet stubs count as sessions", () => {
 // scheduled in the same synchronous step as the sharing mutation, never behind the best-effort
 // cross-DO cleanup, which can stall or hang.
 describe("revocation restart ordering", () => {
-  it.each([
-    ["loses access entirely", null],
-    ["loses one gadget but keeps another", { role: "use", gadgetIds: [101] }],
-  ] as const)("removeCollaborator schedules the restart before the cleanup when the target %s",
-      async (_label, newAccess) => {
+  it("removeCollaborator schedules the restart before the observer teardown", async () => {
     let restarts: string[] = [];
     let restartRecorded = Promise.withResolvers<void>();
-    let removed: unknown[] = [];
     let client = await openFakeOverseer({}, { impl: {
       getSharingManager: async () => ({
-        removeCollaborator: (...args: unknown[]) => {
-          removed.push(args.slice(1));
-          return [{
-            profile: { type: "user", id: "carol", name: "Carol" }, addedBy: [],
-            oldAccess: { role: "use", gadgetIds: [100, 101] }, newAccess,
-          }];
-        },
+        removeCollaborator: () => [{
+          profile: { type: "user", id: "carol", name: "Carol" }, addedBy: [],
+          oldAccess: { role: "use", gadgetIds: [100] }, newAccess: null,
+        }],
       }),
       // A hung gatekeeper/User-DO round trip: the cleanup never settles.
       tearDownLostObservers: () => new Promise(() => {}),
@@ -1251,13 +1226,11 @@ describe("revocation restart ordering", () => {
       },
     } });
 
-    // Narrowing is a revocation too: the live session may be holding the lost gadget.
-    let pending = client.removeCollaborator("carol", [], newAccess ? 100 : undefined);
+    let pending = client.removeCollaborator("carol", []);
     pending.catch(() => {});  // never settles; the restart is what revokes
 
     await restartRecorded.promise;
     expect(restarts).toHaveLength(1);
-    expect(removed).toEqual([["carol", [], newAccess ? 100 : undefined]]);
   });
 });
 

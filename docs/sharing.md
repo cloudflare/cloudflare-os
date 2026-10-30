@@ -23,7 +23,7 @@ New grants are `build` or `use` of a single gadget (`CollaboratorGrant`: `"build
 - **Use their own connected accounts for bindings.** When a collaborator adds a gatekeeper binding, it connects through that collaborator's third-party accounts, not the owner's. This prevents collaborators from gaining access to the owner's accounts beyond what the gadget's existing bindings already expose.
 - **Limited revocation authority.** A collaborator can only remove users that they themselves added (see "Permission graph" below).
 
-A caller may never grant access they don't hold. Only the owner and `build` collaborators can share (sharing methods are not in the `use` allowlist). A stored invitation or share link remains active only while its sharer retains `build` access.
+Only the owner and `build` collaborators can share (sharing methods are not in the `use` allowlist, and the permission graph refuses anyone else). A stored invitation or share link remains active only while its sharer retains `build` access.
 
 ### Restricted capability
 
@@ -31,7 +31,7 @@ Authorization is capability-based: `open()` computes the caller's effective acce
 
 The `UseOverseerInterface` is a workspace shell: opening it verifies nothing (see "Authorization model"), and it lists only the gadgets the collaborator's access includes. Each gadget is obtained separately through `getGadget(id, configureObservers)`, which re-reads the collaborator's access, refuses a gadget it does not include exactly as it refuses one that doesn't exist, verifies the collaborator as an observer of that one gadget, and only then returns a restricted, mainline-only `UseGadgetClientInterface`.
 
-The use-only UI keeps the workspace shell and gadget picker available while admission waits for connected-account choices. It starts a new gadget's UI bundle load only after admission succeeds, so time spent choosing accounts does not consume the bundle timeout. Cancelling or denying admission leaves that gadget retryable without preventing selection of another one; a late response from an abandoned admission cannot replace the current gadget. Reopening an already admitted gadget retains its iframe while the replacement capability is obtained.
+The use-only UI keeps the workspace shell and gadget picker available while admission waits for connected-account choices. It starts a new gadget's UI bundle load only after admission succeeds, so time spent choosing accounts does not consume the bundle timeout. Cancelling or denying admission leaves that gadget retryable without preventing selection of another one; a late response from an abandoned admission cannot replace the current gadget. Re-admitting the gadget on screen after a reconnect keeps its UI mounted while the replacement capability is obtained; a gadget the collaborator switches back to mounts only once it is admitted again.
 
 ### Adding collaborators
 
@@ -137,7 +137,7 @@ Revocation is a two-phase process in the UI:
 
 ### keepUsers (optional re-rooting)
 
-`keepUsers` lets the caller spare specific dependents from a removal/revocation. After the edge is severed, `#reRootKeptUsers` recomputes effective access and, for each listed user whose access would otherwise narrow, gives them fresh `user` edges from the caller restoring exactly what they lost (bounded by what the caller holds): `build`, the gadgets lost, or a legacy workspace-wide `use` grant, which is kept rather than newly assigned. This is pure convenience layered on top of the lazy model -- the same effect is achievable by re-adding the intermediary, or by granting the dependent access directly.
+`keepUsers` lets the caller spare specific dependents from a removal/revocation. After the edge is severed, `#reRootKeptUsers` recomputes effective access and, for each listed user whose access would otherwise narrow, gives them fresh `user` edges from the caller restoring exactly what they lost: `build`, the gadgets lost, or a legacy workspace-wide `use` grant, which is kept rather than newly assigned. A caller who no longer holds `build` keeps nobody, since their edges would confer nothing. This is pure convenience layered on top of the lazy model -- the same effect is achievable by re-adding the intermediary, or by granting the dependent access directly.
 
 ### Non-owner removal
 

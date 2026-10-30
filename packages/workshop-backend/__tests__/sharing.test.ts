@@ -264,18 +264,6 @@ describe("redeemShareKey", () => {
     expect(mgr.getEffectiveAccess("a")).toEqual(only(1));
   });
 
-  it("leaves an existing legacy link recipient's edge and access intact", async () => {
-    let { storage, mgr } = makeManager();
-    let { key, linkId } = await legacyAllUseLink(storage, mgr);
-    let edge = keyEdge(linkId, "use");
-    seedCollaborator(storage, "a", [edge]);
-
-    await mgr.redeemShareKey({ rawKey: key, profileId: "a", fetchProfile: async () => profile("a") });
-
-    expect(edgesOf(storage, "a")).toEqual([edge]);
-    expect(mgr.getEffectiveAccess("a")).toEqual(ALL);
-  });
-
   it("treats a link to a gadget that can no longer be shared as unknown", async () => {
     let { storage, gadgets, mgr } = makeManager();
     let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 2 } });
@@ -324,14 +312,13 @@ describe("addCollaborator", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
-  it("forbids granting more access than the caller holds", () => {
+  it("forbids sharing by a caller without build, even a gadget they hold", () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
-    expect(() => mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant: "build" }))
-        .toThrow("You cannot grant more access than you have.");
-    // Holding gadget 1 says nothing about gadget 2.
-    expect(() => mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant: { gadgetId: 2 } }))
-        .toThrow("You cannot grant more access than you have.");
+    for (let grant of ["build", { gadgetId: 1 }, { gadgetId: 2 }] as const) {
+      expect(() => mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant }))
+          .toThrow("You do not have permission to share this workspace.");
+    }
     expect(storage.collaborators.get("b")).toBeUndefined();
   });
 
@@ -357,39 +344,21 @@ describe("addCollaborator", () => {
       expect.objectContaining({ sharer: OWNER, role: "use", gadgetId: 2 }),
     ]);
 
-    // A build grant from the same sharer covers them, so it replaces them with one edge.
+    // A build grant from the same sharer covers them.
     mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
-    expect(edgesOf(storage, "a")).toEqual([
-      expect.objectContaining({ sharer: OWNER, role: "build" }),
-    ]);
-    expect(edgesOf(storage, "a")[0]).not.toHaveProperty("gadgetId");
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
 
-    // Re-granting a gadget the build edge covers narrows nothing and adds no edge; only the note
-    // changes.
+    // Re-granting a gadget that build covers narrows nothing.
     mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: { gadgetId: 1 }, note: "n" });
-    expect(edgesOf(storage, "a")).toEqual([
-      expect.objectContaining({ sharer: OWNER, role: "build", note: "n" }),
-    ]);
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
   });
 
-  it("treats a legacy all-gadget edge as covering gadget grants and covered by build", () => {
+  it("never narrows a legacy all-gadget grant by granting one gadget", () => {
     let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [userEdge(OWNER, "use"), userEdge("b", "build")]);
-    seedCollaborator(storage, "b", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
 
     mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: { gadgetId: 2 } });
-    expect(edgesOf(storage, "a").filter(edge => edge.type === "user" && edge.sharer === OWNER))
-        .toEqual([expect.objectContaining({ role: "use" })]);
-    expect(edgesOf(storage, "a")[0]).not.toHaveProperty("gadgetId");
-
-    // Build from the owner replaces the owner's legacy edge; b's edge is another sharer's.
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
-    expect(edgesOf(storage, "a")).toEqual([
-      expect.objectContaining({ sharer: OWNER, role: "build" }),
-      expect.objectContaining({ sharer: "b", role: "build" }),
-    ]);
+    expect(mgr.getEffectiveAccess("a")).toEqual(ALL);
   });
 });
 
@@ -855,13 +824,13 @@ describe("createShareLink", () => {
     expect(mgr.listShareLinkRecords()).toEqual([]);
   });
 
-  it("forbids creating a link granting more access than the caller holds", async () => {
+  it("forbids a caller without build from creating a link, even to a gadget they hold", async () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
-    await expect(mgr.createShareLink({ caller: collab("a"), grant: "build" }))
-        .rejects.toThrow("You cannot grant more access than you have.");
-    await expect(mgr.createShareLink({ caller: collab("a"), grant: { gadgetId: 2 } }))
-        .rejects.toThrow("You cannot grant more access than you have.");
+    for (let grant of ["build", { gadgetId: 1 }, { gadgetId: 2 }] as const) {
+      await expect(mgr.createShareLink({ caller: collab("a"), grant }))
+          .rejects.toThrow("You do not have permission to share this workspace.");
+    }
     expect(mgr.listShareLinkRecords()).toEqual([]);
   });
 });
@@ -929,15 +898,15 @@ describe("newShareLinkKey", () => {
         .rejects.toThrow(/only copy/);
   });
 
-  it("forbids copying a link that now grants more than the caller holds", async () => {
+  it("forbids copying a link once its creator no longer holds build", async () => {
     let { storage, mgr } = makeManager();
-    // "a" created a build link and a gadget 2 link, then was narrowed to gadget 1.
+    // "a" created a build link and a gadget 1 link, then was narrowed to gadget 1.
     seedLink(storage, "k1", "a", "build");
-    seedLink(storage, "k2", "a", "use", 2);
+    seedLink(storage, "k2", "a", "use", 1);
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
     for (let linkId of ["k1", "k2"]) {
       await expect(mgr.newShareLinkKey({ caller: collab("a"), linkId }))
-          .rejects.toThrow("You cannot grant more access than you have.");
+          .rejects.toThrow("You do not have permission to share this workspace.");
     }
   });
 

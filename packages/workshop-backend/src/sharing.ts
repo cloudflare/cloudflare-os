@@ -56,18 +56,6 @@ function accessCovers(a: CollaboratorAccess, b: CollaboratorAccess): boolean {
   return b.gadgetIds.every(id => held.includes(id));
 }
 
-// What both `a` and `b` grant, or undefined if nothing.
-function intersectAccess(a: CollaboratorAccess, b: CollaboratorAccess)
-    : CollaboratorAccess | undefined {
-  if (a.role === "build") return b;
-  if (b.role === "build") return a;
-  if (a.gadgetIds === "all") return b;
-  if (b.gadgetIds === "all") return a;
-  let other = b.gadgetIds;
-  let gadgetIds = a.gadgetIds.filter(id => other.includes(id));
-  return gadgetIds.length > 0 ? {role: "use", gadgetIds} : undefined;
-}
-
 // What either `a` or `b` grants.
 function unionAccess(a: CollaboratorAccess, b: CollaboratorAccess): CollaboratorAccess {
   if (a.role === "build" || b.role === "build") return BUILD;
@@ -218,23 +206,21 @@ export class SharingManager {
     return ceilingOf(record);
   }
 
-  // The access `grant` confers and the edge fields recording it, throwing if it names a gadget
-  // that can't be shared.
-  #resolveGrant(grant: CollaboratorGrant): {access: CollaboratorAccess, fields: GrantFields} {
-    if (grant === "build") return {access: BUILD, fields: {role: "build"}};
+  // The edge fields recording `grant`, throwing if it names a gadget that can't be shared.
+  #grantFields(grant: CollaboratorGrant): GrantFields {
+    if (grant === "build") return {role: "build"};
     if (!this.gadgetExists(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
-    return {
-      access: {role: "use", gadgetIds: [grant.gadgetId]},
-      fields: {role: "use", gadgetId: grant.gadgetId},
-    };
+    return {role: "use", gadgetId: grant.gadgetId};
   }
 
-  // Throw unless `caller` holds everything `access` grants: nobody can share what they don't have.
-  #requireCanGrant(caller: SharingCaller, access: CollaboratorAccess): void {
-    if (!accessCovers(this.#requireCallerAccess(caller), access)) {
-      throw new Error("You cannot grant more access than you have.");
+  // Throw unless `caller` holds "build": only then do the grants they make confer anything (see
+  // computeEffectiveAccess).
+  #requireCanShare(caller: SharingCaller): void {
+    if (!caller.isOwner &&
+        this.computeEffectiveAccess().get(caller.profileId)?.role !== "build") {
+      throw new Error("You do not have permission to share this workspace.");
     }
   }
 
@@ -362,8 +348,8 @@ export class SharingManager {
   /**
    * Grant `profile` access with a `user` edge from the caller, adding them as a collaborator if
    * they aren't one. The caller is responsible for resolving `profile` (via RPC) and for any policy
-   * checks. The caller may not grant access they don't hold. Once `ownerInvitesOnly` is set, only
-   * the owner may call this.
+   * checks. The caller must hold "build" (see computeEffectiveAccess). Once `ownerInvitesOnly` is
+   * set, only the owner may call this.
    */
   addCollaborator(opts: {
     caller: SharingCaller;
@@ -381,8 +367,8 @@ export class SharingManager {
           "Only the workspace owner can add people to a workspace that contains sensitive data.");
     }
 
-    let {access, fields} = this.#resolveGrant(opts.grant);
-    this.#requireCanGrant(opts.caller, access);
+    let fields = this.#grantFields(opts.grant);
+    this.#requireCanShare(opts.caller);
 
     let record = this.storage.collaborators.get(opts.profile.id) ??
         {profile: opts.profile, addedBy: []};
@@ -391,7 +377,7 @@ export class SharingManager {
     return {
       profile: record.profile,
       addedBy: record.addedBy,
-      access: this.computeEffectiveAccess().get(record.profile.id) ?? access,
+      access: this.computeEffectiveAccess().get(record.profile.id) ?? ceilingOf(fields),
     };
   }
 
@@ -505,8 +491,8 @@ export class SharingManager {
   async createShareLink(
       opts: { caller: SharingCaller; grant: CollaboratorGrant; note?: string })
       : Promise<{ key: string; linkId: string }> {
-    let {access, fields} = this.#resolveGrant(opts.grant);
-    this.#requireCanGrant(opts.caller, access);
+    let fields = this.#grantFields(opts.grant);
+    this.#requireCanShare(opts.caller);
 
     // The link is stored as its first key: the record is keyed by that key's hash.
     let { key, hash } = await this.#mintKey();
@@ -534,9 +520,9 @@ export class SharingManager {
           "do. Create a link to one gadget instead.");
     }
 
-    // Re-check the ceiling: the caller's access may have narrowed since the link was created, and
-    // a fresh key must never grant more than the caller currently has.
-    this.#requireCanGrant(opts.caller, ceiling);
+    // The caller may have lost "build" since creating the link, which left it conferring nothing
+    // (see computeEffectiveAccess): a fresh key must not hand it out.
+    this.#requireCanShare(opts.caller);
 
     let { key, hash } = await this.#mintKey();
     this.#requireShareLinksAllowed();
@@ -704,17 +690,6 @@ export class SharingManager {
     return eff;
   }
 
-  // The caller's effective access, throwing if the caller has no access at all (which should not
-  // happen for an authorized session).
-  #requireCallerAccess(caller: SharingCaller): CollaboratorAccess {
-    if (caller.isOwner) return BUILD;
-    let access = this.computeEffectiveAccess().get(caller.profileId);
-    if (!access) {
-      throw new Error("You do not have permission to share this workspace.");
-    }
-    return access;
-  }
-
   /**
    * The collaborators whose access narrowed when `ownerInvitesOnly` was set, given `baseline`,
    * the effective access computed just before the flag was set.
@@ -751,16 +726,16 @@ export class SharingManager {
   // Optional re-root sugar for removeCollaborator/revokeShareLink. Must be called *after* the
   // edge/key has already been severed in storage. `baseline` is the effective-access map from
   // before the severance. Each kept user whose access narrowed is given fresh `user` edges from the
-  // caller restoring what they lost (bounded by what the caller holds), so they retain it
-  // independently of the severed path. Restoring access to every gadget writes such a grant again:
-  // it is not newly assigned, only kept.
+  // caller restoring what they lost, so they retain it independently of the severed path; a caller
+  // without "build" keeps no one, since their edges would confer nothing. Restoring access to every
+  // gadget writes such a grant again: it is not newly assigned, only kept.
   #reRootKeptUsers(
       caller: SharingCaller, baseline: Map<string, CollaboratorAccess>,
       keepSet: Set<string>): void {
     if (keepSet.size === 0) return;
 
-    let callerAccess = this.#requireCallerAccess(caller);
     let afterSever = this.computeEffectiveAccess();
+    if (!caller.isOwner && afterSever.get(caller.profileId)?.role !== "build") return;
 
     for (let id of keepSet) {
       let prior = baseline.get(id);
@@ -770,10 +745,9 @@ export class SharingManager {
       if (now && accessCovers(now, prior)) continue;  // nothing lost -- no edge needed
 
       let record = this.storage.collaborators.get(id);
-      let restored = intersectAccess(lostAccess(prior, now), callerAccess);
-      if (!record || !restored) continue;
+      if (!record) continue;
 
-      for (let fields of grantFieldsFor(restored)) {
+      for (let fields of grantFieldsFor(lostAccess(prior, now))) {
         this.#grantEdge(record, caller.profileId, fields);
       }
       this.storage.collaborators.put(record);
