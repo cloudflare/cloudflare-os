@@ -169,6 +169,17 @@ describe("waitForAgent", () => {
     expect(await waiting).toMatchObject({ author: AGENT, type: "message", message: "Halfway there." });
   }));
 
+  it("returns the agent's reply, not the changes its last step recorded after it", () =>
+      withWorkspace(async ({ impl, client }) => {
+    let chatId = await client.newChat("Start", "some-model");
+    endTurn(impl, chatId, "Done.");
+    impl.storage.chats.put({
+      chatId, sequence: impl.nextChatSequence(chatId), timestamp: impl.getChatTimestamp(),
+      author: AGENT, type: "changes",
+    });
+    expect(await client.waitForAgent(chatId)).toMatchObject({ author: AGENT, type: "message", message: "Done." });
+  }));
+
   it("fails with a coded error when timeoutMs runs out with the agent still running", () =>
       withWorkspace(async ({ client }) => {
     let chatId = await client.newChat("Start", "some-model");

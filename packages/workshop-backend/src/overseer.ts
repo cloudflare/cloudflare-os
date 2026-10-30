@@ -500,6 +500,9 @@ const AGENT_RESUME_MAX_ATTEMPTS = 4;
 // runs only once the wait ends, even after the client let the session go or disconnected.
 const MAX_WAIT_FOR_AGENT_MS = 10 * 60 * 1000;
 
+// The agent-authored records Overseer.waitForAgent() returns (see there).
+const WAIT_FOR_AGENT_RESULT_TYPES = new Set(["message", "error", "action", "connectionRequest"]);
+
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
@@ -12439,9 +12442,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
     this.impl.getChatMetaOrThrow(chatId);
     for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-      // An agentNudge logged under the agent (as Stop logs one) is a control note the chat does
-      // not show, not something the agent wrote.
-      if (msg.author.type === "agent" && msg.type !== "agentNudge") {
+      // What the agent wrote: its reply, the error that ended its turn, or the action or connection
+      // it stopped to wait on. Not the other records logged under it: the `changes` a step that
+      // replied and edited records after its reply, nor an agentNudge (as Stop logs one).
+      if (msg.author.type === "agent" && WAIT_FOR_AGENT_RESULT_TYPES.has(msg.type)) {
         return this.#getChatMessageForClient(msg);
       }
     }

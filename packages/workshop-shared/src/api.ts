@@ -3417,9 +3417,10 @@ export interface Overseer extends RpcTarget {
   /**
    * Wait for the agent's turn in a chat to end, and return the latest message the agent wrote in
    * it. This is the way to wait for the turn `newChat()`, `sendChatMessage()` or `retryAgent()`
-   * starts: the message is then its reply, the error that ended it, or what it stopped to wait on.
-   * Returns at once if no turn is running, and null if the agent has written nothing in the chat.
-   * Control notes the chat does not show (`agentNudge`) are not messages the agent wrote.
+   * starts: the message is then its reply (`message`), the `error` that ended it, or what it stopped
+   * to wait on (an `action` or a `connectionRequest`). Returns at once if no turn is running, and
+   * null if the agent has written nothing in the chat. The other records logged under the agent,
+   * such as the `changes` a step records after its reply, are not messages it wrote.
    *
    * The wait ends when the chat's `AiChatMetadata.activeAgent` clears: the turn finished, failed
    * or was stopped, or paused for the user's decision on an action. A turn that hands straight on
