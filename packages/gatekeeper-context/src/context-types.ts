@@ -263,6 +263,30 @@ export const DEFAULT_DOCUMENT_CONTENT_TYPE = "text/markdown";
 /** Raw stored body bytes, leaving headroom below SQLite's 2 MB serialized-value limit. */
 export const MAX_DOCUMENT_BODY_BYTES = 1_800_000;
 
+const MAX_DOCUMENT_PATH_LENGTH = 1024;
+
+/** Validate a document path before using it as a storage key or deep-link target. */
+export function validateDocumentPath(path: string): void {
+  if (typeof path !== "string" || path.length === 0) {
+    throw new Error("Document path is required.");
+  }
+  if (path.length > MAX_DOCUMENT_PATH_LENGTH) {
+    throw new Error(`Document path is too long (max ${MAX_DOCUMENT_PATH_LENGTH} characters).`);
+  }
+  if (path.startsWith("/")) {
+    throw new Error("Document path must be relative (no leading '/').");
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(path)) {
+    throw new Error("Document path must not contain control characters.");
+  }
+  for (let segment of path.split("/")) {
+    if (segment === "" || segment === "." || segment === "..") {
+      throw new Error("Document path must not contain empty, '.', or '..' segments.");
+    }
+  }
+}
+
 // Map of file extensions (without the dot, lowercased) to MIME types we recognize.
 //
 // Active types are only returned over RPC, never served from an HTTP origin. Sanitize if that changes.

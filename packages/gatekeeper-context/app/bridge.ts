@@ -12,6 +12,7 @@ import {
 } from 'react'
 import { flushSync } from 'react-dom'
 import type { RpcStub, RpcTarget } from 'capnweb'
+import type { GatekeeperAppNavigateOptions } from '@gadgets/workshop-shared/gatekeeper-app'
 import type { ContextApi } from '../src/context-types'
 import { getThemeMode, subscribeThemeMode, type ResolvedThemeMode } from './theme'
 
@@ -64,6 +65,57 @@ export function useSelectUsers(): SelectUsers {
   const selectUsers = useContext(SelectUsersContext)
   if (!selectUsers) throw new Error('useSelectUsers() used outside SelectUsersProvider')
   return selectUsers
+}
+
+// ---------------------------------------------------------------------------
+// Workshop navigation
+//
+// The Workshop owns the URL. This app's location is its app-local path (see
+// `@gadgets/workshop-shared/gatekeeper-app`): the host delivers each committed path to the iframe,
+// and the app moves by asking the host to navigate, never by keeping its own history.
+// ---------------------------------------------------------------------------
+
+/** Asks the host to navigate; the committed path then arrives through the AppLocation. */
+export type NavigateAppPath = (path: string, options?: GatekeeperAppNavigateOptions) => Promise<void>
+
+/** The committed app-local path, as a store React subscribes to. */
+export type AppLocation = {
+  subscribe(listener: () => void): () => void
+  /** Null until the host delivers the first path. */
+  getPath(): string | null
+  navigate: NavigateAppPath
+}
+
+/** An AppLocation plus the setter its host receiver calls with each committed path. */
+export function createAppLocation(
+  navigate: NavigateAppPath,
+): AppLocation & { setPath(path: string): void } {
+  let path: string | null = null
+  const listeners = new Set<() => void>()
+  return {
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    getPath: () => path,
+    navigate,
+    setPath(next) {
+      if (next === path) return
+      path = next
+      for (const listener of listeners) listener()
+    },
+  }
+}
+
+const AppLocationContext = createContext<AppLocation | null>(null)
+
+export const AppLocationProvider = AppLocationContext.Provider
+
+export function useAppLocation(): { path: string | null; navigate: NavigateAppPath } {
+  const location = useContext(AppLocationContext)
+  if (!location) throw new Error('useAppLocation() used outside AppLocationProvider')
+  const path = useSyncExternalStore(location.subscribe, location.getPath)
+  return { path, navigate: location.navigate }
 }
 
 // ---------------------------------------------------------------------------

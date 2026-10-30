@@ -82,8 +82,8 @@ export default function Header() {
             {gatekeeperApps.map((app) => (
               <Link
                 key={app.id}
-                to="/gatekeepers/$appId"
-                params={{ appId: app.id }}
+                to="/gatekeepers/$appId/$"
+                params={{ appId: app.id, _splat: '' }}
                 className={navLinkClass}
                 activeProps={{ className: navLinkActiveClass }}
               >
@@ -147,8 +147,8 @@ export default function Header() {
             {gatekeeperApps.map((app) => (
               <Link
                 key={app.id}
-                to="/gatekeepers/$appId"
-                params={{ appId: app.id }}
+                to="/gatekeepers/$appId/$"
+                params={{ appId: app.id, _splat: '' }}
                 onClick={closeMobileMenu}
                 className={navLinkClass}
                 activeProps={{ className: navLinkActiveClass }}
