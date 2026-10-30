@@ -36,6 +36,7 @@ export class OutlookOverlay {
     for (const { action } of pending) {
       switch (action.kind) {
         case "moveMessages":
+        case "deleteMessages":
           for (const message of action.payload.messages) {
             this.moved.set(message.id, resolve(action.payload.to.id));
             if (action.payload.as === "delete") this.deleted.add(message.id);

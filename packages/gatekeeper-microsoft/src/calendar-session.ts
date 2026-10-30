@@ -22,7 +22,7 @@ import { organizationDomains } from "./directory";
 import type { StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
-import { type CalendarAction, type CalendarActions, type CalendarRef, type EventTarget, type EventWrite, type InviteNote } from "./calendar-actions";
+import { respondKind, updateKind, type CalendarAction, type CalendarActions, type CalendarRef, type EventTarget, type EventWrite, type InviteNote } from "./calendar-actions";
 import { CalendarApi, isCalendarId, type GraphCalendar, type GraphEvent, type GraphSchedule, type Weekday } from "./calendar-graph";
 import { checkRecurrence, eventInfo, eventTimes, hidesDetails, isPrivate, recurrenceWords, searchable, type EventView } from "./calendar-events";
 import { freeTimes, type Attendance } from "./calendar-free";
@@ -971,7 +971,7 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
     } else {
       // A pending invitation would make this a change to a meeting, told to everyone on it.
       ctx.requireInvitesSettled(event);
-      await ctx.host.submit(ctx.queue, await ctx.owns(calendar) ? "updateEvent" : "updateSharedEvent", payload);
+      await ctx.host.submit(ctx.queue, updateKind(payload, await ctx.owns(calendar)), payload);
     }
     const overlay = ctx.overlay();
     const shown = isProvisional(event.id) ? overlay.pendingEvent(event.id, me)!.event : event;
@@ -1045,7 +1045,7 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       propose = { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
     }
     await ctx.observeEvent(event, calendar, view);
-    await ctx.host.submit(ctx.queue, "respond", {
+    await ctx.host.submit(ctx.queue, respondKind({ response, notify }, await ctx.owns(calendar)), {
       calendar: ctx.calendarRef(calendar), target: await ctx.target(event), response, ...(message ? { message } : {}), notify,
       ...(propose ? { propose } : {}), zone, submittedAt: Date.now(),
     });

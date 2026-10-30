@@ -3,9 +3,12 @@
 // applied only once approved.
 //
 // Changes are split by who hears about them. An event with nobody else on it (`createEvent`,
-// `updateEvent`, `deleteEvent`) touches only the user's calendar, so it can be auto-approved. A
-// meeting (`createMeeting`, `updateMeeting`, `cancelMeeting`) and a response to an invitation
-// (`respond`) send mail to other people, which can't be called back, so a person always decides.
+// `updateEvent`) touches only the user's calendar, so it can be auto-approved; deleting one
+// (`deleteEvent`) removes it, and making one less private (`revealEvent`) shows it to everyone the
+// calendar is shared with, so neither can. A meeting (`createMeeting`, `updateMeeting`,
+// `cancelMeeting`) and a response the organizer is told of (`respond`) send mail to other people,
+// which can't be called back, so a person always decides; a silent acceptance in the user's own
+// calendar (`respondSilently`) changes only their copy, so it can be auto-approved.
 //
 // Creation is idempotent through Graph's `transactionId`, fixed at proposal: a replay after a crash
 // gets the event already made, not a second one (verified live). A change or deletion is fenced on
@@ -88,7 +91,7 @@ export type CalendarActions = {
     createdChangeKey?: string;
   };
   createMeeting: { calendar: CalendarRef; ref: string; transactionId: string; event: EventWrite; zone: string; submittedAt: number; createdId?: string; appliedAt?: number };
-  /** The `*Event` kinds in a calendar someone else owns: the same change, never auto-approved. */
+  /** The `*Event` kinds in a calendar someone else owns: the same change, under its own kind. */
   createSharedEvent: CalendarActions["createEvent"];
   updateSharedEvent: CalendarActions["updateEvent"];
   deleteSharedEvent: CalendarActions["deleteEvent"];
@@ -116,6 +119,11 @@ export type CalendarActions = {
     propose?: { start: string; end: string };
     zone: string; submittedAt: number; appliedAt?: number;
   };
+  /** A `respond` that tells nobody and declines nothing, in the user's own calendar (see `respondKind`). */
+  respondSilently: CalendarActions["respond"];
+  /** An `updateEvent` or `updateSharedEvent` that makes the event less private (see `updateKind`). */
+  revealEvent: CalendarActions["updateEvent"];
+  revealSharedEvent: CalendarActions["updateEvent"];
 };
 
 /** Any one Calendar action, tagged with its kind. */
@@ -141,6 +149,7 @@ export function requiredAccess(action: CalendarAction): CalendarAccessLevel {
     case "updateMeeting":
     case "cancelMeeting":
     case "respond":
+    case "respondSilently":
       return "schedule";
     default:
       return "edit";
@@ -204,6 +213,8 @@ function addEvent(builder: ReturnType<typeof buildDescription>, event: Partial<E
 
 function addChanges(builder: ReturnType<typeof buildDescription>, payload: CalendarActions["updateEvent"]): void {
   addEvent(builder, payload.changes, payload.zone);
+  // addEvent leaves out "normal", which a change to it must still show.
+  if (payload.changes.sensitivity === "normal") builder.inline("Sensitivity", "normal");
   const lines: string[] = [];
   if (payload.changes.subject !== undefined) lines.push(`Title: ${payload.before.subject || "(no title)"}`);
   if (payload.changes.start !== undefined && payload.before.start !== undefined && payload.before.end !== undefined && payload.before.allDay !== undefined) {
@@ -211,6 +222,7 @@ function addChanges(builder: ReturnType<typeof buildDescription>, payload: Calen
   }
   if (payload.changes.location !== undefined) lines.push(`Location: ${payload.before.location || "(none)"}`);
   if (payload.changes.showAs !== undefined) lines.push(`Show as: ${payload.before.showAs ?? "busy"}`);
+  if (payload.changes.sensitivity !== undefined) lines.push(`Sensitivity: ${payload.before.sensitivity ?? "normal"}`);
   if (payload.changes.attendees !== undefined) lines.push(`Invites: ${(payload.before.attendees ?? []).map(invite => invite.address).join(", ") || "(none)"}`);
   if (lines.length) builder.list("Before", lines);
   if (payload.changes.markdown !== undefined && payload.before.markdown !== undefined) builder.verbatim("Description before", payload.before.markdown, "markdown");
@@ -366,6 +378,38 @@ const INVITATIONS = { tag: "calendar.invitations", label: "Send meeting invitati
 const RESPONSES = { tag: "calendar.responses", label: "Respond to meeting invitations" } as const;
 const SHARED_EVENTS = { tag: "calendar.shared-events", label: "Change events in other people's calendars" } as const;
 
+/**
+ * The kind a response is proposed as. Accepting or tentatively accepting without telling the
+ * organizer changes only the user's own copy; one the organizer is told of mails them, a decline
+ * takes the meeting off the calendar, and one in a calendar someone else owns answers for them.
+ */
+export function respondKind(response: Pick<CalendarActions["respond"], "response" | "notify">, owned: boolean): "respond" | "respondSilently" {
+  return owned && !response.notify && response.response !== "decline" ? "respondSilently" : "respond";
+}
+
+// How much each sensitivity hides. Exchange hides private and confidential events from people the
+// calendar is shared with; personal hides nothing there, but moving off it is still counted, the
+// side that reveals less.
+const SENSITIVITY_RANK = { normal: 0, personal: 1, private: 2, confidential: 2 } as const;
+
+/**
+ * Whether a change makes an event less private, showing its details to people the calendar is
+ * shared with. A series' occurrences can be more private than its master, so a series-wide change
+ * to anything below private counts.
+ */
+export function revealsEvent(payload: Pick<CalendarActions["updateEvent"], "target" | "changes" | "before">): boolean {
+  const after = payload.changes.sensitivity;
+  if (after === undefined) return false;
+  const was = payload.target.series ? "confidential" : payload.before.sensitivity ?? "normal";
+  return SENSITIVITY_RANK[after] < SENSITIVITY_RANK[was];
+}
+
+/** The kind a change to an event nobody else is on is proposed as, by whose calendar it is in and whether it reveals the event. */
+export function updateKind(payload: CalendarActions["updateEvent"], owned: boolean): "updateEvent" | "updateSharedEvent" | "revealEvent" | "revealSharedEvent" {
+  if (revealsEvent(payload)) return owned ? "revealEvent" : "revealSharedEvent";
+  return owned ? "updateEvent" : "updateSharedEvent";
+}
+
 const ownDefinitions = {
   createEvent: {
     kind: EVENTS,
@@ -436,7 +480,8 @@ const ownDefinitions = {
 
   deleteEvent: {
     kind: EVENTS,
-    autoApprovable: true,
+    // Never: it removes the event, every occurrence of a series, and an undo can only recreate it as new.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: payload => {
       const builder = buildDescription(`Delete ${named(payload.target.subject)}${calendarNote(payload.calendar)}` +
@@ -494,7 +539,8 @@ const ownDefinitions = {
 
   respond: {
     kind: RESPONSES,
-    // Never: the organizer gets the response by mail.
+    // Never: the organizer gets the response by mail, a decline removes the meeting, or the calendar
+    // is someone else's. `respondSilently` is the rest.
     autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: payload => {
@@ -537,14 +583,22 @@ const ownDefinitions = {
       return { action: { ...payload, appliedAt: Date.now() } };
     },
   },
-} satisfies { [K in Exclude<keyof CalendarActions, `${string}SharedEvent`>]: ActionDefinition<CalendarActions[K], CalendarActionHost> };
+} satisfies { [K in Exclude<keyof CalendarActions, `${string}SharedEvent` | "respondSilently" | "revealEvent">]: ActionDefinition<CalendarActions[K], CalendarActionHost> };
 
-/** Every kind's definition. A change to someone else's calendar is never auto-approved: "your own events" doesn't cover it. */
+/**
+ * Every kind's definition. A change to someone else's calendar has its own kind, since "your own
+ * events" doesn't cover it; creating and changing an event nobody is invited to can be
+ * auto-approved there too, but deleting one or making one less private never.
+ */
 export const definitions = {
   ...ownDefinitions,
-  createSharedEvent: { ...ownDefinitions.createEvent, kind: SHARED_EVENTS, autoApprovable: false },
-  updateSharedEvent: { ...ownDefinitions.updateEvent, kind: SHARED_EVENTS, autoApprovable: false },
+  createSharedEvent: { ...ownDefinitions.createEvent, kind: SHARED_EVENTS, autoApprovable: true },
+  updateSharedEvent: { ...ownDefinitions.updateEvent, kind: SHARED_EVENTS, autoApprovable: true },
   deleteSharedEvent: { ...ownDefinitions.deleteEvent, kind: SHARED_EVENTS, autoApprovable: false },
+  respondSilently: { ...ownDefinitions.respond, autoApprovable: true },
+  // Never: the event's details become visible to everyone the calendar is shared with.
+  revealEvent: { ...ownDefinitions.updateEvent, autoApprovable: false },
+  revealSharedEvent: { ...ownDefinitions.updateEvent, kind: SHARED_EVENTS, autoApprovable: false },
 } satisfies { [K in keyof CalendarActions]: ActionDefinition<CalendarActions[K], CalendarActionHost> };
 
 /** The Calendar action set. */
@@ -617,7 +671,9 @@ export async function revert(action: CalendarAction, host: CalendarActionHost): 
       }, { replayable: true });
     }
     case "updateEvent":
-    case "updateSharedEvent": {
+    case "updateSharedEvent":
+    case "revealEvent":
+    case "revealSharedEvent": {
       const { payload } = action;
       const id = host.refs.resolve(payload.target.id);
       if (isProvisional(id)) return;
@@ -663,6 +719,7 @@ export async function revert(action: CalendarAction, host: CalendarActionHost): 
     case "cancelMeeting":
       return { message: "A cancelled meeting can't be restored. Send a new invitation instead.", canRetry: false };
     case "respond":
+    case "respondSilently":
       return { message: "The response has been sent. Respond again to change it.", canRetry: false };
   }
 }
@@ -677,6 +734,8 @@ export function dependedRefs(action: CalendarAction): string[] {
   switch (action.kind) {
     case "updateEvent":
     case "updateSharedEvent":
+    case "revealEvent":
+    case "revealSharedEvent":
     case "updateMeeting":
     case "deleteEvent":
     case "deleteSharedEvent":

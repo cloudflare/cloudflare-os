@@ -4,9 +4,10 @@ Connects Microsoft 365 work and school accounts to Gadgets, for [SharePoint and
 OneDrive](#sharepoint-and-onedrive), [Outlook](#outlook) mail and [Outlook Calendar](#calendar), all
 through one connection. Agents act with the user's **delegated** permissions, so they never see more
 than the user can open themselves, and each binding narrows that further. Every change goes through
-the approval workflow, where the user may let a kind of change be auto-approved, except sending mail
-and anything that mails a meeting's attendees, which are never auto-approved. A change shows to the
-agent as though already made while it waits, so the agent keeps working.
+the approval workflow, where the user may let a kind of change be auto-approved. Deleting anything,
+sending mail or setting automatic replies, anything that mails a meeting's attendees or an
+invitation's organizer, and copying a file into another library are never auto-approved. A change
+shows to the agent as though already made while it waits, so the agent keeps working.
 `plans/microsoft-365-gatekeeper.md` is the design record.
 
 ## Setting up the app registration
@@ -144,12 +145,12 @@ connection holding both kinds of permission reaches every site. Under `Sites.Sel
 
 ### SharePoint approvals
 
-Every change is an action that goes through the approval workflow; every SharePoint kind may be
-auto-approved if the user chooses:
+Every change is an action that goes through the approval workflow; every SharePoint kind but the
+deletions may be auto-approved if the user chooses:
 
 | Kind | Actions | Can be auto-approved |
 |---|---|---|
-| `sharepoint.files.create` | Create a folder, upload or copy a file | Yes |
+| `sharepoint.files.create` | Create a folder, upload or copy a file | Yes, except a copy into another library than its source's, which can reach people who couldn't open the source |
 | `sharepoint.files.edit` | Replace a file's content, edit a Word document or deck in place, set cells in a workbook | Yes |
 | `sharepoint.files.organize` | Rename, move within a library | Yes |
 | `sharepoint.files.delete` | Delete a file or folder | **Never** |
@@ -255,8 +256,8 @@ The levels:
 | Level | Adds | Kind | Can be auto-approved |
 |---|---|---|---|
 | `read` | Reading, search, attachments (Office files as text; PDFs and workbooks too with the Workers AI binding), categories, people | — | — |
-| `draft` | Move, archive, delete (to Deleted Items), mark read, flag, categorize, create folders | `outlook.organize` | Yes |
-| `draft` | Create drafts, including replies and forwards that keep the quoted thread, and edit and delete the drafts it wrote (never the user's own, which an auto-approved edit could change under them) | `outlook.drafts` | Yes |
+| `draft` | Move, archive, delete (to Deleted Items), mark read, flag, categorize, create folders | `outlook.organize` | Yes, except deleting and moving into Junk Email or a folder under it, which Exchange empties on a schedule |
+| `draft` | Create drafts, including replies and forwards that keep the quoted thread, and edit and delete the drafts it wrote (never the user's own, which an auto-approved edit could change under them) | `outlook.drafts` | Yes, except deleting a draft |
 | `send` | Send a draft, a new message, a reply or a forward | `outlook.send` | **Never** |
 | `send`, whole mailbox | Automatic replies, which answer whoever writes | `outlook.settings` | **Never** |
 
@@ -328,10 +329,10 @@ The levels:
 | Level | Adds | Kind | Can be auto-approved |
 |---|---|---|---|
 | `read` | Events, availability, free times, people | — | — |
-| `edit` | Create, change and delete events only the user sees (no attendees), and their own copy's categories, show-as and reminder on others' meetings | `calendar.events` | Yes |
+| `edit` | Create, change and delete events only the user sees (no attendees), and their own copy's categories, show-as and reminder on others' meetings | `calendar.events` | Yes, except deleting or making an event less private |
 | `schedule` | Meetings: invitations, updates and cancellations | `calendar.invitations` | **Never** |
-| `schedule` | Accept, tentatively accept or decline, optionally proposing another time | `calendar.responses` | **Never** |
-| `edit` | Create, change and delete events in a calendar someone else owns | `calendar.shared-events` | **Never** |
+| `schedule` | Accept, tentatively accept or decline, optionally proposing another time | `calendar.responses` | Only accepting or tentatively accepting in the user's own calendar without telling the organizer |
+| `edit` | Create, change and delete events in a calendar someone else owns | `calendar.shared-events` | Yes, except deleting or making an event less private |
 
 Only a `full` binding can change events, since nothing a binding can't fully see can be changed
 through it. A read binding's session is a `CalendarReader`, with no write methods at all. A change

@@ -29,7 +29,7 @@ import {
   type Encoded, type PptxImages, type Template,
 } from "./office-write";
 import {
-  cellAt, pathSegment, showableText, shownChanges, shownTexts, type EditChange, type FolderTarget, type ItemTarget, type ListTarget,
+  cellAt, copyKind, pathSegment, showableText, shownChanges, shownTexts, type EditChange, type FolderTarget, type ItemTarget, type ListTarget,
   type SharePointAction, type SharePointActions,
 } from "./sharepoint-actions";
 import {
@@ -1492,7 +1492,7 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
       await this.#requireFreeName(parent, copyName);
       const ref = this.ctx.host.allocate("item");
       const submittedAt = Date.now();
-      await this.ctx.host.submit(this.ctx.queue, "copyFile", {
+      await this.ctx.host.submit(this.ctx.queue, copyKind(target.ref, parent), {
         ref, source: target, parent, name: copyName,
         ...(item.size !== undefined ? { size: item.size } : {}), ...(item.mimeType ? { mimeType: item.mimeType } : {}), submittedAt,
       });
