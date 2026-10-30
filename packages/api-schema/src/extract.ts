@@ -3,12 +3,13 @@
 // that `schema.ts` describes.
 //
 // Types are classified with capnweb-validate's rules (its `transform/type-introspector.ts`): values
-// versus capabilities (`RpcStub<X>`, `RpcPromise<X>`, interfaces extending `RpcTarget`, method-only
-// interfaces), functions, streams and `any` tails. Unlike capnweb-validate, the output keeps names,
-// JSDoc (of services and their members, of named types and of object properties) and its tags
-// (`@deprecated` and `@mutates` as fields, the others in `tags`), records which side implements
-// each service, and is deterministic: services, shapes, properties and union branches are sorted,
-// so the committed schema does not move with TypeScript's internal type ordering.
+// versus capabilities (`RpcStub<X>`, interfaces extending `RpcTarget`, method-only interfaces),
+// functions, streams and `any` tails; an `RpcPromise<X>` is awaited, as a `Promise<X>` is. Unlike
+// capnweb-validate, the output keeps names, JSDoc (of services and their members, of named types
+// and of object properties) and its tags (`@deprecated` and `@mutates` as fields, the others in
+// `tags`), records which side implements each service, and is deterministic: services, shapes,
+// properties and union branches are sorted, so the committed schema does not move with
+// TypeScript's internal type ordering.
 //
 // typescript6 = npm:typescript@6.0.3: the TypeScript 7 package ships no JS compiler API.
 
@@ -343,13 +344,20 @@ class Extractor {
     return { name: param.getName(), type: optional ? withoutUndefined(shape) : shape, optional };
   }
 
-  /** `Promise<T>` (nested too) as `T`: capnweb awaits results. `#shape` applies it per union branch. */
+  /**
+   * `Promise<T>` and `RpcPromise<T>` (nested too) as `T`: capnweb awaits results, and types a
+   * declared `RpcPromise<T>` as it does `Promise<T>`. `#shape` applies it per union branch.
+   */
   #awaited(type: ts.Type, depth = 0): ts.Type {
     if (depth > MAX_DEPTH) return type;
-    const symbol = type.getSymbol();
-    if (symbol && (symbol.getName() === "Promise" || symbol.getName() === "PromiseLike") && isGlobal(symbol)) {
+    if (isPromise(type)) {
       const args = this.#checker.getTypeArguments(type as ts.TypeReference);
       if (args.length === 1) return this.#awaited(args[0]!, depth + 1);
+    }
+    // An `RpcPromise<T>` is a `Promise` intersected with a stub, whose brand is typed `T`.
+    const brand = this.#checker.getPropertyOfType(type, "__RPC_STUB_BRAND");
+    if (brand && type.getFlags() & ts.TypeFlags.Intersection && (type as ts.IntersectionType).types.some(isPromise)) {
+      return this.#awaited(this.#checker.getTypeOfSymbol(brand), depth + 1);
     }
     return type;
   }
@@ -379,11 +387,11 @@ class Extractor {
       return constraint && constraint !== type ? this.#shape(constraint, depth + 1) : { kind: "any" };
     }
 
-    const stub = this.#stub(type, depth);
-    if (stub) return stub;
-
     const awaited = this.#awaited(type);
     if (awaited !== type) return this.#shape(awaited, depth + 1);
+
+    const stub = this.#stub(type, depth);
+    if (stub) return stub;
 
     if (flags & F.Union) {
       // `Alias | undefined` (an optional `x?: Alias` too) is a fresh union with no alias, its
@@ -417,9 +425,9 @@ class Extractor {
   }
 
   /**
-   * A capability, or undefined for a value: an `RpcStub<X>`/`RpcPromise<X>` (by capnweb's stub
-   * brand, whose type is `X`), an interface extending `RpcTarget` (by its target brand), or a
-   * method-only interface. A stub over a function is that function.
+   * A capability, or undefined for a value: an `RpcStub<X>` (by capnweb's stub brand, whose type is
+   * `X`), an interface extending `RpcTarget` (by its target brand), or a method-only interface. A
+   * stub over a function is that function.
    */
   #stub(type: ts.Type, depth: number): ApiShape | undefined {
     const flags = type.getFlags();
@@ -501,7 +509,8 @@ class Extractor {
           + "the schema records a variadic tail only");
       }
       if (flags[i]! & ts.ElementFlags.Variable) {
-        rest = shape.kind === "array" ? shape.element : shape;
+        // A rest element (`...T[]`) is typed `T`; a variadic one (`...T`) by the array `T` itself.
+        rest = flags[i]! & ts.ElementFlags.Variadic && shape.kind === "array" ? shape.element : shape;
         return;
       }
       elements.push(shape);
@@ -721,6 +730,12 @@ function isGlobal(symbol: ts.Symbol): boolean {
     }
   }
   return false;
+}
+
+/** The global `Promise<T>` or `PromiseLike<T>`. */
+function isPromise(type: ts.Type): boolean {
+  const symbol = type.getSymbol();
+  return !!symbol && (symbol.getName() === "Promise" || symbol.getName() === "PromiseLike") && isGlobal(symbol);
 }
 
 function isPrivate(declaration: ts.Declaration): boolean {
