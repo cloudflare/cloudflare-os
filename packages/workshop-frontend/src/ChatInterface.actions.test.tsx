@@ -581,4 +581,31 @@ describe('live views', () => {
     expect(stored).not.toBeNull()
     expect(stored).not.toBe(streamed)
   })
+
+  // Stores a step whose text is `text` and whose executeCode call showed a view, "Spending".
+  async function storeViewStep(text: string) {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [openChat])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    chat.emitMessage({
+      type: 'message', chatId: 1, sequence: 0, timestamp: new Date(), author: agent, message: text,
+      toolCalls: [{
+        toolCallId: 'show', toolName: 'executeCode', input: { code: 'export default async function() {}' },
+        output: 'Showed the user a view: Spending.',
+        views: [{ title: 'Spending', html: '<p></p>', script: '(data => {})', data: '{"food":120}' }],
+      }],
+    })
+    flushFrames()
+    return document.querySelector('iframe[title="Spending"]')
+  }
+
+  it('draws the view an executeCode call showed in a step with no text', async () => {
+    expect(await storeViewStep('')).not.toBeNull()
+  })
+
+  it('draws the view an executeCode call showed after the step\'s text', async () => {
+    const frame = await storeViewStep('Here it is.')
+    const prose = [...document.querySelectorAll('p')].find(p => p.textContent === 'Here it is.')
+    expect(prose && frame && prose.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
 })
