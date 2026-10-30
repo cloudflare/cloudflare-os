@@ -88,6 +88,31 @@ type Env = Cloudflare.Env & {
   FLAGS?: Flagship;
 }
 
+// Whether the user named `name` (a user DO's name) is one of the deployment's admins, `ADMINS`.
+function isDeploymentAdmin(env: Env, name: string | undefined): boolean {
+  let admins = env.ADMINS;
+
+  if (!name || !admins) return false;
+
+  if (typeof admins === "string") {
+    // Admins should be a JSON binding of array type, but `.env` doesn't actually let you
+    // specify JSON bindings, so we also support a string that parses as JSON array.
+    admins = JSON.parse(admins);
+  }
+
+  if (!Array.isArray(admins)) {
+    throw new TypeError("ADMINS must be configured as an array of usernames.");
+  }
+
+  return admins.includes(name);
+}
+
+// The User-Agent `cf-os api` (packages/api-cli) sends: `cf-os-api/<version>`.
+const CF_OS_CLI_USER_AGENT = /^cf-os-api\//;
+
+const CLI_ADMINS_ONLY =
+    "On this deployment the cf-os CLI is limited to deployment admins (anything goes on a local dev server).";
+
 // =======================================================================================
 
 @validateRpc()
@@ -131,22 +156,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   #isAdmin(): boolean {
-    let name = this.#userId.name;
-    let admins = this.env.ADMINS;
-
-    if (!name || !admins) return false;
-
-    if (typeof admins === "string") {
-      // Admins should be a JSON binding of array type, but `.env` doesn't actually let you
-      // specify JSON bindings, so we also support a string that parses as JSON array.
-      admins = JSON.parse(admins);
-    }
-
-    if (!Array.isArray(admins)) {
-      throw new TypeError("ADMINS must be configured as an array of usernames.");
-    }
-
-    return admins.includes(name);
+    return isDeploymentAdmin(this.env, this.#userId.name);
   }
 
   whoami(): Promise<AiChatAuthorInfo> {
@@ -736,14 +746,25 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessSession?: { payload: JWTPayload; jwt: string }) {
+      private accessSession: { payload: JWTPayload; jwt: string } | undefined,
+      private cliAdminsOnly: boolean) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
 
-  async ping(): Promise<void> {}
+  // With `cliAdminsOnly` (`cf-os api` on a deployment, see the /api route), refuses the call unless
+  // it signs in as a deployment admin, `user`. Every method calls it, the sign-ins once they know who
+  // signs in, except the steps that only lead to a session token, which `authenticate` redeems.
+  #limitCli(user?: DurableObjectId): void {
+    if (this.cliAdminsOnly && !isDeploymentAdmin(this.env, user?.name)) throw new Error(CLI_ADMINS_ONLY);
+  }
+
+  async ping(): Promise<void> {
+    this.#limitCli();
+  }
 
   async getServerConfig(): Promise<ServerConfig> {
+    this.#limitCli();
     return getServerConfig(this.env);
   }
 
@@ -799,6 +820,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
     let userId = this.users.idFromName(split[0]);
     await this.users.get(userId).authenticate(split[1]);
+    this.#limitCli(userId);
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
@@ -814,6 +836,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
     let email = this.accessSession.payload.email as string;
     let userId = this.users.idFromName(email);
+    this.#limitCli(userId);
     let signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
     let accountCreated =
         await this.users.get(userId).authenticateFromCfAccess(email, signupsEnabled);
@@ -858,6 +881,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   async createAccount(username: string, displayName: string, passwordHash: Uint8Array)
       : Promise<string | null> {
+    this.#limitCli();
     if (this.env.CF_ACCESS_AUD) {
       throw new Error("This deployment requires Cloudflare Access authentication.");
     }
@@ -886,6 +910,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async getBlueprint(id: string): Promise<BlueprintPublicInfo | null> {
+    this.#limitCli();
     let kvRecord = await readBlueprintKvRecord(this.env, id);
     if (!kvRecord) return null;
 
@@ -893,6 +918,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async downloadBlueprint(id: string): Promise<ReadableStream<Uint8Array>> {
+    this.#limitCli();
     let kvRecord = await readBlueprintKvRecord(this.env, id);
     if (!kvRecord) throw new Error("Blueprint not found.");
 
@@ -1036,8 +1062,14 @@ export default {
         abortController.abort(reason);
       };
 
+      // `cf-os api` names itself in its User-Agent, and outside a local dev instance it may act
+      // only as a deployment admin (PublicApiImpl's #limitCli). A speed bump against casual use,
+      // not a boundary: a client can send any User-Agent, and the API's own checks authorize.
+      let cliAdminsOnly = env.LOCAL_DEV_INSTANCE !== true &&
+          CF_OS_CLI_USER_AGENT.test(req.headers.get("User-Agent") ?? "");
+
       return await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessSession),
+          new PublicApiImpl(ctx, env, abortSession, accessSession, cliAdminsOnly),
           { abortSignal: abortController.signal });
     }
 
