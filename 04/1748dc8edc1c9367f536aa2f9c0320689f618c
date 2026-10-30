@@ -1,0 +1,22 @@
+packages/gatekeeper-microsoft/__tests__/content/pptx-edit.test.ts
+  s_1e2c74fa3cab0c::t_f9088688126c01 39
+  s_1e2c74fa3cab0c::t_4269cccf09ef46 40-41
+packages/gatekeeper-microsoft/__tests__/content/docx-edit.test.ts
+  s_1e2c74fa3cab0c::t_40c8d05b34ca59 158-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "041748dc8edc1c9367f536aa2f9c0320689f618c",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

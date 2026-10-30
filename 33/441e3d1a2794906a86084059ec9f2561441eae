@@ -1,0 +1,50 @@
+packages/gatekeeper-homeassistant/src/approvals.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 5,22-27,136-137,268,280-281,303
+packages/gatekeeper-homeassistant/README.md
+  s_1e2c74fa3cab0c::t_8993501bcd1705 69-70
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 65-68,71-72,96
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_1e2c74fa3cab0c::t_fec704681aa46e 1170
+  s_1e2c74fa3cab0c::t_b8ed6daff867ab 54,988
+packages/gatekeeper-homeassistant/__tests__/auto-approval.test.ts
+  s_1e2c74fa3cab0c::t_5aff485bb4e194 110-123,169-172
+  s_1e2c74fa3cab0c::t_da5009457bcb4a 1-3,5-105,108-109,127-132,143-145,162,202-324,327-345,347-353,383,395-433,437-443
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 4,106-107,124-126,133-142,146-155,157,159-161,163-168,173-201,325-326,346,384-394,434-436,444
+  s_1e2c74fa3cab0c::t_f9cce587c6b025 371-380
+  s_1e2c74fa3cab0c::t_6d45b8d4d82993 156,158
+  s_1e2c74fa3cab0c::t_b84bbdef49394a 354-370,381-382
+packages/gatekeeper-homeassistant/src/auto-approval.ts
+  s_1e2c74fa3cab0c::t_e794c9310935ee 148-149
+  s_1e2c74fa3cab0c::t_a31e6c3dfc3a02 1-6,8-10,12-21,47,79-80,82-91,95-113,116-121,125-147,150-183,190-217,224-225,227-229,233-250
+  s_1e2c74fa3cab0c::t_fec704681aa46e 24-26,28-36,52-53,59,114-115
+  s_1e2c74fa3cab0c::t_a54ba2e35eb557 184-185,218-223,226,230
+  s_1e2c74fa3cab0c::t_264774f3713314 186-189,231-232
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 7,11,22-23,27,37-46,48-51,54-58,60-76,92-94,122-124
+  s_1e2c74fa3cab0c::t_fc2ae617c01c9c 77-78,81
+packages/gatekeeper-homeassistant/package.json
+  s_1e2c74fa3cab0c::t_508bce379dcab0 9-10,22
+packages/gatekeeper-homeassistant/src/types.d.ts
+  s_1e2c74fa3cab0c::t_68dbd2b8abe1c9 55-56,326-327
+packages/gatekeeper-homeassistant/vite.config.ts
+  s_1e2c74fa3cab0c::t_ae599dbac837a0 1-3
+packages/gatekeeper-homeassistant/vitest.config.ts
+  s_1e2c74fa3cab0c::t_e4f810f0d3caa2 1-8
+pnpm-lock.yaml
+  s_1e2c74fa3cab0c::t_572a1b35058490 604-606
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "33441e3d1a2794906a86084059ec9f2561441eae",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,60 @@
+packages/gatekeeper-microsoft/src/outlook-session.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 24,320-339,1233-1234
+plans/microsoft-outlook.md
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 122-125,150-151
+packages/gatekeeper-microsoft/__tests__/outlook-session.test.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 26,36,294,302-333
+  s_1e2c74fa3cab0c::t_e626ae5bd455a0 334
+plans/microsoft-calendar.md
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 110-116,211,213-214
+packages/gatekeeper-microsoft/AGENTS.md
+  s_1e2c74fa3cab0c::t_55e6da62f58011 9,11
+packages/gatekeeper-microsoft/README.md
+  s_1e2c74fa3cab0c::t_76ae3e7cbd56e3 7-10,148-149,153,259-260,332,334-335
+packages/gatekeeper-microsoft/__tests__/calendar-actions.test.ts
+  s_1e2c74fa3cab0c::t_604388f649a472 8,212-217,345-411,416,451,454-455
+packages/gatekeeper-microsoft/__tests__/calendar-session.test.ts
+  s_1e2c74fa3cab0c::t_77e80e38d5a041 68-74,512-542,580,585,587-596
+packages/gatekeeper-microsoft/__tests__/outlook.test.ts
+  s_1e2c74fa3cab0c::t_1bfb20f4c6669c 9,237-246,309-331,1003-1011
+packages/gatekeeper-microsoft/__tests__/sharepoint-actions.test.ts
+  s_1e2c74fa3cab0c::t_53095973e0626c 9,418-458
+packages/gatekeeper-microsoft/__tests__/sharepoint-overlay.test.ts
+  s_1e2c74fa3cab0c::t_c1fc8cac9865aa 152-162
+packages/gatekeeper-microsoft/__tests__/workerd/gatekeeper.test.ts
+  s_1e2c74fa3cab0c::t_c3629edb55f861 14,151-186,387-397
+packages/gatekeeper-microsoft/src/calendar-actions.ts
+  s_1e2c74fa3cab0c::t_395c9ec0b00adc 6-11,94,122-126,152,216-217,225,381-412,483-484,542-543,586,588-592,595-596,598-601,674-676,722,737-738
+packages/gatekeeper-microsoft/src/calendar-gatekeeper.ts
+  s_1e2c74fa3cab0c::t_1bbb50ac80e946 51-52,55-57,130-134
+packages/gatekeeper-microsoft/src/calendar-overlay.ts
+  s_1e2c74fa3cab0c::t_769b38925f07fd 94-95,107
+packages/gatekeeper-microsoft/src/calendar-session.ts
+  s_1e2c74fa3cab0c::t_2c2d0f02d4c689 25,974,1048
+packages/gatekeeper-microsoft/src/outlook-actions.ts
+  s_1e2c74fa3cab0c::t_99a96e7cf5e7ab 105-106,517-527,748-749,876-881,916-917
+packages/gatekeeper-microsoft/src/outlook-overlay.ts
+  s_1e2c74fa3cab0c::t_e8cc24e92cedb5 39
+packages/gatekeeper-microsoft/src/sharepoint-actions.ts
+  s_1e2c74fa3cab0c::t_469c22fb5709fc 199-200,431-441,676-677,876-877,903-908,1071-1072,1132,1146
+packages/gatekeeper-microsoft/src/sharepoint-overlay.ts
+  s_1e2c74fa3cab0c::t_7a91366e9dc7b6 26-32,239,256,279,300,314
+packages/gatekeeper-microsoft/src/sharepoint-session.ts
+  s_1e2c74fa3cab0c::t_fa4eddd4e6f637 32,1495
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "daf3237332a28140834cc20ff4e6b1073087cb82",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
