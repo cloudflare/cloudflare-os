@@ -169,9 +169,10 @@ export type ActionDefinition<Payload, Host> = {
   kind: ActionKind;
   /**
    * Sent as `ActionDescription.autoApprovable`: whether an action of this definition may be applied
-   * without review once the user enables a rule for its `kind`. A verdict that depends on the
-   * payload is two sibling definitions sharing one `kind`, one `true` and one `false`, with the
-   * session submitting through the one that matches.
+   * without review once the user enables a rule for its `kind`. `true` is the norm; the
+   * `write-gatekeeper` skill's "Action kinds and auto-approval" lists when it must be `false`. A
+   * verdict that depends on the payload is sibling definitions, one `true` and one `false`, with
+   * the session submitting through the one that matches.
    */
   autoApprovable: boolean;
   /** Whether pending effects are simulated or the agent must await the decision. */

@@ -1,6 +1,6 @@
 ---
 name: write-gatekeeper
-description: Guides implementation of Gatekeeper Workers that bridge Gadgets to external services. Covers auth, capability-based API design, approval queue integration, caching, and action simulation. Load when creating, modifying, or reviewing the implementation of a gatekeeper.
+description: Guides implementation of Gatekeeper Workers that bridge Gadgets to external services. Covers auth, capability-based API design, approval queue integration, action kinds and auto-approval verdicts, caching, and action simulation. Load when creating, modifying, or reviewing the implementation of a gatekeeper.
 ---
 
 # Writing a Gatekeeper
@@ -35,7 +35,7 @@ This is a **new-authoring** rule, not a shortcut for migrating existing gatekeep
 
 3. **Fine-grained resource granting** — Enable the end user to grant access to agents at fine granularities, in addition to coarse-grained access. For example, a user may want to give an agent access to a specific Google Doc or GitHub repo, rather than granting broad access to everything they can do. This should be straightforward given a capability-based API. That said, broad access should also be allowed when it makes sense. Consider carefully which granularities are meaningful — a Jira gatekeeper might support "whole service", "project", and "issue" granularities, but it would be silly to support granting access to a single field of an issue separately.
 
-4. **Logging & approvals** — Every action the agent or gadget performs must be logged via the `ApprovalQueue` API. Every action with an externally-visible side effect must be submitted via `submitAction()`, and must not actually be performed until `applyAction()` has been called. Read-only observations must call `authorizeObservation()` before returning data to the caller. Reads the gatekeeper makes for its own purposes, returning nothing to the caller, are not observations (see [What counts as an observation](#what-counts-as-an-observation)).
+4. **Logging & approvals** — Every action the agent or gadget performs must be logged via the `ApprovalQueue` API. Every action with an externally-visible side effect must be submitted via `submitAction()`, and must not actually be performed until `applyAction()` has been called. Every action declares an `autoApprovable` verdict, `true` unless the [opt-out policy](#action-kinds-and-auto-approval) applies. Read-only observations must call `authorizeObservation()` before returning data to the caller. Reads the gatekeeper makes for its own purposes, returning nothing to the caller, are not observations (see [What counts as an observation](#what-counts-as-an-observation)).
 
 5. **Caching** — When it makes sense, cache remote content in the gatekeeper's DO storage to improve performance when agents or gadgets repeatedly read the same data. Caching also enables a better TypeScript API when the service's underlying API has an inconvenient data shape. For example, Gmail's API for listing threads returns only thread IDs without metadata, requiring a callback for each thread; with caching, the gatekeeper can provide an API that returns rich thread summaries directly, reading from local content synchronized with Gmail as needed. See Phase 2 for implementation guidance.
 
@@ -53,6 +53,7 @@ Study the service's API docs. Identify:
 - Auth model (OAuth 2.0, API keys, etc.)
 - Resources to expose and what access granularities make sense
 - Which operations are observations (read-only) vs. actions (side effects)
+- For each action, its kind (the group a user would enable together, labelled like "Edit labels") and its auto-approval verdict (see the [opt-out policy](#action-kinds-and-auto-approval))
 
 ### Step 2: Design the Session types
 
@@ -196,6 +197,26 @@ Go through all the API methods and decide where to insert `submitAction()` calls
 - Any operation which has visible side effects on the world must call submitAction(), and must not actually apply the action until approved.
 
 Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+
+#### Action kinds and auto-approval
+
+Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. Nothing auto-applies until the user enables a rule for the kind; the verdict says whether honoring it is safe for *this* action.
+
+**The default is `true`.** Use `false` only when the action:
+
+1. deletes or removes content (its restore counterpart is true);
+2. sends content as the user to people outside the bound resource;
+3. spends money or billed credits;
+4. runs arbitrary code, queries or service calls where one kind covers both benign and destructive effects;
+5. passes a governance gate (merge, approving review, push to a default or protected branch, deploy, publish);
+6. is barred from automation by provider policy;
+7. changes permissions, sharing or membership.
+
+Every `false` carries a one-line comment naming its rule. Posting into the resource the user bound (its channel, thread or issue) is not rule 2. A package's `AGENTS.md` or README may be stricter (e.g. `gatekeeper-x`); follow it.
+
+Where the verdict depends on the payload, compute it instead of a blanket `false`: per payload in a hand-built `ActionDescription` (`autoApprovalOf` in `packages/gatekeeper-github/src/github.ts`), or in the kit as sibling definitions, one `true` and one `false`, that the session picks between at submit (`editSheetValues` and `updateSpreadsheet` in `packages/gatekeeper-google/src/sheets-actions.ts`). The existing definition keeps its name, since stored records resolve by it. When the facts behind a `true` can change before apply (an event gaining attendees), re-check at apply time.
+
+A newly `true` action gets a new tag, never one that already has a `true` action: users' stored rules would silently start covering it.
 
 It's critically important that you add `ApprovalQueue` to all API operations that interact with the outside world, otherwise the gatekeeper security model is broken.
 
@@ -364,13 +385,14 @@ Reviews tend to stop at general correctness. The most important review is of the
   - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
   - Runtime coverage exercises denied observers, empty and cached/buffered pages, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
+- **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true`. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 
 ## Tips
 
 - `types.txt` must be a **symlink** to `types.d.ts`, never a copy. Because it is delivered verbatim, `types.d.ts` must not import from other modules — inline any shared types (see [Documenting the API](#documenting-the-api-typesdts)).
 - Call `.dup()` on `approvalQueue` stubs before storing in a session, since Cap'n Web automatically disposes all stubs in parameters to an RPC call when the call returns.
 - `suggestedBindingName` in `describe()` reflects the resource **type** (e.g. `"GMAIL_INBOX"`), not the specific instance.
-- For read-only or push-only gatekeepers, `applyAction()` / `rejectAction()` / `revertAction()` can simply throw (they'll never be called since the gatekeeper never submits actions).
+- For read-only or push-only gatekeepers, `applyAction()` / `rejectAction()` / `revertAction()` can simply throw (they'll never be called since the gatekeeper never submits actions), and `getAutoApprovableActions()` returns `[]`.
 - For `WorkerEntrypoint` and `DurableObject` subclasses, pass credentials and resource IDs via `ctx.props`, not constructor arguments. RPC stubs pointing to these types can be stored in long-term storage and restored later, creating a new instance based on the same `props`.
 - If the gatekeeper implements multiple unrelated resource types with disjoint APIs, each may have its own `.d.ts` file, so that the `getTypeScriptTypes()` method of the specific `Gatekeeper` implementation only returns the types that matter for it. The `getTypeScriptTypes()` method on the top-level `GatekeeperVendor` should return the concatenation of all of these.
 - All DO classes must appear in `cloudflare.config.ts`'s `migrations` export under `new_sqlite_classes`.
