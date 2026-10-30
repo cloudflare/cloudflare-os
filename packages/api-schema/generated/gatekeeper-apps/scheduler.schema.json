@@ -1,0 +1,829 @@
+{
+  "format": "capnweb-schema/1",
+  "entry": "ScheduleManagementApi",
+  "constants": {},
+  "services": {
+    "ScheduleManagementApi": {
+      "doc": "The read-only management capability the Scheduled Tasks app UI holds: the account's schedules,\nacross all of its workspaces, without the authority to change them. Hook enablement stays in the\nWorkshop's Connections UI.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "list",
+          "doc": "Lists the account's scheduled tasks, across its workspaces, one page of at most 100 at a time,\nfiltered by `options`; pass a page's `cursor` back for the next.",
+          "params": [
+            {
+              "name": "options",
+              "type": {
+                "kind": "ref",
+                "name": "ManagementListOptions"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "ref",
+            "name": "ManagementSchedulePage"
+          }
+        }
+      ]
+    }
+  },
+  "shapes": {
+    "CalendarCadence": {
+      "doc": "Canonical calendar cadence returned by `list()`.",
+      "kind": "object",
+      "properties": {
+        "kind": {
+          "kind": "literal",
+          "value": "calendar"
+        },
+        "rule": {
+          "kind": "ref",
+          "name": "NormalizedCalendarRule"
+        },
+        "timeZone": {
+          "kind": "string"
+        }
+      },
+      "propertyDocs": {
+        "kind": {
+          "doc": "Cadence discriminator."
+        },
+        "rule": {
+          "doc": "Validated normalized recurrence rule."
+        },
+        "timeZone": {
+          "doc": "IANA timezone used for wall-clock interpretation."
+        }
+      }
+    },
+    "IntervalCadence": {
+      "doc": "Canonical interval cadence returned by `list()`.",
+      "kind": "object",
+      "properties": {
+        "anchorMs": {
+          "kind": "number"
+        },
+        "everyMs": {
+          "kind": "number"
+        },
+        "kind": {
+          "kind": "literal",
+          "value": "interval"
+        }
+      },
+      "propertyDocs": {
+        "anchorMs": {
+          "doc": "Registration instant anchoring the cadence, as Unix epoch milliseconds."
+        },
+        "everyMs": {
+          "doc": "Elapsed milliseconds between occurrences."
+        },
+        "kind": {
+          "doc": "Cadence discriminator."
+        }
+      }
+    },
+    "ManagementListOptions": {
+      "doc": "Read-only filters accepted by the Scheduler management capability.",
+      "kind": "object",
+      "properties": {
+        "cursor": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "query": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "statuses": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "array",
+              "element": {
+                "kind": "ref",
+                "name": "ScheduleStatus"
+              }
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        }
+      },
+      "propertyDocs": {
+        "cursor": {
+          "doc": "Opaque continuation token. Pages are weakly consistent if schedules change between requests."
+        }
+      }
+    },
+    "ManagementSchedule": {
+      "doc": "Account-management projection of one schedule.",
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "object",
+          "properties": {
+            "cadence": {
+              "kind": "ref",
+              "name": "ScheduleCadence"
+            },
+            "completedAt": {
+              "kind": "number"
+            },
+            "description": {
+              "kind": "string"
+            },
+            "gadgetId": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrenceCount": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrences": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "ref",
+                  "name": "NormalizedScheduleOccurrences"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "scheduleId": {
+              "kind": "string"
+            },
+            "status": {
+              "kind": "literal",
+              "value": "completed"
+            },
+            "title": {
+              "kind": "string"
+            },
+            "workspaceId": {
+              "kind": "string"
+            }
+          },
+          "propertyDocs": {
+            "cadence": {
+              "doc": "Canonical recurrence/one-shot definition."
+            },
+            "completedAt": {
+              "doc": "Completion time."
+            },
+            "description": {
+              "doc": "Approved display description."
+            },
+            "gadgetId": {
+              "doc": "The gadget within that workspace, when the schedule is pinned to one."
+            },
+            "occurrenceCount": {
+              "doc": "Due slots started so far; present for a bounded recurrence."
+            },
+            "occurrences": {
+              "doc": "Finite recurrence bound, when configured."
+            },
+            "scheduleId": {
+              "doc": "Stable registration ID."
+            },
+            "status": {
+              "doc": "A one-shot completed or a bounded recurrence reached its limit."
+            },
+            "title": {
+              "doc": "Approved display title."
+            },
+            "workspaceId": {
+              "doc": "The workspace this schedule delivers into. The host resolves its live title and route."
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "cadence": {
+              "kind": "ref",
+              "name": "ScheduleCadence"
+            },
+            "description": {
+              "kind": "string"
+            },
+            "expiredAt": {
+              "kind": "number"
+            },
+            "gadgetId": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrenceCount": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrences": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "ref",
+                  "name": "NormalizedScheduleOccurrences"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "scheduleId": {
+              "kind": "string"
+            },
+            "status": {
+              "kind": "literal",
+              "value": "expired"
+            },
+            "title": {
+              "kind": "string"
+            },
+            "workspaceId": {
+              "kind": "string"
+            }
+          },
+          "propertyDocs": {
+            "cadence": {
+              "doc": "Canonical recurrence/one-shot definition."
+            },
+            "description": {
+              "doc": "Approved display description."
+            },
+            "expiredAt": {
+              "doc": "Expiration time."
+            },
+            "gadgetId": {
+              "doc": "The gadget within that workspace, when the schedule is pinned to one."
+            },
+            "occurrenceCount": {
+              "doc": "Due slots started so far; present for a bounded recurrence."
+            },
+            "occurrences": {
+              "doc": "Finite recurrence bound, when configured."
+            },
+            "scheduleId": {
+              "doc": "Stable registration ID."
+            },
+            "status": {
+              "doc": "A one-shot, or a recurrence whose bound passed before it could run, never delivered."
+            },
+            "title": {
+              "doc": "Approved display title."
+            },
+            "workspaceId": {
+              "doc": "The workspace this schedule delivers into. The host resolves its live title and route."
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "cadence": {
+              "kind": "ref",
+              "name": "ScheduleCadence"
+            },
+            "description": {
+              "kind": "string"
+            },
+            "failedAt": {
+              "kind": "number"
+            },
+            "failureCode": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "literal",
+                  "value": "authorization_failed"
+                },
+                {
+                  "kind": "literal",
+                  "value": "callback_failed"
+                }
+              ]
+            },
+            "gadgetId": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrenceCount": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrences": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "ref",
+                  "name": "NormalizedScheduleOccurrences"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "scheduleId": {
+              "kind": "string"
+            },
+            "status": {
+              "kind": "literal",
+              "value": "dead"
+            },
+            "title": {
+              "kind": "string"
+            },
+            "workspaceId": {
+              "kind": "string"
+            }
+          },
+          "propertyDocs": {
+            "cadence": {
+              "doc": "Canonical recurrence/one-shot definition."
+            },
+            "description": {
+              "doc": "Approved display description."
+            },
+            "failedAt": {
+              "doc": "Exhaustion time."
+            },
+            "failureCode": {
+              "doc": "Fixed non-sensitive stage code for the failure."
+            },
+            "gadgetId": {
+              "doc": "The gadget within that workspace, when the schedule is pinned to one."
+            },
+            "occurrenceCount": {
+              "doc": "Due slots started so far; present for a bounded recurrence."
+            },
+            "occurrences": {
+              "doc": "Finite recurrence bound, when configured."
+            },
+            "scheduleId": {
+              "doc": "Stable registration ID."
+            },
+            "status": {
+              "doc": "Callback delivery exhausted its retry budget."
+            },
+            "title": {
+              "doc": "Approved display title."
+            },
+            "workspaceId": {
+              "doc": "The workspace this schedule delivers into. The host resolves its live title and route."
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "cadence": {
+              "kind": "ref",
+              "name": "ScheduleCadence"
+            },
+            "description": {
+              "kind": "string"
+            },
+            "gadgetId": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "nextFire": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrenceCount": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "number"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "occurrences": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "ref",
+                  "name": "NormalizedScheduleOccurrences"
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "retrying": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "literal",
+                  "value": true
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
+            "scheduleId": {
+              "kind": "string"
+            },
+            "status": {
+              "kind": "literal",
+              "value": "active"
+            },
+            "title": {
+              "kind": "string"
+            },
+            "workspaceId": {
+              "kind": "string"
+            }
+          },
+          "propertyDocs": {
+            "cadence": {
+              "doc": "Canonical recurrence/one-shot definition."
+            },
+            "description": {
+              "doc": "Approved display description."
+            },
+            "gadgetId": {
+              "doc": "The gadget within that workspace, when the schedule is pinned to one."
+            },
+            "nextFire": {
+              "doc": "Next planned occurrence or retry, when one is currently known."
+            },
+            "occurrenceCount": {
+              "doc": "Due slots started so far; present for a bounded recurrence."
+            },
+            "occurrences": {
+              "doc": "Finite recurrence bound, when configured."
+            },
+            "retrying": {
+              "doc": "Set when `nextFire` is a retry of a failed attempt, not a new occurrence."
+            },
+            "scheduleId": {
+              "doc": "Stable registration ID."
+            },
+            "status": {
+              "doc": "The schedule can still run or retry."
+            },
+            "title": {
+              "doc": "Approved display title."
+            },
+            "workspaceId": {
+              "doc": "The workspace this schedule delivers into. The host resolves its live title and route."
+            }
+          }
+        }
+      ]
+    },
+    "ManagementSchedulePage": {
+      "doc": "One bounded page returned to the Scheduler management app.",
+      "kind": "object",
+      "properties": {
+        "cursor": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "schedules": {
+          "kind": "array",
+          "element": {
+            "kind": "ref",
+            "name": "ManagementSchedule"
+          }
+        }
+      }
+    },
+    "NormalizedCalendarRule": {
+      "doc": "Canonical normalized calendar rule returned by `list()`.",
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "object",
+          "properties": {
+            "anchorMs": {
+              "kind": "number"
+            },
+            "byDay": {
+              "kind": "array",
+              "element": {
+                "kind": "ref",
+                "name": "Weekday"
+              }
+            },
+            "freq": {
+              "kind": "literal",
+              "value": "weekly"
+            },
+            "hour": {
+              "kind": "number"
+            },
+            "interval": {
+              "kind": "number"
+            },
+            "minute": {
+              "kind": "number"
+            }
+          },
+          "propertyDocs": {
+            "anchorMs": {
+              "doc": "Phase anchor."
+            },
+            "byDay": {
+              "doc": "Weekdays."
+            },
+            "freq": {
+              "doc": "Rule discriminator."
+            },
+            "hour": {
+              "doc": "Hour."
+            },
+            "interval": {
+              "doc": "Unit count."
+            },
+            "minute": {
+              "doc": "Minute."
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "anchorMs": {
+              "kind": "number"
+            },
+            "freq": {
+              "kind": "literal",
+              "value": "daily"
+            },
+            "hour": {
+              "kind": "number"
+            },
+            "interval": {
+              "kind": "number"
+            },
+            "minute": {
+              "kind": "number"
+            }
+          },
+          "propertyDocs": {
+            "anchorMs": {
+              "doc": "Phase anchor."
+            },
+            "freq": {
+              "doc": "Rule discriminator."
+            },
+            "hour": {
+              "doc": "Hour."
+            },
+            "interval": {
+              "doc": "Unit count."
+            },
+            "minute": {
+              "doc": "Minute."
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "anchorMs": {
+              "kind": "number"
+            },
+            "freq": {
+              "kind": "literal",
+              "value": "hourly"
+            },
+            "interval": {
+              "kind": "number"
+            },
+            "minute": {
+              "kind": "number"
+            }
+          },
+          "propertyDocs": {
+            "anchorMs": {
+              "doc": "Phase anchor."
+            },
+            "freq": {
+              "doc": "Rule discriminator."
+            },
+            "interval": {
+              "doc": "Unit count."
+            },
+            "minute": {
+              "doc": "Minute."
+            }
+          }
+        }
+      ]
+    },
+    "NormalizedScheduleOccurrences": {
+      "doc": "A validated recurrence bound returned by `list()`; `until` resolves to epoch milliseconds.",
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "object",
+          "properties": {
+            "count": {
+              "kind": "number"
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "until": {
+              "kind": "number"
+            }
+          }
+        }
+      ]
+    },
+    "OneShotCadence": {
+      "doc": "Canonical one-shot cadence returned by `list()`.",
+      "kind": "object",
+      "properties": {
+        "fireAt": {
+          "kind": "number"
+        },
+        "kind": {
+          "kind": "literal",
+          "value": "once"
+        },
+        "timeZone": {
+          "kind": "string"
+        }
+      },
+      "propertyDocs": {
+        "fireAt": {
+          "doc": "Absolute firing instant as Unix epoch milliseconds."
+        },
+        "kind": {
+          "doc": "Cadence discriminator."
+        },
+        "timeZone": {
+          "doc": "IANA timezone used for display; `UTC` for numeric input."
+        }
+      }
+    },
+    "ScheduleCadence": {
+      "doc": "Canonical cadence returned by `list()`.",
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "ref",
+          "name": "CalendarCadence"
+        },
+        {
+          "kind": "ref",
+          "name": "IntervalCadence"
+        },
+        {
+          "kind": "ref",
+          "name": "OneShotCadence"
+        }
+      ]
+    },
+    "ScheduleStatus": {
+      "doc": "Current state of an enabled schedule: recurring or pending work is `active`; exhausted callback\nretries are `dead`; a delivered one-shot or a recurrence that used its bound is `completed`; and\na schedule whose firing window passed without delivery is `expired`.",
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "literal",
+          "value": "active"
+        },
+        {
+          "kind": "literal",
+          "value": "completed"
+        },
+        {
+          "kind": "literal",
+          "value": "dead"
+        },
+        {
+          "kind": "literal",
+          "value": "expired"
+        }
+      ]
+    },
+    "Weekday": {
+      "doc": "Day-of-week token, RRULE-style: `SU` is Sunday through `SA` for Saturday.",
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "literal",
+          "value": "FR"
+        },
+        {
+          "kind": "literal",
+          "value": "MO"
+        },
+        {
+          "kind": "literal",
+          "value": "SA"
+        },
+        {
+          "kind": "literal",
+          "value": "SU"
+        },
+        {
+          "kind": "literal",
+          "value": "TH"
+        },
+        {
+          "kind": "literal",
+          "value": "TU"
+        },
+        {
+          "kind": "literal",
+          "value": "WE"
+        }
+      ]
+    }
+  }
+}

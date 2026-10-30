@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { table } from "../generated/commands.ts";
-import { accountHash, createAccountHelp, parseCreateAccount } from "./create-account.ts";
+import { accountHash, createAccount, createAccountHelp, parseCreateAccount } from "./create-account.ts";
 import { UsageError } from "./output.ts";
-import { passwordHash } from "./session.ts";
+import { passwordHash, type Session } from "./session.ts";
 
 const SALT = table.constants.SERVICE_SALT;
 
@@ -21,6 +21,11 @@ test("`create-account` is the command only as the first word that is not an opti
   assert.deepEqual(parseCreateAccount(["create-account", "-h"]), { username: "", displayName: "", url: undefined, auth: undefined, dryRun: false, help: true });
   assert.equal(parseCreateAccount(["open-notebook", "create-account"]), undefined);
   assert.equal(parseCreateAccount(["search", "create-account"]), undefined);
+  // A single-dash token is a positional, as walk reads it, so it is the command word: never skipped
+  // to make what follows it the command, or the username.
+  assert.equal(parseCreateAccount(["-v", "create-account"]), undefined);
+  assert.equal(parseCreateAccount(["-x", "create-account", "bob"]), undefined);
+  assert.equal(parseCreateAccount(["--display-name", "B", "create-account", "bob"])?.username, "bob");
 });
 
 function usage(tokens: string[], message: RegExp): void {
@@ -32,19 +37,41 @@ test("`create-account` usage errors name what is wrong and its help", () => {
   // An extra argument is most likely a password: it is not echoed, and the error says where one goes.
   usage(["create-account", "bob", "s3cret"], /^create-account takes one username, but another argument follows "bob"; the password comes from CFOS_API_PASSWORD/);
   assert.throws(() => parseCreateAccount(["create-account", "bob", "s3cret"]), (error: Error) => !error.message.includes("s3cret"));
-  // The password never comes from argv, and the account is the argument, not a sign-in.
-  usage(["create-account", "bob", "--password", "x"], /Unknown option '--password'.*Run `cf-os api create-account --help` for its options\.$/);
-  usage(["create-account", "bob", "--username", "alice"], /Unknown option '--username'/);
-  usage(["create-account", "bob", "--display-name"], /--display-name/);
+  // The password never comes from argv, and the account is the argument, not a sign-in. An unknown or
+  // misused option is refused as a generated command refuses one, never in node:util's words.
+  usage(["create-account", "bob", "--password", "x"], /^Unknown option --password for create-account\. Run `cf-os api create-account --help` for its options\.$/);
+  usage(["create-account", "bob", "--displayname", "X"],
+    /^Unknown option --displayname for create-account\. Did you mean --display-name\? Run `cf-os api create-account --help` for its options\.$/);
+  usage(["create-account", "bob", "--display-name"], /^--display-name needs a value\. Run `cf-os api create-account --help` for its options\.$/);
+  usage(["create-account", "bob", "--display-name", "--dry-run"], /^--display-name needs a value, and --dry-run reads as an option: write --display-name=--dry-run if that is the value\./);
+  usage(["create-account", "bob", "--dry-run=true"], /^--dry-run takes no value: write --dry-run or --no-dry-run\./);
+  usage(["create-account", "--help=x"], /^--help takes no value: run `cf-os api create-account --help`\.$/);
+  usage(["create-account", "bob", "--username", "alice"],
+    /^--username does not apply to create-account: create-account signs in as no one, and the new account's name is its <username> argument; --username then signs in as it\. Run `cf-os api create-account --help` for its options\.$/);
   // --auth says how to pass Access's edge, as for a public command; no one signs in, so not password.
   assert.equal(parseCreateAccount(["create-account", "bob", "--auth", "token"])?.auth, "token");
   usage(["create-account", "bob", "--auth", "password"], /^create-account signs in as no one: --auth is access or token\./);
-  // Runtime options before the word still find create-account, which then refuses those it does not take.
-  for (const option of ["--username", "--timeout", "--out"]) {
-    usage([option, "x", "create-account", "alice"], new RegExp(`^Unknown option '${option}'.*Run .cf-os api create-account --help. for its options[.]$`));
+  // Runtime options before the word still find create-account, which refuses those that do not apply,
+  // saying why, and honours --timeout.
+  for (const [option, why] of [["--username", "create-account signs in as no one"], ["--out", "it prints the new account as JSON on stdout"],
+    ["--answer", "its call asks nothing back"]]) {
+    usage([option, "X.y=1", "create-account", "alice"], new RegExp(`^${option} does not apply to create-account: ${why}`));
   }
-  // It calls nothing that takes a callback, so nothing it does is answered.
-  usage(["create-account", "bob", "--answer", "X.y=1"], /^Unknown option '--answer'.*Run `cf-os api create-account --help` for its options\.$/);
+  assert.equal(parseCreateAccount(["--timeout", "5", "create-account", "alice"])?.timeout, 5);
+  assert.equal("timeout" in parseCreateAccount(["create-account", "alice"])!, false);
+  usage(["create-account", "alice", "--timeout", "0"], /^--timeout must be a positive number of seconds/);
+});
+
+test("--timeout fails a create-account that has not finished in time, and still closes a session that opens late", async () => {
+  const { promise: opened, resolve: open } = Promise.withResolvers<Session>();
+  let disposed = false;
+  const lines: string[] = [];
+  await assert.rejects(createAccount({ ...parseCreateAccount(["create-account", "alice", "--timeout", "0.05"])! }, new Uint8Array(),
+    () => opened, { json: () => assert.fail("printed a result"), log: (text) => lines.push(text) }), /^Error: timed out after 0\.05s\.$/);
+  open({ main: { [Symbol.dispose]: () => { disposed = true; } }, authenticate: async () => assert.fail("signed in"), explain: async (error) => error });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(disposed, "the late session is closed");
+  assert.deepEqual(lines, []);
 });
 
 test("the password is CFOS_API_PASSWORD, hashed as sign-in hashes it; unset, the failure names it", async () => {

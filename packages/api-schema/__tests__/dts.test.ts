@@ -9,14 +9,14 @@ import ts from "typescript6";
 import { afterAll, describe, expect, test } from "vitest";
 import { AWAITABLE, emitDeclarations, PIPELINED, UNTYPED_STUB } from "../src/emit/dts.ts";
 import { extractSchema } from "../src/extract.ts";
-import { type ApiShape, FORMAT, type Schema, type SchemaMethod, type SchemaService } from "../src/schema.ts";
+import { type ApiShape, FORMAT, type Schema, type SchemaMethod, type SchemaService, type SchemaShape } from "../src/schema.ts";
 
 /**
  * A schema of `services` (doc and methods defaulting to none, direction to the server's: the
  * emitter reads its own positions from the root) and `shapes`.
  */
 function schemaOf(services: Record<string, Partial<SchemaService>>,
-  shapes: Record<string, ApiShape> = {}, entry = Object.keys(services)[0]!): Schema {
+  shapes: Record<string, SchemaShape> = {}, entry = Object.keys(services)[0]!): Schema {
   return {
     format: FORMAT,
     entry,
@@ -391,7 +391,14 @@ test("escapes a `*/` in any doc or reason, and a line terminator in the header",
       doc: "Service */ export interface Leaked1 {}",
       methods: [method("a", { kind: "unsupported", reason: "why */ export interface Leaked2 {}" }, [
         { name: "x", type: { kind: "string" }, optional: false, doc: "param */ export interface Leaked3 {}" },
-      ], "Method */\nexport interface Leaked4 {}")],
+      ], "Method */\nexport interface Leaked4 {}"), method("b", { kind: "ref", name: "Item" })],
+    },
+  }, {
+    Item: {
+      doc: "Shape */ export interface Leaked8 {}",
+      kind: "object",
+      properties: { x: { kind: "string" } },
+      propertyDocs: { x: { doc: "Property */ export interface Leaked9 {}" } },
     },
   });
   const { full } = emitDeclarations(schema, {
@@ -401,7 +408,9 @@ test("escapes a `*/` in any doc or reason, and a line terminator in the header",
   expect(full).toMatch(/^\/\/ header \*\/ export interface Leaked5 \{\}\n\/\/ export interface Leaked6 \{\}\n\/\/ /);
   expect(full).toContain("/** Service *\\/ export interface Leaked1 {} */");
   expect(full).toContain("   * @param x param *\\/ export interface Leaked3 {}\n");
-  expect(declared(full)).toEqual(["Api", AWAITABLE]);
+  expect(full).toContain("/** Shape *\\/ export interface Leaked8 {} */\n");
+  expect(full).toContain("  /** Property *\\/ export interface Leaked9 {} */\n");
+  expect(declared(full)).toEqual(["Api", AWAITABLE, "Item"]);
   expect(diagnose({ "api.d.ts": full })).toEqual([]);
 });
 
@@ -749,10 +758,32 @@ describe("tags", () => {
         { ...method("old", { kind: "void" }, [], "Old.\n@deprecated Use new."), deprecated: "Use new." },
         { ...method("other", { kind: "stub", service: "Other" }) },
         { ...method("save", { kind: "void" }, [], "Saves."), mutates: true },
+        { ...method("since", { kind: "void" }, [], "New.\n@since 2"), tags: { beta: "", since: "2" } },
         { ...method("tagged", { kind: "void" }, [], "Writes.\n\n@mutates"), mutates: true },
       ],
+      properties: [{ name: "version", doc: "", type: { kind: "string" }, optional: false, tags: { since: "1" } }],
     },
-    Other: { doc: "Kept.\n@deprecated", deprecated: "" },
+    Other: {
+      doc: "Kept.\n@deprecated", deprecated: "", tags: { audience: "agents" },
+      methods: [method("entry", { kind: "ref", name: "Entry" })],
+    },
+  }, {
+    Entry: {
+      doc: "One entry.",
+      kind: "object",
+      properties: {
+        id: { kind: "number" },
+        label: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+        role: { kind: "ref", name: "Role" },
+        title: { kind: "string" },
+        token: { kind: "string" },
+      },
+      propertyDocs: {
+        id: { doc: "Its ID." }, label: { deprecated: "Read title." }, title: { doc: "Shown.\n\nTwice." },
+        token: { tags: { secret: "" } },
+      },
+    },
+    Role: { deprecated: "", kind: "literal", value: "admin" },
   });
   const { full } = emitDeclarations(schema, { root: "Api" });
 
@@ -764,7 +795,37 @@ describe("tags", () => {
     expect(full).toContain("  other(): Pipelined<Other>;");
     expect(full).toContain("  /**\n   * Saves.\n   * @mutates\n   */\n  save(");
     expect(full).toContain("  /**\n   * Writes.\n   *\n   * @mutates\n   */\n  tagged(");
-    expect(full).toContain("/**\n * Kept.\n * @deprecated\n */\nexport interface Other {");
+    expect(full).toContain("/**\n * Kept.\n * @deprecated\n * @audience agents\n */\nexport interface Other {");
+  });
+
+  test("the other tags are in the JSDoc once, from `tags` when the doc lacks them", () => {
+    expect(full).toContain("  /**\n   * New.\n   * @since 2\n   * @beta\n   */\n  since(");
+    expect(full).toContain("  /** @since 1 */\n  readonly version: Promise<string>;");
+  });
+
+  test("a named shape's and an object property's docs and `@deprecated` are in their JSDoc", () => {
+    expect(full).toContain([
+      "/** One entry. */",
+      "export type Entry = {",
+      "  /** Its ID. */",
+      "  id: number;",
+      "  /** @deprecated Read title. */",
+      "  label?: string;",
+      "  role: Role;",
+      "  /**",
+      "   * Shown.",
+      "   *",
+      "   * Twice.",
+      "   */",
+      "  title: string;",
+      "  /** @secret */",
+      "  token: string;",
+      "};",
+      "",
+      "/** @deprecated */",
+      "export type Role = \"admin\";",
+    ].join("\n"));
+    expect(diagnose({ "api.d.ts": full })).toEqual([]);
   });
 });
 
@@ -774,13 +835,34 @@ test("the extractor's fixture: every tag once, and declarations that type-check"
   const { full } = emitDeclarations(fixture, { root: fixture.entry });
   const services = Object.values(fixture.services);
   const members = services.flatMap((service) => [...service.methods, ...service.properties ?? []]);
-  const deprecated = [...services, ...members].filter((item) => item.deprecated !== undefined).length;
+  const shapes = Object.values(fixture.shapes);
+  const shapeDocs = [...shapes, ...shapes.flatMap((shape) => shape.kind === "object" ? Object.values(shape.propertyDocs ?? {}) : [])];
+  const deprecated = [...services, ...members, ...shapeDocs].filter((item) => item.deprecated !== undefined).length;
   const mutates = services.flatMap((service) => service.methods).filter((m) => m.mutates).length;
+  const since = [...services, ...members, ...shapeDocs].filter((item) => item.tags?.since !== undefined).length;
   expect(deprecated).toBeGreaterThan(0);
   expect(mutates).toBeGreaterThan(0);
+  expect(since).toBeGreaterThan(0);
   expect(full.match(/@deprecated\b/g)).toHaveLength(deprecated);
   expect(full.match(/@mutates\b/g)).toHaveLength(mutates);
+  expect(full.match(/@since\b/g)).toHaveLength(since);
   expect(diagnose({ "api.d.ts": full })).toEqual([]);
+});
+
+test("the extractor's fixture: a documented alias and a documented property keep their docs, extracted and emitted", () => {
+  const PACKAGE = join(import.meta.dirname, "..");
+  const schema = extractSchema({
+    entry: join(import.meta.dirname, "__fixtures__", "api.ts"),
+    tsconfig: join(PACKAGE, "tsconfig.json"),
+    entryName: "FixturePublicApi",
+  });
+  const { full, fragments } = emitDeclarations(schema, { root: "FixtureAuthedApi" });
+  for (const text of [full, fragments.Notebook!]) {
+    expect(text).toContain('/** A string-literal union. */\nexport type Mood = "busy" | "calm";\n');
+    expect(text).toContain("/** A stored note. */\nexport type Note = {\n");
+    expect(text).toContain("  /**\n   * Its first line, from before titles.\n   * @deprecated Read title.\n   * @since 1\n   */\n  heading?: string;\n");
+    expect(text).toContain("  /** Optional, so a union with `undefined`. */\n  tags?: string[];\n");
+  }
 });
 
 describe("fragments", () => {
@@ -1047,7 +1129,7 @@ ${usage}
   test("a synchronous callback type-checks against the generated declaration", () => {
     const subscribe = schema.services.Overseer!.methods.find((m) => m.name === "subscribeToMetadata")!;
     expect(subscribe.params[0]!.type.kind).toBe("function");
-    expect(emitted.full).toContain("subscribeToMetadata(callback: (metadata: GadgetMetadata) => Awaitable<void>)");
+    expect(emitted.full).toContain("subscribeToMetadata(callback: (metadata: WorkspaceMetadata) => Awaitable<void>)");
     expect(probe(emitted.full, `declare const overseer: Generated.Overseer;
 void overseer.subscribeToMetadata((metadata) => {
   const title: string = metadata.title;
@@ -1072,7 +1154,7 @@ class Accounts implements Generated.ConnectedAccountsSubscriber {
 export async function rename(id: string, from: number, to: number): Promise<void> {
   using subscription = await api.subscribeConnectedAccounts(new Accounts());
   void subscription;
-  const overseer = api.openGadget(id);
+  const overseer = api.openWorkspace(id);
   await overseer.getGadget(to).setTitle(overseer.getGadget(from).getTitle());
 }`)).toEqual([]);
   });
@@ -1081,10 +1163,10 @@ export async function rename(id: string, from: number, to: number): Promise<void
   test("a returned handle disposes, and a returned capability pipelines, against the generated declaration", () => {
     expect(probe(emitted.full, `declare const api: Generated.AuthenticatedApi;
 export async function use(id: string): Promise<number> {
-  const chats = await api.openGadget(id).listChats();
-  using subscription = await api.openGadget(id).subscribeToMetadata(() => {});
+  const chats = await api.openWorkspace(id).listChats();
+  using subscription = await api.openWorkspace(id).subscribeToMetadata(() => {});
   void subscription;
-  const handle = await (await api.openGadget(id)).subscribeToMetadata(() => {});
+  const handle = await (await api.openWorkspace(id)).subscribeToMetadata(() => {});
   handle[Symbol.dispose]();
   api[Symbol.dispose]();
   return chats.length;
@@ -1247,12 +1329,12 @@ export async function use(id: string): Promise<number> {
     });
 
     test("a method dropped from the root", () => {
-      const newGadget = schema.services[ROOT]!.methods.find((m) => m.name === "newGadget")!;
-      expect(newGadget.params).toEqual([]);
-      expect(newGadget.returns).toEqual({ kind: "stub", service: "Overseer" });
+      const newWorkspace = schema.services[ROOT]!.methods.find((m) => m.name === "newWorkspace")!;
+      expect(newWorkspace.params).toEqual([]);
+      expect(newWorkspace.returns).toEqual({ kind: "stub", service: "Overseer" });
       const { target, diagnostics } = corrupt((copy) => {
-        copy.services[ROOT]!.methods = copy.services[ROOT]!.methods.filter((m) => m.name !== "newGadget");
-        return "newGadget";
+        copy.services[ROOT]!.methods = copy.services[ROOT]!.methods.filter((m) => m.name !== "newWorkspace");
+        return "newWorkspace";
       });
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"[\\s\\S]*Missing_${ROOT}`));
     });

@@ -12,6 +12,10 @@
 // service's methods return or properties hold as the server's, so only a hand-written schema can
 // reach a client service this way, and it is skipped.
 //
+// A named shape's doc is its `$defs` entry's `description`, and an object property's doc its
+// property's, each `deprecated: true` when the schema marks it so, as a parameter's doc is its
+// property's in `inputSchema`.
+//
 // Values that cannot travel as JSON keep a JSON Schema that says what they are, through the
 // `x-capnweb-*` annotations: a capability, function or stream is marked so a host knows it must
 // supply (or receive) a live reference rather than a value, a stream with what it carries as
@@ -24,7 +28,7 @@
 // other list follows the schema's own (sorted or declared) order, so the same schema always yields
 // the same catalog.
 
-import type { ApiShape, Schema, SchemaMethod } from "../schema.ts";
+import type { ApiShape, Schema, SchemaMethod, ShapeDoc } from "../schema.ts";
 
 /** The JSON Schema dialect every schema in the catalog is written in. */
 export const JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
@@ -88,6 +92,8 @@ export interface JsonSchema {
   $ref?: string;
   $defs?: Record<string, JsonSchema>;
   description?: string;
+  /** The value is deprecated (`@deprecated`); `description` says what instead, when it does. */
+  deprecated?: true;
   type?: "string" | "number" | "boolean" | "null" | "array" | "object";
   const?: string | number | boolean;
   enum?: (string | number | boolean)[];
@@ -197,7 +203,7 @@ function closed<T extends JsonSchema>(schema: Schema, build: (refs: Set<string>)
   for (const name of refs) {
     const shape = own(schema.shapes, name);
     if (!shape) throw new Error(`${name}: referenced, but not a shape of the schema`);
-    defs.set(name, toJsonSchema(shape, refs));
+    defs.set(name, documented(toJsonSchema(shape, refs), shape));
   }
   if (!defs.size) return root;
   const names = [...defs.keys()].toSorted(compare);
@@ -263,9 +269,9 @@ function toJsonSchema(shape: ApiShape, refs: Set<string>): JsonSchema {
       const fields = Object.entries(shape.properties)
         .map(([name, property]) => ({ name, property, present: withoutUndefined(property) }));
       // `Object.fromEntries` defines each key, so even a property named `__proto__` is one.
-      const properties: Record<string, JsonSchema> = Object.fromEntries(
-        fields.map(({ name, property, present }) => [name, toJsonSchema(present ?? property, refs)]),
-      );
+      const docs = shape.propertyDocs ?? {};
+      const properties: Record<string, JsonSchema> = Object.fromEntries(fields.map(({ name, property, present }) =>
+        [name, documented(toJsonSchema(present ?? property, refs), Object.hasOwn(docs, name) ? docs[name] : undefined)]));
       const required = fields.flatMap(({ name, present }) => present ? [] : [name]);
       const object: JsonSchema = { type: "object", properties };
       if (required.length) object.required = required;
@@ -302,6 +308,15 @@ function toJsonSchema(shape: ApiShape, refs: Set<string>): JsonSchema {
     case "response":
       return { "x-capnweb-kind": shape.kind };
   }
+}
+
+/** `json` with `doc`'s text as its `description`, and `deprecated` when it is. */
+function documented(json: JsonSchema, doc: ShapeDoc | undefined): JsonSchema {
+  return {
+    ...json,
+    ...(doc?.doc ? { description: doc.doc } : {}),
+    ...(doc?.deprecated === undefined ? {} : { deprecated: true as const }),
+  };
 }
 
 /**

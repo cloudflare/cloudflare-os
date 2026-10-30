@@ -1,5 +1,6 @@
 // The emitter, from the CLI's own miniature API (`__fixtures__/generated/schema.json`, which records
-// no `format` or `direction`, neither of which emit reads) to the expected command table beside it;
+// no `format` or `direction`, neither of which emit reads), with a gatekeeper app UI of its own
+// (`app-sketch.schema.json`, vendor `sketch`), to the expected command table beside it;
 // and from api-schema's own fixture (`packages/api-schema/__tests__/__fixtures__/schema.json`, read
 // in place), which exercises the current format's fields.
 //
@@ -11,8 +12,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { typeText } from "../src/type-text.ts";
+import type { ApiCapabilityProperty } from "../src/table.ts";
 import {
-  AGENT_TYPES_PATH, type AgentTypes, buildTable, cliDoc, COMMANDS_PATH, CREDENTIAL_METHODS, generate, kebab,
+  AGENT_TYPES_PATH, type AgentTypes, type AppApi, buildTable, cliDoc, COMMANDS_PATH, CREDENTIAL_METHODS, generate, kebab,
   ROOT_CREDENTIAL_METHODS, type Schema, SCHEMA_FORMAT, type SchemaMethod, type SchemaService,
 } from "./emit.ts";
 import { table as real } from "../generated/commands.ts";
@@ -24,12 +26,21 @@ const API_SCHEMA_FIXTURE = join(import.meta.dirname, "..", "..", "api-schema", "
 /** Agent declarations for the files `generate` renders beside the table. */
 const AGENT: AgentTypes = { declarations: "export interface A {}\n", fragments: { A: "export interface A {}\n" } };
 
+/** Every object in `value`, itself included, at any depth. */
+const objects = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.flatMap(objects)
+  : value && typeof value === "object" ? [value as Record<string, unknown>, ...Object.values(value).flatMap(objects)] : [];
+
 function fixture(): Schema {
   return JSON.parse(readFileSync(join(GENERATED, "schema.json"), "utf8")) as Schema;
 }
 
+/** The fixture's gatekeeper app UIs: `sketch`'s. */
+function apps(): AppApi[] {
+  return [{ vendor: "sketch", schema: JSON.parse(readFileSync(join(GENERATED, "app-sketch.schema.json"), "utf8")) as Schema }];
+}
+
 test("renders the fixture's files as committed", () => {
-  const files = generate(fixture(), AGENT);
+  const files = generate(fixture(), AGENT, apps());
   assert.deepEqual(files.map((file) => file.path), [COMMANDS_PATH, AGENT_TYPES_PATH]);
   const commands = files[0]!.contents;
   if (process.env.API_CLI_UPDATE_FIXTURES) writeFileSync(EXPECTED_COMMANDS, commands);
@@ -38,28 +49,92 @@ test("renders the fixture's files as committed", () => {
   assert.match(commands, /^import type \{ ApiTable \} from "\.\.\/src\/table\.ts";$/m);
 });
 
-test("reads api-schema's format, whose properties, directions, deprecations and mutations change no command", () => {
+test("reads api-schema's format, whose properties, directions, deprecations, mutations, tags and property docs change no command", () => {
   const current = JSON.parse(readFileSync(API_SCHEMA_FIXTURE, "utf8")) as Schema;
   assert.equal(current.format, SCHEMA_FORMAT);
   const services = Object.values(current.services);
   assert.ok(services.some((service) => service.properties?.length) && services.some((service) => service.deprecated !== undefined));
   assert.ok(services.some((service) => service.methods.some((method) => method.mutates)));
+  assert.ok(services.some((service) => service.methods.some((method) => method.tags)));
   const without = JSON.parse(JSON.stringify(current)) as Partial<Schema>;
   delete without.format;
   for (const service of Object.values(without.services!) as Partial<Schema["services"][string]>[]) {
     delete service.direction;
     delete service.properties;
     delete service.deprecated;
+    delete service.tags;
     for (const method of service.methods!) {
       delete method.deprecated;
       delete method.mutates;
+      delete method.tags;
     }
+  }
+  assert.ok(objects(current.shapes).some((shape) => shape.propertyDocs));
+  for (const shape of objects(without.shapes)) {
+    if (shape.kind === "object") delete shape.propertyDocs;
+  }
+  for (const shape of Object.values(without.shapes!)) {
+    delete shape.deprecated;
+    delete shape.tags;
   }
   const table = buildTable(current);
   assert.deepEqual(table, buildTable(without as Schema));
   // A property is no command: the CLI calls methods.
   assert.deepEqual(current.services.FixturePublicApi!.properties!.map((property) => property.name), ["build", "version"]);
   assert.deepEqual(Object.keys(table.nodes.FixturePublicApi!.commands), ["download", "legacy", "ping"]);
+});
+
+test("a named type's doc is the first sentence under each argument declared as it, and the table's shapes carry no docs", () => {
+  const schema = fixture();
+  assert.ok(schema.shapes.Mood!.doc && schema.shapes.Destination!.doc);
+  const table = buildTable(schema);
+  assert.deepEqual(table.nodes.FixtureAuthedApi!.commands["set-mood"]!.args[0]!.typeDocs,
+    { Mood: "How the notebook's owner feels." });
+  // An undocumented type (Note) has none.
+  assert.deepEqual(table.nodes.Notebook!.commands.file!.args.map((arg) => arg.typeDocs),
+    [undefined, { Destination: "Where a note is filed." }]);
+  assert.equal(table.nodes.Notebook!.commands.move!.args[0]!.typeDocs?.Destination, "Where a note is filed.");
+  // Revived against, not read for help: the docs stay in the schema.
+  const text = JSON.stringify(table.shapes);
+  assert.doesNotMatch(text, /"propertyDocs"|"doc"|"deprecated"/);
+  assert.deepEqual(table.shapes.Destination, {
+    kind: "union",
+    branches: [
+      { kind: "object", properties: { kind: { kind: "literal", value: "folder" }, path: { kind: "string" } } },
+      { kind: "object", properties: { kind: { kind: "literal", value: "inbox" } } },
+    ],
+  });
+  assert.equal(JSON.stringify(table.nodes.Notebook!.commands.file!.args[1]!.shape), '{"kind":"ref","name":"Destination"}');
+});
+
+test("records where a JSON argument or an answer holds a secret, from @secret on a property or a named type", () => {
+  const table = buildTable(fixture());
+  const [remote] = table.nodes.FixtureAuthedApi!.commands["add-remote"]!.args;
+  // A record's values, and a recursive type nested in itself whole, since its paths are endless.
+  assert.deepEqual(remote!.secrets, [["headers"], ["mirrors", "*"], ["token"]]);
+  assert.equal(table.nodes.Notebook!.commands.file!.args.some((arg) => arg.secrets), false);
+  assert.doesNotMatch(JSON.stringify(table.shapes), /secret|propertyDocs/);
+
+  const tagged = buildTable(edited((schema) => {
+    // A named type marked secret is secret wherever it is used: here, the whole argument and a
+    // property and array elements of an answer.
+    schema.shapes.Destination!.tags = { secret: "" };
+    const subscriber = schema.services.NotesSubscriber!;
+    subscriber.methods.push({
+      name: "where", doc: "", params: [],
+      returns: {
+        kind: "object",
+        properties: {
+          all: { kind: "array", element: { kind: "ref", name: "Destination" } },
+          first: { kind: "ref", name: "Destination" },
+          note: { kind: "ref", name: "Note" },
+        },
+      },
+    });
+  }));
+  assert.deepEqual(tagged.nodes.Notebook!.commands.file!.args.map((arg) => arg.secrets), [undefined, [[]]]);
+  const where = tagged.callbacks.NotesSubscriber!.methods.find((method) => method.name === "where")!;
+  assert.deepEqual(where.answer!.secrets, [["all", "*"], ["first"]]);
 });
 
 test("an old-format schema, from before format and direction, builds a table", () => {
@@ -157,16 +232,94 @@ test("classifies each result", () => {
     kind: "value", type: "Note[], where Note = { body: Uint8Array; created: Date; id: number; size: bigint; tags?: string[]; title: string }",
   });
   assert.deepEqual(returns("FixturePublicApi", "download"), { kind: "stream" });
+  // Bytes, or bytes or null, are marked so for --out; a value merely holding some is not.
+  assert.deepEqual(returns("FixtureAuthedApi", "get-photo"), { kind: "value", type: "Uint8Array | null", bytes: true });
+  assert.equal("bytes" in returns("FixtureAuthedApi", "find-notes"), false);
+  assert.deepEqual(real.nodes.Overseer!.commands["get-chat-attachment-content"]!.returns, { kind: "value", type: "Uint8Array", bytes: true });
   assert.deepEqual(returns("Notebook", "lock"), { kind: "handle" });
   assert.deepEqual(returns("Notebook", "connect"), { kind: "untyped" });
   assert.deepEqual(returns("Notebook", "subscribe"), { kind: "subscription" });
   assert.deepEqual(returns("Notebook", "watch-title"), { kind: "subscription" });
   assert.deepEqual(returns("Notebook", "outline"), { kind: "value", type: "Outline = { children: Outline[]; title: string }" });
-  // One too long to read in help stays a name.
+  // One too long to read in help stays a name. (It keeps the `title` new-notebook reports.)
   const long = buildTable(edited((schema) => {
-    schema.shapes.Outline = { kind: "object", properties: Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`field${i}`, { kind: "string" }])) };
+    schema.shapes.Outline = objectOf(Object.fromEntries([["title", { kind: "string" }],
+      ...Array.from({ length: 60 }, (_, i) => [`field${i}`, { kind: "string" }])]));
   }));
   assert.deepEqual(long.nodes.Notebook!.commands.outline!.returns, { kind: "value", type: "Outline" });
+});
+
+/** An object shape of `properties`. */
+function objectOf(properties: Record<string, Schema["shapes"][string]>): Schema["shapes"][string] {
+  return { kind: "object", properties };
+}
+
+test("records the capabilities a value result holds in its top-level properties, and reaches their nodes", () => {
+  const { nodes } = buildTable(fixture());
+  const returns = (command: string) => nodes.FixtureAuthedApi!.commands[command]!.returns;
+  // An untyped one is continued with `call`; a result that may be null says so.
+  assert.deepEqual(returns("get-frame"), {
+    kind: "value", type: "{ html: string; ui: RpcStub<any> } | null", nullable: true,
+    capabilities: { ui: { property: "ui", returns: { kind: "untyped" } } },
+  });
+  assert.deepEqual(returns("get-notebook-ref"), {
+    kind: "value", type: "{ id: string; notebook: RpcStub<Notebook> }",
+    capabilities: { notebook: { property: "notebook", returns: { kind: "stub", node: "Notebook", nullable: false } } },
+  });
+  // A value holding none is as it was: no `nullable` without `capabilities`.
+  assert.deepEqual(returns("set-nickname"), { kind: "value", type: "void" });
+
+  const table = buildTable(edited((schema) => {
+    schema.services.Ledger = {
+      doc: "Reached through a property only.",
+      methods: [{ name: "total", doc: "", params: [], returns: { kind: "number" } }],
+    } as unknown as SchemaService;
+    const ledger = { kind: "stub", service: "Ledger" } as const;
+    schema.services.FixtureAuthedApi!.methods.push(
+      {
+        name: "openLedger", doc: "", params: [], returns: objectOf({
+          // Optional, so the chain may find it missing.
+          ledgerAccess: { kind: "union", branches: [ledger, { kind: "undefined" }] },
+          // A handle is no hop, nor a capability among other values.
+          lock: { kind: "stub", service: "{}" },
+          either: { kind: "union", branches: [ledger, { kind: "string" }] },
+          name: { kind: "string" },
+        }),
+      },
+      // Only a property of the result itself: not one nested deeper, in an array, or in a union of objects.
+      { name: "nested", doc: "", params: [], returns: objectOf({ inner: objectOf({ ledger }) }) },
+      { name: "listed", doc: "", params: [], returns: { kind: "array", element: objectOf({ ledger }) } },
+      { name: "either", doc: "", params: [], returns: { kind: "union", branches: [objectOf({ ledger }), objectOf({ id: { kind: "string" } })] } },
+    );
+  }));
+  const { type: _, ...ledger } = table.nodes.FixtureAuthedApi!.commands["open-ledger"]!.returns as { type: string };
+  assert.deepEqual(ledger, {
+    kind: "value",
+    capabilities: { "ledger-access": { property: "ledgerAccess", returns: { kind: "stub", node: "Ledger", nullable: true } } },
+  });
+  assert.deepEqual(Object.keys(table.nodes.Ledger!.commands), ["total"]);
+  for (const command of ["nested", "listed", "either"]) {
+    assert.equal("capabilities" in table.nodes.FixtureAuthedApi!.commands[command]!.returns, false, command);
+  }
+
+  // The real table: the gatekeepers' UI frames, untyped, with the doc of the frame's `ui`, but for
+  // the app's, typed by its vendor id (@appApi), and a gatekeeper sign-in's attempt, whose node is
+  // reached so.
+  const authed = real.nodes.AuthenticatedApi!.commands;
+  const capabilities = (command: string) => (authed[command]!.returns as { capabilities: Record<string, ApiCapabilityProperty> }).capabilities;
+  const { doc } = capabilities("get-gatekeeper-app").ui!;
+  assert.match(doc!, /^Capability exposed to the iframe for any RPCs needed by the UI\..*`\*ConfiguratorUI` class/s);
+  const ui = { ui: { property: "ui", returns: { kind: "untyped" }, doc } };
+  assert.deepEqual(authed["get-gatekeeper-app"]!.returns, {
+    ...authed["get-gatekeeper-app"]!.returns, nullable: true,
+    capabilities: { ui: { ...ui.ui, byArgument: { index: 0, nodes: { context: "context:ContextApi", scheduler: "scheduler:ScheduleManagementApi" } } } },
+  });
+  for (const command of ["start-resource-configurator", "start-creation-configurator"]) {
+    assert.deepEqual(capabilities(command), ui, command);
+  }
+  assert.deepEqual((real.nodes.PublicApi!.commands["start-gatekeeper-login"]!.returns as { capabilities?: unknown }).capabilities,
+    { attempt: { property: "attempt", returns: { kind: "stub", node: "LoginAttempt", nullable: false } } });
+  assert.deepEqual(Object.keys(real.nodes.LoginAttempt!.commands), ["receive"]);
 });
 
 test("lists every callback method, and only the shapes json arguments reach", () => {
@@ -182,7 +335,7 @@ test("lists every callback method, and only the shapes json arguments reach", ()
     },
   });
   // Outline is a result only; the codec encodes results without shapes.
-  assert.deepEqual(Object.keys(table.shapes), ["Destination", "Note"]);
+  assert.deepEqual(Object.keys(table.shapes), ["Destination", "Note", "Remote"]);
 });
 
 test("kebab-cases method and parameter names", () => {
@@ -219,6 +372,15 @@ test("fails on names that collide after kebab-casing, naming both", () => {
     });
     assert.throws(() => buildTable(reserved), new RegExp(`FixtureAuthedApi has a method named "${word}", a word the CLI reserves`));
   }
+  const properties = edited((schema) => {
+    schema.services.FixtureAuthedApi!.methods.push({
+      name: "openTwins", doc: "", params: [], returns: { kind: "object", properties: {
+        myNotebook: { kind: "stub", service: "Notebook" }, my_notebook: { kind: "stub", service: "Notebook" },
+      } },
+    });
+  });
+  assert.throws(() => buildTable(properties),
+    /FixtureAuthedApi\.openTwins: its result's properties myNotebook and my_notebook are both "my-notebook"/);
   // Below the root they are names like any other.
   buildTable(edited((schema) => {
     schema.services.Notebook!.methods.push({ name: "search", doc: "", params: [], returns: { kind: "void" } });
@@ -282,18 +444,20 @@ test("does not depend on the schema's key order", () => {
 const readSource = (path: string) => readFileSync(join(import.meta.dirname, path), "utf8");
 const importsOf = (source: string) => [...source.matchAll(/^import\b[^;]*?from\s+"([^"]+)";/gms)];
 
-test("emit.ts is pure: it imports schema and table types, paths.ts and type-text.ts only, and reads no clock, environment or disk", () => {
+test("emit.ts is pure: it imports schema and table types, doc-text.ts, paths.ts and type-text.ts only, and reads no clock, environment or disk", () => {
   const emit = readSource("emit.ts");
   assert.deepEqual(importsOf(emit).map((match) => match[1]),
-    ["@gadgets/api-schema/schema", "../src/table.ts", "../src/paths.ts", "../src/type-text.ts"]);
+    ["@gadgets/api-schema/schema", "../src/table.ts", "../src/doc-text.ts", "../src/paths.ts", "../src/type-text.ts"]);
   assert.match(importsOf(emit)[0]![0], /^import type\b/);
   assert.match(importsOf(emit)[1]![0], /^import type\b/);
-  // paths.ts and type-text.ts, shared with the runtime, hold to the same: table types only.
+  // doc-text.ts, paths.ts and type-text.ts, shared with the runtime, hold to the same: table types only.
+  const docText = readSource("../src/doc-text.ts");
   const paths = readSource("../src/paths.ts");
   const typeTextSource = readSource("../src/type-text.ts");
-  assert.deepEqual(importsOf(paths).map((match) => match[0]), ['import type { ApiTable } from "./table.ts";']);
+  assert.deepEqual(importsOf(docText), []);
+  assert.deepEqual(importsOf(paths).map((match) => match[0]), ['import type { ApiArg, ApiCommand, ApiTable } from "./table.ts";']);
   assert.deepEqual(importsOf(typeTextSource).map((match) => match[0]), ['import type { ApiShape } from "./table.ts";']);
-  for (const source of [emit, paths, typeTextSource]) {
+  for (const source of [emit, docText, paths, typeTextSource]) {
     assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|\bprocess\.|\bDate\.now\b|\bnew Date\b|\bMath\.random\b/);
   }
 });
@@ -333,7 +497,7 @@ test("passes an optional callback the server may ask for a value, and the comman
     { shape: { kind: "array", element: { kind: "number" } }, type: "number[]" });
   // The shapes an answer reaches are hoisted, as a json argument's are; Outline is otherwise a result only.
   const outline = buildTable(withChooser({ kind: "array", element: { kind: "ref", name: "Outline" } }));
-  assert.deepEqual(Object.keys(outline.shapes), ["Destination", "Note", "Outline"]);
+  assert.deepEqual(Object.keys(outline.shapes), ["Destination", "Note", "Outline", "Remote"]);
   assert.equal(outline.callbacks.AccountChooser!.methods[0]!.answer!.type,
     "Outline[], where Outline = { children: Outline[]; title: string }");
   assert.ok(!("Outline" in buildTable(fixture()).shapes));
@@ -384,8 +548,8 @@ test("keeps an optional parameter named answer clear of --answer", () => {
   assert.equal(table.nodes.FixtureAuthedApi!.commands["find-notes"]!.args.at(-1)!.flag, "arg-answer");
 });
 
-test("the real table passes open-gadget's configureObservers, whose configure is answered", () => {
-  const open = real.nodes.AuthenticatedApi!.commands["open-gadget"]!;
+test("the real table passes open-workspace's configureObservers, whose configure is answered", () => {
+  const open = real.nodes.AuthenticatedApi!.commands["open-workspace"]!;
   const { name, index, encoding, callback } = open.args[2]!;
   assert.deepEqual({ name, index, encoding, callback },
     { name: "configureObservers", index: 2, encoding: "callback", callback: "ObserverConfigCallback" });
@@ -400,4 +564,121 @@ test("the real table passes open-gadget's configureObservers, whose configure is
     assert.ok(subscribes.length > 0, node);
     for (const [command, entry] of subscribes) assert.deepEqual(entry.returns, { kind: "subscription" }, command);
   }
+});
+
+test("@reportsId becomes the command's reportsId, out of its doc, checked against what the method returns", () => {
+  const command = buildTable(fixture()).nodes.FixtureAuthedApi!.commands["new-notebook"]!;
+  assert.deepEqual(command.reportsId, { noun: "notebook", method: "outline", property: "title" });
+  assert.equal(command.doc, "A capability to what it creates, whose id it reports.");
+  // A method without the tag reports nothing.
+  assert.equal("reportsId" in buildTable(fixture()).nodes.FixtureAuthedApi!.commands["open-notebook"]!, false);
+
+  const tagged = (text: string, edit: (schema: Schema) => void = () => {}) => () => buildTable(edited((schema) => {
+    const method = schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "newNotebook")!;
+    method.tags = { reportsId: text };
+    edit(schema);
+  }));
+  assert.throws(tagged("notebook outline"), /FixtureAuthedApi\.newNotebook: @reportsId needs "<noun> <method>\(\)\.<property>", not "notebook outline"/);
+  assert.throws(tagged("notebook nosuch().title"), /names Notebook\.nosuch, no method of it that takes no arguments/);
+  assert.throws(tagged("notebook file().title"), /names Notebook\.file, no method of it that takes no arguments/);
+  assert.throws(tagged("notebook outline().children"), /names Notebook\.outline\(\)\.children, which is no string or number/);
+  assert.throws(tagged("notebook outline().title", (schema) => {
+    schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "newNotebook")!.returns = { kind: "string" };
+  }), /FixtureAuthedApi\.newNotebook: @reportsId on a method that returns no capability/);
+  // The noun may be more than a word.
+  assert.deepEqual(tagged("shared notebook outline().title")().nodes.FixtureAuthedApi!.commands["new-notebook"]!.reportsId,
+    { noun: "shared notebook", method: "outline", property: "title" });
+
+  // The real API's creating methods report the workspace's id.
+  for (const name of ["new-workspace", "new-workspace-from-blueprint"]) {
+    const created = real.nodes.AuthenticatedApi!.commands[name]!;
+    assert.deepEqual(created.reportsId, { noun: "workspace", method: "getMetadata", property: "id" }, name);
+    assert.doesNotMatch(created.doc, /@reportsId/, name);
+  }
+});
+
+test("@nullWhen becomes the command's nullWhen, in the CLI's words and out of its doc, on a method whose null stops a chain", () => {
+  const admin = buildTable(fixture()).nodes.FixtureAuthedApi!.commands["get-admin"]!;
+  // Its text runs over two lines in the doc, all of it left out, and is kept on one.
+  assert.equal(admin.nullWhen, "the caller is not an admin; `find-notes` needs none");
+  assert.equal(admin.doc, "A nullable capability over a method-only interface.");
+  assert.equal("nullWhen" in buildTable(fixture()).nodes.FixtureAuthedApi!.commands["open-notebook"]!, false);
+
+  const tagged = (name: string, text: string) => () => buildTable(edited((schema) => {
+    const method = schema.services.FixtureAuthedApi!.methods.find((m) => m.name === name)!;
+    method.doc = `${method.doc}\n@nullWhen ${text}\n@other kept`;
+    method.tags = { nullWhen: text, other: "kept" };
+  })).nodes.FixtureAuthedApi!.commands;
+  // A nullable value holding a capability stops a chain going on to it, so it may say when too.
+  const frame = tagged("getFrame", "no frame is open")()["get-frame"]!;
+  assert.equal(frame.nullWhen, "no frame is open");
+  assert.match(frame.doc, /\n@other kept$/);
+  assert.throws(tagged("getFrame", ""), /FixtureAuthedApi\.getFrame: @nullWhen needs the text of when it returns null/);
+  // A null that ends the chain, or a result that is never null, stops none.
+  assert.throws(tagged("getPhoto", "no photo"), /FixtureAuthedApi\.getPhoto: @nullWhen on a method whose null stops no chain/);
+  assert.throws(tagged("openNotebook", "never"), /FixtureAuthedApi\.openNotebook: @nullWhen on a method whose null stops no chain/);
+
+  // The real API's: each names the next step as a command.
+  assert.match(real.nodes.AuthenticatedApi!.commands["get-admin-api"]!.nullWhen!, /not a deployment admin; `am-i-admin` says whether it is$/);
+  assert.match(real.nodes.AuthenticatedApi!.commands["get-gatekeeper-app"]!.nullWhen!, /`list-gatekeeper-apps`.*`provision-ambient-account`/);
+  assert.match(real.nodes.GadgetClient!.commands["get-binding"]!.nullWhen!, /`list-bindings`/);
+  for (const node of Object.values(real.nodes)) {
+    for (const command of Object.values(node.commands)) assert.doesNotMatch(command.doc, /@nullWhen/, command.method);
+  }
+});
+
+test("@appApi types a capability property by an argument, as each gatekeeper app UI's node, its names prefixed", () => {
+  const table = buildTable(fixture(), apps());
+  const panel = table.nodes.FixtureAuthedApi!.commands["get-panel"]!;
+  assert.equal(panel.doc, "A gatekeeper app's frame, as upstream's getGatekeeperApp: its `ui` is the app UI of the gatekeeper `kind` names.");
+  assert.deepEqual((panel.returns as { capabilities: Record<string, ApiCapabilityProperty> }).capabilities.ui, {
+    property: "ui", returns: { kind: "untyped" }, doc: "The panel's capability, typed by `kind`.",
+    byArgument: { index: 0, nodes: { sketch: "sketch:SketchApi" } },
+  });
+  // The app's node, callbacks and shapes are prefixed, every reference to them too, so its Note is
+  // not the API's; help's type texts keep its own names.
+  assert.deepEqual(Object.keys(table.nodes["sketch:SketchApi"]!.commands), ["clear", "draw", "pick"]);
+  const draw = table.nodes["sketch:SketchApi"]!.commands.draw!;
+  assert.deepEqual(draw.args.map(({ name, flag, shape, type }) => ({ name, flag, shape, type })), [
+    { name: "stroke", flag: undefined, shape: { kind: "ref", name: "sketch:Stroke" }, type: "Stroke = { at: Date; color: Color; width: number }" },
+    { name: "label", flag: "label", shape: { kind: "ref", name: "sketch:Note" }, type: "Note = { text: string }" },
+  ]);
+  assert.deepEqual(table.shapes["sketch:Note"], { kind: "object", properties: { text: { kind: "string" } } });
+  assert.deepEqual(Object.keys(table.shapes.Note!.kind === "object" ? table.shapes.Note!.properties : {}),
+    ["body", "created", "id", "size", "tags", "title"]);
+  assert.deepEqual((table.shapes["sketch:Stroke"] as { properties: Record<string, unknown> }).properties.color,
+    { kind: "ref", name: "sketch:Color" });
+  // Type docs keep the app's own names too.
+  assert.deepEqual(table.nodes["sketch:SketchApi"]!.commands.pick!.args[0]!.typeDocs, { Color: "A pen's colour." });
+
+  // Without apps the tag is still checked, and types nothing; the tag stays out of the doc.
+  const bare = buildTable(fixture()).nodes.FixtureAuthedApi!.commands["get-panel"]!;
+  assert.deepEqual((bare.returns as { capabilities: Record<string, ApiCapabilityProperty> }).capabilities.ui!.byArgument, undefined);
+  assert.equal(bare.doc, panel.doc);
+  assert.equal(Object.keys(buildTable(fixture()).nodes).some((name) => name.includes(":")), false);
+
+  const tagged = (text: string, edit: (schema: Schema) => void = () => {}) => () => buildTable(edited((schema) => {
+    schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "getPanel")!.tags = { appApi: text };
+    edit(schema);
+  }), apps());
+  assert.throws(tagged("ui"), /FixtureAuthedApi\.getPanel: @appApi needs "<property> <param>", not "ui"/);
+  assert.throws(tagged("html kind"), /FixtureAuthedApi\.getPanel: @appApi names html, no untyped capability property of its result/);
+  assert.throws(tagged("ui nosuch"), /FixtureAuthedApi\.getPanel: @appApi names nosuch, no required string parameter of it/);
+  assert.throws(tagged("ui kind", (schema) => {
+    schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "getPanel")!.params[0]!.optional = true;
+  }), /@appApi names kind, no required string parameter of it/);
+  assert.throws(tagged("notebook id", (schema) => {
+    schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "getNotebookRef")!.tags = { appApi: "notebook id" };
+  }), /FixtureAuthedApi\.getNotebookRef: @appApi names notebook, no untyped capability property of its result/);
+  assert.throws(() => buildTable(fixture(), [{ ...apps()[0]!, vendor: "Sketch" }]), /gatekeeper app "Sketch": a vendor id is lowercase/);
+  assert.throws(() => buildTable(fixture(), [...apps(), ...apps()]), /gatekeeper app "sketch" is given twice/);
+
+  // The real table: Context's and the scheduler's app UIs, by the vendor id getGatekeeperApp takes.
+  const app = real.nodes.AuthenticatedApi!.commands["get-gatekeeper-app"]!;
+  assert.doesNotMatch(app.doc, /@appApi/);
+  assert.deepEqual(Object.keys(real.nodes).filter((name) => name.includes(":")), ["context:ContextApi", "scheduler:ScheduleManagementApi"]);
+  assert.deepEqual(real.nodes["context:ContextApi"]!.commands["create-context-skill"]!.args.map((arg) => arg.name),
+    ["collectionId", "path", "doc"]);
+  assert.match(real.nodes["context:ContextApi"]!.commands["create-context-skill"]!.doc, /YAML frontmatter/);
+  assert.deepEqual(Object.keys(real.nodes["scheduler:ScheduleManagementApi"]!.commands), ["list"]);
 });

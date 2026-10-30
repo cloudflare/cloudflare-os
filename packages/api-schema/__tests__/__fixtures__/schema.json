@@ -1,5 +1,5 @@
 {
-  "format": "capnweb-schema/0",
+  "format": "capnweb-schema/1",
   "entry": "FixturePublicApi",
   "constants": {
     "SERVICE_SALT": [
@@ -394,7 +394,7 @@
         },
         {
           "name": "file",
-          "doc": "An object and an object union.\n@mutates",
+          "doc": "An object and an object union.\n@mutates\n@since 2",
           "params": [
             {
               "name": "note",
@@ -418,7 +418,10 @@
           "returns": {
             "kind": "void"
           },
-          "mutates": true
+          "mutates": true,
+          "tags": {
+            "since": "2"
+          }
         },
         {
           "name": "lock",
@@ -632,6 +635,7 @@
   },
   "shapes": {
     "Destination": {
+      "doc": "Where a note is filed.",
       "kind": "union",
       "branches": [
         {
@@ -658,6 +662,7 @@
       ]
     },
     "Mood": {
+      "doc": "A string-literal union.",
       "kind": "union",
       "branches": [
         {
@@ -671,6 +676,7 @@
       ]
     },
     "Note": {
+      "doc": "A stored note.",
       "kind": "object",
       "properties": {
         "body": {
@@ -678,6 +684,17 @@
         },
         "created": {
           "kind": "date"
+        },
+        "heading": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
         },
         "id": {
           "kind": "number"
@@ -702,9 +719,22 @@
         "title": {
           "kind": "string"
         }
+      },
+      "propertyDocs": {
+        "heading": {
+          "doc": "Its first line, from before titles.\n@deprecated Read title.\n@since 1",
+          "deprecated": "Read title.",
+          "tags": {
+            "since": "1"
+          }
+        },
+        "tags": {
+          "doc": "Optional, so a union with `undefined`."
+        }
       }
     },
     "Outline": {
+      "doc": "A recursive named type.",
       "kind": "object",
       "properties": {
         "children": {

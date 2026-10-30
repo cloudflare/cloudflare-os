@@ -8,7 +8,7 @@ import type { Remote } from "./session.ts";
 
 /**
  * A server whose `drive` calls each named method of the callback it is given, once, in order, and
- * whose `ask` asks a configuration callback for its choices, as `openGadget` does.
+ * whose `ask` asks a configuration callback for its choices, as `openWorkspace` does.
  */
 class Driver extends RpcTarget {
   async drive(callback: Remote, methods: string[]): Promise<unknown[]> {

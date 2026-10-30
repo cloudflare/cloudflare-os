@@ -8,18 +8,23 @@
 // CFOS_API_PASSWORD, as password sign-in does, and hashes it as sign-in does (session.ts's
 // passwordHash), so the same CFOS_API_PASSWORD signs the new account in.
 
-import { parseArgs } from "node:util";
 import { UsageError, type Output } from "./output.ts";
-import { CREATE_ACCOUNT, RUNTIME_OPTIONS, urlHelp } from "./run.ts";
+import { commandWord, CREATE_ACCOUNT, parseSegment, RUNTIME_OPTIONS, timeoutSeconds, urlHelp } from "./run.ts";
 import { DEV_SERVER_URL, defaultInstance, type DefaultInstance, passwordHash, requireEnv, type Session } from "./session.ts";
 
-const OPTIONS = {
-  "display-name": { type: "string" },
-  url: { type: "string" },
-  auth: { type: "string" },
-  "dry-run": { type: "boolean" },
-  help: { type: "boolean", short: "h" },
-} as const;
+/** Its options: the API options, and the new account's display name. */
+const OPTIONS = { ...RUNTIME_OPTIONS, "display-name": { type: "string" } } as const;
+
+/**
+ * Why each API option that does not apply to create-account is refused, rather than ignored: each
+ * would otherwise be taken to do what it does for a generated command.
+ */
+const INAPPLICABLE: Partial<Record<keyof typeof OPTIONS, string>> = {
+  username: "create-account signs in as no one, and the new account's name is its <username> argument; " +
+    "--username then signs in as it",
+  answer: "its call asks nothing back",
+  out: "it prints the new account as JSON on stdout",
+};
 
 /** `create-account`'s arguments, parsed. */
 export interface CreateAccountArgs {
@@ -30,6 +35,8 @@ export interface CreateAccountArgs {
   /** `access` or `token`: how to pass Access's edge, as for a public command; inferred when unset. */
   auth?: string;
   dryRun: boolean;
+  /** Seconds: the run fails once they have passed. */
+  timeout?: number;
   help: boolean;
 }
 
@@ -39,18 +46,15 @@ export interface CreateAccountArgs {
  */
 export function parseCreateAccount(tokens: string[]): CreateAccountArgs | undefined {
   // Found with every option `cf-os api` knows, as search and types are, so a runtime option before
-  // the word does not hide it; the strict parse then rejects the ones it does not take.
-  const loose = parseArgs({ args: tokens, options: { ...RUNTIME_OPTIONS, ...OPTIONS }, strict: false, allowPositionals: true });
-  if (loose.positionals[0] !== CREATE_ACCOUNT) return undefined;
-  let parsed: { values: { "display-name"?: string; url?: string; auth?: string; "dry-run"?: boolean; help?: boolean }; positionals: string[] };
-  try {
-    parsed = parseArgs({ args: tokens, options: OPTIONS, strict: true, allowPositionals: true });
-  } catch (error) {
-    const message = (error as Error).message.replace(/[^.!?]$/, "$&.");
-    throw new UsageError(`${message} Run \`cf-os api create-account --help\` for its options.`);
-  }
-  const { values, positionals: [, username, extra] } = parsed;
+  // the word does not hide it.
+  if (commandWord(tokens, OPTIONS) !== CREATE_ACCOUNT) return undefined;
+  const { values, positionals: [, username, extra] } = parseSegment(tokens, OPTIONS, CREATE_ACCOUNT);
   const help = values.help === true;
+  for (const [option, why] of Object.entries(INAPPLICABLE)) {
+    if (values[option] !== undefined) {
+      throw new UsageError(`--${option} does not apply to create-account: ${why}. Run \`cf-os api create-account --help\` for its options.`);
+    }
+  }
   if (!help && !username) {
     throw new UsageError("create-account needs <username>. Run `cf-os api create-account --help`.");
   }
@@ -63,12 +67,14 @@ export function parseCreateAccount(tokens: string[]): CreateAccountArgs | undefi
     throw new UsageError("create-account signs in as no one: --auth is access or token. The new account's password " +
       "comes from CFOS_API_PASSWORD.");
   }
+  const timeout = timeoutSeconds(values.timeout as string | undefined);
   return {
     username: username ?? "",
-    displayName: values["display-name"] ?? username ?? "",
-    url: values.url,
-    auth: values.auth,
+    displayName: (values["display-name"] as string | undefined) ?? username ?? "",
+    url: values.url as string | undefined,
+    auth: values.auth as string | undefined,
     dryRun: values["dry-run"] === true,
+    ...timeout === undefined ? {} : { timeout },
     help,
   };
 }
@@ -76,7 +82,8 @@ export function parseCreateAccount(tokens: string[]): CreateAccountArgs | undefi
 /** Help for `cf-os api create-account`, its `--url` line saying what `instance`, the default instance, is. */
 export function createAccountHelp(instance: DefaultInstance = defaultInstance({})): string {
   return [
-    "Usage: cf-os api create-account <username> [--display-name <name>] [--url <origin>] [--auth access|token] [--dry-run]",
+    "Usage: cf-os api create-account <username> [--display-name <name>] [--url <origin>] [--auth access|token]",
+    "                                [--timeout <seconds>] [--dry-run]",
     "",
     "Creates a password account to act as, on a local or test instance (PublicApi.createAccount, as the",
     "sign-up page calls it). A deployment refuses it, as it limits the CLI to its admins, and so does an",
@@ -97,7 +104,11 @@ export function createAccountHelp(instance: DefaultInstance = defaultInstance({}
     "  --auth access|token    access sends a Cloudflare Access token; token, for an instance not behind",
     "                         Access, sends nothing, as no one signs in (default: token for an http://",
     "                         origin or with CFOS_API_TOKEN set, else access)",
+    "  --timeout <seconds>    fail if the account is not made after this long; without it, no limit",
     "  --dry-run              print the call as JSON on stdout, without the password; connect to nothing",
+    "",
+    "The other API options do not apply, and are refused, saying why: --username (the new account's name",
+    "is <username>), --answer and --out.",
     "",
     'Prints {"username", "displayName"} as JSON on stdout. A refusal (signups closed, password sign-in',
     "off, the name taken or invalid) fails, exit 1, naming the cause.",
@@ -126,13 +137,23 @@ export async function createAccount(
   connect: () => Promise<Session>,
   out: Output,
 ): Promise<number> {
-  const session = await connect();
+  const { promise: expired, reject: expire } = Promise.withResolvers<never>();
+  expired.catch(() => {});
+  const timer = args.timeout === undefined ? undefined
+    : setTimeout(() => expire(new Error(`timed out after ${args.timeout}s.`)), args.timeout * 1000);
+  /** `promise`, unless `--timeout` runs out first. */
+  const within = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, expired]);
+  // Kept so that a session which opens after the timeout is still closed: its socket would otherwise
+  // hold the process open.
+  const connecting = connect();
+  let session: Session | undefined;
   try {
+    session = await within(connecting);
     let token: unknown;
     try {
-      token = await session.main.createAccount(args.username, args.displayName, hash);
+      token = await within(Promise.resolve(session.main.createAccount(args.username, args.displayName, hash)));
     } catch (error) {
-      const explained = await session.explain(error);
+      const explained = await within(session.explain(error));
       if (explained !== error) throw explained;
       throw new Error(`could not create the account ${args.username}: ${(error as Error)?.message ?? String(error)}`, { cause: error });
     }
@@ -145,10 +166,17 @@ export async function createAccount(
     out.json({ username: args.username, displayName: args.displayName });
     return 0;
   } finally {
-    try {
-      session.main[Symbol.dispose]();
-    } catch {
-      // Already broken: there is nothing left to release.
-    }
+    clearTimeout(timer);
+    if (session) close(session);
+    else connecting.then(close, () => {});
+  }
+}
+
+/** Closes `session`'s connection. */
+function close(session: Session): void {
+  try {
+    session.main[Symbol.dispose]();
+  } catch {
+    // Already broken: there is nothing left to release.
   }
 }

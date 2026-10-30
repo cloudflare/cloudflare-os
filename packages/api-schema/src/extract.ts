@@ -2,12 +2,13 @@
 // compiler API and walks the capability graph from an entry interface, producing the `Schema`
 // that `schema.ts` describes.
 //
-// Types are classified with capnweb-validate's rules (its `transform/type-introspector.ts`):
-// values versus capabilities (`RpcStub<X>`, `RpcPromise<X>`, interfaces extending `RpcTarget`,
-// method-only interfaces), functions, streams and `any` tails. Unlike capnweb-validate, the output
-// keeps names, JSDoc and the `@deprecated` and `@mutates` tags, records which side implements each
-// service, and is deterministic: services, shapes, properties and union branches are sorted, so the
-// committed schema does not move with TypeScript's internal type ordering.
+// Types are classified with capnweb-validate's rules (its `transform/type-introspector.ts`): values
+// versus capabilities (`RpcStub<X>`, `RpcPromise<X>`, interfaces extending `RpcTarget`, method-only
+// interfaces), functions, streams and `any` tails. Unlike capnweb-validate, the output keeps names,
+// JSDoc (of services and their members, of named types and of object properties) and its tags
+// (`@deprecated` and `@mutates` as fields, the others in `tags`), records which side implements
+// each service, and is deterministic: services, shapes, properties and union branches are sorted,
+// so the committed schema does not move with TypeScript's internal type ordering.
 //
 // typescript6 = npm:typescript@6.0.3: the TypeScript 7 package ships no JS compiler API.
 
@@ -16,12 +17,16 @@ import ts from "typescript6";
 import {
   type ApiShape,
   type ApiShapeParam,
+  EXCLUDED_TAGS,
   FORMAT,
   type Schema,
   type SchemaMethod,
   type SchemaParam,
   type SchemaProperty,
   type SchemaService,
+  type SchemaShape,
+  type ShapeDoc,
+  type Tags,
 } from "./schema.ts";
 
 /** What to extract. */
@@ -80,13 +85,14 @@ export function extractSchema(options: ExtractOptions): Schema {
   const constants: Record<string, number[]> = {};
   for (const name of options.constants ?? []) constants[name] = byteConstant(exports, name, options.entry);
   const sides = directions(entry, extractor.services, extractor.shapes);
-  const services = new Map([...extractor.services].map(([name, { doc, methods, properties, deprecated }]) => {
+  const services = new Map([...extractor.services].map(([name, { doc, methods, properties, deprecated, tags }]) => {
     const service: SchemaService = {
       doc,
       direction: sides.get(name)!,
       methods,
       ...(properties.length ? { properties } : {}),
       ...(deprecated === undefined ? {} : { deprecated }),
+      ...(tags ? { tags } : {}),
     };
     return [name, service];
   }));
@@ -164,6 +170,17 @@ function tagOf(checker: ts.TypeChecker, symbol: ts.Symbol | undefined, name: str
   return tag && normalizeDoc(ts.displayPartsToString(tag.text));
 }
 
+/** The symbol's {@link Tags}, or undefined when it has none left once {@link EXCLUDED_TAGS} are. */
+function tagsOf(checker: ts.TypeChecker, symbol: ts.Symbol | undefined): Tags | undefined {
+  const texts = new Map<string, string[]>();
+  for (const tag of symbol?.getJsDocTags(checker) ?? []) {
+    if (EXCLUDED_TAGS.includes(tag.name)) continue;
+    const text = normalizeDoc(ts.displayPartsToString(tag.text));
+    texts.set(tag.name, [...texts.get(tag.name) ?? [], ...text ? [text] : []]);
+  }
+  return texts.size ? sortKeys(new Map([...texts].map(([name, parts]) => [name, parts.join("\n")]))) : undefined;
+}
+
 /**
  * Trims the end of every line (keeping indentation, which marks code blocks) and the whole, unifies
  * newlines, and folds runs of blank lines into one.
@@ -213,12 +230,13 @@ interface WalkedService {
   methods: SchemaMethod[];
   properties: SchemaProperty[];
   deprecated: string | undefined;
+  tags: Tags | undefined;
 }
 
 /** One walk of the graph: the services and named shapes found so far, by name. */
 class Extractor {
   readonly services = new Map<string, WalkedService>();
-  readonly shapes = new Map<string, ApiShape>();
+  readonly shapes = new Map<string, SchemaShape>();
   readonly #checker: ts.TypeChecker;
   /** Whether a declaration is Cap'n Web's or the Workers runtime's, not the API author's. */
   readonly #isRuntime: (declaration: ts.Declaration) => boolean;
@@ -248,6 +266,7 @@ class Extractor {
       methods: [],
       properties: [],
       deprecated: tagOf(this.#checker, symbol, "deprecated"),
+      tags: tagsOf(this.#checker, symbol),
     };
     this.services.set(name, service);
     for (const prop of this.#members(type)) {
@@ -284,6 +303,7 @@ class Extractor {
       return { name, type: shape, optional, doc: docOf(this.#checker, param, false) };
     });
     const deprecated = tagOf(this.#checker, prop, "deprecated");
+    const tags = tagsOf(this.#checker, prop);
     return {
       name: prop.getName(),
       doc: docOf(this.#checker, prop),
@@ -291,6 +311,7 @@ class Extractor {
       returns: this.#shape(this.#awaited(signature.getReturnType()), 0),
       ...(deprecated === undefined ? {} : { deprecated }),
       ...(tagOf(this.#checker, prop, "mutates") === undefined ? {} : { mutates: true as const }),
+      ...(tags ? { tags } : {}),
     };
   }
 
@@ -299,12 +320,14 @@ class Extractor {
     const optional = (prop.flags & ts.SymbolFlags.Optional) !== 0;
     const shape = this.#shape(this.#checker.getTypeOfSymbol(prop), 0);
     const deprecated = tagOf(this.#checker, prop, "deprecated");
+    const tags = tagsOf(this.#checker, prop);
     return {
       name: prop.getName(),
       doc: docOf(this.#checker, prop),
       type: optional ? withoutUndefined(shape) : shape,
       optional,
       ...(deprecated === undefined ? {} : { deprecated }),
+      ...(tags ? { tags } : {}),
     };
   }
 
@@ -498,14 +521,30 @@ class Extractor {
       const name = prop.getName();
       return !name.startsWith("__@") && !BRANDS.has(name);
     }).toSorted((a, b) => compare(a.getName(), b.getName()));
+    const docs: [string, ShapeDoc][] = [];
     for (const prop of props) {
       let shape = this.#shape(this.#checker.getTypeOfSymbol(prop), depth + 1);
       if (prop.flags & ts.SymbolFlags.Optional) shape = union([shape, { kind: "undefined" }]);
       properties[prop.getName()] = shape;
+      const doc = this.#shapeDoc(prop);
+      if (Object.keys(doc).length) docs.push([prop.getName(), doc]);
     }
     const index = this.#checker.getIndexTypeOfType(type, ts.IndexKind.String)
       ?? this.#checker.getIndexTypeOfType(type, ts.IndexKind.Number);
-    return { kind: "object", properties, ...(index ? { index: this.#shape(index, depth + 1) } : {}) };
+    return {
+      kind: "object",
+      properties,
+      ...(docs.length ? { propertyDocs: Object.fromEntries(docs) } : {}),
+      ...(index ? { index: this.#shape(index, depth + 1) } : {}),
+    };
+  }
+
+  /** A named shape's or an object property's JSDoc, each field omitted when absent. */
+  #shapeDoc(symbol: ts.Symbol | undefined): ShapeDoc {
+    const doc = docOf(this.#checker, symbol);
+    const deprecated = tagOf(this.#checker, symbol, "deprecated");
+    const tags = tagsOf(this.#checker, symbol);
+    return { ...(doc ? { doc } : {}), ...(deprecated === undefined ? {} : { deprecated }), ...(tags ? { tags } : {}) };
   }
 
   /**
@@ -527,7 +566,7 @@ class Extractor {
     if (known) return { kind: "ref", name: known };
     // Named before resolving, so a recursive reference finds the name.
     const name = this.#nameFor(type);
-    this.shapes.set(name, resolve());
+    this.shapes.set(name, { ...this.#shapeDoc(declaredSymbol(type)), ...resolve() });
     return { kind: "ref", name };
   }
 
@@ -632,11 +671,16 @@ const PRIMITIVE = ts.TypeFlags.String | ts.TypeFlags.Number | ts.TypeFlags.Boole
 
 /** A type's declared name, unless it is anonymous or TypeScript's own (`Record`, `Partial`, ...). */
 function userName(type: ts.Type): string | undefined {
+  return declaredSymbol(type)?.getName();
+}
+
+/** The symbol {@link userName} names the type by: its alias's, or its own. */
+function declaredSymbol(type: ts.Type): ts.Symbol | undefined {
   for (const symbol of [type.aliasSymbol, type.getSymbol()]) {
     const name = symbol?.getName();
     if (!symbol || !name || name === "__type" || name === "__object") continue;
     if (symbol.declarations?.some((d) => /[\\/]lib\.[\w.-]+\.d\.ts$/.test(d.getSourceFile().fileName))) return undefined;
-    return name;
+    return symbol;
   }
   return undefined;
 }

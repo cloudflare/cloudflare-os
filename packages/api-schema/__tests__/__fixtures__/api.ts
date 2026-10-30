@@ -4,8 +4,9 @@
 // callback interface, a bare-function callback, an optional callback, a stream each way, a `{}`
 // handle, a recursive named type and an `any` tail; and the members and tags the format records
 // beside methods: properties, `@deprecated` services and methods, a `@mutates` method, a server
-// capability passed back as a parameter, and server capabilities reached through a callback
-// interface's and a function's parameters.
+// capability passed back as a parameter, server capabilities reached through a callback
+// interface's and a function's parameters, documented named types and object properties, one of
+// them `@deprecated`, and a tag the format does not model (`@since`) on a method and a property.
 //
 // Its doc comments are part of the expected schema (`schema.json`), so they stay byte for byte as
 // they are, including the ones that speak of a command-line client: the same fixture tests the
@@ -21,6 +22,13 @@ export type Note = {
   title: string;
   /** Optional, so a union with `undefined`. */
   tags?: string[];
+  /**
+   * Its first line, from before titles.
+   *
+   * @deprecated Read title.
+   * @since 1
+   */
+  heading?: string;
   created: Date;
   size: bigint;
   body: Uint8Array;
@@ -98,6 +106,7 @@ export interface Notebook extends RpcTarget {
    * An object and an object union.
    *
    * @mutates
+   * @since 2
    */
   file(note: Note, destination: Destination): Promise<void>;
 

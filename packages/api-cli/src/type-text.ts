@@ -10,7 +10,7 @@ const BUILTIN_TEXT: Record<string, string> = {
   blob: "Blob", url: "URL", headers: "Headers", request: "Request", response: "Response",
 };
 
-/** A shape as TypeScript-like text, for help: named shapes by name. */
+/** A shape as TypeScript-like text, for help: named shapes by name, without a gatekeeper's vendor prefix. */
 export function typeText(shape: ApiShape): string {
   switch (shape.kind) {
     case "literal": return JSON.stringify(shape.value);
@@ -37,7 +37,9 @@ export function typeText(shape: ApiShape): string {
     case "union": {
       return shape.branches.toSorted((a, b) => nullishLast(a) - nullishLast(b)).map(wrapped).join(" | ");
     }
-    case "ref": return shape.name;
+    // A gatekeeper app UI's names are prefixed with its vendor id in the table (`scheduler:ScheduleStatus`);
+    // no TypeScript name has a `:`, and the text shows the name its declarations use.
+    case "ref": return shape.name.slice(shape.name.indexOf(":") + 1);
     case "typedArray": return shape.name;
     case "stub": return `RpcStub<${shape.service ?? "any"}>`;
     case "function": {

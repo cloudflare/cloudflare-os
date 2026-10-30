@@ -16,17 +16,18 @@
 // main.ts hands every token after `api` here, so the flags of each segment are parsed here, against
 // that segment's command in the table.
 
-import { accessSync, constants, createReadStream } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { constants, createReadStream, type Stats } from "node:fs";
+import { access, lstat, readFile, readlink, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { table as generatedTable } from "../generated/commands.ts";
-import { encodeValue, type ArgSource } from "./codec.ts";
+import type { ArgSource } from "./codec.ts";
 import { accountHash, createAccount, createAccountHelp, DRY_RUN_HASH, parseCreateAccount } from "./create-account.ts";
 import { UsageError, type Output } from "./output.ts";
 import {
   commandHelp,
   decodeCalls,
+  dryRunAnswers,
   dryRunChain,
   execute,
   incompleteChain,
@@ -89,6 +90,48 @@ function webBytes(stream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
     }));
 }
 
+/** Why a file could not be read, as `no such file (ENOENT)`: the code alone says little to most. */
+function fileFault(error: unknown): string {
+  const { code, message } = error as NodeJS.ErrnoException;
+  const words: Record<string, string> = {
+    ENOENT: "no such file",
+    EISDIR: "it is a directory, not a file",
+    EACCES: "permission denied",
+    EPERM: "permission denied",
+    ENAMETOOLONG: "the name is too long",
+    ELOOP: "too many levels of symbolic links",
+  };
+  return code === undefined ? message : code in words ? `${words[code]} (${code})` : code;
+}
+
+/**
+ * `path`, where `--out` would write, checked before anything is sent, in a dry run too: a directory,
+ * a missing directory, one it cannot write to or a path the file system cannot resolve (too long, a
+ * loop of links) would otherwise fail only once the call had run. A link to a file not yet made is
+ * written through, so where it points is what is checked.
+ */
+async function checkOutput(path: string): Promise<void> {
+  let found: Stats | undefined;
+  try {
+    found = await stat(path);
+  } catch (error) {
+    const { code } = error as NodeJS.ErrnoException;
+    if (code !== "ENOENT" && code !== "ENOTDIR") throw new UsageError(`--out ${path}: ${fileFault(error)}.`);
+    const link = await lstat(path).catch(() => undefined);
+    if (link?.isSymbolicLink()) return checkOutput(resolve(dirname(path), await readlink(path)));
+  }
+  if (found?.isDirectory()) throw new UsageError(`--out ${path}: it is a directory, not a file.`);
+  const directory = dirname(path);
+  if (!found && !(await stat(directory).catch(() => undefined))?.isDirectory()) {
+    throw new UsageError(`--out ${path}: its directory ${directory} does not exist.`);
+  }
+  try {
+    await access(found ? path : directory, constants.W_OK);
+  } catch {
+    throw new UsageError(`--out ${path}: ${found ? "it" : `its directory ${directory}`} cannot be written.`);
+  }
+}
+
 /** `cf-os api`, given every token after `api`. Resolves to the exit code; a failure is thrown. */
 export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = defaultDeps()): Promise<number> {
   const { table } = deps;
@@ -142,10 +185,10 @@ export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = def
   const invocation = parseInvocation(table, tokens);
   if (invocation.help) {
     const target = invocation.help;
-    const help = target.kind === "node" ? nodeHelp(table, target.node, invocation.path, defaultInstance(deps.env))
-      : target.kind === "command" ? commandHelp(table, target.node, target.name, invocation.path, target.at)
-      : untypedHelp(invocation.path);
-    deps.stdout.write(`${help}\n`);
+    const help = target.kind === "node" ? nodeHelp(table, target.node, invocation.path, defaultInstance(deps.env), target.call)
+      : target.kind === "command" ? commandHelp(table, target.node, target.name, invocation.path, target.at, invocation.literal)
+      : untypedHelp(invocation.path.slice(0, target.at), target.about);
+    deps.stdout.write(`${invocation.misread ? `${invocation.misread}\n\n` : ""}${help}\n`);
     return 0;
   }
   // Nothing to call yet: a usage error, saying that nothing was sent and how to finish the chain.
@@ -166,10 +209,20 @@ export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = def
       try {
         return new Uint8Array(await readFile(resolve(ctx.cwd, path)));
       } catch (error) {
-        throw new UsageError(`could not read @${path}: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}.`);
+        throw new UsageError(`could not read @${path}: ${fileFault(error)}.`, { cause: error });
       }
     },
     readStdin,
+    // A stream argument's file, checked before connecting rather than failing once its call is sent.
+    checkFile: async (path, typed) => {
+      const file = resolve(ctx.cwd, path);
+      try {
+        if ((await stat(file)).isDirectory()) throw Object.assign(new Error(file), { code: "EISDIR" });
+        await access(file, constants.R_OK);
+      } catch (error) {
+        throw new UsageError(`could not read ${typed}: ${fileFault(error)}.`);
+      }
+    },
   };
   // Only a run that needs an instance gets here, help, search and types having returned: without
   // --url, its environment's default (CFOS_API_URL, or CFOS_API_URL_UNAVAILABLE's reason) is read
@@ -179,13 +232,14 @@ export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = def
   const auth = resolveAuth(flags, deps.env, target.origin);
   const decoded = await decodeCalls(table, invocation, source);
   const { calls, answers } = decoded;
+  if (flags.out !== undefined && flags.out !== "-") await checkOutput(resolve(ctx.cwd, flags.out));
   if (flags.dryRun) {
     ctx.out.json({
       url: target.url,
       auth: auth.username === undefined ? { mode: auth.mode } : { mode: auth.mode, username: auth.username },
       on: invocation.public ? table.public : table.root,
       chain: dryRunChain(calls),
-      ...answers.size ? { answers: Object.fromEntries([...answers].map(([key, value]) => [key, encodeValue(value)])) } : {},
+      ...answers.size ? { answers: dryRunAnswers(decoded) } : {},
     });
     return 0;
   }
@@ -198,13 +252,8 @@ export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = def
         if (stdinRead) throw new UsageError("Only one argument can read stdin (-).");
         return webBytes(deps.stdin);
       }
-      const file = resolve(ctx.cwd, path);
-      try {
-        accessSync(file, constants.R_OK);
-      } catch (error) {
-        throw new UsageError(`could not read ${path}: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}.`);
-      }
-      return webBytes(createReadStream(file));
+      // Checked as it was decoded (ArgSource.checkFile).
+      return webBytes(createReadStream(resolve(ctx.cwd, path)));
     },
     outputPath: (path) => resolve(ctx.cwd, path),
     onInterrupt: deps.onInterrupt,

@@ -109,13 +109,13 @@ cf, get them for free.
   `cf schema <command>` (the request an operation sends), and a hidden `cf tools` (MCP tool
   definitions from the command metadata). The starter's `cf-os api search` follows the first.
 
-## 3. The format: `capnweb-schema/0`
+## 3. The format: `capnweb-schema/1`
 
 capnweb-schema is JSON. The format today is the `Schema` type in `packages/api-schema/src/schema.ts`:
 
 ```ts
 interface Schema {
-  format: "capnweb-schema/0";                 // so a reader can refuse a format it does not know
+  format: "capnweb-schema/1";                 // so a reader can refuse a format it does not know
   entry: string;                              // the entry interface: a key of `services`
   constants: Record<string, number[]>;        // exported byte constants, by name
   services: Record<string, {                  // every capability interface reached
@@ -123,12 +123,14 @@ interface Schema {
     direction: "server" | "client" | "both";  // the side that implements it
     methods: {
       name: string; doc: string; params: { name; type; optional; doc }[]; returns;
-      deprecated?: string; mutates?: true;
+      deprecated?: string; mutates?: true; tags?: Record<string, string>;
     }[];
-    properties?: { name: string; doc: string; type; optional: boolean; deprecated?: string }[];
-    deprecated?: string;
+    properties?: { name: string; doc: string; type; optional: boolean; deprecated?: string; tags? }[];
+    deprecated?: string; tags?: Record<string, string>;  // the other JSDoc tags, by name
   }>;
-  shapes: Record<string, ApiShape>;           // named object and union types
+  shapes: Record<string, ApiShape & {         // named object and union types
+    doc?: string; deprecated?: string; tags?: Record<string, string>;  // with their declaration's JSDoc
+  }>;
 }
 ```
 
@@ -160,19 +162,23 @@ The additions for the first versioned release, and where each stands in this pac
 
 | Addition | Why | Status |
 | --- | --- | --- |
-| A top-level `format: "capnweb-schema/0"` | So a reader can refuse a format it does not know. | Implemented: the schema's first field. |
+| A top-level `format: "capnweb-schema/1"` | So a reader can refuse a format it does not know. | Implemented: the schema's first field. `/1` added the docs of named types and object properties, and `tags`. |
 | Per service, `direction: "server" \| "client" \| "both"` | A subscriber or callback (`ObserverConfigCallback`) is implemented by the client; without it a consumer infers that from where the service appears. | Implemented. The entry is the server's; a capability in a service's results or property values is its implementer's, one in its parameters the other side's, a function and a `WritableStream`'s element swapping sides the same way; `"both"` is a service reached each way. The Workshop API has 8 server and 8 client services, none both. |
 | Stream element types | `ReadableStream<T>` and `WritableStream<T>` carry `T`, which a stream's kind alone does not say. | Implemented: a stream's `element`, absent when undeclared or `any`. The Workshop API's three streams are `ReadableStream<Uint8Array>`, `element: {kind: "bytes"}`. |
 | `deprecated` and availability, from `@deprecated` and a tag | As forge's methods have them (`deprecated`, `availability`). | `deprecated` implemented, on services, methods and properties: the tag's text, `""` when bare (`doc` keeps the tag too). One Workshop method has it (`ActionsSubscriber.ready`). Availability is not: no tag is chosen for it yet. |
 | Property members | Cap'n Web pipelines property access (`stub.foo.bar()`), and capnweb-validate already models getters (`isGetter`). | Implemented: a service's non-method members, as `properties` with each one's type and whether it is optional. The Workshop API has none. |
 | Handle disposal semantics | Every stub must be disposed; the schema should say which results are stubs the caller owns and must dispose. | Proposed; see below. |
+| Docs on data types | A type's or a field's meaning (`AiChatMetadata.activeAgent`: a turn is in progress) is in its JSDoc, which a consumer printing the type needs as much as a method's. | Implemented: a named shape's `doc` and `deprecated` beside its `kind`, and an object shape's `propertyDocs`, by property name, for the properties that have any. |
+| Other JSDoc tags | A declaration can tell a consumer more about a member than the format models (`@secret` on a property holding one, which `cf-os api` redacts from its dry runs), without a format change per tag. | Implemented: `tags`, by tag name, on services, methods, properties, named shapes and object properties, less the tags with fields of their own and those documenting a signature's parts (`EXCLUDED_TAGS`). The Workshop API's `@secret`s are its model configurations' `apiToken` and `extraHeaders`; its `@reportsId`s, on `newWorkspace` and `newWorkspaceFromBlueprint`, tell `cf-os api` how to read and print the id of the workspace a chain creates; its `@appApi ui id`, on `getGatekeeperApp`, tells it that the frame's untyped `ui` is the app UI of the gatekeeper `id` names, whose interface that gatekeeper's package.json declares (`cloudflareOs.appApi`) and `pnpm api-schema:generate` extracts as a schema of its own, `generated/gatekeeper-apps/<vendor>.schema.json`. |
 | A `@mutates` tag | Which methods change state, so a Gatekeeper can route those through user approval and let reads through. It plays the part of MCP's `readOnlyHint` and forge's `x-forge-require-confirmation`. | Implemented: `mutates: true` on a method whose doc has the tag; absent means undeclared, not read-only. No Workshop method has it yet (§9 step 2). |
 
 The emitters carry the additions through: the `.d.ts` declares a stream's element type and a
-property as a `readonly` member, and keeps `@deprecated` and `@mutates` in the JSDoc; the tool
+property as a `readonly` member, and keeps `@deprecated`, `@mutates` and `tags` in the JSDoc, and the docs
+of named types and object properties as theirs; the tool
 catalog skips client services, follows capabilities a property holds as it does those a method
-returns, gives a stream's element as `x-capnweb-element`, and copies a method's `deprecated` and
-`mutates` onto its tool.
+returns, gives a stream's element as `x-capnweb-element`, copies a method's `deprecated` and
+`mutates` onto its tool, and a named type's or a property's doc onto its JSON Schema as
+`description` (and `deprecated: true`).
 
 **Handle disposal stays a proposal.** Every Cap'n Web stub is disposable, and every stub a caller
 receives is its own to dispose, so "this result is a stub the caller must dispose" is already said
