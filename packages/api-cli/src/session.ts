@@ -374,7 +374,7 @@ async function probedAccessToken(origin: string, deps: Pick<SessionDeps, "env" |
 
 /**
  * The User-Agent of every request `cf-os api` makes: `cf-os-api/<version>`, the version in this
- * package's package.json (session.test.ts checks). Except on a local dev instance, the Workshop lets
+ * package's package.json (session.test.ts checks). Except on a local instance, the Workshop lets
  * a session that sends it act only as a deployment admin, a speed bump rather than a boundary.
  */
 export const USER_AGENT = "cf-os-api/1.0.0";
