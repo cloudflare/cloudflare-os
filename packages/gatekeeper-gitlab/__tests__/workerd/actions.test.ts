@@ -61,6 +61,7 @@ describe("issue creation", () => {
   it("queues with a provisional id, reads back simulated, applies, then resolves the real id", async () => {
     const { gitlab, props, name } = await setup("create-issue");
     gitlab.on("GET", /^\/api\/v4\/users\?username=lennie/, () => json(fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" }))));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ ...fx.singleUserResponse.data, id: 9, username: "lennie" }));
     gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/issues$`), request =>
       json(issue({ iid: 77, title: JSON.parse(request.body!).title }), { status: 201 }));
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/77\\?`), () => json(issue({ iid: 77, title: "New thing" })));
@@ -69,7 +70,7 @@ describe("issue creation", () => {
 
     const action = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue",
       [{ title: "New thing", bodyMarkdown: "see !~1", labels: ["bug"], assignees: ["lennie"] }], DESC));
-    expect(action).toMatchObject({ type: "createIssue", provisionalId: "~1", assigneeIds: [9] });
+    expect(action).toMatchObject({ type: "createIssue", provisionalId: "~1", assigneeIds: [9], assigneeIsBot: false });
 
     // Simulated: the provisional issue reads as if created, authored by the viewer.
     const provisional = await unwrap(await hooks().openIssue(name, props, "~1"));
@@ -93,6 +94,31 @@ describe("issue creation", () => {
     // The provisional id now resolves to the real one; both lookups work.
     const real = await unwrap(await hooks().openIssue(name, props, "~2"));
     expect(real.id).toBe("77");
+  });
+
+  it("keeps an issue assigned to a bot or service account, or to a user whose kind GitLab does not report, from auto-approval", async () => {
+    const { gitlab, props, name } = await setup("create-issue-bot");
+    const users: Record<string, { id: number; bot?: boolean }> = { lennie: { id: 9, bot: false }, duo: { id: 10, bot: true }, quiet: { id: 11 } };
+    gitlab.on("GET", /^\/api\/v4\/users\?username=/, request => {
+      const username = request.url.searchParams.get("username")!;
+      return json([{ ...fx.usersByUsernameResponse.data[0], id: users[username]!.id, username }]);
+    });
+    gitlab.on("GET", /^\/api\/v4\/users\/\d+$/, request => {
+      const [username, user] = Object.entries(users).find(([, u]) => request.url.pathname.endsWith(`/${u.id}`))!;
+      const { bot: _, ...rest } = fx.singleUserResponse.data;
+      return json({ ...rest, id: user.id, username, ...(user.bot === undefined ? {} : { bot: user.bot }) });
+    });
+    gitlab.install();
+    for (const assignees of [[], ["lennie"], ["lennie", "duo"], ["quiet"]]) {
+      await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "New", assignees }], DESC));
+    }
+    const { submitted } = await hooks().queueLog(name);
+    expect(submitted.map(({ description }) => [description.actionKind?.tag, description.autoApprovable])).toEqual([
+      ["gitlab.createIssue", true],
+      ["gitlab.createIssue", true],
+      ["gitlab.createIssue", false],
+      ["gitlab.createIssue", false],
+    ]);
   });
 
   it("serves a created issue once from a listing that was opened before its create applied", async () => {
@@ -426,6 +452,7 @@ describe("merge requests", () => {
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/compare`), () => json(fx.compareResponse.data));
     gitlab.on("GET", /^\/api\/v4\/users\?username=/, request => json(request.url.searchParams.get("username") === "lennie"
       ? fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" })) : []));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ ...fx.singleUserResponse.data, id: 9, username: "lennie" }));
     let posted: Record<string, unknown> | undefined;
     gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/merge_requests$`), request => {
       posted = JSON.parse(request.body!);
@@ -445,7 +472,7 @@ describe("merge requests", () => {
       title: "Feature", sourceBranch: "feature", targetBranch: "main", draft: true, removeSourceBranch: true,
       labels: ["backend"], assignees: ["lennie"],
     }], DESC));
-    expect(action).toMatchObject({ provisionalId: "~1", assigneeIds: [9] });
+    expect(action).toMatchObject({ provisionalId: "~1", assigneeIds: [9], assigneeIsBot: false });
     const provisional = await unwrap(await hooks().openMergeRequest(name, props, "~1"));
     expect(provisional).toMatchObject({
       id: "~1", title: "Draft: Feature", draft: true, state: "opened", source: { branch: "feature" }, target: { branch: "main" },

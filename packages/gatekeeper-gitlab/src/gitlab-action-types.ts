@@ -3,7 +3,7 @@
 // onto remote data) and the write paths (which create and apply them) share one vocabulary.
 // Same shape as gatekeeper-github's, with GitLab's names and options.
 
-import type { ActionDescription, ActionKind, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionKind, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type { ResourceKind } from "./gitlab-env";
 import type {
   GitLabCreateIssueOptions,
@@ -88,6 +88,13 @@ export type CreateIssueAction = BaseAction & {
   options: GitLabCreateIssueOptions;
   /** Resolved at prepare time from `options.assignees`, so apply cannot fail on a typo. */
   assigneeIds: number[];
+  /**
+   * Whether an assignee was a bot or service account when the action was queued, or that could
+   * not be told: assigning one can start an agent run (a GitLab Duo flow) that spends the
+   * namespace's credits, so with assignees only `false` lets the create be auto-approved. Read
+   * only by the verdict, at submit.
+   */
+  assigneeIsBot?: boolean;
 };
 
 export type CreateMergeRequestAction = BaseAction & {
@@ -96,6 +103,8 @@ export type CreateMergeRequestAction = BaseAction & {
   options: GitLabCreateMergeRequestOptions;
   /** Resolved at prepare time from `options.assignees`, as for an issue. */
   assigneeIds: number[];
+  /** Whether an assignee was a bot or service account, as for an issue. */
+  assigneeIsBot?: boolean;
 };
 
 type BaseEntityAction = BaseAction & {
@@ -203,6 +212,12 @@ export type PushAction = BaseAction & {
   expectedOldSha: GitOid;
   newSha: GitOid;
   force: boolean;
+  /**
+   * Whether `branch` was the project's default or a protected branch when the push was queued, or
+   * that could not be told: such a push skips the merge request gate, so it is never
+   * auto-approvable, and only `false` lets it be. Read only by the verdict, at submit.
+   */
+  targetProtected?: boolean;
 };
 
 export type GitLabAction =
@@ -222,7 +237,8 @@ export type GitLabAction =
 
 /**
  * The kind of each action, which users' auto-approval rules key on, so a tag must never change. A
- * force push has a kind of its own: enabling ordinary pushes does not let history be rewritten.
+ * force push has a kind of its own, and is never auto-approvable: it can drop commits from the
+ * branch.
  */
 const ACTION_KINDS = {
   createIssue: { tag: "gitlab.createIssue", label: "Create issues" },
@@ -244,13 +260,14 @@ const ACTION_KINDS = {
 type AutoApprovalKind = keyof typeof ACTION_KINDS;
 
 // The auto-approvable kinds each binding's session can submit, so a pre-approval UI lists only
-// those its actions can carry. Merges never appear: they are never auto-approvable.
+// those its actions can carry. Merges and force pushes never appear: they are never
+// auto-approvable.
 const ISSUE_ACTIONS: AutoApprovalKind[] =
   ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"];
 const MERGE_REQUEST_ACTIONS: AutoApprovalKind[] =
   [...ISSUE_ACTIONS, "postReview", "replyToDiffComment", "resolveDiffThread"];
 const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
-  project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "push", "forcePush"],
+  project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "push"],
   issue: ISSUE_ACTIONS,
   mergeRequest: MERGE_REQUEST_ACTIONS,
 };
@@ -262,16 +279,45 @@ export function autoApprovableKinds(resourceKind: ResourceKind): ActionKind[] {
 
 /**
  * The action's kind, and whether it may be applied without a person once the user has enabled
- * that kind. Every action may be except a merge and an approving review, which always wait for a
- * person: an approval shares its kind with the other reviews, so enabling those never covers it.
+ * that kind. Every action may be except those that pass a gate or drop commits, which always wait
+ * for a person: a merge, an approving review, a force push, and a push to the default or a
+ * protected branch; and an issue or merge request created with a bot or service account among its
+ * assignees, which can start an agent run that spends credits. An approval, a protected push and
+ * a create assigned to a bot share their kinds with actions that may apply, so enabling those
+ * never covers them.
  */
-export function autoApprovalOf(action: GitLabAction): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
+export function autoApprovalOf(action: GitLabAction): { actionKind: ActionKind; autoApprovable: boolean } {
   const kind: AutoApprovalKind = action.type === "push" && action.force ? "forcePush" : action.type;
-  return {
-    actionKind: ACTION_KINDS[kind],
-    autoApprovable: action.type !== "mergeMergeRequest" &&
-      !(action.type === "postReview" && action.review.decision === "approve"),
-  };
+  return { actionKind: ACTION_KINDS[kind], autoApprovable: isAutoApprovable(action) };
+}
+
+function isAutoApprovable(action: GitLabAction): boolean {
+  switch (action.type) {
+    case "mergeMergeRequest":
+      return false;
+    case "postReview":
+      return action.review.decision !== "approve";
+    case "push":
+      return !action.force && action.targetProtected === false;
+    case "createIssue": case "createMergeRequest":
+      return action.assigneeIds.length === 0 || action.assigneeIsBot === false;
+    case "setTitle": case "setBody": case "addLabels":
+    case "removeLabels": case "changeState": case "postComment": case "replyToDiffComment":
+    case "resolveDiffThread":
+      return true;
+  }
+}
+
+/**
+ * Whether GitLab's protected-branch rule `pattern` covers `branch`: the exact name, or a wildcard
+ * in which each `*` matches any run of characters, `/` included, case-sensitively (GitLab's
+ * `RefMatcher`).
+ */
+export function protectedBranchMatches(pattern: string, branch: string): boolean {
+  if (pattern === "") return false;
+  if (!pattern.includes("*")) return pattern === branch;
+  const source = pattern.split("*").map(segment => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp(`^${source}$`).test(branch);
 }
 
 /**

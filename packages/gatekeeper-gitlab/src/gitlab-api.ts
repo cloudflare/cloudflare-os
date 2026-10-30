@@ -388,6 +388,11 @@ export type GitLabBranchResponse = {
   commit: { id: string };
 };
 
+/** A protected-branch rule: `name` is a branch name or a wildcard pattern such as `release/*`. */
+export type GitLabProtectedBranchResponse = {
+  name: string;
+};
+
 export type GitLabTagResponse = {
   name: string;
   /** The tag object's sha for annotated tags, the commit's for lightweight ones -- use `commit.id`. */
@@ -898,6 +903,14 @@ export class GitLabApi {
     return await this.#get<GitLabSimpleUser[]>("/users", { username });
   }
 
+  /**
+   * Whether a user is a bot, a service account included -- `GET /users/:id`, whose `bot` field the
+   * username listing leaves out for anyone but an administrator. Absent reads as a bot.
+   */
+  async isBotUser(id: number): Promise<boolean> {
+    return (await this.#get<{ bot?: boolean }>(`/users/${id}`)).bot !== false;
+  }
+
   // -- projects
 
   async getProject(projectPath: string): Promise<GitLabProjectResponse> {
@@ -1208,6 +1221,12 @@ export class GitLabApi {
     return await this.#getPage<GitLabBranchResponse>(
       `/projects/${encodeProjectPath(projectPath)}/repository/branches`,
       { search: options.search }, options.page, options.perPage);
+  }
+
+  /** One page of the project's protected-branch rules, wildcard patterns included. */
+  async listProtectedBranches(projectPath: string, page: number, perPage: number): Promise<GitLabPage<GitLabProtectedBranchResponse>> {
+    return await this.#getPage<GitLabProtectedBranchResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/protected_branches`, {}, page, perPage);
   }
 
   async listTags(projectPath: string, page: number, perPage: number): Promise<GitLabPage<GitLabTagResponse>> {
