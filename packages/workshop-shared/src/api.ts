@@ -1009,8 +1009,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * is the gatekeeper's frame (self-contained iframe HTML + its `ui` capability), or null if the
    * user has no such gatekeeper. An ambient one the deployment only offers is null until the user
    * opts in with provisionAmbientAccount(). The Workshop hosts the HTML in a sandboxed iframe and
-   * exposes `ui` to it over a MessagePort RPC session. The `ui`'s interface is the one the
-   * gatekeeper's package.json names as `cloudflareOs.appApi`.
+   * exposes `ui` to it over a MessagePort RPC session. The `ui`'s interface is the gatekeeper's own:
+   * `ContextApi` in gatekeeper-context's `context-types.ts`, `ScheduleManagementApi` in
+   * gatekeeper-scheduler's `management-types.ts`.
    *
    * @appApi ui id
    * @nullWhen the user has no gatekeeper of that id with an app, as listGatekeeperApps() lists

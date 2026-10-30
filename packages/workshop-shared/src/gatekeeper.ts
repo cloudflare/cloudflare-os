@@ -558,8 +558,8 @@ export type GatekeeperUiFrame = {
 
   /**
    * Capability exposed to the iframe for any RPCs needed by the UI. A gatekeeper app's (see
-   * AuthenticatedApi.getGatekeeperApp()) implements the interface its package.json names as
-   * `cloudflareOs.appApi`; a configurator's, that vendor's `*ConfiguratorUI` class in
+   * AuthenticatedApi.getGatekeeperApp()) implements an interface its gatekeeper declares; a
+   * configurator's, that vendor's `*ConfiguratorUI` class in
    * `packages/gatekeeper-<vendor>/src/`, which helps look up what fills the URL the configurator
    * yields: for a resource configurator, the resource URL Overseer.newGatekeeper() takes (see
    * AuthenticatedApi.startResourceConfigurator()); for a creation configurator, the
