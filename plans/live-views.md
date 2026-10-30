@@ -2,12 +2,14 @@
 
 ## Goal
 
-The agent can draw a live view inside its answer. It writes HTML, CSS and JS between
-`<inline-html>` tags in the answer text, with no tool call. The Workshop runs each block in a
-sandboxed frame built the same way as a gadget's UI frame. A view shows what the agent writes into
-it: it has no `env`, and no network apart from WebRTC (see "Known edge cases"). A block can also
-suggest a message for the viewer to send. The message goes out only when the viewer clicks Send, as
-the viewer's own chat message.
+The agent can show a live view in the chat in two ways. It writes HTML, CSS and JS between
+`<inline-html>` tags in the answer text, with no tool call, when it already has what the view shows.
+When the view's data comes from code (a Gadget, a connection, values it works out), it calls
+`embedView` in `executeCode`, and the data goes from code to the view without the model retyping
+it (see "Views from code"). The Workshop runs each view in a sandboxed frame built the same way as
+a gadget's UI frame. A view has no `env`, and no network apart from WebRTC (see "Known edge
+cases"). A view can also suggest a message for the viewer to send. The message goes out only when
+the viewer clicks Send, as the viewer's own chat message.
 
 ```html
 Food spending is up 18% on September, mostly eating out.
@@ -56,11 +58,12 @@ Acceptance criteria:
 
 ## Locked decisions
 
-- **A view has no `env`.** It cannot reach the chat's gadgets or connections. The agent reads data
-  with `executeCode` and writes the values into the view's code. Giving a view the chat's `env` was
-  built and deferred on 2026-10-28 (#930 holds that design), so this feature needs no kernel API:
-  the frontend, a parser in `workshop-shared` that the frontend and the evals use, and the agent
-  instructions.
+- **A view has no `env`.** It cannot reach the chat's gadgets or connections. Data from them
+  reaches a view as `embedView`'s `data`, which the agent's `executeCode` reads and passes on.
+  Giving a view the chat's `env` was built and deferred on 2026-10-28 (#930 holds that design).
+  Inline views need no kernel API: the frontend, a parser in `workshop-shared` that the frontend
+  and the evals use, and the agent instructions. `embedView` adds the kernel lines in "Views from
+  code".
 - **No chat gateway text.** A chat gateway gets the agent's answer as stored, tags and all.
   Nothing calls the gateway yet, and its removal is planned, so a note in place of each view was
   built, then dropped on review on 2026-11-06. The kernel then does not import the parser.
@@ -72,9 +75,10 @@ Acceptance criteria:
   block code was built, then dropped on review on 2026-11-04, since the frame is sandboxed: in the
   2026-10-28 eval run, two of the views Kimi K2.7 Code drew built their markup with `innerHTML`,
   which the CSP made throw, so they showed nothing. So text a view shows as HTML, such as a web
-  page the agent copied into it, runs as the view's code: it can redraw the view, replace the
-  message the view asks to send, and use WebRTC (see "Known edge cases"). It still has no `env`,
-  the Send chip shows the whole message, and only the viewer's click sends it.
+  page the agent copied into it or an email subject in a view's `data`, runs as the view's code:
+  it can redraw the view, replace the message the view asks to send, and use WebRTC (see "Known
+  edge cases"). It still has no `env`, the Send chip shows the whole message, and only the
+  viewer's click sends it.
 - **The tag is `<inline-html>`.** A block is HTML in the answer, not a gadget: it has no server,
   no files and no connections.
 - **Markdown decides what is code.** A tag line in a code block, as the chat renders it, stays
@@ -154,12 +158,13 @@ text parse alike, but for the last line while the answer streams (below).
 - Only agent answers can hold blocks: stored messages of type `message` with an author of type
   `agent`, and the text an agent streams. The parser runs on nothing else.
 
+
 ### What a block can reach
 
 | In the frame | Reaches | Rule |
 |---|---|---|
 | `agent.send` | A message shown under the block | Only the viewer's click on Send calls the kernel, through `sendChatMessage`, as the viewer's own message. |
-| Gadgets, connections, the agent's `env` | Nothing | Deferred (see "Future work"). |
+| Gadgets, connections, the agent's `env` | Nothing | Deferred (see "Future work"). Their data reaches a view only as `embedView`'s `data`. |
 | Popups, other frames, the network | Nothing but WebRTC | `sandbox="allow-scripts"`, CSP `connect-src 'none'`, and the Workshop's `frame-src srcdoc:`. WebRTC is the exception (see "Known edge cases"). |
 
 Gadget UI frames keep `allow-popups` and `allow-popups-to-escape-sandbox`. So agent-written
@@ -285,28 +290,130 @@ restricted data. This plan does not change gadget frames.
   running. No automatic error reporting captures block errors, since blocks are agent-written
   code.
 
+### Views from code (`embedView`)
+
+In `executeCode`, where a person reads the chat, a global function shows a view:
+
+```js
+export default async function (self, env) {
+  const { byCategory } = await env.EXPENSE_LOG.rpc.totals();
+  embedView({
+    title: "Spending by category",
+    html: `<h3>Spending by category</h3><div id="bars"></div>`,
+    data: byCategory,
+    script: data => {
+      const bars = document.getElementById("bars");
+      for (const [category, total] of Object.entries(data)) {
+        const bar = bars.appendChild(document.createElement("button"));
+        bar.textContent = `${category}: $${total}`;
+        bar.onclick = () => agent.send(`Tell me about my ${category} spending.`);
+      }
+    },
+  });
+}
+```
+
+- **API.** `embedView({ title, html, css?, data?, script? })`. `title` is required, non-empty,
+  and is the frame's accessible name. `html` is the view's body and `css` its style. `data` is any
+  JSON value. `script` is a real function in the agent's code, so the tool call parses it with the
+  rest of the code and nothing in it is escaped: an arrow, a function, or a method with a plain
+  name. The harness sends its source to the view, which calls it with `data` after the markup. It
+  sees only `data` and the view's globals, not the variables around it. A generator, a class, a
+  native function or a quoted method name throws in the agent's code, so the model can rewrite it.
+- **Record.** `executeCodeMode` returns the log, the views and whether the code failed. The
+  `executeCode` call stores the views as `views` (`EmbeddedView`, with `script` as source and
+  `data` as JSON text) and a failure as `failed: true`, beside `output`. The model reads the log,
+  then one line per view: `Showed the user a view: <title>.` Replay and compaction read `output`,
+  never `views`, so view payloads never go back to the model.
+- **Turn ending.** The view is the answer. A step answered with a view when some `executeCode`
+  call in it showed one and no `executeCode` call in it failed: refused by pi (a schema rejection,
+  an abort, which pi writes to `error`), threw, or had its views refused (`failed`). Then the turn
+  ends rather than asking the model for words under the view, and a step with a failed call goes
+  on, so the agent can fix it. One predicate, `answeredWithView`, decides from the step's
+  tool-call log, which one builder makes for both `finishTurn` and the `turn_end` barrier. On
+  resume after a reset, `#decisionWait` applies it to the last stored agent step and treats a
+  match as a committed final response, behind the same precedence as before: a later steer still
+  wins. `turn_end` stores the step's action and connection cards after its message. The view
+  consumes the step's awaited actions the user approved before the turn ended, as a final text
+  answer consumes an earlier step's. One still pending keeps the wait, and approving it once the
+  turn has ended resumes the agent; one rejected ends the turn as before. A connection request is
+  answered only after its step, so it keeps the wait too.
+- **Limits.** As measured: one `executeCode` call shows at most 4 views, each at most 256 KiB as
+  UTF-8 JSON. The views are stored in the step's message record, which Durable Object storage
+  caps at 8 MiB with the rest of the step (see `MAX_CODE_CHANGE_SIZE`). The harness runs in the
+  agent's realm, so its checks only give early, clear errors; the kernel checks what `run()`
+  returns with the same limits. It caps the views array at 4 and each string at 256 Ki code units
+  before reading further, however the agent's code shaped the result, so checking reads a bounded
+  amount. It then checks a well-formed `script`, which the view's document URL-encodes, a view with
+  content (the inline empty-view rule, `isEmptyViewHtml`, unless a script draws it), and the size.
+  A run that breaks one shows nothing, is `failed`, and its output says why, so the model can fix
+  it. Every call of a step adds its views to the same record, so what they add together may take
+  at most half of `MAX_CODE_CHANGE_SIZE`, measured as `codeChangeSerializedSize` measures a change:
+  the views, the output lines naming them, and a second byte per code unit of the code's log,
+  since a title outside Latin-1 stores the whole output at two bytes per code unit. A call past
+  that is refused the same way. The budget bounds nothing else in the record, such as the code's
+  logs themselves. This guards storage, so the agent instructions don't mention it. Without it,
+  nine valid calls in one step made a record that Durable Object storage refused
+  (`SQLITE_TOOBIG`), and the step was lost.
+- **Spawned and callable agents** run in chats no person reads, so their `executeCode` has no
+  `embedView`. The kernel decides from the chat's stored agent context (`spawnerConfig`), not from
+  the instructions; hooks in ordinary chats keep it.
+- **Rendering.** The chat draws a step's views under its tool calls, in the inline view's card and
+  frame (`UiBlockCard`): the same sandbox, theme, height, Stop, errors and Send chip.
+  `embeddedViewHtml` in `workshop-shared` is the one builder of a view's document, for the
+  Workshop and the evals.
+- **Data stays data.** The view's module goes in as a `data:` URL, so nothing in its script or
+  data can end the script element or add markup. The data goes in as its JSON text in a string
+  that the module passes to `JSON.parse`, never as a JavaScript literal, so a key such as
+  `__proto__` stays a key. The view's own code still decides whether it shows data as text or as
+  HTML (see "A view's code may parse strings as HTML").
+
 ### Agent instructions
 
 - The guidance on when to create a Gadget is main's: a request for an app gets a Gadget. A
   sentence that made a one-off demo, tool or visual a view even when the user called it an app
   was dropped on review on 2026-11-06.
-- The view section: when to draw one, the syntax, with the tags on lines of their own, with no
-  indent, outside code fences, that the view's markup draws as the agent writes it and its module
-  scripts run as soon as its block closes, so any style comes first, then the markup, and the
-  script last, that the `<title>` is not shown and the view sits in the answer with no border or
-  padding around it, module scripts, that a view has no `env` and no network so the agent reads
-  data with `executeCode` first and writes the values in, that the code runs again on each mount
-  and for each viewer, `agent.send` in the user's words, the Kumo colour tokens, the height rules,
-  and that a view keeps no state. The example writes its data into its script and builds its bars
-  with `createElement` and `textContent`, since models copy the example more than they follow the
+- One "Live views" section, as benchmarked: when to show a view, inline when the agent already
+  has its content and `embedView` when its data comes from code. For inline views: the syntax,
+  with the tags on lines of their own, with no indent, outside code fences, and that the markup
+  draws as the agent writes it and module scripts run once the block closes, so style first and
+  script last. For views from code: pass the data as `data` and never retype it, call the tool
+  and never paste its code, the view is the answer so words come before the call, and a call's
+  limit of 4 views of 256 KiB. For every view: no `env` and no network, the code runs again on
+  each mount and for each viewer, `agent.send` in the user's words, the Kumo colour tokens, the
+  height rules, and that a view keeps no state. Both examples build their bars with
+  `createElement` and `textContent`, since models copy the example more than they follow the
   rules.
+- `executeCode`'s description gains one sentence naming `embedView`. Spawned and callable agents
+  get neither.
+
+## Measurement (2026-10-29)
+
+Ten view designs, the same commit, tasks and checks, on gpt-6-luna, claude-haiku-5-5 and Kimi
+K3, about 80 view turns each, from small views of data in the prompt to views of a Gadget's data.
+Inline + `embedView` ranked first: 98% of view turns passed every check, none needed a retry, and
+a view took 1.1 model steps and 14.2K prompt tokens. The agent drew all 45 of the smallest views
+inline and showed all 18 views of Gadget data with `embedView`. The agent instructions, the
+`executeCode` description and the `embedView` limits are the ones that run measured, word for
+word, but for four changes made on review on 2026-11-04 and 2026-11-06: the tag is
+`<inline-html>`, its lines have no indent, the rule that a view cannot parse a string as HTML is
+gone with the Trusted Types CSP, and the sentence that made a one-off tool a view even when the
+user called it an app is gone.
+
+| Design | Passed | Prompt tokens per view | First view (gpt-6-luna) |
+|---|---|---|---|
+| Inline only | 95% | 26.2K | 11.4 s |
+| `embedView` only | 98% | 13.2K | 19.8 s |
+| Inline + `embedView` | 98% | 14.2K | 8.8 s |
 
 ## Rejected alternatives
 
 - **Raw HTML in Markdown.** It would run agent-written code in the Workshop document, with the
   Workshop's authority.
-- **A tool call that shows HTML.** Each view would cost a model round trip, and the view could not
-  stream with the prose.
+- **`embedView` alone.** Every view would wait for a tool call to finish, and could not draw while
+  the model writes it. Inline views stay for views whose content the agent already has.
+- **Inline views alone.** Data from code would pass through the model as text, which costs steps
+  and tokens and can change a number (26.2K prompt tokens per view against 14.2K).
 - **A gadget for each block.** Each one would add a gadget to the workspace list and a git
   history, and would need tool calls.
 - **Sending a block's requests straight to the kernel.** Block code could then start turns on load,
@@ -356,6 +463,9 @@ Three commits, so reviewers can read the kernel lines alone:
 2. **Shared and kernel.** The block parser in `workshop-shared`, and the agent instructions.
 3. **Frontend.** The block card, its frame and host, and drawing blocks in answers as they stream.
 
+`embedView` follows in its own commits: this plan's section; `EmbeddedView`, `embeddedViewHtml`
+and the kernel; the frontend; and the evals.
+
 ## Verification
 
 - Parser unit tests (`workshop-backend/__tests__/inline-html-blocks.test.ts`, in workerd): prose
@@ -379,12 +489,23 @@ Three commits, so reviewers can read the kernel lines alone:
   view's code makes with `agent.send` are released, though the code ignores their results.
 - `ChatInterface` tests: an open block in a streaming answer is already a frame, and the closed
   block and then the stored message keep that frame element; a stored message whose text differs
-  from the streamed text mounts its view fresh.
-- A browser run on the dev server with a real model: the agent draws a view from data it read with
-  `executeCode`, the view follows a theme change, a click shows the message, and Send posts it as
-  the viewer's message. The view's markup draws while its block streams, its module script runs
-  once, at the block's close, and the stored answer does not reload it. Screenshots in light and
-  dark, and after a theme change, show the view with no box around it.
+  from the streamed text mounts its view fresh; a step's `embedView` views draw under its text.
+- `embedView` kernel tests (`embed-view.test.ts`, `spawned-agent-tools.test.ts`,
+  `durable-decision-resume.test.ts`): the views a run hands back, with scripts (arrows, functions,
+  async and plain methods, a method named `async`) that run on their data apart from the code
+  that wrote them; specs the harness refuses; views the kernel refuses (past 4 in a call, empty,
+  over 256 KiB, forged past the harness, a huge array); two calls of one step that show five
+  views between them; a step that read data in one call and showed a view in another ends; a view
+  plus a refused or thrown `executeCode` call goes on; spawned and callable agents have no
+  `embedView`; resume after a reset at a view step makes no model request.
+- The evals' view host runs an embedded view whose script and data hold `</script>` and whose
+  data has a `__proto__` key, which stays data.
+- A browser run on the dev server with a real model: the agent draws an inline view from data in
+  the prompt and shows a Gadget's data with `embedView`, the view follows a theme change, a click
+  shows the message, and Send posts it as the viewer's message. The view's markup draws while its
+  block streams, its module script runs once, at the block's close, and the stored answer does not
+  reload it. Screenshots in light and dark, and after a theme change, show the view with no box
+  around it.
 
 ## Known edge cases
 
@@ -400,8 +521,10 @@ Three commits, so reviewers can read the kernel lines alone:
   the script runs at the block's close. A `<style>` applies only once its end tag arrives. The
   instructions ask for the style first, then the markup, and the script last, so the view takes
   shape as it streams.
-- **Context cost.** The block's HTML stays in the agent's message, so the model reads it again on
-  each later turn until compaction summarizes that part of the chat.
+- **Context cost.** A block's HTML stays in the agent's message, and a view from code stays in
+  its `executeCode` input, so the model reads it again on each later turn until compaction
+  summarizes that part of the chat. Data the code reads for the view does not: it stays in
+  `views`, which replay leaves out.
 - **WebRTC.** No CSP directive in any shipping browser covers `RTCPeerConnection`, so a view's code
   can reach STUN and TURN servers, as gadget UI frames can (`browser-export.ts` records the same
   gap). Deleting the `RTC*` globals in the bootstrap does not hold: measured 2026-10-30 in
