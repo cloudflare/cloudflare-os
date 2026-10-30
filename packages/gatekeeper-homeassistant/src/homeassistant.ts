@@ -51,7 +51,7 @@ import {
   fetchDashboardConfig,
   resolveTargets,
 } from "./approvals";
-import { autoApprovableKinds } from "./auto-approval";
+import { autoApprovableKinds, serviceCallVerdict } from "./auto-approval";
 import {
   indexPendingByEntity,
   overlayDashboardConfig,
@@ -1065,6 +1065,8 @@ type PendingActionRow = {
   id: number;
   action: HomeAssistantAction;
   submittedAt: number;
+  /** The verdict submitted with the action; apply re-checks a `true` one (see applyAction). */
+  autoApprovable?: boolean;
 };
 
 // Internal storage row for actions that have been applied. Retained so that revertAction() can
@@ -1197,6 +1199,13 @@ export class HomeAssistantGatekeeperImpl
     }
     const action = pending.action;
     const creds = await this.#getCreds();
+    // Home Assistant resolves area, device, label and floor targets when the call runs, so what a
+    // device-control call reaches can change while it is queued (a template switch moved into the
+    // area). One that could be auto-approved is held unless it would still qualify now.
+    if (action.type === "callService" && pending.autoApprovable === true &&
+        !serviceCallVerdict(action, await fetchRegistrySnapshot(creds)).autoApprovable) {
+      throw new Error("What this call reaches has changed since it was queued, so it is no longer only device control. Queue it again to have it reviewed.");
+    }
 
     let revertInfo: HomeAssistantRevertInfo;
     try {
@@ -1350,9 +1359,13 @@ export class HomeAssistantGatekeeperImpl
           description = describeAction(action, emptyRegistry);
         }
 
+        self.ctx.storage.kv.put<PendingActionRow>(`pending:${id}`, { ...row, autoApprovable: description.autoApprovable });
         try {
           await approvalQueue.submitAction(id, description);
         } catch (e) {
+          // An auto-approval can apply the action before the reply arrives, so a lost reply on an
+          // applied action proves the overseer received it; failing would invite a repeated call.
+          if (self.ctx.storage.kv.get(`applied:${id}`) !== undefined) return;
           // The submit failed (e.g., the approval queue stub is gone). Drop the pending row.
           self.#deletePending(id);
           throw e;
