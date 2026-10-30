@@ -12,6 +12,7 @@ import type { RegistrySnapshot } from "../src/homeassistant-api";
 
 type Entity = {
   entity_id: string;
+  platform?: string;
   device_id?: string;
   area_id?: string;
   labels?: string[];
@@ -61,7 +62,8 @@ function registry(extra: { entities?: Entity[]; states?: [string, any][] } = {})
     ],
     labels: [{ label_id: "cozy" }],
     devices: [{ id: "lamp", area_id: "living_room" }],
-    entities,
+    // Every fixture entity comes from a device integration unless it names its own platform.
+    entities: entities.map(entity => ({ platform: "demo", ...entity })),
     states,
   };
 }
@@ -294,6 +296,22 @@ describe("callService targets", () => {
 
   it("is false for an explicitly targeted config entity", () => {
     expect(verdict(entityCall("switch.camera_motion", "turn_off"))).toEqual(callService);
+  });
+
+  it("is false for an entity whose integration runs configured actions", () => {
+    for (const platform of ["template", "command_line", "rest", "group", "universal", "switch_as_x"]) {
+      const scripted = registry({ entities: [{ entity_id: "switch.scripted", platform }] });
+      expect(verdict(entityCall("switch.scripted", "turn_on"), scripted), platform).toEqual(callService);
+    }
+    const unknown = registry({ entities: [{ entity_id: "switch.unknown", platform: undefined }] });
+    expect(verdict(entityCall("switch.unknown", "turn_on"), unknown)).toEqual(callService);
+    const plain = registry({ entities: [{ entity_id: "switch.hue_plug", platform: "hue" }] });
+    expect(verdict(entityCall("switch.hue_plug", "turn_on"), plain)).toEqual(deviceControl);
+  });
+
+  it("is false for a script-backed entity reached through its area", () => {
+    const scripted = registry({ entities: [{ entity_id: "switch.lobby", area_id: "empty", platform: "template" }] });
+    expect(verdict(call("switch", "turn_on", { target: { area_id: "empty" } }), scripted)).toEqual(callService);
   });
 
   it("accepts target keys in data from the whole-instance session", () => {

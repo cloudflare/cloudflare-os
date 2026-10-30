@@ -118,6 +118,14 @@ const DEVICE_CONTROL_DOMAINS = new Set([...DEVICE_CONTROL_SERVICES].map((s) => s
 // are entry points, and a cover with no class (or a class HA adds later) is not known to be safe.
 const SAFE_COVER_CLASSES = new Set(["awning", "blind", "curtain", "damper", "shade", "shutter"]);
 
+// Integrations whose entities run user-configured actions rather than drive one device: a template
+// or command-line switch runs a script or shell command on turn_on, a REST switch calls an
+// arbitrary URL, and group, universal and switch_as_x entities forward to members of any platform.
+// Turning one on is as open-ended as calling a script, so it waits for a person.
+const SCRIPT_BACKED_PLATFORMS = new Set([
+  "template", "command_line", "rest", "group", "universal", "switch_as_x",
+]);
+
 // Domains whose per-entity check is more than the entity category. Home Assistant re-resolves
 // area, device, label and floor targets when the call runs, so a garage door added to an area
 // after submission would be reached; these domains need explicit entity ids.
@@ -236,10 +244,12 @@ function resolveDomainEntities(
 
 // An entity is safe to act on without review when the registry knows it, it is not a config or
 // diagnostic entity (in a generic domain like switch, those are device settings such as a
-// camera's motion detection), and, for a cover, every class HA reports for it is a safe one.
+// camera's motion detection), its integration is not script-backed, and, for a cover, every class
+// HA reports for it is a safe one.
 function isSafeEntity(entityId: string, registry: RegistrySnapshot): boolean {
   const entry = registry.entities.find((e: any) => e.entity_id === entityId);
   if (!entry || entry.entity_category != null) return false;
+  if (typeof entry.platform !== "string" || SCRIPT_BACKED_PLATFORMS.has(entry.platform)) return false;
   if (!entityId.startsWith("cover.")) return true;
   const classes = [
     registry.states.get(entityId)?.attributes?.device_class,
