@@ -1,0 +1,35 @@
+packages/gatekeeper-github/src/github-api.ts
+  s_1e2c74fa3cab0c::t_0a8e2529097285 1374-1396
+packages/gatekeeper-github/README.md
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 25-38
+packages/gatekeeper-github/__tests__/workerd/auto-approval.test.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 3-4,59,61,65,77-78,96-126
+packages/gatekeeper-github/src/github.ts
+  s_1e2c74fa3cab0c::t_aa9f2b92c88a59 5605-5607
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 345-347,498-501,531-532,544-547,551-571
+  s_1e2c74fa3cab0c::t_5b5c996846259e 342-344,5611-5616,5637
+packages/gatekeeper-github/__tests__/github-api.test.ts
+  s_1e2c74fa3cab0c::t_965196875447d3 215-216,221-256
+packages/gatekeeper-github/__tests__/workerd/pull-simulation.test.ts
+  s_1e2c74fa3cab0c::t_6a7c56440c9a16 193,280-288
+packages/gatekeeper-github/__tests__/workerd/push.test.ts
+  s_1e2c74fa3cab0c::t_ecdfe5a51aa73d 19,97,103,147-155,158,255,377-439
+packages/gatekeeper-github/storage-schema.md
+  s_1e2c74fa3cab0c::t_43860bbc2633e1 67-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c7476284ead37ed0a4c60995c96b084c66969ae4",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

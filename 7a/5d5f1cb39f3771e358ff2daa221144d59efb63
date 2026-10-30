@@ -1,0 +1,33 @@
+packages/gatekeeper-supabase/README.md
+  s_1e2c74fa3cab0c::t_0963ccadd5195c 46-47
+packages/gatekeeper-supabase/__tests__/supabase-actions.test.ts
+  s_1e2c74fa3cab0c::t_739ca78711f14f 1-34
+packages/gatekeeper-supabase/package.json
+  s_1e2c74fa3cab0c::t_92e7861d1b71eb 9-10,23
+packages/gatekeeper-supabase/src/supabase-actions.ts
+  s_1e2c74fa3cab0c::t_dc791f58ca4293 1-34
+packages/gatekeeper-supabase/src/supabase.ts
+  s_1e2c74fa3cab0c::t_78e6bbb4d27926 31,943,1111
+packages/gatekeeper-supabase/vite.config.ts
+  s_1e2c74fa3cab0c::t_6f02f027b48a66 1-3
+packages/gatekeeper-supabase/vitest.config.ts
+  s_1e2c74fa3cab0c::t_74721b0e28d4ad 1-8
+pnpm-lock.yaml
+  s_1e2c74fa3cab0c::t_b4af9fad33206e 998-1000
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7a5d5f1cb39f3771e358ff2daa221144d59efb63",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
