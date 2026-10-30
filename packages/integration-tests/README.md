@@ -18,6 +18,9 @@ vendor this one as a submodule:
   suite for a new gatekeeper should be "point the harness at the package", not a forked copy.
   `Harness.redeployWorkshop()` deploys another build of the Workshop over the running one, keeping
   its storage, and `bundleBlueprints()` is a patch that changes which blueprints a build ships with.
+  Like `pnpm dev-server`, it boots the Workshop as a local dev instance (`LOCAL_DEV_INSTANCE`), where
+  `cf-os api` may act as anyone; deleting that var in a patch runs it as a deployment, where the CLI
+  is for deployment admins only (`__tests__/cli-admins-only.test.ts`).
 - **`src/network-interceptor.ts`** — `NetworkInterceptor`, mechanism only. It patches
   `globalThis.fetch` (the harness routes Worker subrequests back through the Node process, so that is
   enough), passes loopback through, and **throws on anything a handler didn't match** — a test cannot

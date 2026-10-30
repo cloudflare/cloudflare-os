@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
@@ -12,6 +13,7 @@ import {
   passwordHash,
   resolveAuth,
   resolveTarget,
+  USER_AGENT,
   webSocketConnection,
   type SessionDeps,
   type SpawnCloudflared,
@@ -141,7 +143,8 @@ test("Access mode sends Origin and cf-access-token, then authenticateFromCfAcces
   assert.deepEqual(await api.findNotes("q"), [{ id: 1, title: "q" }]);
   api[Symbol.dispose]();
   session.main[Symbol.dispose]();
-  assert.deepEqual(log.headers, [{ Origin: "https://os.example.com", "cf-access-token": "from.cloudflared.token" }]);
+  assert.deepEqual(log.headers,
+    [{ Origin: "https://os.example.com", "User-Agent": USER_AGENT, "cf-access-token": "from.cloudflared.token" }]);
   assert.deepEqual(spawned, [["cloudflared", "access", "token", "-app=https://os.example.com"]]);
   assert.deepEqual(callsOf(log, "authenticateFromCfAccess"), [[]]);
   assert.deepEqual(callsOf(log, "authenticate"), []);
@@ -153,7 +156,7 @@ test("token mode authenticates with CFOS_API_TOKEN; a public chain needs no toke
   const { api } = await session.authenticate();
   assert.deepEqual(await api.findNotes("q"), [{ id: 1, title: "q" }]);
   session.main[Symbol.dispose]();
-  assert.deepEqual(log.headers, [{ Origin: "https://os.example.com" }]);
+  assert.deepEqual(log.headers, [{ Origin: "https://os.example.com", "User-Agent": USER_AGENT }]);
   assert.deepEqual(callsOf(log, "authenticate"), [["good-token"]]);
   assert.deepEqual(spawned, []);
 
@@ -223,6 +226,14 @@ test("a refused WebSocket is diagnosed over HTTP: Access's login names cloudflar
   assert.equal(upgrades[0].origin, origin);
   assert.equal(upgrades[0]["cf-access-token"], "env.access.token");
   assert.equal(requests[0]["cf-access-token"], "env.access.token");
+  // The Workshop knows the CLI by it, on the WebSocket and the request diagnosing its refusal alike.
+  assert.equal(upgrades[0]["user-agent"], USER_AGENT);
+  assert.equal(requests[0]["user-agent"], USER_AGENT);
+});
+
+test("the User-Agent is cf-os-api/<this package's version>", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  assert.equal(USER_AGENT, `cf-os-api/${manifest.version}`);
 });
 
 test("a 401 for a token sign-in names the token, not cloudflared", async (t) => {
