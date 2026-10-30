@@ -161,6 +161,8 @@ Each Gadget runs in a secure sandbox that prevents it from talking to the intern
 * The server runs in a [Dynamic Worker](https://blog.cloudflare.com/dynamic-workers/) which has had its access to the internet disabled. It can only communicate with specific external resources that you have explicitly designated, via [Workers Bindings](https://blog.cloudflare.com/workers-environment-live-object-bindings/).
 * The client code runs in a sandboxed iframe. This iframe can communicate with its server only via a Cap'n Web RPC session provided over `postMessage()` to the parent frame. The iframe is otherwise blocked from accessing the internet (to the maximum extent allowed by browsers, via `Content-Security-Policy` and iframe sandbox settings).
 
+Gadget UIs can compile WebAssembly from bytes included in their code or supplied through RPC, and can request pointer lock after user interaction (Escape releases it). WebAssembly compilation is also permitted during browser-rendered exports. JavaScript `eval()` and `Function()` remain blocked, as do direct asset downloads and network connections.
+
 ### Capability-based access control
 
 Each agent, and each Gadget, by default has access to nothing. Even if you've configured the Gadget Workshop with access to external accounts, agents and Gadgets do NOT automatically get to use them.
