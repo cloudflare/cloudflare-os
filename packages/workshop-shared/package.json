@@ -31,6 +31,10 @@
       "types": "./src/code-change.ts",
       "import": "./src/code-change.ts"
     },
+    "./gadget-ui-blocks": {
+      "types": "./src/gadget-ui-blocks.ts",
+      "import": "./src/gadget-ui-blocks.ts"
+    },
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
