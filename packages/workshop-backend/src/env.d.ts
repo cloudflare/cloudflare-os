@@ -10,10 +10,11 @@ declare global {
       // (which is what a secret binding, can carry).
       ADMINS?: string[] | string;
 
-      // `true` on a local dev instance only: set by `pnpm dev-server` (scripts/run-dev-server.ts)
-      // and the integration harness, and never by a deployment, which must not set it. It lifts the
-      // limit on what `cf-os api` may do (see the /api route in server.ts).
-      LOCAL_DEV_INSTANCE?: boolean;
+      // Where this Workshop runs: "development" under `pnpm dev-server` (scripts/run-dev-server.ts),
+      // "test" in the integration harness. A deployment never sets it, and must not: an absent or
+      // any other value is a deployment. A local instance lifts the limit on what `cf-os api` may do
+      // (see the /api route in server.ts).
+      WORKSHOP_ENVIRONMENT?: "development" | "test";
 
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;

@@ -1062,11 +1062,12 @@ export default {
         abortController.abort(reason);
       };
 
-      // `cf-os api` names itself in its User-Agent, and outside a local dev instance it may act
-      // only as a deployment admin (PublicApiImpl's #limitCli). A speed bump against casual use,
-      // not a boundary: a client can send any User-Agent, and the API's own checks authorize.
-      let cliAdminsOnly = env.LOCAL_DEV_INSTANCE !== true &&
-          CF_OS_CLI_USER_AGENT.test(req.headers.get("User-Agent") ?? "");
+      // `cf-os api` names itself in its User-Agent, and on a deployment (any WORKSHOP_ENVIRONMENT
+      // but "development" or "test") it may act only as a deployment admin (PublicApiImpl's
+      // #limitCli). A speed bump against casual use, not a boundary: a client can send any
+      // User-Agent, and the API's own checks authorize.
+      let local = env.WORKSHOP_ENVIRONMENT === "development" || env.WORKSHOP_ENVIRONMENT === "test";
+      let cliAdminsOnly = !local && CF_OS_CLI_USER_AGENT.test(req.headers.get("User-Agent") ?? "");
 
       return await newWorkersRpcResponse(req,
           new PublicApiImpl(ctx, env, abortSession, accessSession, cliAdminsOnly),
