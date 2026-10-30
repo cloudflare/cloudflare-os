@@ -184,6 +184,21 @@ test("normalizes doc text", () => {
   expect(normalizeDoc("")).toBe("");
 });
 
+// A gatekeeper's src/app-api.ts re-exports its app UI's interface as AppApi (scripts/generate.ts), which the
+// checker reads as the interface itself.
+test("follows a re-exported entry to the interface it names, which keeps its own name", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "api-schema-reexport-")));
+  try {
+    writeFileSync(join(dir, "types.ts"), "export interface PanelApi { open(): Promise<string>; }\n");
+    writeFileSync(join(dir, "app-api.ts"), 'export type { PanelApi as AppApi } from "./types";\n');
+    const schema = extractSchema({ entry: join(dir, "app-api.ts"), compilerOptions: STRICT, entryName: "AppApi", constants: [] });
+    expect(schema.entry).toBe("PanelApi");
+    expect(Object.keys(schema.services)).toEqual(["PanelApi"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // What the generator hashes to tell when its files are stale: a config the tsconfig extends can change
 // the schema (`strictNullChecks` drops a result's `null`) as surely as a source can.
 test("reports the files it read: the tsconfig, the configs it extends, and every source loaded", () => {

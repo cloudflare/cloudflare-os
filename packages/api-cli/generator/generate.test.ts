@@ -49,28 +49,25 @@ test("agent-types.ts holds the agent declarations, whole, per service and per ga
   assert.deepEqual({ declarations: module.declarations, fragments: module.fragments, apps: module.apps }, agent);
 });
 
-test("the gatekeeper app UIs are the gatekeepers whose package.json names one, by vendor id", () => {
+test("the gatekeeper app UIs are the gatekeepers with a src/app-api.ts, by vendor id", () => {
   const apps = findGatekeeperApps();
   assert.deepEqual(apps.map(({ vendor, file, source }) => ({ vendor, file, entryName: source.entryName })), [
-    { vendor: "context", file: "packages/gatekeeper-context/src/context-types.ts", entryName: "ContextApi" },
-    { vendor: "scheduler", file: "packages/gatekeeper-scheduler/src/management-types.ts", entryName: "ScheduleManagementApi" },
+    { vendor: "context", file: "packages/gatekeeper-context/src/app-api.ts", entryName: "AppApi" },
+    { vendor: "scheduler", file: "packages/gatekeeper-scheduler/src/app-api.ts", entryName: "AppApi" },
   ]);
   for (const { vendor, source } of apps) assert.equal(source.tsconfig, join(ROOT, "packages", `gatekeeper-${vendor}`, "tsconfig.json"));
 });
 
-test("a package.json's appApi is <file>.ts#<Interface>, and a package's directory gives its vendor id", (t) => {
+test("only a gatekeeper package's src/app-api.ts counts, and its directory gives its vendor id", (t) => {
   const root = mkdtempSync(join(tmpdir(), "api-cli-apps-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const manifest = (dir: string, cloudflareOs?: unknown) => {
-    mkdirSync(join(root, "packages", dir), { recursive: true });
-    writeFileSync(join(root, "packages", dir, "package.json"), JSON.stringify({ name: dir, ...cloudflareOs ? { cloudflareOs } : {} }));
+  const pkg = (dir: string, appApi: boolean) => {
+    mkdirSync(join(root, "packages", dir, "src"), { recursive: true });
+    if (appApi) writeFileSync(join(root, "packages", dir, "src", "app-api.ts"), "export type { X as AppApi } from \"./x.js\";\n");
   };
-  manifest("gatekeeper-mcp-portal", { appApi: "src/portal-types.ts#PortalApi" });
-  manifest("gatekeeper-none");
-  manifest("workshop-other", { appApi: "src/x.ts#X" });
+  pkg("gatekeeper-mcp-portal", true);
+  pkg("gatekeeper-none", false);
+  pkg("workshop-other", true);
   assert.deepEqual(findGatekeeperApps(root).map(({ vendor, file }) => ({ vendor, file })),
-    [{ vendor: "mcp_portal", file: "packages/gatekeeper-mcp-portal/src/portal-types.ts" }]);
-  manifest("gatekeeper-bad", { appApi: "src/x.ts" });
-  assert.throws(() => findGatekeeperApps(root),
-    /packages\/gatekeeper-bad\/package\.json: cloudflareOs\.appApi needs "<file>\.ts#<Interface>", not "src\/x\.ts"/);
+    [{ vendor: "mcp_portal", file: "packages/gatekeeper-mcp-portal/src/app-api.ts" }]);
 });

@@ -146,7 +146,7 @@ export interface ApiCapabilityProperty {
  * How an untyped capability property is typed by the value of one of the command's positional
  * arguments, from api.ts's `@appApi <property> <param>` on its method: the property is the app UI
  * capability of the gatekeeper whose vendor id the argument is, and a gatekeeper declares that
- * capability's interface in its package.json (`cloudflareOs.appApi`). When the argument, as typed,
+ * capability's interface as `AppApi` in its `src/app-api.ts`. When the argument, as typed,
  * is a key of `nodes`, the chain continues on that node, whose commands are checked as any node's
  * are, `call <method> [json-args...]` still working beside them; otherwise it stays untyped.
  */

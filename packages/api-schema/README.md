@@ -98,16 +98,17 @@ and those in `tags`) appear in the JSDoc.
 
 A gatekeeper's management app (`getGatekeeperApp(<vendor>)`) is a frame whose `ui` the API types
 as `RpcStub<RpcTarget>`: each gatekeeper's is its own, and the Workshop API depends on no
-gatekeeper. A gatekeeper whose `ui` has a declared interface names it in its package.json,
+gatekeeper. A gatekeeper whose `ui` has a declared interface exports it as `AppApi` from its
+`src/app-api.ts`, re-exporting it from where it is declared:
 
-```json
-"cloudflareOs": { "appApi": "src/context-types.ts#ContextApi" }
+```ts
+export type { ContextApi as AppApi } from "./context-types.js";
 ```
 
-the file relative to the package, and `pnpm api-schema:generate` extracts that interface's schema,
-with the same extractor, under the package's own tsconfig, so the file and what it imports must
-type-check there and should be light (types and `capnweb` only, as `context-types.ts` and the
-scheduler's `management-types.ts` are). Its vendor id is the backend's: the suffix of its
+and `pnpm api-schema:generate` extracts that interface's schema, under its own name, with the same
+extractor, under the package's own tsconfig, so the file and what it imports must type-check there
+and should be light (types and `capnweb` only, as `context-types.ts` and the scheduler's
+`management-types.ts` are). Its vendor id is the backend's: the suffix of its
 `GATEKEEPER_<NAME>` binding, lowercased, which `scripts/run-dev-server.ts` names after the package
 directory (`gatekeeper-context` is `context`). Today `context` (`ContextApi`) and `scheduler`
 (`ScheduleManagementApi`) declare one. A configurator's `ui` (`startResourceConfigurator`) has
@@ -120,7 +121,7 @@ Whatever reads the generated files generates them first, with
 which `@gadgets/api-cli`'s `build` and `test` and the integration tests depend on (so `pnpm build`,
 `pnpm lint` and `pnpm test` run it), the CLI's and the integration tests' direct `test:run`, and the
 root `pnpm cf-os`. A change to `packages/workshop-shared/src/api.ts`, to a gatekeeper app UI's
-interface or to its package.json's `appApi` needs no step of its own, and nothing to commit.
+interface or to its `src/app-api.ts` needs no step of its own, and nothing to commit.
 
 Each generation writes this directory and `packages/api-cli/generated/`, `pnpm cf-os api`'s command
 table and its copy of the agent declarations, removes the `gatekeeper-apps/` files of a gatekeeper

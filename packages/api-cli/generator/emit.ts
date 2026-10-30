@@ -77,8 +77,8 @@ export interface AgentTypes {
 
 /**
  * A gatekeeper's app UI: the gatekeeper's vendor id (its `GATEKEEPER_<VENDOR>` binding's suffix,
- * lowercased), and the schema of the interface its package.json names as `cloudflareOs.appApi`,
- * extracted with that interface as the entry.
+ * lowercased), and the schema of the interface its `src/app-api.ts` exports as `AppApi`, extracted
+ * with that interface as the entry.
  */
 export interface AppApi {
   vendor: string;
