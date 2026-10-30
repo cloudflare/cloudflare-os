@@ -57,7 +57,10 @@ orthogonal — an account can declare either, both, or neither.
   wire it into a gadget's binding list with `setGadgetBinding` when the gadget's persistent code
   needs it.
 - The UI is hosted at `/gatekeepers/$appId` (the gatekeeper's vendor id, e.g.
-  `/gatekeepers/context`) via `startAppUi({ isAdmin })`.
+  `/gatekeepers/context`) via `startAppUi({ isAdmin })`. Anything after that prefix is the app's
+  own path, so apps can be deep-linked: the Workshop owns the URL and syncs it with the iframe over
+  `GatekeeperAppNavigation` (`@gadgets/workshop-shared/gatekeeper-app`); the Context Library uses
+  `/collections/<id>` and `/collections/<id>/files/<path>`.
 
 ## Admin settings
 
