@@ -299,7 +299,7 @@ describe("callService targets", () => {
   });
 
   it("is false for an entity whose integration runs configured actions", () => {
-    for (const platform of ["template", "command_line", "rest", "group", "universal", "switch_as_x"]) {
+    for (const platform of ["template", "command_line", "wake_on_lan", "rest", "group", "universal", "switch_as_x"]) {
       const scripted = registry({ entities: [{ entity_id: "switch.scripted", platform }] });
       expect(verdict(entityCall("switch.scripted", "turn_on"), scripted), platform).toEqual(callService);
     }
