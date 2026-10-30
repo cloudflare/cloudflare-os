@@ -119,11 +119,12 @@ const DEVICE_CONTROL_DOMAINS = new Set([...DEVICE_CONTROL_SERVICES].map((s) => s
 const SAFE_COVER_CLASSES = new Set(["awning", "blind", "curtain", "damper", "shade", "shutter"]);
 
 // Integrations whose entities run user-configured actions rather than drive one device: a template
-// or command-line switch runs a script or shell command on turn_on, a REST switch calls an
-// arbitrary URL, and group, universal and switch_as_x entities forward to members of any platform.
-// Turning one on is as open-ended as calling a script, so it waits for a person.
+// or command-line switch runs a script or shell command on turn_on, a wake_on_lan switch runs its
+// configured off script, a REST switch calls an arbitrary URL, and group, universal and
+// switch_as_x entities forward to members of any platform. Turning one on is as open-ended as
+// calling a script, so it waits for a person.
 const SCRIPT_BACKED_PLATFORMS = new Set([
-  "template", "command_line", "rest", "group", "universal", "switch_as_x",
+  "template", "command_line", "wake_on_lan", "rest", "group", "universal", "switch_as_x",
 ]);
 
 // Domains whose per-entity check is more than the entity category. Home Assistant re-resolves
