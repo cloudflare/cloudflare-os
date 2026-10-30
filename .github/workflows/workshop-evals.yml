@@ -39,6 +39,11 @@ jobs:
           cache: true
           run-install: true
 
+      # Tasks that check a `<gadget-ui>` view run it in Chromium (src/view-host.ts). The frontend
+      # pins the same catalog `playwright`, as workshop-evals-pr.yml explains.
+      - name: Install Chromium for view checks
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
+
       - name: Run local workerd evals
         continue-on-error: true
         env:

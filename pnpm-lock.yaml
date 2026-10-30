@@ -1361,6 +1361,9 @@ importers:
       chess.js:
         specifier: 1.4.0
         version: 1.4.0
+      playwright:
+        specifier: 'catalog:'
+        version: 1.64.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
