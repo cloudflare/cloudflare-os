@@ -1,14 +1,10 @@
-export const BLUEPRINT_ARCHIVE_EXTENSION = '.gadget'
+const BLUEPRINT_ARCHIVE_EXTENSION = '.gadget'
 
 function makeFilename(title: string, fallback: string): string {
   return title
     .trim()
     .replace(/[^A-Za-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '') || fallback
-}
-
-export function makeBlueprintFilename(title: string, version: number): string {
-  return `${makeFilename(title, 'blueprint')}-v${version}${BLUEPRINT_ARCHIVE_EXTENSION}`
 }
 
 export function makeExportFilename(title: string, extension: string, fileName?: string): string {
@@ -93,6 +89,20 @@ export async function saveStreamToFile(
   triggerBlobDownload(await new Response(stream, {
     headers: { 'Content-Type': fileType.contentType },
   }).blob(), filename)
+}
+
+/** Saves a blueprint's `.gadget` archive, named after its title and version. */
+export function saveBlueprintArchive(
+  createStream: () => Promise<ReadableStream<Uint8Array>>,
+  title: string,
+  version: number,
+): Promise<void> {
+  const filename = `${makeFilename(title, 'blueprint')}-v${version}${BLUEPRINT_ARCHIVE_EXTENSION}`
+  return saveStreamToFile(createStream, filename, {
+    description: 'Gadget Blueprint',
+    contentType: 'application/octet-stream',
+    extension: BLUEPRINT_ARCHIVE_EXTENSION,
+  })
 }
 
 export function saveTextToFile(filename: string, content: string): void {

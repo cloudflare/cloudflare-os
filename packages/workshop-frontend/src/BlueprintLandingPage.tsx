@@ -10,11 +10,7 @@ import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, 
 import { useAuth } from './useAuth'
 import LoginPage from './LoginPage'
 import { normalizeResourceUrl } from './resourceMatching'
-import {
-  BLUEPRINT_ARCHIVE_EXTENSION,
-  makeBlueprintFilename,
-  saveStreamToFile,
-} from './fileTransfers'
+import { saveBlueprintArchive } from './fileTransfers'
 import { AccountChooser, AccountOption } from './gatekeeper-modal/AccountChooser'
 import ResourceConfiguratorHost from './ResourceConfiguratorHost'
 import { disposeConfiguratorFrame } from './disposeConfiguratorFrame'
@@ -639,14 +635,10 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     setError(null)
 
     try {
-      await saveStreamToFile(
+      await saveBlueprintArchive(
         () => rpcStub.downloadBlueprint(id),
-        makeBlueprintFilename(blueprint.metadata.title, blueprint.metadata.version),
-        {
-          description: 'Gadget Blueprint',
-          contentType: 'application/octet-stream',
-          extension: BLUEPRINT_ARCHIVE_EXTENSION,
-        },
+        blueprint.metadata.title,
+        blueprint.metadata.version,
       )
     } catch (err: any) {
       setError(err.message || 'Failed to download blueprint.')

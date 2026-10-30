@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { Badge, Dialog, useKumoToastManager } from '@cloudflare/kumo'
-import { ArrowsClockwise, Check, Copy, ImageSquare, Pencil, Plus, Trash, Warning, X } from '@phosphor-icons/react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { Badge, Dialog, Loader, useKumoToastManager } from '@cloudflare/kumo'
+import { ArrowsClockwise, Check, Copy, DownloadSimple, ImageSquare, Pencil, Plus, Trash, Warning, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { BlueprintGadgetSummary, GadgetClient, WorkspaceMetadata, Overseer, BlueprintBindingAnnotation, BlueprintScreenshotUpload } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput, WorkshopInputArea } from './components/WorkshopControls'
 import { copyToClipboard } from './clipboard'
+import { saveBlueprintArchive } from './fileTransfers'
+import { useRpcStub } from './RpcContext'
 import {
   BindingCardData,
   BlueprintBindingCard,
@@ -62,21 +64,25 @@ async function compressBlueprintScreenshot(file: File): Promise<Blob> {
 }
 
 type Props = {
-  open: boolean
   onClose: () => void
   overseer: RpcStub<Overseer>
   // The gadget this modal exports blueprints from (the gadget currently selected in the editor).
   gadget: RpcStub<GadgetClient>
   metadata: WorkspaceMetadata
+  // "Update from blueprint", offered unless the gadget was built from scratch.
+  blueprintUpdate?: { available: boolean; disabled: boolean; onStart: () => void }
 }
 
-export default function BlueprintModal({ open, onClose, overseer, gadget, metadata }: Props) {
+export default function BlueprintModal({ onClose, overseer, gadget, metadata, blueprintUpdate }: Props) {
   const toasts = useKumoToastManager()
+  const publicApi = useRpcStub()
+  const offersUpdate = blueprintUpdate !== undefined
 
   const [blueprints, setBlueprints] = useState<BlueprintGadgetSummary[]>([])
   const [loading, setLoading] = useState(false)
-  const [formMode, setFormMode] = useState<'list' | 'create' | 'edit'>('list')
-  const [newTitle, setNewTitle] = useState('')
+  // Null until the first load picks the view the modal opens on.
+  const [formMode, setFormMode] = useState<'list' | 'create' | 'edit' | null>(null)
+  const [newTitle, setNewTitle] = useState(metadata.title)
   const [newDescription, setNewDescription] = useState('')
   const [newScreenshotBlob, setNewScreenshotBlob] = useState<Blob | null>(null)
   const [newScreenshotUrl, setNewScreenshotUrl] = useState<string | null>(null)
@@ -93,13 +99,16 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
   const [bindingsLoading, setBindingsLoading] = useState(false)
   const [bindingsError, setBindingsError] = useState<string | null>(null)
 
-  const loadBlueprints = useCallback(async () => {
+  const loadBlueprints = useCallback(async (): Promise<BlueprintGadgetSummary[] | null> => {
     setLoading(true)
     try {
-      setBlueprints(await overseer.listBlueprints())
+      const list = await overseer.listBlueprints()
+      setBlueprints(list)
+      return list
     } catch (err) {
       console.error('Failed to load blueprints:', err)
       toasts.add({ title: 'Failed to load blueprints', variant: 'error' })
+      return null
     } finally {
       setLoading(false)
     }
@@ -123,20 +132,16 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
   }, [gadget])
 
   useEffect(() => {
-    if (open) {
-      loadBlueprints()
-      setFormMode('list')
-      setNewTitle(metadata.title)
-      setNewDescription('')
-      setNewScreenshotBlob(null)
-      setNewScreenshotUrl(null)
-      setClearScreenshot(false)
-      setCreateError(null)
-    }
-  }, [open, loadBlueprints, metadata.title])
+    let current = true
+    loadBlueprints().then((list) => {
+      // With nothing to list, the modal opens straight on the create form.
+      if (current) setFormMode(mode => mode ?? (list?.length === 0 && !offersUpdate ? 'create' : 'list'))
+    })
+    return () => { current = false }
+  }, [loadBlueprints, offersUpdate])
 
   useEffect(() => {
-    if (formMode !== 'list') {
+    if (formMode === 'create' || formMode === 'edit') {
       loadBindings()
     } else {
       setBindings([])
@@ -276,9 +281,11 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
     ? editingBlueprint.screenshotUrl
     : null
   const screenshotPreviewUrl = newScreenshotUrl ?? savedScreenshotUrl
+  // A create form opened straight away has no list worth going back to.
+  const hasList = blueprints.length > 0 || offersUpdate
 
   return (
-    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+    <Dialog.Root open onOpenChange={(o) => { if (!o) onClose() }}>
       <Dialog className="responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0" size="lg">
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-kumo-line px-4 py-5 sm:px-6">
             <div className="flex min-w-0 items-start gap-3">
@@ -288,10 +295,10 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
               </Dialog.Title>
               <Dialog.Description className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
                 {formMode === 'create'
-                  ? 'Describe what people get when they start from this blueprint.'
+                  ? 'Publish this gadget as a reusable template.'
                   : formMode === 'edit'
                     ? 'Update the details, screenshot, and connection guidance for this blueprint.'
-                    : 'Turn this gadget into a reusable starting point.'}
+                    : 'Manage blueprint updates and publishing.'}
               </Dialog.Description>
               </div>
             </div>
@@ -307,7 +314,9 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
             />
           </div>
 
-          {formMode !== 'list' ? (
+          {formMode === null ? (
+            <div className="flex justify-center px-4 py-10 sm:px-6"><Loader size="base" /></div>
+          ) : formMode !== 'list' ? (
               <div className="flex min-h-0 flex-1 flex-col">
                 <div className="chat-panel min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6">
                   <div className="space-y-3">
@@ -427,13 +436,15 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                   <div className="flex items-center justify-between">
                     <WorkshopButton
                       className="!h-9 min-w-[64px]"
-                      onClick={() => {
-                        setFormMode('list')
-                        setEditingBlueprint(null)
-                      }}
+                      onClick={hasList
+                        ? () => {
+                          setFormMode('list')
+                          setEditingBlueprint(null)
+                        }
+                        : onClose}
                       disabled={creating}
                     >
-                      Back
+                      {hasList ? 'Back' : 'Cancel'}
                     </WorkshopButton>
                     <WorkshopButton
                       tone="primary"
@@ -452,8 +463,26 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
               </div>
             ) : (
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
-              <button
-                type="button"
+              {blueprintUpdate && (
+                <ActionCard
+                  title="Update from blueprint"
+                  description="Merge a blueprint's latest version into this gadget."
+                  trailing={
+                    <>
+                      {blueprintUpdate.available && (
+                        <span className="text-[11px] leading-4 font-medium text-kumo-brand">Update available</span>
+                      )}
+                      <ArrowsClockwise size={16} className="text-kumo-subtle" />
+                    </>
+                  }
+                  onClick={blueprintUpdate.onStart}
+                  disabled={blueprintUpdate.disabled}
+                />
+              )}
+              <ActionCard
+                title="Create blueprint"
+                description="Publish this gadget as a reusable template."
+                trailing={<Plus size={16} className="text-kumo-subtle" />}
                 onClick={() => {
                   setNewTitle(metadata.title)
                   setNewDescription('')
@@ -463,22 +492,11 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                   setEditingBlueprint(null)
                   setFormMode('create')
                 }}
-                className="flex w-full items-center justify-between rounded-xl border border-kumo-line bg-kumo-base px-4 py-3 text-left transition-colors hover:bg-kumo-elevated"
-              >
-                <span>
-                  <span className="block text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                    Create blueprint
-                  </span>
-                  <span className="mt-0.5 block text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                    Publish this gadget as a reusable template.
-                  </span>
-                </span>
-                <Plus size={16} className="text-kumo-subtle" />
-              </button>
+              />
 
             <section>
               <h3 className="mb-2 text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                Existing blueprints
+                Existing published blueprints
               </h3>
 
               {loading ? (
@@ -529,6 +547,14 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                         const url = `${window.location.origin}/blueprint/${bp.id}`
                         return copyToClipboard(url)
                       }}
+                      onDownload={async () => {
+                        try {
+                          await saveBlueprintArchive(() => publicApi.downloadBlueprint(bp.id), bp.title, bp.version)
+                        } catch (err) {
+                          const message = err instanceof Error ? err.message : ''
+                          toasts.add({ title: message || 'Failed to download blueprint.', variant: 'error' })
+                        }
+                      }}
                       isConfirmingDelete={confirmingDeleteId === bp.id}
                       isDeleting={deletingId === bp.id}
                       onStartDelete={() => setConfirmingDeleteId(bp.id)}
@@ -546,6 +572,37 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
   )
 }
 
+const ActionCard = ({
+  title,
+  description,
+  trailing,
+  onClick,
+  disabled,
+}: {
+  title: string
+  description: string
+  trailing: ReactNode
+  onClick: () => void
+  disabled?: boolean
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    disabled={disabled}
+    className="flex w-full items-center justify-between gap-3 rounded-xl border border-kumo-line bg-kumo-base px-4 py-3 text-left transition-colors hover:bg-kumo-elevated disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-kumo-base"
+  >
+    <span>
+      <span className="block text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
+        {title}
+      </span>
+      <span className="mt-0.5 block text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
+        {description}
+      </span>
+    </span>
+    <span className="flex shrink-0 items-center gap-3">{trailing}</span>
+  </button>
+)
+
 function BlueprintRow({
   bp,
   isFirst,
@@ -553,6 +610,7 @@ function BlueprintRow({
   onUpdateCode,
   onRetryPublish,
   onCopyLink,
+  onDownload,
   isConfirmingDelete,
   isDeleting,
   onStartDelete,
@@ -565,6 +623,7 @@ function BlueprintRow({
   onUpdateCode: () => void
   onRetryPublish: () => void
   onCopyLink: () => Promise<boolean>
+  onDownload: () => Promise<void>
   isConfirmingDelete: boolean
   isDeleting: boolean
   onStartDelete: () => void
@@ -572,6 +631,7 @@ function BlueprintRow({
   onCancelDelete: () => void
 }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [downloading, setDownloading] = useState(false)
   useEffect(() => {
     if (copyState === 'idle') return
     const t = setTimeout(() => setCopyState('idle'), 1500)
@@ -679,6 +739,20 @@ function BlueprintRow({
           >
             {copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy link'}
           </GhostButton>
+          <GhostButton
+            onClick={async () => {
+              setDownloading(true)
+              try {
+                await onDownload()
+              } finally {
+                setDownloading(false)
+              }
+            }}
+            icon={<DownloadSimple size={13} />}
+            disabled={downloading}
+          >
+            {downloading ? 'Downloading...' : 'Download archive'}
+          </GhostButton>
         </div>
         <div className="-mr-1.5 ml-auto flex items-center gap-0.5 opacity-60 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
           <button
@@ -706,17 +780,20 @@ function BlueprintRow({
 function GhostButton({
   onClick,
   icon,
+  disabled,
   children,
 }: {
   onClick: () => void | Promise<void>
   icon: React.ReactNode
+  disabled?: boolean
   children: React.ReactNode
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md bg-transparent px-2 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
+      disabled={disabled}
+      className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md bg-transparent px-2 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default disabled:cursor-not-allowed disabled:opacity-50"
     >
       {icon}
       {children}

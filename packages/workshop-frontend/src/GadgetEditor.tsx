@@ -432,7 +432,7 @@ function getInitialAppRailExpanded(): boolean {
   }
 }
 
-// The menu item that opens the "Update from blueprint" dialog, in the desktop and mobile menus.
+// The menu item that opens the "Update from blueprint" dialog in the phone layout's menu.
 const UpdateFromBlueprintLabel = ({ updateAvailable }: { updateAvailable: boolean }) => (
   <>
     <span className="min-w-0 flex-1">Update from blueprint…</span>
@@ -1657,40 +1657,21 @@ export default function GadgetEditor() {
             <ShareNetwork size={15} />
           </WorkshopIconButton>
 
-          <DropdownMenu>
-            <DropdownMenu.Trigger
-              render={
-                <WorkshopIconButton
-                  disabled={!selectedGadgetStub}
-                  title={blueprintUpdateAvailable ? 'Blueprints (update available)' : 'Blueprints'}
-                  aria-label={blueprintUpdateAvailable ? 'Blueprints (update available)' : 'Blueprints'}
-                  className="relative"
-                >
-                  <Blueprint size={16} />
-                  {blueprintUpdateAvailable && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-kumo-brand"
-                    />
-                  )}
-                </WorkshopIconButton>
-              }
-            />
-            <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE}>
-              <DropdownMenu.Item onClick={() => setBlueprintModalOpen(true)} className={MENU_ITEM}>
-                Publish as blueprint…
-              </DropdownMenu.Item>
-              {!builtFromScratch && (
-                <DropdownMenu.Item
-                  disabled={!canUpdateFromBlueprint}
-                  onClick={() => setBlueprintUpdateDialogOpen(true)}
-                  className={MENU_ITEM}
-                >
-                  <UpdateFromBlueprintLabel updateAvailable={blueprintUpdateAvailable} />
-                </DropdownMenu.Item>
-              )}
-            </DropdownMenu.Content>
-          </DropdownMenu>
+          <WorkshopIconButton
+            onClick={() => setBlueprintModalOpen(true)}
+            disabled={!selectedGadgetStub}
+            title={blueprintUpdateAvailable ? 'Blueprints (update available)' : 'Blueprints'}
+            aria-label={blueprintUpdateAvailable ? 'Blueprints (update available)' : 'Blueprints'}
+            className="relative"
+          >
+            <Blueprint size={16} />
+            {blueprintUpdateAvailable && (
+              <span
+                aria-hidden="true"
+                className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-kumo-brand"
+              />
+            )}
+          </WorkshopIconButton>
 
           {!metadata.owner && (
             <WorkshopIconButton
@@ -2207,13 +2188,20 @@ export default function GadgetEditor() {
             currentUser={userInfo}
             authenticatedApi={authenticatedApi}
           />
-          {selectedGadgetStub && (
+          {blueprintModalOpen && selectedGadgetStub && (
             <BlueprintModal
-              open={blueprintModalOpen}
               onClose={() => setBlueprintModalOpen(false)}
               overseer={overseer.stub}
               gadget={selectedGadgetStub}
               metadata={metadata}
+              blueprintUpdate={builtFromScratch ? undefined : {
+                available: blueprintUpdateAvailable,
+                disabled: !canUpdateFromBlueprint,
+                onStart: () => {
+                  setBlueprintModalOpen(false)
+                  setBlueprintUpdateDialogOpen(true)
+                },
+              }}
             />
           )}
           {blueprintUpdateDialogOpen && selectedGadgetStub && selectedGadgetSummary && (
