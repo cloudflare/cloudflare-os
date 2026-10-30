@@ -265,5 +265,9 @@ export async function run(tokens: string[], ctx: ApiContext, deps: ApiDeps = def
       { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: !invocation.public, timeoutMs: millis(flags.timeout) }, deps), io);
 }
 
-/** `--timeout`'s seconds as milliseconds. connect() is called as the run's timer starts, so it is what is left. */
-const millis = (seconds: number | undefined) => seconds === undefined ? undefined : seconds * 1000;
+/**
+ * `--timeout`'s seconds as whole milliseconds, at least 1: a child process's timeout must be an
+ * integer (`1.001 * 1000` is not), and 0 would disable it. connect() is called as the run's timer
+ * starts, so it is what is left.
+ */
+const millis = (seconds: number | undefined) => seconds === undefined ? undefined : Math.max(1, Math.ceil(seconds * 1000));
