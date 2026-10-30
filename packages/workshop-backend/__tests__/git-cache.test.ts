@@ -1595,7 +1595,7 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
       ["text.txt", { kind: "text", text: "hello\n" }],
       ["huge-omitted.txt", { kind: "unreadable", message:
           `huge-omitted.txt is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)` }],
-      ["binary.png", { kind: "unreadable", message: "binary.png is not a text file" }],
+      ["binary.png", { kind: "blob", blob: { oid: binaryOid, byteLength: binary.byteLength } }],
     ]);
     // The measured blob failed fast before any pull; the omitted one dropped out of the one
     // batch that did go out, and the rest were local after it -- no retry round trip.

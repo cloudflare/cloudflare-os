@@ -58,7 +58,7 @@ beforeEach(() => {
   files = new Map([
     ['a.txt', { kind: 'text', text: 'first\n' }],
     ['later.txt', { kind: 'text', text: 'original\n' }],
-    ['opaque.bin', { kind: 'unreadable', message: 'not a text file' }],
+    ['opaque.bin', { kind: 'blob', blob: { oid: '1'.repeat(40), byteLength: 3 } }],
   ])
   delayedRead = undefined
   receiveRow = undefined

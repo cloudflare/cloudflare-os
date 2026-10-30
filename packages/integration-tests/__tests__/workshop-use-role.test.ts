@@ -89,6 +89,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listTree: ws => ws.listTree(COMMIT),
   listChangedPaths: ws => ws.listChangedPaths(COMMIT, COMMIT),
   readFilesAtCommit: ws => ws.readFilesAtCommit(COMMIT, ["client.js"]),
+  readBlob: ws => ws.readBlob(COMMIT),
   getCommitLog: ws => ws.getCommitLog(COMMIT),
   submitCodeChange: ws => ws.submitCodeChange(1, {
     generation: 0, revision: 0, clientId: "use", seq: 1, change: diffFiles(new Map(), new Map()),

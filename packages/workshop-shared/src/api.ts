@@ -25,7 +25,7 @@
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
-import type { CodeChange } from "./code-change.js";
+import type { BytesRef, CodeChange } from "./code-change.js";
 import type { GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -2526,13 +2526,16 @@ export type TreeNode =
 
 /**
  * One file's content at a commit, as returned by Overseer.readFilesAtCommit(). `text` carries
- * the file's UTF-8 content; `absent` means the path names no entry at that commit (or names a
- * directory); `unreadable` means the entry exists but cannot be presented as text -- a symlink,
- * a submodule, binary content, or a blob over the git store's per-object size cap -- and carries
- * a descriptive, path-flavored message suitable for display in place of the file.
+ * the file's UTF-8 content; `blob` names content that is not text (it has a NUL byte or is not
+ * valid UTF-8) by its git blob, whose bytes Overseer.readBlob() returns; `absent` means the path
+ * names no entry at that commit (or names a directory); `unreadable` means the entry exists but
+ * cannot be presented -- a symlink, a submodule, or a blob over the git store's per-object size
+ * cap -- and carries a descriptive, path-flavored message suitable for display in place of the
+ * file.
  */
 export type FileAtCommit =
   | { kind: "text"; text: string }
+  | { kind: "blob"; blob: BytesRef }
   | { kind: "absent" }
   | { kind: "unreadable"; message: string };
 
@@ -3129,6 +3132,12 @@ export interface Overseer extends RpcTarget {
    * Limited to 8,000,000 bytes; larger-file support is deferred.
    */
   uploadBlob(content: Uint8Array): Promise<GitOid>;
+
+  /**
+   * Read a blob in this workspace's Git store, such as one a `blob` FileAtCommit or a chat's
+   * `setBytes` change names: the counterpart of uploadBlob().
+   */
+  readBlob(oid: GitOid): Promise<ReadableStream<Uint8Array>>;
 
   /**
    * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
