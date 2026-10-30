@@ -1,7 +1,7 @@
-// The frame of an `<inline-html>` block in an agent answer (see plans/live-views.md): the
-// document it runs, and the Cap'n Web interfaces between it and the Workshop. The block's HTML is
-// agent-written and nobody reviews it, so the frame gets the gadget UI sandbox and only what
-// UiBlockHost offers.
+// The frame of a live view in the chat (see plans/live-views.md), an `<inline-html>` block in an
+// agent answer or a view from `embedView`: the document it runs, and the Cap'n Web interfaces
+// between it and the Workshop. The view's HTML is agent-written and nobody reviews it, so the
+// frame gets the gadget UI sandbox and only what UiBlockHost offers.
 
 import { RpcTarget } from 'capnweb'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from '../../sandboxDocument'
