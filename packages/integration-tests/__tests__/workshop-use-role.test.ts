@@ -134,6 +134,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   deleteChat: ws => ws.deleteChat(1),
   stopAgent: ws => ws.stopAgent(1),
   retryAgent: ws => ws.retryAgent(1, "model"),
+  waitForAgent: ws => ws.waitForAgent(1),
   listBlueprints: ws => ws.listBlueprints(),
   updateBlueprint: ws => ws.updateBlueprint("blueprint", { title: "Title" }),
   deleteBlueprint: ws => ws.deleteBlueprint("blueprint"),
