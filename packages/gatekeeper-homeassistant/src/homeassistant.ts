@@ -51,6 +51,7 @@ import {
   fetchDashboardConfig,
   resolveTargets,
 } from "./approvals";
+import { autoApprovableKinds } from "./auto-approval";
 import {
   indexPendingByEntity,
   overlayDashboardConfig,
@@ -984,7 +985,7 @@ class EntityConfiguratorUI extends RpcTarget implements HomeAssistantEntityConfi
 // ---------------------------------------------------------------------------
 // GatekeeperImpl
 
-type HomeAssistantResourceKind = "instance" | "area" | "label" | "device" | "entity";
+export type HomeAssistantResourceKind = "instance" | "area" | "label" | "device" | "entity";
 
 type HomeAssistantGatekeeperImplProps = {
   userObjectId: string;
@@ -1166,7 +1167,7 @@ export class HomeAssistantGatekeeperImpl
   }
 
   async getAutoApprovableActions() {
-    return [];
+    return autoApprovableKinds(this.ctx.props.resourceKind, this.ctx.props.resourceId);
   }
 
   async startSession(
