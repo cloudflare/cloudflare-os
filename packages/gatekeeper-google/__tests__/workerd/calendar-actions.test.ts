@@ -22,6 +22,7 @@ type GoogleEvent = {
 class CalendarModel {
   readonly events = new Map<string, GoogleEvent>();
   readonly patches: { eventId: string; body: unknown }[] = [];
+  readonly created: unknown[] = [];
   readonly versions = new Map<string, number>();
   /** Runs after each GET, to change an event between the gatekeeper's read and its write. */
   afterRead?: (event: GoogleEvent) => void;
@@ -48,6 +49,11 @@ class CalendarModel {
       let request = new Request(input, init);
       let url = new URL(request.url);
       let prefix = `/calendar/v3/calendars/${encodeURIComponent(TEST_CALENDAR_ID)}/events/`;
+      if (request.method === "POST" && `${url.pathname}/` === prefix) {
+        let body = await request.json();
+        this.created.push(body);
+        return Response.json({ ...body as object, id: `created-${this.created.length}` });
+      }
       if (!url.pathname.startsWith(prefix)) throw new Error(`Unexpected request: ${request.url}`);
       let eventId = decodeURIComponent(url.pathname.slice(prefix.length));
       let event = this.events.get(eventId);
@@ -107,6 +113,23 @@ describe("Google Calendar auto-approval", () => {
     let call = await hooks().createEvent(
       "create-meeting", { ...draft, attendees: [{ email: "guest@example.com" }] });
     expect(call.action).toMatchObject({ actionKind: INVITATION, autoApprovable: false });
+  });
+
+  it("reports a create applied before its submit reply was lost as submitted", async () => {
+    let calendar = new CalendarModel();
+    calendar.install();
+    let call = await hooks().createEventLosingReply("create-lost-reply", draft);
+    expect(call.error).toBeUndefined();
+    expect(calendar.created).toHaveLength(1);
+  });
+
+  it("reports an update applied before its submit reply was lost as submitted", async () => {
+    let calendar = new CalendarModel();
+    calendar.add("own");
+    calendar.install();
+    let call = await hooks().updateEventLosingReply("update-lost-reply", "own", { title: "Deep work" });
+    expect(call.error).toBeUndefined();
+    expect(calendar.patches).toHaveLength(1);
   });
 
   it("judges an update by who is on the event in Google", async () => {

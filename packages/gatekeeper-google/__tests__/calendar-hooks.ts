@@ -37,6 +37,25 @@ class RecordingApprovalQueue extends RpcTarget implements ApprovalQueue {
   }
 }
 
+/**
+ * A queue that applies each action before replying, as an auto-approval may, and then loses the
+ * reply.
+ */
+class ApplyThenLoseReplyQueue extends RecordingApprovalQueue {
+  #apply: (actionId: number) => Promise<void>;
+
+  constructor(apply: (actionId: number) => Promise<void>) {
+    super();
+    this.#apply = apply;
+  }
+
+  override async submitAction(actionId: number, description: ActionDescription): Promise<void> {
+    await super.submitAction(actionId, description);
+    await this.#apply(actionId);
+    throw new Error("Network connection lost.");
+  }
+}
+
 /** Drives Google Calendar gatekeeper facets, each bound to `TEST_CALENDAR_ID`. */
 export class CalendarTestHooks extends DurableObject<Env> {
   #gatekeeper(facetName: string) {
@@ -50,8 +69,8 @@ export class CalendarTestHooks extends DurableObject<Env> {
 
   async #call(
     facetName: string, body: (session: GoogleCalendarSession) => Promise<void>,
+    queue = new RecordingApprovalQueue(),
   ): Promise<CalendarCall> {
-    let queue = new RecordingApprovalQueue();
     using approvalQueue = new RpcStub<ApprovalQueue>(queue);
     using session = await this.#gatekeeper(facetName).startSession(
       approvalQueue as unknown as ApprovalQueue,
@@ -70,6 +89,18 @@ export class CalendarTestHooks extends DurableObject<Env> {
 
   async updateEvent(facetName: string, eventId: string, patch: CalendarEventPatch): Promise<CalendarCall> {
     return this.#call(facetName, session => session.updateEvent(eventId, patch));
+  }
+
+  /** `createEvent` through a queue that applies it and then loses the submit reply. */
+  async createEventLosingReply(facetName: string, event: CalendarEventDraft): Promise<CalendarCall> {
+    return this.#call(facetName, session => session.createEvent(event),
+      new ApplyThenLoseReplyQueue(id => this.#gatekeeper(facetName).applyAction(id)));
+  }
+
+  /** `updateEvent` through a queue that applies it and then loses the submit reply. */
+  async updateEventLosingReply(facetName: string, eventId: string, patch: CalendarEventPatch): Promise<CalendarCall> {
+    return this.#call(facetName, session => session.updateEvent(eventId, patch),
+      new ApplyThenLoseReplyQueue(id => this.#gatekeeper(facetName).applyAction(id)));
   }
 
   /** Apply an action, returning the error it threw, if any. */

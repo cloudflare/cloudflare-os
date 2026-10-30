@@ -2913,6 +2913,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
         ...createEventVerdict(event),
       });
     } catch (error) {
+      if (this.#receivedDespite(actionId)) return;
       this.#pendingActions.remove(actionId);
       throw error;
     }
@@ -2958,9 +2959,17 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
         ...verdict,
       });
     } catch (error) {
+      if (this.#receivedDespite(actionId)) return;
       this.#pendingActions.remove(actionId);
       throw error;
     }
+  }
+
+  // An auto-approval can apply an action before its submit reply arrives. Its pending record goes
+  // only once the overseer has applied or rejected it, so a lost reply then is no failure, and
+  // reporting one would invite a repeated write.
+  #receivedDespite(actionId: number): boolean {
+    return this.#pendingActions.get(actionId) === undefined;
   }
 }
 
