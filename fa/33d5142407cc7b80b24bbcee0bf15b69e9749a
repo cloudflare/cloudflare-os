@@ -55,6 +55,7 @@ packages/workshop-backend/__tests__/wait-for-agent.test.ts
   s_f1ff5bfe7029b1::t_c87407cc460426 1-51,53-63,65-88,90-122,124-134,159-160,163-165,170-179,184,191-192,196-221
   s_f1ff5bfe7029b1::t_f88ed1541c82db 180-182
   s_f1ff5bfe7029b1::t_5c51629bc7973a 89
+  s_5f5a6360b85e37::t_11431880d95f32 52
 packages/api-schema/__tests__/tools.test.ts
   s_f1ff5bfe7029b1::t_6fb9118449627d 9-11,25,35,369-393,421,447,474,513-514
 packages/api-cli/README.md
@@ -87,6 +88,7 @@ packages/gatekeeper-scheduler/src/scheduler.ts
   s_f1ff5bfe7029b1::t_2ccf2fc99b116b 38,301,303
 packages/workshop-backend/src/server.ts
   s_f1ff5bfe7029b1::t_a0e3e42ff89525 387,389-390
+  s_5f5a6360b85e37::t_11431880d95f32 4,388
 packages/workshop-shared/src/gatekeeper.ts
   s_f1ff5bfe7029b1::t_3a139270cdc423 559-568,1429
 packages/api-schema/src/extract.ts
@@ -161,6 +163,7 @@ packages/api-cli/src/doc-text.ts
   s_f1ff5bfe7029b1::t_a49473eee1dd63 1-10
 packages/workshop-backend/__tests__/provisional-workspaces.test.ts
   s_f1ff5bfe7029b1::t_6642bae8e4cbf9 1-17,20-21,25-26,28,30,34,37,39-40
+  s_5f5a6360b85e37::t_11431880d95f32 18-19,22-24,27,29,31-33,35-36,38
 packages/api-schema/README.md
   s_f1ff5bfe7029b1::t_66373417035605 16,26-30,38-61,64-66,80-82,87,91-113,123-129,152-154
 packages/api-schema/generated/workshop-api.fragments.json
@@ -199,6 +202,7 @@ packages/api-schema/src/emit/tools.ts
   s_f1ff5bfe7029b1::t_4337dcffebd270 15-18,31,95-96,206,272-274,313-321
 packages/workshop-backend/src/user.ts
   s_f1ff5bfe7029b1::t_0100b27e0d73a4 954-955
+  s_5f5a6360b85e37::t_11431880d95f32 951-953
 packages/gatekeeper-scheduler/README.md
   s_f1ff5bfe7029b1::t_0d85fd2602e6ee 132-134
 packages/api-cli/generator/emit.test.ts
@@ -284,6 +288,14 @@ packages/api-schema/__tests__/__fixtures__/schema.json
   "base_commit_sha": "fa33d5142407cc7b80b24bbcee0bf15b69e9749a",
   "prompts": {},
   "sessions": {
+    "s_5f5a6360b85e37": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c635db0b-11cb-4779-a76d-89a3bfc9fd1e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_618859da4442af": {
       "agent_id": {
         "tool": "claude",
