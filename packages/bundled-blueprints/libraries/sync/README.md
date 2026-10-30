@@ -2,7 +2,8 @@
 
 Every collaborative gadget here has the same skeleton: one Durable Object owns the authoritative
 state and many browsers edit it live -- a mutation queue in the object, a set of subscriber stubs
-it broadcasts to, presence seeded on join and dropped on leave, per-item optimistic concurrency,
+it broadcasts to, presence seeded on join and dropped on leave (in a gadget that shows who is
+there; Docs doesn't), per-item optimistic concurrency,
 and in the browser a debounced save loop with retry, a throttled presence heartbeat and an
 `RpcTarget` for the callbacks. This library is that skeleton once, with none of the flesh: it knows
 nothing about blocks, cells or slides, and a gadget keeps its own model, protocol, DOM and export
