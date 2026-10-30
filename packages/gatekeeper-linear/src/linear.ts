@@ -17,6 +17,7 @@ import {
   SupportedResource,
   ResourceConfiguratorFrame,
   workerVersionTag,
+  type ActionKind,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   type ActionDescriptionBuilder, buildDescription, plainInline, type RenderedDescription,
@@ -73,6 +74,7 @@ import {
   type IssueCreateInput,
   type IssueUpdateInput,
 } from "./linear-api";
+import { autoApprovableKindsOf, autoApprovalOf } from "./linear-auto-approval";
 import {
   LinearWorkspaceConfiguratorUI,
   LinearTeamConfiguratorUI,
@@ -954,8 +956,11 @@ type StoredAction =
       color?: string; description?: string; createdLabelId?: string; synthetic: RawLabel; title: string }
   | { id: number; status: ActionStatus; kind: "archive"; issueRef: string; archived: boolean; title: string };
 
-// Distributive Omit so the union's variant-specific fields survive; enqueue assigns id + status.
-type StoredActionDraft = StoredAction extends infer T
+/**
+ * A stored action before `enqueue` assigns its id and status. The Omit is distributive, so each
+ * variant keeps its own fields.
+ */
+export type StoredActionDraft = StoredAction extends infer T
   ? T extends { id: number } ? Omit<T, "id" | "status"> : never
   : never;
 
@@ -1141,7 +1146,8 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     this.ctx.storage.kv.put<StoredAction>(`action:${id}`, { ...action, id, status: "pending" } as StoredAction);
     this.#invalidatePendingActions();
     try {
-      await approvalQueue.submitAction(id, description);
+      // The verdict comes from the stored payload, so it always describes what applies.
+      await approvalQueue.submitAction(id, { ...description, ...autoApprovalOf(action) });
     } catch (err) {
       // An auto-approval can apply the action mid-flight, which proves the overseer received it --
       // only the reply was lost, and reporting failure would invite a repeated provider write. A
@@ -1479,8 +1485,8 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     return TYPES_CODE;
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return autoApprovableKindsOf(this.ctx.props.resourceKind);
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<LinearWorkspace | LinearTeam | LinearIssue> {
