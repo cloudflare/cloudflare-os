@@ -1,5 +1,6 @@
 // `cf-os api` on a deployment: a session whose upgrade names the CLI in its User-Agent may act only
-// as a deployment admin, unless the instance is a local dev one (LOCAL_DEV_INSTANCE).
+// as a deployment admin, unless the instance is a local one (WORKSHOP_ENVIRONMENT "development" or
+// "test").
 
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -33,13 +34,13 @@ function unique(prefix: string): string {
   return prefix + crypto.randomUUID().replaceAll("-", "");
 }
 
-/** The deployment's env, with `admins` as ADMINS, and LOCAL_DEV_INSTANCE when `dev`. */
-function deployment(admins: string[], options: { dev?: boolean; access?: boolean } = {}): Cloudflare.Env {
+/** The deployment's env, with `admins` as ADMINS, and `environment` as WORKSHOP_ENVIRONMENT. */
+function deployment(admins: string[], options: { environment?: string; access?: boolean } = {}): Cloudflare.Env {
   return {
     ...env,
     BLUEPRINTS,
     ADMINS: admins,
-    ...(options.dev ? { LOCAL_DEV_INSTANCE: true } : {}),
+    ...(options.environment === undefined ? {} : { WORKSHOP_ENVIRONMENT: options.environment }),
     ...(options.access ? { CF_ACCESS_AUD: "aud", CF_ACCESS_ISS: "https://team.cloudflareaccess.com" } : {}),
   } as Cloudflare.Env;
 }
@@ -102,6 +103,14 @@ describe("cf-os api on a deployment", () => {
     await expect(api.authenticate(`${unique("user")}:AAAA`).amIAdmin()).rejects.toThrow(/session/i);
   });
 
+  it("refuses a sign-in as anyone else under any other WORKSHOP_ENVIRONMENT", async () => {
+    const token = await account(unique("user"));
+    for (const environment of ["production", "Development", ""]) {
+      using api = await connect(deployment([unique("admin")], { environment }), CLI);
+      await expect(api.authenticate(token).amIAdmin()).rejects.toThrow(REFUSED);
+    }
+  });
+
   it("refuses every call that signs no one in: createAccount and the public commands", async () => {
     using api = await connect(deployment([]), CLI);
     const username = unique("newcomer");
@@ -132,11 +141,12 @@ describe("cf-os api on a deployment", () => {
   });
 });
 
-describe("other clients, and the CLI on a local dev instance", () => {
+describe("other clients, and the CLI on a local instance", () => {
   for (const [what, userAgent, options] of [
     ["a browser on a deployment", BROWSER, {}],
     ["a client sending no User-Agent", undefined, {}],
-    ["cf-os api on a local dev instance", CLI, { dev: true }],
+    ["cf-os api under pnpm dev-server", CLI, { environment: "development" }],
+    ["cf-os api in the integration harness", CLI, { environment: "test" }],
   ] as const) {
     it(`lets ${what} sign up, read the public API and sign in as anyone`, async () => {
       using api = await connect(deployment([unique("admin")], options), userAgent);

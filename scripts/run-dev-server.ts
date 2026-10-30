@@ -571,8 +571,8 @@ for (const gk of gatekeepers) {
   // For local testing, create an account named "admin" to test admin features.
   config.vars = config.vars || {};
   config.vars.ADMINS = ["admin"];
-  // A local dev instance, where `cf-os api` may act as anyone. Never set by a deployment.
-  config.vars.LOCAL_DEV_INSTANCE = true;
+  // A local instance, where `cf-os api` may act as anyone. Never set by a deployment.
+  config.vars.WORKSHOP_ENVIRONMENT = "development";
 
   if (cloudflareOsDeployment !== undefined) {
     config.vars.CLOUDFLARE_OS_DEPLOYMENT = cloudflareOsDeployment;
