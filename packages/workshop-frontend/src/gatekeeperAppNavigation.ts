@@ -1,4 +1,5 @@
 export const MAX_GATEKEEPER_APP_PROMPT_LENGTH = 4_000;
+export const MAX_GATEKEEPER_APP_PATH_LENGTH = 4_096;
 
 // A Durable Object ID string, which is what a workspace ID is.
 const WORKSPACE_ID_PATTERN = /^[0-9a-f]{64}$/;
@@ -31,4 +32,27 @@ export function normalizeGatekeeperAppPrompt(value: string): string {
     throw new RangeError("Gatekeeper app prompt is too long.");
   }
   return prompt;
+}
+
+/**
+ * Validates an app-local path a sandboxed gatekeeper app asks to navigate to (see
+ * `@gadgets/workshop-shared/gatekeeper-app`). The host pins it under the app's own
+ * /gatekeepers/<appId> prefix, so only the path's own shape is checked here.
+ */
+export function parseGatekeeperAppPath(value: unknown): string {
+  if (typeof value !== "string" || !value.startsWith("/")) {
+    throw new TypeError("Invalid gatekeeper app path.");
+  }
+  if (value.length > MAX_GATEKEEPER_APP_PATH_LENGTH) {
+    throw new RangeError("Gatekeeper app path is too long.");
+  }
+  if (value === "/") return value;
+  // oxlint-disable-next-line no-control-regex -- control characters are exactly what is rejected.
+  if (/[\u0000-\u001f\u007f]/.test(value)) throw new TypeError("Invalid gatekeeper app path.");
+  for (const segment of value.slice(1).split("/")) {
+    if (segment === "" || segment === "." || segment === "..") {
+      throw new TypeError("Invalid gatekeeper app path.");
+    }
+  }
+  return value;
 }
