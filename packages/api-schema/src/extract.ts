@@ -303,13 +303,18 @@ class Extractor {
     return name;
   }
 
-  /** An interface's surface: its own and inherited members, less capnweb's brands and machinery. */
+  /**
+   * An interface's surface: its own and inherited members, less capnweb's brands and machinery,
+   * and less a class's instance fields, which capnweb does not serve: only the prototype's members
+   * are reachable.
+   */
   #members(type: ts.Type): ts.Symbol[] {
     return this.#checker.getPropertiesOfType(type).filter((prop) => {
       const name = prop.getName();
       if (name.startsWith("__@") || BRANDS.has(name) || name === "constructor" || name.startsWith("#")) return false;
       const declaration = prop.valueDeclaration ?? prop.declarations?.[0];
       if (declaration && this.#isRuntime(declaration)) return false;
+      if (declaration && (ts.isPropertyDeclaration(declaration) || ts.isParameter(declaration))) return false;
       return !(declaration && isPrivate(declaration));
     }).toSorted((a, b) => compare(a.getName(), b.getName()));
   }

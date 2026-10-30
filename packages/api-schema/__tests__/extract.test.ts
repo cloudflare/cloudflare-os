@@ -244,6 +244,21 @@ export interface Api { a(): void; b?(): void; readonly c: string; d?: Sub | null
     expect(services.Sub!.direction).toBe("server");
   });
 
+  // capnweb serves an `RpcTarget`'s prototype, not its instance: a field, even one holding a
+  // function, cannot be read or called over RPC, while a getter can.
+  test("a class's surface is its prototype's members: its getters and methods, not its fields", () => {
+    const { services } = extract(`export class Api {
+  constructor(readonly id: string) {}
+  readonly kind = "api";
+  handler = () => 1;
+  get size(): number { return 0; }
+  ping(): void {}
+}
+`);
+    expect(services.Api!.methods.map((m) => m.name)).toEqual(["ping"]);
+    expect(services.Api!.properties).toEqual([{ name: "size", doc: "", type: { kind: "number" }, optional: false }]);
+  });
+
   test("the entry reached again is a stub of it, whatever its members", () => {
     for (const member of ["b: string;", "b?(): void;"]) {
       const { services, shapes } = extract(`export interface Api { a(): Promise<Api>; ${member} }\n`);
