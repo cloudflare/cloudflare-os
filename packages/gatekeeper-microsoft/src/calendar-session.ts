@@ -906,7 +906,10 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       calendar: ctx.calendarRef(calendar), ref, transactionId: crypto.randomUUID(), event, zone, submittedAt: Date.now(),
     };
     await ctx.host.submit(ctx.queue, meeting ? "createMeeting" : await ctx.owns(calendar) ? "createEvent" : "createSharedEvent", payload);
-    return ctx.info(ctx.overlay().pendingEvent(ref, me)!.event, calendar, await ctx.view(calendar), ctx.overlay());
+    // An auto-approval can apply the creation before submit returns; then show the event it made.
+    const pending = ctx.overlay().pendingEvent(ref, me);
+    const created = pending?.event ?? (await ctx.guarded(ref)).event;
+    return ctx.info(created, calendar, await ctx.view(calendar), ctx.overlay());
   }
 
   async updateEvent(eventId: string, changes: EventChanges, options?: EventChangeOptions): Promise<EventInfo> {
@@ -975,7 +978,10 @@ export class CalendarSessionImpl extends CalendarReaderImpl implements CalendarS
       await ctx.host.submit(ctx.queue, updateKind(payload, await ctx.owns(calendar), pending), payload);
     }
     const overlay = ctx.overlay();
-    const shown = isProvisional(event.id) ? overlay.pendingEvent(event.id, me)!.event : event;
+    // The creation and this change may both have been auto-approved and applied by now.
+    const shown = isProvisional(event.id)
+      ? overlay.pendingEvent(event.id, me)?.event ?? (await ctx.guarded(event.id)).event
+      : event;
     return ctx.info(shown, calendar, view, overlay);
   }
 

@@ -158,7 +158,9 @@ function fakeGraph(events: Seeded[], options: { leak?: { into: string; event: Se
 }
 
 /** A session over a scope, recording what it observes and proposes. */
-function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}) {
+// `appliedOnSubmit` maps a provisional ref to the event its creation made, for a creation an
+// auto-approval applies before submit returns: it never shows as pending.
+function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}, appliedOnSubmit: Record<string, string> = {}) {
   const graph = fakeGraph(seed(), options);
   const observations: ObservationDescription[] = [];
   const prepared: string[][] = [];
@@ -170,9 +172,10 @@ function session(scope: CalendarScope, access: CalendarAccessLevel = "read", opt
     read: op => op(graph.api),
     cached: (_key, _ttl, load) => load(),
     pending: () => submitted.map((action, index) => ({ id: index + 1, action: action as CalendarAction })) as never,
-    resolve: id => id,
+    resolve: id => appliedOnSubmit[id] ?? id,
     allocate: () => `~${++sequence}`,
     submit: async (_queue, kind, payload) => {
+      if ("ref" in payload && payload.ref in appliedOnSubmit) return 0;
       submitted.push({ kind, payload });
       return submitted.length;
     },
@@ -531,6 +534,13 @@ describe("an all-calendars binding", () => {
     expect(submitted.map(action => action.kind)).toEqual(["revealEvent", "updateEvent", "updateEvent"]);
     expect(submitted[0]!.payload).toMatchObject({ before: { sensitivity: "private" } });
     expect(submitted.map(action => definitions[action.kind].autoApprovable)).toEqual([false, true, true]);
+  });
+
+  it("returns the event a creation made when it was applied before submit returned", async () => {
+    const { writer } = session(scope("edit"), "edit", {}, { "~1": "AAMkEvSarahs" });
+    const created = await writer.createEvent({ subject: "Focus", start: `${DAY}T09:00`, end: `${DAY}T10:00`, calendarId: SARAHS.id });
+    expect(created).toMatchObject({ id: "AAMkEvSarahs" });
+    expect(created.pending).toBeUndefined();
   });
 
   it("judges a change against the sensitivity a queued change will leave, not only the live one", async () => {
