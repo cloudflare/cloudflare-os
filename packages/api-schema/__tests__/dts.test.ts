@@ -9,16 +9,20 @@ import ts from "typescript6";
 import { afterAll, describe, expect, test } from "vitest";
 import { AWAITABLE, emitDeclarations, PIPELINED, UNTYPED_STUB } from "../src/emit/dts.ts";
 import { extractSchema } from "../src/extract.ts";
-import type { ApiShape, Schema, SchemaMethod, SchemaService } from "../src/schema.ts";
+import { type ApiShape, FORMAT, type Schema, type SchemaMethod, type SchemaService } from "../src/schema.ts";
 
-/** A schema of `services` (doc and methods defaulting to none) and `shapes`. */
+/**
+ * A schema of `services` (doc and methods defaulting to none, direction to the server's: the
+ * emitter reads its own positions from the root) and `shapes`.
+ */
 function schemaOf(services: Record<string, Partial<SchemaService>>,
   shapes: Record<string, ApiShape> = {}, entry = Object.keys(services)[0]!): Schema {
   return {
+    format: FORMAT,
     entry,
     constants: {},
     services: Object.fromEntries(Object.entries(services).map(([name, service]) =>
-      [name, { doc: service.doc ?? "", methods: service.methods ?? [] }])),
+      [name, { doc: "", direction: "server", methods: [], ...service }])),
     shapes,
   };
 }
@@ -36,9 +40,10 @@ function declared(text: string): string[] {
 const parsedLibs = new Map<string, ts.SourceFile | undefined>();
 
 /**
- * Type-checks in-memory files (`.d.ts`, or `.ts` that imports them as `./name.js`), fully
- * (`skipLibCheck` off), under the Web platform's globals, and returns every diagnostic, with the
- * file's name.
+ * Type-checks in-memory files (`.d.ts`, or `.ts` that imports them as `./name.js`, and `capnweb`),
+ * fully (`skipLibCheck` off), under the Web platform's globals, and returns every diagnostic in
+ * them, with the file's name. capnweb's own declarations do not pass a full check, so theirs are
+ * left out.
  */
 function diagnose(files: Record<string, string>): { file: string; code: number; text: string }[] {
   const options: ts.CompilerOptions = {
@@ -50,6 +55,7 @@ function diagnose(files: Record<string, string>): { file: string; code: number; 
     lib: ["lib.esnext.d.ts", "lib.dom.d.ts"],
     types: [],
     skipDefaultLibCheck: true,
+    paths: { capnweb: [join(import.meta.dirname, "..", "node_modules", "capnweb", "dist", "index.d.ts")] },
   };
   const paths = Object.fromEntries(Object.entries(files).map(([name, text]) => [`/virtual/${name}`, text]));
   const host = ts.createCompilerHost(options);
@@ -63,11 +69,13 @@ function diagnose(files: Record<string, string>): { file: string; code: number; 
   host.readFile = (name) => paths[name] ?? readFile.call(host, name);
   host.directoryExists = (name) => name === "/virtual" || (directoryExists?.call(host, name) ?? true);
   const program = ts.createProgram({ rootNames: Object.keys(paths), options, host });
-  return ts.getPreEmitDiagnostics(program).map((diagnostic) => ({
-    file: diagnostic.file?.fileName.replace("/virtual/", "") ?? "",
-    code: diagnostic.code,
-    text: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
-  }));
+  return ts.getPreEmitDiagnostics(program)
+    .filter((diagnostic) => !diagnostic.file || diagnostic.file.fileName in paths)
+    .map((diagnostic) => ({
+      file: diagnostic.file?.fileName.replace("/virtual/", "") ?? "",
+      code: diagnostic.code,
+      text: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    }));
 }
 
 describe("shapes", () => {
@@ -120,6 +128,8 @@ describe("shapes", () => {
     [{ kind: "error" }, "Error"],
     [{ kind: "readableStream" }, "ReadableStream"],
     [{ kind: "writableStream" }, "WritableStream"],
+    [{ kind: "readableStream", element: { kind: "bytes" } }, "ReadableStream<Uint8Array>"],
+    [{ kind: "writableStream", element: { kind: "ref", name: "Item" } }, "WritableStream<Item>"],
     [{ kind: "arrayBuffer" }, "ArrayBuffer"],
     [{ kind: "dataView" }, "DataView"],
     [{ kind: "regexp" }, "RegExp"],
@@ -554,6 +564,200 @@ export async function use(): Promise<string> {
 `,
     })).toEqual([]);
   });
+});
+
+describe("streams", () => {
+  // A readable stream's chunks travel as the stream does, a writable one's the other way.
+  const schema = schemaOf({
+    Api: {
+      methods: [
+        method("read", { kind: "readableStream", element: fn({ kind: "string" }) }),
+        method("upload", { kind: "void" }, [
+          { name: "source", type: { kind: "readableStream", element: { kind: "ref", name: "Chunk" } }, optional: false,
+            doc: "" },
+          { name: "sink", type: { kind: "writableStream", element: fn({ kind: "string" }) }, optional: false, doc: "" },
+        ]),
+        method("write", { kind: "writableStream", element: fn({ kind: "string" }) }),
+      ],
+    },
+  }, { Chunk: { kind: "object", properties: { data: { kind: "bytes" } } } });
+  const { full } = emitDeclarations(schema, { root: "Api" });
+
+  test("carry their element type, in the position its values travel, and reach the shapes in it", () => {
+    expect(full).toContain("  read(): Promise<ReadableStream<() => Promise<string>>>;\n");
+    expect(full).toContain("  write(): Promise<WritableStream<() => Awaitable<string>>>;\n");
+    expect(full).toContain("  upload(source: Awaitable<ReadableStream<Chunk>>, "
+      + "sink: Awaitable<WritableStream<() => Promise<string>>>): Promise<void>;\n");
+    expect(declared(full)).toEqual(["Api", AWAITABLE, "Chunk"]);
+    expect(diagnose({ "api.d.ts": full })).toEqual([]);
+  });
+});
+
+describe("properties", () => {
+  // `Api` is held, and `Sub`, which has properties of its own, is implemented by the caller.
+  const schema = schemaOf({
+    Api: {
+      properties: [
+        { name: "build", doc: "An optional property.\n@deprecated Read version.", type: { kind: "number" }, optional: true,
+          deprecated: "Read version." },
+        { name: "child", doc: "", type: { kind: "stub", service: "Child" }, optional: false },
+        { name: "meta", doc: "", type: { kind: "ref", name: "Meta" }, optional: false },
+        { name: "spare", doc: "", type: { kind: "stub", service: "Child" }, optional: true },
+        { name: "version", doc: "The version.", type: { kind: "string" }, optional: false },
+      ],
+      methods: [
+        method("subscribe", { kind: "void" }, [
+          { name: "sub", type: { kind: "stub", service: "Sub" }, optional: false, doc: "" },
+        ]),
+      ],
+    },
+    Child: { methods: [method("name", { kind: "string" })] },
+    Sub: {
+      properties: [
+        { name: "id", doc: "", type: { kind: "number" }, optional: false },
+        { name: "label", doc: "", type: { kind: "string" }, optional: true },
+      ],
+      methods: [method("changed", { kind: "void" })],
+    },
+  }, { Meta: { kind: "object", properties: { tag: { kind: "string" } } } });
+  const { full, fragments } = emitDeclarations(schema, { root: "Api" });
+
+  test("a held service's are read as a call's result, there whether or not optional, before its methods", () => {
+    expect(full).toContain(`export interface Api {
+  /**
+   * An optional property.
+   * @deprecated Read version.
+   */
+  readonly build: Promise<number | undefined>;
+  readonly child: Pipelined<Child>;
+  readonly meta: Promise<Meta>;
+  readonly spare: Promise<Child | undefined>;
+  /** The version. */
+  readonly version: Promise<string>;
+  subscribe(sub: Sub): Promise<void>;
+  /** Disposes of this stub, releasing the capability it holds. */
+  [Symbol.dispose](): void;
+}
+`);
+  });
+
+  test("an implemented service's are the values themselves, an optional one may be left out", () => {
+    expect(full).toContain(`export interface Sub {
+  readonly id: number;
+  readonly label?: string;
+  changed(): Awaitable<void>;
+}
+`);
+  });
+
+  test("reach the shapes and services in their types, in the full file and the fragments", () => {
+    expect(declared(full)).toEqual(["Api", AWAITABLE, "Child", "Meta", PIPELINED, "Sub"]);
+    expect(declared(fragments.Api!)).toEqual(["Api", "Meta", PIPELINED]);
+    expect(missingNames(fragments)).toEqual({ Api: ["Child", "Child", "Sub"], Child: [], Sub: [] });
+  });
+
+  test("one reached both ways is an Awaitable, which a caller reading it awaits", () => {
+    const both = schemaOf({
+      Api: {
+        methods: [method("swap", { kind: "stub", service: "Both" }, [
+          { name: "both", type: { kind: "stub", service: "Both" }, optional: false, doc: "" },
+        ])],
+      },
+      Both: { properties: [{ name: "tag", doc: "", type: { kind: "string" }, optional: true }] },
+    });
+    expect(emitDeclarations(both, { root: "Api" }).full).toContain(`export interface Both {
+  readonly tag?: Awaitable<string>;
+  /** Disposes of this stub, releasing the capability it holds. Absent on an implementation. */
+  [Symbol.dispose]?(): void;
+}
+`);
+  });
+
+  // capnweb types reading a property of a stub as an `RpcPromise` of its value, which pipelines, and
+  // takes an implementation's property as the value itself, read from a getter.
+  test("capnweb's RpcStub of the interface they come from is assignable to the declaration, and pipelines", () => {
+    expect(diagnose({
+      "api.d.ts": full,
+      "caller.ts": `import type { RpcStub, RpcTarget } from "capnweb";
+import type * as Generated from "./api.js";
+interface Child extends RpcTarget {
+  name(): Promise<string>;
+}
+interface Sub {
+  readonly id: number;
+  label?: string;
+  changed(): void;
+}
+interface Api extends RpcTarget {
+  build?: number;
+  readonly child: Child;
+  readonly meta: { tag: string };
+  spare?: Child;
+  readonly version: string;
+  subscribe(sub: Sub): Promise<void>;
+}
+declare const held: RpcStub<Api>;
+export const generated: Generated.Api = held;
+class Implemented implements Generated.Sub {
+  get id() {
+    return 1;
+  }
+  changed() {}
+}
+export async function use(api: Generated.Api): Promise<string> {
+  await api.subscribe(new Implemented());
+  const build: number | undefined = await api.build;
+  const spare: Generated.Child | undefined = await api.spare;
+  return (await api.child.name()) + (await api.version) + (await api.meta).tag + String(build) + String(spare);
+}
+`,
+    })).toEqual([]);
+  });
+});
+
+describe("tags", () => {
+  const params: SchemaMethod["params"] = [{ name: "x", type: { kind: "string" }, optional: false, doc: "The x." }];
+  const schema = schemaOf({
+    Api: {
+      deprecated: "",
+      methods: [
+        { ...method("both", { kind: "void" }, params), deprecated: "", mutates: true },
+        { ...method("gone", { kind: "void" }), deprecated: "Removed soon." },
+        { ...method("old", { kind: "void" }, [], "Old.\n@deprecated Use new."), deprecated: "Use new." },
+        { ...method("other", { kind: "stub", service: "Other" }) },
+        { ...method("save", { kind: "void" }, [], "Saves."), mutates: true },
+        { ...method("tagged", { kind: "void" }, [], "Writes.\n\n@mutates"), mutates: true },
+      ],
+    },
+    Other: { doc: "Kept.\n@deprecated", deprecated: "" },
+  });
+  const { full } = emitDeclarations(schema, { root: "Api" });
+
+  test("`@deprecated` and `@mutates` are in the JSDoc once, from the field when the doc lacks them", () => {
+    expect(full).toMatch(/^\/\*\* @deprecated \*\/\nexport interface Api \{/);
+    expect(full).toContain("  /**\n   * @param x The x.\n   * @deprecated\n   * @mutates\n   */\n  both(");
+    expect(full).toContain("  /** @deprecated Removed soon. */\n  gone(");
+    expect(full).toContain("  /**\n   * Old.\n   * @deprecated Use new.\n   */\n  old(");
+    expect(full).toContain("  other(): Pipelined<Other>;");
+    expect(full).toContain("  /**\n   * Saves.\n   * @mutates\n   */\n  save(");
+    expect(full).toContain("  /**\n   * Writes.\n   *\n   * @mutates\n   */\n  tagged(");
+    expect(full).toContain("/**\n * Kept.\n * @deprecated\n */\nexport interface Other {");
+  });
+});
+
+// The extractor's own fixture, which has every member and tag the format records.
+test("the extractor's fixture: every tag once, and declarations that type-check", () => {
+  const fixture = JSON.parse(readFileSync(join(import.meta.dirname, "__fixtures__", "schema.json"), "utf8")) as Schema;
+  const { full } = emitDeclarations(fixture, { root: fixture.entry });
+  const services = Object.values(fixture.services);
+  const members = services.flatMap((service) => [...service.methods, ...service.properties ?? []]);
+  const deprecated = [...services, ...members].filter((item) => item.deprecated !== undefined).length;
+  const mutates = services.flatMap((service) => service.methods).filter((m) => m.mutates).length;
+  expect(deprecated).toBeGreaterThan(0);
+  expect(mutates).toBeGreaterThan(0);
+  expect(full.match(/@deprecated\b/g)).toHaveLength(deprecated);
+  expect(full.match(/@mutates\b/g)).toHaveLength(mutates);
+  expect(diagnose({ "api.d.ts": full })).toEqual([]);
 });
 
 describe("fragments", () => {

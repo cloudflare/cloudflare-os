@@ -151,7 +151,7 @@ export interface AuthenticatedApi {
    * Import a `.gadget` archive from another Workshop instance. The imported blueprint is stored
    * as a local blueprint owned by the current user.
    */
-  importBlueprint(archive: Awaitable<ReadableStream>): Promise<string>;
+  importBlueprint(archive: Awaitable<ReadableStream<Uint8Array>>): Promise<string>;
   /**
    * Returns info about whether the blueprint is in the user's library.
    * Returns null if not in library, or { uploaded } if it is.
@@ -816,7 +816,7 @@ export interface GadgetClient {
    * Exports the format with the given ID. If `chatId` is specified, the export
    * uses changes currently proposed in that chat.
    */
-  export(id: Awaitable<string>, chatId?: Awaitable<number>): Promise<ReadableStream>;
+  export(id: Awaitable<string>, chatId?: Awaitable<number>): Promise<ReadableStream<Uint8Array>>;
   /** Get the gatekeeper bound under the given name, or null if there is no such binding. */
   getBinding(name: Awaitable<string>): Promise<null | GatekeeperClient>;
   /**

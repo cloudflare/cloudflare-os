@@ -3096,7 +3096,12 @@
         "properties": {
           "archive": {
             "x-capnweb-kind": "stream",
-            "x-capnweb-stream": "readable"
+            "x-capnweb-stream": "readable",
+            "x-capnweb-element": {
+              "type": "string",
+              "contentEncoding": "base64",
+              "x-capnweb-kind": "bytes"
+            }
           }
         },
         "required": [
@@ -5913,7 +5918,12 @@
       },
       "returns": {
         "x-capnweb-kind": "stream",
-        "x-capnweb-stream": "readable"
+        "x-capnweb-stream": "readable",
+        "x-capnweb-element": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "x-capnweb-kind": "bytes"
+        }
       }
     },
     {

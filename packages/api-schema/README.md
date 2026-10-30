@@ -13,14 +13,28 @@ next is [`plans/capnweb-api-schema.md`](../../plans/capnweb-api-schema.md).
 
 ## The format
 
-`src/schema.ts` is the specification: a `Schema` names its `entry` interface, records its byte
+`src/schema.ts` is the specification: a `Schema` starts with its `format`, `"capnweb-schema/0"`,
+so a reader can refuse a format it does not know, names its `entry` interface, records its byte
 `constants`, and holds `services` (each capability interface, server- and client-implemented
-alike, with its methods) and `shapes` (named object and union types, which other shapes refer to
-by name, so a recursive type stays finite). Shapes follow capnweb-validate's own classification of
-types, and a capability is a `stub` naming the service it continues on. Services, shapes,
-methods, properties and union branches are sorted, so the same declarations always serialize to
-the same bytes; method and function parameters and tuple elements keep their declared order,
-which is what positional arguments mean.
+alike, with its methods and properties) and `shapes` (named object and union types, which other
+shapes refer to by name, so a recursive type stays finite). Shapes follow capnweb-validate's own
+classification of types, and a capability is a `stub` naming the service it continues on.
+Services, shapes, methods, properties and union branches are sorted, so the same declarations
+always serialize to the same bytes; method and function parameters and tuple elements keep their
+declared order, which is what positional arguments mean.
+
+Beyond names, types and docs, the schema records:
+
+- each service's `direction`: `"server"` for a capability the caller receives, `"client"` for one
+  it implements and passes (a subscriber, a callback), `"both"` for one reached each way;
+- a service's `properties`, its non-method members, which a stub reads by pipelining
+  (`stub.foo.bar()`);
+- a stream's `element`, what a `ReadableStream<T>` or `WritableStream<T>` carries;
+- `deprecated`, from a `@deprecated` tag, on a service, method or property, and `mutates: true`
+  on a method whose doc has a `@mutates` tag, so a Gatekeeper can route it through approval.
+
+Each of these but `direction` is omitted when absent, and none changes what an existing field
+means, so a reader that predates them can ignore them.
 
 ## Generated files
 
@@ -30,10 +44,10 @@ Nothing reads these files yet; the last column is who each is written for.
 
 | File | What it is | Meant for |
 | --- | --- | --- |
-| `workshop-api.schema.json` | The capnweb-schema of everything reachable from `PublicApi`. | The starter's `cf-os api` ([cloudflare-os-starter](https://github.com/cloudflare/cloudflare-os-starter)), which extracts the same schema itself today and is to render its command table from this file instead. |
+| `workshop-api.schema.json` | The capnweb-schema of everything reachable from `PublicApi`. | The starter's `cf-os api` ([cloudflare-os-starter](https://github.com/cloudflare/cloudflare-os-starter)), which extracts its own schema today and is to render its command table from this file instead. The starter's extractor predates `format`, `direction`, properties, stream elements, `deprecated` and `mutates`, so the two files are no longer byte-identical; its command table reads only the fields they share. |
 | `workshop-api.agent.d.ts` | One self-contained declaration file of what a holder of an `AuthenticatedApi` stub can call, without the credential methods (`authenticate`, `login`, `changePassword`, ...). | Gatekeepers and code-mode agents, to write code against. The agent's `describeBinding` still writes its own description. |
 | `workshop-api.fragments.json` | The same declarations split per service, each fragment readable on its own, other services referred to by name. | Agents that fetch one service at a time instead of the whole surface. Shaped like the answer a live introspection method would give ([capnweb#177](https://github.com/cloudflare/capnweb/issues/177)), but rendered from `AuthenticatedApi`'s point of view, so a shape's name or position can differ from what one stub alone would report, and without the credential methods, which such a method would list unless it left them out too. |
-| `workshop-api.tools.json` | **Experimental.** One tool per method callable from `AuthenticatedApi`, each with a JSON Schema for its arguments and result, and `continuesOn` where the result is a capability. | A base for MCP and tool search; its shape may change. |
+| `workshop-api.tools.json` | **Experimental.** One tool per method callable from `AuthenticatedApi`, each with a JSON Schema for its arguments and result, `continuesOn` where the result is a capability, and the method's `deprecated` and `mutates` where it has them. | A base for MCP and tool search; its shape may change. |
 
 The declarations use the web platform's globals (`ReadableStream`), as a Worker has them, and
 `Symbol.dispose` (TypeScript's `esnext.disposable` lib): every stub the agent holds can be disposed,
@@ -41,7 +55,9 @@ which is how it cancels a subscription. A call returning a capability returns it
 `Pipelined<Service>`, which can be called on before it resolves (`api.openGadget(id).listChats()`).
 A value parameter is `Awaitable<T>`, the value or a promise of it, so one call's result is passed
 to the next without awaiting it (`gadget.setTitle(other.getTitle())`), and a subscriber's methods
-return `Awaitable<T>`, so an implementation may return its result as is or be `async`.
+return `Awaitable<T>`, so an implementation may return its result as is or be `async`. A
+service's property is a `readonly` member, which a holder reads as it would a method's result,
+and `@deprecated` and `@mutates` appear in the JSDoc.
 
 ## Regenerating
 

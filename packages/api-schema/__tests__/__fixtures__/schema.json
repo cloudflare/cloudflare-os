@@ -1,4 +1,5 @@
 {
+  "format": "capnweb-schema/0",
   "entry": "FixturePublicApi",
   "constants": {
     "SERVICE_SALT": [
@@ -9,8 +10,23 @@
     ]
   },
   "services": {
+    "Cursor": {
+      "doc": "Reached only through parameters of client-implemented callbacks, so the server's.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "position",
+          "doc": "",
+          "params": [],
+          "returns": {
+            "kind": "number"
+          }
+        }
+      ]
+    },
     "FixtureAdmin": {
       "doc": "Method-only, extending nothing, as upstream's AdminApi.",
+      "direction": "server",
       "methods": [
         {
           "name": "setBanner",
@@ -33,6 +49,7 @@
     },
     "FixtureAuthedApi": {
       "doc": "The authenticated API, as upstream's AuthenticatedApi.",
+      "direction": "server",
       "methods": [
         {
           "name": "findNotes",
@@ -95,7 +112,10 @@
             {
               "name": "archive",
               "type": {
-                "kind": "readableStream"
+                "kind": "readableStream",
+                "element": {
+                  "kind": "bytes"
+                }
               },
               "optional": false,
               "doc": ""
@@ -179,6 +199,7 @@
     },
     "FixturePublicApi": {
       "doc": "The entry interface, as upstream's PublicApi.",
+      "direction": "server",
       "methods": [
         {
           "name": "authenticate",
@@ -212,8 +233,21 @@
             }
           ],
           "returns": {
-            "kind": "readableStream"
+            "kind": "readableStream",
+            "element": {
+              "kind": "bytes"
+            }
           }
+        },
+        {
+          "name": "legacy",
+          "doc": "The notes API from before accounts.\n@deprecated Use authenticate.",
+          "params": [],
+          "returns": {
+            "kind": "stub",
+            "service": "LegacyNotes"
+          },
+          "deprecated": "Use authenticate."
         },
         {
           "name": "login",
@@ -256,10 +290,99 @@
             "kind": "void"
           }
         }
+      ],
+      "properties": [
+        {
+          "name": "build",
+          "doc": "An optional property.\n@deprecated Read version.",
+          "type": {
+            "kind": "number"
+          },
+          "optional": true,
+          "deprecated": "Read version."
+        },
+        {
+          "name": "version",
+          "doc": "A property, read by pipelining.",
+          "type": {
+            "kind": "string"
+          },
+          "optional": false
+        }
       ]
+    },
+    "LegacyNotes": {
+      "doc": "@deprecated Kept for clients from before accounts.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "list",
+          "doc": "@deprecated",
+          "params": [],
+          "returns": {
+            "kind": "array",
+            "element": {
+              "kind": "ref",
+              "name": "Note"
+            }
+          },
+          "deprecated": ""
+        },
+        {
+          "name": "release",
+          "doc": "A handle the server returned, passed back, so one that travels both ways.",
+          "params": [
+            {
+              "name": "handle",
+              "type": {
+                "kind": "stub",
+                "service": "{}"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "watch",
+          "doc": "A function whose parameter is a capability the server implements.",
+          "params": [
+            {
+              "name": "callback",
+              "type": {
+                "kind": "function",
+                "params": [
+                  {
+                    "name": "cursor",
+                    "type": {
+                      "kind": "stub",
+                      "service": "Cursor"
+                    },
+                    "optional": false
+                  }
+                ],
+                "returns": {
+                  "kind": "void"
+                }
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        }
+      ],
+      "deprecated": "Kept for clients from before accounts."
     },
     "Notebook": {
       "doc": "A capability reached by a hop.",
+      "direction": "server",
       "methods": [
         {
           "name": "connect",
@@ -271,7 +394,7 @@
         },
         {
           "name": "file",
-          "doc": "An object and an object union.",
+          "doc": "An object and an object union.\n@mutates",
           "params": [
             {
               "name": "note",
@@ -294,7 +417,8 @@
           ],
           "returns": {
             "kind": "void"
-          }
+          },
+          "mutates": true
         },
         {
           "name": "lock",
@@ -427,6 +551,7 @@
     },
     "NotesSubscriber": {
       "doc": "Implemented by the client, as upstream's subscribers.",
+      "direction": "client",
       "methods": [
         {
           "name": "added",
@@ -437,6 +562,32 @@
               "type": {
                 "kind": "ref",
                 "name": "Note"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "edited",
+          "doc": "A parameter of a client-implemented method: a capability the server implements.",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "cursor",
+              "type": {
+                "kind": "stub",
+                "service": "Cursor"
               },
               "optional": false,
               "doc": ""
@@ -475,6 +626,7 @@
     },
     "{}": {
       "doc": "",
+      "direction": "both",
       "methods": []
     }
   },
