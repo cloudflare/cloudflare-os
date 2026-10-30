@@ -1,0 +1,34 @@
+packages/gatekeeper-scheduler/src/management-types.ts
+  s_34892ac5042fc9::t_4db8646b2bdd12 24-36
+packages/workshop-shared/src/gatekeeper.ts
+  s_34892ac5042fc9::t_783ca6c8cb9bd3 559-568,1429
+packages/gatekeeper-context/src/context-types.ts
+  s_34892ac5042fc9::t_9ce93208759a6f 105-110,372-377,397-407
+packages/gatekeeper-scheduler/src/scheduler.ts
+  s_34892ac5042fc9::t_8ec2b91207f1e6 38,301,303
+docs/observers.md
+  s_34892ac5042fc9::t_a5b8ecc5655348 218-221
+packages/workshop-shared/src/api.ts
+  s_34892ac5042fc9::t_baeb109795acdf 156-159,164-166,367-372,492-495,698,722-733,738-739,772-775,777-778,782-791,795-799,802-809,835-838,845-850,855-860,885-889,967-968,989-992,1006-1018,1045-1046,2098-2099,2122-2123,2183-2187,2190-2194,2671-2674,2746,2839-2841,2857,2955-2957,3014-3016,3023-3024,3068-3074,3081-3084,3087-3091,3094-3096,3166,3192,3217-3218,3223-3225,3229-3230,3252-3253,3261-3265,3312-3317,3499-3502,3506-3509,3515,3547-3554,3590,3962,3998,5149,5611,5759,5768,5813-5825,5848-5849,5856-5861,5905-5906
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7022d5dd2fb3a1534a4eb3569adc692ce5393c50",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

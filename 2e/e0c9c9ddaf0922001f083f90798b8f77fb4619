@@ -1,0 +1,23 @@
+packages/api-schema/__tests__/dts.test.ts
+  s_34892ac5042fc9::t_5700379fe12bb5 5,9,45-46,72-81,1028-1054,1080,1117-1128,1132,1141-1156,1160,1162,1165-1169,1174,1179,1195-1197,1201,1210-1212,1222-1223,1227-1233,1251-1255,1257,1261-1265,1269,1273-1283,1285,1289-1297,1299,1303-1317,1319,1323-1327,1329,1336-1339,1341,1344-1347,1349,1354-1359,1361,1365-1371,1373,1377-1383,1385,1389-1392,1397,1401-1405,1407,1411-1417,1420
+packages/api-schema/__tests__/extract.test.ts
+  s_34892ac5042fc9::t_da7f84719bc642 24-25,194,229,353
+packages/api-schema/src/extract.ts
+  s_34892ac5042fc9::t_1f77efcf0613e8 65-66,110-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2ee0c9c9ddaf0922001f083f90798b8f77fb4619",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
