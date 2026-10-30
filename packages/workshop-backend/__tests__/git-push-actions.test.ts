@@ -82,6 +82,7 @@ function pushDescription(heads: string[]): ActionDescription {
     description: "Pushes the listed commits.",
     implementsRevert: true,
     pushedCommits: heads,
+    autoApprovable: false,
   };
 }
 

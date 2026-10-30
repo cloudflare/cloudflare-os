@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule }
     from "../src/auto-approval.js";
-import type { ActionRecord } from "../src/storage-schema/overseer-storage.js";
+import type { ActionRecord, StoredActionDescription }
+    from "../src/storage-schema/overseer-storage.js";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { makeMockStorage } from "./mock-storage.js";
@@ -319,10 +320,20 @@ describe("autoApprovalRule", () => {
   it("requires the author's autoApprovable verdict", () => {
     let storage = makeStorage();
     enableRule(storage);
-    expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: undefined })))
-        .toBeUndefined();
     expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: false })))
         .toBeUndefined();
+  });
+
+  it("refuses a stored description that predates the verdict", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    let legacy: StoredActionDescription = {
+      title: "Edit the thing",
+      description: "Edits the thing.",
+      implementsRevert: true,
+      actionKind: { tag: "edit", label: "Edits" },
+    };
+    expect(autoApprovalRule(storage, GK, legacy)).toBeUndefined();
   });
 
   it("requires an actionKind", () => {

@@ -5,9 +5,10 @@
 
 import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
-import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "./observability";
-import type { ActionRecord, AutoApproveTagRecord } from "./storage-schema/overseer-storage.js";
+import type {
+  ActionRecord, AutoApproveTagRecord, StoredActionDescription,
+} from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
 
@@ -23,10 +24,11 @@ export interface AutoApprovalStorage {
 /**
  * The single authority on whether an action may be applied without a human: the enabling rule if
  * the author marked the action `autoApprovable`, the user enabled a rule for its `actionKind` on
- * this gatekeeper, and the workspace has not latched restricted mode; else undefined.
+ * this gatekeeper, and the workspace has not latched restricted mode; else undefined. A stored
+ * description may lack the verdict, which counts as no.
  */
 export function autoApprovalRule(
-    storage: AutoApprovalStorage, gatekeeperId: number, description: ActionDescription)
+    storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription)
     : AutoApproveTagRecord | undefined {
   if (description.autoApprovable !== true) return undefined;
   let tag = description.actionKind?.tag;

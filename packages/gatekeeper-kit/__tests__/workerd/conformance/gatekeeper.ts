@@ -159,6 +159,7 @@ type ProviderHost = {
 const actions = defineActions<ProviderHost, Actions>({
   createProject: {
     kind: { tag: "create-project", label: "Create a project" },
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     // Non-idempotent at the provider, so a lost activation must not replay it.
     claimBeforeApply: true,
@@ -177,6 +178,7 @@ const actions = defineActions<ProviderHost, Actions>({
   },
   renameProject: {
     kind: { tag: "rename-project", label: "Rename a project" },
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     describe: payload => ({
       title: `Rename ${payload.target}`,

@@ -47,7 +47,7 @@ async function renderReview(restricted: boolean) {
     entries: [entry(1, {
       description: {
         title: 'Send email', description: 'Send an email.', implementsRevert: false,
-        descriptionIsComplete: true, fields,
+        autoApprovable: false, descriptionIsComplete: true, fields,
       },
     })],
   })
