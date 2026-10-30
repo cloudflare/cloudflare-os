@@ -1,0 +1,41 @@
+packages/gatekeeper-context/src/app-api.ts
+  s_34892ac5042fc9::t_7d6ac3d4db9399 1-4
+packages/api-cli/README.md
+  s_34892ac5042fc9::t_153f44c1c8195f 103-104
+packages/api-cli/generator/generate.test.ts
+  s_34892ac5042fc9::t_45cbf23b0bce23 52,55-56,61,64-66,68-70,72
+packages/api-cli/src/table.ts
+  s_34892ac5042fc9::t_153f44c1c8195f 149
+packages/api-schema/__tests__/extract.test.ts
+  s_34892ac5042fc9::t_06e915e31e2792 187-188
+  s_34892ac5042fc9::t_45cbf23b0bce23 189-201
+packages/gatekeeper-scheduler/src/app-api.ts
+  s_34892ac5042fc9::t_7d6ac3d4db9399 1-4
+plans/capnweb-api-schema.md
+  s_34892ac5042fc9::t_a4bc3083f3c32c 172
+packages/gatekeeper-scheduler/README.md
+  s_34892ac5042fc9::t_153f44c1c8195f 133
+packages/api-cli/generator/emit.ts
+  s_34892ac5042fc9::t_153f44c1c8195f 80-81
+packages/api-schema/README.md
+  s_34892ac5042fc9::t_153f44c1c8195f 101-102,104-105,108-111,124
+packages/api-schema/scripts/generate.ts
+  s_34892ac5042fc9::t_a7538979b61ae7 16-19,26-29,79-85,89,101-102,110-111,115-116,140,180-182,211,255
+  s_34892ac5042fc9::t_b5253d6e3c6e32 194-195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e32e108e13c4f083f1bfbbbeb5ac999613c8f3e6",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

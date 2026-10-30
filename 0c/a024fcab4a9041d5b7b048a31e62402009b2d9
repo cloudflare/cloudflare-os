@@ -1,0 +1,21 @@
+packages/api-cli/src/api.test.ts
+  s_34892ac5042fc9::t_210e47ed934f4a 562-572
+packages/api-cli/src/api.ts
+  s_34892ac5042fc9::t_210e47ed934f4a 268-273
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0ca024fcab4a9041d5b7b048a31e62402009b2d9",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
