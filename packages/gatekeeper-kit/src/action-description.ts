@@ -46,7 +46,8 @@ const ITEM_OVERHEAD = 3;
 // characters and the like) render as nothing too, so `admin\u200B@x.com` reads as `admin@x.com`,
 // and the bidi controls can reorder the text around them so it reads as something else.
 const CONTROL_CHARS = "\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F";
-const INVISIBLE_CHARS = `${CONTROL_CHARS}\\p{Default_Ignorable_Code_Point}`;
+// Look-alike spaces and separators must show their exact code points too.
+const INVISIBLE_CHARS = `${CONTROL_CHARS}\\p{Default_Ignorable_Code_Point}\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u2800\\u3000`;
 // Short values (`inline`, `list`, file names) and JSON strings escape or reroute every invisible
 // character, so an identifier or address shows its exact code points.
 const INVISIBLE = new RegExp(`[${INVISIBLE_CHARS}]`, "u");
