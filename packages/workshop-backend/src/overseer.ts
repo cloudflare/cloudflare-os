@@ -563,6 +563,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,
+        outcomeUnconfirmed: record.outcomeUnconfirmed,
       };
     case "bindHook":
       return {
@@ -4943,6 +4944,20 @@ class OverseerImpl implements AgentHooks {
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
                                        configuration: string | null}): Promise<void> {
+    // A second apply of the same action leaves the mark to the first.
+    let marked = !this.#actionsApplying.has(record.id);
+    this.#actionsApplying.add(record.id);
+    try {
+      await this.#applyPendingAction(record, resolvedBy, autoApproved, creation);
+    } finally {
+      if (marked) this.#actionsApplying.delete(record.id);
+    }
+  }
+
+  async #applyPendingAction(record: ActionRecord & {type: "action"},
+                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
+                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
+                                        configuration: string | null}): Promise<void> {
     let id = record.gatekeeperId;
     // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.#creationPending(id)) {
@@ -5006,6 +5021,66 @@ class OverseerImpl implements AgentHooks {
     }
     // Also when a rule applies it: a user's "always approve" answers a pending request that way.
     this.traceAgentActionApproval(record, "approved");
+  }
+
+  // The single chokepoint where an action transitions to "rejected", as applyPendingAction is for
+  // "approved". Denying always resolves the action: if the gatekeeper can't withdraw it -- it
+  // throws, or the connection is gone -- the action is rejected here anyway and flagged
+  // `outcomeUnconfirmed`, since it could otherwise never leave the queue and would stall
+  // auto-approval behind it.
+  async rejectPendingAction(record: ActionRecord & {type: "action"},
+                            resolvedBy: AiChatAuthorInfo): Promise<void> {
+    if (record.action === "create") {
+      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
+      // pushes' marks), and rejects every action queued against the simulated resource: none can
+      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
+      // is called.
+      let queued = Array.from(this.storage.actions.pendingByGatekeeper.get(record.gatekeeperId));
+      this.removeGatekeeper(record.gatekeeperId);
+      for (let queuedRecord of queued) {
+        if (queuedRecord.type === "action") this.#recordRejected(queuedRecord, resolvedBy);
+      }
+      return;
+    }
+
+    let outcomeUnconfirmed = false;
+    try {
+      let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
+      await gatekeeper.rejectAction(record.action);
+    } catch (error) {
+      // An approval running or landed during the await is a reason a gatekeeper refuses, and it
+      // stands: it records "approved" only once the gatekeeper's apply returns.
+      if (this.#actionsApplying.has(record.id) ||
+          this.storage.actions.get(record.id)?.state !== "pending") {
+        throw error;
+      }
+      this.logger.warn("gatekeeper could not withdraw a denied action", {
+        event: "action.reject.unconfirmed",
+        actionId: record.id,
+        gatekeeperId: record.gatekeeperId,
+        error,
+      });
+      outcomeUnconfirmed = true;
+    }
+    this.#recordRejected(record, resolvedBy, outcomeUnconfirmed);
+  }
+
+  // A rejected push's pending-push marks are removed in the same durable step as the state change
+  // (nothing was transmitted, so nothing became proven). No-op for pushless actions.
+  #recordRejected(record: ActionRecord & {type: "action"}, resolvedBy: AiChatAuthorInfo,
+                  outcomeUnconfirmed = false): void {
+    record.state = "rejected";
+    record.appliedAt = new Date();
+    record.resolvedBy = resolvedBy;
+    if (outcomeUnconfirmed) record.outcomeUnconfirmed = true;
+    this.storage.transaction(() => {
+      this.gitCache.clearPushMarks(record.id);
+      this.storage.actions.put(record);
+    });
+    this.traceAgentActionApproval(record, "denied");
+    if (record.caller.from === "agent") {
+      this.resumeAgentAfterDecision(record.caller.chatId, record.id);
+    }
   }
 
   // Traces an approval step for an action an agent turn submitted.
@@ -6305,6 +6380,9 @@ class OverseerImpl implements AgentHooks {
   // scheduled -- marking without one would brick the connection until some unrelated restart came
   // along.
   #gatekeepersPendingRestart = new Set<number>();
+
+  // Actions whose applyPendingAction is in flight, which a denial must not override.
+  #actionsApplying = new Set<number>();
 
   // Whether `id` is NOT blocked pending a scheduled restart (see #gatekeepersPendingRestart).
   // For callers that enumerate connections (listSlashCommands, prepareChatBindings' ambient
@@ -11740,50 +11818,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error(`Can't reject an observation: ${id}`);
     }
 
-    if (action.action === "create") {
-      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
-      // pushes' marks), and rejects every action queued against the simulated resource: none can
-      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
-      // is called.
-      let profile = await this.#getClientProfile();
-      let queued = Array.from(
-          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
-      this.impl.removeGatekeeper(action.gatekeeperId);
-      for (let record of queued) {
-        if (record.type !== "action") continue;
-        record.state = "rejected";
-        record.appliedAt = new Date();
-        record.resolvedBy = profile;
-        this.impl.storage.actions.put(record);
-        this.impl.traceAgentActionApproval(record, "denied");
-        if (record.caller.from === "agent") {
-          this.impl.resumeAgentAfterDecision(record.caller.chatId, record.id);
-        }
-      }
-      return;
-    }
-
-    let gatekeeper = await this.impl.getGatekeeperFacet(action.gatekeeperId);
-
     // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
-
-    await gatekeeper.rejectAction(action.action);
-
-    action.state = "rejected";
-    action.appliedAt = new Date();
-    action.resolvedBy = profile;
-    // A rejected push's pending-push marks are removed in the same durable step as the state
-    // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
-    this.impl.storage.transaction(() => {
-      this.impl.gitCache.clearPushMarks(action.id);
-      this.impl.storage.actions.put(action);
-    });
-    this.impl.traceAgentActionApproval(action, "denied");
-    if (action.caller.from === "agent") {
-      this.impl.resumeAgentAfterDecision(action.caller.chatId, action.id);
-    }
+    await this.impl.rejectPendingAction(action, profile);
+    if (action.action === "create") return;
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate

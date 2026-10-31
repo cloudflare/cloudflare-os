@@ -162,6 +162,27 @@ describe('Activity creation approval', () => {
   })
 })
 
+describe('Activity history', () => {
+  it('marks a denial its connection could not confirm', async () => {
+    const server = makeOverseer()
+    await view.render(
+      <Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePage({ entries: [
+      entry(1, { state: 'rejected' }),
+      entry(2, { state: 'rejected', outcomeUnconfirmed: true }),
+    ] })
+    flushFrames()
+
+    const row = (title: string) => [...document.querySelectorAll('button[aria-expanded]')]
+      .find(button => button.textContent?.includes(title))?.textContent
+    expect(row('Action 1')).toContain('Denied')
+    expect(row('Action 1')).not.toContain('may have already happened')
+    expect(row('Action 2')).toContain('Denied (may have already happened)')
+  })
+})
+
 describe('Activity hook toggles', () => {
   const TITLE = 'Watch acme/widgets on GitHub'
   const refusal = "GitHub refused to add a webhook to acme/widgets: only the repository's admins can."

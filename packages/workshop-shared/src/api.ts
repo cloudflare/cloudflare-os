@@ -2610,6 +2610,13 @@ export type ActionLogEntry = {
    * which the resource is created.
    */
   creation?: true;
+
+  /**
+   * True when the action was denied here but its connection couldn't confirm it hadn't already
+   * taken effect: the gatekeeper refused to withdraw it, or the connection was gone. Only ever set
+   * alongside state "rejected".
+   */
+  outcomeUnconfirmed?: true;
 } | {
   type: "observation";
   description: ObservationDescription;

@@ -1132,7 +1132,9 @@ export interface Gatekeeper<Session> extends DurableObject {
    * Action was approved. This call should apply the action (or schedule it to be applied).
    *
    * If this throws an exception, the user will be informed that the action failed and given the
-   * opportunity to retry or discard.
+   * opportunity to approve it again or deny it. Denying always resolves the action: if
+   * `rejectAction()` throws, the overseer denies it anyway and marks it
+   * `ActionLogEntry.outcomeUnconfirmed`, so the message should tell the user whether denying is safe.
    *
    * Depending on policy conditions, an action may be approved and applied automatically. However,
    * the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
