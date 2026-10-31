@@ -14,7 +14,7 @@
 //   never replace it: an observation omitting `subresources` is checked by nothing here, and
 //   admission runs every connection's addObserver() as well as the checks here.
 
-import type { CollaboratorRole, WorkpieceId } from "@gadgets/workshop-shared/api";
+import type { WorkpieceId } from "@gadgets/workshop-shared/api";
 import type {
   Gatekeeper, GatekeeperUserVerifier, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -23,7 +23,7 @@ import {
   type GatekeeperCaller, type GatekeeperRecord, type ObserverContext, type ObserverRecord,
   type OverseerStorage,
 } from "./storage-schema/overseer-storage";
-import type { SharingManager } from "./sharing";
+import { accessIncludesGadget, type SharingManager } from "./sharing";
 import type { UserDurableObject } from "./user";
 import type { WorkshopLogger } from "./observability";
 
@@ -77,26 +77,29 @@ type ObservationRecipient = Pick<ObserverRecord, "profileId" | "observerId"> & {
 /** One observer to check, with the verifier for the account they chose for the connection. */
 type ObserverVerifier = {id: string, verifier: Fetcher<GatekeeperUserVerifier>};
 
-/** What a collaborator holding some role is verified against (see ObserverLedger.observerScope). */
+/** What a collaborator holding some grant is verified against (see ObserverLedger.observerScope). */
 export type ObserverScope = {
   gatekeepers: GatekeeperRecord[];
   requirements: Map<WorkpieceId, string[]>;
 };
 
 /**
- * Whether a verification pass over `verified` also covers `current`: the same connections, and no
- * requirement the pass did not check.
+ * Whether a verification pass over `verified` still answers for `current`: the same connections
+ * and the same requirements. A requirement the pass did not check may be unmet, and one no longer
+ * required (a gadget stopped reaching another, say) may be the one it failed on.
  */
-export function observerScopeCovers(verified: ObserverScope, current: ObserverScope): boolean {
+export function sameObserverScope(verified: ObserverScope, current: ObserverScope): boolean {
   let verifiedIds = new Set(verified.gatekeepers.map(gk => gk.id));
   if (current.gatekeepers.length !== verifiedIds.size ||
       !current.gatekeepers.every(gk => verifiedIds.has(gk.id))) {
     return false;
   }
-  return Array.from(current.requirements).every(([id, subresources]) => {
-    let checked = new Set(verified.requirements.get(id));
-    return subresources.every(subresource => checked.has(subresource));
-  });
+  return current.requirements.size === verified.requirements.size &&
+      Array.from(current.requirements).every(([id, subresources]) => {
+        let checked = new Set(verified.requirements.get(id));
+        return subresources.length === checked.size &&
+            subresources.every(subresource => checked.has(subresource));
+      });
 }
 
 /**
@@ -116,6 +119,12 @@ export interface ObserverLedgerHost {
 
   /** Whether `executionId` is the executeCode invocation still running for `chatId`. */
   isLiveExecution(chatId: number, executionId: string): boolean;
+
+  /**
+   * The gadgets whose holders can read what gadget `gadgetId` reads: itself, if it can be opened,
+   * and any gadget that reaches it through an agent spawner.
+   */
+  gadgetsReaching(gadgetId: WorkpieceId): WorkpieceId[];
 }
 
 /**
@@ -261,26 +270,38 @@ export class ObserverLedger {
     }
   }
 
-  // Observers without a choice for this connection have had no session since it entered their
-  // role's verification scope (every widening restarts the workspace), and their next admission
-  // checks everything. A "use" collaborator outside that scope (nothing binds or hooks the
-  // connection) usually has no choice and goes unchecked, as under the legacy protocol; a choice
-  // left from an earlier binding is still checked, which can only refuse more.
+  // Everyone who can see what `context` reads: "build" collaborators always, anyone with access
+  // for a workspace read (which every chat and gadget includes), and for a gadget's read, those
+  // whose access includes a gadget that reaches it -- whether or not they have opened that gadget.
+  //
+  // Observers without a choice for this connection have had no session holding anything whose
+  // verification scope it entered since (every widening restarts the sessions holding what
+  // widened), and their next admission checks everything. A collaborator whose gadgets don't
+  // reach the connection usually has no choice and goes unchecked, as under the legacy protocol;
+  // a choice left from an earlier binding, or another gadget, is still checked, which can only
+  // refuse more.
   #audience(sharing: SharingManager, context: ObserverContext,
             gatekeeperId: WorkpieceId): ObservationRecipient[] {
-    let effective = sharing.computeEffectiveRoles();
+    let effective = sharing.computeEffectiveAccess();
+    // Who can read a gadget's state is needed only for a "use" observer of a gadget's read, and
+    // finding out walks every gadget's reach, so it is resolved at most once, on demand.
+    let readers: WorkpieceId[] | undefined;
     let audience: ObservationRecipient[] = [];
-    for (let observer of this.#storage.observers.list()) {
-      let role = effective.get(observer.profileId);
+    // Listed up front: resolving readers lists other collections, which would end this listing.
+    for (let observer of Array.from(this.#storage.observers.list())) {
+      let access = effective.get(observer.profileId);
       let accountId = observer.accountChoices[gatekeeperId];
-      if (role !== undefined && (context.type !== "chat" || role === "build") &&
-          accountId !== undefined) {
-        let {profileId, observerId} = observer;
-        audience.push({
-          profileId, observerId, accountId,
-          key: JSON.stringify([profileId, observerId, accountId]),
-        });
+      if (access === undefined || accountId === undefined) continue;
+      if (access.role !== "build" && context.type !== "workspace") {
+        if (context.type === "chat") continue;
+        readers ??= this.host.gadgetsReaching(context.gadgetId);
+        if (!readers.some(gadgetId => accessIncludesGadget(access, gadgetId))) continue;
       }
+      let {profileId, observerId} = observer;
+      audience.push({
+        profileId, observerId, accountId,
+        key: JSON.stringify([profileId, observerId, accountId]),
+      });
     }
     return audience;
   }
@@ -289,28 +310,49 @@ export class ObserverLedger {
   // Admission
 
   /**
-   * Everything a collaborator holding `role` is verified against: `gatekeepers`, the role's
-   * verification scope, and the deduplicated subresources recorded through each of them that the
-   * role reaches: a "build" collaborator reaches every context, a "use" collaborator the workspace
-   * and every gadget. Reads only the distinct requirement keys, never the observations recorded
-   * under them. `gatekeepers` are live records, so nothing through a connection since removed is
-   * read. Connections with no requirements are left out of `requirements`.
+   * Everything a collaborator is verified against: `gatekeepers`, their verification scope, and
+   * the deduplicated subresources recorded through each of them in the contexts `reach` names: a
+   * "build" collaborator reaches every context; one opening a gadget, the workspace and the
+   * gadgets it reaches (see OverseerImpl.#gadgetReach). Reads only the distinct requirement keys,
+   * never the observations recorded under them. `gatekeepers` are live records, so nothing through
+   * a connection since removed is read. Connections with no requirements are left out of
+   * `requirements`.
    */
-  observerScope(role: CollaboratorRole, gatekeepers: GatekeeperRecord[]): ObserverScope {
+  observerScope(reach: "build" | Iterable<WorkpieceId>,
+                gatekeepers: GatekeeperRecord[]): ObserverScope {
     let index = this.#storage.actions.byObserverRequirement;
-    let contexts: ObserverContext["type"][] =
-        role === "build" ? ["workspace", "chat", "gadget"] : ["workspace", "gadget"];
+    let contexts: (ObserverContext | ObserverContext["type"])[] = reach === "build"
+        ? ["workspace", "chat", "gadget"]
+        : ["workspace", ...Array.from(reach, gadgetId => ({type: "gadget" as const, gadgetId}))];
     let requirements = new Map<WorkpieceId, string[]>();
     for (let connection of gatekeepers) {
       let ids = new Set<string>();
-      for (let type of contexts) {
-        for (let key of index.listKeys({prefix: observerRequirementPrefix(connection.id, type)})) {
-          ids.add(observerRequirementSubresource(key));
-        }
+      for (let context of contexts) {
+        let prefix = observerRequirementPrefix(connection.id, context);
+        for (let key of index.listKeys({prefix})) ids.add(observerRequirementSubresource(key));
       }
       if (ids.size > 0) requirements.set(connection.id, [...ids]);
     }
     return {gatekeepers, requirements};
+  }
+
+  /**
+   * The connections through which any of `gadgetIds` recorded requirements. A gadget's state may
+   * hold what it read through one whether or not it still binds it, so whoever opens it is
+   * verified against these too.
+   */
+  gadgetProducers(gadgetIds: Iterable<WorkpieceId>): WorkpieceId[] {
+    let index = this.#storage.actions.byObserverRequirement;
+    let contexts = Array.from(gadgetIds, gadgetId => ({type: "gadget" as const, gadgetId}));
+    let recorded = (prefix: string) => {
+      for (let _ of index.listKeys({prefix, limit: 1})) return true;
+      return false;
+    };
+    // Listed up front: each probe lists the index, which would end this listing.
+    return Array.from(this.#storage.gatekeepers.list())
+        .filter(connection => contexts.some(
+            context => recorded(observerRequirementPrefix(connection.id, context))))
+        .map(connection => connection.id);
   }
 
   /**

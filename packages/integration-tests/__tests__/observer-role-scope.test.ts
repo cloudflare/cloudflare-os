@@ -1,9 +1,11 @@
-// Tests for role-scoped observer enforcement: a collaborator is held only to what their role's
-// verification scope can actually cover ("use" collaborators are verified only against
-// gadget-bound connections; see #inScopeGatekeepers in overseer.ts). So binding a connection into
-// a gadget widens every "use" collaborator's scope, and since sessions are verified only at open(),
-// that widening restarts the workspace: each client's next open re-verifies against the new scope.
-// The external-message gate's role scoping is covered by external-message-verification.test.ts.
+// Tests for access-scoped observer enforcement: a collaborator is held only to what their access's
+// verification scope can actually cover. A "build" collaborator is verified at open() against
+// every account-requiring connection; one granted individual gadgets is verified at getGadget()
+// against only the connections that gadget reaches (see #gadgetReach in overseer.ts). So binding a
+// connection into a gadget widens the scope of everyone holding it, and since a held gadget is
+// verified only when it is got, that widening restarts the workspace if a live session holds it:
+// the next getGadget() re-verifies against the new scope. The external-message gate's access
+// scoping is covered by external-message-verification.test.ts.
 //
 // This lives in its own file -- with its own harness, like every suite here -- rather than in
 // sensitive-observations.test.ts, because both suites restart the workspace, and a DO reset makes
@@ -12,7 +14,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
+import type {
+  AuthenticatedApi, GadgetClient, Overseer, PublicApi, WorkpieceId,
+} from "@gadgets/workshop-shared/api";
 import {
   settleRestart, startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness,
 } from "../src/harness.js";
@@ -116,23 +120,34 @@ async function reopenAfterRestart(ws: Workspace): Promise<{
 }
 
 // A collaborator's session, opened on its own connection (the one their browser holds) and kept
-// live until close(). Every case here needs one: what a widening restarts is a live session, so a
-// collaborator who is only named in the sharing table has nothing to sever, and a case that opened
-// and closed one would prove nothing about the role filter either way.
-type HeldSession = { overseer: RpcStub<Overseer>, close: () => void };
+// live until close(), holding `gadgetId` too when given. Every case here needs one: what a
+// widening restarts is a live session, so a collaborator who is only named in the sharing table
+// has nothing to sever, and a case that opened and closed one would prove nothing about the scope
+// filter either way. `recorder` answers the prompts of the open and of the getGadget().
+type HeldSession = {
+  overseer: RpcStub<Overseer>,
+  gadget?: RpcStub<GadgetClient>,
+  close: () => void,
+};
 
 async function holdSession(
     ws: Workspace, who: string,
-    recorder: ObserverConfigRecorder = new ObserverConfigRecorder()): Promise<HeldSession> {
+    recorder: ObserverConfigRecorder = new ObserverConfigRecorder(),
+    gadgetId?: WorkpieceId): Promise<HeldSession> {
   const publicApi = connect(harness.url);
   try {
     const api = await logIn(publicApi, who);
     const callback = stubFor(recorder);
     try {
       const overseer = await api.openWorkspace(ws.gadgetId, undefined, callback);
+      const gadget = gadgetId === undefined
+        ? undefined
+        : await overseer.getGadget(gadgetId, callback);
       return {
         overseer,
+        gadget,
         close: () => {
+          gadget?.[Symbol.dispose]();
           overseer[Symbol.dispose]();
           publicApi[Symbol.dispose]();
         },
@@ -146,32 +161,43 @@ async function holdSession(
   }
 }
 
-describe("role-scoped observer enforcement", () => {
-  it.concurrent("a use collaborator is verified only against connections in their scope",
+/** Sign up a fresh collaborator with their own test account and grant them `gadgetId`. */
+async function shareGadget(
+    publicApi: RpcStub<PublicApi>, ws: Workspace, gadgetId: WorkpieceId) {
+  const [carol] = nextUsernames("carol");
+  const carolApi = await signUp(publicApi, carol);
+  const carolAccount = await provisionAccount(carolApi);
+  if (!await ws.overseer.addCollaborator(carol, { gadgetId })) {
+    throw new Error(`Failed to share the gadget with ${carol}`);
+  }
+  return { carol, carolAccount };
+}
+
+describe("access-scoped observer enforcement", () => {
+  it.concurrent("a gadget collaborator is verified only against connections their gadget reaches",
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "use-scope");
-      const [carol] = nextUsernames("carol");
-      const carolApi = await signUp(publicApi, carol);
-      const carolAccount = await provisionAccount(carolApi);
-      const collaborator = await ws.overseer.addCollaborator(carol, "use");
-      if (!collaborator) throw new Error(`Failed to share the gadget with ${carol}`);
+      const gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
+      const gadgetId = await gadget.getId();
+      const { carol, carolAccount } = await shareGadget(publicApi, ws, gadgetId);
 
-      // No gadget binds the connection, so Carol's "use" verification scope is empty: her open
-      // must not prompt (the recorder has no queued responses, so an unexpected prompt throws).
-      const carolSession = await holdSession(ws, carol);
+      // The gadget binds nothing, so Carol's verification scope for it is empty: neither her open
+      // nor getting the gadget may prompt (the recorder has no queued responses, so an unexpected
+      // prompt throws).
+      const carolSession = await holdSession(ws, carol, undefined, gadgetId);
       try {
         // Carol holds no coverage for the connection and never will while it stays unbound, but
-        // that is enforced against her open, not against the owner's reads: this restricted read
-        // goes through.
+        // that is enforced against her getting the gadget, not against the owner's reads: this
+        // restricted read goes through.
         await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-        // Binding the connection to a gadget (pure storage writes; no gadget code runs) brings it
-        // into "use" scope. That widens what Carol's live session must be verified against, and a
-        // live session is never re-verified in place -- so the workspace restarts instead.
-        using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
+        // Binding the connection to her gadget (pure storage writes; no gadget code runs) widens
+        // what Carol's live hold on it must be verified against, and a held gadget is never
+        // re-verified in place -- so the workspace restarts instead.
         await gadget.bind("TEST_THING", ws.gatekeeperId);
       } finally {
+        gadget[Symbol.dispose]();
         carolSession.close();
       }
 
@@ -182,11 +208,11 @@ describe("role-scoped observer enforcement", () => {
         // nothing about Carol's coverage gates the owner's reads.
         await expect(reopened.session.readValue(true)).resolves.toBe(42);
 
-        // Carol's forced re-open is where the newly in-scope connection gets verified, and she is
-        // asked about exactly it -- the one connection her role's scope just gained.
+        // Carol's forced re-get is where the newly reached connection gets verified, and she is
+        // asked about exactly it -- the one connection her gadget's scope just gained.
         const recorder =
             new ObserverConfigRecorder().alwaysChoose(carolAccount.id, MAX_OBSERVER_PROMPTS);
-        const carolReopened = await holdSession(ws, carol, recorder);
+        const carolReopened = await holdSession(ws, carol, recorder, gadgetId);
         carolReopened.close();
         expect(recorder.callCount).toBe(1);
         expect(recorder.calls[0].map(need => need.gatekeeperId)).toEqual([ws.gatekeeperId]);
@@ -196,27 +222,22 @@ describe("role-scoped observer enforcement", () => {
     });
   });
 
-  it.concurrent("binding a connection already in \"use\" scope does not restart the workspace",
+  it.concurrent("binding a connection already in the gadget's scope does not restart",
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "rebind");
       using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
+      const gadgetId = await gadget.getId();
 
-      // Bind before the workspace is shared: the connection is in "use" scope from here on, and
-      // with no collaborators yet there is nothing to restart for.
+      // Bind before the gadget is shared: the connection is in its scope from here on, and with
+      // no collaborators yet there is nothing to restart for.
       await gadget.bind("TEST_THING", ws.gatekeeperId);
+      const { carol, carolAccount } = await shareGadget(publicApi, ws, gadgetId);
 
-      const [carol] = nextUsernames("carol");
-      const carolApi = await signUp(publicApi, carol);
-      const carolAccount = await provisionAccount(carolApi);
-      if (!await ws.overseer.addCollaborator(carol, "use")) {
-        throw new Error(`Failed to share the gadget with ${carol}`);
-      }
-
-      // Carol's open verifies her against the bound connection -- her whole scope.
+      // Getting the gadget verifies Carol against the bound connection -- its whole scope.
       const recorder =
           new ObserverConfigRecorder().alwaysChoose(carolAccount.id, MAX_OBSERVER_PROMPTS);
-      const carolSession = await holdSession(ws, carol, recorder);
+      const carolSession = await holdSession(ws, carol, recorder, gadgetId);
       try {
         expect(recorder.callCount).toBe(1);
         expect(recorder.calls[0].map(need => need.gatekeeperId)).toEqual([ws.gatekeeperId]);
@@ -228,14 +249,44 @@ describe("role-scoped observer enforcement", () => {
         await expect(ws.session.readValue()).resolves.toBe(42);
         await expect(carolSession.overseer.getMetadata()).resolves.toMatchObject(
             { id: ws.gadgetId });
+        await expect(carolSession.gadget!.getTitle()).resolves.toBe("Test Gadget");
       } finally {
         carolSession.close();
       }
     });
   });
 
-  // The two roles widen independently, so each widening must leave the other role's workspace
-  // alone. One test per direction: covering only one would leave half the filter unexercised.
+  it.concurrent("binding into another gadget does not restart a collaborator holding only theirs",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "other-gadget");
+      using mine = await ws.overseer.createGadget("Carol's Gadget", undefined, "MINE");
+      using other = await ws.overseer.createGadget("Other Gadget", undefined, "OTHER");
+      const mineId = await mine.getId();
+      const { carol } = await shareGadget(publicApi, ws, mineId);
+
+      const carolSession = await holdSession(ws, carol, undefined, mineId);
+      try {
+        // Carol does not hold the other gadget, and hers reaches nothing it binds, so this widens
+        // no scope she was verified against: her live session and her gadget must survive it.
+        await other.bind("TEST_THING", ws.gatekeeperId);
+        await settleRestart();
+        await expect(ws.session.readValue()).resolves.toBe(42);
+        await expect(carolSession.overseer.getMetadata()).resolves.toMatchObject(
+            { id: ws.gadgetId });
+        await expect(carolSession.gadget!.getTitle()).resolves.toBe("Carol's Gadget");
+        const otherId = await other.getId();
+        await expect(carolSession.overseer.getGadget(otherId))
+            .rejects.toThrow(`No such gadget: ${otherId}`);
+      } finally {
+        carolSession.close();
+      }
+    });
+  });
+
+  // Workspace-wide and per-gadget access widen independently, so each widening must leave the
+  // other's sessions alone. One test per direction: covering only one would leave half the filter
+  // unexercised.
   it.concurrent("binding does not restart a workspace whose collaborators are all \"build\"",
       async () => {
     await withSession(async publicApi => {
@@ -252,7 +303,7 @@ describe("role-scoped observer enforcement", () => {
       const bobSession = await holdSession(
           ws, bob, new ObserverConfigRecorder().alwaysChoose(bobAccount.id, MAX_OBSERVER_PROMPTS));
       try {
-        // Binding widens "use" scope only. The connection has been in every build collaborator's
+        // Binding widens only gadget scopes. The connection has been in every build collaborator's
         // scope since it was created, so Bob's requirements don't change and his live session --
         // the only one a restart would sever -- must be left alone.
         using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
@@ -266,22 +317,19 @@ describe("role-scoped observer enforcement", () => {
     });
   });
 
-  it.concurrent("a new connection does not restart a workspace whose collaborators are all \"use\"",
+  it.concurrent("a new connection does not restart a workspace shared only by gadget",
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "use-only");
-      const [carol] = nextUsernames("carol");
-      const carolApi = await signUp(publicApi, carol);
-      await provisionAccount(carolApi);
-      if (!await ws.overseer.addCollaborator(carol, "use")) {
-        throw new Error(`Failed to share the gadget with ${carol}`);
-      }
+      using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
+      const gadgetId = await gadget.getId();
+      const { carol } = await shareGadget(publicApi, ws, gadgetId);
 
-      // No gadget binds anything, so Carol's scope is empty and her open must not prompt.
-      const carolSession = await holdSession(ws, carol);
+      // The gadget binds nothing, so Carol's scope is empty and getting it must not prompt.
+      const carolSession = await holdSession(ws, carol, undefined, gadgetId);
       try {
         // The mirror image: a new connection enters "build" scope at once, but no gadget binds it,
-        // so it is in no "use" collaborator's scope and Carol's requirements don't change either.
+        // so it is in no gadget's scope and Carol's requirements don't change either.
         using added = await ws.overseer.newGatekeeper(
             ws.account.id, thingUrl("use-only-extra"));
         if (!added) throw new Error("Failed to create the test connection");
@@ -290,6 +338,7 @@ describe("role-scoped observer enforcement", () => {
         await expect(ws.session.readValue()).resolves.toBe(42);
         await expect(carolSession.overseer.getMetadata()).resolves.toMatchObject(
             { id: ws.gadgetId });
+        await expect(carolSession.gadget!.getTitle()).resolves.toBe("Test Gadget");
       } finally {
         carolSession.close();
       }

@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { BellSlash, DotsThree, Star, ShareNetwork, Trash, Pencil } from '@phosphor-icons/react'
+import { BellSlash, DotsThree, Star, Trash, Pencil, UserPlus } from '@phosphor-icons/react'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from '../menuStyles'
 import { useState, useEffect, useRef } from 'react'
@@ -128,12 +128,15 @@ export default function SidebarGadgetRow({
                   <Star size={13} className="mr-2" weight={gadget.pinned ? 'fill' : 'regular'} />
                   {gadget.pinned ? 'Unfavorite' : 'Favorite'}
                 </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  onClick={() => onShare(gadget)}
-                  className={MENU_ITEM}
-                >
-                  <ShareNetwork size={13} className="mr-2" /> Share
-                </DropdownMenu.Item>
+                {/* Only members can invite; the role is cached with the listing, and the server decides. */}
+                {gadget.role !== 'use' && (
+                  <DropdownMenu.Item
+                    onClick={() => onShare(gadget)}
+                    className={MENU_ITEM}
+                  >
+                    <UserPlus size={13} className="mr-2" /> Invite to workspace
+                  </DropdownMenu.Item>
+                )}
                 <WorkspaceNotificationsMenu
                   workspaceId={gadget.id}
                   mute={gadget.notificationMute}

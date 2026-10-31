@@ -164,7 +164,7 @@ async function bobOpensAndCloses(shared: SharedGadget): Promise<ObserverConfigRe
 }
 
 describe("observer re-verification", () => {
-  it.concurrent("lists the connections each sharing role must verify", async () => {
+  it.concurrent("lists the connections each grant must verify", async () => {
     await withSession(async publicApi => {
       const [alice] = nextUsernames("alice");
       using aliceApi = await signUp(publicApi, alice);
@@ -172,25 +172,38 @@ describe("observer re-verification", () => {
       using overseer = await aliceApi.newWorkspace();
 
       using bound = await overseer.newGatekeeper(account.id, thingUrl("bound"));
+      using other = await overseer.newGatekeeper(account.id, thingUrl("other"));
       using unbound = await overseer.newGatekeeper(account.id, thingUrl("unbound"));
-      if (!bound || !unbound) throw new Error("Failed to create test connections");
+      if (!bound || !other || !unbound) throw new Error("Failed to create test connections");
 
       using gadget = await overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
       await gadget.bind("TEST_THING", await bound.getId());
+      using otherGadget = await overseer.createGadget("Other Gadget", undefined, "OTHER_GADGET");
+      await otherGadget.bind("TEST_THING", await other.getId());
 
-      await expect(overseer.listObserverRequirements("use")).resolves.toEqual([
-        expect.objectContaining({
-          gatekeeperId: await bound.getId(),
-          vendorId: TEST_VENDOR_ID,
-          resourceTitle: "Test Thing bound",
-          resourceUrl: thingUrl("bound"),
-        }),
-      ]);
+      // Each gadget's recipients verify only what that gadget reaches.
+      await expect(overseer.listObserverRequirements({ gadgetId: await gadget.getId() }))
+          .resolves.toEqual([
+            expect.objectContaining({
+              gatekeeperId: await bound.getId(),
+              vendorId: TEST_VENDOR_ID,
+              resourceTitle: "Test Thing bound",
+              resourceUrl: thingUrl("bound"),
+            }),
+          ]);
+      await expect(overseer.listObserverRequirements({ gadgetId: await otherGadget.getId() }))
+          .resolves.toEqual([
+            expect.objectContaining({ gatekeeperId: await other.getId() }),
+          ]);
       await expect(overseer.listObserverRequirements("build")).resolves.toEqual([
         expect.objectContaining({ resourceTitle: "Test Ambient" }),
         expect.objectContaining({ resourceTitle: "Test Thing bound" }),
+        expect.objectContaining({ resourceTitle: "Test Thing other" }),
         expect.objectContaining({ resourceTitle: "Test Thing unbound" }),
       ]);
+      // A connection is not a gadget, so it cannot be granted.
+      await expect(overseer.listObserverRequirements({ gadgetId: await bound.getId() }))
+          .rejects.toThrow(`No such gadget: ${await bound.getId()}`);
     });
   });
 

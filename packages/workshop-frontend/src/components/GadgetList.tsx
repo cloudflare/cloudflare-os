@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
+import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, UserPlus, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
@@ -157,10 +157,13 @@ function AppRow({
             <Info size={13} className="mr-2" />
             Information
           </DropdownMenu.Item>
-          <DropdownMenu.Item onClick={() => onShare(gadget)} className={MENU_ITEM}>
-            <ShareNetwork size={13} className="mr-2" />
-            Share
-          </DropdownMenu.Item>
+          {/* Only members can invite; the role is cached with the listing, and the server decides. */}
+          {gadget.role !== 'use' && (
+            <DropdownMenu.Item onClick={() => onShare(gadget)} className={MENU_ITEM}>
+              <UserPlus size={13} className="mr-2" />
+              Invite to workspace
+            </DropdownMenu.Item>
+          )}
           <WorkspaceNotificationsMenu
             workspaceId={gadget.id}
             mute={gadget.notificationMute}
@@ -485,6 +488,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
           onClose={handleShareClose}
           overseer={shareOverseer.stub}
           metadata={shareTarget}
+          target={{ kind: 'workspace' }}
           currentUser={userInfo}
           authenticatedApi={authenticatedApi}
         />

@@ -7,11 +7,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type {
   WorkspaceMetadata,
   GadgetSummary,
+  WorkpieceId,
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 
-// Covers which gadgets the editor offers "Update from blueprint" for, and how the editor brings a
-// chat into view: the one a blueprint update was proposed in, or the one a notification opens.
+// Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
+// chat into view (the one a blueprint update was proposed in, or the one a notification opens),
+// and which gadget stub a use-only collaborator's view is given while gadgets are admitted.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -34,6 +36,12 @@ const mocks = vi.hoisted(() => {
       replace?: boolean
     }) => void>(),
     search: {} as Record<string, unknown>,
+    // The props the use-only view was last rendered with.
+    useView: null as null | {
+      gadget: unknown
+      gadgetOpenFailure: string | null
+      onRetryGadget: () => void
+    },
     workspace: {
       overseer: {
         stub: {
@@ -51,6 +59,7 @@ const mocks = vi.hoisted(() => {
       error: null,
       connectionLost: false,
       observerConfig: null,
+      createObserverConfigCallback: () => disposable,
       retry: () => {},
       cancelObserverConfig: () => {},
       updateTitle: () => {},
@@ -90,7 +99,10 @@ vi.mock('./AuthContext', () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: mocks.authenticatedApi }),
 }))
 vi.mock('./RpcContext', () => ({ useConnectionLost: () => false, useRpcStub: () => ({}) }))
-vi.mock('./useWorkspaceOpen', () => ({ useWorkspaceOpen: () => mocks.workspace }))
+vi.mock('./useWorkspaceOpen', () => ({
+  useWorkspaceOpen: () => mocks.workspace,
+  observerOpenFailureMessage: () => null,
+}))
 vi.mock('./useActions', () => ({ useActions: () => ({ pending: [] }), useActionEntries: () => {} }))
 vi.mock('./errorReporting', () => ({ reportIssue: () => {} }))
 vi.mock('./features/blueprint-updates/useBlueprintUpdateAvailable', () => ({
@@ -140,7 +152,12 @@ vi.mock('./BlueprintModal', () => ({ default: () => null }))
 vi.mock('./Connections', () => ({ default: () => null }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
 vi.mock('./GadgetUI', () => ({ default: () => null }))
-vi.mock('./GadgetUseView', () => ({ default: () => null }))
+vi.mock('./GadgetUseView', () => ({
+  default: (props: NonNullable<typeof mocks.useView>) => {
+    mocks.useView = props
+    return null
+  },
+}))
 vi.mock('./ObserverConfigModal', () => ({ default: () => null }))
 vi.mock('./ShareModal', () => ({ default: () => null }))
 vi.mock('./TopBarNotice', () => ({ default: () => null }))
@@ -322,5 +339,91 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     await openEditor('desktop')
     expect(isChatVisible('workspace', 3)).toBe(false)
     window.history.replaceState(null, '', window.location.pathname)
+  })
+})
+
+// A use-only collaborator is verified as each gadget opens, so the view gets a gadget's stub only
+// once its admission resolves, and never one disposed when an earlier admission was abandoned.
+describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
+  const BUDGET: GadgetSummary = { id: 2, type: 'gadget', title: 'Budget', commitId: 'head' }
+  type Client = { gadgetId: WorkpieceId; disposed: boolean }
+  const workspace = mocks.workspace
+  const original = { overseer: workspace.overseer, metadata: workspace.metadata }
+  let admissions: { resolve: () => void; reject: (error: Error) => void }[]
+  const shownClient = () => mocks.useView?.gadget as Client | null | undefined
+
+  // A fresh overseer stub, as a reconnect hands the editor.
+  function useOnlyOverseer(): typeof original.overseer {
+    const disposable = { [Symbol.dispose]() {} }
+    return {
+      stub: {
+        ...original.overseer.stub,
+        subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+          await subscriber.entry(GADGET)
+          await subscriber.entry(BUDGET)
+          await subscriber.ready()
+          return disposable
+        },
+        getGadget: (gadgetId?: WorkpieceId) => {
+          const { promise, resolve, reject } = Promise.withResolvers<unknown>()
+          const client = {
+            gadgetId: gadgetId!,
+            disposed: false,
+            [Symbol.dispose]() { client.disposed = true },
+          }
+          admissions.push({ resolve: () => resolve({ dup: () => client, [Symbol.dispose]() {} }), reject })
+          return Object.assign(promise, disposable)
+        },
+      },
+    }
+  }
+
+  beforeEach(() => {
+    admissions = []
+    mocks.useView = null
+    workspace.metadata = { ...original.metadata, role: 'use' } as WorkspaceMetadata
+    workspace.overseer = useOnlyOverseer()
+  })
+
+  afterEach(() => {
+    workspace.overseer = original.overseer
+    workspace.metadata = original.metadata
+  })
+
+  it('shows nothing while a gadget it left is admitted again', async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.resolve())
+    const first = shownClient()
+    expect(first).toMatchObject({ gadgetId: GADGET.id, disposed: false })
+
+    // Leave for a gadget still being admitted, and come back before it is.
+    mocks.search = { w: BUDGET.id }
+    await openEditor('desktop')
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+
+    expect(first?.disposed).toBe(true)
+    expect(shownClient()).toBeNull()
+    await act(async () => admissions.at(-1)!.resolve())
+    expect(shownClient()).toMatchObject({ gadgetId: GADGET.id, disposed: false })
+  })
+
+  it('keeps the gadget on screen through a reconnect, but not past a refused re-admission', async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.resolve())
+    const first = shownClient()
+
+    workspace.overseer = useOnlyOverseer()
+    await openEditor('desktop')
+    expect(shownClient()).toBe(first)
+
+    await act(async () => admissions.at(-1)!.reject(new Error('refused')))
+    expect(mocks.useView?.gadgetOpenFailure).not.toBeNull()
+
+    await act(async () => mocks.useView!.onRetryGadget())
+    expect(mocks.useView?.gadgetOpenFailure).toBeNull()
+    expect(shownClient()).toBeNull()
   })
 })

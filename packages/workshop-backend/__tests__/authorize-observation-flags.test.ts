@@ -113,7 +113,7 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       // The flag is enforced by the memoized sharing manager.
       let sharing = await impl.getSharingManager();
       await expect(sharing.createShareLink({
-        caller: { profileId: OWNER, isOwner: true }, role: "use",
+        caller: { profileId: OWNER, isOwner: true }, grant: "build",
       })).rejects.toThrow(/Share links are disabled/);
     });
   });
@@ -153,8 +153,8 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       // record is torn down. Bob, whom the owner added directly, keeps both.
       expect(restarts).toHaveLength(1);
       let sharing = await impl.getSharingManager();
-      expect(sharing.getEffectiveRole("dave")).toBeUndefined();
-      expect(sharing.getEffectiveRole("bob")).toBe("build");
+      expect(sharing.getEffectiveAccess("dave")).toBeUndefined();
+      expect(sharing.getEffectiveAccess("bob")).toEqual({ role: "build" });
       expect(impl.storage.observers.get("dave")).toBeUndefined();
       expect(impl.storage.observers.get("bob")).toBeDefined();
 
@@ -185,7 +185,8 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
 
       expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
       expect(restarts).toEqual([]);
-      expect((await impl.getSharingManager()).getEffectiveRole("bob")).toBe("use");
+      expect((await impl.getSharingManager()).getEffectiveAccess("bob"))
+          .toEqual({ role: "use", gadgetIds: "all" });
     });
   });
 });
