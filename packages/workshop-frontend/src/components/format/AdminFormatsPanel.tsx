@@ -230,7 +230,13 @@ function FormatRow({
   onPatch: (patch: Parameters<AdminApi['updateFormat']>[1]) => void
   onRemove: () => void
 }) {
-  const needsNaming = !format.missing && !format.output
+  const needsPresentation = !format.missing && !format.output
+  const presentation = { ...format.declared, ...format.overrides }
+  const missingFields = [
+    !presentation.noun && 'a name',
+    !presentation.plural && 'a plural name',
+    !presentation.icon && 'an icon',
+  ].filter(Boolean).join(', ')
 
   return (
     <div className="group rounded-lg border border-kumo-line bg-kumo-base">
@@ -261,13 +267,13 @@ function FormatRow({
               </span>
               {format.bundled && <Badge>Bundled</Badge>}
               {!format.enabled && !format.missing && <Badge>Off</Badge>}
-              {needsNaming && <Badge tone="warn">Needs a name</Badge>}
+              {needsPresentation && <Badge tone="warn">Needs {missingFields}</Badge>}
             </span>
             <span className="mt-0.5 block truncate text-xs text-kumo-subtle">
               {format.missing
                 ? 'Blueprint deleted. Remove this entry.'
-                : needsNaming
-                ? 'This blueprint doesn’t declare what it produces. Give it a name to offer it.'
+                : needsPresentation
+                ? `Set ${missingFields} to offer this format.`
                 : `${format.blueprintTitle} · shown under ${format.output!.plural} on Outputs`}
             </span>
           </span>
@@ -540,7 +546,9 @@ function IconPicker({
               aria-label="Choose icon"
               className="grid h-9 w-9 cursor-pointer place-items-center rounded-lg border border-kumo-line bg-kumo-base text-kumo-subtle transition-colors hover:text-kumo-default disabled:cursor-default"
             >
-              <FormatGlyph output={selected && { ...GENERIC_OUTPUT, icon: selected }} size="lg" />
+              {selected
+                ? <FormatGlyph output={{ ...GENERIC_OUTPUT, icon: selected }} size="lg" />
+                : <Warning size={20} />}
             </button>
           }
         />
