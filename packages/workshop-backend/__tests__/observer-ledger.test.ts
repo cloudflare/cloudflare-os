@@ -994,6 +994,29 @@ describe("admission against recorded requirements", () => {
         check.ids.length === 1 && check.ids[0] === "remembered")).toBe(true);
   }));
 
+  it("lets a historical producer's new read through, dropping only that registration", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    seedGadget(impl);
+    addRows(impl, gadget(GADGET), CONN, ["remembered"]);
+    world.roles.set("carol", "use");
+    let calls: FacetCall[] = [];
+    fakeFacets(impl, { calls });
+    await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, configureAll);
+    let record = impl.storage.observers.get("carol");
+
+    // History requires admission, but no binding, hook, or spawner delivers this new read to her.
+    let actionId = impl.storage.nextActionId.get();
+    await impl.authorizeObservation(CONN,
+        observation({ excludeObservers: [record.observerId] }), { from: "user" });
+    expect(impl.storage.actions.get(actionId)).toMatchObject({
+      gatekeeperId: CONN, type: "observation", state: "approved",
+    });
+    expect(callsTo(calls, "removeObserver")).toEqual([CONN]);
+    expect(impl.storage.observers.get("carol")).toEqual(record);
+  }));
+
   // Admission shares the observation path's answer validation (see refusingAnswers); a
   // verifyObserverAccess() denial is covered under "additive admission" below.
   it("fails closed when the chosen account's verifier can't be looked up", () =>

@@ -147,10 +147,9 @@ The check works as follows:
 - **Verifier:** `Fetcher<GatekeeperUserVerifier>` minted by the *observer's own*
   `GatekeeperUser` (a specific connected account they chose). A persistent service stub — no
   disposal required.
-- **Invariant maintained:** for every user authorized in the sharing graph and every gatekeeper
-  in scope for their role, the gatekeeper has confirmed (at the user's last open) that the user
-  may observe everything read so far, AND no later observation has been allowed that the user may
-  not see.
+- **Invariant maintained:** at workspace admission for `build`, or gadget admission for `use`,
+  every in-scope gatekeeper has confirmed that the user may observe the data that session reaches.
+  No later observation reachable by that session is allowed if the user may not see it.
 
 ---
 
@@ -573,7 +572,7 @@ you're allowed to see the data it uses."
 Extend `authorizeObservation()` (in `overseer.ts`) to honor `description.excludeObservers`.
 Because v1 has no per-thread hiding, an excluded-but-named observation can only proceed when the
 named observer cannot reach it at all: either they have *already lost access* in the sharing graph,
-or the connection that produced it has left their access's verification scope.
+or the connection that produced it is outside their access's forward reach.
 
 For each id in `description.excludeObservers`:
 
@@ -587,12 +586,13 @@ For each id in `description.excludeObservers`:
    failing closed; it lands with `observer-verification-fixes`.
 2. Check sharing-graph reachability for that `profileId`
    (`SharingManager.getEffectiveAccess` / `computeEffectiveAccess`).
-   - **Still authorized, and the producing gatekeeper is still in that access's scope → throw**,
+   - **Still authorized, and the producing gatekeeper is in that access's forward reach → throw**,
      blocking the observation (degrade to per-observation lockdown). Use a clear message, e.g.:
      `"This observation was blocked because it contains data that a current collaborator is not permitted to see."`
-   - **Still authorized, but the gatekeeper has left their scope → allow** for this observer, and
-     drop their registration on *that gatekeeper only* (`removeObserver(observerId)`), keeping the
-     record. The scope test is `#inAccessVerificationScope` and is deliberately narrow and
+   - **Still authorized, but the gatekeeper is outside that access's forward reach → allow** for
+     this observer, and drop their registration on *that gatekeeper only*
+     (`removeObserver(observerId)`), keeping the record. The forward-reach check in
+     `#enforceExcludeObservers` is deliberately narrow and
      fail-closed: the only way out is "access is `use`, the connection requires an account, and
      no gadget their access includes reaches it" (`#gadgetReach` — an enabled hook keeps writing
      the connection's data into a gadget the collaborator can open, and a bound spawner's env
@@ -601,11 +601,13 @@ For each id in `description.excludeObservers`:
      registrations and exclusions cover the connection rather than one gadget: an exclusion it
      names while gadget B reads still blocks if the collaborator holds gadget A and A reaches the
      connection too. Reported subresources (§10) are checked per gadget, but do not narrow an exclusion.
-     This arm is the case a stale registration creates — a
-     `use` collaborator's open never verifies (and so never re-registers or removes) a gatekeeper
-     outside their scope, so an unbind leaves them named by a gatekeeper they can no longer reach.
-     A rebind puts it back in scope and their next open registers them again.
-     **Known gap: "left their scope" does not yet imply "cannot reach".** This classification
+     This deliberately differs from admission: `#inScopeGatekeepers` also includes historical
+     producers with requirements recorded by a reached gadget, to protect data its state may
+     retain. Those requirements do not create a route for new observations. Such a producer's
+     registration is removed here and re-added at the next gadget open, which must still pass
+     verification for the retained data. Without recorded requirements, an unbound connection
+     stays outside admission scope until a rebind makes it reachable again.
+     **Known gap: "outside forward reach" does not yet imply "cannot reach".** This classification
      derives reachability purely from stored graph state, but a binding loopback's props name the
      gatekeeper id — never the (gadget, binding) edge — and every call re-resolves a session
      without revalidating any edge, so a loopback retained across the unbind (returned by a
@@ -627,7 +629,7 @@ For each id in `description.excludeObservers`:
    open's `addObserver` racing one of those `removeObserver` RPCs on the same (observer,
    gatekeeper) pair is ordered behind it (`#withObserverGatekeeperLock`; the overseer is the only
    caller of either, so ordering its own calls is sufficient), so a fresh registration is never
-   silently undone. An observer put back in scope while the teardown is in flight — a bind plus a
+   silently undone. An observer put back in reach while the teardown is in flight — a bind plus a
    fresh open landing inside a removal's window — is admitted for this one observation; that is
    the same tolerance as the restart window (see "Restarting when verification scope widens").
 
@@ -712,10 +714,10 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    cannot tell it from a settled denial — and the collaborator gets back in as soon as a repaired
    open re-verifies them.
 4. **`containsRestrictedData` interaction** — coverage is enforced at *admission*, not per
-   observation: `ensureObserver` re-verifies each collaborator against every in-scope gatekeeper
-   at every `open()`, so nobody can be in the workspace without having passed the producing
-   gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
-   session (see "Restarting when verification scope widens"). Setting `containsRestrictedData` also
+   observation: `ensureObserver` re-verifies `build` collaborators at workspace `open()`, and `use`
+   collaborators at each gadget's `getGadget()`, against the connections and requirements in scope
+   for that admission. Scope widening restarts live sessions (see "Restarting when verification
+   scope widens"). Setting `containsRestrictedData` also
    puts the workspace into a restricted mode: no web fetches, and every action requires manual
    approval (auto-approval rules are suspended), the approver checking the action text for
    restricted data. An action whose description is not complete
@@ -962,8 +964,8 @@ enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, 
   chat's first slash command). A gadget caller persisted without a `gadgetId` is refused. The
   sparse multi-key `actions.byObserverRequirement` index holds one key per subresource,
   `<connection>:<context><id>:<subresource>` (context `w` for workspace, `c` for chats, `g` for
-  gadgets). Admission lists only the distinct keys of the contexts what is opened reaches through
-  each connection, never the records under them, so repeated reads of the same data add no admission
+  gadgets). Per connection, admission lists only the distinct keys of the contexts reached by what
+  is opened, never the records under them, so repeated reads of the same data add no admission
   work. Nothing else stores requirements, so the action log is append-only: deleting an entry would
   drop its checks.
   Client action-log entries omit `subresources`. The record, its action ID and the read's
@@ -979,7 +981,7 @@ enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, 
   Connections enter "build" scope at creation, and a gadget's scope while it reaches them through
   bindings, enabled hooks waking it, or spawners — and also while a reached gadget has recorded
   requirements through them, since its state may hold what it read. Within that scope, admission
-  checks every requirement what is opened reaches: "build" reaches every context; a gadget, the
+  checks every requirement reached by what is opened: "build" reaches every context; a gadget, the
   workspace context and the contexts of the gadgets it reaches
   (`ObserverLedger.observerScope`), never an unrelated gadget's. Two gadgets
   reporting different subresources through one connection have those requirements checked
