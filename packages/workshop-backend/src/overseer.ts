@@ -5356,8 +5356,7 @@ class OverseerImpl implements AgentHooks {
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
     // v1 has no per-thread hiding, the only way to let such an observation proceed is if no named
     // observer could reach it -- either they have lost access in the sharing graph, or this
-    // connection has left their access's verification scope. See
-    // observers-implementation-plan.md §5 Step 5.
+    // connection is outside their access's forward reach. See docs/observers.md, Step 5.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
@@ -5818,27 +5817,31 @@ class OverseerImpl implements AgentHooks {
   // it. For each named opaque observerId:
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
   //     observer (e.g. already torn down), so it is ignored.
-  //   - If that profileId is still authorized in the sharing graph *and* this gatekeeper is still
-  //     in their access's verification scope, we cannot guarantee they won't see the observation
-  //     (v1 has no per-thread hiding, and a legacy connection's observations are not attributed to
-  //     a gadget), so we throw to block it.
-  //   - If this gatekeeper has left their scope, they cannot reach the observation and must not
-  //     block it. They stay a collaborator with an intact record, so only their registration on
-  //     *this* gatekeeper is dropped -- which is what left them named here after the connection
-  //     was unbound, since a "use" collaborator's open never re-verifies (and so never re-registers
-  //     or removes) a gatekeeper outside their scope. A rebind puts it back in scope and their next
-  //     open registers them again.
+  //   - If that profileId is still authorized in the sharing graph *and* this gatekeeper is in
+  //     their access's forward reach, we cannot guarantee they won't see the observation (v1 has
+  //     no per-thread hiding, and a legacy connection's observations are not attributed to a
+  //     gadget), so block it. Forward reach is fail-closed: "build" access and a connection
+  //     requiring no account always block; otherwise some gadget their access includes, opened or
+  //     not, must reach this gatekeeper (#gadgetReach).
+  //   - Otherwise, an authorized observer keeps their record but loses their registration on this
+  //     gatekeeper only. Their next gadget open re-registers them if admission still requires it.
   //   - If that profileId is no longer authorized, we allow the observation for them and delete
   //     their observer record (best-effort removeObserver on all gatekeepers). They are no longer
   //     set up to observe; if they regain access they reconfigure from scratch (Step 3).
   // If no named observer can reach the observation, it is allowed. Every id is classified before
   // anything is torn down, so a blocked observation leaves no teardown behind it; the removals are
   // then all issued together and awaited at once.
+  //
+  // Unlike admission (#inScopeGatekeepers), historical producers alone do not block: their recorded
+  // requirements protect data a gadget's state retains, not a route for new observations. Uses
+  // gatekeeperVendorId because observerVendorId throws on a legacy record without creationSpec.
   async #enforceExcludeObservers(gatekeeperId: number, observerIds: string[]): Promise<void> {
     let sharing = await this.getSharingManager();
+    let vendorless = !gatekeeperVendorId(this.storage.gatekeepers.get(gatekeeperId));
+    let reachingGadgets: WorkpieceId[] | undefined;
 
     let unauthorized: ObserverRecord[] = [];
-    let outOfScope: string[] = [];
+    let unreached: string[] = [];
     for (let observerId of observerIds) {
       let observer = this.storage.observers.byObserverId.get(observerId);
       // TODO(observer-races): a first-time ensureObserver registers its observerId with the
@@ -5849,13 +5852,18 @@ class OverseerImpl implements AgentHooks {
       let access = sharing.getEffectiveAccess(observer.profileId);
       if (!access) {
         unauthorized.push(observer);
-      } else if (this.#inAccessVerificationScope(gatekeeperId, access)) {
+        continue;
+      }
+      reachingGadgets ??= Array.from(this.#gadgetReaches())
+          .filter(([, reach]) => reach.gatekeeperIds.has(gatekeeperId))
+          .map(([gadgetId]) => gadgetId);
+      if (access.role === "build" || vendorless ||
+          reachingGadgets.some(gadgetId => accessIncludesGadget(access, gadgetId))) {
         throw new Error(
             "This observation was blocked because it contains data that a current collaborator " +
             "is not permitted to see.");
-      } else {
-        outOfScope.push(observerId);
       }
+      unreached.push(observerId);
     }
 
     // Nobody named can reach the observation. Tear down those who have lost access entirely, since
@@ -5867,35 +5875,10 @@ class OverseerImpl implements AgentHooks {
       this.storage.observers.delete(observer.profileId);
       return this.#removeObserverFromGatekeepers(observer.observerId, allGatekeeperIds);
     });
-    for (let observerId of outOfScope) {
+    for (let observerId of unreached) {
       removals.push(this.#removeObserverFromGatekeepers(observerId, [gatekeeperId]));
     }
     await Promise.all(removals);
-  }
-
-  // Whether `gatekeeperId` is in the verification scope of a collaborator holding `access`, i.e.
-  // whether they could have been verified against it -- and so whether their being named in its
-  // `excludeObservers` means anything. For "use" access that is every gadget it includes, whether
-  // or not the collaborator has opened it: a legacy connection's registrations and exclusions span
-  // the connection, not one gadget.
-  //
-  // Fail-closed and deliberately narrow: the only way out is "access is `use`, the connection
-  // requires an account, and no gadget it includes reaches it" (see #gadgetReach). A "build"
-  // collaborator's scope is every account-requiring connection, and a connection requiring no
-  // account never verifies anyone, so both stay in scope and block exactly as before.
-  //
-  // Uses #gadgetReaches() rather than #inScopeGatekeepers(), whose observerVendorId() throws on a
-  // legacy record with no creationSpec: an unrelated legacy connection must not turn the
-  // observation path into an error.
-  #inAccessVerificationScope(gatekeeperId: number, access: CollaboratorAccess): boolean {
-    if (access.role === "build") return true;
-    if (!gatekeeperVendorId(this.storage.gatekeepers.get(gatekeeperId))) return true;
-    for (let [gadgetId, reach] of this.#gadgetReaches()) {
-      if (reach.gatekeeperIds.has(gatekeeperId) && accessIncludesGadget(access, gadgetId)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call

@@ -1,5 +1,5 @@
 // `excludeObservers` blocks an observation only for a current collaborator whose access's
-// verification scope covers the producing connection.
+// forward reach covers the producing connection.
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";

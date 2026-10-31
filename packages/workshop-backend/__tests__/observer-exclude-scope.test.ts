@@ -1,8 +1,7 @@
 // Forward exclusion (`ObservationDescription.excludeObservers`) blocks an observation when a named
-// observer could see it. A "use" collaborator only ever sees what the gadgets their access
-// includes reach, so a connection none of those gadgets reaches is outside their verification
-// scope -- and their registration on it, which their opens no longer touch, must not go on blocking
-// observations they could not reach.
+// observer could see it. A "use" collaborator's forward reach is what the gadgets their access
+// includes reach. Historical producers may still require admission for retained data, but do not
+// deliver new observations; their registrations must not block reads the collaborator cannot reach.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding, like
 // observer-scope-restart.test.ts).
@@ -107,7 +106,7 @@ function observe(impl: any): Promise<void> {
   return impl.authorizeObservation(GATEKEEPER_ID, DESCRIPTION, CALLER);
 }
 
-describe("excludeObservers against the observer's verification scope", () => {
+describe("excludeObservers against the observer's forward reach", () => {
   it("a use collaborator blocks an observation from a connection her gadget binds",
       () => withImpl(GADGET_100, async (impl, removals) => {
     bindIntoGadget(impl);

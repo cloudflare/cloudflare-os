@@ -1,5 +1,10 @@
 # Plan: Govern sharing of restricted data by observer verification
 
+> **Historical plan.** This records the original restricted-data-sharing rollout, not current
+> behavior: names below may be gone, and `use` collaborators are now verified per gadget, not at
+> workspace `open()`. See [Observer verification](../docs/observers.md) and
+> [Sharing](../docs/sharing.md).
+
 ## Goal
 
 Replace the all-or-nothing sharing lockdown that a restricted-data observation imposes
@@ -64,7 +69,7 @@ commits.
 - **Fail closed everywhere.** An operational failure — provider outage, expired
   credential — is treated exactly like a refusal.
 
-## Current-state anchors (for orientation)
+## Historical implementation anchors (for orientation)
 
 - `authorizeObservation` (overseer.ts) is where a gatekeeper's observation is admitted
   or refused, and where it sets the durable `containsRestrictedData` flag.
