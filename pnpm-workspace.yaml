@@ -33,7 +33,7 @@ catalog:
   # differ from the Stage-3 lowering wrangler deploys, so it only works while capnweb-validate's
   # decorators ignore their `context` argument.
   vite: 7.3.6
-  vite-plus: ^1.2.0
+  vite-plus: ^1.3.0
   vitest: ^5.0.5
   # Vitest's browser-mode provider, which must match vitest's version, and the Playwright it
   # drives. Playwright's browsers are not dependencies: `playwright install chromium` fetches them.
