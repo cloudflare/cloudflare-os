@@ -9,7 +9,12 @@ const HTTPS_RESOURCE: SupportedResource = {
   description: DESCRIPTION,
 };
 
-const HTTP_RESOURCE: SupportedResource = { ...HTTPS_RESOURCE, urlPattern: "http://*" };
+// Offered only with MCP_ALLOW_INSECURE, so its title has to tell it apart from the https entry.
+const HTTP_RESOURCE: SupportedResource = {
+  ...HTTPS_RESOURCE,
+  urlPattern: "http://*",
+  title: "Any MCP server (http, local development only)",
+};
 
 export function mcpResources(allowInsecure: boolean): SupportedResource[] {
   return allowInsecure ? [HTTPS_RESOURCE, HTTP_RESOURCE] : [HTTPS_RESOURCE];
