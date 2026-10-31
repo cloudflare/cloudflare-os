@@ -62,7 +62,9 @@ export default function GadgetUseView({
         className="relative flex items-center justify-between px-4 sm:px-6 backdrop-blur-md border-b border-kumo-line flex-shrink-0 gap-3"
         style={{ height: TOPBAR_H, backgroundColor: 'color-mix(in srgb, var(--color-kumo-base) 80%, transparent)' }}
       >
-        <TopBarNotice />
+        {/* The notice centers itself over the whole bar, which is where the gadget picker sits when
+            the share holds several gadgets. The picker wins there; the notice shows elsewhere. */}
+        {gadgets.length <= 1 && <TopBarNotice />}
         {/* Left: logo / title */}
         <div className="flex items-center gap-2 min-w-0">
           <Link to="/" aria-label="Home" className="flex-shrink-0 hover:opacity-80 transition-opacity">
