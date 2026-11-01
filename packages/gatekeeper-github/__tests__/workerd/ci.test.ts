@@ -624,11 +624,25 @@ describe("pull request CI", () => {
     const gk = await gatekeeper(7);
 
     const checks = await gk.read<GitHubPullRequestChecks>([{ method: "getChecks" }]);
-    expect(checks).toMatchObject({ commitId: HEAD, state: "success", phase: "done" });
+    // Every reported check passed, but required ones have not reported: CI is not over.
+    expect(checks).toMatchObject({ commitId: HEAD, state: "expected", phase: "active" });
     expect(checks.checks.map(entry => [entry.kind === "checkRun" ? entry.name : entry.context, entry.required]))
       .toEqual([["build", true], ["ci/extra", false]]);
     expect(checks.missingRequired.toSorted()).toEqual(["deploy-preview", "lint"]);
     expect(await gk.read([{ method: "getDetails" }])).toMatchObject({ mergeState: "blocked" });
+  });
+
+  it("keeps polling until a missing required check reports, then is done", async () => {
+    const github = pullScenario();
+    github.requiredByProtection = [];
+    const gk = await gatekeeper(7);
+
+    expect(await gk.read([{ method: "getChecks" }]))
+      .toMatchObject({ state: "expected", phase: "active", missingRequired: ["deploy-preview"] });
+
+    github.rollups.get(HEAD)!.nodes.push(checkRunNode("deploy-preview", "COMPLETED", "SUCCESS", { isRequired: true }));
+    expect(await gk.read([{ method: "getChecks" }]))
+      .toMatchObject({ state: "success", phase: "done", missingRequired: [] });
   });
 
   it("reads every page of the rollup", async () => {
@@ -667,7 +681,7 @@ describe("pull request CI", () => {
 
     const checks = await gk.read<GitHubPullRequestChecks>(
       [{ method: "getPullRequest", args: [provisionalId] }, { method: "getChecks" }]);
-    expect(checks).toMatchObject({ commitId: C1, state: "failure" });
+    expect(checks).toMatchObject({ commitId: C1, state: "failure", phase: "done" });
     expect(checks.checks.map(entry => [entry.kind === "checkRun" ? entry.name : entry.context, entry.required]))
       .toEqual([["build", true]]);
     expect(checks.missingRequired.toSorted()).toEqual(["deploy-preview", "lint"]);
@@ -780,12 +794,17 @@ describe("check runs", () => {
     });
   });
 
-  it("refuses to read the log of another app's check run, pointing at its details", async () => {
+  it("refuses to read the log of another app's check run, pointing at getDetails()", async () => {
     checkRunScenario();
     const gk = await gatekeeper();
 
-    await expect(gk.read([{ method: "getCheckRun", args: ["80"] }, { method: "readLog" }]))
-      .rejects.toThrow(/not GitHub Actions.*https:\/\/circleci\.com\/gh\/acme\/widgets\/42/);
+    const error: unknown = await gk.read([{ method: "getCheckRun", args: ["80"] }, { method: "readLog" }])
+      .then(() => undefined, (thrown: unknown) => thrown);
+    const message = (error as Error).message;
+    expect(message).toContain("not reported by GitHub Actions");
+    expect(message).toContain("getDetails()");
+    // Nothing the provider reported appears before the check run is observed.
+    expect(message).not.toMatch(/circleci/i);
   });
 
   it("pages a log by tail, line range and search", async () => {

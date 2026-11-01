@@ -5678,8 +5678,14 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     // be named missing.
     const reportedCount = Object.values(checks.counts).reduce((sum, count) => sum + (count ?? 0), 0);
     const allRead = reportedCount <= checks.checks.length;
+    const missingRequired = allRead ? required.filter(name => !reported.has(name)) : [];
+    // A required check that has not reported is still expected, as GitHub's own rollup says of a
+    // required commit status, so it keeps the commit active; a failure stays a failure.
+    const expected = missingRequired.length > 0 && checks.state !== "failure";
     return {
       ...checks,
+      state: expected ? "expected" : checks.state,
+      phase: expected && checks.phase === "done" ? "active" : checks.phase,
       checks: checks.checks.map(entry => {
         const { isRequired, ...rest } = entry;
         // A pull request not yet created on GitHub has no number to ask GitHub with; the base
@@ -5687,7 +5693,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const isRequiredHere = isRequired ?? requiredNames.has(entryName(entry));
         return { ...rest, required: isRequiredHere } as GitHubPullRequestChecks["checks"][number];
       }),
-      missingRequired: allRead ? required.filter(name => !reported.has(name)) : [],
+      missingRequired,
     };
   }
 
@@ -5757,9 +5763,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const { owner, repo } = this.ctx.props;
     const run = await this.#withApi(api => api.getCheckRun(owner, repo, checkRunId));
     if (run.app?.slug !== ACTIONS_APP_SLUG) {
-      const details = run.details_url ?? run.html_url;
-      throw new Error(`Check run ${checkRunId} (${run.name}) was reported by ${run.app?.name ?? "an app"}, ` +
-        `not GitHub Actions, so it has no log to read here.${details ? ` See ${details} instead.` : ""}`);
+      // Static: nothing GitHub reported about the check run is shown before it is observed.
+      throw new Error("This check run was not reported by GitHub Actions, so it has no log here; " +
+        "getDetails() returns its output and detailsUrl.");
     }
     if (run.status !== "completed") return { name: run.name, page: unfinished };
     const jobId = actionsJobIdOf(run);

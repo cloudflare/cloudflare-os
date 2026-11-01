@@ -418,9 +418,9 @@ export interface GitHubCheckRun {
    *
    * The log is readable once the job has finished: until then this returns no lines with
    * `complete: false`. A very long log keeps only its end: lines before `firstAvailableLine`
-   * are not available. Throws for a check run that is not a GitHub Actions job (read its
-   * `detailsUrl` instead), and once GitHub has deleted the log after the repository's retention
-   * period.
+   * are not available. Throws for a check run that is not a GitHub Actions job (`getDetails()`
+   * returns its output and `detailsUrl` instead), and once GitHub has deleted the log after the
+   * repository's retention period.
    */
   readLog(options?: GitHubLogOptions): Promise<GitHubLogPage>;
 }
@@ -466,14 +466,21 @@ export type GitHubCommitChecks = {
   checks: GitHubCheckEntry[];
 };
 
-/** CI on one of a pull request's commits, returned by `GitHubPullRequest.getChecks()`. */
+/**
+ * CI on one of a pull request's commits, returned by `GitHubPullRequest.getChecks()`. While a
+ * check the base branch requires has not reported, `state` is `expected` (unless something
+ * failed) and a `done` phase reads `active`. A required check that never starts, e.g. one its
+ * workflow's path filters skip, keeps the phase `active`: after several minutes, report
+ * `missingRequired` instead of waiting.
+ */
 export type GitHubPullRequestChecks = Omit<GitHubCommitChecks, "checks"> & {
   /** Each entry, with whether the base branch requires it to pass before merging. */
   checks: (GitHubCheckEntry & { required: boolean })[];
   /**
    * Names of checks the base branch requires that have not reported on this commit; the pull
-   * request cannot merge until they do. Empty when the requirements are not visible to you, and
-   * when more than 1000 checks reported (a required one may be among those not listed).
+   * request cannot merge until they do, and while any is named the commit's `state` is
+   * `expected` (or `failure`). Empty when the requirements are not visible to you, and when
+   * more than 1000 checks reported (a required one may be among those not listed).
    */
   missingRequired: string[];
 };
