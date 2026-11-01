@@ -134,6 +134,12 @@ describe("readCiLog", () => {
     expect(progress.lines).toEqual(["100% done"]);
   });
 
+  it("cuts an over-long line before a character that would straddle the cut, not through it", async () => {
+    // The emoji is two UTF-16 code units, the first of them the 8192nd.
+    const log = await readCiLog(stream(`${"x".repeat(8191)}😀 and more\n`), "github");
+    expect(log.lines).toEqual([`${"x".repeat(8191)}… [line truncated]`]);
+  });
+
   it("validates its bounds", async () => {
     await expect(readCiLog(stream("a"), "github", { retainBytes: 0 })).rejects.toThrow(/retainBytes/);
   });
@@ -225,6 +231,16 @@ describe("CiLogCache", () => {
     advance(59_999);
     expect(cache.get("job")).toEqual(logOf(["a", "b"]));
     advance(1);
+    expect(cache.get("job")).toBeUndefined();
+    expect(kv.keys()).toEqual(["ciLog:totalBytes"]);
+    expect(kv.get("ciLog:totalBytes")).toBe(0);
+  });
+
+  it("treats an entry another version of the cache wrote as a miss and deletes it", () => {
+    const { kv, cache } = makeCache();
+    cache.put("job", logOf(["a", "b"]));
+    const metaKey = kv.keys().find(key => key.includes(":meta:"))!;
+    kv.put(metaKey, { ...kv.get<object>(metaKey), version: 2 });
     expect(cache.get("job")).toBeUndefined();
     expect(kv.keys()).toEqual(["ciLog:totalBytes"]);
     expect(kv.get("ciLog:totalBytes")).toBe(0);

@@ -114,7 +114,7 @@ export async function readCiLog(
     const text = normalizeCiLogLine(line, flavor);
     if (text === null) return;
     tail.push(truncated || text.length > MAX_LINE_LENGTH
-      ? text.slice(0, MAX_LINE_LENGTH) + TRUNCATED_SUFFIX
+      ? leadingUnits(text, MAX_LINE_LENGTH) + TRUNCATED_SUFFIX
       : text);
   });
   const decoder = new TextDecoder();
@@ -245,7 +245,7 @@ export type CiLogCacheOptions = {
 };
 
 type CiLogMeta = {
-  version: 1;
+  version: number;
   firstLine: number;
   totalLines: number;
   lineCount: number;
@@ -253,6 +253,9 @@ type CiLogMeta = {
   bytes: number;
   storedAt: number;
 };
+
+/** The `CiLogMeta.version` this code writes; an entry with another reads as a miss. */
+const META_VERSION = 1;
 
 /** Size cap for one stored chunk, measured as two bytes per character. */
 const CHUNK_BYTES = 512 * 1024;
@@ -308,7 +311,8 @@ export class CiLogCache {
   }
 
   /**
-   * Reads a cached log. Expired or incomplete entries are deleted and read as misses.
+   * Reads a cached log. Expired or incomplete entries, and ones another version of this cache
+   * wrote, are deleted and read as misses.
    * @param key Caller-chosen log key.
    * @returns The log, or `undefined` on a miss.
    */
@@ -316,7 +320,7 @@ export class CiLogCache {
     const id = encodeURIComponent(key);
     const meta = this.#kv.get<CiLogMeta>(this.#metaKey(id));
     if (meta === undefined) return undefined;
-    if (this.#expired(meta, this.#now())) {
+    if (meta.version !== META_VERSION || this.#expired(meta, this.#now())) {
       this.#remove(id, meta);
       return undefined;
     }
@@ -353,7 +357,7 @@ export class CiLogCache {
     this.#evict(bytes, now);
     chunks.forEach((chunk, index) => this.#kv.put(this.#chunkKey(id, index), chunk));
     this.#kv.put<CiLogMeta>(this.#metaKey(id), {
-      version: 1,
+      version: META_VERSION,
       firstLine: log.firstLine,
       totalLines: log.totalLines,
       lineCount: log.lines.length,
@@ -392,11 +396,12 @@ export class CiLogCache {
     }
   }
 
+  /** Removes an entry; its chunks are found by key, so this holds for a meta record of another version too. */
   #remove(id: string, meta: CiLogMeta): void {
-    for (let index = 0; index < meta.chunks; index++) this.#kv.delete(this.#chunkKey(id, index));
+    for (const [chunkKey] of this.#kv.list<string>({ prefix: `${this.#prefix}chunk:${id}:` })) this.#kv.delete(chunkKey);
     this.#kv.delete(this.#metaKey(id));
     this.#kv.delete(this.#ageKey(meta.storedAt, id));
-    this.#kv.put(this.#totalKey, Math.max(0, this.#total() - meta.bytes));
+    if (Number.isFinite(meta.bytes)) this.#kv.put(this.#totalKey, Math.max(0, this.#total() - meta.bytes));
   }
 
   #expired(meta: CiLogMeta, now: number): boolean {
@@ -558,13 +563,16 @@ class LineSplitter {
     if (point !== -1) this.#pending = this.#pending.slice(point + 1);
     if (this.#pending.length > PENDING_LIMIT) {
       this.#carriageReturns = trailingCarriageReturns(this.#pending);
-      this.#pending = this.#pending.slice(0, PENDING_LIMIT);
+      this.#pending = leadingUnits(this.#pending, PENDING_LIMIT);
       this.#overflow = true;
     }
   }
 }
 
-/** Counts lines while keeping the newest ones within a byte budget. */
+/**
+ * Counts lines while keeping the newest ones within a byte budget. A dropped line's slot is
+ * blanked at once, so its text is released then rather than when the array is next compacted.
+ */
 class LineTail {
   readonly #retainBytes: number;
   #lines: string[] = [];
@@ -582,6 +590,7 @@ class LineTail {
     this.#bytes += lineCost(text);
     while (this.#bytes > this.#retainBytes && this.#start < this.#lines.length) {
       this.#bytes -= lineCost(this.#lines[this.#start]!);
+      this.#lines[this.#start] = "";
       this.#start++;
     }
     if (this.#start > 1024 && this.#start * 2 > this.#lines.length) {
@@ -594,6 +603,13 @@ class LineTail {
     const lines = this.#lines.slice(this.#start);
     return { lines, firstLine: this.#total - lines.length + 1, totalLines: this.#total };
   }
+}
+
+/** The first `length` UTF-16 code units of `text`, one fewer where the cut would split a surrogate pair. */
+function leadingUnits(text: string, length: number): string {
+  const end = Math.min(length, text.length);
+  const last = text.charCodeAt(end - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? end - 1 : end);
 }
 
 function lineCost(text: string): number {
