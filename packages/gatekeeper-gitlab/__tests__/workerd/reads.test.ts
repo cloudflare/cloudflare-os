@@ -32,6 +32,8 @@ function fakeProject(): FakeGitLab {
   const gitlab = new FakeGitLab();
   gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json(project()));
   gitlab.on("GET", /^\/api\/v4\/user$/, () => json(fx.currentUserResponse.data));
+  // A commit read reports its CI; the documented commit has no pipeline.
+  gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => json([]));
   return gitlab;
 }
 
@@ -351,7 +353,7 @@ describe("repository", () => {
       stats: { additions: 15, deletions: 10, total: 25 },
     });
     // The default branch came from project metadata.
-    expect(fake.requests.at(-1)!.url.pathname).toBe(`/api/v4/projects/${P}/repository/commits/main`);
+    expect(fake.requests.map(r => r.url.pathname)).toContain(`/api/v4/projects/${P}/repository/commits/main`);
 
     await expect(unwrap(await hooks().resolveRef("repo-refs", props, "nope"))).rejects.toThrow(/No commit found for ref "nope"/);
   });

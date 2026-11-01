@@ -9,6 +9,9 @@
  * `listCommits()`, `resolveRef()`, or `getCommit()` to discover commit ids, then mount a commit
  * as a worktree (see the `createWorktree` tool) to read or edit the files it contains. The
  * repository's file *content* is not readable through this interface directly.
+ *
+ * CI: `getCommit(ref).ci` reports a commit's pipeline (for example "is `main` green?");
+ * `listPipelines()`, `getPipeline()`, and `getJob()` reach pipelines, jobs, logs, and test reports.
  */
 export interface GitLabProject {
   /** Returns basic metadata about the project. */
@@ -42,7 +45,7 @@ export interface GitLabProject {
   resolveRef(ref?: string): Promise<string>;
 
   /**
-   * Looks up a single commit.
+   * Looks up a single commit, with its CI status in `ci`.
    *
    * `ref` may be a full commit id, an unambiguously truncated commit id, a branch name, or a tag
    * name; it defaults to the default branch, whose latest commit is then returned. If you only
@@ -150,6 +153,25 @@ export interface GitLabProject {
    * fields are structured filters.
    */
   searchMergeRequests(query: GitLabMergeRequestSearch): Promise<Cursor<GitLabMergeRequestSummary>>;
+
+  /**
+   * Lists this project's pipelines, newest first. Child pipelines (started by a trigger job of
+   * another pipeline) are not listed; open them with `GitLabPipeline.getDownstreamPipeline()`.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listPipelines(options?: GitLabPipelineFilter): Promise<Cursor<GitLabPipelineSummary>>;
+
+  /** Opens a pipeline of this project by its id, e.g. `"123"` from a URL ending `/-/pipelines/123`. */
+  getPipeline(id: string): Promise<GitLabPipeline>;
+
+  /**
+   * Opens a job of this project by its id, e.g. `"456"` from a URL ending `/-/jobs/456`. Only jobs
+   * run by a runner (`kind: "job"` in `GitLabPipeline.listJobs()`) can be opened; trigger jobs and
+   * external statuses are data only.
+   */
+  getJob(id: string): Promise<GitLabJob>;
 }
 
 /**
@@ -276,9 +298,93 @@ export interface GitLabMergeRequest extends GitLabIssuable {
    *
    * Fails with GitLab's reason when the request is not mergeable -- for example unresolved
    * conflicts, missing approvals, unresolved threads, a draft title, or a pipeline that has not
-   * passed (pipeline status is not exposed through this interface; check it in GitLab).
+   * passed (see `getDetails().ci`).
    */
   merge(options?: GitLabMergeRequestMergeOptions): Promise<void>;
+
+  /**
+   * Lists the pipelines that ran for this merge request, for its current and earlier head
+   * commits, newest first. A pipeline with `project` set ran in another project (the source
+   * project of a merge request from a fork) and is data only.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listPipelines(options?: GitLabPageOptions): Promise<Cursor<GitLabPipelineSummary>>;
+
+  /**
+   * Opens one of this merge request's pipelines. Without `id`, the pipeline for the current head
+   * commit (`getDetails().ci.pipeline`); this throws while there is none yet (read
+   * `getDetails().ci` again shortly) and when CI is not visible to you. With `id`, it must be one
+   * of `listPipelines()`. A pipeline that ran in another project cannot be opened.
+   */
+  getPipeline(id?: string): Promise<GitLabPipeline>;
+
+  /**
+   * Opens a job of one of this merge request's pipelines by its id. Only jobs run by a runner
+   * (`kind: "job"`) can be opened.
+   */
+  getJob(id: string): Promise<GitLabJob>;
+}
+
+/**
+ * A CI pipeline: the jobs GitLab runs for one commit on one ref. Open one with `getPipeline()` on
+ * a project or merge request.
+ */
+export interface GitLabPipeline {
+  /** Returns the pipeline's current details. */
+  getDetails(): Promise<GitLabPipelineDetails>;
+
+  /**
+   * Lists the pipeline's jobs in creation order (roughly stage order): jobs run by a runner
+   * (`kind: "job"`), trigger jobs that start a downstream pipeline (`kind: "trigger"`), and
+   * statuses that external systems reported for the pipeline (`kind: "status"`). Only the latest
+   * attempt of a retried job is listed, and at most 1000 rows. Only `kind: "job"` rows can be
+   * opened, with `getJob()`; a trigger job's downstream pipeline in this project opens with
+   * `getDownstreamPipeline()`.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listJobs(options?: GitLabJobFilter): Promise<Cursor<GitLabJobSummary>>;
+
+  /**
+   * Opens the pipeline one of this pipeline's trigger jobs started in this project (a child
+   * pipeline): `id` is a `downstream.pipelineId` from `listJobs()`. A downstream pipeline in
+   * another project (`downstream.crossProject: true`) cannot be opened.
+   */
+  getDownstreamPipeline(id: string): Promise<GitLabPipeline>;
+
+  /** Totals from the unit test reports this pipeline's jobs uploaded; all zero when none did. */
+  getTestReport(): Promise<GitLabTestReportSummary>;
+
+  /**
+   * Lists the failed and errored test cases from this pipeline's unit test reports, suite by
+   * suite. Each case's `output` is cut to about 4 KiB; read the job's log for the rest.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listFailedTests(options?: GitLabPageOptions): Promise<Cursor<GitLabTestCase>>;
+}
+
+/** A CI job run by a runner. Open one with `getJob()` on a project or merge request. */
+export interface GitLabJob {
+  /** Returns the job's current details. */
+  getDetails(): Promise<GitLabJobDetails>;
+
+  /**
+   * Reads the job's log as numbered lines, with terminal colours removed and each collapsible
+   * section's header shown as a `▶ <heading>` line.
+   *
+   * Without `fromLine`, returns the last `maxLines` lines (default 200, at most 2000); with it,
+   * lines from `fromLine` on -- to read on, pass the last returned line's number plus one.
+   * `search` keeps only lines containing it (case-insensitive), and `maxLines` then counts
+   * matching lines. A page holds fewer lines when they are very long. While the job is still
+   * running, `complete` is false and the log grows: read again to follow it. Throws when the
+   * job's log has been erased.
+   */
+  readLog(options?: GitLabLogOptions): Promise<GitLabLogPage>;
 }
 
 /** Basic information about a GitLab user or bot that appears in issue or review metadata. */
@@ -412,6 +518,12 @@ export type GitLabMergeRequestDetails = GitLabMergeRequestSummary & {
    * `readDiff()` throws rather than serve part of the diff as the whole.
    */
   changedFilesTruncated?: boolean;
+  /**
+   * CI for the head commit (`source.sha`). Omitted when CI is not visible to you on this
+   * project. To wait for CI, read `getDetails()` again while `ci.phase` is `"notStarted"` or
+   * `"active"`, and stop once it is `"blocked"` or `"done"`.
+   */
+  ci?: GitLabCommitCi;
 }
 
 /** A branch returned by `GitLabProject.listBranches()`. */
@@ -470,7 +582,157 @@ export type GitLabCommitDetails = GitLabCommitSummary & {
     deletions: number;
     total: number;
   };
+  /**
+   * CI for this commit. Omitted when CI is not visible to you on this project. To wait for CI,
+   * read the commit again while `ci.phase` is `"notStarted"` or `"active"`, and stop once it is
+   * `"blocked"` or `"done"`.
+   */
+  ci?: GitLabCommitCi;
 }
+
+/**
+ * Whether CI work will move on by itself:
+ * - `"active"`: queued, running, or waiting on a timer or an external system -- read again later.
+ * - `"blocked"`: waiting for a person (a manual job, say) -- see its `url`. A status this
+ *   interface does not recognise (`"unknown"`) is also reported as blocked.
+ * - `"done"`: finished; it changes only if someone retries it.
+ */
+export type GitLabCiPhase = "active" | "blocked" | "done";
+
+/**
+ * A commit's CI phase: a `GitLabCiPhase`, or `"notStarted"` when no pipeline has appeared for the
+ * commit yet but one is expected shortly -- read again later.
+ */
+export type GitLabCiRollupPhase = GitLabCiPhase | "notStarted";
+
+/**
+ * CI for one commit. Keep reading while `phase` is `"notStarted"` or `"active"`; stop once it is
+ * `"blocked"` or `"done"`. `phase: "done"` with `pipeline: null` means no CI ran on this commit
+ * (a pipeline that is started for it later still shows up).
+ */
+export type GitLabCommitCi = {
+  /** The commit CI is reported for: for a merge request, its current head commit. */
+  commitId: string;
+  /** The pipeline's phase; without a pipeline, `"notStarted"` when one is expected soon, else `"done"`. */
+  phase: GitLabCiRollupPhase;
+  /** The latest pipeline for `commitId` (never one for an earlier head), or `null` when there is none. */
+  pipeline: GitLabPipelineSummary | null;
+};
+
+/**
+ * A pipeline's or job's status, as GitLab reports it. `"manual"` waits for someone to start it;
+ * `"scheduled"` starts on a timer; `"waiting_for_callback"` waits on an external system;
+ * `"unknown"` is a status this interface does not recognise.
+ */
+export type GitLabPipelineStatus =
+  | "created" | "waiting_for_resource" | "preparing" | "waiting_for_callback" | "pending"
+  | "running" | "success" | "failed" | "canceling" | "canceled" | "skipped" | "manual"
+  | "scheduled" | "unknown";
+
+/** A job's status; the same values as `GitLabPipelineStatus`. */
+export type GitLabJobStatus = GitLabPipelineStatus;
+
+/**
+ * A pipeline. A manual job that is allowed to fail does not hold its pipeline up, so judge
+ * whether CI has finished by the pipeline's `phase`, not its jobs'.
+ */
+export type GitLabPipelineSummary = {
+  id: string;
+  status: GitLabPipelineStatus;
+  phase: GitLabCiPhase;
+  /** What started it, as GitLab names it: e.g. `"push"`, `"merge_request_event"`, `"schedule"`, `"web"`, `"api"`, `"parent_pipeline"`. */
+  source: string;
+  /** The branch or tag it ran on; a merge request pipeline's is `refs/merge-requests/<id>/head`, or `/merge` for one run on the result of merging. */
+  ref: string;
+  /** The commit it ran on. A pipeline run on the result of merging ran on GitLab's merge of the head into the target branch. */
+  commitId: string;
+  url: string;
+  createdAt: Date;
+  updatedAt: Date;
+  /** Set when it ran in another project (the source project of a merge request from a fork): data only, it cannot be opened. */
+  project?: GitLabProjectRef;
+};
+
+/** Full pipeline details returned by `GitLabPipeline.getDetails()`. */
+export type GitLabPipelineDetails = GitLabPipelineSummary & {
+  startedAt?: Date;
+  finishedAt?: Date;
+  durationSeconds?: number;
+  /** Why GitLab could not create the pipeline's jobs from its CI configuration, when it could not. */
+  configErrors?: string;
+  /** Who started it. */
+  user: GitLabActor | null;
+};
+
+/** One row of `GitLabPipeline.listJobs()`. */
+export type GitLabJobSummary = {
+  id: string;
+  name: string;
+  stage: string;
+  status: GitLabJobStatus;
+  phase: GitLabCiPhase;
+  /**
+   * `"job"`: run by a runner; opens with `getJob()`. `"trigger"`: starts a downstream pipeline
+   * (see `downstream`). `"status"`: reported by an external system (see `description` and
+   * `targetUrl`). Trigger jobs and statuses are data only.
+   */
+  kind: "job" | "trigger" | "status";
+  /** Whether the pipeline may succeed even if this job fails. */
+  allowFailure: boolean;
+  /** Why the job failed, as GitLab names it, e.g. `"script_failure"`. */
+  failureReason?: string;
+  /** The pipeline a trigger job started, once it has. Only one in this project opens, with `getDownstreamPipeline()`. */
+  downstream?: { crossProject: false; pipelineId: string } | { crossProject: true };
+  /** An external status's description. */
+  description?: string;
+  /** Where an external status links to. */
+  targetUrl?: string;
+  startedAt?: Date;
+  finishedAt?: Date;
+  durationSeconds?: number;
+  url: string;
+};
+
+/** Full job details returned by `GitLabJob.getDetails()`. */
+export type GitLabJobDetails = GitLabJobSummary & {
+  pipelineId: string;
+  commitId: string;
+  ref: string;
+  /** The runner that ran it, by its description. */
+  runner?: string;
+};
+
+/** Totals from a pipeline's unit test reports. */
+export type GitLabTestReportSummary = {
+  total: number;
+  failed: number;
+  errored: number;
+  skipped: number;
+  suites: { name: string; total: number; failed: number; errored: number }[];
+};
+
+/** A failed or errored test case. */
+export type GitLabTestCase = {
+  suite: string;
+  name: string;
+  className?: string;
+  file?: string;
+  status: "failed" | "error";
+  /** The failure message, stack trace, and output the report recorded, cut to about 4 KiB. */
+  output?: string;
+  durationSeconds?: number;
+};
+
+/** What `GitLabJob.readLog()` returns. */
+export type GitLabLogPage = {
+  lines: { number: number; text: string }[];
+  /** Lines in the whole log. */
+  totalLines: number;
+  /** The first line that can still be read: 1, unless the log is so long that its start was not kept. */
+  firstAvailableLine: number;
+  /** Whether the job has finished, so the log will not grow. */
+  complete: boolean;
+};
 
 /**
  * A pagination cursor.
@@ -553,6 +815,34 @@ export type GitLabCommitFilter = GitLabPageOptions & {
   since?: Date;
   /** Only commits dated before this time. */
   until?: Date;
+}
+
+/** Filters for listing pipelines. */
+export type GitLabPipelineFilter = GitLabPageOptions & {
+  /** Only pipelines that ran on this branch or tag. */
+  ref?: string;
+  /** Only pipelines that ran on this full commit id. */
+  commitId?: string;
+  /** Only pipelines with this status. */
+  status?: Exclude<GitLabPipelineStatus, "unknown">;
+  /** Only pipelines started this way, e.g. `"push"`, `"schedule"`, `"merge_request_event"`. */
+  source?: string;
+}
+
+/** Filters for listing a pipeline's jobs. */
+export type GitLabJobFilter = GitLabPageOptions & {
+  /** Only jobs with one of these statuses, e.g. `["failed"]`. */
+  status?: GitLabJobStatus[];
+}
+
+/** Which lines `GitLabJob.readLog()` returns. */
+export type GitLabLogOptions = {
+  /** First line to return (1-based). Omitted: the last lines of the log. */
+  fromLine?: number;
+  /** Most lines to return: default 200, at most 2000. */
+  maxLines?: number;
+  /** Only lines containing this text, compared case-insensitively. */
+  search?: string;
 }
 
 /** The state of an issue. */

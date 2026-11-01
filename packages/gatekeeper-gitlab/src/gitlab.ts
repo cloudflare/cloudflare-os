@@ -703,6 +703,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // Over-strictness (Planner's confidential-issue and 18.7+ private-repo read, custom roles, the
 // non-member collaborator on an open-source project) is accepted: under `excludeObservers`
 // semantics erring toward denial never leaks.
+//
+// CI job logs and test reports raise the bar once a binding has read them: a job run with
+// `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, and GitLab lets only
+// Developers and above read such a log
+// (https://docs.gitlab.com/ci/variables/variables_troubleshooting/). The gatekeeper then passes
+// `minAccessLevel` 30, rather than telling debug logs apart from others.
 
 type GitLabVerifierProps = {
   userObjectId: string;
@@ -713,7 +719,11 @@ type GitLabVerifierProps = {
  * part of the generic GatekeeperUserVerifier contract.
  */
 export interface GitLabVerifierApi extends GatekeeperUserVerifier {
-  hasProjectAccess(projectPath: string): Promise<boolean>;
+  /**
+   * Whether the user holds an effective membership of at least `minAccessLevel` on the project.
+   * The level defaults to, and is never lower than, Reporter (20).
+   */
+  hasProjectAccess(projectPath: string, minAccessLevel?: number): Promise<boolean>;
 }
 
 /**
@@ -731,17 +741,18 @@ const REPORTER_ACCESS_LEVEL = 20;
  */
 function membershipGrantsFullRead(
   member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
+  minAccessLevel: number,
   now: Date = new Date(),
 ): boolean {
   if (member === null || member.membership_state === "awaiting") return false;
   if (member.expires_at != null && !(Date.parse(member.expires_at) > now.getTime())) return false;
-  return member.access_level >= REPORTER_ACCESS_LEVEL;
+  return member.access_level >= Math.max(REPORTER_ACCESS_LEVEL, minAccessLevel);
 }
 
 @validateRpc()
 export class GitLabVerifier extends WorkerEntrypoint<Env, GitLabVerifierProps>
     implements GitLabVerifierApi {
-  async hasProjectAccess(projectPath: string): Promise<boolean> {
+  async hasProjectAccess(projectPath: string, minAccessLevel = REPORTER_ACCESS_LEVEL): Promise<boolean> {
     const { userObjectId } = this.ctx.props;
     const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
     try {
@@ -755,7 +766,7 @@ export class GitLabVerifier extends WorkerEntrypoint<Env, GitLabVerifierProps>
       const member = await accountReader(this.env, this.ctx.exports, userObjectId)(
         api => api.getProjectMember(projectPath, user.id));
       if ((await account.getUser()).generation !== user.generation) return false;
-      return membershipGrantsFullRead(member);
+      return membershipGrantsFullRead(member, minAccessLevel);
     } catch (error) {
       // 403 in some policy cases; the observer lacks access either way.
       if (error instanceof GitLabApiError && (error.status === 404 || error.status === 403)) {

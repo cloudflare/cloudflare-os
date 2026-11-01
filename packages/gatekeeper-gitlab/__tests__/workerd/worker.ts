@@ -82,6 +82,8 @@ type GatekeeperFacet = Pick<GitLabGatekeeperImpl, "gitPull"> & {
   projectMetadata(): Promise<GitLabProjectMetadata>;
   openIssue(id: string): Promise<GitLabIssueDetails>;
   openMergeRequest(id: string, cache?: RpcStub<GitCache>): Promise<GitLabMergeRequestDetails>;
+  mergeRequestDetails(id: string, cache?: RpcStub<GitCache>): Promise<GitLabMergeRequestDetails>;
+  startSession(queue: unknown): Promise<Record<string, (...args: unknown[]) => Promise<unknown>>>;
   issueDiscussion(kind: "issue" | "mergeRequest", id: string, pageSize: number): Promise<Pages<GitLabDiscussionEntry>>;
   mergeRequestDiff(id: string, pageSize: number, cache?: RpcStub<GitCache>):
     Promise<{ revision: GitLabMergeRequestRevision; files: Pages<GitLabDiffFile> }>;
@@ -156,10 +158,20 @@ export class TestCallback extends WorkerEntrypoint<Cloudflare.Env, { userObjectI
   }
 }
 
+/** Stands in for the workspace git cache a session advertises to: it knows no objects. */
+class EmptyGitCache extends RpcTarget {
+  async advertiseCommit(): Promise<void> {}
+  async get(): Promise<null> {
+    return null;
+  }
+}
+
 /** A test approval queue: records descriptions, and accepts every action unless told to refuse. */
 export class RecordingQueue extends RpcTarget {
   readonly submitted: Array<{ actionId: number; description: ActionDescription }> = [];
   readonly observations: string[] = [];
+  /** Each observation's exclusions, in the order recorded (`undefined` for none). */
+  readonly excluded: Array<string[] | undefined> = [];
   /** How many of the next submissions to refuse, as a Workshop that could not record them would. */
   refuseNext = 0;
   async submitAction(actionId: number, description: ActionDescription): Promise<void> {
@@ -169,10 +181,17 @@ export class RecordingQueue extends RpcTarget {
     }
     this.submitted.push({ actionId, description });
   }
-  async authorizeObservation(description: { title: string }): Promise<void> {
+  async authorizeObservation(description: { title: string; excludeObservers?: string[] }): Promise<void> {
     this.observations.push(description.title);
+    this.excluded.push(description.excludeObservers);
+  }
+  async getGitCache(): Promise<EmptyGitCache> {
+    return new EmptyGitCache();
   }
 }
+
+/** One call of `TestHooks.session`: `method(...args)` on the previous step's result, its cursor drained if `drain`. */
+export type SessionStep = { method: string; args?: unknown[]; drain?: true };
 
 async function drain<T>(cursor: Pages<T>): Promise<T[]> {
   const items: T[] = [];
@@ -224,6 +243,27 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async openMergeRequest(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>):
       Promise<Outcome<GitLabMergeRequestDetails>> {
     return await outcome(() => this.#gatekeeper(facetName, props).openMergeRequest(id, cache));
+  }
+
+  async mergeRequestDetails(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>):
+      Promise<Outcome<GitLabMergeRequestDetails>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).mergeRequestDetails(id, cache));
+  }
+
+  /**
+   * Starts a session on the facet over its recording queue, then makes each call in `steps` on
+   * what the previous one returned -- `getPipeline()`, then `listJobs()`, say. The last result
+   * rides back as data; observations land in `queueLog`.
+   */
+  async session(facetName: string, props: GatekeeperProps, steps: SessionStep[]): Promise<Outcome<unknown>> {
+    return await outcome(async () => {
+      let target: unknown = await this.#gatekeeper(facetName, props).startSession(this.#queue(facetName));
+      for (const step of steps) {
+        const result = await (target as Record<string, (...args: unknown[]) => Promise<unknown>>)[step.method]!(...(step.args ?? []));
+        target = step.drain ? await drain(result as Pages<unknown>) : result;
+      }
+      return target;
+    });
   }
 
   async discussionAll(facetName: string, props: GatekeeperProps, kind: "issue" | "mergeRequest", id: string, pageSize: number):
@@ -313,9 +353,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /** `addObserver` with a verifier minted for `observerUserObjectId`'s account. */
-  async addObserver(facetName: string, props: GatekeeperProps, observerUserObjectId: string): Promise<Outcome<void>> {
+  async addObserver(facetName: string, props: GatekeeperProps, observerUserObjectId: string, observerId = "observer"): Promise<Outcome<void>> {
     const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId: observerUserObjectId } });
-    return await outcome(() => this.#gatekeeper(facetName, props).addObserver("observer", verifier));
+    return await outcome(() => this.#gatekeeper(facetName, props).addObserver(observerId, verifier));
   }
 
   // -- write side -------------------------------------------------------------------------
@@ -337,9 +377,13 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /** What the facet's queue has recorded so far. */
-  async queueLog(facetName: string): Promise<{ submitted: Array<{ actionId: number; description: ActionDescription }>; observations: string[] }> {
+  async queueLog(facetName: string): Promise<{
+    submitted: Array<{ actionId: number; description: ActionDescription }>;
+    observations: string[];
+    excluded: Array<string[] | undefined>;
+  }> {
     const queue = this.#queue(facetName);
-    return { submitted: queue.submitted, observations: queue.observations };
+    return { submitted: queue.submitted, observations: queue.observations, excluded: queue.excluded };
   }
 
   /**
