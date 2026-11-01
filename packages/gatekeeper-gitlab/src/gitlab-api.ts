@@ -413,8 +413,8 @@ export class GitLabApiError extends Error {
   movedTo?: string;
 
   constructor(status: number, message: string,
-              options: { details?: unknown; movedTo?: string; isAuthError?: boolean } = {}) {
-    super(message);
+              options: { details?: unknown; movedTo?: string; isAuthError?: boolean; cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "GitLabApiError";
     this.status = status;
     this.details = options.details;
@@ -507,7 +507,7 @@ async function parseBody(response: Response): Promise<unknown> {
   } catch (error) {
     if (!(error instanceof ResponseTooLargeError)) throw error;
     throw new GitLabApiError(502,
-      `GitLab's response was larger than the ${MAX_BODY_BYTES / (1024 * 1024)} MiB the gatekeeper reads.`);
+      `GitLab's response was larger than the ${MAX_BODY_BYTES / (1024 * 1024)} MiB the gatekeeper reads.`, { cause: error });
   }
   if (text === "") return undefined;
   return isJson(response) ? JSON.parse(text) : text;

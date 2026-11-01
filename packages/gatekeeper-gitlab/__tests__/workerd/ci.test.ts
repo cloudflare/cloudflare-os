@@ -1,9 +1,9 @@
 // CI reads on the real gatekeeper Durable Object against a fake GitLab: a commit's and a merge
 // request's `ci` (the head pipeline, the stale-head rule, and the absence policy when there is no
 // pipeline), what a queued push reads as, which pipelines and jobs each binding may open,
-// `listJobs()` merging jobs, trigger jobs, and external statuses, failed tests, job logs (tail,
-// search, a running job, the cache of finished logs and its revalidation), and the observer gate
-// that log and test-report reads raise to Developer.
+// `listJobs()` merging jobs, trigger jobs, and external statuses, failed tests, status read afresh
+// rather than cached, job logs (tail, search, a running job, the cache of finished logs and its
+// revalidation), and the observer gate that log and test-report reads raise to Developer.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -55,7 +55,7 @@ function commit(id: string, overrides: Record<string, unknown> = {}) {
 /**
  * GitLab with the project (id 1, default CI config), the owner's and observers' accounts (the
  * bearer token names the user), their memberships, an instance version that predates
- * `trigger_jobs`, and commits served from `commits`.
+ * `trigger_jobs`, commits served from `commits`, and the project's pipelines from `pipelines`.
  */
 class CiFake extends FakeGitLab {
   readonly commits = new Map<string, Record<string, unknown>>();
@@ -63,6 +63,8 @@ class CiFake extends FakeGitLab {
   readonly members = new Map<string, number>();
   /** Shas at which `.gitlab-ci.yml` exists. */
   readonly ciConfigAt = new Set<string>();
+  /** The project's pipelines, newest first; the listing filters them by `sha` as GitLab does. */
+  readonly pipelines: Record<string, unknown>[] = [];
 
   constructor() {
     super();
@@ -99,7 +101,10 @@ class CiFake extends FakeGitLab {
     });
     this.on("HEAD", new RegExp(`^/api/v4/projects/${P}/repository/files/\\.gitlab-ci\\.yml\\?`), request =>
       new Response(null, { status: this.ciConfigAt.has(request.url.searchParams.get("ref")!) ? 200 : 404 }));
-    this.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => json([]));
+    this.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), request => {
+      const sha = request.url.searchParams.get("sha");
+      return json(this.pipelines.filter(row => sha === null || row.sha === sha));
+    });
   }
 
   /** Requests that asked GitLab anything about CI. */
@@ -151,14 +156,41 @@ function stubOf(cache: TestGitCache): never {
 }
 
 describe("a commit's CI", () => {
-  it("reports the latest pipeline GitLab embeds in the commit", async () => {
+  it("reports the commit's newest pipeline", async () => {
     const fake = new CiFake();
     fake.branches.set("main", HEAD);
-    fake.commits.set(HEAD, commit(HEAD, { last_pipeline: pipeline(287, { status: "running" }) }));
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.pipelines.push(pipeline(287, { status: "running" }), pipeline(286, { status: "failed" }), pipeline(9, { sha: BASE }));
     const { props, name } = await setup(fake);
     const { details } = await unwrap(await hooks().getCommit(name, props, "main"));
     expect(details.ci).toMatchObject({ commitId: HEAD, phase: "active", pipeline: { id: "287", status: "running", phase: "active" } });
     expect(details.ci!.pipeline!.project).toBeUndefined();
+  });
+
+  it("reads the pipeline afresh each time, reading the commit only once", async () => {
+    const fake = new CiFake();
+    fake.branches.set("main", HEAD);
+    fake.commits.set(HEAD, commit(HEAD));
+    const row = pipeline(287, { status: "running" });
+    fake.pipelines.push(row);
+    const { props, name } = await setup(fake);
+    await unwrap(await hooks().getCommit(name, props, "main"));
+    row.status = "success";
+    expect((await unwrap(await hooks().getCommit(name, props, "main"))).details.ci)
+      .toMatchObject({ phase: "done", pipeline: { id: "287", status: "success" } });
+    expect(fake.count("GET", /repository\/commits\//)).toBe(1);
+  });
+
+  it("still reports a commit's pipeline while a queued push points another branch at it", async () => {
+    const fake = new CiFake();
+    fake.branches.set("main", HEAD);
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.pipelines.push(pipeline(290, { status: "failed" }));
+    const { props, name } = await setup(fake);
+    const cache = new TestGitCache();
+    await unwrap(await hooks().queuePush(name, props, ["release", HEAD, false, stubOf(cache)], DESC));
+    expect((await unwrap(await hooks().getCommit(name, props, "main", stubOf(cache)))).details.ci)
+      .toMatchObject({ commitId: HEAD, phase: "done", pipeline: { id: "290", status: "failed" } });
   });
 
   it("is notStarted while a configured commit is new, and done once the window has passed", async () => {
@@ -268,6 +300,32 @@ describe("a merge request's CI", () => {
     expect((await details(name, props)).ci).toMatchObject({ commitId: HEAD, phase: "active", pipeline: { id: "301", commitId: MERGE } });
   });
 
+  it("counts a merge train pipeline whose train commit has the head as a parent", async () => {
+    const fake = mrFake(pipeline(303, { sha: MERGE, ref: "refs/merge-requests/133/train", status: "running" }));
+    fake.commits.set(MERGE, commit(MERGE, { parent_ids: [TARGET, HEAD] }));
+    const { props, name } = await setup(fake);
+    expect((await details(name, props)).ci).toMatchObject({ commitId: HEAD, phase: "active", pipeline: { id: "303", commitId: MERGE } });
+  });
+
+  it("reads CI afresh, and follows the head when someone else moves it", async () => {
+    const fake = mrFake(undefined);
+    let mr: Record<string, unknown> = { ...MR, head_pipeline: pipeline(300, { status: "running" }) };
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133\\?`), () => json(mr));
+    const { props, name } = await setup(fake);
+    expect((await details(name, props)).ci).toMatchObject({ phase: "active", pipeline: { id: "300", status: "running" } });
+
+    mr = { ...mr, head_pipeline: pipeline(300, { status: "success" }) };
+    expect((await details(name, props)).ci).toMatchObject({ phase: "done", pipeline: { id: "300", status: "success" } });
+
+    // A push outside this gatekeeper: the head and its CI move together.
+    fake.commits.set(PUSHED, commit(PUSHED));
+    mr = { ...mr, sha: PUSHED, diff_refs: { ...MR.diff_refs, head_sha: PUSHED },
+      head_pipeline: pipeline(302, { sha: PUSHED, status: "pending" }) };
+    const moved = await details(name, props);
+    expect(moved.source.sha).toBe(PUSHED);
+    expect(moved.ci).toMatchObject({ commitId: PUSHED, phase: "active", pipeline: { id: "302", commitId: PUSHED } });
+  });
+
   it("ignores an earlier head's pipeline and applies the absence policy from the head's diff version", async () => {
     // The head moved a minute ago (its diff version), though the commit is an hour old.
     const fake = mrFake(pipeline(299, { sha: EARLIER }));
@@ -281,7 +339,7 @@ describe("a merge request's CI", () => {
 
     // Opening the head's pipeline says to come back, rather than opening the earlier one.
     await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline" }))
-      .rejects.toThrow("There is no pipeline yet for the head commit; read again shortly.");
+      .rejects.toThrow(/no pipeline yet for the head commit; read again shortly/);
   });
 
   it("is done with no pipeline once the head has been without one past the window", async () => {
@@ -317,6 +375,9 @@ describe("a merge request's CI", () => {
     await unwrap(await hooks().queuePush(name, props, ["feature", PUSHED, false, stubOf(cache)], DESC));
     expect((await details(name, props)).ci).toEqual({ commitId: PUSHED, phase: "notStarted", pipeline: null });
     expect(fake.ciRequests()).toEqual([]);
+    // Opening it says what it waits for.
+    await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline" }))
+      .rejects.toThrow(/no pipeline yet for the head commit; it appears after the pushed commits reach GitLab/);
   });
 });
 
@@ -361,6 +422,25 @@ describe("what a binding may open", () => {
       .rejects.toThrow("Job 80 does not belong to one of merge request !133's pipelines.");
   });
 
+  it("finds a pipeline or job newer than its cached list of the merge request's pipelines", async () => {
+    const fake = seamFake();
+    const listed = [pipeline(6)];
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/pipelines\\?`), () => json(listed));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6[01]$`), request =>
+      json(pipeline(Number(request.url.pathname.split("/").at(-1)))));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/82$`), () =>
+      json(job(82, { pipeline: { ...fx.jobResponse.data.pipeline, id: 61, project_id: PROJECT_ID } })));
+    const { props, name } = await setup(fake);
+    await session(name, props, mr, { method: "getPipeline", args: ["6"] });
+
+    listed.unshift(pipeline(60));
+    expect((await session<{ id: string }>(name, props, mr, { method: "getPipeline", args: ["60"] }, { method: "getDetails" })).id)
+      .toBe("60");
+    listed.unshift(pipeline(61));
+    expect((await session<{ id: string }>(name, props, mr, { method: "getJob", args: ["82"] }, { method: "getDetails" })).id)
+      .toBe("82");
+  });
+
   it("opens a child pipeline in this project, never a cross-project downstream", async () => {
     const { props, name } = await setup(seamFake());
     const child = await session<{ id: string }>(name, props,
@@ -376,6 +456,8 @@ describe("what a binding may open", () => {
     const { props, name } = await setup(seamFake());
     await expect(session(name, props, { method: "getJob", args: ["7"] })).rejects.toThrow(/Only jobs run by a runner/);
     await expect(session(name, props, { method: "getJob", args: ["7x"] })).rejects.toThrow(/positive integer string/);
+    // Past 2^53 a number no longer names one job.
+    await expect(session(name, props, { method: "getJob", args: ["9007199254740993"] })).rejects.toThrow(/positive integer string/);
   });
 
   it("records an observation for each read and none for an open", async () => {
@@ -389,29 +471,35 @@ describe("what a binding may open", () => {
 });
 
 describe("listJobs", () => {
+  const BUILDS = [job(10, { status: "success", name: "build" }), job(8, { status: "failed" })];
+  // GitLab's statuses listing holds the jobs and trigger jobs too, without telling them apart.
+  const STATUSES = [
+    { id: 8, name: "rubocop", status: "failed", allow_failure: false, created_at: minutesAgo(5), pipeline_id: 6 },
+    { id: 7, name: "teaspoon", status: "pending", allow_failure: false, created_at: minutesAgo(5), pipeline_id: 6 },
+    { id: 11, name: "ci/lint", status: "failed", description: "3 problems", target_url: "https://lint.example.com/1",
+      allow_failure: true, created_at: minutesAgo(4), pipeline_id: 6 },
+    { id: 12, name: "other", status: "failed", allow_failure: false, created_at: minutesAgo(4), pipeline_id: 99 },
+    { id: 13, name: "unplaced", status: "failed", allow_failure: false, created_at: minutesAgo(4) },
+  ];
+  const JOBS_ROUTE = new RegExp(`^/api/v4/projects/${P}/pipelines/6/jobs\\?`);
+  const STATUSES_ROUTE = new RegExp(`^/api/v4/projects/${P}/repository/commits/${HEAD}/statuses\\?`);
+  const scoped = <T extends { status: string }>(request: { url: URL }, rows: T[]) => {
+    const scope = request.url.searchParams.getAll("scope[]");
+    return rows.filter(row => scope.length === 0 || scope.includes(row.status));
+  };
+
   function jobsFake(): CiFake {
     const fake = new CiFake();
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
-    const builds = [job(10, { status: "success", name: "build" }), job(8, { status: "failed" })];
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/jobs\\?`), request => {
-      const scope = request.url.searchParams.getAll("scope[]");
-      return json(builds.filter(row => scope.length === 0 || scope.includes(row.status)));
-    });
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), request => {
-      const scope = request.url.searchParams.getAll("scope[]");
-      return json([trigger(7, { id: 5, project_id: PROJECT_ID })].filter(row => scope.length === 0 || scope.includes(row.status)));
-    });
-    // GitLab's statuses listing holds the jobs and trigger jobs too, without telling them apart.
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/commits/${HEAD}/statuses\\?`), () => json([
-      { id: 8, name: "rubocop", status: "failed", allow_failure: false, created_at: minutesAgo(5), pipeline_id: 6 },
-      { id: 7, name: "teaspoon", status: "pending", allow_failure: false, created_at: minutesAgo(5), pipeline_id: 6 },
-      { id: 11, name: "ci/lint", status: "failed", description: "3 problems", target_url: "https://lint.example.com/1",
-        allow_failure: true, created_at: minutesAgo(4), pipeline_id: 6 },
-      { id: 12, name: "other", status: "failed", allow_failure: false, created_at: minutesAgo(4), pipeline_id: 99 },
-      { id: 13, name: "unplaced", status: "failed", allow_failure: false, created_at: minutesAgo(4) },
-    ]));
+    fake.on("GET", JOBS_ROUTE, request => json(scoped(request, BUILDS)));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), request =>
+      json(scoped(request, [trigger(7, { id: 5, project_id: PROJECT_ID })])));
+    fake.on("GET", STATUSES_ROUTE, () => json(STATUSES));
     return fake;
   }
+
+  const listJobs = (filter?: unknown): SessionStep[] =>
+    [{ method: "getPipeline", args: ["6"] }, { method: "listJobs", args: filter === undefined ? [] : [filter], drain: true }];
 
   it("merges jobs, trigger jobs, and the pipeline's external statuses in creation order", async () => {
     const { props, name } = await setup(jobsFake());
@@ -434,6 +522,36 @@ describe("listJobs", () => {
     expect(jobsRequest.url.searchParams.getAll("scope[]")).toEqual(["failed"]);
     await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listJobs", args: [{ status: ["broken"] }] }))
       .rejects.toThrow(/GitLabPipelineImpl\.listJobs/);
+  });
+
+  it("never takes a job created while it lists for an external status", async () => {
+    const fake = jobsFake();
+    // Job 14 appears just after the first of the two listings answers, whichever that is.
+    let created = false;
+    const late = job(14, { status: "pending", name: "late" });
+    const answerThenCreate = (rows: () => unknown[]) => () => {
+      const response = json(rows());
+      created = true;
+      return response;
+    };
+    fake.on("GET", JOBS_ROUTE, answerThenCreate(() => created ? [...BUILDS, late] : BUILDS));
+    fake.on("GET", STATUSES_ROUTE, answerThenCreate(() => created
+      ? [...STATUSES, { id: 14, name: "late", status: "pending", allow_failure: false, created_at: minutesAgo(0), pipeline_id: 6 }]
+      : STATUSES));
+    const { props, name } = await setup(fake);
+    const rows = await session<GitLabJobSummary[]>(name, props, ...listJobs());
+    expect(rows.find(row => row.id === "14")?.kind).toBe("job");
+  });
+
+  it("never takes a job whose status left the filter while it lists for an external status", async () => {
+    const fake = jobsFake();
+    // Job 15 is running when the statuses are first listed, and has succeeded by the time the jobs are.
+    let statusReads = 0;
+    fake.on("GET", JOBS_ROUTE, request => json(scoped(request, [...BUILDS, job(15, { status: "success", name: "slow" })])));
+    fake.on("GET", STATUSES_ROUTE, () => json([...STATUSES, { id: 15, name: "slow", status: statusReads++ === 0 ? "running" : "success",
+      allow_failure: false, created_at: minutesAgo(3), pipeline_id: 6 }]));
+    const { props, name } = await setup(fake);
+    expect(await session<GitLabJobSummary[]>(name, props, ...listJobs({ status: ["running"] }))).toEqual([]);
   });
 });
 
@@ -459,6 +577,43 @@ describe("test reports", () => {
     expect(cases[0].output!.length).toBeLessThan(4200);
     expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" }))
       .toEqual({ total: 3363, failed: 0, errored: 0, skipped: 12, suites: [{ name: "test", total: 3363, failed: 0, errored: 0 }] });
+  });
+
+  it("points at the totals and the job logs when the whole report is too large to read", async () => {
+    const fake = new CiFake();
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
+    // Larger than the client reads (10 MiB), produced a megabyte at a time until it is cut off.
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20)); },
+    }), { headers: { "content-type": "application/json" } }));
+    const { props, name } = await setup(fake);
+    await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests" }))
+      .rejects.toThrow(/too large to read here\. Use getTestReport\(\) for its totals, and the failing jobs' logs/);
+  });
+});
+
+describe("status reads", () => {
+  it("are never served from a cache", async () => {
+    const fake = new CiFake();
+    const listed = pipeline(6, { status: "running" });
+    fake.pipelines.push(listed);
+    let status = "running";
+    let total = 1;
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6, { status })));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/8$`), () => json(job(8, { status })));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () =>
+      json({ ...fx.testReportSummaryResponse.data, total: { ...fx.testReportSummaryResponse.data.total, count: total } }));
+    const { props, name } = await setup(fake);
+    const read = async () => ({
+      pipeline: (await session<{ status: string }>(name, props, { method: "getPipeline", args: ["6"] }, { method: "getDetails" })).status,
+      job: (await session<{ status: string }>(name, props, { method: "getJob", args: ["8"] }, { method: "getDetails" })).status,
+      listed: (await session<{ status: string }[]>(name, props, { method: "listPipelines", args: [], drain: true }))[0].status,
+      tests: (await session<{ total: number }>(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).total,
+    });
+    expect(await read()).toEqual({ pipeline: "running", job: "running", listed: "running", tests: 1 });
+    status = listed.status = "success";
+    total = 2;
+    expect(await read()).toEqual({ pipeline: "success", job: "success", listed: "success", tests: 2 });
   });
 });
 
@@ -564,5 +719,12 @@ describe("observers once logs are read", () => {
     const log = await hooks().queueLog(name);
     expect(log.observations).toEqual(["Read pipeline #6", "Read log of job `rubocop` #8, lines 1–1", "Read test report of pipeline #6"]);
     expect(log.excluded).toEqual([undefined, ["reporter"], ["reporter"]]);
+  });
+
+  it("shares a binding with up to 50 collaborators", async () => {
+    const names = Array.from({ length: 51 }, (_, i) => `member${i}`);
+    const { props, name } = await setup(gateFake(), Object.fromEntries(names.map(member => [member, 20])));
+    for (const member of names.slice(0, 50)) await observer(name, props, member);
+    await expect(observer(name, props, names[50]!)).rejects.toThrow(/already answers for 50 collaborators/);
   });
 });

@@ -966,6 +966,13 @@ such read: from then on `addObserver` asks `hasProjectAccess(path, 30)`, and eve
 excludes stored observers below it. Observers are stored for this alone, so `removeObserver` is
 no longer a no-op. A binding that never reads a log or test report keeps the Reporter bar.
 
+Two consequences of storing them. A transition gap: observers admitted before this version were
+never stored, so a log or test-report read cannot exclude them until their next open, which runs
+`addObserver` (and so admission) again. And a cap: the tracker keeps at most 50 observers
+(`maxObservers`; the kit's default of 10 would refuse collaborators existing bindings already
+had), because each such read re-checks every stored observer's membership with GitLab, and the
+cap bounds that fan-out under the Workers subrequest limit.
+
 ### 9. Tests
 
 Same two-project layout as GitHub (`vitest.config.ts` node, `vitest.worker.config.ts` workerd
@@ -1322,13 +1329,14 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
 - **CI/CD — reads shipped (tier 1); actions, `autoMerge` and hooks remain.** v1 left CI out of
   both gatekeepers for parity; the follow-up added read-only CI to both in one change (GitHub:
   check runs, commit statuses, workflow runs, job logs). GitLab's tier 1: `ci` on `getCommit()`
-  and on the MR's `getDetails()` — the pipeline from `last_pipeline` or `head_pipeline`, a
-  `head_pipeline` counted only when it ran on the current head (or, on
-  `refs/merge-requests/<iid>/merge`, on a merge commit whose parents include it), and with none a
-  `notStarted`/`done` absence policy over a 10-minute window from this gatekeeper's push-apply
-  record, else the MR's diff versions, else the commit date; `listPipelines`/`getPipeline`/
-  `getJob` on project and MR bindings (an MR binding reaches only its own pipelines and their
-  same-project children; fork and cross-project pipelines are data only); `GitLabPipeline` jobs
+  and on the MR's `getDetails()` — the commit's newest pipeline or the MR's `head_pipeline`, read
+  fresh (status is never cached), a `head_pipeline` counted only when it ran on the current head
+  (or, on `refs/merge-requests/<iid>/merge` or `…/train`, on a commit whose parents include it),
+  and with none a `notStarted`/`done` absence policy over a 10-minute window from this
+  gatekeeper's push-apply record, else the MR's diff versions, else the commit date;
+  `listPipelines`/`getPipeline`/`getJob` on project and MR bindings (an MR binding reaches only
+  its own pipelines and their same-project children; fork and cross-project pipelines are data
+  only); `GitLabPipeline` jobs
   (`…/jobs`, `…/trigger_jobs` or `…/bridges` by version, and external statuses from
   `…/commits/:sha/statuses`), same-project downstreams, `test_report_summary` and the failed cases
   of `test_report`; `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci-log`

@@ -577,9 +577,10 @@ export function normalizeCommitStatus(response: GitLabCommitStatusResponse, pipe
 
 /**
  * Whether a merge request's head pipeline ran for its head commit `headSha`, not an earlier head's.
- * A merged-results pipeline runs on GitLab's merge commit, on the merge request's `…/merge` ref,
- * and counts when that commit's parents include the head; `parentsOf` reads them, and is asked
- * only for such a pipeline. `null` (the commit cannot be read) counts as not current.
+ * A merged-results pipeline runs on a commit GitLab made by merging the head -- on the merge
+ * request's `…/merge` ref, or `…/train` for a merge train -- and counts when that commit's parents
+ * include the head; `parentsOf` reads them, and is asked only for such a pipeline. `null` (the
+ * commit cannot be read) counts as not current.
  */
 export async function pipelineIsForHead(
   pipeline: { sha: string; ref: string },
@@ -588,7 +589,8 @@ export async function pipelineIsForHead(
   parentsOf: (sha: string) => Promise<string[] | null>,
 ): Promise<boolean> {
   if (pipeline.sha === headSha) return true;
-  if (pipeline.ref !== `refs/merge-requests/${mergeRequestIid}/merge`) return false;
+  const prefix = `refs/merge-requests/${mergeRequestIid}/`;
+  if (pipeline.ref !== `${prefix}merge` && pipeline.ref !== `${prefix}train`) return false;
   return (await parentsOf(pipeline.sha))?.includes(headSha) ?? false;
 }
 

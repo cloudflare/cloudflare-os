@@ -72,7 +72,9 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed test's
   recorded output comes from the job that ran it, so test reports count too. Collaborators
   already observing are checked again at Developer on each of those reads, and left out of them
-  if they fall short.
+  if they fall short. This has a transition gap: collaborators admitted before this version were
+  not stored, so those reads cannot check or leave them out until they next open the workspace,
+  which runs admission again.
 
 Status values GitLab adds after this gatekeeper was written read as `unknown` with phase
 `blocked`, and are logged as `ci.unknown_status`. GitLab 19.2 renamed the trigger-jobs listing
@@ -262,3 +264,9 @@ The collaborator is a member below **Developer**, and the workspace has read a j
 report, which raises the bar from Reporter to Developer (see [CI status](#ci-status)). A project
 maintainer can grant the collaborator Developer; otherwise share a workspace that has not read
 CI job logs or test reports.
+
+### "This binding already answers for 50 collaborators …"
+
+A binding can be shared with at most 50 collaborators at once. Every job-log or test-report read
+checks each of them with GitLab, and the cap keeps that within what one request may fetch. Remove
+a collaborator from the workspace before adding another.

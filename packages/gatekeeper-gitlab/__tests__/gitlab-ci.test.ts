@@ -56,6 +56,12 @@ describe("pipelineIsForHead", () => {
     expect(parents).toHaveBeenCalledWith(MERGE);
   });
 
+  it("counts a merge train pipeline whose train commit has the head as a parent", async () => {
+    const parents = vi.fn(async (sha: string) => sha === MERGE ? ["t".repeat(40), HEAD] : null);
+    expect(await pipelineIsForHead({ sha: MERGE, ref: "refs/merge-requests/7/train" }, HEAD, "7", parents)).toBe(true);
+    expect(await pipelineIsForHead({ sha: MERGE, ref: "refs/merge-requests/8/train" }, HEAD, "7", never)).toBe(false);
+  });
+
   it("does not count an earlier head's pipeline, merged-results or not", async () => {
     const earlier = "e".repeat(40);
     expect(await pipelineIsForHead({ sha: earlier, ref: "feature" }, HEAD, "7", never)).toBe(false);

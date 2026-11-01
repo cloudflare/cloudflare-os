@@ -396,7 +396,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /** TTL cache: GitLab's REST API does not reliably answer conditional requests, so there is no ETag path. */
   async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
     const cached = this.#loadCached<T>(key, ttlMs);
-    if (cached !== undefined) return cached;
+    return cached !== undefined ? cached : await this.#refreshCached(key, loader);
+  }
+
+  /** `#cached`'s loader run whatever is cached, for a read that must be current; later cached reads get its value. */
+  async #refreshCached<T>(key: string, loader: () => Promise<T>): Promise<T> {
     const generation = this.#cacheGeneration();
     const value = await loader();
     this.#storeCached(key, value, generation);
@@ -584,16 +588,19 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * The raw merge request, retried once when `diff_refs` is still empty (GitLab computes it
    * asynchronously after creation); the revision reads fall back to `/merge_base` if it stays so.
+   * `fresh` skips the cache, for CI, which is status.
    */
-  async #getRawMergeRequest(realId: string): Promise<GitLabMergeRequestResponse> {
-    return await this.#cached(this.#cacheKey("mr-raw", realId), ENTITY_CACHE_TTL_MS, async () => {
+  async #getRawMergeRequest(realId: string, fresh = false): Promise<GitLabMergeRequestResponse> {
+    const load = async () => {
       let mr = await this.#withApi(api => api.getMergeRequest(this.#projectPath(), Number(realId)));
       if (!mr.diff_refs && mr.state === "opened") {
         await new Promise(resolve => setTimeout(resolve, DIFF_REFS_RETRY_DELAY_MS));
         mr = await this.#withApi(api => api.getMergeRequest(this.#projectPath(), Number(realId)));
       }
       return mr;
-    });
+    };
+    const key = this.#cacheKey("mr-raw", realId);
+    return fresh ? await this.#refreshCached(key, load) : await this.#cached(key, ENTITY_CACHE_TTL_MS, load);
   }
 
   /**
@@ -1355,63 +1362,62 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * CI for a commit no pipeline has reported on: `notStarted` while one is expected -- a queued
    * push will make it a head, or CI is expected and it became a head under `CI_START_WINDOW_MS`
-   * ago -- else `done` with no pipeline.
+   * ago -- else `done` with no pipeline. `commit` is the caller's read of `sha`, when it has one.
    */
-  async #ciWithoutPipeline(sha: GitOid, mergeRequestIid?: string): Promise<GitLabCommitCi> {
+  async #ciWithoutPipeline(sha: GitOid, mergeRequestIid?: string, commit?: GitLabCommitResponse): Promise<GitLabCommitCi> {
     if (this.#pendingPushActions().some(action => action.newSha === sha)) {
       return { commitId: sha, phase: "notStarted", pipeline: null };
     }
-    const commit = await this.#getRawCommit(sha);
-    const becameHead = await this.#becameHeadAt(sha, commit, mergeRequestIid);
+    const read = commit ?? await this.#getRawCommit(sha);
+    const becameHead = await this.#becameHeadAt(sha, read, mergeRequestIid);
     const recent = becameHead !== undefined && Date.now() - becameHead < CI_START_WINDOW_MS;
-    const expected = recent && await this.#ciExpected(sha, commit?.parent_ids?.[0]);
+    const expected = recent && await this.#ciExpected(sha, read?.parent_ids?.[0]);
     return { commitId: sha, phase: expected ? "notStarted" : "done", pipeline: null };
   }
 
   /**
-   * CI for a commit of this project, or undefined when the account cannot see its pipelines.
-   * GitLab's commit read embeds the latest pipeline (`last_pipeline`) but answers null both when
-   * there is none and when the account may not read pipelines; a null is told apart by listing the
-   * commit's pipelines, which GitLab refuses (403, or 404 for a project it hides) in the latter
-   * case. A commit only a queued push will put on GitLab has no pipeline yet, and GitLab is not
-   * asked.
+   * CI for a commit GitLab has (`commit`, the caller's read of it), or undefined when the account
+   * cannot see its pipelines. The newest pipeline is listed afresh, since status is not cached
+   * (the commit read's embedded `last_pipeline` may be a cached copy's); GitLab refuses the
+   * listing (403, or 404 for a project it hides) to an account that may not read pipelines. The
+   * listing leaves child pipelines out, and a child is never the commit's CI on its own.
    */
-  async #commitCi(sha: GitOid): Promise<GitLabCommitCi | undefined> {
-    if (this.#pendingPushActions().some(action => action.newSha === sha)) {
-      return { commitId: sha, phase: "notStarted", pipeline: null };
+  async #commitCi(commit: GitLabCommitResponse): Promise<GitLabCommitCi | undefined> {
+    const sha = commit.id;
+    let pipeline;
+    try {
+      pipeline = (await this.#withApi(api =>
+        api.listPipelines(this.#projectPath(), { sha, page: 1, perPage: 1 }))).items[0] ?? null;
+    } catch (error) {
+      if (error instanceof GitLabApiError && (error.status === 403 || error.status === 404)) return undefined;
+      throw error;
     }
-    let pipeline = (await this.#getRawCommit(sha))?.last_pipeline ?? null;
-    // The listing leaves child pipelines out; a child is never the commit's CI on its own.
-    if (pipeline === null || pipeline.source === "parent_pipeline") {
-      try {
-        pipeline = (await this.#withApi(api =>
-          api.listPipelines(this.#projectPath(), { sha, page: 1, perPage: 1 }))).items[0] ?? null;
-      } catch (error) {
-        if (error instanceof GitLabApiError && (error.status === 403 || error.status === 404)) return undefined;
-        throw error;
-      }
-    }
-    if (pipeline === null) return await this.#ciWithoutPipeline(sha);
+    if (pipeline === null) return await this.#ciWithoutPipeline(sha, undefined, commit);
     const summary = normalizePipelineSummary(pipeline);
     return { commitId: sha, phase: summary.phase, pipeline: summary };
   }
 
   /**
    * CI for a merge request's head (`details.source.sha`, simulated), or undefined when the
-   * account cannot see pipelines or the head is unknown. GitLab's `head_pipeline` can briefly be
+   * account cannot see pipelines or the head is unknown. `mr` is a fresh read of the merge
+   * request, or undefined while its creation is queued. GitLab's `head_pipeline` can briefly be
    * an earlier head's after a push, so it counts only when `pipelineIsForHead` says it ran for this
-   * one. A merge request still queued for creation, or a head a queued push moved, has no
-   * pipeline yet, and GitLab is not asked.
+   * one. A merge request still queued for creation, or a head a queued push will move it to, has
+   * no pipeline yet, and GitLab is not asked.
    */
-  async #mergeRequestCi(logicalId: string, details: GitLabMergeRequestDetails): Promise<GitLabCommitCi | undefined> {
+  async #mergeRequestCi(details: GitLabMergeRequestDetails, mr: GitLabMergeRequestResponse | undefined):
+      Promise<GitLabCommitCi | undefined> {
     const headSha = details.source.sha;
     if (headSha === null) return undefined;
-    const realId = this.#realIdOf(logicalId);
-    if (!realId) return { commitId: headSha, phase: "notStarted", pipeline: null };
-    const mr = await this.#getRawMergeRequest(realId);
+    const queued = { commitId: headSha, phase: "notStarted" as const, pipeline: null };
+    if (mr === undefined) return queued;
     // GitLab leaves the key out for an account that may not read the project's pipelines.
     if (!("head_pipeline" in mr)) return undefined;
-    if (headSha !== (mr.diff_refs?.head_sha ?? mr.sha)) return { commitId: headSha, phase: "notStarted", pipeline: null };
+    if (details.source.project.path === this.#projectPath() &&
+        this.#pendingPushActions(details.source.branch).some(action => action.newSha === headSha)) {
+      return queued;
+    }
+    const realId = String(mr.iid);
     const head = mr.head_pipeline ?? null;
     if (head !== null && await pipelineIsForHead(head, headSha, realId,
       async sha => (await this.#getRawCommit(sha))?.parent_ids ?? null)) {
@@ -1423,23 +1429,29 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /** A CI id from the caller, as GitLab's number. */
   #parseCiId(id: string, what: "Pipeline" | "Job"): number {
-    if (!/^[1-9]\d{0,15}$/.test(id)) {
+    if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) {
       throw new TypeError(`${what} id must be a positive integer string such as "123"; got ${JSON.stringify(id)}.`);
     }
     return Number(id);
   }
 
-  async #getRawPipeline(pipelineId: number): Promise<GitLabPipelineResponse> {
-    const pipeline = await this.#cached(this.#cacheKey("pipeline", String(pipelineId)), ENTITY_CACHE_TTL_MS, async () =>
-      await this.#withApi(api => api.getPipeline(this.#projectPath(), pipelineId)));
+  /** A pipeline of this project; `fresh` skips the cache, for a read of its status. */
+  async #getRawPipeline(pipelineId: number, fresh = false): Promise<GitLabPipelineResponse> {
+    const load = async () => await this.#withApi(api => api.getPipeline(this.#projectPath(), pipelineId));
+    const key = this.#cacheKey("pipeline", String(pipelineId));
+    const pipeline = fresh ? await this.#refreshCached(key, load) : await this.#cached(key, ENTITY_CACHE_TTL_MS, load);
     if (pipeline === null) throw new Error(`No pipeline ${pipelineId} exists in the GitLab project ${this.#projectPath()}.`);
     return pipeline;
   }
 
-  /** A job run by a runner; GitLab answers 404 for a trigger job's or external status's id too. */
-  async #getRawJob(jobId: number): Promise<GitLabJobResponse> {
-    const job = await this.#cached(this.#cacheKey("job", String(jobId)), ENTITY_CACHE_TTL_MS, async () =>
-      await this.#withApi(api => api.getJob(this.#projectPath(), jobId)));
+  /**
+   * A job run by a runner; GitLab answers 404 for a trigger job's or external status's id too.
+   * `fresh` skips the cache, for a read of its status.
+   */
+  async #getRawJob(jobId: number, fresh = false): Promise<GitLabJobResponse> {
+    const load = async () => await this.#withApi(api => api.getJob(this.#projectPath(), jobId));
+    const key = this.#cacheKey("job", String(jobId));
+    const job = fresh ? await this.#refreshCached(key, load) : await this.#cached(key, ENTITY_CACHE_TTL_MS, load);
     if (job === null) throw this.#noSuchJob(jobId);
     return job;
   }
@@ -1450,11 +1462,16 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       `(kind "job" in listJobs()) can be opened; trigger jobs and external statuses are data only.`);
   }
 
-  /** A merge request's pipelines (id, project, commit), newest first, at most `MAX_CI_ROWS`. */
-  async #mergeRequestPipelineRows(realId: string): Promise<GitLabPipelineBasicResponse[]> {
-    return await this.#cached(this.#cacheKey("mr-pipelines", realId), LIST_CACHE_TTL_MS, async () =>
-      await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
-        this.#withApi(api => api.listMergeRequestPipelines(this.#projectPath(), Number(realId), page, perPage))));
+  /**
+   * A merge request's pipelines (id, project, commit), newest first, at most `MAX_CI_ROWS`.
+   * Cached briefly for the opens' checks, so a pipeline newer than the cached copy is looked for
+   * again with `fresh`, which skips the cache, before it is refused.
+   */
+  async #mergeRequestPipelineRows(realId: string, fresh = false): Promise<GitLabPipelineBasicResponse[]> {
+    const load = async () => await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
+      this.#withApi(api => api.listMergeRequestPipelines(this.#projectPath(), Number(realId), page, perPage)));
+    const key = this.#cacheKey("mr-pipelines", realId);
+    return fresh ? await this.#refreshCached(key, load) : await this.#cached(key, LIST_CACHE_TTL_MS, load);
   }
 
   /** `#fetchAllPages`, stopping once `max` rows are in; `truncated` says whether rows were left out. */
@@ -1496,26 +1513,31 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * Whether `pipeline` is one of the merge request's pipelines or a same-project child of one
    * (children run on their parent's commit, so only parents on that commit are searched, two
-   * levels deep as GitLab nests them).
+   * levels deep as GitLab nests them). A pipeline newer than the cached listing is looked for
+   * again in a fresh one.
    */
   async #isMergeRequestPipeline(realId: string, pipeline: { id: number; sha: string }): Promise<boolean> {
     const boundProjectId = await this.#boundProjectId();
-    const rows = (await this.#mergeRequestPipelineRows(realId)).filter(row => row.project_id === boundProjectId);
-    if (rows.some(row => row.id === pipeline.id)) return true;
-    let parents = rows.filter(row => row.sha === pipeline.sha).map(row => row.id);
-    for (let depth = 0; depth < 2 && parents.length > 0; depth++) {
-      const children: number[] = [];
-      for (const parent of parents) {
-        for (const trigger of await this.#listTriggerJobs(parent, undefined)) {
-          const downstream = trigger.downstream_pipeline;
-          if (downstream?.project_id !== boundProjectId) continue;
-          if (downstream.id === pipeline.id) return true;
-          children.push(downstream.id);
+    const among = async (listed: GitLabPipelineBasicResponse[]) => {
+      const rows = listed.filter(row => row.project_id === boundProjectId);
+      if (rows.some(row => row.id === pipeline.id)) return true;
+      let parents = rows.filter(row => row.sha === pipeline.sha).map(row => row.id);
+      for (let depth = 0; depth < 2 && parents.length > 0; depth++) {
+        const children: number[] = [];
+        for (const parent of parents) {
+          for (const trigger of await this.#listTriggerJobs(parent, undefined)) {
+            const downstream = trigger.downstream_pipeline;
+            if (downstream?.project_id !== boundProjectId) continue;
+            if (downstream.id === pipeline.id) return true;
+            children.push(downstream.id);
+          }
         }
+        parents = children;
       }
-      parents = children;
-    }
-    return false;
+      return false;
+    };
+    return await among(await this.#mergeRequestPipelineRows(realId)) ||
+      await among(await this.#mergeRequestPipelineRows(realId, true));
   }
 
   // Session-facing CI reads. Each returns data for its session to record as an observation;
@@ -1526,9 +1548,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const query = { ref: filter?.ref, sha: filter?.commitId, status: filter?.status, source: filter?.source };
     return new StreamingCursor<GitLabPipelineSummary>({
       fetchPage: async (page, perPage) =>
-        await this.#cached(this.#cacheKey("list-pipelines", stableKey(query), `p${page}`), LIST_CACHE_TTL_MS, async () =>
-          mapPage(await this.#withApi(api => api.listPipelines(projectPath, { ...query, page, perPage })),
-            pipeline => normalizePipelineSummary(pipeline))),
+        mapPage(await this.#withApi(api => api.listPipelines(projectPath, { ...query, page, perPage })),
+          pipeline => normalizePipelineSummary(pipeline)),
       pageSize,
     });
   }
@@ -1569,9 +1590,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       const { ci } = await this.mergeRequestDetails(logicalId, gitCache);
       if (ci === undefined) throw new Error("CI is not visible to you on this project.");
       if (ci.pipeline === null) {
-        throw new Error(ci.phase === "notStarted"
-          ? "There is no pipeline yet for the head commit; read again shortly."
-          : "No pipeline ran for the head commit.");
+        if (ci.phase !== "notStarted") throw new Error("No pipeline ran for the head commit.");
+        if (this.#realIdOf(logicalId) === undefined) {
+          throw new Error(`Merge request ${logicalId} is not on GitLab yet, so it has no pipeline; one appears after it is created.`);
+        }
+        throw new Error(this.isCommitPendingPush(ci.commitId)
+          ? "There is no pipeline yet for the head commit; it appears after the pushed commits reach GitLab."
+          : "There is no pipeline yet for the head commit; read again shortly.");
       }
       if (ci.pipeline.project !== undefined) {
         throw new Error(`The head commit's pipeline ran in ${ci.pipeline.project.path}, another project, so it cannot be opened.`);
@@ -1580,7 +1605,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
     const pipelineId = this.#parseCiId(id, "Pipeline");
     const realId = this.#requireRealId(logicalId, "Merge request");
-    const row = (await this.#mergeRequestPipelineRows(realId)).find(pipeline => pipeline.id === pipelineId);
+    const listed = (rows: GitLabPipelineBasicResponse[]) => rows.find(pipeline => pipeline.id === pipelineId);
+    // The listing is cached briefly; a pipeline newer than that copy is looked for in a fresh one.
+    const row = listed(await this.#mergeRequestPipelineRows(realId)) ?? listed(await this.#mergeRequestPipelineRows(realId, true));
     if (row === undefined) throw new Error(`Pipeline ${pipelineId} is not one of merge request !${logicalId}'s pipelines.`);
     if (row.project_id !== boundProjectId) {
       throw new Error(`Pipeline ${pipelineId} ran in another project (the merge request's source project), so it cannot be opened.`);
@@ -1600,16 +1627,19 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async pipelineDetails(pipelineId: number): Promise<GitLabPipelineDetails> {
-    return normalizePipelineDetails(this.#instanceUrl(), await this.#getRawPipeline(pipelineId));
+    return normalizePipelineDetails(this.#instanceUrl(), await this.#getRawPipeline(pipelineId, true));
   }
 
   /**
    * A pipeline's jobs, trigger jobs, and external statuses, oldest first (ids share one table, so
    * id order is creation order), at most `MAX_CI_ROWS`. GitLab's statuses listing holds the jobs
    * and trigger jobs too, without saying which is which, so an external status is a row neither
-   * of the other listings returned. With a status filter the three listings are filtered alike,
-   * so that still holds; when either of the others was cut short, statuses are left out rather
-   * than risk listing a job as one.
+   * of the other listings returned. The statuses are listed first, so a job created meanwhile is
+   * in the other listings rather than taken for one. With a status filter GitLab filters the job
+   * listings, so a job whose status moved out of the filter meanwhile is missing from them; such
+   * rows are listed again afterwards and kept only if their status did not change (a job's status
+   * only moves forward, so one unchanged across both reads had it in between too). When either
+   * job listing was cut short, statuses are left out rather than risk listing a job as one.
    */
   async pipelineJobs(pipelineId: number, filter: GitLabJobFilter | undefined, pageSize: number): Promise<Cursor<GitLabJobSummary>> {
     // Statuses are checked against the union at the RPC boundary. GitLab's `scope[]` rejects
@@ -1619,18 +1649,23 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const pipeline = await this.#getRawPipeline(pipelineId);
     const boundProjectId = await this.#boundProjectId();
     const projectPath = this.#projectPath();
-    const [builds, triggers, commitStatuses] = await Promise.all([
+    const listStatuses = async () => await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
+      this.#withApi(api => api.listCommitStatuses(projectPath, pipeline.sha, { pipelineId, page, perPage })));
+    const listedFirst = await listStatuses();
+    const [builds, triggers] = await Promise.all([
       this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
         this.#withApi(api => api.listPipelineJobs(projectPath, pipelineId, { scope, page, perPage }))),
       this.#listTriggerJobs(pipelineId, scope),
-      this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
-        this.#withApi(api => api.listCommitStatuses(projectPath, pipeline.sha, { pipelineId, page, perPage }))),
     ]);
     const known = new Set([...builds, ...triggers].map(job => job.id));
-    const external = builds.truncated || triggers.truncated ? [] : commitStatuses
-      // A row without `pipeline_id` cannot be placed in a pipeline; drop it rather than guess.
-      .filter(row => row.pipeline_id === pipelineId && !known.has(row.id))
-      .map(row => normalizeCommitStatus(row, pipeline.web_url));
+    // A row without `pipeline_id` cannot be placed in a pipeline; drop it rather than guess.
+    let unplaced = builds.truncated || triggers.truncated ? []
+      : listedFirst.filter(row => row.pipeline_id === pipelineId && !known.has(row.id));
+    if (scope !== undefined && unplaced.length > 0) {
+      const now = new Map((await listStatuses()).map(row => [row.id, row.status]));
+      unplaced = unplaced.filter(row => now.get(row.id) === row.status);
+    }
+    const external = unplaced.map(row => normalizeCommitStatus(row, pipeline.web_url));
     const rows = [
       ...builds.map(job => normalizeJobSummary(job, "job", boundProjectId)),
       ...triggers.map(job => normalizeJobSummary(job, "trigger", boundProjectId)),
@@ -1649,9 +1684,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async pipelineTestReport(pipelineId: number): Promise<GitLabTestReportSummary> {
-    return normalizeTestReportSummary(await this.#cached(this.#cacheKey("test-report-summary", String(pipelineId)),
-      ENTITY_CACHE_TTL_MS, async () =>
-        await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId))));
+    return normalizeTestReportSummary(
+      await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId)));
   }
 
   async pipelineFailedTests(pipelineId: number, pageSize: number): Promise<Cursor<GitLabTestCase>> {
@@ -1659,7 +1693,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     try {
       report = await this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId));
     } catch (error) {
-      if (!(error instanceof ResponseTooLargeError)) throw error;
+      // The client reports a body past its cap as a 502 caused by the cap.
+      if (!(error instanceof GitLabApiError && error.cause instanceof ResponseTooLargeError)) throw error;
       throw new Error(
         `Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its totals, ` +
         `and the failing jobs' logs for details.`, { cause: error });
@@ -1668,7 +1703,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async jobDetails(jobId: number): Promise<GitLabJobDetails> {
-    return normalizeJobDetails(await this.#getRawJob(jobId), await this.#boundProjectId());
+    return normalizeJobDetails(await this.#getRawJob(jobId, true), await this.#boundProjectId());
   }
 
   /**
@@ -1785,6 +1820,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       collectionPrefix: OBSERVED_SET_PREFIX,
       vendorId: VENDOR_ID,
       maxTrackedCollections: 1,
+      // Sharing had no cap before observers were stored, so the kit's default (10) would refuse
+      // collaborators bindings already had. Each job-log or test-report read checks every stored
+      // observer's membership with GitLab, so the cap bounds that fan-out: 50 keeps a read well
+      // inside the Workers subrequest limit.
+      maxObservers: 50,
       verifyBaseline: async verifier => {
         if (!(await verifier.hasProjectAccess(this.#projectPath()))) {
           throw new Error(
@@ -1843,10 +1883,23 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return await this.#getMergeRequestDetails(id, gitCache);
   }
 
-  /** `getDetails()`'s read: the merge request with CI for its head (`ci`), where visible. */
+  /**
+   * `getDetails()`'s read: the merge request with CI for its head (`ci`), where visible. CI is
+   * status, so the merge request is read afresh for it, and details cached before its head last
+   * moved are dropped: `source.sha` and `ci` then come from the same read.
+   */
   async mergeRequestDetails(id: string, gitCache?: RpcStub<GitCache>): Promise<GitLabMergeRequestDetails> {
+    const realId = this.#realIdOf(id);
+    let mr: GitLabMergeRequestResponse | undefined;
+    if (realId !== undefined) {
+      mr = await this.#getRawMergeRequest(realId, true);
+      const key = this.#cacheKey("mr", realId);
+      if (this.#loadCached<GitLabMergeRequestDetails>(key, ENTITY_CACHE_TTL_MS)?.source.sha !== (mr.sha ?? null)) {
+        this.ctx.storage.kv.delete(key);
+      }
+    }
     const details = await this.#getMergeRequestDetails(id, gitCache);
-    const ci = await this.#mergeRequestCi(id, details);
+    const ci = await this.#mergeRequestCi(details, mr);
     return ci === undefined ? details : { ...details, ci };
   }
 
@@ -2024,9 +2077,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       if (realHead === null) throw new Error(`No commit found for ref "${ref}".`);
     }
 
-    const details = await this.#getRemoteCommitDetails(ref);
-    if (details !== null) {
-      const ci = await this.#commitCi(details.id);
+    const commit = await this.#getRawCommit(ref);
+    if (commit !== null) {
+      const details = normalizeCommitDetails(this.#instanceUrl(), this.#projectPath(), commit);
+      const ci = await this.#commitCi(commit);
       return { details: ci === undefined ? details : { ...details, ci }, fromCache: false };
     }
     if (gitCache !== undefined && isCommitOid(ref)) {
