@@ -839,6 +839,8 @@ The kit supplies defaults where they apply across consumers:
 | cursor `maxProviderPagesPerCall` | 10 |
 | `OAuthClient` `timeoutMs` | 30 000 ms |
 | `OAuthClient` `maxResponseBytes` | 64 KiB |
+| `readCiLog` `retainBytes` / `maxBytes` | 8 MiB / 128 MiB |
+| `CiLogCache` `ttlMs` / `maxTotalBytes` | 1 hour / 32 MiB |
 
 The kit requires values where no general default is safe:
 
@@ -924,6 +926,12 @@ shallow-info.
   so an oversized HTML error page still yields its first bytes. Never redact its result: the cut can
   split an echoed secret. Read a body that may echo a credential whole with `readTextCapped` and
   redact before cutting. Use `readTextCapped` whenever the whole body must be read, JSON included.
+- Read CI job logs with `readCiLog`, not `readTextCapped`: a long log is legitimately larger than
+  any whole-body cap, and `readCiLog` streams it, keeps only the tail, and still counts every
+  line, so `pageCiLog` numbers lines over the whole log. Pass agent-supplied page options to
+  `pageCiLog` untouched; it validates them. Put only finished logs in `CiLogCache`, and revalidate
+  a hit against the provider (log erased, job deleted, access lost) before serving it — the cache
+  holds bytes, not authority.
 - Use `normalizeVendorEndpoint` for user-supplied provider base URLs. It validates that one URL and
   is not a fetch policy: fetch with `redirect: "manual"`, or re-validate each `Location` and drop
   origin-scoped headers when the origin changes, or a redirect carries `Authorization` off the
