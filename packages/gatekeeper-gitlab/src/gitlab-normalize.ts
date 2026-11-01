@@ -22,7 +22,6 @@ import type {
   GitLabIssueSearch,
   GitLabIssueSummary,
   GitLabJobDetails,
-  GitLabJobStatus,
   GitLabJobSummary,
   GitLabLabel,
   GitLabMergeRequestDetails,

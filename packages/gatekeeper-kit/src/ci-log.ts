@@ -141,7 +141,8 @@ export async function readCiLog(
 
 // CSI, OSC (BEL- or ST-terminated, or cut off), charset designation, other two-byte escapes, or a
 // lone ESC.
-const ANSI = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[()*+][0-9A-Za-z]|[@-Z\\-_])?/g;
+// eslint-disable-next-line no-control-regex -- Terminal escape sequences start with ESC and BEL.
+const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[()*+][0-9A-Za-z]|[@-Z\\-_])?/g;
 const GITHUB_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}) /;
 const GITHUB_COMMAND = /^##\[(group|endgroup|error|warning|notice|debug)\]/;
 const GITLAB_SECTION = /section_(start|end):\d+:([A-Za-z0-9_.-]+)(?:\[[^\]\r]*\])?\r?/g;
@@ -468,7 +469,7 @@ function positiveInt(label: string, value: unknown): number {
   try {
     return requirePositiveInt(label, value);
   } catch (error) {
-    throw new TypeError((error as Error).message);
+    throw new TypeError((error as Error).message, { cause: error });
   }
 }
 
