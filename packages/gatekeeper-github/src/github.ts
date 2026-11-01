@@ -5459,7 +5459,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const push = pushes.find(entry => entry.after === sha);
         if (push !== undefined) return Date.parse(push.timestamp);
       } catch (error) {
-        if (!(error instanceof GitHubApiError) || error.rateLimited || error.status >= 500) throw error;
+        // Best-effort: any GitHub refusal or outage falls back to the committer date rather than
+        // failing a read whose rollup is already in hand. Credential failures are not
+        // GitHubApiErrors (withAccountApi maps them), so they still propagate.
+        if (!(error instanceof GitHubApiError)) throw error;
         logger.warn("failed to read a branch's pushes", { event: "ci.pushes.read.failed", error });
       }
     }
@@ -5604,9 +5607,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
          seen += page.length, page = await cursor.next()) {
       if (page.slice(0, MAX_PULL_COMMITS - seen).some(commit => commit.id === sha)) return;
     }
-    throw new Error(`${subject === undefined ? `Commit ${sha}` : `${subject} ran on commit ${sha}, which`} ` +
-      `is not one of pull request #${logicalId}'s commits: only its head and the first ` +
-      `${MAX_PULL_COMMITS} commits listCommits() lists are.`);
+    // A refused run's commit is never named: run ids are sequential, and a pull request binding
+    // must not learn where other runs in the repository ran.
+    throw new Error(`${subject === undefined ? `Commit ${sha} is not one of` : `${subject} did not run on one of`} ` +
+      `pull request #${logicalId}'s commits: only its head and the first ${MAX_PULL_COMMITS} commits ` +
+      `listCommits() lists are.`);
   }
 
   /** `#assertPullCommitOf`, for a session holding a check run's or workflow run's commit. */
@@ -5659,19 +5664,30 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const sha = commitId ?? details.head.sha;
     if (!isCommitOid(sha)) throw new Error(`Pull request #${logicalId} has no head commit yet.`);
     await this.#assertPullCommitOf(logicalId, details, sha, gitCache);
-    const checks = this.isSimulatedCommitId(sha) ? undefined : await this.#commitChecks(sha, {
+    // Only a commit a queued push will deliver is known not to be on GitHub; any other commit
+    // simulation served (an intermediate one of a stacked chain) is asked for, and reads as queued
+    // if GitHub does not have it yet.
+    const checks = this.isCommitPendingPush(sha) ? undefined : await this.#commitChecks(sha, {
       branch: isOwnHead(details) ? details.head.ref : undefined, pullNumber: number,
     });
     if (checks === undefined) return { ...queuedCommitChecks(sha), checks: [], missingRequired: [] };
     const required = await this.#requiredContexts(details.base.ref);
+    const requiredNames = new Set(required);
     const reported = new Set(checks.checks.map(entryName));
+    // Past the entry cap a required check may have reported among the unread entries, so none can
+    // be named missing.
+    const reportedCount = Object.values(checks.counts).reduce((sum, count) => sum + (count ?? 0), 0);
+    const allRead = reportedCount <= checks.checks.length;
     return {
       ...checks,
       checks: checks.checks.map(entry => {
         const { isRequired, ...rest } = entry;
-        return { ...rest, required: isRequired ?? false } as GitHubPullRequestChecks["checks"][number];
+        // A pull request not yet created on GitHub has no number to ask GitHub with; the base
+        // branch's rules answer instead.
+        const isRequiredHere = isRequired ?? requiredNames.has(entryName(entry));
+        return { ...rest, required: isRequiredHere } as GitHubPullRequestChecks["checks"][number];
       }),
-      missingRequired: required.filter(name => !reported.has(name)),
+      missingRequired: allRead ? required.filter(name => !reported.has(name)) : [],
     };
   }
 
@@ -5801,7 +5817,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       : Promise<Cursor<GitHubWorkflowRunSummary>> {
     const { details } = await this.#pullForCi(logicalId, gitCache);
     const sha = details.head.sha;
-    if (!isCommitOid(sha) || this.isSimulatedCommitId(sha)) return new ArrayCursor([], pageSize);
+    if (!isCommitOid(sha) || this.isCommitPendingPush(sha)) return new ArrayCursor([], pageSize);
     return await this.listWorkflowRuns({ commitId: sha }, pageSize);
   }
 

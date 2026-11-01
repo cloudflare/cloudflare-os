@@ -45,7 +45,7 @@ for approval, and every read is logged as an observation.
   `.github/workflows/*.yml`, or its first parent had CI); otherwise it is `done` with
   `state: "none"`. The head time is when this gatekeeper applied the push, else GitHub's activity
   log for the branch, else the committer date. A pull request read also marks which entries the
-  base branch requires (`isRequired`) and names required checks that have not reported
+  base branch requires (`required`) and names required checks that have not reported
   (`missingRequired`, best-effort from the branch's rulesets and classic protection).
 - **Pull request scope.** A pull request binding reads CI only on the pull request's head (counting
   queued pushes) and the first 250 commits its listing shows; check runs and workflow runs on any

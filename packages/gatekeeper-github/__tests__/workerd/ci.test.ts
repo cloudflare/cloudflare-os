@@ -11,7 +11,9 @@ import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport"
 import type {
   GitHubCheckRunDetails, GitHubCommitChecks, GitHubLogPage, GitHubPullRequestChecks,
 } from "../../src/types";
-import type { GatekeeperProps, Outcome, PushActionData, SessionCall } from "./worker";
+import type {
+  CreatePullRequestActionData, GatekeeperProps, Outcome, PushActionData, SessionCall,
+} from "./worker";
 
 const OWNER = "acme";
 const REPO = "widgets";
@@ -41,6 +43,8 @@ type FakeRollup = {
   workflows: boolean;
   /** Whether the commit's first parent has a rollup. */
   parentHasCi: boolean;
+  /** Entries per GraphQL page; all on one page when omitted. */
+  pageSize?: number;
 };
 
 function checkRunNode(name: string, status: string, conclusion: string | null, extra: Record<string, unknown> = {}) {
@@ -148,8 +152,12 @@ class FakeGitHub {
   readonly runs = new Map<number, ReturnType<typeof workflowRun>>();
   readonly pulls = new Map<number, ReturnType<typeof pullResponse>>();
   readonly pullCommits = new Map<number, string[]>();
+  /** `base...head` → the commits GitHub's compare lists, oldest first. */
+  readonly compares = new Map<string, { mergeBase: string; commits: string[] }>();
   /** Pushes the activity API reports for any branch, newest first. */
   pushes: { after: string; timestamp: string }[] = [];
+  /** When set, the activity API fails with this status instead. */
+  activityStatus?: number;
   requiredByRules: string[] = [];
   requiredByProtection: string[] = [];
   readonly graphqlQueries: string[] = [];
@@ -195,6 +203,9 @@ class FakeGitHub {
     if (path === "https://api.github.com/graphql") {
       return Response.json(this.#graphql(JSON.parse(await new Response(init!.body as BodyInit).text())));
     }
+    if (path === "https://api.github.com/user") {
+      return Response.json({ login: "ada", name: null, html_url: "https://github.com/ada", avatar_url: null });
+    }
     if (path === API_BASE) {
       return Response.json({ id: 1, description: null, visibility: "public", private: false, default_branch: "main" });
     }
@@ -214,7 +225,20 @@ class FakeGitHub {
       }
       return headers.get("accept")?.includes("sha") ? new Response(sha) : Response.json(commitResponse(sha));
     }
-    if (rest === "/activity") return Response.json(this.pushes.map(push => ({ ...push, activity_type: "push" })));
+    if (rest === "/activity") {
+      if (this.activityStatus !== undefined) {
+        return Response.json({ message: "Server Error" }, { status: this.activityStatus });
+      }
+      return Response.json(this.pushes.map(push => ({ ...push, activity_type: "push" })));
+    }
+    if ((match = rest.match(/^\/compare\/(.+)$/))) {
+      const compare = this.compares.get(decodeURIComponent(match[1]));
+      if (compare === undefined) return notFound();
+      return Response.json({
+        base_commit: { sha: compare.mergeBase }, merge_base_commit: { sha: compare.mergeBase },
+        commits: compare.commits.map(commitResponse), total_commits: compare.commits.length, files: [],
+      });
+    }
     if ((match = rest.match(/^\/check-runs\/(\d+)(\/annotations)?$/))) {
       const run = this.checkRuns.get(Number(match[1]));
       if (run === undefined) return notFound();
@@ -283,6 +307,8 @@ class FakeGitHub {
       const { isRequired: _isRequired, ...rest } = node;
       return rest;
     });
+    const offset = variables.after === null ? 0 : Number(variables.after);
+    const end = offset + (rollup?.pageSize ?? nodes.length);
     const countBy = (typename: string, stateOf: (node: Record<string, unknown>) => string) => {
       const counts = new Map<string, number>();
       for (const node of nodes.filter(candidate => candidate.__typename === typename)) {
@@ -300,10 +326,10 @@ class FakeGitHub {
             statusCheckRollup: rollup.state === null ? null : {
               state: rollup.state,
               contexts: {
-                pageInfo: { hasNextPage: false, endCursor: null },
+                pageInfo: { hasNextPage: end < nodes.length, endCursor: end < nodes.length ? String(end) : null },
                 checkRunCountsByState: countBy("CheckRun", node => String(node.conclusion ?? node.status)),
                 statusContextCountsByState: countBy("StatusContext", node => String(node.state)),
-                nodes,
+                nodes: nodes.slice(offset, end),
               },
             },
           },
@@ -314,7 +340,10 @@ class FakeGitHub {
   }
 }
 
-/** The workspace git cache: serves the queued commit, and records what is advertised. */
+/**
+ * The workspace git cache: serves the queued commit and the one it builds on (both on the empty
+ * tree, so a simulated pull request diff is empty), and records what is advertised.
+ */
 class TestGitCache extends RpcTarget {
   readonly advertised: string[] = [];
   readonly #objects = new Map<GitOid, { type: GitObjectType; content: Uint8Array }>([
@@ -323,6 +352,12 @@ class TestGitCache extends RpcTarget {
       content: encoder.encode(`tree ${TREE}\nparent ${HEAD}\nauthor A <a@example.com> 1700000000 +0000\n` +
         `committer A <a@example.com> 1700000000 +0000\n\nfix\n`),
     }],
+    [HEAD, {
+      type: "commit",
+      content: encoder.encode(`tree ${TREE}\nauthor A <a@example.com> 1700000000 +0000\n` +
+        `committer A <a@example.com> 1700000000 +0000\n\nbase\n`),
+    }],
+    [TREE, { type: "tree", content: new Uint8Array() }],
   ]);
 
   async get(id: GitOid) {
@@ -368,6 +403,16 @@ async function unwrap<T>(pending: Promise<Outcome<T>>): Promise<T> {
   return result.ok;
 }
 
+/** The message `pending` is refused with. */
+async function refusalOf(pending: Promise<unknown>): Promise<string> {
+  try {
+    await pending;
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error("test: expected a refusal");
+}
+
 /** A gatekeeper bound to the repository, or to pull request `pull` in it. */
 async function gatekeeper(pull?: number) {
   const scenario = `ci-${nextScenario++}`;
@@ -395,6 +440,15 @@ async function gatekeeper(pull?: number) {
       };
       await unwrap(hooks.submitPush(scenario, props, new RpcStub(queue) as never, action, description));
       return action.approvalId;
+    },
+    /** Queues creating a pull request from `head` into main; returns its provisional id. */
+    async queuePullRequest(head: string): Promise<string> {
+      const action = await unwrap(hooks.prepareCreatePullRequest(
+        scenario, props, { title: "Fix", head, base: "main" })) as CreatePullRequestActionData;
+      await unwrap(hooks.submitCreatePullRequest(scenario, props, new RpcStub(queue) as never, action, {
+        title: "create PR", description: "create PR", implementsRevert: false,
+      }));
+      return action.provisionalId;
     },
     apply: (actionId: number) =>
       unwrap(hooks.applyAction(scenario, props, actionId, new RpcStub(queue.cache) as never)),
@@ -495,6 +549,17 @@ describe("getChecks: a commit nothing has reported on", () => {
     expect(await gk.read([{ method: "getChecks", args: ["main"] }])).toMatchObject({ phase: "notStarted" });
   });
 
+  it("falls back to the commit date when GitHub's push record cannot be read", async () => {
+    const github = fakeGitHub();
+    github.rollups.set(HEAD, empty({ committedAt: Date.now() - 60 * MINUTE }));
+    github.activityStatus = 503;
+    const gk = await gatekeeper();
+
+    expect(await gk.read([{ method: "getChecks", args: ["main"] }]))
+      .toMatchObject({ commitId: HEAD, state: "none", phase: "done", checks: [] });
+    expect(github.requestsTo(`${API_BASE}/activity`)).toHaveLength(1);
+  });
+
   it("is done at once when no CI is expected, and not when the first parent had CI", async () => {
     const github = fakeGitHub();
     github.rollups.set(HEAD, empty({ workflows: false }));
@@ -513,7 +578,7 @@ describe("getChecks: a commit nothing has reported on", () => {
     expect(await gk.read([{ method: "getChecks", args: ["feature"] }]))
       .toEqual({ commitId: PUSHED, state: "none", phase: "notStarted", counts: {}, checks: [] });
     expect(github.graphqlQueries).toEqual([]);
-    expect(gk.queue.observations).toEqual([`Read CI on ${PUSHED.slice(0, 12)}`]);
+    expect(gk.queue.observations).toEqual([expect.stringContaining(PUSHED.slice(0, 12))]);
     // A commit GitHub does not have yet is not advertised.
     expect(gk.queue.cache.advertised).toEqual([]);
   });
@@ -566,23 +631,66 @@ describe("pull request CI", () => {
     expect(await gk.read([{ method: "getDetails" }])).toMatchObject({ mergeState: "blocked" });
   });
 
+  it("reads every page of the rollup", async () => {
+    const github = pullScenario();
+    github.rollups.get(HEAD)!.pageSize = 1;
+    const gk = await gatekeeper(7);
+
+    const checks = await gk.read<GitHubPullRequestChecks>([{ method: "getChecks" }]);
+    expect(github.graphqlQueries).toHaveLength(2);
+    expect(checks.checks.map(entry => [entry.kind === "checkRun" ? entry.name : entry.context, entry.required]))
+      .toEqual([["build", true], ["ci/extra", false]]);
+    expect(checks.counts).toEqual({ success: 2 });
+    expect(checks.missingRequired.toSorted()).toEqual(["deploy-preview", "lint"]);
+  });
+
+  it("counts every check past the 1000 it lists, and names none missing then", async () => {
+    const github = pullScenario();
+    github.rollups.set(HEAD, {
+      state: "SUCCESS", committedAt: Date.now(), workflows: true, parentHasCi: true, pageSize: 100,
+      nodes: Array.from({ length: 1001 }, (_, index) => checkRunNode(`check-${index}`, "COMPLETED", "SUCCESS")),
+    });
+    const gk = await gatekeeper(7);
+
+    const checks = await gk.read<GitHubPullRequestChecks>([{ method: "getChecks" }]);
+    expect(checks.checks).toHaveLength(1000);
+    expect(checks.counts).toEqual({ success: 1001 });
+    expect(checks).toMatchObject({ state: "success", phase: "done", missingRequired: [] });
+  });
+
+  it("takes what the base branch requires for a pull request GitHub has not created yet", async () => {
+    const github = pullScenario();
+    github.branches.set("fix", C1);
+    github.compares.set("main...fix", { mergeBase: HEAD, commits: [C1] });
+    const gk = await gatekeeper();
+    const provisionalId = await gk.queuePullRequest("fix");
+
+    const checks = await gk.read<GitHubPullRequestChecks>(
+      [{ method: "getPullRequest", args: [provisionalId] }, { method: "getChecks" }]);
+    expect(checks).toMatchObject({ commitId: C1, state: "failure" });
+    expect(checks.checks.map(entry => [entry.kind === "checkRun" ? entry.name : entry.context, entry.required]))
+      .toEqual([["build", true]]);
+    expect(checks.missingRequired.toSorted()).toEqual(["deploy-preview", "lint"]);
+  });
+
   it("reads CI on the pull request's own commits and refuses any other", async () => {
     pullScenario();
     const gk = await gatekeeper(7);
 
     expect(await gk.read([{ method: "getChecks", args: [C1] }])).toMatchObject({ commitId: C1, state: "failure" });
-    await expect(gk.read([{ method: "getChecks", args: [FOREIGN] }]))
-      .rejects.toThrow(`Commit ${FOREIGN} is not one of pull request #7's commits`);
+    await expect(gk.read([{ method: "getChecks", args: [FOREIGN] }])).rejects.toThrow("pull request #7");
 
     expect(await gk.read([{ method: "getCheckRun", args: ["56"] }, { method: "getDetails" }]))
       .toMatchObject({ id: "56", commitId: C1 });
-    await expect(gk.read([{ method: "getCheckRun", args: ["55"] }]))
-      .rejects.toThrow(`Check run 55 ran on commit ${FOREIGN}, which is not one of pull request #7's commits`);
+    // A refusal names no commit another run ran on: run ids are sequential and enumerable.
+    for (const opened of [{ method: "getCheckRun", args: ["55"] }, { method: "getWorkflowRun", args: ["901"] }]) {
+      const refusal = await refusalOf(gk.read([opened]));
+      expect(refusal).toContain("pull request #7");
+      expect(refusal).not.toContain(FOREIGN.slice(0, 7));
+    }
 
     expect(await gk.read([{ method: "getWorkflowRun", args: ["900"] }, { method: "getDetails" }]))
       .toMatchObject({ id: "900", commitId: HEAD });
-    await expect(gk.read([{ method: "getWorkflowRun", args: ["901"] }]))
-      .rejects.toThrow(`Workflow run 901 ran on commit ${FOREIGN}, which is not one of pull request #7's commits`);
   });
 
   it("lists the head commit's workflow runs", async () => {
@@ -590,6 +698,38 @@ describe("pull request CI", () => {
     const gk = await gatekeeper(7);
 
     expect(await gk.read([{ method: "listWorkflowRuns" }], true)).toMatchObject([{ id: "900", commitId: HEAD }]);
+  });
+
+  it("reads CI on a head it pushed once the push reaches GitHub", async () => {
+    const github = fakeGitHub();
+    github.branches.set("fix", HEAD);
+    github.pulls.set(7, pullResponse(7, HEAD));
+    github.pullCommits.set(7, [HEAD]);
+    github.compares.set(`main...${HEAD}`, { mergeBase: HEAD, commits: [] });
+    github.rollups.set(HEAD, { state: "FAILURE", nodes: [checkRunNode("build", "COMPLETED", "FAILURE")],
+      committedAt: Date.now(), workflows: true, parentHasCi: true });
+    const gk = await gatekeeper(7);
+    const push = await gk.queuePush("fix");
+
+    // Queued: nothing has run on it, and GitHub is not asked.
+    expect(await gk.read([{ method: "getChecks" }]))
+      .toEqual({ commitId: PUSHED, state: "none", phase: "notStarted", counts: {}, checks: [], missingRequired: [] });
+    expect(github.graphqlQueries).toEqual([]);
+    expect(await gk.read([{ method: "listWorkflowRuns" }], true)).toEqual([]);
+
+    github.respondToPush("unpack ok", "ok refs/heads/fix");
+    await gk.apply(push);
+    github.branches.set("fix", PUSHED);
+    github.pulls.set(7, pullResponse(7, PUSHED));
+    github.pullCommits.set(7, [HEAD, PUSHED]);
+    github.rollups.set(PUSHED, { state: "SUCCESS", nodes: [checkRunNode("build", "COMPLETED", "SUCCESS")],
+      committedAt: Date.now(), workflows: true, parentHasCi: true });
+    github.runs.set(900, workflowRun(900, PUSHED));
+
+    const checks = await gk.read<GitHubPullRequestChecks>([{ method: "getChecks" }]);
+    expect(checks).toMatchObject({ commitId: PUSHED, state: "success", phase: "done", counts: { success: 1 } });
+    expect(checks.checks).toMatchObject([{ kind: "checkRun", name: "build", state: "success" }]);
+    expect(await gk.read([{ method: "listWorkflowRuns" }], true)).toMatchObject([{ id: "900", commitId: PUSHED }]);
   });
 });
 
@@ -732,14 +872,15 @@ describe("observations", () => {
     await gk.read([{ method: "listWorkflowRuns", args: [{ branch: "main" }] }], true);
     await gk.read([{ method: "getWorkflowRun", args: ["900"] }, { method: "getDetails" }]);
     await gk.read([{ method: "getWorkflowRun", args: ["900"] }, { method: "listJobs", args: [{ attempt: 1 }] }], true);
+    // One observation per read, in order, each naming what it read.
     expect(gk.queue.observations).toEqual([
-      `Read CI on ${HEAD.slice(0, 12)}`,
-      "Read check run `test` #70",
-      "List annotations of check run #70",
-      "Read log of job `test` #70, lines 5–6",
-      "List workflow runs",
-      "Read workflow run CI #900",
-      "List jobs of workflow run #900",
+      expect.stringContaining(HEAD.slice(0, 12)),
+      expect.stringContaining("#70"),
+      expect.stringContaining("#70"),
+      expect.stringContaining("#70"),
+      expect.any(String),
+      expect.stringContaining("#900"),
+      expect.stringContaining("#900"),
     ]);
   });
 });

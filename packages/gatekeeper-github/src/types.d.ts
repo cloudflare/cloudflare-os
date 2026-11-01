@@ -472,7 +472,8 @@ export type GitHubPullRequestChecks = Omit<GitHubCommitChecks, "checks"> & {
   checks: (GitHubCheckEntry & { required: boolean })[];
   /**
    * Names of checks the base branch requires that have not reported on this commit; the pull
-   * request cannot merge until they do. Empty when the requirements are not visible to you.
+   * request cannot merge until they do. Empty when the requirements are not visible to you, and
+   * when more than 1000 checks reported (a required one may be among those not listed).
    */
   missingRequired: string[];
 };
@@ -573,11 +574,16 @@ export type GitHubWorkflowRunDetails = GitHubWorkflowRunSummary & {
 
 /** Filters for listing workflow runs. */
 export type GitHubWorkflowRunFilter = GitHubPageOptions & {
+  /**
+   * Only runs whose head branch has this name. Pull requests from forks count too when their
+   * branch has the same name, so for a branch's own history add `event: "push"`.
+   */
   branch?: string;
   /** Only runs on this full commit id. */
   commitId?: string;
   /** Only runs triggered by this event, e.g. `"push"`. */
   event?: string;
+  /** Only runs in this state. */
   state?: Exclude<GitHubCheckState, "unknown">;
 };
 
@@ -695,7 +701,8 @@ export type GitHubPullRequestDetails = GitHubIssueDetails & GitHubPullRequestSum
    * Why it can or cannot merge: `clean` (it can); `unstable` (it can, but checks are not all
    * passing); `hasHooks` (it can, with passing checks and pre-receive hooks); `blocked` (required
    * checks or reviews are missing); `behind` (the base branch must be merged in first); `dirty`
-   * (it conflicts); `draft`; `unknown` (not computed yet, e.g. just after a push -- read again).
+   * (it conflicts); `draft`; `unknown` (not computed yet: read again shortly; it also stays
+   * `unknown` until commits you pushed to the pull request have reached GitHub).
    */
   mergeState: "clean" | "blocked" | "behind" | "dirty" | "unstable" | "hasHooks" | "draft" | "unknown";
   /** Requested reviewers who have not yet submitted a review. */
