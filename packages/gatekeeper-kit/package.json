@@ -41,7 +41,7 @@
     "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "diff": "catalog:",
-    "jose": "^6.2.12"
+    "jose": "^6.2.13"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",
