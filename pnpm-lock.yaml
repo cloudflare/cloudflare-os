@@ -435,8 +435,8 @@ importers:
         specifier: 'catalog:'
         version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
       postal-mime:
-        specifier: ^2.7.6
-        version: 2.7.6
+        specifier: ^4.0.8
+        version: 4.0.8
     devDependencies:
       '@gadgets/scripts':
         specifier: workspace:*
@@ -552,8 +552,8 @@ importers:
         specifier: ^3.0.28
         version: 3.0.28
       postal-mime:
-        specifier: ^2.7.6
-        version: 2.7.6
+        specifier: ^4.0.8
+        version: 4.0.8
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 'catalog:'
@@ -3076,6 +3076,7 @@ packages:
   '@smithy/core@3.34.1':
     resolution: {integrity: sha512-dLcOUxz8YCv1RZUMKq6GbyUf95pLbrqh34bPvpCZ1+CByFF31BEAFewZjsGCnVsZTKdThNENfGyAgk2TJqVwSw==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.4.16':
     resolution: {integrity: sha512-QfuLWAkLzptffFW980AFeHZFdqds2B64rpEd3uJ6lgs3xVn9QegGMUgUcj+4d7dRrAsya3r58ZKpku97WcFb4w==}
@@ -5124,8 +5125,9 @@ packages:
     resolution: {integrity: sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg==}
     engines: {node: '>= 0.4'}
 
-  postal-mime@2.7.6:
-    resolution: {integrity: sha512-UUlyE2KlxmvwMGq060onF/VWU3zD6dVW31FwokQ5v26jWd35fbs2MoTFzh+jXnPwAyV2MULMKXcBInGOl5TO6Q==}
+  postal-mime@4.0.8:
+    resolution: {integrity: sha512-nnAgc4a9hn7zYuQmX4C7LU+fN47kR5S8cE8zvB/vZ2NimNDbaj+ISZJ9qe3CKIfn2uOTwwz4nQeIyljvdFNgOA==}
+    engines: {node: '>=20'}
 
   postcss@8.5.25:
     resolution: {integrity: sha512-DTPx3RWSSnWyzLxQnlH0rJP+EW5ekl16ZU4/psbIhA0e53kJfdgaN5vKM+xP7yJtXVu+nfdVFmlgFDEKAe4Pyw==}
@@ -9549,7 +9551,7 @@ snapshots:
 
   possible-typed-array-names@1.1.0: {}
 
-  postal-mime@2.7.6: {}
+  postal-mime@4.0.8: {}
 
   postcss@8.5.25:
     dependencies:
