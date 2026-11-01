@@ -44,17 +44,53 @@ import {
   withAccountApi,
   type GitHubOAuthGrant,
   type ConditionalRequestResult,
+  type GitHubCheckAnnotationResponse,
   type GitHubCompareResponse,
   type GitHubIssueCommentResponse,
   type GitHubIssueResponse,
   type GitHubLabelResponse,
+  type GitHubGraphqlResult,
   type GitHubPullFileResponse,
   type GitHubPullRequestResponse,
   type GitHubPullRequestReviewCommentResponse,
   type GitHubPullRequestReviewResponse,
+  type GitHubWorkflowJobResponse,
+  type GitHubWorkflowRunResponse,
   type PinnedRepo,
 } from "./github-api";
 import { getBasePath, getBaseUrl, webhookOrigin, type Env } from "./github-env";
+import {
+  ACTIONS_APP_SLUG,
+  CI_START_WINDOW_MS,
+  MAX_CHECK_ENTRIES,
+  MAX_PULL_COMMITS,
+  PENDING_DEPLOYMENT_QUERY,
+  ROLLUP_QUERY,
+  absencePhaseOf,
+  actionsJobIdOf,
+  annotationOf,
+  checkRunDetailsOf,
+  checkRunIdOfUrl,
+  countStates,
+  countsFromRollup,
+  entryName,
+  hasWorkflowFiles,
+  jobSummaryOf,
+  mergeStateOf,
+  parseCiId,
+  pendingDeploymentOf,
+  phaseOf,
+  queuedCommitChecks,
+  rollupEntryOf,
+  rollupPhaseOf,
+  rollupStateOf,
+  workflowRunDetailsOf,
+  workflowRunStatusFilter,
+  workflowRunSummaryOf,
+  type GqlDeploymentRequest,
+  type GqlRollupData,
+  type RollupEntry,
+} from "./github-ci";
 import {
   HOOKS_NOT_CONFIGURED, handleWebhookRequest,
   type GitHubEventHookTarget, type GitHubHookDelivery, type GitHubHookParams,
@@ -69,6 +105,7 @@ import {
   parseUnifiedPatch,
   type TreeDiffSource,
 } from "@gadgets/gatekeeper-kit/git-diff";
+import { CiLogCache, CiLogTooLargeError, pageCiLog, readCiLog, type CiLog } from "@gadgets/gatekeeper-kit/ci-log";
 import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import {
   commitIdsOfSummary,
@@ -96,8 +133,14 @@ import {
 import GITHUB_LOGO_SVG from "./github-logo.svg";
 import type {
   GitHubActor,
+  GitHubAnnotation,
   GitHubBranchFilter,
   GitHubBranchSummary,
+  GitHubCheckRun,
+  GitHubCheckRunDetails,
+  GitHubCheckRunSummary,
+  GitHubCheckState,
+  GitHubCommitChecks,
   GitHubCommitDetails,
   GitHubCommitFilter,
   GitHubCommitSummary,
@@ -117,10 +160,13 @@ import type {
   GitHubIssueState,
   GitHubIssueSummary,
   GitHubLabel,
+  GitHubLogOptions,
+  GitHubLogPage,
   GitHubPageOptions,
   GitHubPullRequest,
   GitHubPullRequestBranchRef,
   GitHubPullRequestDetails,
+  GitHubPullRequestChecks,
   GitHubPullRequestDiff,
   GitHubPullRequestDiffFile,
   GitHubPullRequestEvent,
@@ -137,6 +183,10 @@ import type {
   GitHubSubmittedDiffComment,
   GitHubSubscribeOptions,
   GitHubTagSummary,
+  GitHubWorkflowRun,
+  GitHubWorkflowRunDetails,
+  GitHubWorkflowRunFilter,
+  GitHubWorkflowRunSummary,
 } from "./types";
 import TYPES_CODE from "./types.txt";
 import {
@@ -582,6 +632,13 @@ const MAX_REPLY_TARGET_HOPS = 50;
 // Cap on the queued-but-not-yet-pushed commits walked when simulating a branch's history
 // (mirrors GitHub's own 250-commit cap on compare listings).
 const MAX_PENDING_CHAIN_COMMITS = 250;
+// When this gatekeeper applied a push of each commit (`ciPushApplied:<sha>` -> epoch ms): the CI
+// absence policy's best "became the head" time. Only CI_START_WINDOW_MS of history matters, so
+// older records are pruned, and the family is capped.
+const APPLIED_PUSH_PREFIX = "ciPushApplied:";
+const MAX_APPLIED_PUSHES = 100;
+/** The log of a job that has not finished: read as no lines yet. */
+const EMPTY_CI_LOG: CiLog = { lines: [], firstLine: 1, totalLines: 0 };
 
 const GITHUB_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GITHUB_LOGO_SVG)}`;
 
@@ -870,6 +927,7 @@ function normalizePullDetails(
     ...normalizeIssueDetails(owner, repo, response),
     ...normalizePullSummary(owner, repo, response),
     mergeable: response.mergeable ?? undefined,
+    mergeState: mergeStateOf(response.mergeable_state),
     requestedReviewers: actorsFromUsers(response.requested_reviewers),
     commits: response.commits,
     additions: response.additions,
@@ -887,6 +945,7 @@ function summarizePullDetails(details: GitHubPullRequestDetails): GitHubPullRequ
   const {
     bodyMarkdown: _bodyMarkdown,
     mergeable: _mergeable,
+    mergeState: _mergeState,
     requestedReviewers: _requestedReviewers,
     commits: _commits,
     additions: _additions,
@@ -2776,8 +2835,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * Overlay queued pushes onto an existing pull request's head: when the (same-repo) head branch
    * has pending pushes, the details read as if they had landed -- simulated head sha and
-   * recomputed commit/diff stats. `mergeable` is dropped: GitHub's verdict describes the remote
-   * head, not the simulated one. Degrades to the remote details if the simulation fails.
+   * recomputed commit/diff stats. `mergeable` and `mergeState` are dropped: GitHub's verdict
+   * describes the remote head, not the simulated one. Degrades to the remote details if the
+   * simulation fails.
    */
   async #overlaySimulatedPullHead(
     details: GitHubPullRequestDetails,
@@ -2799,6 +2859,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         deletions: simulated.deletions,
         changedFiles: simulated.files.length,
         mergeable: undefined,
+        mergeState: "unknown",
       };
     } catch (error) {
       logger.warn("failed to overlay queued pushes onto pull request details", {
@@ -2846,7 +2907,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async #getRemotePullRequestDetails(realId: string): Promise<GitHubPullRequestDetails> {
-    const key = this.#cacheKey("pull", realId);
+    // v2: the details gained `mergeState`, and etag revalidation can keep an old-shaped entry alive.
+    const key = this.#cacheKey("pull-v2", realId);
     const details = await this.#loadCachedWithEtag<GitHubPullRequestDetails>(
       key,
       ENTITY_CACHE_TTL_MS,
@@ -2973,6 +3035,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         repo: repoRef(this.ctx.props.owner, this.ctx.props.repo),
       },
       mergeable: undefined,
+      mergeState: "unknown",
       requestedReviewers: [],
       commits,
       additions,
@@ -4200,6 +4263,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             api.getBranchHead(action.owner, action.repo, action.branch));
           if (head !== action.newSha) throw this.#pushRefusal(action, head, error);
         }
+        this.#recordAppliedPush(action.newSha);
         this.#markActionApproved(action);
         this.#clearCaches();
         return;
@@ -5345,6 +5409,433 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     });
   }
 
+  // -- CI ---------------------------------------------------------------------------------------
+  //
+  // Status reads are never cached: CI moves on its own, and a poll must see it move. Finished job
+  // logs are (#ciLogCache), revalidated against GitHub before each use. A pull request binding sees
+  // CI only on the pull request's own commits (#assertPullCommitOf).
+
+  #ciLogs?: CiLogCache;
+
+  /** Finished job logs, so following up on one (another page, a search) does not refetch it. */
+  #ciLogCache(): CiLogCache {
+    return this.#ciLogs ??= new CiLogCache(this.ctx.storage.kv, { prefix: "ciLog:" });
+  }
+
+  /**
+   * Records when this gatekeeper made `sha` a branch head (see APPLIED_PUSH_PREFIX), pruning
+   * records past the window and capping the family. A retried apply keeps the first record.
+   */
+  #recordAppliedPush(sha: GitOid): void {
+    const kv = this.ctx.storage.kv;
+    const now = Date.now();
+    const key = `${APPLIED_PUSH_PREFIX}${sha}`;
+    const live: [string, number][] = [];
+    for (const [stored, at] of kv.list<number>({ prefix: APPLIED_PUSH_PREFIX })) {
+      if (now - at >= CI_START_WINDOW_MS) kv.delete(stored);
+      else live.push([stored, at]);
+    }
+    if (live.some(([stored]) => stored === key)) return;
+    const excess = Math.max(0, live.length - MAX_APPLIED_PUSHES + 1);
+    for (const [stale] of live.toSorted((a, b) => a[1] - b[1]).slice(0, excess)) kv.delete(stale);
+    kv.put(key, now);
+  }
+
+  /**
+   * When `sha` became a head, for the absence policy: this gatekeeper's record of pushing it, else
+   * GitHub's record of a push that left `branch` at it, else its committer date. GitHub's record
+   * is asked for only once the committer date is out of the window, since a push cannot predate
+   * its commit and so could only move the time later; it is best-effort.
+   */
+  async #becameHeadAt(
+    sha: GitOid, branch: string | undefined, committedAt: number | undefined, now: number,
+  ): Promise<number | undefined> {
+    const applied = this.ctx.storage.kv.get<number>(`${APPLIED_PUSH_PREFIX}${sha}`);
+    if (applied !== undefined) return applied;
+    if (branch !== undefined && (committedAt === undefined || now - committedAt >= CI_START_WINDOW_MS)) {
+      try {
+        const pushes = await this.#withApi(api =>
+          api.listBranchPushes(this.ctx.props.owner, this.ctx.props.repo, branch));
+        const push = pushes.find(entry => entry.after === sha);
+        if (push !== undefined) return Date.parse(push.timestamp);
+      } catch (error) {
+        if (!(error instanceof GitHubApiError) || error.rateLimited || error.status >= 500) throw error;
+        logger.warn("failed to read a branch's pushes", { event: "ci.pushes.read.failed", error });
+      }
+    }
+    return committedAt;
+  }
+
+  /**
+   * A commit's status check rollup through GraphQL: its entries (paged, at most
+   * MAX_CHECK_ENTRIES), GitHub's counts by state over all of them, and from the first page what the
+   * absence policy needs. `pullNumber` asks each entry whether that pull request requires it.
+   * Undefined when GitHub does not have the commit.
+   */
+  async #fetchRollup(sha: GitOid, pullNumber: number | undefined): Promise<{
+    state: GitHubCommitChecks["state"];
+    entries: RollupEntry[];
+    counts: Partial<Record<GitHubCheckState, number>>;
+    /** Whether entries past MAX_CHECK_ENTRIES were left unread. */
+    truncated: boolean;
+    committedAt: number | undefined;
+    ciExpected: boolean;
+  } | undefined> {
+    const { owner, repo } = this.ctx.props;
+    const entries: RollupEntry[] = [];
+    let first: {
+      state: GitHubCommitChecks["state"];
+      counts: Partial<Record<GitHubCheckState, number>> | undefined;
+      committedAt: number | undefined;
+      ciExpected: boolean;
+    } | undefined;
+    let after: string | null = null;
+    for (;;) {
+      const result: GitHubGraphqlResult<GqlRollupData> = await this.#readApi(api =>
+        api.queryRepository<GqlRollupData>(owner, repo, ROLLUP_QUERY, {
+          oid: sha, workflows: `${sha}:.github/workflows`, after, first: first === undefined,
+          withPull: pullNumber !== undefined, pull: pullNumber ?? null,
+        }));
+      if (result.errors.length > 0) {
+        logger.warn("GitHub answered a CI query with partial data", {
+          event: "ci.graphql.partial", graphqlErrorCount: result.errors.length,
+        });
+      }
+      const commit = result.data.repository?.object;
+      if (!commit?.committedDate) return undefined;
+      const rollup = commit.statusCheckRollup ?? null;
+      if (first === undefined) {
+        const checkRuns = rollup?.contexts.checkRunCountsByState;
+        const statuses = rollup?.contexts.statusContextCountsByState;
+        const committedAt = Date.parse(commit.committedDate);
+        first = {
+          state: rollupStateOf(rollup?.state),
+          counts: rollup === null ? {}
+            : checkRuns && statuses ? countsFromRollup(checkRuns, statuses) : undefined,
+          committedAt: Number.isNaN(committedAt) ? undefined : committedAt,
+          ciExpected: hasWorkflowFiles(result.data.repository?.workflows?.entries) ||
+            commit.parents?.nodes?.[0]?.statusCheckRollup != null,
+        };
+      }
+      for (const node of rollup?.contexts.nodes ?? []) {
+        if (node !== null && entries.length < MAX_CHECK_ENTRIES) entries.push(rollupEntryOf(node));
+      }
+      const page = rollup?.contexts.pageInfo;
+      if (!page?.hasNextPage || page.endCursor === null || entries.length >= MAX_CHECK_ENTRIES) {
+        return {
+          ...first,
+          counts: first.counts ?? countStates(entries.map(entry => entry.state)),
+          entries,
+          truncated: page?.hasNextPage === true,
+        };
+      }
+      after = page.endCursor;
+    }
+  }
+
+  /**
+   * CI on a commit: the rollup and its phase, or for a commit nothing has reported on, the absence
+   * policy's. `branch` is a branch the commit is or was the head of, whose push record GitHub may
+   * have. Undefined when GitHub does not have the commit.
+   */
+  async #commitChecks(sha: GitOid, options: { branch?: string; pullNumber?: number })
+      : Promise<(Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[] }) | undefined> {
+    const rollup = await this.#fetchRollup(sha, options.pullNumber);
+    if (rollup === undefined) return undefined;
+    // Past the entry cap, the unread entries' phases are judged from the counts alone, where a
+    // `waiting` one reads as blocked.
+    const phases = rollup.entries.map(entry => entry.phase);
+    if (rollup.truncated) {
+      phases.push(...(Object.keys(rollup.counts) as GitHubCheckState[]).map(state => phaseOf(state)));
+    }
+    let phase = rollupPhaseOf(rollup.state, phases);
+    if (phase === undefined) {
+      const now = Date.now();
+      const pushQueued = this.isCommitPendingPush(sha);
+      phase = absencePhaseOf({
+        pushQueued,
+        ciExpected: rollup.ciExpected,
+        becameHeadAt: pushQueued || !rollup.ciExpected
+          ? undefined : await this.#becameHeadAt(sha, options.branch, rollup.committedAt, now),
+        now,
+      });
+    }
+    return { commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries };
+  }
+
+  /**
+   * CI on the commit `ref` reads at, as `resolveRef` resolves it: a branch with queued pushes reads
+   * at its simulated head. A commit GitHub does not have yet, which only a queued push will
+   * deliver, has had nothing reported on it, and GitHub is not asked.
+   */
+  async repoChecks(refOrDefault: string | undefined, gitCache: RpcStub<GitCache>): Promise<GitHubCommitChecks> {
+    const ref = refOrDefault ?? (await this.#getRepoMetadata()).defaultBranch;
+    const { id, fromCache } = await this.resolveRef(ref, gitCache);
+    if (fromCache) return queuedCommitChecks(id);
+    const checks = await this.#commitChecks(id,
+      { branch: isCommitOid(ref) ? undefined : ref.replace(/^refs\/heads\//, "") });
+    if (checks === undefined) throw new Error(`Commit ${id} was not found in ${this.#repoFullName()}.`);
+    return checks;
+  }
+
+  /**
+   * A pull request's details as CI reads see them (the head counting queued pushes), with its
+   * number on GitHub once it has one.
+   */
+  async #pullForCi(logicalId: string, gitCache: RpcStub<GitCache>)
+      : Promise<{ details: GitHubPullRequestDetails; number: number | undefined }> {
+    const details = await this.#getPullRequestDetails(logicalId, gitCache);
+    const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId) : logicalId;
+    return { details, number: realId === undefined ? undefined : Number(realId) };
+  }
+
+  /**
+   * Throws unless `sha` is one of the pull request's commits: its head (counting queued pushes), or
+   * among the first MAX_PULL_COMMITS its commit listing shows (GitHub lists no more). `subject`
+   * names what ran on `sha`, for the refusal; omitted, the refusal is about the commit itself.
+   */
+  async #assertPullCommitOf(
+    logicalId: string, details: GitHubPullRequestDetails, sha: string, gitCache: RpcStub<GitCache>,
+    subject?: string,
+  ): Promise<void> {
+    if (sha === details.head.sha) return;
+    const cursor = await this.pullCommits(logicalId, REMOTE_PAGE_SIZE, gitCache);
+    for (let seen = 0, page = await cursor.next(); page !== null && seen < MAX_PULL_COMMITS;
+         seen += page.length, page = await cursor.next()) {
+      if (page.slice(0, MAX_PULL_COMMITS - seen).some(commit => commit.id === sha)) return;
+    }
+    throw new Error(`${subject === undefined ? `Commit ${sha}` : `${subject} ran on commit ${sha}, which`} ` +
+      `is not one of pull request #${logicalId}'s commits: only its head and the first ` +
+      `${MAX_PULL_COMMITS} commits listCommits() lists are.`);
+  }
+
+  /** `#assertPullCommitOf`, for a session holding a check run's or workflow run's commit. */
+  async assertPullCommit(logicalId: string, sha: string, gitCache: RpcStub<GitCache>, subject: string): Promise<void> {
+    const { details } = await this.#pullForCi(logicalId, gitCache);
+    await this.#assertPullCommitOf(logicalId, details, sha, gitCache, subject);
+  }
+
+  /**
+   * The status checks `branch` requires before merging, from the rulesets that apply to it and its
+   * classic protection, as far as this account can see them. Best-effort: a source GitHub does not
+   * show (403, 404, or a renamed branch's redirect) counts as requiring nothing.
+   */
+  async #requiredContexts(branch: string): Promise<string[]> {
+    const { owner, repo } = this.ctx.props;
+    return await this.#cachedRead(this.#cacheKey("required-checks", stableKey(branch)), ENTITY_CACHE_TTL_MS, async () => {
+      const visible = async <T>(read: (api: GitHubApi) => Promise<T>): Promise<T | undefined> => {
+        try {
+          return await this.#withApi(read);
+        } catch (error) {
+          if (error instanceof GitHubApiError && [301, 403, 404].includes(error.status)) return undefined;
+          throw error;
+        }
+      };
+      const [rules, protection] = await Promise.all([
+        visible(api => api.getBranchRules(owner, repo, branch)),
+        visible(api => api.getBranchProtectionChecks(owner, repo, branch)),
+      ]);
+      const names = new Set<string>();
+      for (const rule of rules ?? []) {
+        if (rule.type !== "required_status_checks") continue;
+        for (const check of rule.parameters?.required_status_checks ?? []) names.add(check.context);
+      }
+      for (const context of protection?.contexts ?? []) names.add(context);
+      for (const check of protection?.checks ?? []) names.add(check.context);
+      return [...names];
+    });
+  }
+
+  /**
+   * CI on one of a pull request's commits, by default its head (counting queued pushes), with what
+   * the base branch requires. A commit GitHub does not have yet has had nothing reported on it.
+   */
+  async pullChecks(logicalId: string, commitId: string | undefined, gitCache: RpcStub<GitCache>)
+      : Promise<GitHubPullRequestChecks> {
+    if (commitId !== undefined && !isCommitOid(commitId)) {
+      throw new Error(`getChecks() takes a full 40-character commit id; got ${JSON.stringify(commitId)}.`);
+    }
+    const { details, number } = await this.#pullForCi(logicalId, gitCache);
+    const sha = commitId ?? details.head.sha;
+    if (!isCommitOid(sha)) throw new Error(`Pull request #${logicalId} has no head commit yet.`);
+    await this.#assertPullCommitOf(logicalId, details, sha, gitCache);
+    const checks = this.isSimulatedCommitId(sha) ? undefined : await this.#commitChecks(sha, {
+      branch: isOwnHead(details) ? details.head.ref : undefined, pullNumber: number,
+    });
+    if (checks === undefined) return { ...queuedCommitChecks(sha), checks: [], missingRequired: [] };
+    const required = await this.#requiredContexts(details.base.ref);
+    const reported = new Set(checks.checks.map(entryName));
+    return {
+      ...checks,
+      checks: checks.checks.map(entry => {
+        const { isRequired, ...rest } = entry;
+        return { ...rest, required: isRequired ?? false } as GitHubPullRequestChecks["checks"][number];
+      }),
+      missingRequired: required.filter(name => !reported.has(name)),
+    };
+  }
+
+  /**
+   * Opens a check run by its id, or by the id of the GitHub Actions job behind it (which Actions
+   * job URLs carry), returning the check run's id and commit. Not an observation.
+   */
+  async openCheckRun(id: string): Promise<{ id: number; commitId: string }> {
+    const { owner, repo } = this.ctx.props;
+    const number = parseCiId(id, "check run");
+    try {
+      const run = await this.#withApi(api => api.getCheckRun(owner, repo, number));
+      return { id: run.id, commitId: run.head_sha };
+    } catch (error) {
+      if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
+    }
+    let job: GitHubWorkflowJobResponse;
+    try {
+      job = await this.#withApi(api => api.getWorkflowJob(owner, repo, number));
+    } catch (error) {
+      if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
+      throw new Error(`No check run or GitHub Actions job ${id} exists in ${this.#repoFullName()}.`, { cause: error });
+    }
+    const checkRunId = checkRunIdOfUrl(job.check_run_url);
+    if (checkRunId === undefined) throw new Error(`GitHub Actions job ${id} has no check run.`);
+    return { id: checkRunId, commitId: job.head_sha };
+  }
+
+  async checkRunDetails(checkRunId: number): Promise<GitHubCheckRunDetails> {
+    const { owner, repo } = this.ctx.props;
+    const run = await this.#withApi(api => api.getCheckRun(owner, repo, checkRunId));
+    const job = run.app?.slug === ACTIONS_APP_SLUG
+      ? await this.#withApi(api => api.getWorkflowJob(owner, repo, actionsJobIdOf(run)))
+      : undefined;
+    // A waiting job is held by a deployment environment, which only GraphQL describes.
+    const pending = run.status === "waiting"
+      ? (await this.#readApi(api => api.graphql<{ node: { pendingDeploymentRequest?: GqlDeploymentRequest | null } | null }>(
+        PENDING_DEPLOYMENT_QUERY, { id: run.node_id }))).data.node?.pendingDeploymentRequest
+      : undefined;
+    return checkRunDetailsOf(run, job, pendingDeploymentOf(pending));
+  }
+
+  async checkRunAnnotations(checkRunId: number, pageSize: number): Promise<Cursor<GitHubAnnotation>> {
+    const { owner, repo } = this.ctx.props;
+    return new StreamingCursor<GitHubAnnotation, GitHubCheckAnnotationResponse>({
+      fetchPage: (page, perPage) =>
+        this.#withApi(api => api.listCheckRunAnnotations(owner, repo, checkRunId, page, perPage)),
+      overlay: annotationOf,
+      comparator: () => 0,
+      injectedItems: [],
+      pageSize,
+    });
+  }
+
+  /**
+   * One page of a GitHub Actions job's log, with the check run's name for the observation. The
+   * check run is re-read first, uncached: its status says whether the log is final, and an
+   * unfinished job's log is not read. A finished log is downloaded once and cached, but each read
+   * first asks GitHub for the log again -- it answers with a short-lived download location, not
+   * the log -- so a log GitHub has deleted stops being served. The download goes to GitHub's blob
+   * storage, without the token.
+   */
+  async readCheckRunLog(checkRunId: number, options: GitHubLogOptions | undefined)
+      : Promise<{ name: string; page: GitHubLogPage }> {
+    // Validates the options before anything is fetched.
+    const unfinished = pageCiLog(EMPTY_CI_LOG, options, false);
+    const { owner, repo } = this.ctx.props;
+    const run = await this.#withApi(api => api.getCheckRun(owner, repo, checkRunId));
+    if (run.app?.slug !== ACTIONS_APP_SLUG) {
+      const details = run.details_url ?? run.html_url;
+      throw new Error(`Check run ${checkRunId} (${run.name}) was reported by ${run.app?.name ?? "an app"}, ` +
+        `not GitHub Actions, so it has no log to read here.${details ? ` See ${details} instead.` : ""}`);
+    }
+    if (run.status !== "completed") return { name: run.name, page: unfinished };
+    const jobId = actionsJobIdOf(run);
+    const cache = this.#ciLogCache();
+    const cacheKey = String(jobId);
+    const location = await this.#withApi(api => api.getWorkflowJobLogLocation(owner, repo, jobId));
+    if (location === null) {
+      const wasCached = cache.get(cacheKey) !== undefined;
+      cache.delete(cacheKey);
+      throw new Error(wasCached
+        ? `GitHub has deleted the log of job ${jobId}.`
+        : `GitHub has no log for job ${jobId}: it has been deleted, or is not available yet.`);
+    }
+    let log = cache.get(cacheKey);
+    if (log === undefined) {
+      try {
+        log = await readCiLog(await this.#withApi(api => api.downloadJobLog(location)), "github");
+      } catch (error) {
+        if (!(error instanceof CiLogTooLargeError)) throw error;
+        throw new Error(`The log of job ${jobId} is too large to read here; open it on GitHub: ${run.html_url}`,
+          { cause: error });
+      }
+      cache.put(cacheKey, log);
+    }
+    return { name: run.name, page: pageCiLog(log, options, true) };
+  }
+
+  async listWorkflowRuns(filter: GitHubWorkflowRunFilter | undefined, pageSize: number)
+      : Promise<Cursor<GitHubWorkflowRunSummary>> {
+    const { owner, repo } = this.ctx.props;
+    if (filter?.commitId !== undefined && !isCommitOid(filter.commitId)) {
+      throw new Error(`commitId must be a full 40-character commit id; got ${JSON.stringify(filter.commitId)}.`);
+    }
+    const status = workflowRunStatusFilter(filter?.state);
+    return new StreamingCursor<GitHubWorkflowRunSummary, GitHubWorkflowRunResponse>({
+      fetchPage: (page, perPage) => this.#withApi(api => api.listWorkflowRuns(owner, repo, {
+        branch: filter?.branch, head_sha: filter?.commitId, event: filter?.event, status, page, per_page: perPage,
+      })),
+      // GitHub's status filter is broader than some states (a startup failure has none of its own).
+      overlay: run => {
+        const summary = workflowRunSummaryOf(run);
+        return filter?.state === undefined || summary.state === filter.state ? summary : null;
+      },
+      comparator: () => 0,
+      injectedItems: [],
+      pageSize,
+    });
+  }
+
+  /**
+   * The workflow runs of a pull request's head commit. A head only a queued push will deliver has
+   * none yet, and GitHub is not asked.
+   */
+  async pullWorkflowRuns(logicalId: string, pageSize: number, gitCache: RpcStub<GitCache>)
+      : Promise<Cursor<GitHubWorkflowRunSummary>> {
+    const { details } = await this.#pullForCi(logicalId, gitCache);
+    const sha = details.head.sha;
+    if (!isCommitOid(sha) || this.isSimulatedCommitId(sha)) return new ArrayCursor([], pageSize);
+    return await this.listWorkflowRuns({ commitId: sha }, pageSize);
+  }
+
+  /** Opens a workflow run, returning its id and commit. Not an observation. */
+  async openWorkflowRun(id: string): Promise<{ id: number; commitId: string }> {
+    const number = parseCiId(id, "workflow run");
+    try {
+      const run = await this.#withApi(api =>
+        api.getWorkflowRun(this.ctx.props.owner, this.ctx.props.repo, number));
+      return { id: run.id, commitId: run.head_sha };
+    } catch (error) {
+      if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
+      throw new Error(`No workflow run ${id} exists in ${this.#repoFullName()}.`, { cause: error });
+    }
+  }
+
+  async workflowRunDetails(runId: number): Promise<GitHubWorkflowRunDetails> {
+    return workflowRunDetailsOf(await this.#withApi(api =>
+      api.getWorkflowRun(this.ctx.props.owner, this.ctx.props.repo, runId)));
+  }
+
+  async workflowRunJobs(runId: number, attempt: number | undefined, pageSize: number)
+      : Promise<Cursor<GitHubCheckRunSummary>> {
+    const { owner, repo } = this.ctx.props;
+    return new StreamingCursor<GitHubCheckRunSummary, GitHubWorkflowJobResponse>({
+      fetchPage: (page, perPage) =>
+        this.#withApi(api => api.listWorkflowRunJobs(owner, repo, runId, attempt, page, perPage)),
+      overlay: jobSummaryOf,
+      comparator: () => 0,
+      injectedItems: [],
+      pageSize,
+    });
+  }
+
   async prepareCreateIssue(options: GitHubCreateIssueOptions): Promise<CreateIssueAction> {
     return {
       type: "createIssue",
@@ -5824,6 +6315,40 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
     return await this.#gitCache.wrap(cursor, commitIdsOfSummary);
   }
 
+  async getChecks(ref?: string): Promise<GitHubCommitChecks> {
+    const checks = await this.#gatekeeper.repoChecks(ref, await this.#gitCache.stub());
+    await this.#approvalQueue.authorizeObservation({
+      title: `Read CI on ${checks.commitId.slice(0, 12)}`,
+      description: `Read the check runs and commit statuses on commit ${checks.commitId}`
+        + `${ref === undefined ? " (head of the default branch)"
+          : ref === checks.commitId ? "" : ` (resolved from "${ref}")`} in the GitHub repository.`,
+    });
+    // A simulated head (a queued push's commit) is withheld from advertising.
+    await this.#gitCache.advertise([checks.commitId]);
+    return checks;
+  }
+
+  /** Opening is not an observation (see getIssue); the stub's reads record their own. */
+  async getCheckRun(id: string): Promise<GitHubCheckRun> {
+    const run = await this.#gatekeeper.openCheckRun(id);
+    return new GitHubCheckRunImpl(this.#gatekeeper, this.#approvalQueue.dup(), run.id);
+  }
+
+  async listWorkflowRuns(options?: GitHubWorkflowRunFilter): Promise<Cursor<GitHubWorkflowRunSummary>> {
+    await this.#approvalQueue.authorizeObservation({
+      title: `List workflow runs`,
+      description: `List GitHub Actions workflow runs in the GitHub repository.`,
+    });
+    const cursor = await this.#gatekeeper.listWorkflowRuns(options, pageSizeOf(options));
+    return await this.#gitCache.wrap(cursor, run => [run.commitId]);
+  }
+
+  /** Opening is not an observation (see getIssue); the stub's reads record their own. */
+  async getWorkflowRun(id: string): Promise<GitHubWorkflowRun> {
+    const run = await this.#gatekeeper.openWorkflowRun(id);
+    return new GitHubWorkflowRunImpl(this.#gatekeeper, this.#approvalQueue.dup(), run.id);
+  }
+
   async subscribe(hook: RpcStub<GitHubEventHookTarget>, options?: GitHubSubscribeOptions): Promise<void> {
     await this.#gatekeeper.bindEventHook(this.#approvalQueue, undefined, hook, options);
   }
@@ -6033,6 +6558,145 @@ export class GitHubPullRequestImpl extends GitHubIssueImpl implements GitHubPull
       title: `Merge pull request #${this.logicalId}`,
       implementsRevert: false,
     });
+  }
+
+  async getChecks(commitId?: string): Promise<GitHubPullRequestChecks> {
+    const checks =
+      await this.gatekeeper.pullChecks(this.logicalId, commitId, await this.#gitCache.stub());
+    await this.approvalQueue.authorizeObservation({
+      title: `Read CI on #${this.logicalId}`,
+      description: `Read the check runs and commit statuses on commit ${checks.commitId} of pull request`
+        + ` #${this.logicalId}, and which checks its base branch requires.`,
+    });
+    // A simulated head (a queued push's commit) is withheld from advertising.
+    await this.#gitCache.advertise([checks.commitId]);
+    return checks;
+  }
+
+  /** Opening is not an observation (see getIssue); the stub's reads record their own. */
+  async getCheckRun(id: string): Promise<GitHubCheckRun> {
+    const run = await this.gatekeeper.openCheckRun(id);
+    await this.gatekeeper.assertPullCommit(
+      this.logicalId, run.commitId, await this.#gitCache.stub(), `Check run ${id}`);
+    return new GitHubCheckRunImpl(this.gatekeeper, this.approvalQueue.dup(), run.id);
+  }
+
+  async listWorkflowRuns(options?: GitHubPageOptions): Promise<Cursor<GitHubWorkflowRunSummary>> {
+    await this.approvalQueue.authorizeObservation({
+      title: `List workflow runs for #${this.logicalId}`,
+      description: `List the GitHub Actions workflow runs of pull request #${this.logicalId}'s head commit.`,
+    });
+    const cursor = await this.gatekeeper.pullWorkflowRuns(
+      this.logicalId, pageSizeOf(options), await this.#gitCache.stub());
+    return await this.#gitCache.wrap(cursor, run => [run.commitId]);
+  }
+
+  /** Opening is not an observation (see getIssue); the stub's reads record their own. */
+  async getWorkflowRun(id: string): Promise<GitHubWorkflowRun> {
+    const run = await this.gatekeeper.openWorkflowRun(id);
+    await this.gatekeeper.assertPullCommit(
+      this.logicalId, run.commitId, await this.#gitCache.stub(), `Workflow run ${id}`);
+    return new GitHubWorkflowRunImpl(this.gatekeeper, this.approvalQueue.dup(), run.id);
+  }
+}
+
+/** A check run opened through a repository or pull request session. */
+@validateRpc()
+class GitHubCheckRunImpl extends RpcTarget implements GitHubCheckRun {
+  readonly #gatekeeper: GitHubGatekeeperImpl;
+  readonly #approvalQueue: RpcStub<ApprovalQueue>;
+  readonly #gitCache: SessionGitCache;
+  readonly #id: number;
+
+  constructor(gatekeeper: GitHubGatekeeperImpl, approvalQueue: RpcStub<ApprovalQueue>, id: number) {
+    super();
+    this.#gatekeeper = gatekeeper;
+    this.#approvalQueue = approvalQueue;
+    this.#gitCache = new SessionGitCache(approvalQueue, { withhold: commit => gatekeeper.isSimulatedCommitId(commit) });
+    this.#id = id;
+  }
+
+  [Symbol.dispose](): void {
+    this.#gitCache.dispose();
+    (this.#approvalQueue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
+  }
+
+  async getDetails(): Promise<GitHubCheckRunDetails> {
+    const details = await this.#gatekeeper.checkRunDetails(this.#id);
+    await this.#approvalQueue.authorizeObservation({
+      title: `Read check run \`${details.name}\` #${this.#id}`,
+      description: `Read the state and output of check run \`${details.name}\` #${this.#id}`
+        + ` (${details.state}) on commit ${details.commitId}.`,
+    });
+    await this.#gitCache.advertise([details.commitId]);
+    return details;
+  }
+
+  async listAnnotations(options?: GitHubPageOptions): Promise<Cursor<GitHubAnnotation>> {
+    await this.#approvalQueue.authorizeObservation({
+      title: `List annotations of check run #${this.#id}`,
+      description: `List the file annotations of check run #${this.#id}.`,
+    });
+    return await this.#gatekeeper.checkRunAnnotations(this.#id, pageSizeOf(options));
+  }
+
+  async readLog(options?: GitHubLogOptions): Promise<GitHubLogPage> {
+    const { name, page } = await this.#gatekeeper.readCheckRunLog(this.#id, options);
+    const first = page.lines[0]?.number;
+    const range = first === undefined ? "no lines" : `lines ${first}–${page.lines.at(-1)!.number}`;
+    const search = options?.search === undefined ? "" : ` matching "${options.search}"`;
+    await this.#approvalQueue.authorizeObservation({
+      title: `Read log of job \`${name}\` #${this.#id}, ${range}`,
+      description: `Read ${range}${search} of the log of GitHub Actions job \`${name}\` #${this.#id}`
+        + ` (${page.totalLines} lines in all).`,
+    });
+    return page;
+  }
+}
+
+/** A workflow run opened through a repository or pull request session. */
+@validateRpc()
+class GitHubWorkflowRunImpl extends RpcTarget implements GitHubWorkflowRun {
+  readonly #gatekeeper: GitHubGatekeeperImpl;
+  readonly #approvalQueue: RpcStub<ApprovalQueue>;
+  readonly #gitCache: SessionGitCache;
+  readonly #id: number;
+
+  constructor(gatekeeper: GitHubGatekeeperImpl, approvalQueue: RpcStub<ApprovalQueue>, id: number) {
+    super();
+    this.#gatekeeper = gatekeeper;
+    this.#approvalQueue = approvalQueue;
+    this.#gitCache = new SessionGitCache(approvalQueue, { withhold: commit => gatekeeper.isSimulatedCommitId(commit) });
+    this.#id = id;
+  }
+
+  [Symbol.dispose](): void {
+    this.#gitCache.dispose();
+    (this.#approvalQueue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
+  }
+
+  async getDetails(): Promise<GitHubWorkflowRunDetails> {
+    const details = await this.#gatekeeper.workflowRunDetails(this.#id);
+    await this.#approvalQueue.authorizeObservation({
+      title: `Read workflow run ${details.name} #${this.#id}`,
+      description: `Read the state of GitHub Actions workflow run ${details.name} #${this.#id}`
+        + ` (${details.state}, attempt ${details.attempt}) on commit ${details.commitId}.`,
+    });
+    await this.#gitCache.advertise([details.commitId]);
+    return details;
+  }
+
+  async listJobs(options?: { attempt?: number } & GitHubPageOptions): Promise<Cursor<GitHubCheckRunSummary>> {
+    const attempt = options?.attempt;
+    if (attempt !== undefined && (!Number.isInteger(attempt) || attempt < 1)) {
+      throw new Error("attempt must be a positive integer.");
+    }
+    await this.#approvalQueue.authorizeObservation({
+      title: `List jobs of workflow run #${this.#id}`,
+      description: `List the jobs of GitHub Actions workflow run #${this.#id}`
+        + `${attempt === undefined ? "" : `, attempt ${attempt}`}.`,
+    });
+    return await this.#gatekeeper.workflowRunJobs(this.#id, attempt, pageSizeOf(options));
   }
 }
 

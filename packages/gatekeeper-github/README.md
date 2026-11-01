@@ -30,6 +30,40 @@ enabling ordinary pushes does not let history be rewritten. Excluded actions are
 by hand as before. Each binding advertises through `getAutoApprovableActions()` only the eligible
 kinds its session can submit (an issue binding, for example, never lists pushes).
 
+## CI status (read-only)
+
+Gadgets can read CI with the `repo` scope connections already have; nothing CI-related is queued
+for approval, and every read is logged as an observation.
+
+- **Checks on a commit.** `repo.getChecks(ref?)` and `pullRequest.getChecks(commitId?)` report
+  every check run (GitHub Actions jobs and other apps' checks) and commit status on a commit, from
+  GraphQL's `statusCheckRollup`, with an overall `state`, `counts` by state, and a `phase`:
+  `active` (queued, running, or on a deployment wait timer: poll again), `blocked` (waits for a
+  person, such as a deployment reviewer or a first-time contributor's approval), `done`, or for a
+  commit nothing has reported on, `notStarted`. A commit reads `notStarted` while a push of it is
+  queued, or for 10 minutes after it became a head when CI is expected (the commit has
+  `.github/workflows/*.yml`, or its first parent had CI); otherwise it is `done` with
+  `state: "none"`. The head time is when this gatekeeper applied the push, else GitHub's activity
+  log for the branch, else the committer date. A pull request read also marks which entries the
+  base branch requires (`isRequired`) and names required checks that have not reported
+  (`missingRequired`, best-effort from the branch's rulesets and classic protection).
+- **Pull request scope.** A pull request binding reads CI only on the pull request's head (counting
+  queued pushes) and the first 250 commits its listing shows; check runs and workflow runs on any
+  other commit are refused. `GitHubPullRequestDetails.mergeState` carries GitHub's
+  `mergeable_state`.
+- **Check runs.** `getCheckRun(id)` accepts a check run id or an Actions job id (`/runs/<id>` and
+  `/actions/runs/<run>/job/<id>` URLs). `getDetails()` adds output, steps and any deployment
+  hold; `listAnnotations()` pages the file annotations; `readLog()` reads a finished Actions job's
+  log (numbered lines, tail by default, `fromLine`/`maxLines`/`search`), refusing other apps'
+  check runs. GitHub answers the logs endpoint with a redirect to its blob storage, which is
+  fetched without the token. Finished logs are cached (see `storage-schema.md`) and revalidated
+  against the logs endpoint before each use, so a deleted log stops being served.
+- **Workflow runs.** `repo.listWorkflowRuns()` filters by branch, commit, event and state;
+  `pullRequest.listWorkflowRuns()` lists the head commit's. `getWorkflowRun(id)` opens one for
+  `getDetails()` and `listJobs({ attempt? })`.
+
+Re-running, cancelling or approving runs, and merging when green, are not supported yet.
+
 ## Setting Up GitHub OAuth Credentials
 
 If you're running this project locally and want to use GitHub integrations, you'll need to create

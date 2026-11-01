@@ -81,6 +81,25 @@ Before approval, `realId` is absent. After the create action is applied, `realId
 Written when a diff reply is applied. Unread while replies to provisional comments are refused
 (see Design choices).
 
+### CI push records
+
+- `ciPushApplied:<sha>` -> epoch ms when this gatekeeper applied a push leaving a branch at `sha`.
+  The CI absence policy's first source for when a commit became a head: `getChecks()` reads a
+  commit nothing has reported on as `notStarted` for 10 minutes from then while CI is expected.
+  Written at push apply (a retried apply keeps the first record); each write deletes records
+  older than 10 minutes and caps the family at 100, dropping the oldest.
+
+### CI job logs
+
+- `ciLog:*` -> finished GitHub Actions job logs, keyed by job id, as the kit's `CiLogCache` stores
+  them: a metadata record, newline-joined line chunks of at most 512 KiB each, an age index, and
+  a total-size counter. One hour TTL, 32 MiB in all (oldest evicted first). Every `readLog()`
+  first asks GitHub's logs endpoint again: a 404 or 410 deletes the entry and reports the log
+  deleted. Unfinished jobs' logs are never stored. Not invalidated by `cacheGeneration`: a
+  finished log only changes by being deleted, which the revalidation catches.
+
+CI status (check runs, commit statuses, workflow runs, jobs) is never cached: it moves on its own.
+
 ### Incremental discussion sync state
 
 Two `since`-capable streams use persistent materialized prefixes plus sync metadata:
@@ -139,7 +158,8 @@ Implemented TTL cache families:
 - `cache:repo-v2:<owner>:<repo>` -> `GitHubRepoMetadata` (v2: the shape gained `defaultBranch`,
   and etag revalidation can keep an old-shaped entry alive past the TTL)
 - `cache:issue:<realId>` -> `GitHubIssueDetails`
-- `cache:pull:<realId>` -> `GitHubPullRequestDetails`
+- `cache:pull-v2:<realId>` -> `GitHubPullRequestDetails` (v2: the shape gained `mergeState`, and
+  etag revalidation can keep an old-shaped entry alive past the TTL)
 - `cache:list-issues-v2:<encodedQuery>:p<page>` -> `(GitHubIssueSummary | null)[]`, one entry per
   upstream row (`null` for pull requests), so a page keeps the length that ends the walk (v2: v1
   stored filtered, short pages)
@@ -155,12 +175,14 @@ Implemented TTL cache families:
 - `cache:compare-provisional-v2:<provisionalPullId>` -> provisional diff snapshot from branch
   comparison (v2: same `mergeBaseSha` addition)
 - `cache:merge-base:<baseSha>:<headSha>` -> merge base commit id of the two commits
+- `cache:required-checks:<encodedBranch>` -> names of the status checks a base branch requires
+  (its rulesets' `required_status_checks` rules plus classic protection), for `missingRequired`
 
 ### Cache TTLs
 
 - Viewer cache: 5 minutes
-- Entity caches (`repo-v2`, `issue`, `pull`, `discussion-reviews`, `resolve-ref`, `diff-v2`):
-  30 seconds
+- Entity caches (`repo-v2`, `issue`, `pull-v2`, `discussion-reviews`, `resolve-ref`, `diff-v2`,
+  `required-checks`): 30 seconds
 - List/search caches: 15 seconds
 - `merge-base` entries never expire (a merge base is a pure function of its two key commits);
   only the generation bump below evicts them
@@ -224,6 +246,9 @@ One per connected account, named by its `UserAccount` id; see `src/github-hooks.
 - Rejecting a provisional create retires its dependent pending actions as rejected and returns
   `restart: true`.
 - Review-thread simulation supports pending review comments and pending replies to real GitHub diff comments.
+- CI reads follow the simulated head: a commit only a queued push will deliver reads as
+  `{ state: "none", phase: "notStarted", checks: [] }` without asking GitHub, and a pull request
+  whose head is such a commit lists no workflow runs.
 
 ## Absent schema
 
