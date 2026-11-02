@@ -1,4 +1,6 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import {
+  useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent,
+} from 'react'
 import { Button } from '@cloudflare/kumo'
 import { Cpu, Plus } from '@phosphor-icons/react'
 import type { AiModelProvider } from '@gadgets/workshop-shared/api'
@@ -16,6 +18,8 @@ const POOL_DOCS = 'https://developers.cloudflare.com/ai-gateway/features/auto-ro
 const malformedError = (name: string) =>
   `“${name}” is not a gateway model name. Name each model as provider/model, like ` +
   'anthropic/claude-sonnet-5.5, or a provider’s every model, like anthropic/*'
+
+const commas = (text: string) => text.split(',').length - 1
 
 // An option of the listbox: a suggested name, or the typed text added as it is.
 type Option = AllowedModelSuggestion & { typed: boolean }
@@ -50,6 +54,9 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
   const inputRef = useRef<HTMLInputElement>(null)
   // Whether a pointer is pressed anywhere on the page while the list is open.
   const pressing = useRef(false)
+  const listboxRef = useRef<HTMLDivElement>(null)
+  // Set when the arrow keys move the highlight, whose option the list then scrolls to.
+  const revealActive = useRef(false)
   const inputId = useId()
   const facts = useId()
   const listboxId = useId()
@@ -62,12 +69,26 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
     (name.toLowerCase().includes(lowered) || description.toLowerCase().includes(lowered)))
   const options: Option[] = [
     ...matches.map((suggestion) => ({ ...suggestion, typed: false })),
-    ...(typed && !names.includes(typed) && !matches.some(({ name }) => name === typed)
+    ...(typed && !typed.includes(',') && !names.includes(typed) &&
+      !matches.some(({ name }) => name === typed)
       ? [{ name: typed, description: 'Use the text as a gateway model name', typed: true }]
       : []),
   ]
   const open = !listDismissed && !busy && options.length > 0
   const active = Math.min(activeIndex, options.length - 1)
+
+  // Scrolls the list, not the page, so that the option the arrow keys highlight can be seen.
+  useLayoutEffect(() => {
+    if (!revealActive.current) return
+    revealActive.current = false
+    const list = listboxRef.current
+    const option = list?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (!list || !option) return
+    const listRect = list.getBoundingClientRect()
+    const optionRect = option.getBoundingClientRect()
+    if (optionRect.top < listRect.top) list.scrollTop -= listRect.top - optionRect.top
+    else if (optionRect.bottom > listRect.bottom) list.scrollTop += optionRect.bottom - listRect.bottom
+  }, [active, open])
 
   useEffect(() => {
     if (!open) return
@@ -182,6 +203,7 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
         setListDismissed(false)
         return
       }
+      revealActive.current = true
       const step = event.key === 'ArrowDown' ? 1 : -1
       const from = active >= 0 ? active : step > 0 ? -1 : 0
       setActiveIndex((from + step + options.length) % options.length)
@@ -233,7 +255,10 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
               onChange={(event) => {
                 const text = event.target.value
                 // A comma ends a name, so a typed or pasted list is staged as it comes.
-                if (text.includes(',')) {
+                // Only a comma just typed or pasted ends a name: editing an entry before one, such
+                // as a refused entry being corrected, leaves the field as typed until it is
+                // added with Enter, Save or another comma.
+                if (commas(text) > commas(query)) {
                   setListDismissed(false)
                   const cut = text.lastIndexOf(',')
                   add(text.slice(0, cut), text.slice(cut + 1))
@@ -258,6 +283,7 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
         </div>
         {open && (
           <div
+            ref={listboxRef}
             id={listboxId}
             role="listbox"
             aria-label={`Models to allow ${modelName}`}

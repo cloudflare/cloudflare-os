@@ -609,6 +609,49 @@ describe('GatewayModelRow', () => {
           { allowedModels: ['openai/*', 'anthropic/*', 'workers-ai/good-name'] })
       })
 
+    it('leaves a refused entry being corrected as typed until it is added', async () => {
+      const { onSettingsChange } = await render({ model: AUTO })
+      await type(field(), 'openai/*, bad name, anthropic/*')
+      expect(field().value).toBe('bad name, anthropic/*')
+
+      // Midway through rewriting the refused entry, a prefix that looks like a name is not taken.
+      await type(field(), 'openai/g, anthropic/*')
+      expect(chips()).toEqual(['openai/*'])
+      expect(field().value).toBe('openai/g, anthropic/*')
+      await type(field(), 'openai/gpt-6-luna, anthropic/*')
+      expect(chips()).toEqual(['openai/*'])
+
+      await press('Enter')
+      expect(chips()).toEqual(['openai/*', 'openai/gpt-6-luna', 'anthropic/*'])
+      expect(field().value).toBe('')
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+        { allowedModels: ['openai/*', 'openai/gpt-6-luna', 'anthropic/*'] })
+    })
+
+    it('scrolls the list to the option the arrow keys highlight', async () => {
+      const many = Array.from({ length: 8 }, (_, index) =>
+        ({ name: `openai/model-${index}`, description: `Model ${index}` }))
+      await render({ model: AUTO, poolSuggestions: many })
+      await act(async () => { field().focus() })
+      const list = document.getElementById(field().getAttribute('aria-controls')!)!
+      // The list shows 100px of options 40px tall.
+      const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect')
+        .mockImplementation(function (this: Element) {
+          const index = Array.from(list.children).indexOf(this)
+          const top = index < 0 ? 0 : index * 40 - list.scrollTop
+          return { top, bottom: index < 0 ? 100 : top + 40 } as DOMRect
+        })
+      try {
+        await press('ArrowUp')
+        expect(list.scrollTop).toBe(7 * 40 + 40 - 100)
+        await press('ArrowDown')
+        expect(list.scrollTop).toBe(0)
+      } finally {
+        rect.mockRestore()
+      }
+    })
+
     it('keeps the list open until a press that takes focus ends, so the press lands where it began',
       async () => {
         await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
