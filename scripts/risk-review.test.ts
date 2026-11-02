@@ -353,6 +353,10 @@ function verdictInput(name: "sol" | "opus", overrides: Record<string, Json | und
 
 const PERFECT = { sol: verdictInput("sol"), opus: verdictInput("opus") };
 
+function migrations(holds: boolean) {
+  return { artifact: { ...JSON.parse(proofJson("proof-migrations", "proof", holds)), name: "proof-migrations" } };
+}
+
 describe("decide", () => {
   it("lets a maintainer's low-risk change through an open band when both verdicts clear it", () => {
     const decision = decide(inputs({ producers: PERFECT }), OPEN_SCORED, NOW);
@@ -462,6 +466,18 @@ describe("decide", () => {
       { decision: "auto", area: "proven", reasons: [] });
     // Dependabot never qualifies through AI verdicts.
     assert.equal(decide(inputs({ pull, files, producers: PERFECT }), OPEN_SCORED, NOW).would.decision, "person");
+  });
+
+  it("never proves a change through the migration proof alone, and needs it for a Worker config change", () => {
+    const policy = policyWith(bandsJson("enforce", true, [{ area: "proven", band: "low" }, { area: "scored", band: "medium" }]));
+    const alone = decide(inputs({ producers: { "proof-migrations": migrations(true) } }), policy, NOW);
+    assert.equal(alone.would.decision, "person");
+    assert.notEqual(alone.would.area, "proven");
+    const config = [file("packages/gatekeeper-x/wrangler.jsonc")];
+    assert.match(decide(inputs({ files: config, producers: PERFECT }), policy, NOW).would.reasons.join("\n"), /migration proof/);
+    assert.match(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(false) } }), policy, NOW).would.reasons.join("\n"), /migration proof/);
+    assert.deepEqual(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(true) } }), policy, NOW).would,
+      { decision: "auto", area: "scored", reasons: [] });
   });
 
   it("requires a human assignee's approval on a pull request an agent opened", () => {
@@ -676,6 +692,12 @@ describe("runRiskReview preview smoke from main", () => {
       const stale = await smokeInput([smoke(smokeRun({ created_at: "2026-11-02T12:00:00Z", run_started_at: "2026-11-02T12:00:00Z" }), trigger)]);
       assert.ok(stale && "absent" in stale && /follows another run/.test(stale.absent), JSON.stringify(stale));
     }
+  });
+
+  it("accepts the smoke from a pull_request Preview run on the head, under the same head-named artifact", async () => {
+    const deploy = run(PRODUCERS["preview-smoke"].workflow, { created_at: "2026-11-02T10:20:00Z", run_started_at: "2026-11-02T10:20:00Z" });
+    const named = { run: deploy, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", true) } };
+    assert.deepEqual(await smokeInput([named]), { status: "ok", holds: true });
   });
 
   it("does not let another workflow's artifact with the same name mask the real smoke", async () => {

@@ -95,7 +95,9 @@ const DEPENDABOT = "dependabot[bot]";
 
 /** Rung 1 proofs a maintainer's pull request may qualify through. */
 // `proof-actions` is not here: every Actions bump touches `.github/**`, which always needs a person.
-const PROOFS = ["proof-deps", "proof-migrations", "proof-equivalence", "proof-tests"] as const;
+// Nor is `proof-migrations`: it holds for any change that leaves migrations alone, so it is only a
+// precondition for a change that touches a Worker config.
+const PROOFS = ["proof-deps", "proof-equivalence", "proof-tests"] as const;
 
 /** What the check run reports. */
 export type Mode = "shadow" | "enforce";
@@ -432,6 +434,11 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   const common: string[] = [...classification.neverAuto.map((reason) => `policy: ${reason}`), ...holds];
   if (blockers.length > 0) common.push(`changes requested by ${blockers.map((login) => `@${login}`).join(", ")}`);
   const depsProven = holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"]);
+  const touchesWorkerConfig = inputs.files.some((file) =>
+    [file.filename, file.previous_filename].some((path) => path !== undefined && needsContents(path) === "worker-config"));
+  if (touchesWorkerConfig && !holding(inputs.producers["proof-migrations"])) {
+    common.push("changes a Worker config, and the migration proof does not hold");
+  }
   const proven = dependabot
     ? depsProven
     : PROOFS.some((name) => name === "proof-deps" ? depsProven : holding(inputs.producers[name]));
@@ -827,7 +834,8 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
   if (!run) return { absent: "no run" };
   const error = bindingError(run, expected);
   if (error) return { absent: error };
-  const artifactName = run.event === "workflow_run" ? `automerge-${name}-${pull.head.sha}` : `automerge-${name}`;
+  // The preview smoke names the head it checked in both its routes; other producers run on the head.
+  const artifactName = "triggeredBy" in expected.producer ? `automerge-${name}-${pull.head.sha}` : `automerge-${name}`;
   const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifactName, per_page: PER_PAGE });
   const artifact = pickArtifact(data.artifacts, artifactName, run);
   if (!artifact) return { absent: "the run's latest attempt uploaded no usable artifact" };

@@ -19,7 +19,8 @@ export interface Producer {
   /**
    * Also accept a `workflow_run` run of `workflow` on the default branch, which runs `main`'s
    * definition when this workflow's run on the head finishes. Its artifact name carries the pull
-   * request's head SHA, since the run's own head is `main`'s, and its `details.trigger` names the run
+   * request's head SHA in both routes, since a follow-up run's own head is `main`'s, and a follow-up
+   * run's `details.trigger` names the run
    * and attempt it followed, which must be this workflow's newest run on the head in its current
    * attempt: a follow-up of an older run, or none at all, means the input is absent.
    */
