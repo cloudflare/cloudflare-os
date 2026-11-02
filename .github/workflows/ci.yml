@@ -5,6 +5,9 @@ on:
     branches:
       - main
   pull_request:
+  # A merge queue only merges once every required check has reported on the queue's merge commit,
+  # so `Lint` and `Build and test` must run here too.
+  merge_group:
 
 permissions:
   contents: read
