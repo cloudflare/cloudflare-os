@@ -3,7 +3,7 @@ import { ObservationGate, type ObserverKv } from "@gadgets/gatekeeper-kit/observ
 import type {
   GatekeeperUserVerifier, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { CONTEXT_OBSERVER_DENIED, contextObserverStrategy } from "../src/context-observers.js";
+import { contextObserverStrategy } from "../src/context-observers.js";
 import type { ContextCollectionDurableObject } from "../src/context-collection.js";
 import { LibraryReadSession } from "../src/library-read.js";
 import type { UserLibraryDurableObject } from "../src/user-library.js";
@@ -39,12 +39,15 @@ const DOCUMENT = {
 };
 
 // The owner's library: one public collection and one private collection.
-function makeSession({ publicDiscoveryFails = false, publicAccessFails = false } = {}) {
+function makeSession({ publicDiscoveryFails = false, publicAccessFails = false, refusal }: {
+  publicDiscoveryFails?: boolean; publicAccessFails?: boolean; refusal?: Error;
+} = {}) {
   let kv = makeKv();
   let strategy = contextObserverStrategy(kv, DOMAIN);
   let authorized: ObservationDescription[] = [];
   let authorizer = {
     async authorizeObservation(description: ObservationDescription) {
+      if (refusal) throw refusal;
       authorized.push(description);
     },
     [Symbol.dispose]() {},
@@ -96,21 +99,18 @@ function makeSession({ publicDiscoveryFails = false, publicAccessFails = false }
   return { session, strategy, authorized };
 }
 
-describe("LibraryReadSession sharing", () => {
-  it("lists every collection without restricting who may open the workspace", async () => {
-    let { session, strategy, authorized } = makeSession();
-    await strategy.addObserver("existing", verifier(["public"]));
+describe("LibraryReadSession observations", () => {
+  it("lists every collection without depending on any of them", async () => {
+    let { session, authorized } = makeSession();
 
     let listing = await session.list();
 
     expect(listing.entries.map(entry => entry.type === "collection" && entry.id))
       .toEqual(["private", "public"]);
-    expect(authorized).toHaveLength(1);
-    expect(authorized[0].excludeObservers).toBeUndefined();
-    await strategy.addObserver("later", verifier(["public"]));
+    expect(authorized).toEqual([expect.objectContaining({ subresources: [] })]);
   });
 
-  it("restricts sharing once a private collection's contents are listed or read", async () => {
+  it("reports a private collection once its contents are listed or read, for the Workshop to check", async () => {
     for (let reveal of [
       (session: LibraryReadSession) => session.list({ collectionId: "private" }),
       (session: LibraryReadSession) => session.read("private/plan.md"),
@@ -120,11 +120,31 @@ describe("LibraryReadSession sharing", () => {
 
       await reveal(session);
 
-      expect(authorized[0].excludeObservers).toEqual(["existing"]);
-      await expect(strategy.addObserver("later", verifier(["public"])))
-        .rejects.toThrow(CONTEXT_OBSERVER_DENIED);
-      await strategy.addObserver("owner-account", verifier(["public", "private"]));
+      expect(authorized).toEqual([expect.objectContaining({ subresources: ["private"] })]);
+      expect(authorized[0].excludeObservers).toBeUndefined();
+      // The binding refuses nobody for it: the Workshop checks the collection where it was read.
+      await strategy.addObserver("later", verifier(["public"]));
     }
+  });
+
+  it("reports only the collections a search returned results from", async () => {
+    let { session, authorized } = makeSession();
+
+    expect((await session.search("plan", { limit: 1 })).map(result => result.docId))
+      .toEqual(["private/plan.md"]);
+    expect(await session.search("plan")).toHaveLength(2);
+
+    expect(authorized.map(description => description.subresources))
+      .toEqual([["private"], ["private", "public"]]);
+  });
+
+  it("returns nothing a refused observation covered", async () => {
+    let refusal = new Error("This workspace may not read that.");
+    let { session } = makeSession({ refusal });
+
+    await expect(session.read("private/plan.md")).rejects.toBe(refusal);
+    await expect(session.list({ collectionId: "private" })).rejects.toBe(refusal);
+    await expect(session.search("plan")).rejects.toBe(refusal);
   });
 
   it("keeps healthy private and public results when another public collection is unavailable", async () => {

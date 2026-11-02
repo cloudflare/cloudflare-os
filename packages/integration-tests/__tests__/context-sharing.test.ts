@@ -14,6 +14,8 @@ const CONTEXT_DIR = fileURLToPath(new URL("../../gatekeeper-context/", import.me
 const VENDOR_ID = "context";
 const DOCUMENT_PATH = "plan.md";
 const DOCUMENT = { description: "Owner-only launch plan", body: "Launch code: private-context." };
+/** The Workshop's refusal of an account that cannot read a subresource a read reported. */
+const DENIED = "This account can't access some of the data this workspace read through this service.";
 let harness: Harness;
 
 type ContextUser = Disposable & {
@@ -94,7 +96,7 @@ it.concurrent("top-level private collection metadata does not prevent a collabor
 });
 
 it.concurrent.each(["list", "read"] as const)(
-  "a private collection's %s prevents a collaborator without collection access opening",
+  "a private collection's %s admits only collaborators who can read the collection",
   async reveal => {
     using owner = await newAccount("contextcontentowner");
     using observer = await newAccount("contextcontentobserver");
@@ -116,11 +118,17 @@ it.concurrent.each(["list", "read"] as const)(
     const recorder = new ObserverConfigRecorder()
       .alwaysChoose(observer.account.id, MAX_OBSERVER_PROMPTS);
     using callback = stubFor(recorder);
-    await expect(observer.api.openWorkspace(workspaceId, undefined, callback))
-      .rejects.toThrow();
+    // The Workshop refuses, checking the collection the read reported against the collaborator's
+    // own account, without naming it.
+    await expect(observer.api.openWorkspace(workspaceId, undefined, callback)).rejects.toThrow(DENIED);
     const failure = recorder.needAt(0).failure;
-    expect(failure).toMatchObject({ accountId: observer.account.id, reason: expect.any(String) });
+    expect(failure).toMatchObject({ accountId: observer.account.id, reason: expect.stringContaining(DENIED) });
     expect(failure?.reason).not.toContain(collection.id);
     expect(failure?.reason).not.toContain(collection.title);
+
+    // The check is live, so once the collection is theirs to read they may open.
+    await owner.context.setContextCollectionEveryoneCanView(collection.id, true);
+    using opened = await observer.api.openWorkspace(workspaceId, undefined, callback);
+    expect(await opened.getMetadata()).toMatchObject({ id: workspaceId, role: "build" });
   },
 );
