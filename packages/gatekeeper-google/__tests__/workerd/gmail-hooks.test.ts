@@ -20,7 +20,7 @@ const testEnv = env as unknown as {
 let MAILBOX: string;
 const PUSH_ACCOUNT = "push@test.iam.gserviceaccount.com";
 const OTHER_ACCOUNT = "other@example.com";
-const PUSH_URL = "http://localhost:8787/gatekeeper/google/pubsub";
+const PUSH_URL = "https://gadgets.example.com/gatekeeper/google/pubsub";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const CLIENTS_LABEL = {id: "Label_7", name: "Clients", type: "user"};

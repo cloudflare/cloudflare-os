@@ -265,6 +265,60 @@ Disconnecting a Google account drops its hooks from the mailbox's and each space
 nothing goes on reading or renewing with credentials that are gone; a watch or subscription no
 hook uses any more lapses, as when the hooks are disabled.
 
+## Google Calendar event hooks
+
+Gadgets can watch a connected calendar for new, updated and cancelled events
+(`subscribeEventChanges()` in `src/calendar-types.d.ts`). This needs no setup beyond the Calendar
+API the connection already uses.
+
+Each connected account's calendar has one `CalendarHookDriver` (`src/calendar-hooks.ts`), shared by
+all of that connection's hooks on it. Enabling the first hook lists the calendar's events from a
+week back, which only teaches the driver which events exist; from then on it reads what changed
+with Calendar's sync token. An event it hadn't seen is new, whether it was created on the calendar
+or an invitation to it arrived, and one it had seen was updated, as is an occurrence of a recurring
+series it had seen that begins to differ from the series. Recurring events are read as their
+series, so a change to a whole series is one delivery. Only an event the driver had seen, or an
+occurrence of one, is delivered as cancelled. Should Google expire the sync token, the driver lists
+the calendar again, and changes made in between are not delivered.
+
+The driver remembers every event it has seen that hasn't been deleted, a hundred bytes or so each,
+since an edit to an event it had forgotten would read as new. Two things rest on Google's behavior
+that the tests' fake can't show: that the week-back listing includes a recurring series that began
+earlier and continues past it, as Google's own sync guide relies on; and how an event that ended
+before that week is reported when edited later, which is as new, if at all, until the driver has
+seen it once.
+
+Calendar notifies of changes by webhook (`events.watch`), with no event in the notification. When
+`BASE_URL` is public https, the driver opens a channel posting to
+`${BASE_URL}/calendar/notifications/<driver>` and replaces it a day before its week is up; Google's
+push guide asks only that the address be https with a valid certificate. A notification counts only
+with its channel's random token, and then only prompts a read with the account's own credentials.
+Once Google's first notification on a channel arrives, the driver also reads the calendar hourly,
+for notifications Google drops. Until one arrives, as when Google can't reach the deployment, and on
+a deployment without a public https URL, such as `pnpm dev-server`, it reads every two minutes.
+Behind Cloudflare Access, add a bypass for `/gatekeeper/google/calendar/notifications/*`, or hooks
+fall back to reading every two minutes.
+
+A read that fails, as when the account can no longer read the calendar, is retried after five
+minutes, doubling with each failure in a row up to hourly. A channel Google refuses is asked for
+again after an hour, doubling up to daily, and the calendar is read every two minutes meanwhile.
+
+Every write the gatekeeper applies to an event sets its private extended property `gadgetsWrite`
+to a fresh value. Google keeps it on that calendar's copy of the event through edits made anywhere
+else, so a change carrying a value the driver hadn't seen for that event is the gatekeeper's own,
+and no hook on that calendar receives it: hooks can't answer themselves or one another, as Chat's
+hooks never receive what the account posts through the gatekeeper. Calendar doesn't say who made
+any other change, so unlike Chat there is no telling the user's own edits apart: each is delivered,
+whoever made it. A change made elsewhere before the driver has read one of the gatekeeper's is taken
+for the gatekeeper's too, and so would a copy of a marked event, should Google Calendar's Duplicate
+copy private properties, which hasn't been checked. Undoing a created event deletes it, which leaves
+nothing to mark, so hooks receive its cancellation. An invitation the gatekeeper sends lands on each
+attendee's calendar unmarked, so hooks watching two calendars can answer each other; approval is the
+only guard there.
+
+Disabling a calendar's last hook stops its channel. Disconnecting the account drops its hooks from
+each of its calendars' drivers, whose channels then lapse within the week.
+
 ## Worker Preview OAuth callbacks
 
 Deployments using Worker Preview hostnames can register one stable Google callback and relay the

@@ -1,3 +1,5 @@
+import type { RpcStub } from "cloudflare:workers";
+
 /** The availability lookup scope chosen when this calendar connection was configured. */
 export type CalendarAvailabilityMode = "thisCalendar" | "allVisible";
 
@@ -55,6 +57,13 @@ export type CalendarReminder = {
   minutes: number;
 };
 
+/**
+ * What kind of event Google Calendar says an event is: `default` for an ordinary event, or one of
+ * the special kinds it keeps on a calendar. `fromGmail` is one Gmail added, such as a flight.
+ */
+export type CalendarEventType =
+  | "default" | "outOfOffice" | "focusTime" | "workingLocation" | "birthday" | "fromGmail";
+
 /** A Google Calendar event. */
 export type CalendarEvent = {
   /**
@@ -82,8 +91,17 @@ export type CalendarEvent = {
   transparency?: "opaque" | "transparent";
   /** Event visibility, if set. */
   visibility?: "default" | "public" | "private" | "confidential";
-  /** Whether this event is part of a recurring series. */
+  /** What kind of event this is; absent when Google Calendar reports a kind not listed there. */
+  eventType?: CalendarEventType;
+  /** For one occurrence of a recurring event, the event ID of its series. */
   recurringEventId?: string;
+  /**
+   * Set only on a recurring event's series itself: its recurrence rules as RFC 5545 lines
+   * (`RRULE`, `EXRULE`, `RDATE` and `EXDATE`). A series' `start` and `end` are its first
+   * occurrence's. `listEvents()` returns each occurrence rather than the series; a
+   * `CalendarEventHook` receives the series when it changes as a whole.
+   */
+  recurrence?: string[];
   /** True for events that have been submitted but not yet committed to Google Calendar. */
   pending?: boolean;
 };
@@ -129,6 +147,59 @@ export type PersonAvailability = {
 
 /** Options for changing attendee notifications when modifying an event. */
 export type CalendarSendUpdates = "all" | "externalOnly" | "none";
+
+/** A kind of change a `CalendarEventHook` receives. */
+export type CalendarEventChangeKind = "created" | "updated" | "cancelled";
+
+/** What `GoogleCalendarSession.subscribeEventChanges()` delivers. */
+export type CalendarSubscribeOptions = {
+  /** The kinds of change to deliver; by default, all of them. */
+  changes?: CalendarEventChangeKind[];
+  /**
+   * Deliver only changes to this event, by its ID. To watch a recurring event, give its series ID
+   * (an occurrence's `recurringEventId`): changes to the whole series and to each of its occurrences
+   * are then delivered. An occurrence's own ID, which `listEvents()` returns as its `id`, matches
+   * only changes made to that occurrence alone, not a change to the whole series that moves or
+   * cancels it.
+   */
+  eventId?: string;
+  /** Include event descriptions in delivered events. Defaults to false. */
+  includeDescriptions?: boolean;
+};
+
+/** One change delivered to a `CalendarEventHook`. */
+export type CalendarEventChangeEntry = {
+  /**
+   * - `created`: an event appeared on the calendar, whether it was created there or an invitation
+   *   to it arrived;
+   * - `updated`: an event on the calendar changed, such as its time, title, location, attendees or
+   *   an attendee's response, including one occurrence of a recurring event;
+   * - `cancelled`: an event was cancelled or deleted, or one occurrence of a recurring event was.
+   */
+  change: CalendarEventChangeKind;
+  /**
+   * The event as it is when delivered, which may already reflect later changes. A change to a whole
+   * recurring series delivers the series (see `CalendarEvent.recurrence`). A cancelled event has
+   * `status: "cancelled"`, but rely only on its `id` and `recurringEventId`: Google Calendar may
+   * clear its other fields, leaving its title and times meaningless.
+   */
+  event: CalendarEvent;
+  /** This calendar, to read and to change. */
+  calendar: GoogleCalendarSession;
+};
+
+/** Implemented by a gadget to receive calendar changes; see `GoogleCalendarSession.subscribeEventChanges()`. */
+export interface CalendarEventHook {
+  /**
+   * Called with each change the hook watches for. `entry.calendar` can read the calendar and queue
+   * changes for approval, and is released when this call returns. A change may arrive more than
+   * once or out of order, so key any work on `entry.event.id` to keep it idempotent. One this
+   * throws for is retried with backoff, eight attempts in all, and disabling the hook ends its
+   * retries. A change can also be missed, as when Google Calendar resets the calendar's change
+   * history, so a gadget that must see every change should also list events now and then.
+   */
+  receiveEventChange(entry: CalendarEventChangeEntry): Promise<void>;
+}
 
 /**
  * Fields that can be changed on an existing event. Only the fields you set are changed; omitted
@@ -209,4 +280,41 @@ export interface GoogleCalendarSession {
     patch: CalendarEventPatch,
     opts?: { sendUpdates?: CalendarSendUpdates },
   ): Promise<void>;
+
+  /**
+   * Have `hook.receiveEventChange()` called with each change to an event on this calendar, of the
+   * kinds in `options.changes` (by default, all of them). Events created and changes made through
+   * this API, by you or any Gadget, are never delivered, so hooks can't answer themselves or one
+   * another. Every other change is, whoever made it, including the user's own edits in Google
+   * Calendar. The hook starts disabled, and nothing is delivered until the user enables it. Every
+   * call creates a distinct hook, so subscribe once for each set of changes to watch.
+   *
+   * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
+   * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's
+   * binding, as "Persistent Stubs and `ctx.restore()`" in your instructions describes. The
+   * Gadget's `[restore]()` receives those `params` for every delivery, so they can tell its
+   * subscriptions apart. The restored target is a separate object; pass it what it needs from
+   * `[restore]()`, such as `this`, the Gadget.
+   *
+   * @example
+   * // server.js
+   * import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+   * export class Gadget extends DurableObject {
+   *   async [restore](params) {
+   *     if (params.type === "meetings") return new Meetings(this.ctx.storage);
+   *     throw new TypeError(`Unknown restore type: ${params.type}`);
+   *   }
+   * }
+   * class Meetings extends RpcTarget {
+   *   constructor(storage) { super(); this.storage = storage; }
+   *   async receiveEventChange({ change, event }) {
+   *     if (change === "cancelled") await this.storage.delete(`meeting:${event.id}`);
+   *     else if (event.eventType === "default") await this.storage.put(`meeting:${event.id}`, event.title);
+   *   }
+   * }
+   *
+   * // executeCode, where `hook` is a persistent stub for the params `{ type: "meetings" }`
+   * await env.GOOGLE_CALENDAR.subscribeEventChanges(hook);
+   */
+  subscribeEventChanges(hook: RpcStub<CalendarEventHook>, options?: CalendarSubscribeOptions): Promise<void>;
 }

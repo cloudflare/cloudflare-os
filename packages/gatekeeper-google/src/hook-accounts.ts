@@ -5,9 +5,9 @@
 
 /**
  * A hook driver holding some of an account's hooks, which the account tells to drop them when it
- * is disconnected: Gmail's per mailbox, Chat's per space.
+ * is disconnected: Gmail's per mailbox, Chat's per space, Calendar's per connection and calendar.
  */
-export type HookDriverRef = { kind: "gmail" | "chat"; name: string };
+export type HookDriverRef = { kind: "gmail" | "chat" | "calendar"; name: string };
 
 /**
  * How often each account with hooks in a driver is asked again whether it knows of the driver:

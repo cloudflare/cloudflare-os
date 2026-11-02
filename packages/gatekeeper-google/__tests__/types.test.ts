@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
 import {
-  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX,
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, RPC_STUB_TYPES_MODULE_PREFIX,
   SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "../src/type-bundle";
 
@@ -119,8 +119,10 @@ function slidesBundle(): string {
 /** The vendor's flat declaration bundle, composed as `GatekeeperVendor.getTypeScriptTypes()` does. */
 function vendorBundle(): string {
   return [
-    stripTypeModulePrefix(source("types.txt"), GMAIL_TYPES_MODULE_PREFIX), docBundle(),
-    sheetsBundle(), slidesBundle(), source("calendar-types.txt"), source("bigquery-types.txt"),
+    stripTypeModulePrefix(source("types.txt"), RPC_STUB_TYPES_MODULE_PREFIX), docBundle(),
+    sheetsBundle(), slidesBundle(),
+    stripTypeModulePrefix(source("calendar-types.txt"), RPC_STUB_TYPES_MODULE_PREFIX),
+    source("bigquery-types.txt"),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
     source("chat-types.txt"),
   ].join("\n");
@@ -156,6 +158,26 @@ message.addAttachment(file);
 
   it("compiles the exact Google Doc agent declaration bundle without module dependencies", () => {
     expect(compileAgentTypes(docBundle())).toEqual([]);
+  });
+
+  it("subscribes a calendar's hook to the kinds of change it names, handing it the calendar", () => {
+    expect(compileAgentTypes(source("calendar-types.txt") + `
+declare const calendar: GoogleCalendarSession;
+declare const hook: RpcStub<CalendarEventHook>;
+const subscribed: Promise<void> = calendar.subscribeEventChanges(hook, {
+  changes: ["created", "cancelled"], eventId: "abc123", includeDescriptions: true,
+});
+const everything: Promise<void> = calendar.subscribeEventChanges(hook);
+// @ts-expect-error Only these kinds of change are delivered.
+calendar.subscribeEventChanges(hook, { changes: ["moved"] });
+class Meetings implements CalendarEventHook {
+  async receiveEventChange({ change, event, calendar }: CalendarEventChangeEntry): Promise<void> {
+    const kind: CalendarEventChangeKind = change;
+    const meeting: boolean = event.eventType === "default" && event.recurrence === undefined;
+    if (meeting && kind === "created") await calendar.updateEvent(event.id, { location: "Room 1" });
+  }
+}
+`).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
   });
 
   it("compiles the exact Google Drive agent declaration bundle without module dependencies", () => {

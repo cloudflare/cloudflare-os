@@ -2,7 +2,17 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cl
 import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
-import { GoogleVerifier, UserAccount as GoogleUserAccount, type HookDriverRef } from "../../src/google";
+import {
+  GoogleCalendarGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
+  type GoogleCalendarGatekeeperImplProps, type HookDriverRef,
+} from "../../src/google";
+import {
+  CalendarHookDriver as GoogleCalendarHookDriver, type CalendarHookChange, type CalendarHookParams,
+} from "../../src/calendar-hooks";
+import type {
+  CalendarEvent, CalendarEventChangeEntry, CalendarEventChangeKind, CalendarEventDraft, CalendarEventPatch,
+  CalendarSubscribeOptions, GoogleCalendarSession,
+} from "../../src/calendar-types";
 import type {
   ActionKind, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -21,9 +31,10 @@ import { ChatHookDriver as GoogleChatHookDriver, type ChatHookParams } from "../
 import { GmailHookDriver as GoogleGmailHookDriver, type GmailHookParams } from "../../src/gmail-hooks";
 
 export { default } from "../../src/google";
+export { CalendarHookController } from "../../src/calendar-hooks";
 export { ChatHookController } from "../../src/chat-hooks";
 export { GmailHookController } from "../../src/gmail-hooks";
-export { GmailGatekeeperImpl, GoogleChatGatekeeperImpl, GoogleVerifier };
+export { GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl, GoogleVerifier };
 
 const UNREACHABLE = "The test hook driver can't be reached.";
 
@@ -40,6 +51,14 @@ export class GmailHookDriver extends GoogleGmailHookDriver {
 
 /** The space's driver, unreachable as GmailHookDriver above is. */
 export class ChatHookDriver extends GoogleChatHookDriver {
+  override async forgetAccount(userObjectId: string): Promise<void> {
+    if (this.ctx.storage.kv.get("test:unreachable")) throw new Error(UNREACHABLE);
+    await super.forgetAccount(userObjectId);
+  }
+}
+
+/** The calendar's driver, unreachable as GmailHookDriver above is. */
+export class CalendarHookDriver extends GoogleCalendarHookDriver {
   override async forgetAccount(userObjectId: string): Promise<void> {
     if (this.ctx.storage.kv.get("test:unreachable")) throw new Error(UNREACHABLE);
     await super.forgetAccount(userObjectId);
@@ -293,10 +312,42 @@ class GmailRecordingHook extends RpcTarget {
   }
 }
 
+type CalendarHookState = {
+  received: Array<{ change: CalendarEventChangeKind; event: CalendarEvent }>;
+  failures: number;
+  /** Queue this change to each event delivered. */
+  update?: CalendarEventPatch;
+  /** Queue the creation of this event for each change delivered. */
+  create?: CalendarEventDraft;
+};
+
+/** A gadget's Calendar hook: records each change, optionally failing first or queueing writes. */
+class CalendarRecordingHook extends RpcTarget {
+  constructor(private readonly state: CalendarHookState) {
+    super();
+  }
+
+  async receiveEventChange(entry: CalendarEventChangeEntry): Promise<void> {
+    try {
+      if (this.state.failures > 0) {
+        this.state.failures--;
+        throw new Error("The test hook failed.");
+      }
+      this.state.received.push({ change: entry.change, event: entry.event });
+      if (this.state.update !== undefined) await entry.calendar.updateEvent(entry.event.id, this.state.update);
+      if (this.state.create !== undefined) await entry.calendar.createEvent(this.state.create);
+    } finally {
+      disposeRpc(entry.calendar);
+    }
+  }
+}
+
 type ChatFacet = { facetName: string; id: string; props: GoogleChatGatekeeperImplProps };
 type TestHookDeliveryProps = { hooks: string; facet: ChatFacet; params: ChatHookParams };
 type GmailFacet = { facetName: string; id: string; props: GmailGatekeeperImplProps };
 type TestGmailHookDeliveryProps = { hooks: string; facet: GmailFacet; params: GmailHookParams };
+type CalendarFacet = { facetName: string; id: string; props: GoogleCalendarGatekeeperImplProps };
+type TestCalendarHookDeliveryProps = { hooks: string; facet: CalendarFacet; params: CalendarHookParams };
 
 /** This worker's loopback exports, which the gatekeeper's generated `Cloudflare.Exports` omits. */
 type TestExports = {
@@ -304,6 +355,7 @@ type TestExports = {
   TestHookInitiator(options: { props: { hooks: string } }): Fetcher<TestHookInitiator>;
   TestHookDelivery(options: { props: TestHookDeliveryProps }): Fetcher<TestHookDelivery>;
   TestGmailHookDelivery(options: { props: TestGmailHookDeliveryProps }): Fetcher<TestGmailHookDelivery>;
+  TestCalendarHookDelivery(options: { props: TestCalendarHookDeliveryProps }): Fetcher<TestCalendarHookDelivery>;
 };
 
 function testHooks(exports: Cloudflare.Exports, id: string) {
@@ -335,6 +387,14 @@ export class TestGmailHookDelivery extends WorkerEntrypoint<Cloudflare.Env, Test
   deliver(callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, messageId: string) {
     const { hooks, facet, params } = this.ctx.props;
     return testHooks(this.ctx.exports, hooks).gmailDeliver(facet, params, callback, approvalQueue, messageId);
+  }
+}
+
+/** TestHookDelivery's counterpart for a Calendar facet's `[restore]` target. */
+export class TestCalendarHookDelivery extends WorkerEntrypoint<Cloudflare.Env, TestCalendarHookDeliveryProps> {
+  deliver(callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, change: CalendarHookChange) {
+    const { hooks, facet, params } = this.ctx.props;
+    return testHooks(this.ctx.exports, hooks).calendarDeliver(facet, params, callback, approvalQueue, change);
   }
 }
 
@@ -604,8 +664,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   #hookQueue = new TestApprovalQueue();
   #hook: HookState = { received: [], failures: 0 };
   #gmailHook: GmailHookState = { received: [], failures: 0 };
+  #calendarHook: CalendarHookState = { received: [], failures: 0 };
   /** Which gatekeeper bound the hook, and so which recording hook its firings get. */
-  #hookKind: "chat" | "gmail" = "chat";
+  #hookKind: "chat" | "gmail" | "calendar" = "chat";
 
   /** Subscribe through the facet's own subscribeNewMessages(), keeping the controller it binds. */
   async chatSubscribe(facet: ChatFacet, options?: ChatSubscribeOptions): Promise<void> {
@@ -649,6 +710,63 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       .testDeliver(params, callback, approvalQueue, message);
   }
 
+  // ── Google Calendar ─────────────────────────────────────────────────
+
+  #calendar(facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps) {
+    const exports = this.ctx.exports as unknown as {
+      GoogleCalendarGatekeeperImpl(options: {props: GoogleCalendarGatekeeperImplProps}):
+        DurableObjectClass<GoogleCalendarGatekeeperImpl>;
+    };
+    return this.ctx.facets.get<GoogleCalendarGatekeeperImpl>(facetName, () => ({
+      id, class: exports.GoogleCalendarGatekeeperImpl({props}),
+    }));
+  }
+
+  /** Subscribe through the calendar facet's own subscribeEventChanges(), keeping the controller it binds. */
+  async calendarSubscribe(facet: CalendarFacet, options?: CalendarSubscribeOptions): Promise<void> {
+    const calendar = this.#calendar(facet.facetName, facet.id, facet.props) as unknown as TestCalendar;
+    await calendar.testCalendarRestoreThrough(this.ctx.id.toString(), facet);
+    using queue = new RpcStub(new HookBindingQueue(this.ctx.storage));
+    using session = await calendar.startSession(queue as never) as GoogleCalendarSession & Disposable;
+    using hook = new RpcStub(new CalendarRecordingHook(this.#calendarHook));
+    await session.subscribeEventChanges(hook as never, options);
+    this.#hookKind = "calendar";
+  }
+
+  async calendarDeliver(
+      { facetName, id, props }: CalendarFacet, params: CalendarHookParams,
+      callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, change: CalendarHookChange,
+  ): Promise<void> {
+    await (this.#calendar(facetName, id, props) as unknown as TestCalendar)
+      .testCalendarDeliver(params, callback, approvalQueue, change);
+  }
+
+  /** Apply one of the calendar facet's queued actions, as approving it does. */
+  async calendarApplyAction({ facetName, id, props }: CalendarFacet, actionId: number): Promise<void> {
+    await this.#calendar(facetName, id, props).applyAction(actionId);
+  }
+
+  /** Undo one of the calendar facet's applied actions. */
+  async calendarRevertAction({ facetName, id, props }: CalendarFacet, actionId: number): Promise<void> {
+    await this.#calendar(facetName, id, props).revertAction(actionId);
+  }
+
+  setCalendarHookBehavior(behavior: Partial<Omit<CalendarHookState, "received">>): void {
+    Object.assign(this.#calendarHook, behavior);
+  }
+
+  /** What the Calendar hook received, how many of its failures remain, and what it queued and read. */
+  readCalendarHook(): {
+    received: CalendarHookState["received"]; failures: number; submissions: Array<{ actionId: number }>;
+    observations: Array<{ title: string; description: string }>;
+  } {
+    const { submissions, observations } = this.#hookQueue.read();
+    return {
+      received: this.#calendarHook.received, failures: this.#calendarHook.failures, submissions,
+      observations: observations as Array<{ title: string; description: string }>,
+    };
+  }
+
   async chatEnableHook(): Promise<void> {
     await this.#hookController().enable(
       (this.ctx.exports as unknown as TestExports).TestHookInitiator({ props: { hooks: this.ctx.id.toString() } }),
@@ -672,7 +790,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     }
     const callback = this.#hookKind === "gmail"
       ? new GmailRecordingHook(this.#gmailHook)
-      : new RecordingHook(this.#hook);
+      : this.#hookKind === "calendar"
+        ? new CalendarRecordingHook(this.#calendarHook)
+        : new RecordingHook(this.#hook);
     return { callback, approvalQueue: new RpcStub(this.#hookQueue) };
   }
 
@@ -1208,6 +1328,28 @@ testGmailPrototype.runTestOperation = async function(
   } finally {
     disposeRpc(session);
   }
+};
+
+// ── Google Calendar test surface ──────────────────────────────────────
+
+type TestCalendar = GoogleCalendarGatekeeperImpl & {
+  testCalendarDeliver(params: CalendarHookParams, callback: unknown, queue: unknown, change: CalendarHookChange): Promise<void>;
+  testCalendarRestoreThrough(hooks: string, facet: CalendarFacet): void;
+};
+
+const testCalendarPrototype = GoogleCalendarGatekeeperImpl.prototype as TestCalendar;
+
+/** Deliver through the target the facet's `[restore]()` returns for a hook's delivery stub. */
+testCalendarPrototype.testCalendarDeliver = function(params, callback, queue, change) {
+  return this[restore](params).deliver(callback as never, queue as never, change);
+};
+
+/** As testChatPrototype.testRestoreThrough, for a Calendar facet. */
+testCalendarPrototype.testCalendarRestoreThrough = function(hooks, facet) {
+  const { ctx } = this as unknown as { ctx: DurableObjectState };
+  const exports = ctx.exports as unknown as TestExports;
+  ctx.restore = async (params: CalendarHookParams) => Object.assign(
+    exports.TestCalendarHookDelivery({ props: { hooks, facet, params } }), { [Symbol.dispose]() {} });
 };
 
 // ── Google Chat test surface ──────────────────────────────────────────

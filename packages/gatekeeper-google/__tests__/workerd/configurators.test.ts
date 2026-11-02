@@ -478,15 +478,18 @@ describe("Google resource configurators", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 500 })));
 
     await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("shared@example.com"))
-      .rejects.toThrow("Google Calendar API request failed: 500");
+      .rejects.toThrow("Google Calendar API request failed [http=500]");
   });
 
-  it("does not mistake a quota 403 for missing Calendar access", async () => {
+  it("does not mistake a quota 403 for missing Calendar access, naming the reason but not the response", async () => {
     let getToken = vi.fn(async () => token("access-token"));
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limit", { status: 403 })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: {
+      code: 403, message: "Rate limit exceeded for shared@example.com",
+      errors: [{ domain: "usageLimits", reason: "rateLimitExceeded", message: "Rate limit exceeded for shared@example.com" }],
+    } }, { status: 403 })));
 
     await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("shared@example.com"))
-      .rejects.toThrow("Google Calendar API request failed: 403");
+      .rejects.toThrow(/^Google Calendar API request failed \[http=403\] \(rateLimitExceeded\)$/);
   });
 
   it("refreshes a rejected Calendar access token", async () => {
