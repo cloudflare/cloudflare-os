@@ -96,19 +96,19 @@ function OutputMenu({
         />
         <DropdownMenu.Content className={MENU_CONTENT}>
           <DropdownMenu.Item onClick={onOpen} className={MENU_ITEM}>
-            <ArrowSquareOut size={13} className="mr-2" /> Open
+            <ArrowSquareOut size={13} /> Open
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={onOpenWorkspace} className={MENU_ITEM}>
-            <Cube size={13} className="mr-2" /> Open workspace
+            <Cube size={13} /> Open workspace
           </DropdownMenu.Item>
           {onRename && (
             <DropdownMenu.Item onClick={onRename} className={MENU_ITEM}>
-              <PencilSimple size={13} className="mr-2" /> Rename
+              <PencilSimple size={13} /> Rename
             </DropdownMenu.Item>
           )}
           {onRemove && (
             <DropdownMenu.Item onClick={onRemove} className={`${MENU_ITEM} text-kumo-danger`}>
-              <Trash size={13} className="mr-2" /> Remove
+              <Trash size={13} /> Remove
             </DropdownMenu.Item>
           )}
         </DropdownMenu.Content>
@@ -300,15 +300,15 @@ function ScopeSelect({
               className={MENU_ITEM}
               onClick={() => onChange(option.value)}
             >
-              <Icon size={13} className="mr-2 flex-shrink-0 text-kumo-subtle" />
+              <Icon size={13} className="flex-shrink-0 text-kumo-subtle" />
               <span className="min-w-0 flex-1 truncate">{option.label}</span>
-              <span className="ml-3 flex-shrink-0 tabular-nums text-kumo-inactive">
+              <span className="ml-1 flex-shrink-0 tabular-nums text-kumo-inactive">
                 {counts[option.value]}
               </span>
               <Check
                 size={12}
                 weight="bold"
-                className={`ml-2 flex-shrink-0 ${
+                className={`flex-shrink-0 ${
                   option.value === value ? 'text-kumo-subtle' : 'invisible'
                 }`}
               />

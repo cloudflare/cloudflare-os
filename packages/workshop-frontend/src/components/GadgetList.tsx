@@ -146,19 +146,19 @@ function AppRow({
         />
         <DropdownMenu.Content className={MENU_CONTENT}>
           <DropdownMenu.Item onClick={startRenaming} className={MENU_ITEM}>
-            <Pencil size={13} className="mr-2" />
+            <Pencil size={13} />
             Rename
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={() => onTogglePin(gadget)} className={MENU_ITEM}>
-            <Star size={13} className="mr-2" weight={gadget.pinned ? 'fill' : 'regular'} />
+            <Star size={13} weight={gadget.pinned ? 'fill' : 'regular'} />
             {gadget.pinned ? 'Unfavorite' : 'Favorite'}
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={() => onInfo(gadget)} className={MENU_ITEM}>
-            <Info size={13} className="mr-2" />
+            <Info size={13} />
             Information
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={() => onShare(gadget)} className={MENU_ITEM}>
-            <ShareNetwork size={13} className="mr-2" />
+            <ShareNetwork size={13} />
             Share
           </DropdownMenu.Item>
           <WorkspaceNotificationsMenu
@@ -172,7 +172,7 @@ function AppRow({
             onClick={() => onDelete(gadget)}
             className={MENU_ITEM_DANGER}
           >
-            <Trash size={13} className="mr-2" />
+            <Trash size={13} />
             {gadget.owner ? 'Dismiss' : 'Delete'}
           </DropdownMenu.Item>
         </DropdownMenu.Content>

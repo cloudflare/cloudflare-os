@@ -919,7 +919,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
               />
               <DropdownMenu.Content className={MENU_CONTENT}>
                 <DropdownMenu.Item
-                  icon={<DownloadSimple size={13} className="mr-2" />}
+                  icon={<DownloadSimple className="size-3.25" />}
                   onClick={handleDownload}
                   disabled={downloading}
                   className={MENU_ITEM}
@@ -928,7 +928,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Item
-                  icon={<Star size={13} className="mr-2" weight={isPinned ? 'fill' : 'regular'} />}
+                  icon={<Star className="size-3.25" weight={isPinned ? 'fill' : 'regular'} />}
                   onClick={handleTogglePinned}
                   disabled={updatingPinned}
                   className={MENU_ITEM}
@@ -938,7 +938,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
                 {sourceWorkspace && (
                   <DropdownMenu.Item
-                    icon={<ArrowSquareOut size={13} className="mr-2" />}
+                    icon={<ArrowSquareOut className="size-3.25" />}
                     onClick={() => window.open(`/workspace/${sourceWorkspace.workspaceId}`, '_blank', 'noopener,noreferrer')}
                     className={MENU_ITEM}
                   >
@@ -950,7 +950,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   <>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
-                      icon={<Trash size={13} className="mr-2" />}
+                      icon={<Trash className="size-3.25" />}
                       variant="danger"
                       onClick={() => setShowDeleteConfirm(true)}
                       className={MENU_ITEM_DANGER}
@@ -965,7 +965,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                     <DropdownMenu.Separator />
                     {isUploadedBlueprint ? (
                       <DropdownMenu.Item
-                        icon={<Trash size={13} className="mr-2" />}
+                        icon={<Trash className="size-3.25" />}
                         variant="danger"
                         onClick={() => setShowDeleteConfirm(true)}
                         className={MENU_ITEM_DANGER}
@@ -974,7 +974,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                       </DropdownMenu.Item>
                     ) : (
                       <DropdownMenu.Item
-                        icon={<Trash size={13} className="mr-2" />}
+                        icon={<Trash className="size-3.25" />}
                         variant="danger"
                         onClick={handleRemoveFromLibrary}
                         disabled={removingFromLibrary}
@@ -990,7 +990,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   <>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
-                      icon={<Sparkle size={13} className="mr-2" weight={isFeatured ? 'fill' : 'regular'} />}
+                      icon={<Sparkle className="size-3.25" weight={isFeatured ? 'fill' : 'regular'} />}
                       onClick={handleToggleFeatured}
                       disabled={updatingFeatured}
                       className={MENU_ITEM}

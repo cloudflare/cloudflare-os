@@ -18,7 +18,7 @@
     "test:run": "vitest run && vitest run -c vitest.browser.config.ts"
   },
   "dependencies": {
-    "@cloudflare/kumo": "^2.14.0",
+    "@cloudflare/kumo": "^2.16.0",
     "@gadgets/error-reporting": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/node": "^4.3.3",
@@ -34,12 +34,12 @@
     "@gadgets/scripts": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "@types/node": "26.1.0",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitest/browser-playwright": "catalog:",
     "playwright": "catalog:",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
