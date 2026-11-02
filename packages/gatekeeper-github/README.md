@@ -46,13 +46,17 @@ for approval, and every read is logged as an observation.
   `.github/workflows/*.yml` or `*.yaml`, or its first parent had CI); otherwise it is `done` with
   `state: "none"`. The head time is when this gatekeeper applied the push, else GitHub's activity
   log for the branch (best-effort: if GitHub refuses or fails it, the committer date), else the
-  committer date. A pull request read also marks which entries the base branch requires
+  committer date; for a pull request's head, no earlier than when the pull request was opened,
+  since opening it starts `on: pull_request` CI without a push. A pull request read also marks which entries the base branch requires
   (`required`) and names required checks that have not reported (`missingRequired`, best-effort
   from the branch's rulesets and classic protection); while any is missing, the state reads
   `expected` (unless something failed). An `expected` state, GitHub's own or from
   `missingRequired`, with nothing else unfinished reads `active` for those same 10 minutes, then
   `blocked`, since a required check that has not reported by then needs someone to act (a
-  path-filtered workflow, or an app that is not installed).
+  path-filtered workflow, or an app that is not installed). A phase that would end polling
+  (`done`, or that `blocked`) reads `active` instead while a GitHub Actions run of the commit
+  waits on its concurrency group, created under an hour ago: such a run has no check runs, so
+  the rollup cannot show it (one best-effort `status=pending` runs lookup, made only then).
 - **Pull request scope.** A pull request binding reads CI only on the pull request's head (counting
   queued pushes) and the first 250 commits its listing shows; check runs and workflow runs on any
   other commit are refused. `GitHubPullRequestDetails.mergeState` carries GitHub's

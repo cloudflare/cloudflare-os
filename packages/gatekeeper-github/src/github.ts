@@ -626,6 +626,11 @@ const NONCE_BYTES = 32;
 const INITIATION_NONCE_LIFETIME_MS = 10 * 60 * 1000;
 const OAUTH_NONCE_LIFETIME_MS = 10 * 60 * 1000;
 const ENTITY_CACHE_TTL_MS = 30 * 1000;
+/**
+ * How long a workflow run held `pending` by its concurrency group keeps its commit's CI `active`:
+ * it waits for the one run ahead of it, about one CI run's time. Past this it is taken as stuck.
+ */
+const PENDING_RUN_WINDOW_MS = 60 * 60 * 1000;
 const LIST_CACHE_TTL_MS = 15 * 1000;
 // For values that are pure functions of immutable inputs (e.g. the merge base of two commits,
 // keyed by both shas): never stale, so only a generation bump (`#clearCaches`) evicts them.
@@ -5425,6 +5430,22 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   readonly #appliedPushes = new AppliedPushLog(this.ctx.storage.kv);
 
   /**
+   * A GitHub read that only refines a verdict already in hand: a refusal, timeout or lost
+   * connection yields `fallback` and a warning (`event`) rather than failing the read. Only an
+   * expired connection, which withAccountApi() wraps around the marked error, still fails it: the
+   * owner has to reconnect.
+   */
+  async #bestEffort<T>(read: (api: GitHubApi) => Promise<T>, fallback: T, event: string): Promise<T> {
+    try {
+      return await this.#withApi(read);
+    } catch (error) {
+      if (isConnectionExpired(error)) throw error;
+      logger.warn("a best-effort CI read failed", { event, error });
+      return fallback;
+    }
+  }
+
+  /**
    * When `sha` became a head, for the absence policy: this gatekeeper's record of pushing it, else
    * GitHub's record of an update (push, force push, creation) that left `branch` at it, else its
    * committer date. GitHub's record is asked for only once the committer date is out of the window,
@@ -5435,22 +5456,22 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   ): Promise<number | undefined> {
     const applied = this.#appliedPushes.get(sha);
     if (applied !== undefined) return applied;
-    if (branch !== undefined && !withinCiStartWindow(committedAt, now)) {
-      try {
-        const updates = await this.#withApi(api =>
-          api.listBranchActivity(this.ctx.props.owner, this.ctx.props.repo, branch));
-        const update = updates.find(entry => entry.after === sha);
-        if (update !== undefined) return Date.parse(update.timestamp);
-      } catch (error) {
-        // Best-effort: a GitHub refusal, timeout or lost connection falls back to the committer
-        // date rather than failing a read whose rollup is already in hand. Only an expired
-        // connection, which withAccountApi() wraps around the marked error, still fails it: the
-        // owner has to reconnect.
-        if (isConnectionExpired(error)) throw error;
-        logger.warn("failed to read a branch's pushes", { event: "ci.pushes.read.failed", error });
-      }
-    }
-    return committedAt;
+    if (branch === undefined || withinCiStartWindow(committedAt, now)) return committedAt;
+    const updates = await this.#bestEffort(api =>
+      api.listBranchActivity(this.ctx.props.owner, this.ctx.props.repo, branch), [], "ci.pushes.read.failed");
+    const update = updates.find(entry => entry.after === sha);
+    return update === undefined ? committedAt : Date.parse(update.timestamp);
+  }
+
+  /**
+   * Whether a GitHub Actions run of `sha` created under PENDING_RUN_WINDOW_MS ago waits on its
+   * concurrency group. Such a run has no check runs until it starts, so the rollup cannot show
+   * it. Best-effort.
+   */
+  async #hasPendingRun(sha: GitOid, now: number): Promise<boolean> {
+    const [run] = await this.#bestEffort(api => api.listWorkflowRuns(this.ctx.props.owner, this.ctx.props.repo,
+      { head_sha: sha, status: "pending", page: 1, per_page: 1 }), [], "ci.pending_runs.read.failed");
+    return run !== undefined && now - Date.parse(run.created_at) < PENDING_RUN_WINDOW_MS;
   }
 
   /**
@@ -5536,8 +5557,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * absence policy's. `required` names the checks a pull request's base branch requires; those
    * that have not reported (`missingRequired`; none when entries were left out, since a required
    * one may be among them) keep the commit `expected`, as GitHub's own rollup does for a required
-   * commit status, and a failure stays a failure. An `expected` commit with nothing else
-   * unfinished is bounded by `awaitingRequiredPhase`. `branch` is a branch the commit is or was the
+   * commit status, and a failure stays a failure. A verdict of `done` reads `active` while a run of
+   * the commit waits on its concurrency group (`#hasPendingRun`); otherwise an `expected` commit
+   * with nothing else unfinished is bounded by `awaitingRequiredPhase`. `branch` is a branch the commit is or was the
    * head of, whose push record GitHub may have; `openedAt`, when the pull request it heads was
    * opened, which starts CI without a push. Undefined when GitHub does not have the commit.
    */
@@ -5565,6 +5587,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const reported = new Set(rollup.entries.map(entryName));
     const missingRequired = rollup.truncated ? [] : (await options.required ?? []).filter(name => !reported.has(name));
     const state = missingRequired.length > 0 && rollup.state !== "failure" ? "expected" : rollup.state;
+    // Asked only of a verdict that would end polling, since it costs a request.
+    if (phase === "done" && await this.#hasPendingRun(sha, now)) phase = "active";
     if (state === "expected" && phase === "done") phase = awaitingRequiredPhase(await becameHeadAt(), now);
     const counts = rollup.counts ?? countStates(rollup.entries.map(entry => entry.state));
     return { ci: { commitId: sha, state, phase, counts, checks: rollup.entries }, missingRequired };

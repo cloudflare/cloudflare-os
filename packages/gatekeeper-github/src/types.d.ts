@@ -448,7 +448,9 @@ export type GitHubCiPhase = "active" | "blocked" | "done";
 /**
  * A commit's overall phase: `active` if any entry is, else `blocked` if any entry is, else
  * `done`. `notStarted` means nothing has reported yet but CI is expected to start soon: poll
- * again.
+ * again. A phase that would be `done` reads `active` while a GitHub Actions run of the commit
+ * waits on its concurrency group, for up to an hour: such a run has no check runs to list until
+ * it starts.
  */
 export type GitHubCiRollupPhase = GitHubCiPhase | "notStarted";
 
@@ -476,7 +478,8 @@ export type GitHubCommitChecks = {
  * CI on one of a pull request's commits, returned by `GitHubPullRequest.getChecks()`. While a
  * check the base branch requires has not reported, `state` is `expected` (unless something
  * failed) and a `done` phase reads `active`, for the first 10 minutes after the commit became a
- * head. After that a required check that has not reported needs someone to act (its workflow's
+ * head or, for the head, after the pull request was opened, whichever is later. After that a
+ * required check that has not reported needs someone to act (its workflow's
  * path filters skip it, or the app that reports it is not installed), so the phase reads
  * `blocked`: report `missingRequired`.
  */

@@ -110,11 +110,17 @@ function job(id: number, overrides: Record<string, unknown> = {}) {
 function workflowRun(id: number, headSha: string) {
   return {
     id, name: "CI", event: "push", head_branch: "main", head_sha: headSha,
-    status: "completed", conclusion: "failure", run_attempt: 1,
+    status: "completed", conclusion: "failure" as string | null, run_attempt: 1,
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:05:00Z",
     run_started_at: "2026-01-01T00:00:00Z",
     html_url: `https://github.com/${OWNER}/${REPO}/actions/runs/${id}`, actor: null,
   };
+}
+
+/** A run of HEAD held `pending` by its concurrency group, created `minutes` ago: it has no check runs yet. */
+function pendingRun(id: number, minutes: number) {
+  const createdAt = new Date(Date.now() - minutes * MINUTE).toISOString();
+  return { ...workflowRun(id, HEAD), status: "pending", conclusion: null, created_at: createdAt, run_started_at: createdAt };
 }
 
 function commitResponse(sha: string) {
@@ -275,9 +281,10 @@ class FakeGitHub {
       return new Response(null, { status: 302, headers: { Location: `${BLOB_ORIGIN}/logs/${id}?sig=signed` } });
     }
     if (rest === "/actions/runs") {
-      const sha = url.searchParams.get("head_sha");
+      const sha = url.searchParams.get("head_sha"), status = url.searchParams.get("status");
       return Response.json({
-        workflow_runs: [...this.runs.values()].filter(run => sha === null || run.head_sha === sha),
+        workflow_runs: [...this.runs.values()].filter(run => (sha === null || run.head_sha === sha) &&
+          (status === null || run.status === status || run.conclusion === status)),
       });
     }
     if ((match = rest.match(/^\/actions\/runs\/(\d+)(\/jobs|\/attempts\/\d+\/jobs)?$/))) {
@@ -638,6 +645,29 @@ describe("getChecks: a commit nothing has reported on", () => {
   });
 });
 
+describe("getChecks: a run its concurrency group holds", () => {
+  it("keeps a commit whose visible checks are done active for an hour, then lets it be done", async () => {
+    const github = fakeGitHub();
+    github.rollups.set(HEAD, { state: "SUCCESS", nodes: [checkRunNode("build", "COMPLETED", "SUCCESS")],
+      committedAt: Date.now() - 60 * MINUTE, workflows: true, parentHasCi: true });
+    github.runs.set(900, pendingRun(900, 5));
+    const gk = await gatekeeper();
+    expect(await gk.read([{ method: "getChecks", args: [HEAD] }])).toMatchObject({ state: "success", phase: "active" });
+
+    // Pending for over an hour, it is taken as stuck.
+    github.runs.set(900, pendingRun(900, 61));
+    expect(await gk.read([{ method: "getChecks", args: [HEAD] }])).toMatchObject({ phase: "done" });
+  });
+
+  it("keeps an old commit nothing has reported on active rather than done", async () => {
+    const github = fakeGitHub();
+    github.rollups.set(HEAD, { state: null, nodes: [], committedAt: Date.now() - 60 * MINUTE, workflows: true, parentHasCi: false });
+    github.runs.set(900, pendingRun(900, 30));
+    const gk = await gatekeeper();
+    expect(await gk.read([{ method: "getChecks", args: [HEAD] }])).toMatchObject({ state: "none", phase: "active" });
+  });
+});
+
 describe("pull request CI", () => {
   function pullScenario(): FakeGitHub {
     const github = fakeGitHub();
@@ -673,6 +703,16 @@ describe("pull request CI", () => {
     openedAgo(60);
     expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ state: "expected", phase: "blocked" });
     expect(github.requestsTo(`${API_BASE}/activity`)).toHaveLength(2);
+  });
+
+  it("keeps a missing required check active, not blocked, while a run of the head waits on its concurrency group", async () => {
+    const github = pullScenario();
+    github.rollups.get(HEAD)!.committedAt = Date.now() - 60 * MINUTE;
+    const gk = await gatekeeper(7);
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ state: "expected", phase: "blocked" });
+
+    github.runs.set(902, pendingRun(902, 20));
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ state: "expected", phase: "active" });
   });
 
   it("reports the head's checks with what the base branch requires, and mergeState", async () => {
