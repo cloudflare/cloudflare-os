@@ -1,4 +1,4 @@
-import { createObservabilityContext } from "@gadgets/observability/observability-context";
+import { createObservabilityContext, type Logger } from "@gadgets/observability/observability-context";
 
 /** Observability fields emitted by the Workshop backend. */
 export type WorkshopObservabilityFields = {
@@ -53,10 +53,13 @@ export type WorkshopObservabilityFields = {
   vendorId: string;
 };
 
+/** A logger restricted to the Workshop backend's field vocabulary. */
+export type WorkshopLogger = Logger<WorkshopObservabilityFields>;
+
 /** Ambient observability fields for one Workshop operation. */
 export const obsContext = createObservabilityContext<WorkshopObservabilityFields>();
 
 /** Creates a logger restricted to the Workshop backend's field vocabulary. */
-export function createWorkshopLogger(component: string) {
+export function createWorkshopLogger(component: string): WorkshopLogger {
   return obsContext.createLogger({ component });
 }
