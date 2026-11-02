@@ -13,6 +13,10 @@ const RESERVED_BLUEPRINT_KEYS = new Set([".featured", ".adminConfig"]);
 // CollaboratorRole for the same reason as OUTPUT_ICONS.
 const PUBLICATION_ROLES = ["use", "build"];
 
+// Bounds on a declared importMethods list; each name is called as a gadget method.
+const MAX_IMPORT_METHODS = 32;
+const IMPORT_METHOD_NAME = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
+
 export type BundledBlueprintManifest = {
   blueprintId: string;
   title: string;
@@ -25,6 +29,11 @@ export type BundledBlueprintManifest = {
    * default, at this role. Only the deployment's bundled blueprints are trusted to declare it.
    */
   publication?: "use" | "build";
+  /**
+   * The gadget methods a space sync may call on a workspace created from this blueprint (see
+   * docs/space-sync.md). Absent when a space sync may call none.
+   */
+  importMethods?: string[];
   created: string;
   version: number;
   lastUpdated: string;
@@ -97,7 +106,8 @@ function parsePresentation(
 ): BundledBlueprintPresentation {
   let bad = (message: string): never => { throw new Error(`${label}: ${message}`); };
   let {
-    blueprintId, title, description, output, author, revision, publication, $comment, ...rest
+    blueprintId, title, description, output, author, revision, publication, importMethods, $comment,
+    ...rest
   } = parsed;
   let unknown = Object.keys(rest).filter(key => !allowedExtra.includes(key));
   if (unknown.length > 0) bad(`unknown keys: ${unknown.join(", ")}`);
@@ -118,6 +128,12 @@ function parsePresentation(
   }
   if (publication !== undefined && !PUBLICATION_ROLES.includes(publication as string)) {
     bad(`publication must be one of: ${PUBLICATION_ROLES.join(", ")}`);
+  }
+  if (importMethods !== undefined && (!Array.isArray(importMethods) ||
+      importMethods.length === 0 || importMethods.length > MAX_IMPORT_METHODS ||
+      importMethods.some(name => typeof name !== "string" || !IMPORT_METHOD_NAME.test(name)) ||
+      new Set(importMethods).size !== importMethods.length)) {
+    bad(`importMethods must be 1 to ${MAX_IMPORT_METHODS} distinct method names`);
   }
   if (typeof output !== "object" || output === null) bad("output is required");
   let { id, noun, plural, icon, ...outputRest } = output as Record<string, unknown>;
@@ -153,5 +169,6 @@ function parsePresentation(
     },
     revision: revision as number,
     ...(publication === undefined ? {} : {publication: publication as "use" | "build"}),
+    ...(importMethods === undefined ? {} : {importMethods: importMethods as string[]}),
   };
 }

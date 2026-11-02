@@ -31,7 +31,9 @@ __tests__/             the build's own tests
 `files/` is the gadget's code. `blueprint.json` contains its install ID, presentation, provenance,
 bindings, blueprint `version`, bundled `revision`, and optionally a default `publication` (`"use"`
 or `"build"`): the role a workspace created from it is published with to everyone signed in, unless
-its creator opts out. Only a bundled blueprint can declare one (see docs/blueprints.md). The build embeds the manifest and the files,
+its creator opts out. Only a bundled blueprint can declare one (see docs/blueprints.md). It may
+also declare `importMethods`, 1 to 32 distinct gadget method names a space sync may call on a
+workspace created from it (see docs/space-sync.md). The build embeds the manifest and the files,
 as built, in the generated Worker module. No binary archive is committed, and none is built.
 
 Installing a blueprint makes a git commit of its files, as publishing one from a Workshop does, and

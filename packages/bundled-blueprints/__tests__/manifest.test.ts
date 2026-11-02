@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseArchive } from "../src/files.ts";
 import { generateBundledBlueprintsModule } from "../src/generate.ts";
 import { parseBundledBlueprintManifest, parseBundledBlueprintPresentation } from "../src/manifest.ts";
 
@@ -56,6 +57,42 @@ describe("bundled blueprint manifest", () => {
         .toThrow("example.json: publication must be one of: use, build");
   });
 
+  it("accepts importMethods", () => {
+    let methods = ["importContent", "$set_2", "_x"];
+    expect(parseBundledBlueprintManifest("example",
+        JSON.stringify({...manifest, importMethods: methods})).importMethods).toEqual(methods);
+    expect(parseBundledBlueprintPresentation("example.json",
+        JSON.stringify({...presentation, importMethods: methods})).importMethods).toEqual(methods);
+  });
+
+  it("omits importMethods when the manifest declares none", () => {
+    expect(parseBundledBlueprintManifest("example", JSON.stringify(manifest)))
+        .not.toHaveProperty("importMethods");
+  });
+
+  it.each([
+    ["not an array", "importContent"],
+    ["empty", []],
+    ["too many", Array.from({length: 33}, (_, i) => `method${i}`)],
+    ["duplicated", ["importContent", "importContent"]],
+    ["a non-string", ["importContent", 1]],
+    ["an empty name", [""]],
+    ["a name starting with a digit", ["1import"]],
+    ["a dotted name", ["a.b"]],
+    ["a name with a space", ["import content"]],
+    ["null", null],
+  ])("refuses importMethods that is %s", (_, methods) => {
+    let raw = JSON.stringify({...manifest, importMethods: methods});
+    expect(() => parseBundledBlueprintManifest("example", raw))
+        .toThrow("example/blueprint.json: importMethods must be 1 to 32 distinct method names");
+  });
+
+  it("accepts the maximum number of importMethods", () => {
+    let methods = Array.from({length: 32}, (_, i) => `method${i}`);
+    expect(parseBundledBlueprintManifest("example",
+        JSON.stringify({...manifest, importMethods: methods})).importMethods).toEqual(methods);
+  });
+
   it("refuses a key the manifest does not define", () => {
     let raw = JSON.stringify({...manifest, published: "use"});
     expect(() => parseBundledBlueprintManifest("example", raw))
@@ -93,5 +130,20 @@ describe("generated bundled blueprints module", () => {
     let byId = new Map(entries(text).map(entry => [entry.blueprintId, entry]));
     expect(byId.get("format.published")?.publication).toBe("use");
     expect(byId.get("format.plain")).not.toHaveProperty("publication");
+  });
+
+  it("carries declared importMethods into its entry and types it", async () => {
+    let text = await generate({
+      synced: {...manifest, blueprintId: "format.synced", importMethods: ["importContent"]},
+      plain: {...manifest, blueprintId: "format.plain"},
+    });
+
+    expect(text).toContain("importMethods?: string[];");
+    let byId = new Map(entries(text).map(entry => [entry.blueprintId, entry]));
+    let synced = byId.get("format.synced");
+    expect(synced?.importMethods).toEqual(["importContent"]);
+    expect(byId.get("format.plain")).not.toHaveProperty("importMethods");
+    let archive = parseArchive(Buffer.from(synced?.archive as string, "base64"), "synced");
+    expect(archive.metadata).not.toHaveProperty("importMethods");
   });
 });
