@@ -823,6 +823,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * Ask the first suggested model of a provider for a few tokens through the gateway, on behalf
    * of the admin `adminUserId`, and report what happened. A request that fails is a result. The
    * environment alone decides how the request is routed, so a provider that is off can be tested.
+   * Auto Router's request carries the pool its model picks from (see GatewayModels.autoRouterPool).
    *
    * Nothing is stored and the config mutation queue is not joined, so the other admin calls run
    * while the request is out.
@@ -835,7 +836,16 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     if (model === undefined) {
       throw new Error(`Provider "${provider}" has no suggested model to test.`);
     }
-    return this.#runTest(gateway, { provider, model, apiToken: "" }, adminUserId, PROVIDER_TEST);
+    let config: AiModelConfig = { provider, model, apiToken: "" };
+    if (provider === "cloudflare-auto-router") {
+      // Which model answers is the router's pick from its pool, so the test sends the pool the
+      // router's model is given, the admin's allowed models included, for its pass to say that
+      // one of those answered.
+      let stored = this.#config();
+      config.autoRouterPool = new GatewayModels(gateway, stored)
+          .autoRouterPool(stored.modelSettings[model]?.allowedModels);
+    }
+    return this.#runTest(gateway, config, adminUserId, PROVIDER_TEST);
   }
 
   /**

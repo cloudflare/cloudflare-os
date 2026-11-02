@@ -317,15 +317,18 @@ export class GatewayModels {
     let model = this.#byId.get(id);
     if (!model) return undefined;
     return gatewayRunConfig(model, model.settings?.reasoning ?? this.#defaultReasoning,
-        model.settings?.compactionInputBudget, this.#autoRouterPool(model));
+        model.settings?.compactionInputBudget,
+        model.provider === "cloudflare-auto-router"
+            ? this.autoRouterPool(model.settings?.allowedModels) : undefined);
   }
 
-  // The Auto Router model's pool: the listed models of enabled providers, or else those providers
-  // whole. It never exceeds the enabled providers, so a listed model drops out once its provider
-  // is turned off. Undefined for every other model.
-  #autoRouterPool(model: AdminModel): AutoRouterPool | undefined {
-    if (model.provider !== "cloudflare-auto-router") return undefined;
-    let listed = model.settings?.allowedModels;
+  /**
+   * The pool an Auto Router model whose admin listed `listed` picks from, or that one with no
+   * list picks from when it is undefined: the listed models of enabled providers, or else those
+   * providers whole. It never exceeds the enabled providers, so a listed model drops out once its
+   * provider is turned off.
+   */
+  autoRouterPool(listed: string[] | undefined): AutoRouterPool {
     if (listed === undefined) return { providers: this.addableProviders };
     return { models: listed.filter(name => this.enablesProviderOf(name)) };
   }

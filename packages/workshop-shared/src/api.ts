@@ -1524,7 +1524,8 @@ export interface AdminApi {
    * A pass says that one model answered once. A 401 or 403 does not tell a provider key the
    * gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models. The request is a
    * quick one that takes none of a model's settings: testGatewayModel() sends a model the
-   * request its chats would.
+   * request its chats would. Auto Router's alone carries a setting, the pool its model picks
+   * from, allowed models included, since that decides which model answers.
    */
   testGatewayProvider(provider: AiModelProvider): Promise<GatewayModelTest>;
 
