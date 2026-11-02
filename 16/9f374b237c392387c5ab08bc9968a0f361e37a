@@ -1,0 +1,21 @@
+packages/workshop-backend/AGENTS.md
+  s_dd2417a6d5bd82::t_e4aa7bc5a2824f 96-99
+docs/spaces.md
+  s_dd2417a6d5bd82::t_3fa71afd35207d 3,5,13,18,22,29,37,44,48,50-51,55,71,73,78-112,115-117,128-131,135-140,142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "169f374b237c392387c5ab08bc9968a0f361e37a",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
