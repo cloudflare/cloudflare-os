@@ -404,7 +404,8 @@ export type GitLabCompareResponse = {
 };
 
 /**
- * A failed GitLab request. `status` is the HTTP status. `isAuthError` marks a 401 that means the
+ * A failed GitLab request. `status` is the HTTP status (502 or 504 for one GitLab never answered,
+ * see `transportError`). `isAuthError` marks a 401 that means the
  * *credentials* were rejected, which the account adjudicates (see `withAccountApi`). GitLab also
  * answers 401 for things that are not credential rejections -- documented for `PUT …/merge` as
  * "this user does not have permission to accept this merge request", and the approvals endpoint
@@ -509,13 +510,25 @@ function isJson(response: Response): boolean {
   return (response.headers.get("content-type") ?? "").includes("application/json");
 }
 
+/**
+ * A request GitLab never answered -- it timed out (504), or could not be reached or broke off
+ * mid-body (502) -- as the `GitLabApiError` of GitLab failing, so callers treat it as one. Never
+ * a credential refusal: those are answers.
+ */
+function transportError(error: unknown): GitLabApiError {
+  const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+  const reason = error instanceof Error ? error.message : String(error);
+  return new GitLabApiError(timedOut ? 504 : 502,
+    timedOut ? "GitLab did not answer in time." : `GitLab could not be reached: ${reason}`, { cause: error });
+}
+
 /** A success body: JSON when GitLab labels it so, text otherwise, `undefined` when empty. */
 async function parseBody(response: Response): Promise<unknown> {
   let text: string;
   try {
     text = await readTextCapped(response, MAX_BODY_BYTES);
   } catch (error) {
-    if (!(error instanceof ResponseTooLargeError)) throw error;
+    if (!(error instanceof ResponseTooLargeError)) throw transportError(error);
     throw new GitLabApiError(502,
       `GitLab's response was larger than the ${MAX_BODY_BYTES / (1024 * 1024)} MiB the gatekeeper reads.`, { cause: error });
   }
@@ -655,6 +668,8 @@ async function send(
     // silently turn a POST into a GET. Surfaced as a "project moved" error instead.
     redirect: "manual",
     signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
+  }).catch((error: unknown) => {
+    throw transportError(error);
   });
 
   await throwOnRedirect(response, url);

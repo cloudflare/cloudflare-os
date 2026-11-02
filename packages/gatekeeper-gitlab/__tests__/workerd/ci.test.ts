@@ -345,6 +345,21 @@ describe("a commit's CI", () => {
     expect(details).not.toHaveProperty("ci");
   });
 
+  it.each([
+    ["times out", () => new DOMException("The operation was aborted due to timeout", "TimeoutError")],
+    ["cannot be reached", () => new TypeError("Network connection lost.")],
+  ])("is left out, and the commit still returned, when GitLab %s", async (_, failure) => {
+    const fake = new CiFake();
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => {
+      throw failure();
+    });
+    const { props, name } = await setup(fake);
+    const { details } = await unwrap(await hooks().getCommit(name, props, HEAD));
+    expect(details.id).toBe(HEAD);
+    expect(details).not.toHaveProperty("ci");
+  });
+
   it("still fails the read when the account's credentials are dead", async () => {
     const fake = new CiFake();
     fake.commits.set(HEAD, commit(HEAD));
