@@ -1320,12 +1320,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             vendor.getSupportedResources(options),
           ]);
           let enabledResources =
-              filterEnabledResources(config, id, supportedResources);
-          if (description.creatableResources) {
-            description = { ...description, creatableResources:
-                filterEnabledResources(config, id, description.creatableResources) };
-          }
-          if (enabledResources.length === 0 && !description.creatableResources?.length) {
+              filterEnabledResources(config, id, supportedResources)
+                  .filter(resource => resource.connectable !== false || resource.creatable);
+          if (enabledResources.length === 0) {
             // Every resource for this vendor is disabled (or it advertised none) — hide the vendor.
             return null;
           }
@@ -2214,8 +2211,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
                   action: ActionDescription}> {
     let vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
-    let advertised = (await vendor.describe()).creatableResources
-        ?.find(r => r.urlPattern === resourceUrlPattern);
+    let advertised = (await vendor.getSupportedResources({ userId: this.storage.profile.get().id }))
+        .find(r => r.urlPattern === resourceUrlPattern && r.creatable);
     if (!advertised) {
       throw new Error(`This vendor does not advertise creation of "${resourceUrlPattern}". ` +
           "Call listConnectableResources to see the available creations.");

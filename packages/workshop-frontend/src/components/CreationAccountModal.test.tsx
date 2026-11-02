@@ -140,10 +140,9 @@ async function renderModal() {
   testState.authenticatedApi = {
     listGatekeeperVendors: async () => [{
       id: 'google',
-      description: { displayName: 'Google', creatableResources: [
-        { urlPattern: PATTERN, creationConfigurator: true },
-      ] },
-      supportedResources: [],
+      description: { displayName: 'Google' },
+      supportedResources: [{ urlPattern: PATTERN, connectable: false, creatable: true,
+        creationConfigurator: true }],
     }],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
       testState.subscriber = subscriber

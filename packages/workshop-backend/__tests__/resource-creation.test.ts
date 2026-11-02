@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import type {
-  Gatekeeper, SupportedResource, VendorDescription,
+import {
+  resolveRequestedResource, type Gatekeeper, type SupportedResource, type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
@@ -21,21 +21,20 @@ const EXISTING: SupportedResource = {
 };
 const CREATION: SupportedResource = {
   urlPattern: "example://environment/*", title: "Environment", description: "Create an environment",
-  creationConfigurator: true,
+  connectable: false, creatable: true, creationConfigurator: true,
 };
 let counter = 0;
 
-function fixture(existing: SupportedResource[] = [], creations: SupportedResource[] = [CREATION],
-    config: Partial<AdminConfig> = {}) {
+function fixture(resources: SupportedResource[] = [CREATION], config: Partial<AdminConfig> = {}) {
   const description: VendorDescription = {
-    displayName: "Example", url: "https://example.com", creatableResources: creations,
+    displayName: "Example", url: "https://example.com",
   };
   const createResource = vi.fn(async (pattern: string, _title: string) => ({
     class: {} as DurableObjectClass<Gatekeeper<unknown>>,
-    resource: creations.find(r => r.urlPattern === pattern)!,
+    resource: resources.find(r => r.urlPattern === pattern)!,
     action: { title: "Create environment", description: "Create a fresh environment" },
   }));
-  const vendor = { describe: async () => description, getSupportedResources: async () => existing,
+  const vendor = { describe: async () => description, getSupportedResources: async () => resources,
     createResource };
   const vars = { ...env, GATEKEEPER_EXAMPLE: vendor,
     BLUEPRINTS: { get: async () => JSON.stringify(config), put: async () => {} },
@@ -52,21 +51,23 @@ describe("independent creation and connection discovery", () => {
   it("keeps creation-only vendors visible without advertising an existing-resource picker", async () => {
     const { inUser } = fixture();
     expect(await inUser(user => user.listGatekeeperVendors())).toMatchObject([{
-      id: "example", supportedResources: [], description: { creatableResources: [CREATION] },
+      id: "example", supportedResources: [CREATION],
     }]);
   });
 
   it("hides a vendor advertising neither connections nor creations", async () => {
-    const { inUser } = fixture([], []);
-    expect(await inUser(user => user.listGatekeeperVendors())).toEqual([]);
+    for (const resources of [[], [{ ...CREATION, creatable: false }]]) {
+      const { inUser } = fixture(resources);
+      expect(await inUser(user => user.listGatekeeperVendors())).toEqual([]);
+    }
   });
 
   it("filters disabled creations without hiding independently available connections", async () => {
-    const { inUser } = fixture([EXISTING], [CREATION], {
+    const { inUser } = fixture([EXISTING, CREATION], {
       disabledResources: { example: [CREATION.urlPattern] },
     });
     expect(await inUser(user => user.listGatekeeperVendors())).toMatchObject([{
-      supportedResources: [EXISTING], description: { creatableResources: [] },
+      supportedResources: [EXISTING],
     }]);
   });
 
@@ -75,7 +76,7 @@ describe("independent creation and connection discovery", () => {
       { disabledResources: { example: [CREATION.urlPattern] } },
       { disabledGatekeepers: ["example"] },
     ]) {
-      const { inUser } = fixture([], [CREATION], config);
+      const { inUser } = fixture([CREATION], config);
       expect(await inUser(user => user.listGatekeeperVendors())).toEqual([]);
     }
   });
@@ -95,7 +96,7 @@ describe("independent creation and connection discovery", () => {
   });
 
   it("checks admin policy before asking the gatekeeper to mint a creation", async () => {
-    const { inUser, createResource } = fixture([], [CREATION], {
+    const { inUser, createResource } = fixture([CREATION], {
       disabledResources: { example: [CREATION.urlPattern] },
     });
     await expect(inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build")))
@@ -113,8 +114,8 @@ describe("independent creation and connection discovery", () => {
       .rejects.toThrow("does not match");
   });
 
-  it("shows creation-only types to admins and deduplicates types offered both ways", async () => {
-    const { inAdmin } = fixture([EXISTING], [EXISTING, CREATION]);
+  it("shows creation-only and dual-purpose types in the single admin resource list", async () => {
+    const { inAdmin } = fixture([{ ...EXISTING, creatable: true }, CREATION]);
     const view = await inAdmin(admin => admin.getSettings("admin"));
     expect(view.resourceVendors).toMatchObject([{
       vendorId: "example", resources: [
@@ -126,22 +127,21 @@ describe("independent creation and connection discovery", () => {
 });
 
 describe("agent resource discovery", () => {
-  async function withDiscovery(existing: SupportedResource[], creations: SupportedResource[],
-      run: (impl: any) => Promise<void>) {
+  async function withDiscovery(resources: SupportedResource[], run: (impl: any) => Promise<void>) {
     const stub = env.TEST_OVERSEER.getByName(`resource-discovery-${++counter}`);
     await runInDurableObject(stub, async instance => {
       const impl = (instance as unknown as { impl: any }).impl;
       impl.ownerId = "owner";
       impl.users = { idFromString: (id: string) => id, get: () => ({
-        listGatekeeperVendors: async () => [{ id: "example", supportedResources: existing,
-          description: { displayName: "Example", creatableResources: creations } }],
+        listGatekeeperVendors: async () => [{ id: "example", supportedResources: resources,
+          description: { displayName: "Example" } }],
       }) };
       await run(impl);
     });
   }
 
   it("offers creation without telling the agent to request an unusable existing connection", async () => {
-    await withDiscovery([], [CREATION], async impl => {
+    await withDiscovery([CREATION], async impl => {
       const text = await impl.listConnectableResources("example");
       expect(text).toContain("New resources (createExternalResource)");
       expect(text).toContain(CREATION.urlPattern);
@@ -154,12 +154,37 @@ describe("agent resource discovery", () => {
   });
 
   it("lists connection and creation independently when a vendor supports both", async () => {
-    await withDiscovery([EXISTING], [CREATION], async impl => {
+    await withDiscovery([EXISTING, CREATION], async impl => {
       const text = await impl.listConnectableResources("example");
       expect(text).toContain("Existing resources (requestConnection)");
       expect(text).toContain(EXISTING.urlPattern);
       expect(text).toContain("New resources (createExternalResource)");
       expect(text).toContain(CREATION.urlPattern);
+      expect(text.split("New resources")[0]).not.toContain(CREATION.urlPattern);
     });
+  });
+
+  it("offers both flows for a type marked connectable and creatable", async () => {
+    await withDiscovery([{ ...EXISTING, connectable: true, creatable: true }], async impl => {
+      const text = await impl.listConnectableResources("example");
+      const [existing, creation] = text.split("New resources (createExternalResource):");
+      expect(existing).toContain(EXISTING.urlPattern);
+      expect(creation).toContain(EXISTING.urlPattern);
+    });
+  });
+});
+
+describe("connection request resolution", () => {
+  it.each([
+    { resource: CREATION, url: undefined },
+    { resource: CREATION, url: "example://environment/test" },
+    { resource: { ...CREATION, urlPattern: "https://*" }, url: "https://example.com" },
+  ])("excludes non-connectable types from URL and fallback selection: $url", ({ resource, url }) => {
+    expect(resolveRequestedResource([resource], url)).toMatchObject({ ok: false });
+  });
+
+  it("ignores creation-only types when choosing the sole existing connection", () => {
+    expect(resolveRequestedResource([CREATION, EXISTING], undefined))
+      .toEqual({ ok: true, resource: EXISTING });
   });
 });

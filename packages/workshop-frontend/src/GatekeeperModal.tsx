@@ -164,6 +164,7 @@ function platformConnectionTypes(siteName: string): ConnectionType[] {
 function connectionsForVendor(vendor: VendorOption): ConnectionType[] {
   const groups = new Map<string, SupportedResource[]>()
   for (const resource of vendor.supportedResources) {
+    if (resource.connectable === false) continue
     const key = resource.groupedWith ?? resource.urlPattern
     const group = groups.get(key)
     if (group) group.push(resource)

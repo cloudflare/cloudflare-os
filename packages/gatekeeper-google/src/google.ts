@@ -99,7 +99,7 @@ import {
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DRIVE_RESOURCE,
   RESOURCE_BY_KIND,
-  SUPPORTED_RESOURCES, CREATABLE_RESOURCES, creatableKind, nativeFileUrl,
+  SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
   grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
   parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
@@ -368,7 +368,6 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "schedule meetings, follow and post to Chat conversations, or run analytics queries on " +
           "your data.",
       providesAuth: true,
-      creatableResources: CREATABLE_RESOURCES,
     };
   }
 

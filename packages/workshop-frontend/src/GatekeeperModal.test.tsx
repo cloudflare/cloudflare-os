@@ -130,13 +130,11 @@ const api = vi.hoisted(() => ({
   ensureAccountResources: vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>(),
 }))
 
-function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], granted,
-    creations = [] }: {
+function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], granted }: {
   resource?: SupportedResource | null
   otherResources?: SupportedResource[]
   accountIds?: number[]
   granted?: string[]
-  creations?: SupportedResource[]
 } = {}): RpcStub<AuthenticatedApi> {
   const resources = [...(resource ? [resource] : []), ...otherResources]
   api.startResourceConfigurator.mockImplementation(async () => ({
@@ -147,7 +145,7 @@ function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds
     listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : [CHAT_MODEL],
     listGatekeeperVendors: async () => [{
       id: 'catalog',
-      description: { ...VENDOR, creatableResources: creations },
+      description: VENDOR,
       supportedResources: resources,
     }],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
@@ -205,8 +203,8 @@ async function renderModal(props: {
 }
 
 describe('GatekeeperModal configurator readiness', () => {
-  it('does not offer a creation advertisement as an existing-resource picker', async () => {
-    await renderModal({}, { resource: null, creations: [RESOURCE] })
+  it('does not offer a creation-only type as an existing-resource picker', async () => {
+    await renderModal({}, { resource: { ...RESOURCE, connectable: false, creatable: true } })
     expect(document.body.querySelector('[aria-controls="connection-group-panel-vendor:catalog"]'))
       .toBeNull()
     expect(api.startResourceConfigurator).not.toHaveBeenCalled()

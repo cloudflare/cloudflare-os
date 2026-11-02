@@ -9366,8 +9366,8 @@ class OverseerImpl implements AgentHooks {
           `${[...vendors.map(v => v.id), AGENT_SPAWNER_CONNECTION_ID].join(", ")}.`;
     }
     let lines = [`Resource types offered by "${vendorId}" (${vendor.description.displayName}):`];
-    let existing = vendor.supportedResources;
-    let creations = vendor.description.creatableResources ?? [];
+    let existing = vendor.supportedResources.filter(resource => resource.connectable !== false);
+    let creations = vendor.supportedResources.filter(resource => resource.creatable);
     if (existing.length > 0) {
       lines.push("\nExisting resources (requestConnection):");
       for (let r of existing) lines.push(`* ${r.title} — urlPattern: ${r.urlPattern}\n  ${r.description}`);
@@ -9430,7 +9430,7 @@ class OverseerImpl implements AgentHooks {
     // Resolve the exact resource this request maps to, using the same precedence the accept modal
     // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
     // card that opens a blank "create new connection" picker. The agent is told what to fix.
-    if (vendor.supportedResources.length === 0) {
+    if (!vendor.supportedResources.some(resource => resource.connectable !== false)) {
       return { requested: false, message:
           `"${vendor.description.displayName}" offers no existing resources to connect. ` +
           `Call listConnectableResources to see what can be created with createExternalResource.` };

@@ -1,19 +1,20 @@
 # Connection and creation discovery
 
-Gatekeepers advertise two independent sets of resource **types**:
+Gatekeepers advertise one list of resource **types** through
+`GatekeeperVendor.getSupportedResources()`. Each `SupportedResource` has two independent flags:
 
-- `GatekeeperVendor.getSupportedResources()` describes existing resource types offered for
-  connection. The account provides their selection UI through `startResourceConfigurator()`.
-- `VendorDescription.creatableResources` describes types offered for creation through
-  `createExternalResource` / `GatekeeperVendor.createResource()`. Omitted or empty means no creation.
+- `connectable?: boolean` — offer an existing-resource picker and `requestConnection`. Defaults to
+  **true** when omitted, so existing gatekeepers need no changes.
+- `creatable?: boolean` — offer `createExternalResource` / `GatekeeperVendor.createResource()`.
+  Defaults to **false** when omitted.
 
-A type may appear in either or both sets. Reuse its stable `urlPattern` when it appears in both:
-admin policy applies to the type, not separately to creation and connection. These are discovery
-advertisements, not inventories of individual instances and not grants of access.
+These are resource-type advertisements, not inventories of individual instances or grants of
+access. Admin policy is keyed by the type's stable `urlPattern` and applies to both flows.
 
-For example, a document service can advertise documents in both sets. A per-chat execution
-environment can advertise creation while returning `[]` from `getSupportedResources()`. Workshop
-then offers creation but no existing-resource picker. Neither case needs a `connectable` flag.
+A document service can mark the same type `creatable: true` and leave `connectable` at its default.
+A per-chat execution environment uses `connectable: false, creatable: true` to offer creation
+without an existing-resource picker. Types with both flows disabled are hidden from discovery.
+The account's `getSupportedResources()` may narrow the types it offers.
 
 ## Existing bindings
 
@@ -22,18 +23,12 @@ bindings. A gatekeeper continues serving those bindings through its ordinary ses
 restoring a suspended external resource if needed. Creating a new resource is not how an existing
 binding is resumed. Ownership, revocation, and resource access remain enforced by the gatekeeper.
 
-## Adapting creation-capable gatekeepers
+## Creation
 
-The former `SupportedResource.creatable` boolean is removed. Move those types into
-`describe().creatableResources`; keep them in `getSupportedResources()` only if an existing resource
-can also be connected. Account `getSupportedResources()` likewise describes existing connection
-types. Non-creating gatekeepers need no change.
+`creationConfigurator`, when needed, belongs on the resource type alongside `creatable`. Its
+account UI, approval, simulation, and `applyCreation()` behavior are unchanged. Creating something
+still needs approval and a chosen account; advertising creation creates or connects nothing.
 
-`creationConfigurator`, when needed, belongs on the type in `creatableResources`. Its account UI,
-approval, simulation, and `applyCreation()` behavior are unchanged. Creating something still needs
-approval and a chosen account; advertising creation alone creates or connects nothing.
-
-Workshop filters both advertisements through deployment policy, shows their union in the admin
-resource settings, and checks creation's advertised type and policy before minting its gatekeeper.
-There is no fallback from an empty connection list to the creation list. Existing-resource URL
-resolution still uses only the connection list.
+Workshop filters resource types through deployment policy and checks the advertised creation type
+and policy before minting its simulated gatekeeper. Existing-resource pickers and connection
+request resolution exclude types marked `connectable: false`.
