@@ -144,6 +144,8 @@ interface HarnessOptions {
   newerCheckRun?: boolean;
   /** Merge bases by `base...head`, where the head does not simply contain the base. */
   mergeBases?: Record<string, string>;
+  /** Makes every commit comparison a 404. */
+  uncomparable?: true;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -202,8 +204,10 @@ function harness(options: HarnessOptions = {}) {
           const sha = createHash("sha1").update(text).digest("hex");
           return { data: { type: "file", sha, encoding: "base64", content: Buffer.from(text).toString("base64") } };
         },
-        compareCommitsWithBasehead: async ({ basehead }) =>
-          ({ data: { merge_base_commit: { sha: options.mergeBases?.[basehead] ?? basehead.split("...")[0] ?? "" } } }),
+        compareCommitsWithBasehead: async ({ basehead }) => {
+          if (options.uncomparable) throw notFound();
+          return { data: { merge_base_commit: { sha: options.mergeBases?.[basehead] ?? basehead.split("...")[0] ?? "" } } };
+        },
         listPullRequestsAssociatedWithCommit: async ({ commit_sha }) =>
           ({ data: [...pulls.values()].filter((pull) => pull.head.sha === commit_sha) }),
       },
@@ -832,6 +836,11 @@ function proofRun(name: RungOneProof): ProducerRun {
   return { run: run(PRODUCERS[name].workflow), artifacts: { [`automerge-${name}`]: proofJson(name, "proof", true) } };
 }
 
+/** The two files proof-deps reads at its merge base, as they stand at `sha`. */
+function at(sha: string, workspaceText: string, lockText: string): Record<string, string> {
+  return { [`${sha}:pnpm-workspace.yaml`]: workspaceText, [`${sha}:pnpm-lock.yaml`]: lockText };
+}
+
 describe("runRiskReview proof freshness", () => {
   // The relay's run for the recorded merge group; #943's slot holds a Dependabot bump of #621's
   // ci.yml change, and lands on the group commit for #939.
@@ -883,14 +892,40 @@ describe("runRiskReview proof freshness", () => {
     assert.ok(unread && "absent" in unread, JSON.stringify(unread));
   });
 
-  it("counts proof-deps in the queue only while the release-age policy it read is unchanged", async () => {
+  it("counts proof-deps in the queue only while the release-age policy and base lockfile it read are unchanged", async () => {
     const files = [file("packages/ui/package.json"), file("pnpm-lock.yaml")];
-    const same = await queuedInput("proof-deps", files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${landsOn}:pnpm-workspace.yaml`]: workspace });
+    const lock = "lockfileVersion: '9.0'\npackages:\n  left-pad@1.3.0: {}\n";
+    const same = await queuedInput("proof-deps", files, { ...at(BASE, workspace, lock), ...at(landsOn, workspace, lock) });
     assert.deepEqual(same, { status: "ok", holds: true });
     const stricter = workspace.replace(/^minimumReleaseAge: \d+$/m, "minimumReleaseAge: 20160");
     assert.notEqual(stricter, workspace);
-    const changed = await queuedInput("proof-deps", files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${landsOn}:pnpm-workspace.yaml`]: stricter });
-    assert.ok(changed && "absent" in changed && /pnpm-workspace\.yaml changed/.test(changed.absent), JSON.stringify(changed));
+    for (const contents of [
+      { ...at(BASE, workspace, lock), ...at(landsOn, stricter, lock) },
+      { ...at(BASE, workspace, lock), ...at(landsOn, workspace, "lockfileVersion: '9.0'\npackages: {}\n") },
+      { ...at(BASE, workspace, lock), [`${landsOn}:pnpm-workspace.yaml`]: workspace },
+    ]) {
+      const changed = await queuedInput("proof-deps", files, contents);
+      assert.ok(changed && "absent" in changed && /unreadable or changed/.test(changed.absent), JSON.stringify(changed));
+    }
+  });
+
+  it("does not count proof-actions on its own base when a workflow it read cannot be read", async () => {
+    const pull = pullRequest({ user: { login: "dependabot[bot]", type: "Bot" } });
+    const readable = harness({ pulls: [pull], files: { 7: ciOnly }, runs: [proofRun("proof-actions")], contents: { [`${BASE}:.github/workflows/ci.yml`]: ci } });
+    await readable.evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(readable.calls).pulls[0]?.inputs["proof-actions"], { status: "ok", holds: true });
+    const unread = harness({ pulls: [pull], files: { 7: ciOnly }, runs: [proofRun("proof-actions")] });
+    await unread.evaluate("workflow_run", producerCompleted());
+    const input = lastRecord(unread.calls).pulls[0]?.inputs["proof-actions"];
+    assert.ok(input && "absent" in input && /unreadable/.test(input.absent), JSON.stringify(input));
+  });
+
+  it("treats a proof whose commits GitHub cannot compare as absent, and still decides", async () => {
+    const { calls, evaluate } = harness({ files: { 7: [file("pnpm-lock.yaml")] }, runs: [proofRun("proof-deps")], uncomparable: true, reviewDecision: { 7: "APPROVED" } });
+    await evaluate("workflow_run", producerCompleted());
+    const input = lastRecord(calls).pulls[0]?.inputs["proof-deps"];
+    assert.ok(input && "absent" in input && /cannot compare/.test(input.absent), JSON.stringify(input));
+    assert.equal(calls.updates.at(-1)?.conclusion, "success");
   });
 
   it("counts proof-equivalence and proof-tests only when made against the commit the pull request lands on", async () => {

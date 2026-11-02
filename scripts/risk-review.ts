@@ -713,20 +713,26 @@ async function readBlobSha(github: GitHubClient, repo: RepoRef, path: string, re
   }
 }
 
-async function mergeBaseOf(github: GitHubClient, repo: RepoRef, base: string, head: string): Promise<string> {
-  const { data } = await github.rest.repos.compareCommitsWithBasehead({ ...repo, basehead: `${base}...${head}`, per_page: 1 });
-  return data.merge_base_commit.sha;
+/** The merge base of two commits, or `undefined` when GitHub cannot compare them. */
+async function mergeBaseOf(github: GitHubClient, repo: RepoRef, base: string, head: string): Promise<string | undefined> {
+  try {
+    const { data } = await github.rest.repos.compareCommitsWithBasehead({ ...repo, basehead: `${base}...${head}`, per_page: 1 });
+    return data.merge_base_commit.sha;
+  } catch (error) {
+    if (error instanceof Error && isNotFound(error)) return undefined;
+    throw error;
+  }
 }
 
 /**
  * Why a rung 1 proof, made against the commit it names as its base, does not hold for the base this
  * decision is about (the pull request's base, or what a merge group puts under it), or `undefined`
- * when it does. Each proof read something from its base; that must be the same at the decision's.
+ * when it does. Each proof read something from its base; that must be the same, readable, at the
+ * decision's.
  *
- * - `proof-actions` read every touched workflow at its base, for credentials: each must be the same
- *   blob at both commits.
- * - `proof-deps` read the release-age policy in `pnpm-workspace.yaml` at the merge base of its base
- *   and the head: that blob must match the decision base's.
+ * - `proof-actions` read every touched workflow at its base, for credentials.
+ * - `proof-deps` read the release-age policy in `pnpm-workspace.yaml` and the package names in
+ *   `pnpm-lock.yaml` at the merge base of its base and the head.
  * - `proof-equivalence` and `proof-tests` built or ran the whole tree at that merge base, which no
  *   file list can bound: they hold only when made against the decision base and the head already
  *   contains it, so the merge base they built is the decision base and the head is what merges.
@@ -739,22 +745,23 @@ async function staleProofError(github: GitHubClient, repo: RepoRef, { name, arti
   decisionBase: string;
 }): Promise<string | undefined> {
   const proofBase = artifact.base_sha;
-  const sameBlob = async (path: string, at: string) => {
-    const [before, after] = await Promise.all([readBlobSha(github, repo, path, at), readBlobSha(github, repo, path, decisionBase)]);
-    return before !== undefined && before === after;
+  const unchanged = async (paths: string[], at: string) => {
+    for (const path of paths) {
+      const before = await readBlobSha(github, repo, path, at);
+      const after = at === decisionBase ? before : await readBlobSha(github, repo, path, decisionBase);
+      if (before === undefined || before !== after) {
+        return `${path} is unreadable or changed between ${at.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
+      }
+    }
+    return undefined;
   };
   switch (name) {
-    case "proof-actions": {
-      if (proofBase === decisionBase) return undefined;
-      const same = await Promise.all(files.map(({ filename }) => sameBlob(filename, proofBase)));
-      return same.every(Boolean) ? undefined : `a workflow it read changed between ${proofBase.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
-    }
+    case "proof-actions":
+      return unchanged(files.map(({ filename }) => filename), proofBase);
     case "proof-deps": {
       const from = await mergeBaseOf(github, repo, proofBase, pull.head.sha);
-      if (from === decisionBase) return undefined;
-      return await sameBlob("pnpm-workspace.yaml", from)
-        ? undefined
-        : `pnpm-workspace.yaml changed between ${from.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
+      if (from === undefined) return `cannot compare ${proofBase.slice(0, 7)} with the head`;
+      return unchanged(["pnpm-workspace.yaml", "pnpm-lock.yaml"], from);
     }
     case "proof-equivalence":
     case "proof-tests": {
@@ -951,7 +958,9 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
     readProducers(github, repo, pull, context),
   ]);
   for (const [name, input] of Object.entries(producers)) {
+    // Only a holding proof can count, so only it needs checking.
     if (!isProducerName(name) || !input || !("artifact" in input)) continue;
+    if (input.artifact.kind === "verdict" || input.artifact.status !== "ok" || !input.artifact.holds) continue;
     const stale = await staleProofError(github, repo, { name, artifact: input.artifact, pull, files, decisionBase });
     if (stale) producers[name] = { absent: stale };
   }

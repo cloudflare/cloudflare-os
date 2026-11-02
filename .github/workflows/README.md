@@ -33,8 +33,8 @@ attempt started last wins even when it failed. The one exception is the bot prev
 SHA, and it counts only when it names, as the run it followed, the newest Automerge evidence run on
 that head in its current attempt. A rung 1 proof also counts only for the commit the pull request would land on
 (its base, or the queue's commit under it in a merge group): `proof-actions` and `proof-deps` only
-while the files they read at their base (the touched workflows; `pnpm-workspace.yaml`) are the same
-blobs there, and `proof-equivalence` and `proof-tests` only when made against that commit with a
+while the files they read at their base (the touched workflows; `pnpm-workspace.yaml` and
+`pnpm-lock.yaml`) are the same readable blobs there, and `proof-equivalence` and `proof-tests` only when made against that commit with a
 head that contains it.
 
 `automerge-bands.json` sets the mode. It ships in `shadow` with every band closed: the check
