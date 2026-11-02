@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/workshop-spaces.test.ts
+  s_dd2417a6d5bd82::t_8cb80997a0a940 2-3,8-12,18,22,97,99-118,269-272,296,299-300,310-425
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_dd2417a6d5bd82::t_8cb80997a0a940 87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "db32b7cbd4344f9961f7195ab88aab954f036882",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
