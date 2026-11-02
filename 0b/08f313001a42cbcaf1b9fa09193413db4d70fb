@@ -1,0 +1,41 @@
+packages/workshop-frontend/src/components/ComposerChip.tsx
+  s_ec879fdc5b589d::t_ab7be99b0647c1 1-41
+packages/workshop-frontend/src/features/ai-models/AllowedModelsField.tsx
+  s_ec879fdc5b589d::t_a721d73e62a60e 158,224-226,228
+  s_ec879fdc5b589d::t_9a714f1427f535 1-3,5-12,21-23,25-28,30,36-37,42-50,52,55-69,71,77-95,97-107,111-116,120-123,125,129-152,155-157,159-200,202-223,227,229-257,259,262,272-273
+  s_ec879fdc5b589d::t_e07fd4e4aa3486 76,96,201
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_ec879fdc5b589d::t_b4c28e2d7f51b1 25,273,354
+packages/workshop-frontend/src/features/ai-models/modelForm.test.ts
+  s_ec879fdc5b589d::t_c55fb836040bdf 1-30
+packages/workshop-frontend/src/ShareModal.tsx
+  s_ec879fdc5b589d::t_1ee27792ca5d18 1060
+  s_ec879fdc5b589d::t_9c67fa2ccdca0b 1055,1057-1058,1061-1064
+  s_ec879fdc5b589d::t_0901a2f9d82543 20
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.test.tsx
+  s_ec879fdc5b589d::t_c45e002119a854 18,169,187-188,198
+  s_ec879fdc5b589d::t_71dae82f2d4504 495-515,520-521,536-550,552-567,574,579,583-586,589,592-594,599,603
+  s_ec879fdc5b589d::t_a6b7196bf1c553 551
+packages/workshop-frontend/src/features/ai-models/modelForm.ts
+  s_ec879fdc5b589d::t_981f8164c6a7a6 1-6
+  s_ec879fdc5b589d::t_38055f438b7856 49-89
+  s_ec879fdc5b589d::t_0eb00917280d6a 90
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_ec879fdc5b589d::t_b4c28e2d7f51b1 19,80-81,88-89,345
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0b08f313001a42cbcaf1b9fa09193413db4d70fb",
+  "prompts": {},
+  "sessions": {
+    "s_ec879fdc5b589d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "224442ef-c782-431b-80fc-658f13b10f31",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
