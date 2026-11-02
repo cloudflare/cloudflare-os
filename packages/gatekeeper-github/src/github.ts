@@ -33,7 +33,7 @@ import {
   clearCredentialExpiryLatch, notifyCredentialsExpiredOnce,
 } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
-import { CredentialCoordinator, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
+import { CredentialCoordinator, isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
 import {
   CREDENTIALS_EXPIRED_MESSAGE,
   GitHubApi,
@@ -5442,10 +5442,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const push = pushes.find(entry => entry.after === sha);
         if (push !== undefined) return Date.parse(push.timestamp);
       } catch (error) {
-        // Best-effort: any GitHub refusal or outage falls back to the committer date rather than
-        // failing a read whose rollup is already in hand. Credential failures are not
-        // GitHubApiErrors (withAccountApi maps them), so they still propagate.
-        if (!(error instanceof GitHubApiError)) throw error;
+        // Best-effort: a GitHub refusal, timeout or lost connection falls back to the committer
+        // date rather than failing a read whose rollup is already in hand. Only an expired
+        // connection, which withAccountApi() wraps around the marked error, still fails it: the
+        // owner has to reconnect.
+        if (isCredentialsExpired((error as { cause?: unknown } | undefined)?.cause)) throw error;
         logger.warn("failed to read a branch's pushes", { event: "ci.pushes.read.failed", error });
       }
     }
@@ -5527,12 +5528,13 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * CI on a commit (`ci`): the rollup and its phase, or for a commit nothing has reported on, the
    * absence policy's. `branch` is a branch the commit is or was the head of, whose push record
-   * GitHub may have. `truncated` says whether entries were left out of `ci.checks`. Undefined
-   * when GitHub does not have the commit.
+   * GitHub may have. `truncated` says whether entries were left out of `ci.checks`; `committedAt`
+   * is the commit's committer date. Undefined when GitHub does not have the commit.
    */
   async #commitChecks(sha: GitOid, options: { branch?: string; pullNumber?: number }): Promise<{
     ci: Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[] };
     truncated: boolean;
+    committedAt: number | undefined;
   } | undefined> {
     const rollup = await this.#fetchRollup(sha, options.pullNumber);
     if (rollup === undefined) return undefined;
@@ -5553,6 +5555,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return {
       ci: { commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries },
       truncated: rollup.truncated,
+      committedAt: rollup.committedAt,
     };
   }
 
@@ -5657,8 +5660,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     // Only a commit a queued push will deliver is known not to be on GitHub; any other commit
     // simulation served (an intermediate one of a stacked chain) is asked for, and reads as queued
     // if GitHub does not have it yet.
+    const branch = isOwnHead(details) ? details.head.ref : undefined;
     const [read, required] = this.isCommitPendingPush(sha) ? [undefined, []] : await Promise.all([
-      this.#commitChecks(sha, { branch: isOwnHead(details) ? details.head.ref : undefined, pullNumber: number }),
+      this.#commitChecks(sha, { branch, pullNumber: number }),
       this.#requiredContexts(details.base.ref),
     ]);
     if (read === undefined) return { ...queuedCommitChecks(sha), checks: [], missingRequired: [] };
@@ -5669,12 +5673,21 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     // can be named missing.
     const missingRequired = truncated ? [] : required.filter(name => !reported.has(name));
     // A required check that has not reported is still expected, as GitHub's own rollup says of a
-    // required commit status, so it keeps the commit active; a failure stays a failure.
+    // required commit status, so it keeps the commit active; a failure stays a failure. Once the
+    // rest is done and CI's start window has passed since the commit became a head, it is not
+    // coming without someone acting (a path-filtered workflow, an app not installed), so polling
+    // stops: `blocked`.
     const expected = missingRequired.length > 0 && ci.state !== "failure";
+    let phase = ci.phase;
+    if (expected && phase === "done") {
+      const now = Date.now();
+      const since = await this.#becameHeadAt(sha, branch, read.committedAt, now);
+      phase = since !== undefined && now - since < CI_START_WINDOW_MS ? "active" : "blocked";
+    }
     return {
       ...ci,
       state: expected ? "expected" : ci.state,
-      phase: expected && ci.phase === "done" ? "active" : ci.phase,
+      phase,
       checks: ci.checks.map(entry => {
         const { isRequired, ...rest } = entry;
         // A pull request not yet created on GitHub has no number to ask GitHub with; the base

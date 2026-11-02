@@ -36,18 +36,22 @@ Gadgets can read CI with the `repo` scope connections already have; nothing CI-r
 for approval, and every read is logged as an observation.
 
 - **Checks on a commit.** `repo.getChecks(ref?)` and `pullRequest.getChecks(commitId?)` report
-  every check run (GitHub Actions jobs and other apps' checks) and commit status on a commit, from
-  GraphQL's `statusCheckRollup`, with an overall `state`, `counts` by state, and a `phase`:
+  the check runs (GitHub Actions jobs and other apps' checks) and commit statuses on a commit,
+  from GraphQL's `statusCheckRollup`: the first 1000 entries, with an overall `state`, `counts` by
+  state over every entry, and a `phase`:
   `active` (queued, running, or on a deployment wait timer: poll again), `blocked` (waits for a
   person, such as a deployment reviewer or a first-time contributor's approval), `done`, or for a
   commit nothing has reported on, `notStarted`. A commit reads `notStarted` while a push of it is
   queued, or for 10 minutes after it became a head when CI is expected (the commit has
-  `.github/workflows/*.yml`, or its first parent had CI); otherwise it is `done` with
+  `.github/workflows/*.yml` or `*.yaml`, or its first parent had CI); otherwise it is `done` with
   `state: "none"`. The head time is when this gatekeeper applied the push, else GitHub's activity
-  log for the branch, else the committer date. A pull request read also marks which entries the
-  base branch requires (`required`) and names required checks that have not reported
-  (`missingRequired`, best-effort from the branch's rulesets and classic protection); while any is
-  missing, the state reads `expected` (unless something failed) and a `done` phase reads `active`.
+  log for the branch (best-effort: if GitHub refuses or fails it, the committer date), else the
+  committer date. A pull request read also marks which entries the base branch requires
+  (`required`) and names required checks that have not reported (`missingRequired`, best-effort
+  from the branch's rulesets and classic protection); while any is missing, the state reads
+  `expected` (unless something failed) and a `done` phase reads `active` for those same 10
+  minutes, then `blocked`, since a required check that has not reported by then needs someone to
+  act (a path-filtered workflow, or an app that is not installed).
 - **Pull request scope.** A pull request binding reads CI only on the pull request's head (counting
   queued pushes) and the first 250 commits its listing shows; check runs and workflow runs on any
   other commit are refused. `GitHubPullRequestDetails.mergeState` carries GitHub's

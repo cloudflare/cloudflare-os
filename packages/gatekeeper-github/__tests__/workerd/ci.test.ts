@@ -162,6 +162,8 @@ class FakeGitHub {
   pushes: { after: string; timestamp: string }[] = [];
   /** When set, the activity API fails with this status instead. */
   activityStatus?: number;
+  /** When set, a request to the activity API rejects with this, as a timeout or lost connection does. */
+  activityError?: Error;
   requiredByRules: string[] = [];
   requiredByProtection: string[] = [];
   readonly graphqlQueries: string[] = [];
@@ -230,6 +232,7 @@ class FakeGitHub {
       return headers.get("accept")?.includes("sha") ? new Response(sha) : Response.json(commitResponse(sha));
     }
     if (rest === "/activity") {
+      if (this.activityError !== undefined) throw this.activityError;
       if (this.activityStatus !== undefined) {
         return Response.json({ message: "Server Error" }, { status: this.activityStatus });
       }
@@ -555,10 +558,14 @@ describe("getChecks: a commit nothing has reported on", () => {
     expect(await gk.read([{ method: "getChecks", args: ["main"] }])).toMatchObject({ phase: "notStarted" });
   });
 
-  it("falls back to the commit date when GitHub's push record cannot be read", async () => {
+  it.each([
+    ["refuses it", (github: FakeGitHub) => { github.activityStatus = 503; }],
+    ["times out", (github: FakeGitHub) => { github.activityError = new DOMException("timed out", "TimeoutError"); }],
+    ["cannot be reached", (github: FakeGitHub) => { github.activityError = new TypeError("Network connection lost."); }],
+  ])("falls back to the commit date when GitHub's push record cannot be read: GitHub %s", async (_, fail) => {
     const github = fakeGitHub();
     github.rollups.set(HEAD, empty({ committedAt: Date.now() - 60 * MINUTE }));
-    github.activityStatus = 503;
+    fail(github);
     const gk = await gatekeeper();
 
     expect(await gk.read([{ method: "getChecks", args: ["main"] }]))
@@ -649,6 +656,26 @@ describe("pull request CI", () => {
     github.rollups.get(HEAD)!.nodes.push(checkRunNode("deploy-preview", "COMPLETED", "SUCCESS", { isRequired: true }));
     expect(await gk.read([{ method: "getChecks" }]))
       .toMatchObject({ state: "success", phase: "done", missingRequired: [] });
+  });
+
+  it("stops polling on a required check still missing ten minutes after the head arrived", async () => {
+    // A required check that has not reported by then never will without someone acting: a
+    // path-filtered workflow, or an app not installed on the repository.
+    const github = pullScenario();
+    github.requiredByProtection = [];
+    github.rollups.get(HEAD)!.committedAt = Date.now() - 60 * MINUTE;
+    const gk = await gatekeeper(7);
+
+    expect(await gk.read([{ method: "getChecks" }]))
+      .toMatchObject({ state: "expected", phase: "blocked", missingRequired: ["deploy-preview"] });
+    // Unless the head was pushed lately, whatever its commit date.
+    github.pushes = [{ after: HEAD, timestamp: new Date(Date.now() - 2 * MINUTE).toISOString() }];
+    expect(await gk.read([{ method: "getChecks" }]))
+      .toMatchObject({ state: "expected", phase: "active", missingRequired: ["deploy-preview"] });
+    // And a check still running keeps it active, however old the head.
+    github.pushes = [];
+    github.rollups.get(HEAD)!.nodes.push(checkRunNode("e2e", "IN_PROGRESS", null));
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ phase: "active" });
   });
 
   it("reads every page of the rollup", async () => {

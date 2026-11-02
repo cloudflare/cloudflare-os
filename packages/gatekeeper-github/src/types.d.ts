@@ -149,8 +149,9 @@ export interface GitHubRepo {
   searchPullRequests(query: GitHubPullRequestSearch): Promise<Cursor<GitHubPullRequestSummary>>;
 
   /**
-   * Reports CI on one commit: every check run (GitHub Actions jobs and other apps' checks) and
-   * commit status reported on it, with an overall `state` and `phase`.
+   * Reports CI on one commit: the check runs (GitHub Actions jobs and other apps' checks) and
+   * commit statuses reported on it, up to 1000 of them with `counts` covering all, and an overall
+   * `state` and `phase`.
    *
    * `ref` is as for `getCommit()`, defaulting to the default branch; a branch you have pushed to
    * reads at the commit you pushed. Poll while `phase` is `"notStarted"` or `"active"`, e.g. every
@@ -472,9 +473,10 @@ export type GitHubCommitChecks = {
 /**
  * CI on one of a pull request's commits, returned by `GitHubPullRequest.getChecks()`. While a
  * check the base branch requires has not reported, `state` is `expected` (unless something
- * failed) and a `done` phase reads `active`. A required check that never starts, e.g. one its
- * workflow's path filters skip, keeps the phase `active`: after several minutes, report
- * `missingRequired` instead of waiting.
+ * failed) and a `done` phase reads `active`, for the first 10 minutes after the commit became a
+ * head. After that a required check that has not reported needs someone to act (its workflow's
+ * path filters skip it, or the app that reports it is not installed), so the phase reads
+ * `blocked`: report `missingRequired`.
  */
 export type GitHubPullRequestChecks = Omit<GitHubCommitChecks, "checks"> & {
   /** Each entry, with whether the base branch requires it to pass before merging. */
