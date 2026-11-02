@@ -1,8 +1,8 @@
 name: Automerge evidence
 
-# Producers that build or run the pull request's code (BUILD-PLAN.md, trust model). Each job writes
-# one `automerge-<name>` artifact (scripts/automerge/proofs/artifact.ts) for the risk-review gate,
-# which binds it to this file, the `pull_request` event, the head SHA and the newest attempt.
+# Producers that build or run the pull request's code. Each job writes one `automerge-<name>`
+# artifact (scripts/automerge/proofs/artifact.ts) for the risk-review gate, which binds it to this
+# file, the `pull_request` event, the head SHA and the newest attempt.
 #
 # No job here holds a secret or posts a check. Head code runs in every job, so any job could upload
 # an artifact under any name in this run; that is why the proofs that judge untrusted dependency

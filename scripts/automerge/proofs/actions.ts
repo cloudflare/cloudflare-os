@@ -6,8 +6,13 @@
 // Holds when Dependabot opened it and wrote every commit; every change is a `uses:` line in a
 // workflow that swaps one full 40-character SHA pin of the same action for another, with a
 // `# <tag>` comment; the publisher is on PUBLISHERS; the tag resolves to that SHA in the action's
-// own repository (so the pin cannot name a commit that exists only in a fork); and no workflow
-// that produces automerge inputs, posts a required check or runs the gate is touched.
+// own repository (so the pin cannot name a commit that exists only in a fork); and every touched
+// workflow, as it stands at the base, holds no credential and is not a reusable workflow
+// (workflow.ts). A pinned action then runs with a read-only token and no secret, whatever its new
+// release does.
+//
+// Which workflows are producers or the gate, and so always go to a person, is the gate's list,
+// not this proof's.
 //
 //   node scripts/automerge/proofs/actions.ts
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA, AUTOMERGE_PR_AUTHOR, AUTOMERGE_HEAD_REF
@@ -16,23 +21,14 @@ import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts";
 import type { FileDiff } from "./diff.ts";
-import { commitAuthors, mergeBase, pullRequestDiff } from "./git.ts";
+import { commitAuthors, fileAt, mergeBase, pullRequestDiff } from "./git.ts";
 import { DEPENDABOT_EMAIL, DEPENDABOT_LOGIN } from "./deps.ts";
+import { workflowReasons } from "./workflow.ts";
 
 const ACTIONS_BRANCH_PREFIX = "dependabot/github_actions/";
 
 /** Owners whose actions a Dependabot bump may move without a person. */
 export const PUBLISHERS = ["actions", "voidzero-dev", "getsentry"];
-
-/**
- * Workflows whose definition decides what the gate sees: the automerge producers, the gate, Bonk,
- * the required CLA check and the contribution policy. A bump to one of them goes to a person.
- */
-export const GUARDED_WORKFLOWS = [
-  "automerge-evidence.yml", "automerge-weekly-sample.yml", "preview.yml", "review-verdict.yml",
-  "risk-review.yml", "risk-review-trigger.yml", "bonk.yml", "bonk-pr.yml", "cla.yml",
-  "contribution-policy.yml", "workshop-evals-pr.yml",
-].map((name) => `.github/workflows/${name}`);
 
 const WORKFLOW = /^\.github\/workflows\/[^/]+\.ya?ml$/;
 const USES = /^(\s*-?\s*)uses: ([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)((?:\/[^@\s]+)?)@([0-9a-f]{40}) # (\S+)$/;
@@ -53,6 +49,8 @@ export interface ActionsInput {
   files: FileDiff[];
   /** What each `owner/repo@tag` resolves to in that repository: the tag object and the commit. */
   tagTargets: Record<string, string[]>;
+  /** Each touched workflow's text at the base; missing means it is not there. */
+  baseWorkflows: Record<string, string | undefined>;
 }
 
 /** The pin moves a diff makes, and every rule its lines break. */
@@ -64,7 +62,6 @@ export function pinMoves(files: FileDiff[]): { moves: PinMove[]; reasons: string
       reasons.push(`${file.path}: not an edit to an existing workflow file`);
       continue;
     }
-    if (GUARDED_WORKFLOWS.includes(file.path)) reasons.push(`${file.path}: a guarded workflow`);
     for (const hunk of file.hunks) {
       if (hunk.removed.length !== hunk.added.length) {
         reasons.push(`${file.path}: adds or removes lines`);
@@ -106,7 +103,16 @@ export function evaluateActions(input: ActionsInput): Outcome {
       reasons.push(`${move.repo}@${move.tag}: the tag does not point at ${move.sha}`);
     }
   }
-  return decide(reasons, { moves: moves.map((move) => `${move.repo}@${move.sha} # ${move.tag}`) });
+  const workflows = input.files.map((file) => file.path).filter((path) => WORKFLOW.test(path));
+  for (const path of workflows) {
+    const text = input.baseWorkflows[path];
+    if (text === undefined) reasons.push(`${path}: not at the base`);
+    else for (const reason of workflowReasons(text)) reasons.push(`${path}: ${reason}`);
+  }
+  return decide(reasons, {
+    moves: moves.map((move) => `${move.repo}@${move.sha} # ${move.tag}`),
+    workflows_checked: workflows,
+  });
 }
 
 /** Parses `git ls-remote` output for one tag into the SHAs it names (tag object and peeled commit). */
@@ -133,6 +139,7 @@ async function main(): Promise<void> {
       commitEmails: commitAuthors(from, head),
       files,
       tagTargets,
+      baseWorkflows: Object.fromEntries(files.map((file) => [file.path, fileAt(base, file.path)])),
     });
   });
 }
