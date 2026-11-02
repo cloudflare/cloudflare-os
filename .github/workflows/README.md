@@ -39,7 +39,11 @@ would have made as JSON at the top of its output.
 [`scripts/risk-review-report.ts`](../../scripts/risk-review-report.ts) rebuilds the calibration
 table from those records. In `enforce` mode the check reports the gate's own rule, and for an open
 band the App approves (when `app_approvals_count` is true) and enqueues the pull request. A change to
-any of these files always needs a person.
+any of these files, or to anything else under `.github/`, always needs a person, with one exception:
+a Dependabot Actions bump that only modifies workflows the gate does not read (none of the producer
+workflows, `risk-review.yml` or `risk-review-trigger.yml`; `GATE_WORKFLOWS` in the script), and whose
+`proof-actions` from `automerge-proofs.yml` holds. That proof requires full-SHA pin swaps by
+Dependabot alone, an allowlisted publisher, and touched workflows that hold no credential.
 
 ### Setup
 

@@ -94,10 +94,22 @@ const PER_PAGE = 100;
 const DEPENDABOT = "dependabot[bot]";
 
 /** Rung 1 proofs a maintainer's pull request may qualify through. */
-// `proof-actions` is not here: every Actions bump touches `.github/**`, which always needs a person.
-// Nor is `proof-migrations`: it holds for any change that leaves migrations alone, so it is only a
-// precondition for a change that touches a Worker config.
+// `proof-actions` is Dependabot's only: see {@link GATE_WORKFLOWS}. `proof-migrations` is not a proof
+// either: it holds for any change that leaves migrations alone, so it is only a precondition for a
+// change that touches a Worker config.
 const PROOFS = ["proof-deps", "proof-equivalence", "proof-tests"] as const;
+
+/**
+ * The workflows the gate reads from or runs as: every producer's, and its own. A Dependabot Actions
+ * bump whose proof holds needs no person unless it touches one of these or any other `.github/**`
+ * file; the proof checks the workflows it touches hold no credential.
+ */
+export const GATE_WORKFLOWS: ReadonlySet<string> = new Set([
+  ".github/workflows/risk-review.yml",
+  ".github/workflows/risk-review-trigger.yml",
+  ...Object.values(PRODUCERS).flatMap((producer) =>
+    "triggeredBy" in producer ? [producer.workflow, producer.triggeredBy] : [producer.workflow]),
+]);
 
 /** What the check run reports. */
 export type Mode = "shadow" | "enforce";
@@ -418,15 +430,16 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   const { pull } = inputs;
   const author = pull.user ?? undefined;
   const authorLogin = author?.login ?? "";
+  const dependabot = authorLogin === DEPENDABOT && author?.type === "Bot";
   const classification = classifyChangeset({
     files: inputs.files,
     listed: inputs.files.length >= pull.changed_files,
     facts: inputs.facts,
     escapes: policy.escapes,
     now,
+    ...(dependabot && holding(inputs.producers["proof-actions"]) && { provenActionsBump: { gateInputs: GATE_WORKFLOWS } }),
   });
   const maintainer = author?.type === "User" && policy.maintainers.has(authorLogin.toLowerCase());
-  const dependabot = authorLogin === DEPENDABOT && author?.type === "Bot";
   const people = { author: author?.login, maintainers: policy.maintainers };
   const { approvers, blockers } = tallyReviews(inputs.reviews, { headSha: pull.head.sha, ...people });
   const holds = maintainerHolds(inputs.reviews, inputs.comments, { lastPush: inputs.lastPush, ...people });
@@ -440,13 +453,15 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
     common.push("changes a Worker config, and the migration proof does not hold");
   }
   const proven = dependabot
-    ? depsProven
+    ? depsProven || classification.workflowBump
     : PROOFS.some((name) => name === "proof-deps" ? depsProven : holding(inputs.producers[name]));
   const candidates: Area[] = [];
   if (proven) candidates.push("proven");
   if (maintainer) candidates.push(classification.area);
   else if (!dependabot) common.push("the author is not a maintainer");
-  if (dependabot && !proven) common.push("a Dependabot pull request needs its dependency proof and preview smoke to hold");
+  if (dependabot && !proven) {
+    common.push("a Dependabot pull request needs its dependency proof and preview smoke, or its Actions proof, to hold");
+  }
 
   let would: PullDecision["would"] = { decision: "person", area: candidates[0] ?? null, reasons: [...common] };
   for (const area of candidates) {

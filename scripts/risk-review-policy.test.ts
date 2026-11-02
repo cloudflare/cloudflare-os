@@ -87,7 +87,7 @@ describe("pathFloor", () => {
 
 describe("classifyChangeset bands", () => {
   it("rates a small docs change low", () => {
-    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], area: "scored" });
+    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], area: "scored", workflowBump: false });
   });
 
   it("rates more than 400 changed lines high", () => {

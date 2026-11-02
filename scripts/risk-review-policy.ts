@@ -113,7 +113,8 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
  * Paths no AI may decide on, always a person: this gate and everything it reads or trusts (so a
  * pull request that an AI judges always runs `main`'s producer workflows and judge scripts), the
  * instructions AI reviewers follow, auth config, the supply-chain policy and release. Each entry
- * names its reason for the decision record.
+ * names its reason for the decision record. The one exception is a proven Actions bump (see
+ * {@link classifyChangeset}); no AI decides that either.
  */
 const NEVER_AUTO_PATHS: { reason: string; globs: string[] }[] = [
   { reason: "CI, repository policy or a producer workflow", globs: [".github/**"] },
@@ -272,21 +273,30 @@ export interface Classification {
   neverAuto: string[];
   /** The rung 2 or rung 3 area an AI decision would come from. */
   area: Exclude<Area, "proven">;
+  /** Whether the change is a proven Actions bump, exempt from the `.github/**` policy rule. */
+  workflowBump: boolean;
 }
+
+/** A workflow file GitHub runs: directly under `.github/workflows/`. */
+const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/;
 
 /**
  * Classifies a change. Every rule can only raise the band or add a policy reason.
  *
  * @param input The changed files; whether `listFiles` returned every one (it stops at 3,000); what
  *     the gate read from file contents; the escape snapshot from the base branch, or `undefined` when
- *     it is missing or malformed; and the time of the decision, for the escape window.
+ *     it is missing or malformed; the time of the decision, for the escape window; and, only when
+ *     Dependabot opened the pull request and its Actions proof holds, the workflows the gate reads
+ *     from. Such a change is exempt from the `.github/**` rule when every changed file is an existing
+ *     workflow, modified in place (not added, removed or renamed), that is not one of those.
  */
-export function classifyChangeset({ files, listed, facts, escapes, now }: {
+export function classifyChangeset({ files, listed, facts, escapes, now, provenActionsBump }: {
   files: ChangedFile[];
   listed: boolean;
   facts: ContentFacts;
   escapes: EscapeSnapshot | undefined;
   now: Date;
+  provenActionsBump?: { gateInputs: ReadonlySet<string> };
 }): Classification {
   let band: Band = "low";
   const bandReasons: string[] = [];
@@ -326,7 +336,12 @@ export function classifyChangeset({ files, listed, facts, escapes, now }: {
     }
   }
 
+  const workflowBump = provenActionsBump !== undefined && files.length > 0 &&
+    files.every(({ filename, previous_filename, status }) =>
+      status === "modified" && previous_filename === undefined && WORKFLOW_FILE.test(filename) &&
+      !provenActionsBump.gateInputs.has(filename));
   for (const { reason, globs } of NEVER_AUTO_PATHS) {
+    if (workflowBump && globs.includes(".github/**")) continue;
     const matched = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, globs)));
     if (matched.length > 0) neverAuto.push(`${reason} (${names(matched)})`);
   }
@@ -337,7 +352,7 @@ export function classifyChangeset({ files, listed, facts, escapes, now }: {
     neverAuto.push(`deletes Durable Object classes (${facts.deletedClasses.join(", ")})`);
   }
 
-  return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0) };
+  return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0), workflowBump };
 }
 
 function areaOf(files: ChangedFile[], band: Band, lines: number, seam: boolean): Classification["area"] {

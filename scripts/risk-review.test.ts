@@ -353,6 +353,10 @@ function verdictInput(name: "sol" | "opus", overrides: Record<string, Json | und
 
 const PERFECT = { sol: verdictInput("sol"), opus: verdictInput("opus") };
 
+function actions(holds: boolean) {
+  return { artifact: { ...JSON.parse(proofJson("proof-actions", "proof", holds)), name: "proof-actions" } };
+}
+
 function migrations(holds: boolean) {
   return { artifact: { ...JSON.parse(proofJson("proof-migrations", "proof", holds)), name: "proof-migrations" } };
 }
@@ -478,6 +482,60 @@ describe("decide", () => {
     assert.match(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(false) } }), policy, NOW).would.reasons.join("\n"), /migration proof/);
     assert.deepEqual(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(true) } }), policy, NOW).would,
       { decision: "auto", area: "scored", reasons: [] });
+  });
+
+  describe("a Dependabot GitHub Actions bump", () => {
+    // Recorded: #621, Dependabot's bump of three actions across ci.yml, preview.yml,
+    // workshop-evals-pr.yml and workshop-evals.yml.
+    const recorded = JSON.parse(read("scripts/risk-review-fixtures/dependabot-actions-621.json"));
+    const pull621 = pullRequest({ ...recorded.pull, base: { ...recorded.pull.base } });
+    const files621: ChangedFile[] = recorded.files;
+    const ciOnly = files621.filter(({ filename }) => filename === ".github/workflows/ci.yml");
+    const ciPull = { ...pull621, changed_files: ciOnly.length };
+    const policy = policyWith(bandsJson("enforce", true, [{ area: "proven", band: "high" }]));
+    const proven = { decision: "auto", area: "proven", reasons: [] };
+
+    it("qualifies when confined to non-gate workflows, but not when it touches a producer, as #621 does", () => {
+      assert.deepEqual(decide(inputs({ pull: ciPull, files: ciOnly, producers: { "proof-actions": actions(true) } }), policy, NOW).would, proven);
+      const whole = decide(inputs({ pull: pull621, files: files621, producers: { "proof-actions": actions(true) } }), policy, NOW);
+      assert.equal(whole.would.decision, "person");
+      assert.match(whole.would.reasons.join("\n"), /preview\.yml/);
+    });
+
+    it("needs its Actions proof to hold", () => {
+      assert.deepEqual(decide(inputs({ pull: ciPull, files: ciOnly, producers: { "proof-actions": actions(true) } }), policy, NOW).would, proven);
+      for (const producers of [{}, { "proof-actions": actions(false) }, { "proof-actions": { absent: "concluded failure" } }]) {
+        assert.equal(decide(inputs({ pull: ciPull, files: ciOnly, producers }), policy, NOW).would.decision, "person", JSON.stringify(producers));
+      }
+    });
+
+    it("covers only existing workflow files modified in place", () => {
+      const ok = { pull: ciPull, producers: { "proof-actions": actions(true) } };
+      assert.deepEqual(decide(inputs({ ...ok, files: ciOnly }), policy, NOW).would, proven);
+      const [ci] = ciOnly;
+      assert.ok(ci);
+      for (const changed of [
+        { ...ci, filename: ".github/dependabot.yml" },
+        { ...ci, filename: ".github/workflows/nested/ci.yml" },
+        { ...ci, status: "added" },
+        { ...ci, status: "renamed", previous_filename: ".github/workflows/preview.yml" },
+        { ...ci, status: "renamed", filename: ".github/workflows/risk-review.yml", previous_filename: ".github/workflows/ci.yml" },
+        { ...ci, filename: ".github/workflows/automerge-proofs.yml" },
+      ]) {
+        assert.equal(decide(inputs({ ...ok, files: [changed] }), policy, NOW).would.decision, "person", JSON.stringify(changed.filename));
+      }
+      assert.equal(decide(inputs({ ...ok, files: [...ciOnly, file(".github/dependabot.yml")], pull: { ...ciPull, changed_files: 2 } }), policy, NOW).would.decision, "person");
+      assert.equal(decide(inputs({ ...ok, files: ciOnly, pull: { ...ciPull, changed_files: 2 } }), policy, NOW).would.decision, "person");
+    });
+
+    it("applies to Dependabot only", () => {
+      assert.deepEqual(decide(inputs({ pull: ciPull, files: ciOnly, producers: { "proof-actions": actions(true) } }), policy, NOW).would, proven);
+      const maintainer = { ...ciPull, user: { login: "deregtd", type: "User" } };
+      const scored = policyWith(bandsJson("enforce", true, ["proven", "scored", "kernel"].map((area) => ({ area, band: "high" }))));
+      const decision = decide(inputs({ pull: maintainer, files: ciOnly, producers: { ...PERFECT, "proof-actions": actions(true) } }), scored, NOW);
+      assert.equal(decision.would.decision, "person");
+      assert.match(decision.would.reasons.join("\n"), /policy:/);
+    });
   });
 
   it("requires a human assignee's approval on a pull request an agent opened", () => {
