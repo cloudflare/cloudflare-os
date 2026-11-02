@@ -132,3 +132,127 @@ jobs:
           name: automerge-proof-tests
           path: automerge-out/automerge-proof-tests.json
           if-no-files-found: error
+
+  # Band evidence (BUILD-PLAN.md, PR-F). Each job writes one `automerge-evidence-<name>` artifact
+  # and succeeds when its producer could only report `error`, so one producer cannot void the run.
+
+  # Every Worker the change can reach still bundles with `wrangler deploy --dry-run`.
+  deploy-dry-run:
+    name: Deploy dry run
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out the head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      - name: evidence-deploy-dry-run
+        run: node scripts/automerge/evidence/deploy-dry-run.ts
+
+      - name: Upload evidence-deploy-dry-run
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-evidence-deploy-dry-run
+          path: automerge-out/automerge-evidence-deploy-dry-run.json
+          if-no-files-found: error
+
+  # A kernel change's new or changed tests fail on the base source and pass on the head source.
+  red-green:
+    name: Red then green
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out the head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      - name: evidence-red-green
+        run: node scripts/automerge/evidence/red-green.ts
+
+      - name: Upload evidence-red-green
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-evidence-red-green
+          path: automerge-out/automerge-evidence-red-green.json
+          if-no-files-found: error
+
+  # gadgets-internal builds and tests against the head. This job holds the GitLab tokens, so it
+  # checks out the base and runs only the base's producer; nothing from the head executes. A base
+  # without the producer (before this lands) uploads nothing, which the gate reads as absent.
+  consumer-build:
+    name: Consumer build
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out the base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          run-install: false
+
+      - name: evidence-consumer-build
+        if: ${{ hashFiles('scripts/automerge/evidence/consumer-build.ts') != '' }}
+        env:
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.AUTOMERGE_GITLAB_TRIGGER_TOKEN }}
+          GITLAB_READ_TOKEN: ${{ secrets.AUTOMERGE_GITLAB_READ_TOKEN }}
+        run: node scripts/automerge/evidence/consumer-build.ts
+
+      - name: Upload evidence-consumer-build
+        if: ${{ !cancelled() && hashFiles('scripts/automerge/evidence/consumer-build.ts') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-evidence-consumer-build
+          path: automerge-out/automerge-evidence-consumer-build.json
+          if-no-files-found: error
