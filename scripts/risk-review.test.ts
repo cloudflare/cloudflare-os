@@ -98,6 +98,8 @@ function run(path: string, overrides: Partial<WorkflowRun> = {}): WorkflowRun {
 interface ProducerRun {
   run: WorkflowRun;
   artifacts: Record<string, string>;
+  /** The file inside an artifact's archive, when it is not `<artifact name>.json`. */
+  archived?: Record<string, string>;
 }
 
 function verdicts(overrides: { sol?: Record<string, Json | undefined>; opus?: Record<string, Json | undefined> } = {}): ProducerRun {
@@ -160,10 +162,10 @@ function harness(options: HarnessOptions = {}) {
   const runs = options.runs ?? [];
   const artifacts = new Map<number, Artifact[]>();
   const zips = new Map<number, Uint8Array>();
-  for (const { run: producerRun, artifacts: files } of runs) {
+  for (const { run: producerRun, artifacts: files, archived } of runs) {
     artifacts.set(producerRun.id, Object.entries(files).map(([name, text]) => {
       const id = ++ids;
-      zips.set(id, zip({ [`${name}.json`]: text }));
+      zips.set(id, zip({ [archived?.[name] ?? `${name}.json`]: text }));
       const uploaded = new Date(Date.parse(producerRun.run_started_at ?? producerRun.created_at) + 60_000).toISOString();
       return { id, name, size_in_bytes: text.length, expired: false, created_at: uploaded, workflow_run: { id: producerRun.id } };
     }));
@@ -740,11 +742,13 @@ async function smokeInput(runs: ProducerRun[]): Promise<InputSummary | undefined
 
 describe("runRiskReview preview smoke", () => {
   it("counts the smoke from Automerge evidence on the head, and not from preview.yml, whatever its artifact's name", async () => {
-    assert.deepEqual(await smokeInput([smokeIn(PRODUCERS["preview-smoke"].workflow)]), { status: "ok", holds: true });
+    assert.deepEqual(await smokeInput([smokeIn(".github/workflows/automerge-evidence.yml")]), { status: "ok", holds: true });
     // Recorded: a real pull_request run of preview.yml, moved onto the test head.
     const preview: WorkflowRun = { ...JSON.parse(read("scripts/risk-review-fixtures/preview-run.json")), head_sha: HEAD };
     for (const name of ["automerge-preview-smoke", `automerge-preview-smoke-${HEAD}`]) {
-      const input = await smokeInput([{ run: preview, artifacts: { [name]: proofJson("preview-smoke", "evidence", true) } }]);
+      // Archived as the old route wrote it, so only the binding can reject it.
+      const archived = { [name]: "automerge-preview-smoke.json" };
+      const input = await smokeInput([{ run: preview, artifacts: { [name]: proofJson("preview-smoke", "evidence", true) }, archived }]);
       assert.ok(input && "absent" in input, `${name}: ${JSON.stringify(input)}`);
     }
   });
