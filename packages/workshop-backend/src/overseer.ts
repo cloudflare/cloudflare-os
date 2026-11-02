@@ -23,7 +23,9 @@ import {
   type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
-import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
+import type {
+  UserAiModelRecord, WorkspaceOutputEntry, WorkspaceRestrictions,
+} from "./storage-schema/user-storage";
 import {
   GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge, type MergeResult,
 } from "./git-store";
@@ -5348,6 +5350,9 @@ class OverseerImpl implements AgentHooks {
       if (hookId !== undefined) requireLiveHook(this, hookId);
       let baseline = sharing && !this.storage.ownerInvitesOnly.get()
           ? sharing.computeEffectiveRoles() : undefined;
+      let newlyRestricted =
+          (description.containsRestrictedData && !this.storage.containsRestrictedData.get())
+          || (description.ownerInvitesOnly && !this.storage.ownerInvitesOnly.get());
 
       // One transaction: a failed audit write must not leave a policy flag latched without the
       // revocation below, nor an action ID spent.
@@ -5381,6 +5386,16 @@ class OverseerImpl implements AgentHooks {
         return actionId;
       });
       this.#associateAction(caller, actionId);
+
+      if (newlyRestricted) {
+        // No space may list this workspace any longer (see `restrictions`), so its owner's User DO
+        // gets an activity report now, not at the next throttled one. It is the ordinary report,
+        // an observation being activity: it stamps the workspace active, and its failure is logged
+        // and handled as any bump's. Not awaited: the observation neither waits on it nor fails
+        // with it, and the next report states the flags again.
+        this.#lastActiveTimeKnownToUs = new Date();
+        this.#bumpLastActiveImpl();
+      }
 
       if (sharing && baseline) {
         let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
@@ -6058,6 +6073,17 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
+  // The two one-way flags as they stand now. They go with every call to the owner's User DO
+  // that can lead a space to list this workspace (an activity report, a title update, a move,
+  // a delete), which lists it only while both are false (see
+  // UserDurableObject.#reconcileSpace()).
+  get restrictions(): WorkspaceRestrictions {
+    return {
+      containsRestrictedData: this.storage.containsRestrictedData.get(),
+      ownerInvitesOnly: this.storage.ownerInvitesOnly.get(),
+    };
+  }
+
   // What is the last active time that we know the user DO has been made aware of?
   #lastActiveTimeKnownToUserDo?: Date;
   // What is the last active time we've seen locally?
@@ -6112,7 +6138,7 @@ class OverseerImpl implements AgentHooks {
 
       this.#lastActiveTimeKnownToUserDo = this.#lastActiveTimeKnownToUs!;
       await owner.setWorkspaceLastActive(this.ctx.id.toString(), this.#lastActiveTimeKnownToUs!,
-                                      this.storage.totalCost.get());
+                                      this.storage.totalCost.get(), this.restrictions);
     } catch (err) {
       this.logger.warn("failed to bump gadget last-active on user DO", {
         event: "gadget.last.active.bump.failed",
@@ -8820,7 +8846,7 @@ class OverseerImpl implements AgentHooks {
       if (chatId === 0 && ["Untitled Gadget", "Untitled Workspace"].includes(this.storage.title.get()) && this.ownerId) {
         this.storage.title.put(result);
         let owner = this.users.get(this.users.idFromString(this.ownerId));
-        await owner.updateTitle(this.ctx.id.toString(), result);
+        await owner.updateTitle(this.ctx.id.toString(), result, this.restrictions);
       }
 
       // TODO: Should we track costs for title generation? It's pretty negligible.
@@ -8862,7 +8888,7 @@ class OverseerImpl implements AgentHooks {
       if (title && this.ownerId) {
         this.storage.title.put(title);
         let owner = this.users.get(this.users.idFromString(this.ownerId));
-        await owner.updateTitle(this.ctx.id.toString(), title);
+        await owner.updateTitle(this.ctx.id.toString(), title, this.restrictions);
       }
     } catch (err) {
       // Oh well, just leave the title as-is.
@@ -10434,6 +10460,15 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * This workspace's two one-way flags, for the owner to mirror on their record of it. Every
+   * activity report, title update, move and delete already states them, so this exists only to
+   * catch up records that predate that. Null unless the caller really is the owner, like the above.
+   */
+  async getRestrictionsForOwnerBackfill(ownerId: string): Promise<WorkspaceRestrictions | null> {
+    return this.impl.ownerId === ownerId ? this.impl.restrictions : null;
+  }
+
+  /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openWorkspaceInternal() to detect Durable Object disconnects.
    */
@@ -10814,7 +10849,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
     // (A write, so deliberately not retried -- a reset can't distinguish "never applied" from
     // "applied, response lost".)
-    await owner().setWorkspaceLastActive(this.ctx.id.toString(), new Date(), undefined);
+    await owner().setWorkspaceLastActive(
+        this.ctx.id.toString(), new Date(), undefined, this.impl.restrictions);
   }
 
   async startGatekeeperSession(
@@ -11364,7 +11400,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async setTitle(title: string): Promise<void> {
     this.impl.storage.title.put(title);
-    await this.#owner.updateTitle(this.impl.ctx.id.toString(), title);
+    await this.#owner.updateTitle(this.impl.ctx.id.toString(), title, this.impl.restrictions);
   }
 
   // Which space a workspace belongs to is recorded by its owner's User DO, which asks the space
@@ -11373,7 +11409,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can move it to another space.");
     }
-    await this.#owner.setGadgetSpace(this.impl.ctx.id.toString(), spaceKey);
+    await this.#owner.setGadgetSpace(
+        this.impl.ctx.id.toString(), spaceKey, this.impl.restrictions);
   }
 
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
@@ -11486,7 +11523,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     await this.impl.ctx.blockConcurrencyWhile(async () => {
-      await this.#owner.deleteWorkspace(this.impl.ctx.id.toString());
+      await this.#owner.deleteWorkspace(this.impl.ctx.id.toString(), this.impl.restrictions);
       await this.impl.ctx.storage.deleteAll();
       this.impl.recordGadgetAnalytics({
         event_name: "gadget_deleted",

@@ -113,19 +113,39 @@ type LibraryBlueprintRecord = {
   uploaded: boolean;
 };
 
+/**
+ * The two one-way flags of a workspace (`WorkspaceMetadata.containsRestrictedData` and
+ * `ownerInvitesOnly`) as its Overseer states them, each one present. The Overseer sends them to
+ * its owner's User DO with every call that can lead to a space listing the workspace.
+ */
+export type WorkspaceRestrictions =
+    Required<Pick<WorkspaceMetadata, "containsRestrictedData" | "ownerInvitesOnly">>;
+
 export type GadgetRecord = WorkspaceMetadata & {
   created: Date;
   lastActive?: Date;  // if missing, gadget is provisional
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
 
+  // On the user's own workspaces, `containsRestrictedData` and `ownerInvitesOnly` (inherited from
+  // GadgetMetadata) are what the workspace's Overseer last reported (see WorkspaceRestrictions),
+  // and absent means it has never reported. A space lists a workspace only while both are false:
+  // one that is set, or was never reported, keeps it out of every listing (see
+  // UserDurableObject.#reconcileSpace()). A record of a workspace shared with the user has neither.
+
   /**
    * What a space last acknowledged for this workspace: the key of the space listing it, personal
    * or team, and the title listed there. It is the marker UserDurableObject.#reconcileSpace()
-   * works from: absent, or different from what the record now says, means the listing has yet
-   * to catch up. Set on the user's own workspaces only, and never sent to a client.
+   * works from. For a workspace a space may list, the marker being absent, or different from
+   * what the record now says, means the listing has yet to catch up; for one no space may list,
+   * the marker being there at all does. Without `title`, the space has acknowledged nothing: it
+   * was asked to list the workspace, or to drop it (see UserDurableObject.deleteGadget()), and
+   * may or may not have. A marker is written before any space is asked to list the workspace,
+   * so with no marker no space lists it, and with one the spaces that may are the one it names
+   * and the one the record points at. Set on the user's own workspaces only, and never sent to
+   * a client.
    */
-  registered?: { spaceKey: string; title: string };
+  registered?: { spaceKey: string; title?: string };
 };
 
 /**

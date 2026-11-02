@@ -9,6 +9,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
+  type WorkspaceRestrictions,
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
@@ -145,9 +146,28 @@ function isFullyCreated(g: GadgetRecord): g is GadgetRecord & WorkspaceMetadataW
   return g.lastActive !== undefined;
 }
 
-// Whether space `spaceKey` has acknowledged `record` as it is now (see GadgetRecord.registered).
-function isRegistered(record: GadgetRecord, spaceKey: string): boolean {
-  return record.registered?.spaceKey === spaceKey && record.registered.title === record.title;
+// Whether a space may list the workspace of `record`, one of the user's own: only once its
+// Overseer has reported both flags to be false. A flag that is set and one never reported keep
+// it out alike.
+function isListable(record: GadgetRecord): boolean {
+  return record.containsRestrictedData === false && record.ownerInvitesOnly === false;
+}
+
+// Records on `record`, if the workspace is the user's own, the two flags its Overseer states.
+// Both are one-way there, so one recorded as set stays set: a report made before it was set
+// may arrive after one made later.
+function mirrorRestrictions(record: GadgetRecord, stated: WorkspaceRestrictions): void {
+  if (record.owner) return;
+  record.containsRestrictedData ||= stated.containsRestrictedData;
+  record.ownerInvitesOnly ||= stated.ownerInvitesOnly;
+}
+
+// Whether `record` is listed as it should be: acknowledged as it is now by space `spaceKey`, or
+// with none, by no space (see GadgetRecord.registered).
+function isRegistered(record: GadgetRecord, spaceKey: string | undefined): boolean {
+  let { registered } = record;
+  return spaceKey === undefined ? !registered
+      : registered?.spaceKey === spaceKey && registered.title === record.title;
 }
 
 // A gadget record as it leaves this object: without `registered`, which is its own bookkeeping.
@@ -967,11 +987,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
-  async updateTitle(workspaceId: string, title: string) {
+  async updateTitle(workspaceId: string, title: string, restrictions: WorkspaceRestrictions) {
     let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
+    mirrorRestrictions(record, restrictions);
     record.title = title;
     this.storage.gadgets.put(record);
     this.#syncSpaceDetached(gadgetId);
@@ -1006,9 +1027,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     await this.newWorkspace(id, title);
   }
 
-  async setWorkspaceLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
+  async setWorkspaceLastActive(id: string, time: Date, totalCost: number | undefined,
+                            restrictions: WorkspaceRestrictions): Promise<void> {
     let workspace = this.storage.gadgets.get(id);
     if (workspace) {
+      mirrorRestrictions(workspace, restrictions);
       workspace.lastActive = time;
       if (totalCost) {
         workspace.totalCost = totalCost;
@@ -1020,19 +1043,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Forgets a workspace. One of the user's own that has seen activity is first synced, which
-   * leaves the space its marker names as the only one listing it, and then dropped from that
-   * space. If either fails so does this, with the record kept: once it is gone nothing would
-   * ever remove the listing. The record gives up its marker before the space is asked, so that
-   * a record which outlives this call is listed again by its next sync. Syncing first is what
-   * keeps a marker from ever naming a space that has dropped the workspace, which #syncSpace()
-   * relies on when it falls back.
+   * leaves the space its marker names as the only one listing it, or leaves it with no marker
+   * and on no listing if no space may list it, and then dropped from that space. That sync may
+   * list the workspace, so it goes by `restrictions`, which its Overseer states with the delete.
+   * If either fails so does this, with the record kept: once it is gone nothing would ever
+   * remove the listing. The marker gives up its title before the space is asked, so that the
+   * next sync of a record which outlives this call lists the workspace again, or drops it if by
+   * then no space may list it. Syncing first leaves the marker naming the very space the record
+   * points at, so that a marker without its title never sends #syncSpace(), when it falls back,
+   * to a space that has dropped the workspace.
    */
-  async deleteWorkspace(id: string): Promise<void> {
+  async deleteWorkspace(id: string, restrictions: WorkspaceRestrictions): Promise<void> {
+    this.#amendGadget(id, record => mirrorRestrictions(record, restrictions));
     await this.#inSpaceOrder(async () => {
       await this.#syncSpace(id);
       let listedIn = this.storage.gadgets.get(id)?.registered?.spaceKey;
       if (listedIn) {
-        this.#amendGadget(id, gadget => { delete gadget.registered; });
+        this.#amendGadget(id, gadget => { delete gadget.registered?.title; });
         await this.#space(listedIn).detachWorkspace(id, this.storage.profile.get().id);
       }
       this.storage.gadgets.delete(id);
@@ -1216,6 +1243,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // `registered` on the record is what the space last acknowledged, and #reconcileSpace() brings
   // the listing in line, so whatever stopped half way is finished by the next call. A listing
   // and `registered` have two other writers: #backfillSpacesPage(), and deleteGadget() above.
+  //
+  // No space lists a workspace that holds restricted data or is owner-invites-only, since what a
+  // listing shows of it could derive from that data. Its Overseer states those two flags in every
+  // call that leads here and the record mirrors them (see mirrorRestrictions()): the workspace is
+  // listed only while both are known to be false, is dropped otherwise by every space that may
+  // list it, and keeps its `spaceKey` either way.
 
   // The tail of the chain everything below runs on. Reconciling calls other objects, and this
   // one takes further requests meanwhile, so two reconciliations of one workspace could
@@ -1251,25 +1284,39 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  // Brings the listing of workspace `id` in line with its record: lists it in the space it
-  // belongs to, then drops it from the space that listed it before, and only then records what
-  // was acknowledged. A failure at any point leaves `registered` as it was, so the next call
-  // does what is left. There is nothing to do for a workspace that is provisional, shared with
-  // this user, or listed as it should be. Returns false, having changed nothing, if the space
-  // refused the workspace. Callers run it within #inSpaceOrder().
+  // Brings the listing of workspace `id` in line with its record: lists it in the space the
+  // record points at, or in none if no space may list it (see isListable()), then drops it from
+  // every other space that may list it, and only then records what was acknowledged. Those are
+  // the space the marker names and, after a move that stopped half way, the one the record
+  // points at. A space is first asked to list the workspace only once a marker names it, so
+  // that a record with no marker is listed nowhere whatever became of the call. A failure at
+  // any point leaves a marker that is out of step, so the next call does what is left. There is
+  // nothing to do for a workspace that is provisional, shared with this user, or listed as it
+  // should be. Returns false, having changed nothing, if the space refused the workspace.
+  // Callers run it within #inSpaceOrder().
   async #reconcileSpace(id: string): Promise<boolean> {
     let record = this.storage.gadgets.get(id);
     if (!record || record.owner || !isFullyCreated(record)) return true;
-    let spaceKey = record.spaceKey ?? await this.#ensurePersonalSpace();
+    let pointedAt = record.spaceKey ?? await this.#ensurePersonalSpace();
+    let spaceKey = isListable(record) ? pointedAt : undefined;
     if (isRegistered(record, spaceKey)) return true;
 
     let { title, created, registered } = record;
     let owner = this.storage.profile.get();
-    if (!await this.#space(spaceKey).attachWorkspaces(owner, [{ id, title, created }])) return false;
-    if (registered && registered.spaceKey !== spaceKey) {
-      await this.#space(registered.spaceKey).detachWorkspace(id, owner.id);
+    if (spaceKey !== undefined) {
+      if (!registered) this.#amendGadget(id, gadget => { gadget.registered = { spaceKey }; });
+      if (!await this.#space(spaceKey).attachWorkspaces(owner, [{ id, title, created }])) {
+        if (!registered) this.#amendGadget(id, gadget => { delete gadget.registered; });
+        return false;
+      }
     }
-    this.#amendGadget(id, gadget => { gadget.registered = { spaceKey, title }; });
+    for (let listedIn of new Set([registered?.spaceKey ?? pointedAt, pointedAt])) {
+      if (listedIn !== spaceKey) await this.#space(listedIn).detachWorkspace(id, owner.id);
+    }
+    this.#amendGadget(id, gadget => {
+      if (spaceKey === undefined) delete gadget.registered;
+      else gadget.registered = { spaceKey, title };
+    });
     return true;
   }
 
@@ -1309,10 +1356,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * the record is pointed back where it was and this throws. A call that fails without an answer
    * may have reached the space, so then the record stays pointed at it for the next sync to
    * finish the move, or to undo it. A provisional workspace is listed nowhere, so for one this
-   * only records where it will register (see #syncSpace()).
+   * only records where it will register (see #syncSpace()). Nor is one that no space may list,
+   * going by `restrictions`, which its Overseer states with the move: for one this only records
+   * where its owner grouped it, and never asks the space whether they may add to it.
    */
-  async setGadgetSpace(id: string, spaceKey: string | null): Promise<void> {
+  async setGadgetSpace(id: string, spaceKey: string | null, restrictions: WorkspaceRestrictions)
+      : Promise<void> {
+    // Refused before the flags are recorded, since only the sync below acts on them.
     if (spaceKey !== null) checkTeamSpaceKey(spaceKey);
+    this.#amendGadget(id, record => mirrorRestrictions(record, restrictions));
     await this.#inSpaceOrder(async () => {
       await this.#syncSpace(id);
       let record = this.storage.gadgets.get(id);
@@ -1331,37 +1383,81 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // Registers every workspace of the user's own that has seen activity and that its space has
   // yet to acknowledge as it is now: those created before workspaces registered with a space,
-  // which all belong in the personal space, and any whose reconciliation failed earlier. It reads
-  // this object's records only, so no Overseer is woken.
+  // which all belong in the personal space, and any whose reconciliation failed earlier. None
+  // is listed before its flags are known, so those are learned first (#backfillRestrictions()).
   //
-  // The former go a page per call, and each page is marked as it is acknowledged, so a catch-up
-  // that stops is resumed by the next one with what is left. The latter may have a space to
-  // leave or to fall back from, and go through #syncSpace(), all of them asked for before any
-  // is awaited so that one whose space is out of reach does not keep the rest from theirs.
+  // Those that only the personal space has to hear of go a page per call, and each page is
+  // marked as it is acknowledged, so a catch-up that stops is resumed by the next one with what
+  // is left. The rest may have a space to leave or to fall back from, and go through
+  // #syncSpace(), all of them asked for before any is awaited so that one whose space is out of
+  // reach does not keep the rest from theirs.
   async #backfillSpaces(): Promise<void> {
     let personalKey = await this.#ensurePersonalSpace();
+    await this.#backfillRestrictions();
     let cursor: string | undefined;
     do {
       cursor = await this.#inSpaceOrder(() => this.#backfillSpacesPage(personalKey, cursor));
     } while (cursor !== undefined);
     let stale = [...this.storage.gadgets.list()].filter(record => !record.owner
-        && isFullyCreated(record) && !isRegistered(record, record.spaceKey ?? personalKey));
+        && isFullyCreated(record)
+        && !isRegistered(record, isListable(record) ? record.spaceKey ?? personalKey : undefined));
     await Promise.all(stale.map(({ id }) => this.#inSpaceOrder(() => this.#syncSpace(id))));
   }
 
+  // Asks the Overseer of each workspace of the user's own that has seen activity and never
+  // reported its flags what they are, as many at a time as #backfillOutputs() wakes, and records
+  // the answers. A workspace reports them with its activity, so only a record older than that
+  // needs this. Each is asked at most once, and one whose Overseer does not answer stays
+  // unknown, which no space may list, until its next report or the next catch-up. A page where
+  // every call failed looks systemic, as in #backfillOutputs(), so the sweep stops there rather
+  // than send a burst of doomed calls, and the next catch-up starts with the unanswered ones.
+  async #backfillRestrictions(): Promise<void> {
+    let unknown = [...this.storage.gadgets.list()].filter(record => !record.owner
+        && isFullyCreated(record) && (record.containsRestrictedData === undefined
+            || record.ownerInvitesOnly === undefined)).map(record => record.id);
+    let ownerId = this.ctx.id.toString();
+    let overseers = this.ctx.exports.OverseerDurableObject;
+    let results: PromiseSettledResult<void>[] = [];
+    for (let start = 0; start < unknown.length; start += OUTPUTS_BACKFILL_PAGE) {
+      let page = unknown.slice(start, start + OUTPUTS_BACKFILL_PAGE);
+      let settled = await Promise.allSettled(page.map(async id => {
+        let stated = await overseers.get(overseers.idFromString(id))
+            .getRestrictionsForOwnerBackfill(ownerId);
+        if (stated) this.#amendGadget(id, record => mirrorRestrictions(record, stated));
+      }));
+      results.push(...settled);
+      if (settled.every(result => result.status === "rejected")) break;
+    }
+    let failures = results.filter(result => result.status === "rejected");
+    if (failures.length > 0) {
+      logger.warn("failed to learn the restrictions of some workspaces", {
+        event: "space.workspace.backfill.partial",
+        failureCount: failures.length, error: failures[0].reason,
+      });
+    }
+  }
+
   // One page of #backfillSpaces(): registers with the personal space, `spaceKey`, the first
-  // SPACES_BACKFILL_PAGE never-registered workspaces after `startAfter` that belong in it.
-  // Returns the id it stopped at, or undefined if it reached the last record.
+  // SPACES_BACKFILL_PAGE workspaces after `startAfter` that belong in it, that a space may list
+  // and that it has yet to acknowledge as they are now, leaving out any whose marker names
+  // another space, which that one has to drop. Each gets its marker before the space is asked,
+  // as in #reconcileSpace(). Returns the id it stopped at, or undefined if it reached the last
+  // record.
   async #backfillSpacesPage(spaceKey: string, startAfter: string | undefined)
       : Promise<string | undefined> {
     let page: WorkspaceRegistration[] = [];
     for (let record of this.storage.gadgets.list({ startAfter })) {
-      if (record.owner || !isFullyCreated(record) || record.registered || record.spaceKey) continue;
+      if (record.owner || !isFullyCreated(record) || record.spaceKey || !isListable(record)
+          || (record.registered?.spaceKey ?? spaceKey) !== spaceKey
+          || isRegistered(record, spaceKey)) continue;
       let { id, title, created } = record;
       page.push({ id, title, created });
       if (page.length === SPACES_BACKFILL_PAGE) break;
     }
     if (page.length === 0) return undefined;
+    for (let { id } of page) {
+      this.#amendGadget(id, record => { record.registered ??= { spaceKey }; });
+    }
     if (!await this.#space(spaceKey).attachWorkspaces(this.storage.profile.get(), page)) {
       throw new Error("A personal space refused workspaces of its owner's.");
     }
