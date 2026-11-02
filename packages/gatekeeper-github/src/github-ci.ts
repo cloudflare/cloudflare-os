@@ -504,10 +504,7 @@ const STATE_FILTERS: Record<NonNullable<GitHubWorkflowRunFilter["state"]>, strin
 };
 
 export function workflowRunStatusFilter(state: GitHubWorkflowRunFilter["state"]): string | undefined {
-  if (state === undefined) return undefined;
-  const filter = lookup(STATE_FILTERS, state);
-  if (filter === undefined) throw new Error(`Unknown workflow run state ${JSON.stringify(state)}.`);
-  return filter;
+  return state === undefined ? undefined : STATE_FILTERS[state];
 }
 
 export function annotationOf(annotation: GitHubCheckAnnotationResponse): GitHubAnnotation {

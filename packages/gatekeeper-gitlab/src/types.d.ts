@@ -341,9 +341,9 @@ export interface GitLabPipeline {
    * statuses that external systems reported for the pipeline (`kind: "status"`). Only the latest
    * attempt of a retried job is listed, and at most 1000 rows, favouring the most recent: a larger
    * pipeline has some left out without notice, even under a `status` filter, while the pipeline's
-   * own `status` still counts them. Only `kind: "job"` rows can be
-   * opened, with `getJob()`; a trigger job's downstream pipeline in this project opens with
-   * `getDownstreamPipeline()`.
+   * own `status` still counts them. A pipeline with more than 1000 jobs or trigger jobs lists no
+   * external statuses at all. Only `kind: "job"` rows can be opened, with `getJob()`; a trigger
+   * job's downstream pipeline in this project opens with `getDownstreamPipeline()`.
    *
    * Results are streamed through the returned cursor. Call `next()` repeatedly on that
    * same cursor until it returns `null`.

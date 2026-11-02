@@ -180,13 +180,10 @@ describe("pageCiLog", () => {
       .toEqual([{ number: 2, text: "Error: one" }]);
   });
 
-  it("refuses invalid options with a TypeError", () => {
-    for (const options of [
-      { fromLine: 0 }, { fromLine: 1.5 }, { maxLines: -1 }, { maxLines: "5" }, { search: 3 },
-    ]) {
-      expect(() => pageCiLog(log, options as never, true)).toThrow(TypeError);
+  it("refuses a fromLine or maxLines that is not a positive integer", () => {
+    for (const options of [{ fromLine: 0 }, { fromLine: 1.5 }, { maxLines: -1 }]) {
+      expect(() => pageCiLog(log, options, true)).toThrow("must be a positive safe integer");
     }
-    expect(() => pageCiLog(log, "tail" as never, true)).toThrow(TypeError);
   });
 });
 

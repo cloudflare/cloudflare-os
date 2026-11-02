@@ -174,7 +174,7 @@ class FakeGitHub {
   activityStatus?: number;
   /** When set, a request to the activity API rejects with this, as a timeout or lost connection does. */
   activityError?: Error;
-  requiredByRules: string[] = [];
+  requiredByRules: string[] | "rateLimited" = [];
   requiredByProtection: string[] = [];
   readonly graphqlQueries: string[] = [];
   /** Every request, with the Authorization header it carried. */
@@ -293,6 +293,9 @@ class FakeGitHub {
       return match[2] === undefined ? Response.json(run) : Response.json({ jobs: [...this.jobs.values()] });
     }
     if (rest.startsWith("/rules/branches/")) {
+      if (this.requiredByRules === "rateLimited") {
+        return Response.json({ message: "API rate limit exceeded" }, { status: 403, headers: { "x-ratelimit-remaining": "0" } });
+      }
       return Response.json(this.requiredByRules.length === 0 ? [] : [{
         type: "required_status_checks",
         parameters: { required_status_checks: this.requiredByRules.map(context => ({ context })) },
@@ -739,6 +742,16 @@ describe("pull request CI", () => {
     github.rollups.get(HEAD)!.nodes.push(checkRunNode("deploy-preview", "COMPLETED", "SUCCESS", { isRequired: true }));
     expect(await gk.read([{ method: "getChecks" }]))
       .toMatchObject({ state: "success", phase: "done", missingRequired: [] });
+  });
+
+  it("fails a read whose required checks GitHub rate-limited, and does not cache that", async () => {
+    const github = pullScenario();
+    github.requiredByRules = "rateLimited";
+    const gk = await gatekeeper(7);
+    await expect(gk.read([{ method: "getChecks" }])).rejects.toThrow("rate limit");
+
+    github.requiredByRules = ["deploy-preview"];
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ missingRequired: ["deploy-preview", "lint"] });
   });
 
   it("reads CI at a head someone else pushed at once, not at the cached previous one", async () => {

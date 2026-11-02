@@ -143,15 +143,16 @@ export async function readCiLog(
 }
 
 /**
- * Pages a log. Validates options (positive integers; maxLines capped at CI_LOG_MAX_LINES; throws
- * TypeError with a clear message on invalid input). Omitted fromLine ⇒ the last maxLines lines (or
- * with `search`, the last maxLines matching lines); fromLine ⇒ lines (or matches) from there.
+ * Pages a log. Range-checks options (positive integers, throwing on a bad one; maxLines capped at
+ * CI_LOG_MAX_LINES); their types are the RPC layer's to check. Omitted fromLine ⇒ the last
+ * maxLines lines (or with `search`, the last maxLines matching lines); fromLine ⇒ lines (or
+ * matches) from there.
  * `search` is a case-insensitive substring. fromLine below firstLine starts at firstLine.
  *
  * A page also stops once its text reaches about one million characters, always keeping at least
  * one line; line numbers show where to continue.
  * @param log Normalised log.
- * @param options Caller-supplied page options; validated here, so pass them through untouched.
+ * @param options Caller-supplied page options; range-checked here.
  * @param complete Whether the log is final.
  * @returns The page.
  */
@@ -416,33 +417,15 @@ function chunkLines(lines: readonly string[]): string[] | undefined {
   return chunks;
 }
 
-function parseLogOptions(options: unknown): { fromLine?: number; maxLines: number; search?: string } {
-  if (options === undefined) return { maxLines: CI_LOG_DEFAULT_LINES };
-  if (options === null || typeof options !== "object") {
-    throw new TypeError("Log options must be an object.");
-  }
-  const { fromLine, maxLines, search } = options as Record<string, unknown>;
-  if (search !== undefined && typeof search !== "string") {
-    throw new TypeError(`search must be a string, got ${typeof search}.`);
-  }
+function parseLogOptions(options: CiLogOptions | undefined): { fromLine?: number; maxLines: number; search?: string } {
+  const { fromLine, maxLines, search } = options ?? {};
   return {
-    fromLine: fromLine === undefined ? undefined : positiveInt("fromLine", fromLine),
+    fromLine: fromLine === undefined ? undefined : requirePositiveInt("fromLine", fromLine),
     maxLines: maxLines === undefined
       ? CI_LOG_DEFAULT_LINES
-      : Math.min(positiveInt("maxLines", maxLines), CI_LOG_MAX_LINES),
+      : Math.min(requirePositiveInt("maxLines", maxLines), CI_LOG_MAX_LINES),
     search,
   };
-}
-
-function positiveInt(label: string, value: unknown): number {
-  if (typeof value !== "number") {
-    throw new TypeError(`${label} must be a positive integer, got ${typeof value}.`);
-  }
-  try {
-    return requirePositiveInt(label, value);
-  } catch (error) {
-    throw new TypeError((error as Error).message, { cause: error });
-  }
 }
 
 // CSI, OSC (BEL- or ST-terminated, or cut off), charset designation, other two-byte escapes, or a

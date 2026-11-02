@@ -5651,7 +5651,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * The status checks `branch` requires before merging, from the rulesets that apply to it and its
    * classic protection, as far as this account can see them. Best-effort: a source GitHub does not
-   * show (403, 404, or a renamed branch's redirect) counts as requiring nothing.
+   * show (403, 404, or a renamed branch's redirect) counts as requiring nothing; a rate limit's 403
+   * fails the read, since it would hide a required check.
    */
   async #requiredContexts(branch: string): Promise<string[]> {
     const { owner, repo } = this.ctx.props;
@@ -5660,7 +5661,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         try {
           return await this.#withApi(read);
         } catch (error) {
-          if (error instanceof GitHubApiError && [301, 403, 404].includes(error.status)) return undefined;
+          if (error instanceof GitHubApiError && [301, 403, 404].includes(error.status) && !error.rateLimited) return undefined;
           throw error;
         }
       };
