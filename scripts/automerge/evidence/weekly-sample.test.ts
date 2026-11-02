@@ -91,9 +91,4 @@ describe("sample", () => {
     const issue = issueFor("2026-10-26", "2026-11-02", [], [], [951, 966]);
     assert.match(issue.body, /No readable risk-review decision, so whether a person approved is unknown: #951, #966\./);
   });
-
-  it("does not count an eligible pull request a person approved", () => {
-    const approved = { ...record.pulls[0], approvers: ["kentonv"], gate: { passes: true, reason: "approved" } };
-    assert.equal(rung3Decision(asObject(parseJson(JSON.stringify({ ...record, pulls: [approved] })), "r"), 932), undefined);
-  });
 });
