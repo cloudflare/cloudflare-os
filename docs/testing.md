@@ -13,6 +13,11 @@ cross-Worker harness and its isolation rules, see [integration testing](integrat
 A direct `test:run` script does not execute a task's `dependsOn`. When tests import generated files,
 both entrypoints must request codegen; verify without a root prebuild or prepared snapshot.
 
+Backend unit tests use inline Miniflare bindings, not the full deployment configuration. Tests that
+read admin settings, including through `getWebFetchEnv()`, must provide a `BLUEPRINTS.get` fixture;
+returning `null` selects the default configuration. Assert async refusals with an awaited
+`.rejects.toThrow(...)`, not a synchronous `.toThrow(...)`.
+
 Workshop's browser tests need Chromium installed once with
 `pnpm --filter @gadgets/workshop-frontend exec playwright install chromium`.
 Run them separately with `pnpm --filter @gadgets/workshop-frontend test:run:browser`.
