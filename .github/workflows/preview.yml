@@ -17,13 +17,14 @@ name: Preview
 # number, or the artifact naming it comes from an untrusted contributor.
 #
 # The one `workflow_run` job, `bot-deploy`, is built so that none of that applies. It deploys
-# Dependabot pull requests (BUILD-PLAN.md, bot preview) with its own preview-only token,
-# PREVIEW_BOT_CLOUDFLARE_API_TOKEN, never CLOUDFLARE_API_TOKEN, and fails when that secret is
-# absent. It runs no code from the pull request: it checks out the pull request's merge base with
-# `main`, a reviewed commit, and runs that commit's scripts. The pull request's code arrives only
-# as the release bundle Automerge evidence built with no secrets, and is uploaded, not executed;
-# prebuilt.ts checks every file in it against the hash its manifest names. The pull request number
-# comes from the event and is re-checked against the API, never read from the artifact.
+# Dependabot pull requests with its own preview-only token, PREVIEW_BOT_CLOUDFLARE_API_TOKEN, never
+# CLOUDFLARE_API_TOKEN, and fails when that secret is absent. It runs no code from the pull
+# request: it checks out `main`, runs main's scripts, and deploys only when the pull request's
+# worker configs equal main's, so it deploys with the configs the bundle was built against. The
+# pull request's code arrives only as the release bundle Automerge evidence built with no secrets,
+# and is uploaded, not executed; prebuilt.ts checks every file in it against the hash its manifest
+# names. The pull request number comes from the event and is re-checked against the API, never
+# read from the artifact.
 #
 # The `if:` conditions and the in-job guard are defence in depth, each fail-closed, and exist so
 # that a future edit which weakens the trigger still does not leak the token. They are not what
@@ -274,15 +275,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Objects only, to find the merge base. Its wrangler configs are the ones the bundle was built
-      # against, since proof-deps admits only manifest and lockfile changes.
-      - name: Check out the merge base
+      # Objects only: the head's worker configs are compared, never checked out. A branch behind a
+      # config change on main has to be rebased (`@dependabot rebase`) before it gets a preview.
+      - name: Check the pull request's worker configs match main
         env:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
           test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
-          git checkout --detach "$(git merge-base HEAD "$HEAD_SHA")"
+          if ! git diff --quiet HEAD "$HEAD_SHA" -- cloudflare.config.ts \
+              'packages/*/cloudflare.config.ts' 'packages/*/wrangler.jsonc'; then
+            echo "::error::worker configs differ between main and $HEAD_SHA; rebase the pull request"
+            exit 1
+          fi
 
       - name: Enable Corepack
         run: corepack enable
