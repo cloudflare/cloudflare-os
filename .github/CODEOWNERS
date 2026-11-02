@@ -1,0 +1,26 @@
+# Code-owner review is required on main, so a PR that changes a path below needs an approval
+# from one of its owners. When several lines match a file, the last one wins.
+
+# CI, release, repo policy and the auto-merge gate.
+/.github/                                        @Maximo-Guk @ndisidore
+/scripts/release/                                @Maximo-Guk @ndisidore
+/scripts/risk-review*                            @Maximo-Guk @ndisidore
+/scripts/automerge/                              @Maximo-Guk @ndisidore
+/scripts/contribution-policy*                    @Maximo-Guk @ndisidore
+
+# The kernel and its public API.
+/packages/workshop-backend/                      @kentonv
+/packages/workshop-shared/src/api.ts             @kentonv
+
+# Declarations the agent reads.
+/packages/gatekeeper-*/src/*types.d.ts           @kentonv
+/packages/mcp-shared/src/types.d.ts              @kentonv
+
+# Capability and credential chokepoints outside the kernel.
+/packages/workshop-frontend/src/routes/connect.handoff.tsx   @kentonv
+/packages/gatekeeper-kit/src/credential-stage.ts             @kentonv
+/packages/gatekeeper-context/src/collection-access.ts        @kentonv
+/packages/mcp-shared/src/tools.ts                            @kentonv
+
+# The rules the AI reviewers follow.
+/REVIEW.md                                       @kentonv
