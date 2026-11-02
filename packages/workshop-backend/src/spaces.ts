@@ -10,7 +10,8 @@
 // its owner's User DO, which registers the workspace here and keeps the entry current; the space
 // decides whether that owner may add to it. An entry of the listing settles one thing only, that
 // nobody but the owner it is listed under updates or drops it: nothing about a workspace, or
-// about who can open it, is decided from the listing.
+// about who can open it, is decided from the listing. An entry's address within the space, its
+// slug, is the space's alone: the space gives it, and no other object knows it.
 //
 // Trust: every method `SpaceDurableObject` exposes takes the acting user as a plain parameter,
 // exactly like `OverseerDurableObject.open(userId, profileId, ...)`. Its only callers are
@@ -25,11 +26,14 @@ import { DurableObject } from "cloudflare:workers";
 import { RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import {
-  PERSONAL_SPACE_PREFIX, isValidSpaceKey, isValidTeamSpaceKey,
+  MAX_SLUG_LENGTH, PERSONAL_SPACE_PREFIX, isValidSpaceKey, isValidTeamSpaceKey, slugify,
   type AiChatAuthorInfo, type Space, type SpaceInfo, type SpaceMemberInfo, type SpaceMemberRole,
-  type SpaceWorkspaceInfo,
+  type SpaceWorkspaceInfo, type SpaceWorkspaceResolution,
 } from "@gadgets/workshop-shared/api";
-import { makeSpaceStorage, type SpaceRecord, type SpaceStorage } from "./storage-schema/space-storage.js";
+import {
+  makeSpaceStorage, type SpaceRecord, type SpaceStorage, type SpaceWorkspaceRecord,
+} from "./storage-schema/space-storage.js";
+import { PLACEHOLDER_TITLES } from "./storage-schema/overseer-storage.js";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.spaces");
@@ -39,6 +43,10 @@ const logger = createWorkshopLogger("workshop.spaces");
 const MAX_KEY_LENGTH = 32;
 const MAX_SPACE_NAME_LENGTH = 100;
 
+// The former slugs an entry keeps; the oldest fall off. Bounds the record of a workspace whose
+// slug is changed over and over, at the cost of its oldest links.
+const MAX_FORMER_SLUGS = 32;
+
 /**
  * The space a claim asks for. Whoever claims it becomes its first admin and, if it is personal,
  * its owner (see `SpaceModel.claim`).
@@ -47,9 +55,10 @@ export type SpaceClaim = Pick<SpaceRecord, "key" | "name" | "kind">;
 
 /**
  * What the owner of a workspace registers with a space: the workspace's entry in the listing,
- * less the owner, whom the registering User DO states once for all of them.
+ * less the owner, whom the registering User DO states once for all of them, and the slug, which
+ * is the space's to give.
  */
-export type WorkspaceRegistration = Omit<SpaceWorkspaceInfo, "owner">;
+export type WorkspaceRegistration = Omit<SpaceWorkspaceInfo, "owner" | "slug">;
 
 /** Refuses a key that cannot name a space, before a Durable Object is addressed by it. */
 export function checkSpaceKey(key: string): void {
@@ -102,11 +111,17 @@ export function noSuchSpace(): Error {
   return new Error("No such space, or you are not a member of it.");
 }
 
+// An entry of the listing as a member is shown it: without the slugs it used to have.
+function listed({ formerSlugs: _formerSlugs, ...workspace }: SpaceWorkspaceRecord)
+    : SpaceWorkspaceInfo {
+  return workspace;
+}
+
 /**
- * The rules of one space, over its typed storage: who its members are, and which workspaces it
- * lists. No RPC and no knowledge of other Durable Objects. Every method that acts for a user
- * takes who they are as a parameter and looks their membership up at that moment, so nothing
- * here trusts an earlier answer.
+ * The rules of one space, over its typed storage: who its members are, which workspaces it
+ * lists, and the slug each is addressed by. No RPC and no knowledge of other Durable Objects.
+ * Every method that acts for a user takes who they are as a parameter and looks their membership
+ * up at that moment, so nothing here trusts an earlier answer.
  */
 export class SpaceModel {
   constructor(private storage: SpaceStorage) {}
@@ -219,20 +234,32 @@ export class SpaceModel {
    * under this owner is updated whether or not they may still add, which is what lets a
    * workspace keep its place after its owner leaves the space. One it lists under someone else
    * is refused.
+   *
+   * An entry keeps its slug and former slugs through an update, so no later title moves a slug.
+   * One that has no slug is given one (see `#deriveSlug`) the first time it is written with a
+   * title that is not one of `PLACEHOLDER_TITLES`.
    */
   attachWorkspaces(owner: AiChatAuthorInfo, registrations: WorkspaceRegistration[]): boolean {
     let mayAdd = this.canAddWorkspaces(owner.id);
     for (let { id } of registrations) {
-      let listed = this.storage.workspaces.get(id);
-      if (listed ? listed.owner.id !== owner.id : !mayAdd) return false;
+      let entry = this.storage.workspaces.get(id);
+      if (entry ? entry.owner.id !== owner.id : !mayAdd) return false;
     }
     for (let { id, title, created } of registrations) {
-      this.storage.workspaces.put({ id, title, owner, created });
+      let entry: SpaceWorkspaceRecord =
+          { ...this.storage.workspaces.get(id), id, title, owner, created };
+      if (entry.slug === undefined && !PLACEHOLDER_TITLES.includes(title)) {
+        entry.slug = this.#deriveSlug(title);
+      }
+      this.storage.workspaces.put(entry);
     }
     return true;
   }
 
-  /** Drop workspace `id` from the listing if `ownerId` is who it is listed under. */
+  /**
+   * Drop workspace `id` from the listing if `ownerId` is who it is listed under. Its slug and
+   * former slugs go with the entry, and are free again.
+   */
   detachWorkspace(id: string, ownerId: string): void {
     if (this.storage.workspaces.get(id)?.owner.id === ownerId) this.storage.workspaces.delete(id);
   }
@@ -240,8 +267,72 @@ export class SpaceModel {
   /** Space.listWorkspaces: any member, newest first. */
   listWorkspaces(caller: string): SpaceWorkspaceInfo[] {
     this.#requireMember(caller);
-    return [...this.storage.workspaces.list()]
+    return [...this.storage.workspaces.list()].map(listed)
         .toSorted((a, b) => b.created.getTime() - a.created.getTime());
+  }
+
+  /** Space.resolveWorkspace: any member. */
+  resolveWorkspace(caller: string, slug: string): SpaceWorkspaceResolution | null {
+    this.#requireMember(caller);
+    return this.#resolve(slug) ?? null;
+  }
+
+  /**
+   * Space.setWorkspaceSlug: a member who is the owner workspace `id` is listed under, or an
+   * admin. The slug the entry had stays with it as a former one, the oldest falling off past
+   * `MAX_FORMER_SLUGS`. A slug asked for by name is refused while another entry uses it, but is
+   * taken from an entry that only used to: whoever asks knows the address they want, and that
+   * slug stops resolving to the other workspace.
+   */
+  setWorkspaceSlug(caller: string, id: string, slug: string): SpaceWorkspaceInfo {
+    let role = this.#requireMember(caller);
+    let entry = this.storage.workspaces.get(id);
+    if (!entry) throw new Error("This space does not list that workspace.");
+    if (role !== "admin" && entry.owner.id !== caller) {
+      throw new Error("Only a workspace's owner or an admin of this space can change its slug.");
+    }
+    if (entry.slug === slug) return listed(entry);
+    // slugify() never returns the empty string, so this refuses one too.
+    if (slugify(slug) !== slug) {
+      throw new Error(`A slug is 1 to ${MAX_SLUG_LENGTH} lowercase letters and digits, in groups `
+          + "joined by single dashes.");
+    }
+    if (this.storage.workspaces.bySlug.get(slug)) {
+      throw new Error("Another workspace of this space already uses that slug.");
+    }
+    // Collected before any write: a put re-indexes its record, which would end a live listing.
+    let holders = [...this.storage.workspaces.byFormerSlug.get(slug)];
+    for (let holder of holders) {
+      this.storage.workspaces.put(
+          { ...holder, formerSlugs: holder.formerSlugs?.filter(former => former !== slug) });
+    }
+    let formerSlugs = [entry.formerSlugs ?? [], entry.slug ?? []].flat()
+        .filter(former => former !== slug).slice(-MAX_FORMER_SLUGS);
+    entry = { ...entry, slug, formerSlugs };
+    this.storage.workspaces.put(entry);
+    return listed(entry);
+  }
+
+  // The slug `title` leads to, or with the first of `-2`, `-3`, ... appended that makes it one no
+  // entry has or used to have, cut so that the suffix still fits `MAX_SLUG_LENGTH`: every slug a
+  // space gives is one that can be asked for by name. A former slug still resolves to the entry
+  // that gave it up, so a derived slug never takes an old link over.
+  #deriveSlug(title: string): string {
+    let base = slugify(title);
+    let slug = base;
+    for (let n = 2; this.#resolve(slug); n++) {
+      let suffix = `-${n}`;
+      slug = base.slice(0, MAX_SLUG_LENGTH - suffix.length).replace(/-$/, "") + suffix;
+    }
+    return slug;
+  }
+
+  // The workspace `slug` addresses: the entry that has it now, otherwise the one that used to.
+  #resolve(slug: string): SpaceWorkspaceResolution | undefined {
+    let current = this.storage.workspaces.bySlug.get(slug);
+    if (current) return { workspace: listed(current), canonical: true };
+    let [former] = this.storage.workspaces.byFormerSlug.get(slug);
+    return former && { workspace: listed(former), canonical: false };
   }
 
   #requireMember(caller: string): SpaceMemberRole {
@@ -324,6 +415,16 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#model.listWorkspaces(caller);
   }
 
+  /** Space.resolveWorkspace, as `caller`. */
+  async resolveWorkspace(caller: string, slug: string): Promise<SpaceWorkspaceResolution | null> {
+    return this.#model.resolveWorkspace(caller, slug);
+  }
+
+  /** Space.setWorkspaceSlug, as `caller`. */
+  async setWorkspaceSlug(caller: string, id: string, slug: string): Promise<SpaceWorkspaceInfo> {
+    return this.#model.setWorkspaceSlug(caller, id, slug);
+  }
+
   /**
    * `SpaceModel.attachWorkspaces`. Called only by the User DO of `owner`, which states its own
    * user's profile, so every workspace it registers is one that user owns.
@@ -379,6 +480,14 @@ class SpaceClientInterface extends RpcTarget implements Space {
 
   listWorkspaces(): Promise<SpaceWorkspaceInfo[]> {
     return this.space.listWorkspaces(this.caller);
+  }
+
+  resolveWorkspace(slug: string): Promise<SpaceWorkspaceResolution | null> {
+    return this.space.resolveWorkspace(this.caller, slug);
+  }
+
+  setWorkspaceSlug(id: string, slug: string): Promise<SpaceWorkspaceInfo> {
+    return this.space.setWorkspaceSlug(this.caller, id, slug);
   }
 
   setMemberRole(username: string, role: SpaceMemberRole): Promise<SpaceMemberInfo | null> {

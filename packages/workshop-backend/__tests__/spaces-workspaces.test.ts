@@ -149,8 +149,9 @@ describe("a workspace's place in a space", () => {
     using space = (await env.TEST_SPACE.getByName(alice.personal).open(alice.profile.id))!;
     let workspaces = await space.listWorkspaces();
     expect(workspaces.map(workspace => workspace.id).toSorted()).toEqual([provisional, active].toSorted());
-    expect(workspaces.find(workspace => workspace.id === active)).toEqual(
-        { id: active, title: "Untitled", owner: alice.profile, created: expect.any(Date) });
+    expect(workspaces.find(workspace => workspace.id === active)).toEqual({
+      id: active, title: "Untitled", owner: alice.profile, created: expect.any(Date), slug: "untitled",
+    });
   });
 
   it("mirrors a change of title", async () => {

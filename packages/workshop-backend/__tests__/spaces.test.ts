@@ -1,6 +1,7 @@
 // Spaces: the key grammar and SpaceModel's membership and listing rules over a Map-backed
 // storage, then the real Durable Objects -- a space, and the users whose memberships it mirrors.
-// The users' side of the listing is spaces-workspaces.test.ts.
+// The users' side of the listing is spaces-workspaces.test.ts, and the slugs a space gives the
+// workspaces it lists are spaces-slugs.test.ts.
 
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
@@ -303,8 +304,8 @@ describe("SpaceModel workspaces", () => {
       ws("mid", "Mid", new Date("2026-02-01")), ws("new", "New", new Date("2026-03-01")),
       ws("old", "Old", new Date("2026-01-01")),
     ]);
-    expect(model.listWorkspaces(BOB.id)[0])
-        .toEqual({ id: "new", title: "New", owner: ALICE, created: new Date("2026-03-01") });
+    expect(model.listWorkspaces(BOB.id)[0]).toEqual(
+        { id: "new", title: "New", owner: ALICE, created: new Date("2026-03-01"), slug: "new" });
     expect(model.listWorkspaces(BOB.id).map(w => w.id)).toEqual(["new", "mid", "old"]);
     expect(() => model.listWorkspaces(CAROL.id)).toThrow(NO_SUCH_SPACE);
   });
@@ -395,6 +396,8 @@ describe("SpaceDurableObject", () => {
       await expectRejection(space.getInfo(bob.id), NO_SUCH_SPACE);
       await expectRejection(space.listMembers(bob.id), NO_SUCH_SPACE);
       await expectRejection(space.listWorkspaces(bob.id), NO_SUCH_SPACE);
+      await expectRejection(space.resolveWorkspace(bob.id, "roadmap"), NO_SUCH_SPACE);
+      await expectRejection(space.setWorkspaceSlug(bob.id, "ws", "roadmap"), NO_SUCH_SPACE);
       await expectRejection(space.setMemberRole(bob.id, bob.id, "admin"), NO_SUCH_SPACE);
       await expectRejection(space.removeMember(bob.id, bob.id), NO_SUCH_SPACE);
     }
@@ -439,6 +442,8 @@ describe("SpaceDurableObject", () => {
     await expectRejection(asCarol.getInfo(), NO_SUCH_SPACE);
     await expectRejection(asCarol.listMembers(), NO_SUCH_SPACE);
     await expectRejection(asCarol.listWorkspaces(), NO_SUCH_SPACE);
+    await expectRejection(asCarol.resolveWorkspace("roadmap"), NO_SUCH_SPACE);
+    await expectRejection(asCarol.setWorkspaceSlug("ws", "roadmap"), NO_SUCH_SPACE);
     await expectRejection(asCarol.setMemberRole(carol.id, "use"), NO_SUCH_SPACE);
     await expectRejection(asCarol.removeMember(carol.id), NO_SUCH_SPACE);
     expect(await env.TEST_SPACE.getByName(key).open(carol.id)).toBeNull();

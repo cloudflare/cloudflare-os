@@ -1251,6 +1251,19 @@ export type BlueprintGadgetRecord = {
 // Schema
 
 /**
+ * The title a workspace has until one is chosen for it: what its storage starts with, and what
+ * `AuthenticatedApi.newGadget` records it under.
+ */
+export const DEFAULT_WORKSPACE_TITLE = "Untitled Workspace";
+
+/**
+ * Every title a workspace carries when nobody chose one: the default, and "Untitled Gadget",
+ * which older workspaces still hold for the same reason. A first chat's generated title replaces
+ * one of these, and a space derives no slug from one.
+ */
+export const PLACEHOLDER_TITLES: readonly string[] = [DEFAULT_WORKSPACE_TITLE, "Untitled Gadget"];
+
+/**
  * The Overseer's storage schema. Tests of the modules that operate on a slice of it (the git
  * store and cache, the git migration, the action log) also call this over mock storage, so they
  * exercise the real schema rather than a copy.
@@ -1294,7 +1307,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
-      title: "Untitled Workspace",
+      title: DEFAULT_WORKSPACE_TITLE,
 
       // If present, this gadget was migrated from version zero, when a workspace had only one
       // gadget. Many stored records that normally contain a `gadgetId` might be missing it; they

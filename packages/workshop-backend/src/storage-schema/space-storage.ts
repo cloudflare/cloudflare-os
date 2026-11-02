@@ -9,6 +9,13 @@ import type { SpaceInfo, SpaceMemberInfo, SpaceWorkspaceInfo } from "@gadgets/wo
 /** A space as stored: its `SpaceInfo` without `role`, which is derived per caller on read. */
 export type SpaceRecord = Omit<SpaceInfo, "role">;
 
+/**
+ * A workspace's entry in the listing as stored: what a member is shown, plus the slugs the entry
+ * used to have, oldest first, which keep resolving to it and are never sent to a client. An
+ * entry has none until its slug is first changed.
+ */
+export type SpaceWorkspaceRecord = SpaceWorkspaceInfo & { formerSlugs?: string[] };
+
 export function makeSpaceStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     singletons: {
@@ -25,8 +32,18 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       // seen activity (see SpaceModel.attachWorkspaces()). A listing only: the owner's record of
       // a workspace says which space it belongs to, and all an entry decides is that only the
       // owner it is listed under updates or drops it.
-      workspaces: collection<SpaceWorkspaceInfo>()({
+      //
+      // The indexes are the space's slugs: each slug in use names one entry, and a former slug
+      // names the entry that gave it up. An entry with no slug yields no key for either, so it is
+      // in neither index, and deleting an entry frees every slug it held.
+      workspaces: collection<SpaceWorkspaceRecord>()({
         primaryKey: "id",
+        uniqueIndexes: {
+          bySlug(record: SpaceWorkspaceRecord) { return record.slug ?? null; },
+        },
+        nonUniqueIndexes: {
+          byFormerSlug(record: SpaceWorkspaceRecord) { return record.formerSlugs ?? []; },
+        },
       }),
     },
   });
