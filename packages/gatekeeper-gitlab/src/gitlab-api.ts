@@ -264,6 +264,16 @@ export type GitLabMergeRequestVersionResponse = {
 };
 
 /**
+ * One row of `GET /projects/:id/events?action=pushed`: when GitLab recorded a push, and the commit
+ * it left the ref at (`commit_to`: null when the push deleted the ref, and in the one bulk event
+ * GitLab records for a push past the instance's push-event limit).
+ */
+export type GitLabPushEventResponse = {
+  created_at: string;
+  push_data?: { commit_to: string | null } | null;
+};
+
+/**
  * `GET …/approvals`, and `POST …/approve`'s answer. `user_has_approved` is about the token's own
  * user, which is how a retried approval tells the approval it made before its reply was lost from
  * no approval at all; `approved_at`, where the instance reports it, tells one approval from a
@@ -1322,6 +1332,16 @@ export class GitLabApi {
       Promise<GitLabPage<GitLabMergeRequestVersionResponse>> {
     return await this.#getPage<GitLabMergeRequestVersionResponse>(
       `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/versions`, {}, page, perPage);
+  }
+
+  /**
+   * One page of the project's push events the account may see, newest first (GitLab orders them
+   * by id, which follows creation). GitLab's post-receive job records a push's event just before
+   * it queues the push's pipelines.
+   */
+  async listPushEvents(projectPath: string, page: number, perPage: number): Promise<GitLabPage<GitLabPushEventResponse>> {
+    return await this.#getPage<GitLabPushEventResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/events`, { action: "pushed" }, page, perPage);
   }
 
   /** One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only. */

@@ -53,13 +53,15 @@ export class TestUser extends GatekeeperUserImpl {}
 export class TestVerifier extends GitLabVerifier {}
 
 /**
- * The gatekeeper on storage a version before observer tracking left: keys its reads wrote, and no
- * observer-roster marker. It seeds that storage before the production constructor looks at it.
+ * The gatekeeper with its storage writable from a test, to leave what an earlier version wrote:
+ * `seed` puts each entry, and deletes the key for a `null`.
  */
-export class PreRosterGatekeeper extends GitLabGatekeeperImpl {
-  constructor(ctx: DurableObjectState<GatekeeperProps>, env: Cloudflare.Env) {
-    if ([...ctx.storage.kv.list({ limit: 1 })].length === 0) ctx.storage.kv.put("cacheGeneration", 1);
-    super(ctx, env);
+export class SeededGatekeeper extends GitLabGatekeeperImpl {
+  seed(entries: Record<string, unknown>): void {
+    for (const [key, value] of Object.entries(entries)) {
+      if (value === null) this.ctx.storage.kv.delete(key);
+      else this.ctx.storage.kv.put(key, value);
+    }
   }
 }
 
@@ -72,7 +74,7 @@ type UserProps = { userObjectId: string };
 
 type TestExports = {
   GitLabGatekeeperImpl(options: { props: GatekeeperProps }): DurableObjectClass<GitLabGatekeeperImpl>;
-  PreRosterGatekeeper(options: { props: GatekeeperProps }): DurableObjectClass<GitLabGatekeeperImpl>;
+  SeededGatekeeper(options: { props: GatekeeperProps }): DurableObjectClass<SeededGatekeeper>;
   TestUser(options: { props: UserProps }): {
     describe(): Promise<{ displayName?: string; uniqueName?: string }>;
     getAuthenticatedEmail(): Promise<string | null>;
@@ -327,14 +329,15 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Start `facetName` as a binding an earlier version created (see `PreRosterGatekeeper`), then
-   * restart it, so later calls reach the production class on that storage.
+   * Start `facetName` on storage an earlier version left: a new binding's, with `entries` written
+   * over it (see `SeededGatekeeper`), then restart it, so later calls reach the production class on
+   * that storage, as after a deploy.
    */
-  async startPreRosterBinding(facetName: string, props: GatekeeperProps): Promise<void> {
-    const facet = this.ctx.facets.get<GitLabGatekeeperImpl>(facetName, () => ({
-      class: (this.ctx.exports as unknown as TestExports).PreRosterGatekeeper({ props }),
-    })) as unknown as GatekeeperFacet;
-    await facet.isSimulatedCommitId("0");
+  async startOnEarlierStorage(facetName: string, props: GatekeeperProps, entries: Record<string, unknown>): Promise<void> {
+    const facet = this.ctx.facets.get<SeededGatekeeper>(facetName, () => ({
+      class: (this.ctx.exports as unknown as TestExports).SeededGatekeeper({ props }),
+    })) as unknown as { seed(entries: Record<string, unknown>): Promise<void> };
+    await facet.seed(entries);
     this.ctx.facets.abort(facetName, new Error("test restart"));
   }
 

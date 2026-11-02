@@ -315,8 +315,8 @@ export interface GitLabMergeRequest extends GitLabIssuable {
   /**
    * Opens one of this merge request's pipelines. Without `id`, the pipeline for the current head
    * commit (`getDetails().ci.pipeline`); this throws while there is none yet (read
-   * `getDetails().ci` again shortly) and when CI is not visible to you. With `id`, it must be one
-   * of `listPipelines()`. A pipeline that ran in another project cannot be opened.
+   * `getDetails().ci` again shortly) and when `getDetails()` would leave `ci` out. With `id`, it
+   * must be one of `listPipelines()`. A pipeline that ran in another project cannot be opened.
    */
   getPipeline(id?: string): Promise<GitLabPipeline>;
 
@@ -519,9 +519,10 @@ export type GitLabMergeRequestDetails = GitLabMergeRequestSummary & {
    */
   changedFilesTruncated?: boolean;
   /**
-   * CI for the head commit (`source.sha`). Omitted when CI is not visible to you on this
-   * project. To wait for CI, read `getDetails()` again while `ci.phase` is `"notStarted"` or
-   * `"active"`, and stop once it is `"blocked"` or `"done"`.
+   * CI for the head commit (`source.sha`). Left out when CI is not visible to you on this
+   * project, or when GitLab failed to answer for it (read again). To wait for CI, read
+   * `getDetails()` again while `ci.phase` is `"notStarted"` or `"active"`, and stop once it is
+   * `"blocked"` or `"done"`.
    */
   ci?: GitLabCommitCi;
 }
@@ -583,9 +584,9 @@ export type GitLabCommitDetails = GitLabCommitSummary & {
     total: number;
   };
   /**
-   * CI for this commit. Omitted when CI is not visible to you on this project. To wait for CI,
-   * read the commit again while `ci.phase` is `"notStarted"` or `"active"`, and stop once it is
-   * `"blocked"` or `"done"`.
+   * CI for this commit. Left out when CI is not visible to you on this project, or when GitLab
+   * failed to answer for it (read again). To wait for CI, read the commit again while `ci.phase`
+   * is `"notStarted"` or `"active"`, and stop once it is `"blocked"` or `"done"`.
    */
   ci?: GitLabCommitCi;
 }

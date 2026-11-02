@@ -32,8 +32,9 @@ function fakeProject(): FakeGitLab {
   const gitlab = new FakeGitLab();
   gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json(project()));
   gitlab.on("GET", /^\/api\/v4\/user$/, () => json(fx.currentUserResponse.data));
-  // A commit read reports its CI; the documented commit has no pipeline.
+  // A commit read reports its CI; the documented commit has no pipeline, nor CI configuration.
   gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => json([]));
+  gitlab.on("HEAD", new RegExp(`^/api/v4/projects/${P}/repository/files/`), () => new Response(null, { status: 404 }));
   return gitlab;
 }
 

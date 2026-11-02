@@ -705,3 +705,33 @@ export const testReportResponse = docs("api/pipelines", {
     }],
   }],
 });
+
+/**
+ * A push event, one row of `GET /projects/:id/events?action=pushed` -- api/events (the push row of
+ * "Retrieve contribution events for a user", `author` trimmed). The example leaves out
+ * `created_at`, which every event carries; it is added here.
+ */
+export const pushEventResponse = docs("api/events", {
+  id: 4,
+  title: null,
+  project_id: 15,
+  action_name: "pushed",
+  target_id: null,
+  target_iid: null,
+  target_type: null,
+  author_id: 1,
+  author_username: "john",
+  imported: false,
+  imported_from: "none",
+  created_at: "2015-12-04T10:33:58.089Z",
+  push_data: {
+    commit_count: 1,
+    action: "pushed",
+    ref_type: "branch",
+    commit_from: "50d4420237a9de7be1304607147aec22e4a14af7",
+    commit_to: "c5feabde2d8cd023215af4d2ceeb7a64839fc428",
+    ref: "main",
+    commit_title: "Add simple search to projects in public area",
+  },
+  target_title: null,
+});

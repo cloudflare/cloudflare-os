@@ -50,8 +50,15 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   left behind. With no pipeline yet, `notStarted` means one is expected: a queued push will make
   the commit a head, or it became one less than ten minutes ago and has CI configuration (the
   project's `ci_config_path`, else `.gitlab-ci.yml`) or its first parent ran a pipeline.
-  Otherwise it is `done` with `pipeline: null`. `ci` is left out for an account that cannot read
-  the project's pipelines.
+  Otherwise it is `done` with `pipeline: null`. When it became a head is, in order: when this
+  gatekeeper pushed it, else the merge request diff version GitLab made for it, else its
+  committer date or, when that is older than the window and CI is expected, a push GitLab
+  recorded among the project's latest 100 push events (`GET /projects/:id/events?action=pushed`),
+  so an old commit someone else just pushed reads `notStarted` rather than a terminal `done`.
+  These lookups are best-effort: one that GitLab fails is skipped. `ci` is left
+  out for an account that cannot read the project's pipelines, and when GitLab fails any other
+  CI read (logged; read again), so the commit or merge request is still returned. A refused or
+  expired token still fails the read.
 - **Pipelines and jobs.** A project binding has `listPipelines(filter)`, `getPipeline(id)` and
   `getJob(id)` for the bound project. A merge request binding has `listPipelines()`,
   `getPipeline(id?)` (the head's pipeline by default) and `getJob(id)`, limited to the merge

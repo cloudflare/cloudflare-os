@@ -20,7 +20,6 @@ import {
   type GitOid,
   type GitPullHints,
   type GitPullTransfer,
-  type ObservationDescription,
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -37,7 +36,7 @@ import {
   type TreeDiffSource,
 } from "@gadgets/gatekeeper-kit/git-diff";
 import { commitDetailsFromGitObject, isCommitOid, parseGitCommitPayload } from "@gadgets/gatekeeper-kit/git-objects";
-import { ObserverTracker, asVerifier, isObservationRefused } from "@gadgets/gatekeeper-kit/observers";
+import { ObservationGate, trackedCollectionObservers, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import {
   GitRefUpdateRejectedError,
   ZERO_OID,
@@ -130,8 +129,8 @@ import {
   normalizeCommitDetails,
   normalizeCommitStatus,
   normalizeCommitSummary,
-  normalizeGitLabLogLine,
   normalizeDiffFile,
+  normalizeGitLabLogLine,
   normalizeIssueDetails,
   normalizeIssueSummary,
   normalizeJobDetails,
@@ -226,11 +225,16 @@ const APPLIED_PUSH_PREFIX = "ciPushApplied:";
 /** Most push-apply records kept at once; each lives `CI_START_WINDOW_MS` at most. */
 const MAX_APPLIED_PUSHES = 100;
 /**
- * The observed-set marker of the CI-data gate (see `authorizeCiDataObservation`): job logs and test
- * reports. Its prefix keeps it clear of the kit's reserved `observer*` families.
+ * How many of the project's latest push events are searched for one that left a ref at a commit:
+ * one page, GitLab's most. A push older than that many others is outside the window anyway on all
+ * but the busiest projects, where its commit then reads `done` before its pipeline appears.
+ */
+const PUSH_EVENTS_SEARCHED = 100;
+/**
+ * The observed-set marker of the CI-data gate (see `#observers`): job logs and test reports. Its
+ * prefix keeps it clear of the kit's reserved `observer*` families.
  */
 const OBSERVED_SET_PREFIX = "observedSet:";
-const CI_DATA_SET = "ci-logs";
 /** GitLab's Developer role, below which a member cannot read debug-trace job logs. */
 const DEVELOPER_ACCESS_LEVEL = 30;
 /**
@@ -573,7 +577,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /** The project as GitLab returns it, for what metadata leaves out (its numeric id, CI config path). */
   async #getProjectResponse(): Promise<GitLabProjectResponse> {
-    return await this.#cached(this.#cacheKey("project", this.#projectPath()), ENTITY_CACHE_TTL_MS, async () =>
+    return await this.#cached(this.#cacheKey("project-raw", this.#projectPath()), ENTITY_CACHE_TTL_MS, async () =>
       await this.#withApi(api => api.getProject(this.#projectPath())));
   }
 
@@ -1290,7 +1294,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /** A commit by sha, branch, or tag, as GitLab returns it; null on 404. Cached briefly, since `ref` may be a name. */
   async #getRawCommit(ref: string): Promise<GitLabCommitResponse | null> {
-    return await this.#cached(this.#cacheKey("commit", stableKey(ref)), ENTITY_CACHE_TTL_MS, async () =>
+    return await this.#cached(this.#cacheKey("commit-raw", stableKey(ref)), ENTITY_CACHE_TTL_MS, async () =>
       await this.#withApi(api => api.getCommit(this.#projectPath(), ref)));
   }
 
@@ -1334,8 +1338,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * Records when this gatekeeper made `sha` a branch head: the absence policy's best "became the
    * head" time. Only `CI_START_WINDOW_MS` matters, so records older than that are pruned here (a
-   * pruned sha falls back to its merge request version or commit date, which are older still),
-   * and the family is capped. A retried apply keeps the first record.
+   * pruned sha falls back to the other sources), and the family is capped. A retried apply keeps
+   * the first record.
    */
   #recordAppliedPush(sha: GitOid): void {
     const kv = this.ctx.storage.kv;
@@ -1354,20 +1358,41 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * When `sha` became a head: this gatekeeper's push-apply record, else (for a merge request) the
-   * diff version GitLab made when its head moved there, else the commit's date.
+   * `read`'s answer, or undefined (logged as `event`) when GitLab fails it: CI rides on details
+   * that must still be returned. A refused token is not GitLab failing and still propagates:
+   * `withAccountApi` reports a reconnect as a plain Error, and rethrows a 401 it could not have
+   * the account settle as the `GitLabApiError` it was.
    */
-  async #becameHeadAt(sha: GitOid, commit: GitLabCommitResponse | null, mergeRequestIid?: string): Promise<number | undefined> {
-    const applied = this.ctx.storage.kv.get<number>(`${APPLIED_PUSH_PREFIX}${sha}`);
-    if (applied !== undefined) return applied;
-    if (mergeRequestIid !== undefined) {
-      const versions = await this.#withApi(api =>
-        api.listMergeRequestVersions(this.#projectPath(), Number(mergeRequestIid), 1, 20));
-      const version = versions.items.find(entry => entry.head_commit_sha === sha);
-      if (version !== undefined) return Date.parse(version.created_at);
+  async #bestEffort<T>(event: string, read: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(error instanceof GitLabApiError) || error.isAuthError) throw error;
+      logger.warn("GitLab failed a CI read; leaving it out", { event, error });
+      return undefined;
     }
-    const committed = Date.parse(commit?.committed_date ?? "");
-    return Number.isNaN(committed) ? undefined : committed;
+  }
+
+  /**
+   * When `sha` became a head, by the sources that know it outright: this gatekeeper's push-apply
+   * record, else (for a merge request) the diff version GitLab made when its head moved there.
+   * Undefined when neither does, a versions read GitLab failed included.
+   */
+  async #knownBecameHeadAt(sha: GitOid, mergeRequestIid: string | undefined): Promise<number | undefined> {
+    const applied = this.ctx.storage.kv.get<number>(`${APPLIED_PUSH_PREFIX}${sha}`);
+    if (applied !== undefined || mergeRequestIid === undefined) return applied;
+    const versions = await this.#bestEffort("ci.versions.read.failed", () => this.#withApi(api =>
+      api.listMergeRequestVersions(this.#projectPath(), Number(mergeRequestIid), 1, 20)));
+    const version = versions?.items.find(entry => entry.head_commit_sha === sha);
+    return version === undefined ? undefined : Date.parse(version.created_at);
+  }
+
+  /** When GitLab recorded a push that left a ref at `sha`, among the project's latest pushes. */
+  async #pushedAt(sha: GitOid): Promise<number | undefined> {
+    const events = await this.#bestEffort("ci.push.events.read.failed", () => this.#withApi(api =>
+      api.listPushEvents(this.#projectPath(), 1, PUSH_EVENTS_SEARCHED)));
+    const event = events?.items.find(entry => entry.push_data?.commit_to === sha);
+    return event === undefined ? undefined : Date.parse(event.created_at);
   }
 
   /**
@@ -1387,16 +1412,25 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * CI for a commit no pipeline has reported on: `notStarted` while one is expected -- a queued
    * push will make it a head, or CI is expected and it became a head under `CI_START_WINDOW_MS`
    * ago -- else `done` with no pipeline. `commit` is the caller's read of `sha`, when it has one.
+   * When no source knows outright when it became a head, its committer date stands in; a push
+   * cannot predate its commit, so GitLab's push events are asked only when that date is out of
+   * the window and CI is expected, the one case where they can change the answer: someone else
+   * pushing an old commit.
    */
   async #ciWithoutPipeline(sha: GitOid, mergeRequestIid?: string, commit?: GitLabCommitResponse): Promise<GitLabCommitCi> {
     if (this.#pendingPushActions().some(action => action.newSha === sha)) {
       return { commitId: sha, phase: "notStarted", pipeline: null };
     }
     const read = commit ?? await this.#getRawCommit(sha);
-    const becameHead = await this.#becameHeadAt(sha, read, mergeRequestIid);
-    const recent = becameHead !== undefined && Date.now() - becameHead < CI_START_WINDOW_MS;
-    const expected = recent && await this.#ciExpected(sha, read?.parent_ids?.[0]);
-    return { commitId: sha, phase: expected ? "notStarted" : "done", pipeline: null };
+    const firstParent = read?.parent_ids?.[0];
+    const now = Date.now();
+    const recent = (at: number | undefined) => at !== undefined && now - at < CI_START_WINDOW_MS;
+    const known = await this.#knownBecameHeadAt(sha, mergeRequestIid);
+    const waiting = known !== undefined
+      ? recent(known) && await this.#ciExpected(sha, firstParent)
+      : await this.#ciExpected(sha, firstParent) &&
+        (recent(Date.parse(read?.committed_date ?? "")) || recent(await this.#pushedAt(sha)));
+    return { commitId: sha, phase: waiting ? "notStarted" : "done", pipeline: null };
   }
 
   /**
@@ -1612,7 +1646,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const boundProjectId = await this.#boundProjectId();
     if (id === undefined) {
       const { ci } = await this.mergeRequestDetails(logicalId, gitCache);
-      if (ci === undefined) throw new Error("CI is not visible to you on this project.");
+      if (ci === undefined) {
+        throw new Error("CI is not visible to you on this project, or GitLab failed to answer for it; try again shortly.");
+      }
       if (ci.pipeline === null) {
         if (ci.phase !== "notStarted") throw new Error("No pipeline ran for the head commit.");
         if (this.#realIdOf(logicalId) === undefined) {
@@ -1852,14 +1888,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * CI job logs and test reports are the exception (strategy C, one set): a job run with
    * `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, which GitLab shows
    * only to Developers and above (https://docs.gitlab.com/ci/variables/variables_troubleshooting/).
-   * So once this binding has read one (the `ci-logs` set is pending or observed), admission needs
-   * Developer, and the read that first marks the set excludes stored observers below it. Observers
-   * are stored for that reason alone.
+   * So once this binding has read one (its one tracked set, `ci-logs`, the sessions' `CI_DATA`
+   * scope, is pending or observed), admission needs Developer, and the read that first marks the
+   * set excludes stored observers below it. Observers are stored for that reason alone.
    */
-  #observerTracker: ObserverTracker<Fetcher<GitLabVerifierApi>> | undefined;
+  #observerStrategy: ObserverStrategy | undefined;
 
-  #observers(): ObserverTracker<Fetcher<GitLabVerifierApi>> {
-    return this.#observerTracker ??= new ObserverTracker<Fetcher<GitLabVerifierApi>>({
+  #observers(): ObserverStrategy {
+    return this.#observerStrategy ??= trackedCollectionObservers<Fetcher<GitLabVerifierApi>>({
       kv: this.ctx.storage.kv,
       collectionPrefix: OBSERVED_SET_PREFIX,
       vendorId: VENDOR_ID,
@@ -1888,29 +1924,20 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    await this.#observers().addObserver(id, asVerifier<Fetcher<GitLabVerifierApi>>(user));
+    await this.#observers().addObserver(id, user);
   }
 
   async removeObserver(id: string): Promise<void> {
-    this.#observers().removeObserver(id);
+    await this.#observers().removeObserver(id);
   }
 
   /**
-   * Authorizes a read of CI job logs or test reports: marks the `ci-logs` set (see
-   * `#observers`), excludes stored observers below Developer, and promotes the set once the
-   * overseer has recorded the observation. Sessions route these reads here, not to the queue.
+   * An observation gate over this binding's observer strategy and its own duplicate of `queue`,
+   * for a pipeline or job capability, which authorizes its reads through it (CI-data reads with
+   * the `CI_DATA` scope) and disposes it with itself.
    */
-  async authorizeCiDataObservation(queue: RpcStub<ApprovalQueue>, description: ObservationDescription): Promise<void> {
-    const check = await this.#observers().prepareObservation([CI_DATA_SET]);
-    const exclude = check.excludeObservers;
-    try {
-      await queue.authorizeObservation(exclude?.length ? { ...description, excludeObservers: exclude } : description);
-    } catch (error) {
-      if (isObservationRefused(error)) check.discard?.();
-      else check.abandon?.();
-      throw error;
-    }
-    check.commit();
+  observationGate(queue: RpcStub<ApprovalQueue>): ObservationGate {
+    return new ObservationGate(queue.dup(), this.#observers());
   }
 
   // -- session-facing reads (in-process; sessions hold this object directly) --------------
@@ -1928,9 +1955,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * `getDetails()`'s read: the merge request with CI for its head (`ci`), where visible. CI is
-   * status, so the merge request is read afresh for it, and details cached before its head last
-   * moved are dropped: `source.sha` and `ci` then come from the same read.
+   * `getDetails()`'s read: the merge request with CI for its head (`ci`), where visible and
+   * GitLab answers for it (`#bestEffort`). CI is status, so the merge request is read afresh for
+   * it, and details cached before its head last moved are dropped: `source.sha` and `ci` then
+   * come from the same read.
    */
   async mergeRequestDetails(id: string, gitCache?: RpcStub<GitCache>): Promise<GitLabMergeRequestDetails> {
     const realId = this.#realIdOf(id);
@@ -1943,7 +1971,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
     }
     const details = await this.#getMergeRequestDetails(id, gitCache);
-    const ci = await this.#mergeRequestCi(details, mr);
+    const ci = await this.#bestEffort("ci.merge.request.read.failed", () => this.#mergeRequestCi(details, mr));
     return ci === undefined ? details : { ...details, ci };
   }
 
@@ -2093,13 +2121,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * Look up a commit for the session, with its CI (`ci`, where visible). `fromCache` reports
-   * whether the details were served from the workspace git cache rather than from GitLab; the
-   * session must not advertise a cache-served result (it is either already known from this
-   * remote, or part of a pending push whose advertisement would outlive a rejection). A branch
-   * with queued pushes reads at its simulated head; a full commit id GitLab does not know reads
-   * from the cache only when the push simulation stands behind it (`#readQueuedPushCommit`). A
-   * cache-served commit is a queued push's, so no pipeline can exist for it yet.
+   * Look up a commit for the session, with its CI (`ci`, where visible and GitLab answers for it,
+   * as in `mergeRequestDetails`). `fromCache` reports whether the details were served from the
+   * workspace git cache rather than from GitLab; the session must not advertise a cache-served
+   * result (it is either already known from this remote, or part of a pending push whose
+   * advertisement would outlive a rejection). A branch with queued pushes reads at its simulated
+   * head; a full commit id GitLab does not know reads from the cache only when the push simulation
+   * stands behind it (`#readQueuedPushCommit`). A cache-served commit is a queued push's, so no
+   * pipeline can exist for it yet.
    */
   async getCommit(refOrDefault: string | undefined, gitCache?: RpcStub<GitCache>):
       Promise<{ details: GitLabCommitDetails; fromCache: boolean }> {
@@ -2124,7 +2153,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const commit = await this.#getRawCommit(ref);
     if (commit !== null) {
       const details = normalizeCommitDetails(this.#instanceUrl(), this.#projectPath(), commit);
-      const ci = await this.#commitCi(commit);
+      const ci = await this.#bestEffort("ci.commit.read.failed", () => this.#commitCi(commit));
       return { details: ci === undefined ? details : { ...details, ci }, fromCache: false };
     }
     if (gitCache !== undefined && isCommitOid(ref)) {

@@ -1,6 +1,7 @@
 // CI reads on the real gatekeeper Durable Object against a fake GitLab: a commit's and a merge
-// request's `ci` (the head pipeline, the stale-head rule, and the absence policy when there is no
-// pipeline), what a queued push reads as, which pipelines and jobs each binding may open,
+// request's `ci` (the head pipeline, the stale-head rule, the absence policy when there is no
+// pipeline and its push-event source, and `ci` left out rather than the read failed when GitLab
+// fails a CI read), what a queued push reads as, which pipelines and jobs each binding may open,
 // `listJobs()` merging jobs, trigger jobs, and external statuses (retries and status changes
 // racing the listings included), failed tests, status read afresh rather than cached, job logs
 // (tail, search, a running job, the cache of finished logs and its revalidation against erasure
@@ -54,11 +55,17 @@ function commit(id: string, overrides: Record<string, unknown> = {}) {
   return { ...fx.commitResponse.data, id, parent_ids: [BASE], committed_date: minutesAgo(2), last_pipeline: null, ...overrides };
 }
 
+/** A push GitLab recorded `minutes` ago that left a branch at `sha`. */
+function pushEvent(sha: string, minutes: number) {
+  return { ...fx.pushEventResponse.data, project_id: PROJECT_ID, created_at: minutesAgo(minutes),
+    push_data: { ...fx.pushEventResponse.data.push_data, commit_to: sha } };
+}
+
 /**
  * GitLab with the project (id 1, default CI config), the owner's and observers' accounts (the
  * bearer token names the user), their memberships (the owner a Maintainer unless `ownerAccess`
  * says otherwise), an instance version that predates `trigger_jobs`, commits served from
- * `commits`, and the project's pipelines from `pipelines`.
+ * `commits`, the project's pipelines from `pipelines`, and its push events from `pushEvents`.
  */
 class CiFake extends FakeGitLab {
   readonly commits = new Map<string, Record<string, unknown>>();
@@ -70,13 +77,17 @@ class CiFake extends FakeGitLab {
   readonly ciConfigAt = new Set<string>();
   /** The project's pipelines, newest first; the listing filters them by `sha` as GitLab does. */
   readonly pipelines: Record<string, unknown>[] = [];
+  /** The project's push events, newest first; only a listing of pushes is answered. */
+  readonly pushEvents: Record<string, unknown>[] = [];
+  /** The project's default branch. */
+  defaultBranch = "main";
 
   constructor() {
     super();
     const userId = (name: string) => 100 + [...this.members.keys()].indexOf(name);
     this.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json({
       ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: PROJECT, web_url: `https://gitlab.example.com/${PROJECT}`,
-      namespace: { ...fx.projectResponse.data.namespace, full_path: "group/sub" },
+      namespace: { ...fx.projectResponse.data.namespace, full_path: "group/sub" }, default_branch: this.defaultBranch,
     }));
     this.on("GET", new RegExp(`^/api/v4/projects/${FORK_ID}$`), () => json({
       ...fx.projectResponse.data, id: FORK_ID, name: "fork", path_with_namespace: "someone/fork",
@@ -113,11 +124,12 @@ class CiFake extends FakeGitLab {
       const sha = request.url.searchParams.get("sha");
       return json(this.pipelines.filter(row => sha === null || row.sha === sha));
     });
+    this.on("GET", new RegExp(`^/api/v4/projects/${P}/events\\?(.*&)?action=pushed(&|$)`), () => json(this.pushEvents));
   }
 
   /** Requests that asked GitLab anything about CI. */
   ciRequests(): string[] {
-    return this.requests.map(r => r.url.pathname).filter(path => /pipelines|\/jobs|repository\/files|versions|statuses/.test(path));
+    return this.requests.map(r => r.url.pathname).filter(path => /pipelines|\/jobs|repository\/files|versions|statuses|\/events/.test(path));
   }
 }
 
@@ -274,6 +286,92 @@ describe("a commit's CI", () => {
     expect((await unwrap(await hooks().getCommit(name, props, PUSHED))).details.ci)
       .toEqual({ commitId: PUSHED, phase: "notStarted", pipeline: null });
   });
+
+  describe("an old commit someone else made a head", () => {
+    const TWO_DAYS = 2 * 24 * 60;
+
+    function oldFake(): CiFake {
+      const fake = new CiFake();
+      fake.commits.set(HEAD, commit(HEAD, { committed_date: minutesAgo(TWO_DAYS) }));
+      fake.ciConfigAt.add(HEAD);
+      return fake;
+    }
+
+    it("is notStarted while GitLab's push events say a push left a branch at it a minute ago", async () => {
+      const fake = oldFake();
+      fake.pushEvents.push(pushEvent(PUSHED, 0.5), pushEvent(HEAD, 1));
+      const { props, name } = await setup(fake);
+      expect((await unwrap(await hooks().getCommit(name, props, HEAD))).details.ci)
+        .toEqual({ commitId: HEAD, phase: "notStarted", pipeline: null });
+    });
+
+    it("is done when no push left a branch at it within the window", async () => {
+      const fake = oldFake();
+      fake.pushEvents.push(pushEvent(PUSHED, 1), pushEvent(HEAD, 30));
+      const { props, name } = await setup(fake);
+      expect((await unwrap(await hooks().getCommit(name, props, HEAD))).details.ci)
+        .toEqual({ commitId: HEAD, phase: "done", pipeline: null });
+    });
+
+    it("falls back to the committer date when GitLab fails the push events listing", async () => {
+      const fake = oldFake();
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/events\\?`), () => json({ message: "500 Internal Server Error" }, { status: 500 }));
+      const { props, name } = await setup(fake);
+      const { details } = await unwrap(await hooks().getCommit(name, props, HEAD));
+      expect(details.id).toBe(HEAD);
+      expect(details.ci).toEqual({ commitId: HEAD, phase: "done", pipeline: null });
+    });
+
+    it("costs no push events read for a new commit, nor for an old one no CI is expected for", async () => {
+      const fake = new CiFake();
+      fake.commits.set(HEAD, commit(HEAD));
+      fake.ciConfigAt.add(HEAD);
+      fake.commits.set(EARLIER, commit(EARLIER, { committed_date: minutesAgo(TWO_DAYS) }));
+      fake.commits.set(BASE, commit(BASE, { parent_ids: [] }));
+      const { props, name } = await setup(fake);
+      expect((await unwrap(await hooks().getCommit(name, props, HEAD))).details.ci).toMatchObject({ phase: "notStarted" });
+      expect((await unwrap(await hooks().getCommit(name, props, EARLIER))).details.ci).toMatchObject({ phase: "done" });
+      expect(fake.count("GET", /\/events\?/)).toBe(0);
+    });
+  });
+
+  it("is left out, and the commit still returned, when GitLab fails the pipelines listing", async () => {
+    const fake = new CiFake();
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => json({ message: "500 Internal Server Error" }, { status: 500 }));
+    const { props, name } = await setup(fake);
+    const { details } = await unwrap(await hooks().getCommit(name, props, HEAD));
+    expect(details.id).toBe(HEAD);
+    expect(details).not.toHaveProperty("ci");
+  });
+
+  it("still fails the read when the account's credentials are dead", async () => {
+    const fake = new CiFake();
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.on("POST", /^\/oauth\/token/, () => json({ error: "invalid_grant", error_description: "revoked" }, { status: 400 }));
+    const { props, name } = await setup(fake);
+    // The commit read is cached now, so only the CI reads ask GitLab next time.
+    await unwrap(await hooks().getCommit(name, props, HEAD));
+    expect(await hooks().reportTokenRejected(props.userObjectId, "test-token")).toBe("expired");
+    await expect(unwrap(await hooks().getCommit(name, props, HEAD))).rejects.toThrow(/expired or been revoked. Please reconnect/);
+  });
+
+  it("reads past the project and commit an earlier version cached in another shape", async () => {
+    const fake = new CiFake();
+    fake.defaultBranch = "develop";
+    fake.branches.set("develop", HEAD);
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.ciConfigAt.add(HEAD);
+    const { props, name } = await setup(fake);
+    // That version kept normalised metadata and commit details under these keys.
+    const fetchedAt = Date.now();
+    await hooks().startOnEarlierStorage(name, props, {
+      [`cache:project:${PROJECT}`]: { fetchedAt, generation: 0, value: { path: PROJECT, defaultBranch: "develop" } },
+      [`cache:commit:${encodeURIComponent(JSON.stringify("develop"))}`]: { fetchedAt, generation: 0, value: { id: HEAD, parents: [BASE] } },
+    });
+    const { details } = await unwrap(await hooks().getCommit(name, props, undefined));
+    expect(details).toMatchObject({ id: HEAD, parents: [BASE], ci: { commitId: HEAD, phase: "notStarted", pipeline: null } });
+  });
 });
 
 describe("a merge request's CI", () => {
@@ -358,6 +456,16 @@ describe("a merge request's CI", () => {
     ]));
     const { props, name } = await setup(fake);
     expect((await details(name, props)).ci).toEqual({ commitId: HEAD, phase: "done", pipeline: null });
+  });
+
+  it("falls back to the commit date, keeping ci, when GitLab fails the diff versions read", async () => {
+    const fake = mrFake(null);
+    fake.ciConfigAt.add(HEAD);
+    fake.commits.set(HEAD, commit(HEAD, { committed_date: minutesAgo(2) }));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/versions\\?`), () =>
+      json({ message: "502 Bad Gateway" }, { status: 502 }));
+    const { props, name } = await setup(fake);
+    expect((await details(name, props)).ci).toEqual({ commitId: HEAD, phase: "notStarted", pipeline: null });
   });
 
   it("is omitted when GitLab leaves head_pipeline out for an account that may not read pipelines", async () => {
@@ -796,7 +904,8 @@ describe("observers once logs are read", () => {
     it("refuses job logs and test reports before reading them, and serves the other CI reads", async () => {
       const fake = legacyFake();
       const { props, name } = await setup(fake);
-      await hooks().startPreRosterBinding(name, props);
+      // Keys that version wrote, and no roster marker.
+      await hooks().startOnEarlierStorage(name, props, { observerRoster: null, cacheGeneration: 1 });
       await expect(session(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" })).rejects.toThrow(REFUSED);
       await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).rejects.toThrow(REFUSED);
       await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests" })).rejects.toThrow(REFUSED);

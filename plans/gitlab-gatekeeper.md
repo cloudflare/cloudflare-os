@@ -960,11 +960,13 @@ The CI reads (Punted) make one exception to "Reporter sees everything a binding 
 CI/CD variable, masked or not, into its log, and "access to debug logging is restricted to users
 with the Developer, Maintainer, or Owner role"
 (docs.gitlab.com/ci/variables/variables_troubleshooting); the gatekeeper does not try to tell
-debug logs from others, and a failed test's recorded output is job output too. So it keeps one
-kit `ObserverTracker` set, `ci-logs`, marked by the first
-such read: from then on `addObserver` asks `hasProjectAccess(path, 30)`, and every such read
-excludes stored observers below it. Observers are stored for this alone, so `removeObserver` is
-no longer a no-op. A binding that never reads a log or test report keeps the Reporter bar.
+debug logs from others, and a failed test's recorded output is job output too. So the binding's
+strategy is the kit's `trackedCollectionObservers` with one set, `ci-logs`, marked by the first
+such read (pipeline and job capabilities authorize through their own `ObservationGate`, those
+reads with that collection): from then on `addObserver` asks `hasProjectAccess(path, 30)`, and
+every such read excludes stored observers below it. Observers are stored for this alone, so
+`removeObserver` is no longer a no-op. A binding that never reads a log or test report keeps the
+Reporter bar.
 
 Two consequences of storing them. Bindings from before: observers admitted before this version
 were never stored, and the overseer neither re-admits a viewer already connected nor enforces
@@ -1344,7 +1346,12 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   fresh (status is never cached), a `head_pipeline` counted only when it ran on the current head
   (or, on `refs/merge-requests/<iid>/merge` or `…/train`, on a commit whose parents include it),
   and with none a `notStarted`/`done` absence policy over a 10-minute window from this
-  gatekeeper's push-apply record, else the MR's diff versions, else the commit date;
+  gatekeeper's push-apply record, else the MR's diff versions, else the commit date or, when that
+  is out of the window and CI is expected, a push GitLab recorded (one page of
+  `GET /projects/:id/events?action=pushed`, newest first, matched on `push_data.commit_to`: the
+  post-receive job records a push's event just before it queues the pipelines, so the event
+  covers the gap until the pipeline exists); each lookup best-effort, and `ci` itself left out
+  (logged) rather than failing the read when GitLab fails any other CI read;
   `listPipelines`/`getPipeline`/`getJob` on project and MR bindings (an MR binding reaches only
   its own pipelines and their same-project children; fork and cross-project pipelines are data
   only); `GitLabPipeline` jobs
@@ -1360,8 +1367,9 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   (non-revertible actions with their own kinds, simulated as `pending`/`canceling`, a retried job
   as a provisional `~N`); `autoMerge` on `merge()` (below); and GitLab hooks, which this gatekeeper
   has no infrastructure for, so agents poll `ci.phase`. Unprobed still: the trace endpoint's `Range`
-  behaviour (the read takes the whole body), push events as a "became the head" source, and
-  stale-head detection for merged-results pipelines beyond the parent check.
+  behaviour (the read takes the whole body), the push events source (built from the docs and
+  GitLab's `EventsFinder`/`BaseHooksService` source, not a live instance), and stale-head
+  detection for merged-results pipelines beyond the parent check.
 - **Honouring both pull hints at once** if Gitaly accepts `combine:` / `tree:<depth≥1>` — the
   docs list only `blob:none`, `blob:limit` and `sparse:oid` for partial clone; a live probe would
   settle it. A GitLab-specific `filterSpecForHints` variant in the kit, selected by the
