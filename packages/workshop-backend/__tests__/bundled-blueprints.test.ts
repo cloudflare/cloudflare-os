@@ -159,6 +159,9 @@ describe("bundled blueprints", () => {
         lastUpdated: new Date(entry.lastUpdated),
         bindings: entry.bindings,
       });
+      // The manifest's default publication is written in too, for the creation UI to show; an
+      // entry that declares none installs none.
+      expect(record.metadata.publication).toBe(entry.publication);
 
       // Content is a release pack of the entry's files, stored under the commit the metadata
       // names, which is where readBlueprintRelease() looks for it.
@@ -261,6 +264,20 @@ describe("bundled blueprints", () => {
       ...before, title: `${before.title} (Beta)`, version: before.version + 1, lastUpdated,
     });
     expect(await storedKeys(blueprintId)).toEqual([`${blueprintId}/${before.commitId}`]);
+  });
+
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
+      "installs the publication a manifest entry declares", async () => {
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let original = entry.publication;
+    try {
+      entry.publication = "use";
+      let deployment = makeDeployment();
+      await deployment.install();
+      expect(deployment.published(entry.blueprintId).publication).toBe("use");
+    } finally {
+      if (original === undefined) delete entry.publication; else entry.publication = original;
+    }
   });
 
   it("ships print layouts for every standard output format", () => {
@@ -380,5 +397,25 @@ describe("bundled blueprints", () => {
     }
 
     expect(bundledBlueprintsManifestVersion()).toBe(before);
+  });
+
+  // A publication reaches deployments that already installed only through a reinstall, like
+  // curated text, and the default it gives is read from the compiled entry rather than from what
+  // was installed, so the two must not drift apart unnoticed.
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
+      "changes the manifest version when only the publication changes", () => {
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let original = entry.publication;
+    let versions = new Set<string>();
+    try {
+      for (let publication of [undefined, "use", "build"] as const) {
+        if (publication === undefined) delete entry.publication;
+        else entry.publication = publication;
+        versions.add(bundledBlueprintsManifestVersion());
+      }
+      expect(versions.size).toBe(3);
+    } finally {
+      if (original === undefined) delete entry.publication; else entry.publication = original;
+    }
   });
 });

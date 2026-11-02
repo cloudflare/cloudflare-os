@@ -47,7 +47,8 @@ export type BlueprintKvRecord = {
   /**
    * The User DO that published or uploaded this blueprint, and which owns the authoritative
    * "featured" bit for it. Undefined for a blueprint the deployment installed itself, which
-   * has no owning user.
+   * has no owning user, and only such a blueprint publishes the workspaces created from it by
+   * default (see bundledPublication() in bundled-blueprints.ts).
    */
   ownerId?: string;
   gadgetId?: string;  // undefined = uploaded, not published from a gadget on this instance
