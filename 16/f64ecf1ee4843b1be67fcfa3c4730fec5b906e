@@ -1,0 +1,26 @@
+packages/bundled-blueprints/README.md
+  s_dd2417a6d5bd82::t_46c07f4f5de1e1 32-34,171-172
+packages/bundled-blueprints/src/manifest.ts
+  s_dd2417a6d5bd82::t_46c07f4f5de1e1 12-15,23-27,100,119-121,155
+packages/bundled-blueprints/__tests__/manifest.test.ts
+  s_dd2417a6d5bd82::t_46c07f4f5de1e1 1-97
+packages/bundled-blueprints/src/generate.ts
+  s_dd2417a6d5bd82::t_46c07f4f5de1e1 185
+  s_dd2417a6d5bd82::t_06a917bd15f70e 201-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "16f64ecf1ee4843b1be67fcfa3c4730fec5b906e",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
