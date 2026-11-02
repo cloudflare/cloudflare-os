@@ -39,7 +39,7 @@ export function planRedGreen(files: FileDiff[]): RedGreenScope {
   if (!files.some((file) => KERNEL.test(file.path))) return { notApplicable: "touches no kernel path" };
   const dependencies = files.filter((file) => DEPENDENCY_FILE.test(file.path)).map((file) => file.path);
   if (dependencies.length > 0) return { error: `changes dependencies (${dependencies.join(", ")}), so base source cannot run on this install` };
-  const sources = files.filter((file) => !TEST_PATH.test(file.path) && !/\.md$/.test(file.path)).map((file) => file.path);
+  const sources = files.filter((file) => !TEST_PATH.test(file.path) && !file.path.endsWith(".md")).map((file) => file.path);
   if (sources.length === 0) return { notApplicable: "changes only tests and documentation" };
   const tests = files.filter((file) => file.status !== "deleted" && RUNNABLE_TEST.test(file.path)).map((file) => file.path);
   return { tests, sources };

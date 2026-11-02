@@ -17,6 +17,24 @@ export function packageOf(path: string): string | undefined {
   return /^(packages\/[^/]+)\//.exec(path)?.[1];
 }
 
+/** The supported vitest configs tracked in a package. */
+function supportedConfigs(pkg: string): string[] {
+  const result = runCommand("git", ["ls-files", "--", `${pkg}/vitest*.config.ts`], ".");
+  return result.stdout.split("\n").filter((path) => path.startsWith(pkg) && !UNSUPPORTED_CONFIG.test(path));
+}
+
+/** The repo-relative test files a config includes, by `vitest list`; none if it fails to list. */
+function configFiles(pkg: string, config: string): Set<string> {
+  const dir = mkdtempSync(join(tmpdir(), "automerge-vitest-list-"));
+  const out = join(dir, "list.json");
+  try {
+    const result = runCommand("pnpm", ["exec", "vitest", "list", "--filesOnly", `--json=${out}`, "--config", relative(pkg, config)], pkg);
+    return new Set(result.ok ? listedFiles(readFileSync(out, "utf8"), process.cwd()) : []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
  * Assigns each test file to the one supported vitest config in its package that lists it, using
  * `vitest list`. Returns the groups, keyed by config path, and the files no config or more than
@@ -26,30 +44,16 @@ export function groupByConfig(tests: string[]): { groups: Map<string, string[]>;
   const groups = new Map<string, string[]>();
   const unplaced: string[] = [];
   const listed = new Map<string, Set<string>>();
-  const configsOf = (pkg: string): string[] => {
-    const result = runCommand("git", ["ls-files", "--", `${pkg}/vitest*.config.ts`], ".");
-    return result.stdout.split("\n").filter((path) => path.startsWith(pkg) && !UNSUPPORTED_CONFIG.test(path));
-  };
-  const listFiles = (pkg: string, config: string): Set<string> => {
-    const dir = mkdtempSync(join(tmpdir(), "automerge-vitest-list-"));
-    const out = join(dir, "list.json");
-    try {
-      const result = runCommand("pnpm", ["exec", "vitest", "list", "--filesOnly", `--json=${out}`, "--config", relative(pkg, config)], pkg);
-      return new Set(result.ok ? listedFiles(readFileSync(out, "utf8"), process.cwd()) : []);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  };
   for (const test of tests) {
     const pkg = packageOf(test);
     if (!pkg) {
       unplaced.push(test);
       continue;
     }
-    const matches = configsOf(pkg).filter((config) => {
+    const matches = supportedConfigs(pkg).filter((config) => {
       let files = listed.get(config);
       if (!files) {
-        files = listFiles(pkg, config);
+        files = configFiles(pkg, config);
         listed.set(config, files);
       }
       return files.has(test);

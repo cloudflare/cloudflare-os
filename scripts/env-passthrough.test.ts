@@ -85,6 +85,9 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "VITE_FRONTEND_ERROR_REPORTING",
     ],
     injected: ["NODE_ENV"],
+    // The end-to-end suite (`vitest.e2e.config.ts`) runs by hand and from the automerge evidence
+    // workflow, never as a vp task.
+    external: ["E2E_ACCESS_TOKEN", "E2E_BASE_URL"],
   },
   "packages/workshop-backend": {
     uncached: ["BUNDLED_BLUEPRINTS_DIR"],
@@ -101,10 +104,11 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "TESTS_WITH_TIMEOUT_MAX_SECONDS", "VITE_FRONTEND_ERROR_REPORTING",
     ],
     external: [
-      // The automerge producers (`automerge/proofs/`), run directly by their workflows.
+      // The automerge producers (`automerge/proofs/`, `automerge/evidence/`), run directly by their
+      // workflows.
       "AUTOMERGE_HEAD_REF", "AUTOMERGE_MUTATION_BUDGET_MINUTES", "AUTOMERGE_OUT_DIR", "AUTOMERGE_PR_AUTHOR",
-      "AUTOMERGE_TRIGGER_RUN_ATTEMPT", "AUTOMERGE_TRIGGER_RUN_ID", "PREVIEW_ACCESS_CLIENT_ID",
-      "PREVIEW_ACCESS_CLIENT_SECRET",
+      "AUTOMERGE_TRIGGER_RUN_ATTEMPT", "AUTOMERGE_TRIGGER_RUN_ID", "GITLAB_READ_TOKEN", "GITLAB_TRIGGER_TOKEN",
+      "PREVIEW_ACCESS_CLIENT_ID", "PREVIEW_ACCESS_CLIENT_SECRET", "SAMPLE_ASSIGNEE", "SAMPLE_NOW",
       "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",
       "CI_COMMIT_SHA", "CI_PIPELINE_IID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",

@@ -34,15 +34,22 @@ const DEADLINE_MS = 45 * 60 * 1000;
 /** Flows per viewport times viewports; fewer means the suite did not run every flow. */
 export const EXPECTED_TESTS = 10;
 
+/** Where the head's preview deploy stands. */
+export type PreviewRun = { state: "absent" } | { state: "pending" } | { state: "done"; id: number; conclusion: string };
+
+/** When a run's latest attempt started; a re-run makes an old run the newest. */
+function attemptStarted(run: JsonObject): number {
+  return Date.parse(asString(run.run_started_at ?? run.created_at, "run start"));
+}
+
 /** The preview deploy run for `headSha`, from a workflow-runs listing: the newest attempt wins. */
-export function previewRun(listing: Json, headSha: string, repository: string): { state: "pending" } | { state: "done"; id: number; conclusion: string } | { state: "absent" } {
+export function previewRun(listing: Json, headSha: string, repository: string): PreviewRun {
   const runs = asArray(asObject(listing, "workflow runs").workflow_runs, "workflow_runs")
     .map((run) => asObject(run, "run"))
     .filter((run) => run.path === PREVIEW_WORKFLOW && run.event === "pull_request" && run.head_sha === headSha &&
       isObject(run.head_repository) && run.head_repository.full_name === repository);
   if (runs.length === 0) return { state: "absent" };
-  const started = (run: JsonObject) => Date.parse(asString(run.run_started_at ?? run.created_at, "run start"));
-  const newest = runs.toSorted((a, b) => started(b) - started(a))[0];
+  const newest = runs.toSorted((a, b) => attemptStarted(b) - attemptStarted(a))[0];
   if (newest.status !== "completed") return { state: "pending" };
   return { state: "done", id: asNumber(newest.id, "run id"), conclusion: String(newest.conclusion) };
 }
