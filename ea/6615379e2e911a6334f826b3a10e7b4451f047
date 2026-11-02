@@ -1,0 +1,37 @@
+packages/workshop-shared/src/api.ts
+  s_dd2417a6d5bd82::t_616f1a5eea6c77 742
+  s_dd2417a6d5bd82::t_35ef5005329b6c 510-511,734-740,935-940,944-945,2364-2379,2807-2829,5977-5985,5993-5994,5996-5997,6036,6040-6041,6087-6109,6126-6141
+  s_dd2417a6d5bd82::t_a34a77f79c8801 6142
+  s_dd2417a6d5bd82::t_ec054d5fd16080 2825-2826
+  s_dd2417a6d5bd82::t_c897939231a154 510-511,735-740,935-940,944-945,2364-2366,2372-2379,2807-2811,2823-2824,2827-2829,5977-5985,5993-5994,5996-5997,6036,6040,6087-6109,6126-6131,6138-6141
+  s_dd2417a6d5bd82::t_fc4a3a8f2b7554 2367-2371
+  s_dd2417a6d5bd82::t_4ef009d446cc4f 2812-2815,2818-2822
+  s_dd2417a6d5bd82::t_a0eb5ce16de3b0 2816-2817
+  s_dd2417a6d5bd82::t_d3e3e62d3a7faa 6132-6134
+  s_dd2417a6d5bd82::t_fd531637d34340 6135-6137
+  s_0a52902bfbdd4c::t_b317d00e3cb428 6041,6142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ea6615379e2e911a6334f826b3a10e7b4451f047",
+  "prompts": {},
+  "sessions": {
+    "s_0a52902bfbdd4c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d505eba-5567-4f95-8b42-e45bd5269e15",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
