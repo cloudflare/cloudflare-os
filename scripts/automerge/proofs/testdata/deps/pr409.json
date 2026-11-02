@@ -1,0 +1,142 @@
+{
+  "pull_request": 409,
+  "base": "d4cc79501882b4eeb36d30df8a06edba0bd4a6f8",
+  "head": "0e80e07e17607b04e8cee03671753eba128904ad",
+  "recorded": "2026-11-02T17:22:36.481Z",
+  "now": "2026-09-01T11:50:34-05:00",
+  "commit_emails": [
+    "49699333+dependabot[bot]@users.noreply.github.com"
+  ],
+  "minimum_release_age_minutes": 1440,
+  "manifests": [
+    {
+      "path": "packages/gatekeeper-context/package.json",
+      "base": "{\n  \"name\": \"@gadgets/gatekeeper-context\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/index.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:app && wrangler deploy\",\n    \"typecheck:app\": \"tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json\",\n    \"build\": \"pnpm run typecheck:app && vp run --cache build:app && tsc\",\n    \"clean\": \"rm -rf dist src/generated\",\n    \"test:run\": \"vitest run && vitest run -c vitest.node.config.ts\"\n  },\n  \"dependencies\": {\n    \"@gadgets/backend-utils\": \"workspace:*\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/typed-storage\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"isomorphic-git\": \"^1.40.5\",\n    \"yaml\": \"^2.9.0\",\n    \"zod\": \"^4.4.3\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/kumo\": \"^2.9.2\",\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@codemirror/commands\": \"^6.10.4\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.2\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.12.4\",\n    \"@codemirror/state\": \"^6.7.1\",\n    \"@codemirror/view\": \"^6.43.8\",\n    \"@emoji-mart/data\": \"^1.2.1\",\n    \"@lezer/highlight\": \"^1.2.3\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@types/node\": \"26.1.0\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.4\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"emoji-mart\": \"^5.6.0\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"terser\": \"^5.49.2\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vite-plugin-singlefile\": \"^2.3.3\",\n    \"vite-plus\": \"catalog:\",\n    \"vite-tsconfig-paths\": \"^6.1.1\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/gatekeeper-context\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/index.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:app && wrangler deploy\",\n    \"typecheck:app\": \"tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json\",\n    \"build\": \"pnpm run typecheck:app && vp run --cache build:app && tsc\",\n    \"clean\": \"rm -rf dist src/generated\",\n    \"test:run\": \"vitest run && vitest run -c vitest.node.config.ts\"\n  },\n  \"dependencies\": {\n    \"@gadgets/backend-utils\": \"workspace:*\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/typed-storage\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"isomorphic-git\": \"^1.40.5\",\n    \"yaml\": \"^2.9.0\",\n    \"zod\": \"^4.4.3\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/kumo\": \"^2.12.0\",\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@codemirror/commands\": \"^6.10.4\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.2\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.12.4\",\n    \"@codemirror/state\": \"^6.7.1\",\n    \"@codemirror/view\": \"^6.43.8\",\n    \"@emoji-mart/data\": \"^1.2.1\",\n    \"@lezer/highlight\": \"^1.2.3\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@types/node\": \"26.1.0\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.5\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"emoji-mart\": \"^5.6.0\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"terser\": \"^5.49.2\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vite-plugin-singlefile\": \"^2.3.3\",\n    \"vite-plus\": \"catalog:\",\n    \"vite-tsconfig-paths\": \"^6.1.1\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n"
+    },
+    {
+      "path": "packages/gatekeeper-scheduler/package.json",
+      "base": "{\n  \"name\": \"@gadgets/gatekeeper-scheduler\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/index.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:app && wrangler deploy\",\n    \"typecheck:app\": \"tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json\",\n    \"build\": \"pnpm run typecheck:app && vp run --cache build:app && tsc\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run && vitest run -c vitest.app.config.ts\"\n  },\n  \"dependencies\": {\n    \"@gadgets/backend-utils\": \"workspace:*\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"temporal-polyfill\": \"1.0.2\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/kumo\": \"^2.9.2\",\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@types/node\": \"^26.1.0\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.4\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"jsdom\": \"^26.1.0\",\n    \"miniflare\": \"5.20260801.0-alpha\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"terser\": \"^5.49.2\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vite-plugin-singlefile\": \"^2.3.3\",\n    \"vite-plus\": \"catalog:\",\n    \"vite-tsconfig-paths\": \"^6.1.1\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/gatekeeper-scheduler\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/index.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:app && wrangler deploy\",\n    \"typecheck:app\": \"tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json\",\n    \"build\": \"pnpm run typecheck:app && vp run --cache build:app && tsc\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run && vitest run -c vitest.app.config.ts\"\n  },\n  \"dependencies\": {\n    \"@gadgets/backend-utils\": \"workspace:*\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"temporal-polyfill\": \"1.0.2\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/kumo\": \"^2.12.0\",\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@types/node\": \"^26.1.0\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.5\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"jsdom\": \"^26.1.0\",\n    \"miniflare\": \"5.20260801.0-alpha\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"terser\": \"^5.49.2\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vite-plugin-singlefile\": \"^2.3.3\",\n    \"vite-plus\": \"catalog:\",\n    \"vite-tsconfig-paths\": \"^6.1.1\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n"
+    },
+    {
+      "path": "packages/workshop-frontend/package.json",
+      "base": "{\n  \"name\": \"@gadgets/workshop-frontend\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"preview\": \"vite preview\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"@cloudflare/kumo\": \"^2.9.2\",\n    \"@codemirror/commands\": \"^6.10.4\",\n    \"@codemirror/lang-cpp\": \"^6.0.3\",\n    \"@codemirror/lang-css\": \"^6.3.1\",\n    \"@codemirror/lang-go\": \"^6.0.1\",\n    \"@codemirror/lang-html\": \"^6.4.12\",\n    \"@codemirror/lang-java\": \"^6.0.2\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.1\",\n    \"@codemirror/lang-python\": \"^6.2.1\",\n    \"@codemirror/lang-rust\": \"^6.0.2\",\n    \"@codemirror/lang-sql\": \"^6.10.0\",\n    \"@codemirror/lang-xml\": \"^6.1.0\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.12.4\",\n    \"@codemirror/legacy-modes\": \"^6.5.3\",\n    \"@codemirror/merge\": \"^6.12.2\",\n    \"@codemirror/search\": \"^6.7.1\",\n    \"@codemirror/state\": \"^6.7.1\",\n    \"@codemirror/view\": \"^6.43.7\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"@lezer/highlight\": \"^1.2.3\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@tanstack/react-router\": \"^1.170.23\",\n    \"capnweb\": \"catalog:\",\n    \"hash-wasm\": \"^4.12.0\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"vite-tsconfig-paths\": \"^6.1.1\"\n  },\n  \"devDependencies\": {\n    \"@tanstack/router-plugin\": \"^1.168.27\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.4\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"jsdom\": \"^26.1.0\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vitest\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/workshop-frontend\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"preview\": \"vite preview\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"@cloudflare/kumo\": \"^2.12.0\",\n    \"@codemirror/commands\": \"^6.10.4\",\n    \"@codemirror/lang-cpp\": \"^6.0.3\",\n    \"@codemirror/lang-css\": \"^6.3.1\",\n    \"@codemirror/lang-go\": \"^6.0.1\",\n    \"@codemirror/lang-html\": \"^6.4.12\",\n    \"@codemirror/lang-java\": \"^6.0.2\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.1\",\n    \"@codemirror/lang-python\": \"^6.2.1\",\n    \"@codemirror/lang-rust\": \"^6.0.2\",\n    \"@codemirror/lang-sql\": \"^6.10.0\",\n    \"@codemirror/lang-xml\": \"^6.1.0\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.12.4\",\n    \"@codemirror/legacy-modes\": \"^6.5.3\",\n    \"@codemirror/merge\": \"^6.12.2\",\n    \"@codemirror/search\": \"^6.7.1\",\n    \"@codemirror/state\": \"^6.7.1\",\n    \"@codemirror/view\": \"^6.43.7\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"@lezer/highlight\": \"^1.2.3\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@tanstack/react-router\": \"^1.170.32\",\n    \"capnweb\": \"catalog:\",\n    \"hash-wasm\": \"^4.12.0\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"vite-tsconfig-paths\": \"^6.1.1\"\n  },\n  \"devDependencies\": {\n    \"@tanstack/router-plugin\": \"^1.168.35\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.5\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"jsdom\": \"^26.1.0\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vitest\": \"catalog:\"\n  }\n}\n"
+    }
+  ],
+  "base_lock_names": [
+    "@cloudflare/kumo",
+    "@tanstack/react-router",
+    "@tanstack/router-core",
+    "@tanstack/router-generator",
+    "@tanstack/router-plugin",
+    "@types/react-dom",
+    "reselect",
+    "seroval",
+    "seroval-plugins"
+  ],
+  "published": {
+    "@cloudflare/kumo@2.12.0": "2026-08-20T19:43:47.974Z",
+    "@tanstack/react-router@1.170.32": "2026-08-22T23:00:20.558Z",
+    "@tanstack/router-core@1.171.27": "2026-08-22T22:59:19.757Z",
+    "@tanstack/router-generator@1.167.33": "2026-08-22T22:59:18.107Z",
+    "@tanstack/router-plugin@1.168.35": "2026-08-22T22:58:17.598Z",
+    "@types/react-dom@19.2.5": "2026-08-23T21:05:23.671Z",
+    "reselect@5.3.0": "2026-08-22T02:13:00.013Z",
+    "seroval-plugins@1.6.4": "2026-08-25T09:16:05.411Z",
+    "seroval@1.6.4": "2026-08-25T09:16:29.079Z"
+  },
+  "osv_queries": [
+    "@cloudflare/kumo@2.12.0",
+    "@tanstack/react-router@1.170.32",
+    "@tanstack/router-core@1.171.27",
+    "@tanstack/router-generator@1.167.33",
+    "@tanstack/router-plugin@1.168.35",
+    "@types/react-dom@19.2.5",
+    "reselect@5.3.0",
+    "seroval-plugins@1.6.4",
+    "seroval@1.6.4",
+    "@cloudflare/kumo@2.9.2",
+    "@tanstack/react-router@1.170.23",
+    "@tanstack/router-core@1.171.19",
+    "@tanstack/router-generator@1.167.25",
+    "@tanstack/router-plugin@1.168.27",
+    "@types/react-dom@19.2.4",
+    "reselect@5.2.0",
+    "seroval-plugins@1.6.2",
+    "seroval@1.6.2"
+  ],
+  "osv_response": {
+    "results": [
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {
+        "vulns": [
+          {
+            "id": "GHSA-7rv5-mrxv-xcr9",
+            "modified": "2026-10-28T21:30:03.899348Z"
+          },
+          {
+            "id": "GHSA-97r2-qh9m-474h",
+            "modified": "2026-10-28T21:30:06.799577Z"
+          },
+          {
+            "id": "GHSA-9wx9-5pv9-3349",
+            "modified": "2026-10-28T21:30:04.992414Z"
+          },
+          {
+            "id": "GHSA-f86p-h4j2-7qgj",
+            "modified": "2026-10-28T21:30:05.897308Z"
+          },
+          {
+            "id": "GHSA-wp97-x4hv-qvhp",
+            "modified": "2026-10-28T21:30:05.906685Z"
+          }
+        ]
+      },
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {
+        "vulns": [
+          {
+            "id": "GHSA-7rv5-mrxv-xcr9",
+            "modified": "2026-10-28T21:30:03.899348Z"
+          },
+          {
+            "id": "GHSA-97r2-qh9m-474h",
+            "modified": "2026-10-28T21:30:06.799577Z"
+          },
+          {
+            "id": "GHSA-9wx9-5pv9-3349",
+            "modified": "2026-10-28T21:30:04.992414Z"
+          },
+          {
+            "id": "GHSA-f86p-h4j2-7qgj",
+            "modified": "2026-10-28T21:30:05.897308Z"
+          },
+          {
+            "id": "GHSA-jp82-f5mq-hwhp",
+            "modified": "2026-10-05T23:45:07.431923Z"
+          },
+          {
+            "id": "GHSA-wp97-x4hv-qvhp",
+            "modified": "2026-10-28T21:30:05.906685Z"
+          }
+        ]
+      }
+    ]
+  }
+}

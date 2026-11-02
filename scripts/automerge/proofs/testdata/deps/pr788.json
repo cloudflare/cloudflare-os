@@ -1,0 +1,72 @@
+{
+  "pull_request": 788,
+  "base": "7ff076540134b567bc32458e6241bcc65d64deb9",
+  "head": "e82afa360804c3716506a580b2b54b05db130343",
+  "recorded": "2026-11-02T17:22:39.806Z",
+  "now": "2026-10-16T12:41:56-05:00",
+  "commit_emails": [
+    "49699333+dependabot[bot]@users.noreply.github.com"
+  ],
+  "minimum_release_age_minutes": 1440,
+  "manifests": [
+    {
+      "path": "packages/gatekeeper-context/package.json",
+      "base": "{\n  \"name\": \"@gadgets/gatekeeper-context\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/index.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:app && wrangler deploy\",\n    \"typecheck:app\": \"tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json\",\n    \"build\": \"pnpm run typecheck:app && vp run --cache build:app && tsc\",\n    \"clean\": \"rm -rf dist src/generated\",\n    \"test:run\": \"vitest run && vitest run -c vitest.node.config.ts\"\n  },\n  \"dependencies\": {\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/gatekeeper-kit\": \"workspace:*\",\n    \"@gadgets/observability\": \"workspace:*\",\n    \"@gadgets/typed-storage\": \"workspace:*\",\n    \"@gadgets/ui\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"isomorphic-git\": \"^1.42.2\",\n    \"yaml\": \"^2.9.1\",\n    \"zod\": \"catalog:\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/kumo\": \"^2.14.0\",\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@codemirror/commands\": \"^6.11.1\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.2\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.12.4\",\n    \"@codemirror/state\": \"^6.7.6\",\n    \"@codemirror/view\": \"^6.43.13\",\n    \"@emoji-mart/data\": \"^1.2.1\",\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"@lezer/highlight\": \"^1.2.4\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@types/node\": \"26.1.0\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.7\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"emoji-mart\": \"^5.6.0\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"terser\": \"^5.51.2\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vite-plugin-singlefile\": \"^2.3.3\",\n    \"vite-plus\": \"catalog:\",\n    \"vite-tsconfig-paths\": \"^6.1.1\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/gatekeeper-context\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/index.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:app && wrangler deploy\",\n    \"typecheck:app\": \"tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json\",\n    \"build\": \"pnpm run typecheck:app && vp run --cache build:app && tsc\",\n    \"clean\": \"rm -rf dist src/generated\",\n    \"test:run\": \"vitest run && vitest run -c vitest.node.config.ts\"\n  },\n  \"dependencies\": {\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/gatekeeper-kit\": \"workspace:*\",\n    \"@gadgets/observability\": \"workspace:*\",\n    \"@gadgets/typed-storage\": \"workspace:*\",\n    \"@gadgets/ui\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"isomorphic-git\": \"^1.42.2\",\n    \"yaml\": \"^2.9.1\",\n    \"zod\": \"catalog:\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/kumo\": \"^2.14.0\",\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@codemirror/commands\": \"^6.11.1\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.2\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.13.1\",\n    \"@codemirror/state\": \"^6.7.6\",\n    \"@codemirror/view\": \"^6.43.14\",\n    \"@emoji-mart/data\": \"^1.2.1\",\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"@lezer/highlight\": \"^1.2.5\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@types/node\": \"26.1.0\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.7\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"emoji-mart\": \"^5.6.0\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"terser\": \"^5.51.2\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vite-plugin-singlefile\": \"^2.3.3\",\n    \"vite-plus\": \"catalog:\",\n    \"vite-tsconfig-paths\": \"^6.1.1\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n"
+    },
+    {
+      "path": "packages/workshop-frontend/package.json",
+      "base": "{\n  \"name\": \"@gadgets/workshop-frontend\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"preview\": \"vite preview\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\",\n    \"test:run:browser\": \"vitest run -c vitest.browser.config.ts\"\n  },\n  \"dependencies\": {\n    \"@cloudflare/kumo\": \"^2.14.0\",\n    \"@codemirror/commands\": \"^6.11.1\",\n    \"@codemirror/lang-cpp\": \"^6.0.3\",\n    \"@codemirror/lang-css\": \"^6.3.1\",\n    \"@codemirror/lang-go\": \"^6.0.1\",\n    \"@codemirror/lang-html\": \"^6.4.12\",\n    \"@codemirror/lang-java\": \"^6.0.2\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.1\",\n    \"@codemirror/lang-python\": \"^6.2.1\",\n    \"@codemirror/lang-rust\": \"^6.0.2\",\n    \"@codemirror/lang-sql\": \"^6.10.0\",\n    \"@codemirror/lang-xml\": \"^6.1.0\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.12.4\",\n    \"@codemirror/legacy-modes\": \"^6.5.4\",\n    \"@codemirror/merge\": \"^6.12.2\",\n    \"@codemirror/search\": \"^6.7.2\",\n    \"@codemirror/state\": \"^6.7.6\",\n    \"@codemirror/view\": \"^6.43.13\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"@lezer/highlight\": \"^1.2.4\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@tanstack/react-router\": \"^1.170.39\",\n    \"capnweb\": \"catalog:\",\n    \"hash-wasm\": \"^4.12.0\",\n    \"motion\": \"^13.4.3\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"vite-tsconfig-paths\": \"^6.1.1\"\n  },\n  \"devDependencies\": {\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"@tanstack/router-plugin\": \"^1.168.40\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.7\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"@vitest/browser-playwright\": \"catalog:\",\n    \"jsdom\": \"^26.1.0\",\n    \"playwright\": \"catalog:\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vitest\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/workshop-frontend\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"preview\": \"vite preview\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\",\n    \"test:run:browser\": \"vitest run -c vitest.browser.config.ts\"\n  },\n  \"dependencies\": {\n    \"@cloudflare/kumo\": \"^2.14.0\",\n    \"@codemirror/commands\": \"^6.11.1\",\n    \"@codemirror/lang-cpp\": \"^6.0.3\",\n    \"@codemirror/lang-css\": \"^6.3.1\",\n    \"@codemirror/lang-go\": \"^6.0.1\",\n    \"@codemirror/lang-html\": \"^6.4.12\",\n    \"@codemirror/lang-java\": \"^6.0.2\",\n    \"@codemirror/lang-javascript\": \"^6.2.5\",\n    \"@codemirror/lang-json\": \"^6.0.2\",\n    \"@codemirror/lang-markdown\": \"^6.5.1\",\n    \"@codemirror/lang-python\": \"^6.2.1\",\n    \"@codemirror/lang-rust\": \"^6.0.2\",\n    \"@codemirror/lang-sql\": \"^6.10.0\",\n    \"@codemirror/lang-xml\": \"^6.1.0\",\n    \"@codemirror/lang-yaml\": \"^6.1.3\",\n    \"@codemirror/language\": \"^6.13.1\",\n    \"@codemirror/legacy-modes\": \"^6.5.5\",\n    \"@codemirror/merge\": \"^6.12.2\",\n    \"@codemirror/search\": \"^6.7.2\",\n    \"@codemirror/state\": \"^6.7.6\",\n    \"@codemirror/view\": \"^6.43.14\",\n    \"@gadgets/error-reporting\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"@lezer/highlight\": \"^1.2.5\",\n    \"@phosphor-icons/react\": \"^2.1.10\",\n    \"@tailwindcss/vite\": \"^4.3.3\",\n    \"@tanstack/react-router\": \"^1.170.39\",\n    \"capnweb\": \"catalog:\",\n    \"hash-wasm\": \"^4.12.0\",\n    \"motion\": \"^13.4.3\",\n    \"react\": \"^19.2.8\",\n    \"react-dom\": \"^19.2.8\",\n    \"react-markdown\": \"^10.1.0\",\n    \"remark-gfm\": \"^4.0.1\",\n    \"tailwindcss\": \"^4.3.3\",\n    \"vite-tsconfig-paths\": \"^6.1.1\"\n  },\n  \"devDependencies\": {\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"@tanstack/router-plugin\": \"^1.168.40\",\n    \"@types/react\": \"^19.2.18\",\n    \"@types/react-dom\": \"^19.2.7\",\n    \"@vitejs/plugin-react\": \"^5.2.0\",\n    \"@vitest/browser-playwright\": \"catalog:\",\n    \"jsdom\": \"^26.1.0\",\n    \"playwright\": \"catalog:\",\n    \"typescript\": \"catalog:\",\n    \"vite\": \"catalog:\",\n    \"vitest\": \"catalog:\"\n  }\n}\n"
+    }
+  ],
+  "base_lock_names": [
+    "@codemirror/language",
+    "@codemirror/legacy-modes",
+    "@codemirror/view",
+    "@lezer/common",
+    "@lezer/highlight",
+    "@lezer/lr"
+  ],
+  "published": {
+    "@codemirror/language@6.13.1": "2026-10-07T13:20:36.281Z",
+    "@codemirror/legacy-modes@6.5.5": "2026-10-07T11:24:38.609Z",
+    "@codemirror/streamparser@6.0.0": "2026-10-07T11:22:03.574Z",
+    "@codemirror/view@6.43.14": "2026-10-07T11:24:16.597Z",
+    "@lezer/common@1.5.3": "2026-09-24T15:50:14.097Z",
+    "@lezer/highlight@1.2.5": "2026-09-28T06:38:18.133Z",
+    "@lezer/lr@1.4.11": "2026-10-07T11:40:01.659Z"
+  },
+  "osv_queries": [
+    "@codemirror/language@6.13.1",
+    "@codemirror/legacy-modes@6.5.5",
+    "@codemirror/streamparser@6.0.0",
+    "@codemirror/view@6.43.14",
+    "@lezer/common@1.5.3",
+    "@lezer/highlight@1.2.5",
+    "@lezer/lr@1.4.11",
+    "@codemirror/language@6.12.4",
+    "@codemirror/legacy-modes@6.5.4",
+    "@codemirror/view@6.43.13",
+    "@lezer/common@1.5.2",
+    "@lezer/highlight@1.2.4",
+    "@lezer/lr@1.4.10"
+  ],
+  "osv_response": {
+    "results": [
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {}
+    ]
+  }
+}

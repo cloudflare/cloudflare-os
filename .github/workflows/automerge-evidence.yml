@@ -1,0 +1,134 @@
+name: Automerge evidence
+
+# Producers that build or run the pull request's code (BUILD-PLAN.md, trust model). Each job writes
+# one `automerge-<name>` artifact (scripts/automerge/proofs/artifact.ts) for the risk-review gate,
+# which binds it to this file, the `pull_request` event, the head SHA and the newest attempt.
+#
+# No job here holds a secret or posts a check. Head code runs in every job, so any job could upload
+# an artifact under any name in this run; that is why the proofs that judge untrusted dependency
+# code run in automerge-proofs.yml, where nothing from the head executes. What this run produces
+# rests on the author being a maintainer (threat model, rule 7).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: automerge-evidence-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24.19.0"
+
+jobs:
+  # Builds the release (scripts/release/build-release.ts) at the merge base and at head and
+  # compares the manifests. A Dependabot pull request's head build is also the bundle preview.yml's
+  # bot path deploys, so it is uploaded for that.
+  equivalence:
+    name: Release equivalence
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out the head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      - name: Build the head release
+        continue-on-error: true
+        run: |
+          pnpm build
+          node scripts/release/build-release.ts --out "$RUNNER_TEMP/release-head" --release-id automerge-head
+
+      - name: Build the merge-base release
+        continue-on-error: true
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "$(git merge-base "$AUTOMERGE_BASE_SHA" "$AUTOMERGE_HEAD_SHA")"
+          cd "$RUNNER_TEMP/base"
+          pnpm install --frozen-lockfile
+          pnpm build
+          node scripts/release/build-release.ts --out "$RUNNER_TEMP/release-base" --release-id automerge-base
+
+      - name: proof-equivalence
+        if: ${{ !cancelled() }}
+        run: >-
+          node scripts/automerge/proofs/equivalence.ts
+          --base "$RUNNER_TEMP/release-base/manifest.json"
+          --head "$RUNNER_TEMP/release-head/manifest.json"
+
+      - name: Upload proof-equivalence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-proof-equivalence
+          path: automerge-out/automerge-proof-equivalence.json
+          if-no-files-found: error
+
+      - name: Upload the bot-preview bundle
+        if: ${{ !cancelled() && github.event.pull_request.user.login == 'dependabot[bot]' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-bot-preview-release
+          path: ${{ runner.temp }}/release-head
+          if-no-files-found: error
+          retention-days: 7
+
+  # A test-only pull request's tests kill at least the mutants the base tests killed.
+  tests:
+    name: Test-only mutation proof
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out the head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      - name: proof-tests
+        run: node scripts/automerge/proofs/tests.ts
+
+      - name: Upload proof-tests
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-proof-tests
+          path: automerge-out/automerge-proof-tests.json
+          if-no-files-found: error

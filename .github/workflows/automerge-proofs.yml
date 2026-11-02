@@ -1,0 +1,92 @@
+name: Automerge proofs
+
+# Rung 1 proofs that read the pull request's diff and never execute its code (BUILD-PLAN.md, trust
+# model). Each job writes one `automerge-<name>` artifact (scripts/automerge/proofs/artifact.ts);
+# the risk-review gate reads them, binding each to this file, the `pull_request` event, the head SHA
+# and the newest attempt. Nothing here posts a check or holds a secret.
+#
+# The jobs check out the pull request's BASE and run the base's scripts; the head commit arrives as
+# objects only. A job that ran head code could upload an artifact under any name in its run, so
+# proofs that judge untrusted dependencies stay in a run where no head code executes. The proofs
+# that must build or test head code live in automerge-evidence.yml instead.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: automerge-proofs-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24.19.0"
+
+jobs:
+  proofs:
+    name: Rung 1 proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      AUTOMERGE_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      AUTOMERGE_HEAD_REF: ${{ github.head_ref }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # Full history: the proofs diff from the merge base, and the base can be well behind main.
+      - name: Check out the base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Objects only: nothing from the head is checked out or run.
+      - name: Fetch the head commit
+        run: |
+          git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$AUTOMERGE_HEAD_SHA"
+
+      - name: Set up Node.js
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: false
+
+      # Each producer writes its artifact even when it cannot decide (status `error`), and exits
+      # non-zero only when it cannot write one.
+      - name: proof-deps
+        run: node scripts/automerge/proofs/deps.ts
+      - name: proof-actions
+        if: ${{ !cancelled() }}
+        run: node scripts/automerge/proofs/actions.ts
+      - name: proof-migrations
+        if: ${{ !cancelled() }}
+        run: node scripts/automerge/proofs/migrations.ts
+
+      - name: Upload proof-deps
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-proof-deps
+          path: automerge-out/automerge-proof-deps.json
+          if-no-files-found: error
+      - name: Upload proof-actions
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-proof-actions
+          path: automerge-out/automerge-proof-actions.json
+          if-no-files-found: error
+      - name: Upload proof-migrations
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-proof-migrations
+          path: automerge-out/automerge-proof-migrations.json
+          if-no-files-found: error

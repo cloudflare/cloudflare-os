@@ -1,0 +1,49 @@
+{
+  "pull_request": 216,
+  "base": "ba4036b9366070a5d396b1bf76bc62b4fb50c9ab",
+  "head": "3b2c4b8bf271354f61c3ccfc6b7c900779a19509",
+  "recorded": "2026-11-02T17:22:43.688Z",
+  "now": "2026-08-15T11:33:49-05:00",
+  "commit_emails": [
+    "49699333+dependabot[bot]@users.noreply.github.com"
+  ],
+  "minimum_release_age_minutes": 1440,
+  "manifests": [
+    {
+      "path": "packages/backend-utils/package.json",
+      "base": "{\n  \"name\": \"@gadgets/backend-utils\",\n  \"version\": \"1.0.0\",\n  \"description\": \"Shared Worker-side libraries; not a standalone deployable Worker.\",\n  \"type\": \"module\",\n  \"exports\": {\n    \"./logger\": {\n      \"types\": \"./src/logger.ts\",\n      \"import\": \"./src/logger.ts\"\n    },\n    \"./observability-context\": {\n      \"types\": \"./src/observability-context.ts\",\n      \"import\": \"./src/observability-context.ts\"\n    },\n    \"./tracing\": {\n      \"types\": \"./src/tracing.ts\",\n      \"import\": \"./src/tracing.ts\"\n    },\n    \"./error-reporting\": {\n      \"types\": \"./src/error-reporting.ts\",\n      \"import\": \"./src/error-reporting.ts\"\n    }\n  },\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"dependencies\": {\n    \"@gadgets/error-reporting\": \"workspace:*\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@cloudflare/workers-types\": \"^5.20260722.1\",\n    \"vitest\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/backend-utils\",\n  \"version\": \"1.0.0\",\n  \"description\": \"Shared Worker-side libraries; not a standalone deployable Worker.\",\n  \"type\": \"module\",\n  \"exports\": {\n    \"./logger\": {\n      \"types\": \"./src/logger.ts\",\n      \"import\": \"./src/logger.ts\"\n    },\n    \"./observability-context\": {\n      \"types\": \"./src/observability-context.ts\",\n      \"import\": \"./src/observability-context.ts\"\n    },\n    \"./tracing\": {\n      \"types\": \"./src/tracing.ts\",\n      \"import\": \"./src/tracing.ts\"\n    },\n    \"./error-reporting\": {\n      \"types\": \"./src/error-reporting.ts\",\n      \"import\": \"./src/error-reporting.ts\"\n    }\n  },\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"dependencies\": {\n    \"@gadgets/error-reporting\": \"workspace:*\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@cloudflare/workers-types\": \"^5.20260808.1\",\n    \"vitest\": \"catalog:\"\n  }\n}\n"
+    },
+    {
+      "path": "packages/integration-tests/package.json",
+      "base": "{\n  \"name\": \"@gadgets/integration-tests\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"exports\": {\n    \"./harness\": \"./src/harness.ts\",\n    \"./network-interceptor\": \"./src/network-interceptor.ts\",\n    \"./rpc-client\": \"./src/rpc-client.ts\"\n  },\n  \"scripts\": {\n    \"build\": \"tsc --noEmit\",\n    \"test:run\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"dependencies\": {\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"jsonc-parser\": \"^3.3.1\",\n    \"zod\": \"^4.4.3\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/workers-types\": \"^5.20260722.1\",\n    \"@types/node\": \"^26.1.0\",\n    \"typescript\": \"catalog:\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/integration-tests\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"exports\": {\n    \"./harness\": \"./src/harness.ts\",\n    \"./network-interceptor\": \"./src/network-interceptor.ts\",\n    \"./rpc-client\": \"./src/rpc-client.ts\"\n  },\n  \"scripts\": {\n    \"build\": \"tsc --noEmit\",\n    \"test:run\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"dependencies\": {\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"jsonc-parser\": \"^3.3.1\",\n    \"zod\": \"^4.4.3\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/workers-types\": \"^5.20260808.1\",\n    \"@types/node\": \"^26.1.0\",\n    \"typescript\": \"catalog:\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n"
+    },
+    {
+      "path": "packages/typed-storage/package.json",
+      "base": "{\n  \"name\": \"@gadgets/typed-storage\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"dist/index.js\",\n  \"types\": \"dist/index.d.ts\",\n  \"exports\": {\n    \".\": {\n      \"types\": \"./dist/index.d.ts\",\n      \"import\": \"./dist/index.js\"\n    }\n  },\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"build:watch\": \"tsc --watch\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@cloudflare/workers-types\": \"^5.20260722.1\",\n    \"vitest\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/typed-storage\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"dist/index.js\",\n  \"types\": \"dist/index.d.ts\",\n  \"exports\": {\n    \".\": {\n      \"types\": \"./dist/index.d.ts\",\n      \"import\": \"./dist/index.js\"\n    }\n  },\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"build:watch\": \"tsc --watch\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"devDependencies\": {\n    \"@cloudflare/vitest-pool-workers\": \"catalog:\",\n    \"@cloudflare/workers-types\": \"^5.20260808.1\",\n    \"vitest\": \"catalog:\"\n  }\n}\n"
+    },
+    {
+      "path": "packages/workshop-shared/package.json",
+      "base": "{\n  \"name\": \"@gadgets/workshop-shared\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"exports\": {\n    \"./api\": {\n      \"types\": \"./src/api.ts\",\n      \"import\": \"./src/api.ts\"\n    },\n    \"./feature-flags\": {\n      \"types\": \"./src/feature-flags.ts\",\n      \"import\": \"./src/feature-flags.ts\"\n    },\n    \"./gatekeeper\": {\n      \"types\": \"./src/gatekeeper.ts\",\n      \"import\": \"./src/gatekeeper.ts\"\n    },\n    \"./cloudflare-gatekeeper\": {\n      \"types\": \"./src/cloudflare-gatekeeper.ts\",\n      \"import\": \"./src/cloudflare-gatekeeper.ts\"\n    },\n    \"./limits\": {\n      \"types\": \"./src/limits.ts\",\n      \"import\": \"./src/limits.ts\"\n    },\n    \"./external-message-gateway\": {\n      \"types\": \"./src/external-message-gateway.ts\",\n      \"import\": \"./src/external-message-gateway.ts\"\n    },\n    \"./theme\": {\n      \"types\": \"./src/theme.ts\",\n      \"import\": \"./src/theme.ts\"\n    }\n  },\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"dev\": \"tsc --watch\",\n    \"clean\": \"rm -rf dist\"\n  },\n  \"dependencies\": {\n    \"@cloudflare/workers-types\": \"^5.20260722.1\",\n    \"capnweb\": \"catalog:\"\n  },\n  \"devDependencies\": {\n    \"typescript\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/workshop-shared\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"exports\": {\n    \"./api\": {\n      \"types\": \"./src/api.ts\",\n      \"import\": \"./src/api.ts\"\n    },\n    \"./feature-flags\": {\n      \"types\": \"./src/feature-flags.ts\",\n      \"import\": \"./src/feature-flags.ts\"\n    },\n    \"./gatekeeper\": {\n      \"types\": \"./src/gatekeeper.ts\",\n      \"import\": \"./src/gatekeeper.ts\"\n    },\n    \"./cloudflare-gatekeeper\": {\n      \"types\": \"./src/cloudflare-gatekeeper.ts\",\n      \"import\": \"./src/cloudflare-gatekeeper.ts\"\n    },\n    \"./limits\": {\n      \"types\": \"./src/limits.ts\",\n      \"import\": \"./src/limits.ts\"\n    },\n    \"./external-message-gateway\": {\n      \"types\": \"./src/external-message-gateway.ts\",\n      \"import\": \"./src/external-message-gateway.ts\"\n    },\n    \"./theme\": {\n      \"types\": \"./src/theme.ts\",\n      \"import\": \"./src/theme.ts\"\n    }\n  },\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"dev\": \"tsc --watch\",\n    \"clean\": \"rm -rf dist\"\n  },\n  \"dependencies\": {\n    \"@cloudflare/workers-types\": \"^5.20260808.1\",\n    \"capnweb\": \"catalog:\"\n  },\n  \"devDependencies\": {\n    \"typescript\": \"catalog:\"\n  }\n}\n"
+    }
+  ],
+  "base_lock_names": [
+    "@cloudflare/workers-types"
+  ],
+  "published": {
+    "@cloudflare/workers-types@5.20260808.1": "2026-08-08T00:58:45.101Z"
+  },
+  "osv_queries": [
+    "@cloudflare/workers-types@5.20260808.1",
+    "@cloudflare/workers-types@5.20260804.1"
+  ],
+  "osv_response": {
+    "results": [
+      {},
+      {}
+    ]
+  }
+}
