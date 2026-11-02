@@ -18,31 +18,36 @@ export interface Producer {
   workflow: string;
   /**
    * Also accept a `workflow_run` run of `workflow` on the default branch, which runs `main`'s
-   * definition. Its artifact name carries the pull request's head SHA, since the run's own head is
-   * `main`'s.
+   * definition when this workflow's run on the head finishes. Its artifact name carries the pull
+   * request's head SHA, since the run's own head is `main`'s, and it must have been created after
+   * that run's latest attempt started: a newer trigger run with no follow-up means the follow-up
+   * failed or has not run, so the input is absent.
    */
-  viaWorkflowRun?: true;
+  triggeredBy?: string;
 }
 
 const VERDICTS = ".github/workflows/review-verdict.yml";
+/** Proofs that run no pull request code, so nothing in the head can write their artifacts. */
+const PROOFS = ".github/workflows/automerge-proofs.yml";
+/** Producers that build or run the head; their artifacts rest on a maintainer author. */
 const EVIDENCE = ".github/workflows/automerge-evidence.yml";
 
 /** Every producer the gate reads, by name. The artifact is `automerge-<name>`. */
 export const PRODUCERS = {
   sol: { kind: "verdict", workflow: VERDICTS },
   opus: { kind: "verdict", workflow: VERDICTS },
-  "proof-deps": { kind: "proof", workflow: EVIDENCE },
-  "proof-actions": { kind: "proof", workflow: EVIDENCE },
-  "proof-migrations": { kind: "proof", workflow: EVIDENCE },
+  "proof-deps": { kind: "proof", workflow: PROOFS },
+  "proof-actions": { kind: "proof", workflow: PROOFS },
+  "proof-migrations": { kind: "proof", workflow: PROOFS },
   "proof-equivalence": { kind: "proof", workflow: EVIDENCE },
   "proof-tests": { kind: "proof", workflow: EVIDENCE },
   "evidence-deploy-dry-run": { kind: "evidence", workflow: EVIDENCE },
-  "evidence-eval": { kind: "evidence", workflow: EVIDENCE },
+  "evidence-eval": { kind: "evidence", workflow: ".github/workflows/workshop-evals-pr.yml" },
   "evidence-consumer-build": { kind: "evidence", workflow: EVIDENCE },
   "evidence-preview-e2e": { kind: "evidence", workflow: EVIDENCE },
   "evidence-mutation": { kind: "evidence", workflow: EVIDENCE },
   "evidence-red-green": { kind: "evidence", workflow: EVIDENCE },
-  "preview-smoke": { kind: "evidence", workflow: ".github/workflows/preview.yml", viaWorkflowRun: true },
+  "preview-smoke": { kind: "evidence", workflow: ".github/workflows/preview.yml", triggeredBy: EVIDENCE },
 } as const satisfies Record<string, Producer>;
 
 /** A producer's name. */
@@ -127,7 +132,8 @@ function parseFinding(value: Json): Finding | undefined {
   return { severity, title, path, line };
 }
 
-function parseFingerprint(value: Json | undefined): Fingerprint | undefined {
+/** Parses a reviewer fingerprint, or returns `undefined` when any field is missing. */
+export function parseFingerprint(value: Json | undefined): Fingerprint | undefined {
   const fingerprint = asObject(value);
   const { model, opencode, review_md, prompt } = fingerprint ?? {};
   if (typeof model !== "string" || typeof opencode !== "string") return undefined;
@@ -218,38 +224,58 @@ export interface Artifact {
   workflow_run?: { id?: number } | null;
 }
 
-/** The newest run wins, even when it failed: an older success never stands in for it. */
+/** When a run's latest attempt started; re-running an old run makes it the newest. */
+export function attemptStarted(run: WorkflowRun): number {
+  return Date.parse(run.run_started_at ?? run.created_at);
+}
+
+/** The run whose latest attempt started last wins, even when it failed: an older success never stands in for it. */
 export function newestRun<T extends WorkflowRun>(runs: T[]): T | undefined {
   return runs.reduce<T | undefined>(
     (newest, run) =>
-      !newest || Date.parse(run.created_at) > Date.parse(newest.created_at) ||
-        (run.created_at === newest.created_at && run.id > newest.id)
+      !newest || attemptStarted(run) > attemptStarted(newest) ||
+        (attemptStarted(run) === attemptStarted(newest) && run.id > newest.id)
         ? run
         : newest,
     undefined,
   );
 }
 
+/** What a producer's run must match: the producer, the pull request's head, this repository and its default branch. */
+export interface BindingExpectation {
+  producer: Producer;
+  headSha: string;
+  repository: string;
+  defaultBranch: string;
+}
+
 /**
- * Checks that a run may publish a producer's artifact for this head: from this repository, from the
- * expected workflow file, by the expected event, finished and successful in its latest attempt.
+ * Checks that a run is one of the producer's own: from this repository, from the expected workflow
+ * file, by the expected event, on the head (or, for a follow-up run, on the default branch). Only
+ * such runs compete to be the newest, so an unrelated run cannot mask the producer's.
  *
- * @returns Why the run is rejected, or `undefined` when it is bound.
+ * @returns Why the run is not the producer's, or `undefined` when it is.
  */
-export function bindingError(
-  run: WorkflowRun,
-  expected: { producer: Producer; headSha: string; repository: string; defaultBranch: string },
-): string | undefined {
+export function identityError(run: WorkflowRun, expected: BindingExpectation): string | undefined {
   const { producer, headSha, repository, defaultBranch } = expected;
   if (run.path !== producer.workflow) return `ran from ${run.path}, not ${producer.workflow}`;
   if (run.head_repository?.full_name !== repository) return "ran from another repository";
-  if (run.event === "pull_request") {
-    if (run.head_sha !== headSha) return "ran on another head commit";
-  } else if (run.event === "workflow_run" && producer.viaWorkflowRun) {
-    if (run.head_branch !== defaultBranch) return `ran on ${run.head_branch ?? "no branch"}, not ${defaultBranch}`;
-  } else {
-    return `ran on ${run.event}`;
+  if (run.event === "pull_request") return run.head_sha === headSha ? undefined : "ran on another head commit";
+  if (run.event === "workflow_run" && producer.triggeredBy !== undefined) {
+    return run.head_branch === defaultBranch ? undefined : `ran on ${run.head_branch ?? "no branch"}, not ${defaultBranch}`;
   }
+  return `ran on ${run.event}`;
+}
+
+/**
+ * Checks that a run may publish a producer's artifact for this head: it is the producer's own
+ * ({@link identityError}), and its latest attempt finished successfully.
+ *
+ * @returns Why the run is rejected, or `undefined` when it is bound.
+ */
+export function bindingError(run: WorkflowRun, expected: BindingExpectation): string | undefined {
+  const identity = identityError(run, expected);
+  if (identity) return identity;
   if (run.status !== "completed") return "still running";
   if (run.conclusion !== "success") return `concluded ${run.conclusion ?? "without a result"}`;
   return undefined;

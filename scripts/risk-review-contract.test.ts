@@ -116,6 +116,12 @@ describe("bindingError", () => {
 });
 
 describe("newestRun", () => {
+  it("lets a re-run of an older run beat a newer run's success", () => {
+    const older = { ...recorded, id: 1, created_at: "2026-11-02T10:00:00Z", run_started_at: "2026-11-02T12:00:00Z", conclusion: "failure" };
+    const newer = { ...recorded, id: 2, created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z", conclusion: "success" };
+    assert.equal(newestRun([newer, older])?.id, 1);
+  });
+
   it("lets a newer failed run beat an older success", () => {
     const older = { ...recorded, id: 1, created_at: "2026-11-02T15:00:00Z", conclusion: "success" };
     const newer = { ...recorded, id: 2, created_at: "2026-11-02T16:00:00Z", conclusion: "failure" };

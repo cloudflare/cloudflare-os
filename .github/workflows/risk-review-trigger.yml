@@ -1,8 +1,10 @@
 name: Risk review trigger
 
-# Relays pull request, review and review-comment events to risk-review.yml, which decides again from
-# the default branch through `workflow_run`. These events run the pull request's own copy of this
-# file, so it holds no permissions and does nothing, and a pull request can change or delete it.
+# Relays pull request, review, review-comment and merge group events to risk-review.yml, which
+# decides again from the default branch through `workflow_run`. These events run the pull request's
+# (or the merge group's) own copy of this file, so it holds no permissions and does nothing, and a
+# pull request can change or delete it; a merge group whose relay never runs never gets its required
+# check, so it cannot merge.
 # A pull request that breaks it leaves its check stale until a producer run or a maintainer comment
 # wakes the gate, and a revoked approval or a new review hold may not refresh it at all. The merge
 # group backstops that: the gate decides every queued pull request again, from current reviews,
@@ -16,6 +18,8 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, deleted]
+  merge_group:
+    types: [checks_requested]
 
 permissions: {}
 

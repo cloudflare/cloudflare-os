@@ -31,7 +31,7 @@ function summaryFor(number: number): string {
   const inputs: PullInputs = {
     pull: { number, node_id: "PR_1", state: "open", user: { login: "kentonv", type: "User" }, head: { sha: HEAD }, base: { sha: BASE, ref: "main" }, changed_files: 1 },
     files: [{ filename: "docs/automerge.md", status: "modified", additions: 1, deletions: 1, changes: 2 }],
-    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] },
+    facts: { workspaceCatalogOnly: true, newDependencies: [] },
     reviews: [],
     comments: [],
     lastPush: "2026-11-02T10:00:00Z",

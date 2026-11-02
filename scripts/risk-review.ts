@@ -5,9 +5,11 @@
 // The gate posts the one `risk-review` check run on each pull request head and merge group, as the
 // risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts, rung 1
 // proofs, band evidence) run on `pull_request`, write one artifact each, and post nothing; the gate
-// reads those artifacts only from runs bound to the head (risk-review-contract.ts). It runs from
-// `main`'s definition, through `workflow_run`, `issue_comment` and `merge_group`, and reads every
-// policy file from the base branch, so a pull request cannot rewrite its own gate.
+// reads those artifacts only from runs bound to the head (risk-review-contract.ts). It runs only
+// from `main`'s definition, through `workflow_run` and `issue_comment`; merge groups reach it
+// through the relay's `workflow_run`, and a merge group is accepted only when the merge queue lists
+// its commit. It reads every policy file from the base branch, so a pull request cannot rewrite its
+// own gate.
 //
 // What it decides, per pull request (rules in risk-review-policy.ts):
 //
@@ -37,7 +39,6 @@ import {
   isCatalogVersionBump,
   asObject,
   classifyChangeset,
-  countDeletedClasses,
   needsContents,
   parseEscapeSnapshot,
   parseJson,
@@ -54,13 +55,17 @@ import {
 import {
   PRODUCERS,
   VERDICT_NAMES,
+  attemptStarted,
   bindingError,
+  identityError,
   isProducerName,
   newestRun,
+  parseFingerprint,
   parseProducerArtifact,
   pickArtifact,
   readArtifactFile,
   type Artifact,
+  type BindingExpectation,
   type Fingerprint,
   type ProducerInput,
   type ProducerName,
@@ -88,7 +93,8 @@ const PER_PAGE = 100;
 const DEPENDABOT = "dependabot[bot]";
 
 /** Rung 1 proofs a maintainer's pull request may qualify through. */
-const PROOFS = ["proof-deps", "proof-actions", "proof-migrations", "proof-equivalence", "proof-tests"] as const;
+// `proof-actions` is not here: every Actions bump touches `.github/**`, which always needs a person.
+const PROOFS = ["proof-deps", "proof-migrations", "proof-equivalence", "proof-tests"] as const;
 
 /** What the check run reports. */
 export type Mode = "shadow" | "enforce";
@@ -134,26 +140,24 @@ function parseBandRule(value: Json | undefined, area: Area): BandRule | string {
   if (threshold !== null && (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 0 || threshold > 10)) {
     return "threshold is not null or an integer from 0 to 10";
   }
-  const names = Array.isArray(evidence) ? evidence.filter((name) => typeof name === "string" && isProducerName(name)) : [];
-  if (!Array.isArray(evidence) || names.length !== evidence.length) return "evidence is not a list of producer names";
+  if (!Array.isArray(evidence)) return "evidence is not a list";
+  const names = evidence.flatMap((name) => (typeof name === "string" && isProducerName(name) ? [name] : []));
+  if (names.length !== evidence.length) return "evidence names an unknown producer";
   let reviewerFingerprint: BandRule["reviewerFingerprint"] = null;
   if (reviewer_fingerprint !== null) {
     const object = asObject(reviewer_fingerprint);
     if (!object) return "reviewer_fingerprint is not null or an object";
     reviewerFingerprint = {};
     for (const name of VERDICT_NAMES) {
-      const print = asObject(object[name]);
-      const { model, opencode, review_md, prompt } = print ?? {};
-      if (typeof model !== "string" || typeof opencode !== "string" || typeof review_md !== "string" || typeof prompt !== "string") {
-        return `reviewer_fingerprint.${name} is malformed`;
-      }
-      reviewerFingerprint[name] = { model, opencode, review_md, prompt };
+      const print = parseFingerprint(object[name]);
+      if (!print) return `reviewer_fingerprint.${name} is malformed`;
+      reviewerFingerprint[name] = print;
     }
   }
   if (open && area !== "proven" && (threshold === null || reviewerFingerprint === null)) {
     return "an open AI-scored band needs a threshold and a reviewer fingerprint";
   }
-  return { open, threshold, reviewerFingerprint, evidence: names.filter((name) => isProducerName(name)) };
+  return { open, threshold, reviewerFingerprint, evidence: names };
 }
 
 function closedBecause(problem: string): { config: BandsConfig; problem: string } {
@@ -373,8 +377,15 @@ function mergeRuleFailures(area: Area, band: Band, inputs: PullInputs, rule: Ban
         continue;
       }
       const { artifact } = input;
-      if (artifact.kind !== "verdict") continue;
+      if (artifact.kind !== "verdict") {
+        reasons.push(`${name} is not a verdict`);
+        continue;
+      }
       if (artifact.status !== "ok") reasons.push(`${name} verdict status is ${artifact.status}`);
+      // A diff-only re-review did not look again at what earlier rounds found.
+      if (artifact.review_from_sha !== null) {
+        reasons.push(`${name} reviewed only the diff since ${artifact.review_from_sha.slice(0, 7)}`);
+      }
       const pinned = rule.reviewerFingerprint?.[name];
       if (pinned && !sameFingerprint(pinned, artifact.fingerprint)) {
         reasons.push(`${name} ran with a configuration other than the band's, which closes the band for this pull request`);
@@ -623,7 +634,6 @@ export interface ActionsContext {
       pull_requests?: { number: number; base: { ref: string } }[];
     };
     issue?: { number: number; pull_request?: object | null };
-    merge_group?: { head_sha: string; head_ref: string; base_sha: string };
   };
 }
 
@@ -688,7 +698,7 @@ function contentsKind(file: ChangedFile): ContentsKind | undefined {
 }
 
 async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest, files: ChangedFile[]): Promise<ContentFacts> {
-  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] };
+  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [] };
   const needed = files.filter((file) => contentsKind(file) !== undefined);
   if (needed.length === 0) return facts;
   const { data } = await github.rest.repos.compareCommitsWithBasehead({
@@ -714,10 +724,6 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
         else facts.newDependencies.push(...names.map((name) => `${file.filename}: ${name}`));
         break;
       }
-      case "worker-config":
-        if (unreadable) facts.deletedClasses.push(`${file.filename} (unreadable)`);
-        else if (countDeletedClasses(after ?? "") > countDeletedClasses(before ?? "")) facts.deletedClasses.push(file.filename);
-        break;
       case undefined:
         break;
     }
@@ -733,22 +739,15 @@ async function readLastPush(github: GitHubClient, repo: RepoRef, sha: string): P
   return times.length > 0 ? new Date(Math.min(...times)).toISOString() : undefined;
 }
 
-async function readPullState(github: GitHubClient, repo: RepoRef, number: number):
-  Promise<{ reviewDecision: string | null; queued: boolean }> {
+async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: number): Promise<string | null> {
   const response = await github.graphql(
     `query($owner: String!, $repo: String!, $number: Int!) {
-      repository(owner: $owner, name: $repo) {
-        pullRequest(number: $number) { reviewDecision mergeQueueEntry { id } }
-      }
+      repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewDecision } }
     }`,
     { owner: repo.owner, repo: repo.repo, number },
   );
-  const pull = asObject(asObject(asObject(response)?.repository)?.pullRequest);
-  const decision = pull?.reviewDecision;
-  return {
-    reviewDecision: typeof decision === "string" ? decision : null,
-    queued: asObject(pull?.mergeQueueEntry) !== undefined,
-  };
+  const decision = asObject(asObject(asObject(response)?.repository)?.pullRequest)?.reviewDecision;
+  return typeof decision === "string" ? decision : null;
 }
 
 async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest, context: ActionsContext):
@@ -780,13 +779,18 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
   const inputs: Partial<Record<ProducerName, ProducerInput>> = {};
   for (const [name, producer] of Object.entries(PRODUCERS)) {
     if (!isProducerName(name)) continue;
+    const expected = { producer, headSha: pull.head.sha, repository, defaultBranch };
     const runs = await runsOf(producer.workflow);
     if (typeof runs === "string") {
       inputs[name] = { absent: runs };
       continue;
     }
     const candidates = [...runs];
-    if ("viaWorkflowRun" in producer) {
+    let follows: number | undefined;
+    if ("triggeredBy" in producer) {
+      const triggers = await runsOf(producer.triggeredBy);
+      const trigger = typeof triggers === "string" ? undefined : newestRun(triggers);
+      follows = trigger && attemptStarted(trigger);
       const { data } = await github.rest.actions.listArtifactsForRepo({
         ...repo,
         name: `automerge-${name}-${pull.head.sha}`,
@@ -795,27 +799,25 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
       const ids = new Set(data.artifacts.flatMap(({ workflow_run }) => (workflow_run?.id ? [workflow_run.id] : [])));
       for (const run_id of ids) candidates.push((await github.rest.actions.getWorkflowRun({ ...repo, run_id })).data);
     }
-    inputs[name] = await readProducer(github, repo, {
-      name,
-      run: newestRun(candidates),
-      pull,
-      repository,
-      defaultBranch,
-    });
+    // Only the producer's own runs compete to be the newest, so an unrelated run cannot mask them.
+    const run = newestRun(candidates.filter((candidate) => identityError(candidate, expected) === undefined));
+    if (run?.event === "workflow_run" && (follows === undefined || Date.parse(run.created_at) < follows)) {
+      inputs[name] = { absent: `made before the newest ${"triggeredBy" in producer ? producer.triggeredBy : ""} run on this head` };
+      continue;
+    }
+    inputs[name] = await readProducer(github, repo, { name, run, pull, expected });
   }
   return inputs;
 }
 
-async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pull, repository, defaultBranch }: {
+async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pull, expected }: {
   name: ProducerName;
   run: WorkflowRun | undefined;
   pull: PullRequest;
-  repository: string;
-  defaultBranch: string;
+  expected: BindingExpectation;
 }): Promise<ProducerInput> {
   if (!run) return { absent: "no run" };
-  const producer = PRODUCERS[name];
-  const error = bindingError(run, { producer, headSha: pull.head.sha, repository, defaultBranch });
+  const error = bindingError(run, expected);
   if (error) return { absent: error };
   const artifactName = run.event === "workflow_run" ? `automerge-${name}-${pull.head.sha}` : `automerge-${name}`;
   const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifactName, per_page: PER_PAGE });
@@ -828,31 +830,20 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
 }
 
 /** Reads everything the decision needs about one pull request. */
-export async function readPullInputs(github: GitHubClient, context: ActionsContext, pull: PullRequest):
-  Promise<PullInputs & { queued: boolean }> {
+export async function readPullInputs(github: GitHubClient, context: ActionsContext, pull: PullRequest): Promise<PullInputs> {
   const repo = context.repo;
   const ref = { ...repo, pull_number: pull.number };
   const files = await listAll((page) => github.rest.pulls.listFiles({ ...ref, ...page }));
-  const [facts, reviews, issueComments, reviewComments, lastPush, state, producers] = await Promise.all([
+  const [facts, reviews, issueComments, reviewComments, lastPush, reviewDecision, producers] = await Promise.all([
     readFacts(github, repo, pull, files),
     listAll((page) => github.rest.pulls.listReviews({ ...ref, ...page })),
     listAll((page) => github.rest.issues.listComments({ ...repo, issue_number: pull.number, ...page })),
     listAll((page) => github.rest.pulls.listReviewComments({ ...ref, ...page })),
     readLastPush(github, repo, pull.head.sha),
-    readPullState(github, repo, pull.number),
+    readReviewDecision(github, repo, pull.number),
     readProducers(github, repo, pull, context),
   ]);
-  return {
-    pull,
-    files,
-    facts,
-    reviews,
-    comments: [...issueComments, ...reviewComments],
-    lastPush,
-    reviewDecision: state.reviewDecision,
-    producers,
-    queued: state.queued,
-  };
+  return { pull, files, facts, reviews, comments: [...issueComments, ...reviewComments], lastPush, reviewDecision, producers };
 }
 
 /** The commit a run posts on, the pull requests it decides, and the commit policy is read at. */
@@ -860,6 +851,7 @@ interface Target {
   sha: string;
   policySha: string;
   pulls: PullRequest[];
+  mergeGroup: boolean;
   /** Set when the event names a commit but its pull requests cannot be told apart. */
   problem?: string;
 }
@@ -871,10 +863,12 @@ async function openPullIntoDefault(github: GitHubClient, context: ActionsContext
 }
 
 /**
- * The pull requests in a merge group, oldest first: walk from the group's head entry back through
- * each entry's base until the group's base. Any gap means the mapping is ambiguous.
+ * The pull requests in the merge group whose commit is `headSha`, oldest first, and the group's
+ * base: walk from the entry whose merge commit is `headSha` back through each entry's base until a
+ * base that is no entry's commit. `undefined` when no queue entry has that commit, so a branch that
+ * only looks like a merge group's is never decided as one.
  */
-export function mergeGroupPulls(entries: Json, group: { head_sha: string; base_sha: string }): number[] | undefined {
+export function mergeGroupPulls(entries: Json, headSha: string): { numbers: number[]; baseSha: string } | undefined {
   const nodes = asObject(asObject(asObject(asObject(entries)?.repository)?.mergeQueue)?.entries)?.nodes;
   if (!Array.isArray(nodes)) return undefined;
   const byHead = new Map<string, { base: string; number: number }>();
@@ -888,44 +882,51 @@ export function mergeGroupPulls(entries: Json, group: { head_sha: string; base_s
     }
   }
   const numbers: number[] = [];
-  for (let sha = group.head_sha; sha !== group.base_sha;) {
-    const entry = byHead.get(sha);
-    if (!entry || numbers.length >= byHead.size) return undefined;
+  let sha = headSha;
+  for (let entry = byHead.get(sha); entry; entry = byHead.get(sha)) {
+    if (numbers.length >= byHead.size) return undefined;
     numbers.unshift(entry.number);
     sha = entry.base;
   }
-  return numbers.length > 0 ? numbers : undefined;
+  return numbers.length > 0 ? { numbers, baseSha: sha } : undefined;
+}
+
+async function resolveMergeGroup(github: GitHubClient, context: ActionsContext, run: { head_sha: string; head_branch: string | null }):
+  Promise<Target | undefined> {
+  const { repo, payload } = context;
+  const defaultBranch = payload.repository?.default_branch ?? "main";
+  const response = await github.graphql(
+    `query($owner: String!, $repo: String!, $branch: String!) {
+      repository(owner: $owner, name: $repo) {
+        mergeQueue(branch: $branch) {
+          entries(first: 100) { nodes { headCommit { oid } baseCommit { oid } pullRequest { number } } }
+        }
+      }
+    }`,
+    { owner: repo.owner, repo: repo.repo, branch: defaultBranch },
+  );
+  const group = mergeGroupPulls(response, run.head_sha);
+  // The queue's ref names its newest pull request: gh-readonly-queue/<base>/pr-<number>-<base sha>.
+  const named = /^gh-readonly-queue\/[^/]+\/pr-(\d+)-/.exec(run.head_branch ?? "")?.[1];
+  if (!group || Number(named) !== group.numbers.at(-1)) return undefined;
+  const target = { sha: run.head_sha, policySha: group.baseSha, mergeGroup: true };
+  const pulls = await Promise.all(group.numbers.map((number) => openPullIntoDefault(github, context, number)));
+  const open = pulls.filter((pull) => pull !== undefined);
+  if (open.length !== group.numbers.length) {
+    return { ...target, pulls: [], problem: "a pull request in the group is not open into the default branch" };
+  }
+  return { ...target, pulls: open };
 }
 
 async function resolveTarget(github: GitHubClient, context: ActionsContext): Promise<Target | undefined> {
   const { payload, repo } = context;
   const defaultBranch = payload.repository?.default_branch ?? "main";
-  const group = payload.merge_group;
-  if (context.eventName === "merge_group" && group) {
-    const response = await github.graphql(
-      `query($owner: String!, $repo: String!, $branch: String!) {
-        repository(owner: $owner, name: $repo) {
-          mergeQueue(branch: $branch) {
-            entries(first: 100) { nodes { headCommit { oid } baseCommit { oid } pullRequest { number } } }
-          }
-        }
-      }`,
-      { owner: repo.owner, repo: repo.repo, branch: defaultBranch },
-    );
-    const numbers = mergeGroupPulls(response, group);
-    const target = { sha: group.head_sha, policySha: group.base_sha };
-    if (!numbers) return { ...target, pulls: [], problem: "the merge group does not map to queued pull requests" };
-    const pulls = await Promise.all(numbers.map((number) => openPullIntoDefault(github, context, number)));
-    const open = pulls.filter((pull) => pull !== undefined);
-    if (open.length !== numbers.length) return { ...target, pulls: [], problem: "a pull request in the group is not open into the default branch" };
-    return { ...target, pulls: open };
-  }
-
   let number: number | undefined;
   if (context.eventName === "issue_comment") {
     if (payload.issue?.pull_request) number = payload.issue.number;
   } else if (context.eventName === "workflow_run" && payload.workflow_run) {
     const run = payload.workflow_run;
+    if (run.event === "merge_group") return resolveMergeGroup(github, context, run);
     if (run.event === "workflow_run") {
       // A producer run on `main`'s definition (the bot preview's smoke) names the head it checked in
       // its artifact. The name only picks which pull request to decide again; the decision binds
@@ -941,24 +942,24 @@ async function resolveTarget(github: GitHubClient, context: ActionsContext): Pro
       number = pulls.find((pull) => pull.state === "open" && pull.head.sha === head && pull.base.ref === defaultBranch)?.number;
     } else {
       number = run.pull_requests?.find((pull) => pull.base.ref === defaultBranch)?.number;
-    }
-    // `pull_requests` is empty when the head is in a fork, so look the pull request up by head and
-    // base. GitHub allows one open pull request per pair.
-    if (number === undefined && run.event !== "workflow_run" && run.head_repository && run.head_branch) {
-      const { data } = await github.rest.pulls.list({
-        ...repo,
-        state: "open",
-        head: `${run.head_repository.owner.login}:${run.head_branch}`,
-        base: defaultBranch,
-        per_page: PER_PAGE,
-        page: 1,
-      });
-      number = data[0]?.number;
+      // `pull_requests` is empty when the head is in a fork, so look the pull request up by head and
+      // base. GitHub allows one open pull request per pair.
+      if (number === undefined && run.head_repository && run.head_branch) {
+        const { data } = await github.rest.pulls.list({
+          ...repo,
+          state: "open",
+          head: `${run.head_repository.owner.login}:${run.head_branch}`,
+          base: defaultBranch,
+          per_page: PER_PAGE,
+          page: 1,
+        });
+        number = data[0]?.number;
+      }
     }
   }
   if (number === undefined) return undefined;
   const pull = await openPullIntoDefault(github, context, number);
-  return pull && { sha: pull.head.sha, policySha: context.sha, pulls: [pull] };
+  return pull && { sha: pull.head.sha, policySha: context.sha, pulls: [pull], mergeGroup: false };
 }
 
 /**
@@ -967,14 +968,14 @@ async function resolveTarget(github: GitHubClient, context: ActionsContext): Pro
  * approval otherwise. It enqueues a pull request that may merge without a person once the gate
  * passes.
  */
-async function execute(github: GitHubClient, context: ActionsContext, { inputs, decision, policy, app, queued }: {
+async function execute(github: GitHubClient, context: ActionsContext, { inputs, decision, policy, app }: {
   inputs: PullInputs;
   decision: PullDecision;
   policy: Policy;
   app: RiskReviewApp;
-  queued: boolean;
 }): Promise<void> {
-  const ref = { ...context.repo, pull_number: decision.number };
+  const { repo } = context;
+  const ref = { ...repo, pull_number: decision.number };
   const auto = decision.would.decision === "auto";
   const approve = auto && policy.bands.appApprovalsCount;
   const standing = inputs.reviews.filter((review) => review.user?.login === app.login && review.state === "APPROVED");
@@ -985,14 +986,21 @@ async function execute(github: GitHubClient, context: ActionsContext, { inputs, 
   } else if (!standing.some((review) => review.commit_id === decision.head_sha)) {
     await github.rest.pulls.createReview({ ...ref, commit_id: decision.head_sha, event: "APPROVE", body: decision.gate.reason });
   }
-  if (auto && decision.gate.passes && !queued && !inputs.pull.draft) {
-    await github.graphql(
-      `mutation($id: ID!, $head: GitObjectID!) {
-        enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { id } }
-      }`,
-      { id: inputs.pull.node_id, head: decision.head_sha },
-    );
-  }
+  if (!auto || !decision.gate.passes || inputs.pull.draft) return;
+  const response = await github.graphql(
+    `query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) { pullRequest(number: $number) { mergeQueueEntry { id } } }
+    }`,
+    { owner: repo.owner, repo: repo.repo, number: decision.number },
+  );
+  const queued = asObject(asObject(asObject(asObject(response)?.repository)?.pullRequest)?.mergeQueueEntry) !== undefined;
+  if (queued) return;
+  await github.graphql(
+    `mutation($id: ID!, $head: GitObjectID!) {
+      enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { id } }
+    }`,
+    { id: inputs.pull.node_id, head: decision.head_sha },
+  );
 }
 
 /**
@@ -1010,7 +1018,7 @@ export async function runRiskReview({ github, context, core, app, now = new Date
 }): Promise<void> {
   const target = await resolveTarget(github, context);
   if (!target) {
-    core.notice("No open pull request into the default branch matches this event; nothing to decide.");
+    core.notice("No open pull request into the default branch, or queued merge group, matches this event; nothing to decide.");
     return;
   }
   const { repo } = context;
@@ -1023,46 +1031,49 @@ export async function runRiskReview({ github, context, core, app, now = new Date
     status: "in_progress",
     details_url: `${context.serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${context.runId}`,
   });
-  const policy = await readPolicy(github, repo, target.policySha);
-  const pulls = await Promise.all(target.pulls.map(async (pull) => {
-    const inputs = await readPullInputs(github, context, pull);
-    return { inputs, queued: inputs.queued, decision: decide(inputs, policy, now) };
-  }));
-  const decisions = pulls.map(({ decision }) => decision);
-  const record: DecisionRecord = {
-    schema: 1,
-    mode: policy.bands.mode,
-    event: context.eventName,
-    sha: target.sha,
-    policy_sha: policy.sha,
-    ...(policy.bandsProblem && { bands_problem: policy.bandsProblem }),
-    ...conclude(decisions, policy.bands.mode, target.problem),
-    pulls: decisions,
-  };
+  const complete = (conclusion: "success" | "failure" | "cancelled", output: { title: string; summary: string }) =>
+    github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion, output });
+  try {
+    const policy = await readPolicy(github, repo, target.policySha);
+    const pulls = await Promise.all(target.pulls.map(async (pull) => {
+      const inputs = await readPullInputs(github, context, pull);
+      return { inputs, decision: decide(inputs, policy, now) };
+    }));
+    const decisions = pulls.map(({ decision }) => decision);
+    const record: DecisionRecord = {
+      schema: 1,
+      mode: policy.bands.mode,
+      event: target.mergeGroup ? "merge_group" : context.eventName,
+      sha: target.sha,
+      policy_sha: policy.sha,
+      ...(policy.bandsProblem && { bands_problem: policy.bandsProblem }),
+      ...conclude(decisions, policy.bands.mode, target.problem),
+      pulls: decisions,
+    };
 
-  const { data: latest } = await github.rest.checks.listForRef({
-    ...repo,
-    ref: target.sha,
-    check_name: CHECK_NAME,
-    app_id: app.id,
-    filter: "all",
-    per_page: PER_PAGE,
-  });
-  if (latest.check_runs.some(({ id }) => id > created.id)) {
-    await github.rest.checks.update({
+    const { data: latest } = await github.rest.checks.listForRef({
       ...repo,
-      check_run_id: created.id,
-      status: "completed",
-      conclusion: "cancelled",
-      output: { title: "Superseded", summary: "A later run decides this commit." },
+      ref: target.sha,
+      check_name: CHECK_NAME,
+      app_id: app.id,
+      filter: "all",
+      per_page: PER_PAGE,
     });
-    core.notice("A later run has taken over this commit's check run; leaving it to that run.");
-    return;
+    if (latest.check_runs.some(({ id }) => id > created.id)) {
+      await complete("cancelled", { title: "Superseded", summary: "A later run decides this commit." });
+      core.notice("A later run has taken over this commit's check run; leaving it to that run.");
+      return;
+    }
+    const output = renderOutput(record);
+    await complete(record.conclusion, output);
+    if (record.mode === "enforce" && !target.mergeGroup) {
+      for (const { inputs, decision } of pulls) await execute(github, context, { inputs, decision, policy, app });
+    }
+    await core.summary.addRaw(output.summary).write();
+  } catch (error) {
+    // A check run left in progress would hold the commit until some later event; fail it instead.
+    const message = error instanceof Error ? error.message : String(error);
+    await complete("failure", { title: "The gate failed", summary: `The gate could not decide: ${message}` });
+    throw error;
   }
-  const output = renderOutput(record);
-  await github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion: record.conclusion, output });
-  if (record.mode === "enforce" && context.eventName !== "merge_group") {
-    for (const { inputs, decision, queued } of pulls) await execute(github, context, { inputs, decision, policy, app, queued });
-  }
-  await core.summary.addRaw(output.summary).write();
 }

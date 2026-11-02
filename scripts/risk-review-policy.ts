@@ -63,7 +63,7 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
       "scripts/automerge/**",
       "scripts/contribution-policy.ts",
       "pnpm-workspace.yaml",
-      ".npmrc",
+      "**/.npmrc",
       "packages/workshop-backend/**",
       "packages/typed-storage/**",
       "packages/workshop-shared/src/api.ts",
@@ -100,7 +100,8 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
       "**/wrangler.jsonc",
       "REVIEW.md",
       "**/AGENTS.md",
-      ".agents/**",
+      "**/CLAUDE.md",
+      "**/.agents/**",
       "**/opencode.json",
       "**/opencode.jsonc",
       "**/.opencode/**",
@@ -126,7 +127,7 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[] }[] = [
       "REVIEW.md",
       "**/AGENTS.md",
       "**/CLAUDE.md",
-      ".agents/**",
+      "**/.agents/**",
       "**/opencode.json",
       "**/opencode.jsonc",
       "**/.opencode/**",
@@ -136,6 +137,9 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[] }[] = [
   { reason: "supply-chain policy", globs: ["**/.npmrc"] },
   { reason: "release pipeline", globs: ["scripts/release/**"] },
 ];
+
+/** Worker configs, which carry the Durable Object migrations. */
+const WORKER_CONFIGS = ["**/cloudflare.config.ts", "**/wrangler.jsonc"];
 
 /** `pnpm-workspace.yaml` is on the policy list except when only catalog versions change. */
 const WORKSPACE_FILE = "pnpm-workspace.yaml";
@@ -256,8 +260,6 @@ export interface ContentFacts {
   workspaceCatalogOnly: boolean;
   /** `path: name` for each dependency a `package.json` gained, or `path: unreadable`. */
   newDependencies: string[];
-  /** Worker configs whose head deletes Durable Object classes the base did not. */
-  deletedClasses: string[];
 }
 
 /** The band, area and policy reasons of one change. */
@@ -329,9 +331,8 @@ export function classifyChangeset({ files, listed, facts, escapes, now }: {
   if (files.some((file) => pathsOf(file).includes(WORKSPACE_FILE)) && !facts.workspaceCatalogOnly) {
     neverAuto.push(`supply-chain policy (${WORKSPACE_FILE} beyond catalog versions)`);
   }
-  if (facts.deletedClasses.length > 0) {
-    neverAuto.push(`deletes Durable Object classes (${facts.deletedClasses.join(", ")})`);
-  }
+  const deletions = files.filter(deletesDurableObjectClasses);
+  if (deletions.length > 0) neverAuto.push(`may delete Durable Object classes (${names(deletions)})`);
 
   return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0) };
 }
@@ -381,7 +382,8 @@ export function isCatalogVersionBump(base: string, head: string): boolean {
 }
 
 function catalogEntry(line: string): { indent: string; key: string } | undefined {
-  const match = /^(\s+)(['"]?[@\w./-]+['"]?):\s*['"]?[^\s'"#]+['"]?\s*(#.*)?$/.exec(line);
+  // A version or range only: `npm:`, `github:`, `file:` or `link:` would swap the package itself.
+  const match = /^(\s+)(['"]?[@\w./-]+['"]?):\s*(['"]?)[\^~]?\d[\w.+-]*\3\s*(#.*)?$/.exec(line);
   return match ? { indent: match[1] ?? "", key: match[2] ?? "" } : undefined;
 }
 
@@ -437,20 +439,24 @@ function dependencyMap(text: string): Map<string, string> | undefined {
   return map;
 }
 
-/** How many times a Worker config names deleted Durable Object classes. */
-export function countDeletedClasses(text: string): number {
-  return text.match(/\bdeleted_?[cC]lasses\b/g)?.length ?? 0;
+/**
+ * Whether a Worker config's diff adds a line naming deleted Durable Object classes, the migration
+ * that drops a class's data. Any added mention counts, so moving one around also needs a person, and
+ * a diff the API did not inline counts as one.
+ */
+function deletesDurableObjectClasses(file: ChangedFile): boolean {
+  if (!pathsOf(file).some((path) => matchesAny(path, WORKER_CONFIGS))) return false;
+  if (file.patch === undefined) return file.changes > 0;
+  return file.patch.split("\n").some((line) => /^\+(?!\+\+ )/.test(line) && /deleted_?[cC]lasses/.test(line));
 }
 
 /** A file whose contents, not only its diff, the classifier reads. */
-export type ContentsKind = "workspace" | "manifest" | "worker-config";
+export type ContentsKind = "workspace" | "manifest";
 
 /** Whether the classifier needs a file's contents, not only its diff. */
 export function needsContents(filename: string): ContentsKind | undefined {
   if (filename === WORKSPACE_FILE) return "workspace";
-  if (matchesPath(filename, "**/package.json")) return "manifest";
-  // Worker configs carry the Durable Object migrations, which can delete classes.
-  return matchesAny(filename, ["**/cloudflare.config.ts", "**/wrangler.jsonc"]) ? "worker-config" : undefined;
+  return matchesPath(filename, "**/package.json") ? "manifest" : undefined;
 }
 
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;

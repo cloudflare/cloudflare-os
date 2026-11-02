@@ -15,7 +15,7 @@ import {
 } from "./risk-review-policy.ts";
 
 const NOW = new Date("2026-11-02T12:00:00Z");
-const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] };
+const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [] };
 const NO_ESCAPES: EscapeSnapshot = { windowDays: 90, files: [] };
 
 function file(filename: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
@@ -66,6 +66,8 @@ describe("pathFloor", () => {
       "tsconfig.json",
       "opencode.json",
       "packages/x/.opencode/agent.md",
+      "packages/x/CLAUDE.md",
+      "packages/x/.agents/skills/a.md",
     ]) {
       assert.equal(pathFloor(path), "medium", path);
     }
@@ -160,6 +162,8 @@ describe("classifyChangeset NEVER_AUTO", () => {
       "packages/gatekeeper-x/AGENTS.md",
       "CLAUDE.md",
       ".agents/skills/write-gatekeeper/SKILL.md",
+      "packages/gatekeeper-x/.agents/skills/a.md",
+      "packages/x/.npmrc",
       "opencode.jsonc",
       ".opencode/plugins/x.ts",
       "packages/workshop-backend/src/auth/config.ts",
@@ -175,11 +179,18 @@ describe("classifyChangeset NEVER_AUTO", () => {
     assert.notDeepEqual(classify([file("pnpm-workspace.yaml")], { facts: { ...NO_FACTS, workspaceCatalogOnly: false } }).neverAuto, []);
   });
 
-  it("sends Durable Object class deletions to a person", () => {
-    const result = classify([file("packages/gatekeeper-x/cloudflare.config.ts")], {
-      facts: { ...NO_FACTS, deletedClasses: ["packages/gatekeeper-x/cloudflare.config.ts"] },
-    });
-    assert.match(result.neverAuto.join("\n"), /Durable Object/);
+  it("sends a Worker config diff that adds a Durable Object class deletion to a person", () => {
+    const adds = "@@ -40,2 +40,3 @@\n   { tag: 'v4', new_sqlite_classes: ['Notes'] },\n+  { tag: 'v5', deleted_classes: ['Notes'] },";
+    assert.match(classify([file("packages/gatekeeper-x/cloudflare.config.ts", { patch: adds })]).neverAuto.join("\n"), /Durable Object/);
+    assert.match(classify([file("packages/gatekeeper-x/wrangler.jsonc", { patch: adds.replace("deleted_classes", "deletedClasses") })]).neverAuto.join("\n"), /Durable Object/);
+    // A diff the API did not inline may hold one.
+    assert.notDeepEqual(classify([file("packages/gatekeeper-x/cloudflare.config.ts", { patch: undefined, changes: 9000 })]).neverAuto, []);
+  });
+
+  it("leaves a Worker config diff that only appends classes, or a deletion elsewhere, to the band", () => {
+    const appends = "@@ -40,2 +40,3 @@\n   { tag: 'v4', deleted_classes: ['Old'] },\n+  { tag: 'v5', new_sqlite_classes: ['Notes'] },";
+    assert.deepEqual(classify([file("packages/gatekeeper-x/cloudflare.config.ts", { patch: appends })]).neverAuto, []);
+    assert.deepEqual(classify([file("docs/migrations.md", { patch: "@@ -1 +1 @@\n+deleted_classes" })]).neverAuto, []);
   });
 });
 
@@ -215,6 +226,12 @@ describe("isCatalogVersionBump", () => {
   it("accepts a change to an existing catalog entry's version", () => {
     assert.equal(isCatalogVersionBump(base, base.replace("zod: ^4.6.7", "zod: ^4.7.0")), true);
     assert.equal(isCatalogVersionBump(base, base), true);
+  });
+
+  it("rejects a catalog value that swaps the package rather than its version", () => {
+    for (const swap of ["npm:evil-zod@4.7.0", "github:evil/zod", "file:../zod", "link:../zod"]) {
+      assert.equal(isCatalogVersionBump(base, base.replace("zod: ^4.6.7", `zod: ${swap}`)), false, swap);
+    }
   });
 
   it("rejects a new catalog entry, a renamed one, and any change outside the catalog", () => {

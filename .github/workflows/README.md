@@ -21,13 +21,16 @@ medium, high) and area, and decides whether it could merge without a person; the
 commit: [`maintainers`](../maintainers), [`automerge-bands.json`](../automerge-bands.json) and
 [`automerge-escape-files.json`](../automerge-escape-files.json).
 
-It runs from `main`'s definition through `workflow_run` (when a producer workflow or the review
-relay finishes), `issue_comment` and `merge_group`, and never checks out or runs pull request code.
-[`risk-review-trigger.yml`](risk-review-trigger.yml) only relays pull request and review events to
-it. Producer workflows (reviewer verdicts, rung 1 proofs, band evidence) upload one JSON artifact
-each and post nothing; the gate accepts an artifact only from a successful `pull_request` run of
-the expected workflow file on the pull request's head, in this repository, and the newest such run
-wins even when it failed.
+It runs only from `main`'s definition, through `workflow_run` (when a producer workflow or the
+review relay finishes) and `issue_comment`, and never checks out or runs pull request code.
+[`risk-review-trigger.yml`](risk-review-trigger.yml) only relays pull request, review and merge
+group events to it; the gate decides a merge group only when the merge queue lists its commit.
+Producer workflows (reviewer verdicts, rung 1 proofs, band evidence) upload one JSON artifact each
+and post nothing. The gate accepts an artifact only from a successful `pull_request` run of the
+expected workflow file on the pull request's head, in this repository, and the run whose latest
+attempt started last wins even when it failed. The one exception is the bot preview's smoke, which
+`preview.yml` runs from `main` after Automerge evidence finishes: its artifact name carries the head
+SHA, and it counts only when made after the newest Automerge evidence run on that head started.
 
 `automerge-bands.json` sets the mode. It ships in `shadow` with every band closed: the check
 mirrors today's rule (`reviewDecision` is `APPROVED`), is not required, and records the decision it
@@ -43,13 +46,14 @@ An organization owner, or a GitHub App manager, does this once.
 
 1. **The app.** Create a GitHub App owned by the organization, with its webhook inactive, the
    repository permissions *Checks: Read and write*, *Pull requests: Read and write*, *Contents:
-   Read*, *Actions: Read* (to read producer runs and artifacts) and *Merge queues: Read*, and
-   installation limited to this account. Install it on this repository only. Set the repository
+   Read*, *Actions: Read* (to read producer runs and artifacts) and *Merge queues: Read and write*
+   (to enqueue), and installation limited to this account. Install it on this repository only. Set the repository
    variable `RISK_REVIEW_APP_ID` to its App ID.
 2. **The key.** Generate a private key and store it as the secret `RISK_REVIEW_APP_PRIVATE_KEY` in
-   the `risk-review` environment, with no reviewers and deployment branches limited to `main` and
-   `gh-readonly-queue/main/*` (merge group runs are on that ref). Until the key exists the workflow
-   fails at the token step and posts nothing; there is no fallback to the job token.
+   the `risk-review` environment, with no reviewers and deployment branches limited to `main`. Do not
+   add `gh-readonly-queue/main/*`: anyone who can push can create a branch with that name. Until the
+   key exists the workflow fails at the token step and posts nothing; there is no fallback to the job
+   token.
 
    **Never store the key as a repository secret.** A workflow a pull request adds can read those,
    and could then post a passing check run or an approval as the app.

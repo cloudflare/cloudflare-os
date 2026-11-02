@@ -19,6 +19,7 @@ import {
   type DecisionRecord,
   type GitHubClient,
   type Policy,
+  type PullDecision,
   type PullInputs,
   type PullRequest,
   type Review,
@@ -132,7 +133,8 @@ interface HarnessOptions {
   comments?: Record<number, Comment[]>;
   reviewDecision?: Record<number, string | null>;
   runs?: ProducerRun[];
-  repoArtifacts?: Record<string, { artifact: Artifact; run: WorkflowRun }[]>;
+  /** Makes reading reviews fail, as an API outage would. */
+  broken?: true;
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
   contents?: Record<string, string>;
   lastPush?: string | undefined;
@@ -157,7 +159,8 @@ function harness(options: HarnessOptions = {}) {
     artifacts.set(producerRun.id, Object.entries(files).map(([name, text]) => {
       const id = ++ids;
       zips.set(id, zip({ [`${name.replace(/-[0-9a-f]{40}$/, "")}.json`]: text }));
-      return { id, name, size_in_bytes: text.length, expired: false, created_at: "2026-11-02T10:05:00Z", workflow_run: { id: producerRun.id } };
+      const uploaded = new Date(Date.parse(producerRun.run_started_at ?? producerRun.created_at) + 60_000).toISOString();
+      return { id, name, size_in_bytes: text.length, expired: false, created_at: uploaded, workflow_run: { id: producerRun.id } };
     }));
   }
   const calls: Calls = { checks: [], updates: [], approvals: [], dismissals: [], enqueued: [] };
@@ -172,7 +175,10 @@ function harness(options: HarnessOptions = {}) {
         },
         list: async ({ head }) => ({ data: [...pulls.values()].filter(() => head.endsWith(":kenton/topic") || head.endsWith(":chore/classify-changsets")) }),
         listFiles: async (args) => page(options.files?.[args.pull_number] ?? [file("docs/automerge.md")], args),
-        listReviews: async (args) => page(options.reviews?.[args.pull_number] ?? [], args),
+        listReviews: async (args) => {
+          if (options.broken) throw new Error("HTTP 502");
+          return page(options.reviews?.[args.pull_number] ?? [], args);
+        },
         listReviewComments: async (args) => page([], args),
         createReview: async ({ commit_id }) => {
           calls.approvals.push(commit_id);
@@ -226,14 +232,13 @@ function harness(options: HarnessOptions = {}) {
           return { data: { total_count: matching.length, workflow_runs: matching } };
         },
         getWorkflowRun: async ({ run_id }) => {
-          const found = runs.find(({ run: r }) => r.id === run_id) ??
-            Object.values(options.repoArtifacts ?? {}).flat().find(({ run: r }) => r.id === run_id);
+          const found = runs.find(({ run: r }) => r.id === run_id);
           if (!found) throw notFound();
           return { data: found.run };
         },
         listWorkflowRunArtifacts: async ({ run_id, name }) =>
           ({ data: { artifacts: (artifacts.get(run_id) ?? []).filter((a) => name === undefined || a.name === name) } }),
-        listArtifactsForRepo: async ({ name }) => ({ data: { artifacts: (options.repoArtifacts?.[name] ?? []).map(({ artifact }) => artifact) } }),
+        listArtifactsForRepo: async ({ name }) => ({ data: { artifacts: [...artifacts.values()].flat().filter((a) => a.name === name) } }),
         downloadArtifact: async ({ artifact_id }) => {
           const bytes = zips.get(artifact_id);
           if (!bytes) throw notFound();
@@ -247,9 +252,9 @@ function harness(options: HarnessOptions = {}) {
         return { enqueuePullRequest: { mergeQueueEntry: { id: "MQE_1" } } };
       }
       if (query.includes("mergeQueue(")) return options.mergeQueue ?? null;
-      const number = Number(variables.number);
-      const decision = options.reviewDecision?.[number];
-      return { repository: { pullRequest: { reviewDecision: decision === undefined ? "REVIEW_REQUIRED" : decision, mergeQueueEntry: null } } };
+      if (query.includes("mergeQueueEntry")) return { repository: { pullRequest: { mergeQueueEntry: null } } };
+      const decision = options.reviewDecision?.[Number(variables.number)];
+      return { repository: { pullRequest: { reviewDecision: decision === undefined ? "REVIEW_REQUIRED" : decision } } };
     },
   };
   const core: ActionsCore = {
@@ -320,7 +325,7 @@ function inputs(overrides: Partial<PullInputs> = {}): PullInputs {
   return {
     pull: pullRequest(),
     files: [file("docs/automerge.md")],
-    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] },
+    facts: { workspaceCatalogOnly: true, newDependencies: [] },
     reviews: [],
     comments: [],
     lastPush: PUSHED,
@@ -432,6 +437,13 @@ describe("decide", () => {
     }
   });
 
+  it("sends a diff-only re-review to a person", () => {
+    const sol = verdictInput("sol", { round: 3, review_from_sha: "c".repeat(40) });
+    const decision = decide(inputs({ producers: { ...PERFECT, sol } }), OPEN_SCORED, NOW);
+    assert.equal(decision.would.decision, "person");
+    assert.match(decision.would.reasons.join("\n"), /only the diff since ccccccc/);
+  });
+
   it("requires the band's evidence to hold", () => {
     const policy = policyWith(bandsJson("enforce", true, [{ area: "scored", band: "low", evidence: ["evidence-deploy-dry-run"] }]));
     assert.equal(decide(inputs({ producers: PERFECT }), policy, NOW).would.decision, "person");
@@ -444,9 +456,9 @@ describe("decide", () => {
     const pull = pullRequest({ user: { login: "dependabot[bot]", type: "Bot" } });
     const files = [file("packages/ui/package.json")];
     const deps = { artifact: { ...JSON.parse(proofJson("proof-deps", "proof", true)), name: "proof-deps" } };
-    const smoke = { artifact: { ...JSON.parse(proofJson("preview-smoke", "evidence", true)), name: "preview-smoke" } };
+    const smokeHolds = { artifact: { ...JSON.parse(proofJson("preview-smoke", "evidence", true)), name: "preview-smoke" } };
     assert.equal(decide(inputs({ pull, files, producers: { "proof-deps": deps } }), policy, NOW).would.decision, "person");
-    assert.deepEqual(decide(inputs({ pull, files, producers: { "proof-deps": deps, "preview-smoke": smoke } }), policy, NOW).would,
+    assert.deepEqual(decide(inputs({ pull, files, producers: { "proof-deps": deps, "preview-smoke": smokeHolds } }), policy, NOW).would,
       { decision: "auto", area: "proven", reasons: [] });
     // Dependabot never qualifies through AI verdicts.
     assert.equal(decide(inputs({ pull, files, producers: PERFECT }), OPEN_SCORED, NOW).would.decision, "person");
@@ -541,46 +553,58 @@ describe("runRiskReview in shadow mode", () => {
 });
 
 describe("runRiskReview on a merge group", () => {
-  const group = fixture("merge_group.json");
+  // The relay's `workflow_run` for the recorded merge group: same head commit and queue ref.
+  const { merge_group: group } = JSON.parse(JSON.stringify(fixture("merge_group.json")));
+  const relayed = {
+    workflow_run: {
+      id: 3,
+      event: "merge_group",
+      head_sha: group.head_sha,
+      head_branch: group.head_ref.replace("refs/heads/", ""),
+      head_repository: { owner: { login: "cloudflare" }, full_name: "cloudflare/cloudflare-os" },
+      pull_requests: [],
+    },
+    repository: { default_branch: "main", full_name: "cloudflare/cloudflare-os" },
+  };
   const queue = fixture("merge_queue.json");
   const pulls = [939, 943].map((number) => pullRequest({ number, head: { sha: String(number).repeat(14).slice(0, 40) } }));
+  const basePolicy = {
+    [`${group.base_sha}:${POLICY_FILES.maintainers}`]: MAINTAINERS,
+    [`${group.base_sha}:${POLICY_FILES.bands}`]: read(POLICY_FILES.bands),
+    [`${group.base_sha}:${POLICY_FILES.escapes}`]: NO_ESCAPES,
+  };
 
-  it("maps a merge group to its two pull requests and decides each on the group's commit", () => {
-    const { merge_group } = JSON.parse(JSON.stringify(group));
-    assert.deepEqual(mergeGroupPulls(queue, merge_group), [939, 943]);
-    assert.equal(mergeGroupPulls(queue, { ...merge_group, base_sha: HEAD }), undefined);
-    assert.equal(mergeGroupPulls(null, merge_group), undefined);
+  it("maps a merge group's commit to its two pull requests and its base", () => {
+    assert.deepEqual(mergeGroupPulls(queue, group.head_sha), { numbers: [939, 943], baseSha: group.base_sha });
+    assert.equal(mergeGroupPulls(queue, HEAD), undefined);
+    assert.equal(mergeGroupPulls(null, group.head_sha), undefined);
   });
 
-  it("posts the aggregate on the group's head, reading policy at its base", async () => {
-    const { merge_group } = JSON.parse(JSON.stringify(group));
-    const { calls, evaluate } = harness({
-      pulls,
-      mergeQueue: queue,
-      reviewDecision: { 939: "APPROVED", 943: "APPROVED" },
-      contents: {
-        [`${merge_group.base_sha}:${POLICY_FILES.maintainers}`]: MAINTAINERS,
-        [`${merge_group.base_sha}:${POLICY_FILES.bands}`]: read(POLICY_FILES.bands),
-        [`${merge_group.base_sha}:${POLICY_FILES.escapes}`]: NO_ESCAPES,
-      },
-    });
-    await evaluate("merge_group", group);
-    assert.deepEqual(calls.checks.map(({ sha }) => sha), [merge_group.head_sha]);
+  it("posts the aggregate on the group's commit, reading policy at its base", async () => {
+    const { calls, evaluate } = harness({ pulls, mergeQueue: queue, reviewDecision: { 939: "APPROVED", 943: "APPROVED" }, contents: basePolicy });
+    await evaluate("workflow_run", relayed);
+    assert.deepEqual(calls.checks.map(({ sha }) => sha), [group.head_sha]);
     const record = lastRecord(calls);
     assert.equal(record.conclusion, "success");
-    assert.equal(record.policy_sha, merge_group.base_sha);
+    assert.equal(record.event, "merge_group");
+    assert.equal(record.policy_sha, group.base_sha);
     assert.equal(record.bands_problem, undefined);
     assert.deepEqual(record.pulls.map(({ number }) => number), [939, 943]);
   });
 
-  it("fails the group when one pull request fails, or when the group does not map", async () => {
-    const first = harness({ pulls, mergeQueue: queue, reviewDecision: { 939: "APPROVED", 943: "CHANGES_REQUESTED" } });
-    await first.evaluate("merge_group", group);
-    assert.equal(first.calls.updates.at(-1)?.conclusion, "failure");
-    const second = harness({ pulls, mergeQueue: null, reviewDecision: { 939: "APPROVED", 943: "APPROVED" } });
-    await second.evaluate("merge_group", group);
-    assert.equal(second.calls.updates.at(-1)?.conclusion, "failure");
-    assert.match(lastRecord(second.calls).reason, /does not map/);
+  it("fails the group when one pull request fails today's rule", async () => {
+    const { calls, evaluate } = harness({ pulls, mergeQueue: queue, reviewDecision: { 939: "APPROVED", 943: "CHANGES_REQUESTED" }, contents: basePolicy });
+    await evaluate("workflow_run", relayed);
+    assert.equal(calls.updates.at(-1)?.conclusion, "failure");
+  });
+
+  it("decides nothing for a queue-named branch the merge queue does not list, or whose name disagrees", async () => {
+    const forged = harness({ pulls, mergeQueue: queue, reviewDecision: { 939: "APPROVED", 943: "APPROVED" } });
+    await forged.evaluate("workflow_run", { ...relayed, workflow_run: { ...relayed.workflow_run, head_sha: HEAD } });
+    assert.deepEqual(forged.calls.checks, []);
+    const renamed = harness({ pulls, mergeQueue: queue, reviewDecision: { 939: "APPROVED", 943: "APPROVED" } });
+    await renamed.evaluate("workflow_run", { ...relayed, workflow_run: { ...relayed.workflow_run, head_branch: `gh-readonly-queue/main/pr-939-${group.base_sha}` } });
+    assert.deepEqual(renamed.calls.checks, []);
   });
 });
 
@@ -596,7 +620,7 @@ describe("runRiskReview producer binding", () => {
   });
 
   it("lets a newer failed attempt beat an older success", async () => {
-    const failed = { run: run(PRODUCERS.sol.workflow, { created_at: "2026-11-02T10:30:00Z", conclusion: "failure" }), artifacts: {} };
+    const failed = { run: run(PRODUCERS.sol.workflow, { created_at: "2026-11-02T10:30:00Z", run_started_at: "2026-11-02T10:30:00Z", conclusion: "failure" }), artifacts: {} };
     const { calls, evaluate } = harness({ ...open, runs: [verdicts(), failed] });
     await evaluate("workflow_run", producerCompleted());
     assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.sol, { absent: "concluded failure" });
@@ -614,6 +638,79 @@ describe("runRiskReview producer binding", () => {
       assert.ok(record.pulls[0]?.inputs.sol && "absent" in record.pulls[0].inputs.sol);
       assert.equal(record.pulls[0]?.would.decision, "person");
     }
+  });
+});
+
+/** A follow-up Preview run's smoke artifact for the test head. */
+function smoke(producerRun: WorkflowRun, holds = true): ProducerRun {
+  return { run: producerRun, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", holds) } };
+}
+
+/** Decides the test pull request with these changed files and file contents. */
+async function decideFiles(files: ChangedFile[], contents: Record<string, string>): Promise<PullDecision> {
+  const { calls, evaluate } = harness({ files: { 7: files }, contents });
+  await evaluate("workflow_run", producerCompleted());
+  const pull = lastRecord(calls).pulls[0];
+  assert.ok(pull);
+  return pull;
+}
+
+describe("runRiskReview preview smoke from main", () => {
+  const evidence = run(PRODUCERS["proof-equivalence"].workflow, { run_started_at: "2026-11-02T10:01:00Z" });
+  const smokeRun = (overrides: Partial<WorkflowRun> = {}) =>
+    run(PRODUCERS["preview-smoke"].workflow, { event: "workflow_run", head_branch: "main", head_sha: POLICY_SHA, created_at: "2026-11-02T10:20:00Z", run_started_at: "2026-11-02T10:20:00Z", ...overrides });
+  const smokeInput = async (runs: ProducerRun[]) => {
+    const { calls, evaluate } = harness({ runs: [{ run: evidence, artifacts: {} }, ...runs] });
+    await evaluate("workflow_run", producerCompleted());
+    return lastRecord(calls).pulls[0]?.inputs["preview-smoke"];
+  };
+
+  it("accepts a smoke run on main made after the newest Automerge evidence run", async () => {
+    assert.deepEqual(await smokeInput([smoke(smokeRun())]), { status: "ok", holds: true });
+  });
+
+  it("treats a smoke run made before a newer Automerge evidence run as absent", async () => {
+    const stale = await smokeInput([smoke(smokeRun({ created_at: "2026-11-02T09:00:00Z", run_started_at: "2026-11-02T09:00:00Z" }))]);
+    assert.ok(stale && "absent" in stale && /made before/.test(stale.absent));
+  });
+
+  it("does not let another workflow's artifact with the same name mask the real smoke", async () => {
+    const forged = smoke(run(".github/workflows/someone.yml", { created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z" }), false);
+    assert.deepEqual(await smokeInput([smoke(smokeRun()), forged]), { status: "ok", holds: true });
+  });
+});
+
+describe("runRiskReview content rules", () => {
+  const workspace = read("pnpm-workspace.yaml");
+
+  it("allows pnpm-workspace.yaml when only catalog versions change, and keeps every other change with a person", async () => {
+    const files = [file("pnpm-workspace.yaml")];
+    const bump = await decideFiles(files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${HEAD}:pnpm-workspace.yaml`]: workspace.replace("zod: ^4.6.7", "zod: ^4.7.0") });
+    assert.deepEqual(bump.never_auto, []);
+    const age = await decideFiles(files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${HEAD}:pnpm-workspace.yaml`]: `${workspace}minimumReleaseAge: 1\n` });
+    assert.match(age.never_auto.join("\n"), /supply-chain/);
+    const unread = await decideFiles(files, { [`${BASE}:pnpm-workspace.yaml`]: workspace });
+    assert.match(unread.never_auto.join("\n"), /supply-chain/);
+  });
+
+  it("rates a package.json that gains a dependency high, and one it cannot read too", async () => {
+    const files = [file("packages/ui/package.json")];
+    const before = JSON.stringify({ dependencies: { zod: "catalog:" } });
+    const added = await decideFiles(files, { [`${BASE}:packages/ui/package.json`]: before, [`${HEAD}:packages/ui/package.json`]: JSON.stringify({ dependencies: { zod: "catalog:", "left-pad": "^1.0.0" } }) });
+    assert.equal(added.band, "high");
+    assert.match(added.band_reasons.join("\n"), /left-pad/);
+    const same = await decideFiles(files, { [`${BASE}:packages/ui/package.json`]: before, [`${HEAD}:packages/ui/package.json`]: before });
+    assert.equal(same.band, "medium");
+    const unread = await decideFiles(files, { [`${BASE}:packages/ui/package.json`]: before });
+    assert.match(unread.band_reasons.join("\n"), /unreadable/);
+  });
+});
+
+describe("runRiskReview failure", () => {
+  it("fails its check run, rather than leaving it in progress, when the API fails", async () => {
+    const { calls, evaluate } = harness({ broken: true });
+    await assert.rejects(evaluate("workflow_run", producerCompleted()), /HTTP 502/);
+    assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["failure"]);
   });
 });
 
@@ -664,9 +761,9 @@ const gateWorkflow = read(".github/workflows/risk-review.yml");
 const relayWorkflow = read(".github/workflows/risk-review-trigger.yml");
 
 describe("risk-review workflows", () => {
-  it("runs only from main's definition: no pull_request_target, pull_request or review triggers", () => {
+  it("runs only from main's definition: no pull_request_target, pull_request, review or merge_group triggers", () => {
     const triggers = /^on:\n((?: .*\n|\n)*?)^\S/m.exec(gateWorkflow)?.[1] ?? "";
-    assert.deepEqual([...triggers.matchAll(/^ {2}(\w+):/gm)].map((match) => match[1]), ["workflow_run", "issue_comment", "merge_group"]);
+    assert.deepEqual([...triggers.matchAll(/^ {2}(\w+):/gm)].map((match) => match[1]), ["workflow_run", "issue_comment"]);
   });
 
   it("wakes on every producer workflow and the review relay", () => {
@@ -684,26 +781,27 @@ describe("risk-review workflows", () => {
     assert.match(gateWorkflow, /github-token: \$\{\{ steps\.app\.outputs\.token \}\}\n/);
     assert.doesNotMatch(gateWorkflow, /github\.token/);
     assert.match(gateWorkflow, /permission-checks: write/);
+    assert.match(gateWorkflow, /permission-merge-queues: write/);
     assert.doesNotMatch(gateWorkflow, /statuses/);
   });
 
-  it("checks the script out from the default branch, or the merge group's base", () => {
-    assert.match(gateWorkflow, /ref: \$\{\{ github\.event\.merge_group\.base_sha \|\| github\.workflow_sha \}\}/);
+  it("checks the script out from the default branch", () => {
+    assert.match(gateWorkflow, /ref: \$\{\{ github\.workflow_sha \}\}\n/);
     assert.doesNotMatch(gateWorkflow, /github\.event\.(pull_request|workflow_run)\.head\.(ref|sha|repo)/);
   });
 
   it("relays pull request and review events from a workflow with no permissions or secrets", () => {
     assert.match(relayWorkflow, /^permissions: \{\}$/m);
     assert.doesNotMatch(relayWorkflow, /secrets\./);
-    for (const event of ["pull_request", "pull_request_review", "pull_request_review_comment"]) {
+    for (const event of ["pull_request", "pull_request_review", "pull_request_review_comment", "merge_group"]) {
       assert.match(relayWorkflow, new RegExp(`^ {2}${event}:`, "m"));
     }
   });
 
   it("gives no producer workflow checks: write, so only the gate publishes", () => {
     for (const workflow of new Set(Object.values(PRODUCERS).map(({ workflow: path }) => path))) {
-      if (existsSync(new URL(workflow, ROOT))) assert.doesNotMatch(read(workflow), /checks: write/, workflow);
+      if (existsSync(new URL(workflow, ROOT))) assert.doesNotMatch(read(workflow), /checks: write|write-all/, workflow);
     }
-    assert.doesNotMatch(relayWorkflow, /checks: write/);
+    assert.doesNotMatch(relayWorkflow, /checks: write|write-all/);
   });
 });

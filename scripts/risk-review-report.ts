@@ -11,11 +11,10 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import { asObject, parseJson, type Json } from "./risk-review-policy.ts";
+import { CHECK_NAME } from "./risk-review.ts";
 
 /** A revert counts if it merged within this long after the pull request. */
 export const REVERT_WINDOW_DAYS = 14;
-
-const CHECK_NAME = "risk-review";
 
 /** The pull request fields the report reads. */
 export interface MergedPull {

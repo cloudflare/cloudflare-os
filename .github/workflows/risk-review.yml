@@ -5,29 +5,28 @@ name: Risk review
 # .github/automerge-bands.json sets whether the check mirrors today's rule (shadow) or reports the
 # gate's own decision (enforce).
 #
-# The gate is the only publisher. Producer workflows (Review verdict, Automerge evidence, Preview)
-# run on `pull_request`, upload one JSON artifact each and post nothing; the gate reads an artifact
-# only from a run bound to the pull request's head. Their completion, and the review relay, wake this
-# workflow through `workflow_run`; maintainer comments wake it through `issue_comment`. Both run this
-# file and check out the script from the default branch, never the pull request's copy, so a change
-# cannot rewrite its own gate. Nothing here checks out or runs pull request code.
+# The gate is the only publisher. Producer workflows (Review verdict, Automerge proofs, Automerge
+# evidence, Workshop eval comparison, Preview) upload one JSON artifact each and post nothing; the
+# gate reads an artifact only from a run bound to the pull request's head. Their completion, and the
+# review relay, wake this workflow through `workflow_run`; maintainer comments wake it through
+# `issue_comment`. Both run this file and check out the script from the default branch, never the
+# pull request's copy, so a change cannot rewrite its own gate. Nothing here checks out or runs pull
+# request code.
 #
-# `merge_group` runs this file from the merge group's commit, which includes the queued pull
-# requests; every change to this file or the script needs a person (NEVER_AUTO), and the script
-# itself is checked out at the group's base, `main`.
+# Merge groups reach the gate through the relay too, rather than through `merge_group` here: that
+# event runs on a `gh-readonly-queue/main/*` ref, and anyone who can push can create a branch under
+# that name, so an environment that admitted those refs would hand them the key. The gate decides a
+# merge group only when the merge queue lists its commit.
 #
-# The App's key is a secret of the `risk-review` environment, whose deployment branches are `main`
-# and `gh-readonly-queue/main/*`: a workflow a pull request adds runs on its own ref and can neither
-# read the key nor post as the App. There is no fallback to the job token, whose check runs any
-# workflow could forge.
+# The App's key is a secret of the `risk-review` environment, whose only deployment branch is
+# `main`: a workflow a pull request adds runs on its own ref and can neither read the key nor post as
+# the App. There is no fallback to the job token, whose check runs any workflow could forge.
 on:
   workflow_run:
-    workflows: [Risk review trigger, Review verdict, Automerge evidence, Preview]
+    workflows: [Risk review trigger, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison, Preview]
     types: [completed]
   issue_comment:
     types: [created, deleted]
-  merge_group:
-    types: [checks_requested]
 
 permissions: {}
 
@@ -42,7 +41,7 @@ jobs:
     # One run per commit at a time. Runs for one pull request can still overlap across events, so
     # each creates its check run before reading anything and leaves the commit to any newer one.
     concurrency:
-      group: risk-review-${{ github.event.workflow_run.head_sha || github.event.merge_group.head_sha || github.event.issue.number }}
+      group: risk-review-${{ github.event.workflow_run.head_sha || github.event.issue.number }}
       cancel-in-progress: false
     environment: risk-review
     permissions:
@@ -51,7 +50,7 @@ jobs:
       - name: Check out the trusted script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.merge_group.base_sha || github.workflow_sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Mint the risk-review app's token
@@ -63,6 +62,7 @@ jobs:
           permission-actions: read
           permission-checks: write
           permission-contents: read
+          permission-merge-queues: write
           permission-pull-requests: write
 
       - name: Decide and post the check run
