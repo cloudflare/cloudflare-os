@@ -511,7 +511,8 @@ export interface AuthenticatedApi extends RpcTarget {
   // to it, which leaves out any that holds restricted data or is owner-invites-only. Its members
   // may open the workspaces that it lists and that belong to it, each in the role their
   // membership gives them. Anyone else signed in sees of a space only the workspaces it lists
-  // that are published to the deployment; see the "Spaces" section below.
+  // that are published to the deployment and have no unpublished workspace above them in its
+  // tree; see the "Spaces" section below.
 
   /**
    * List the spaces the caller is a member of: their personal space first, then the others by
@@ -528,14 +529,14 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Open a space. A member of the space may always open it. Anyone else signed in may open it
-   * only while it lists at least one workspace published to the deployment
-   * (`SpaceWorkspaceInfo.published`), and then as a visitor, who sees those workspaces and no
-   * other (see `Space`).
+   * only while it lists a workspace published to the deployment (`SpaceWorkspaceInfo.published`)
+   * at the top of its tree, and then as a visitor, who sees only the published workspaces whose
+   * every ancestor in the tree is published too (see `Space`).
    *
    * Throws for a `key` that is not `isValidSpaceKey()`. A key no space has claimed, and a space
-   * that the caller is not a member of and that lists nothing published, fail with the same
-   * error: the call does not say which. The returned `Space` acts as the caller; dispose it when
-   * done.
+   * that the caller is not a member of and that has no published workspace at the top of its
+   * tree, fail with the same error: the call does not say which. The returned `Space` acts as
+   * the caller; dispose it when done.
    */
   openSpace(key: string): Promise<RpcStub<Space>>;
 
@@ -749,7 +750,12 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * `spaceKey` is the team space the workspace belongs to, and must satisfy
    * `isValidTeamSpaceKey()` or this throws; omitted, the workspace belongs to the caller's
-   * personal space. Nothing else about the space is checked here. A workspace is listed by its
+   * personal space. Nothing else about the space is checked here, nor about `parentId`, the
+   * entry of that space's listing to place the workspace under when the space first lists it
+   * (see `SpaceWorkspaceInfo.parentId`): if the space does not list `parentId` by then, the
+   * workspace is placed at the top of its tree. Once listed it stays where it was placed until
+   * it is moved with `Space.moveWorkspace`, or the entry it sits under leaves the listing and it
+   * moves up into that entry's place. A workspace is listed by its
    * space (`Space.listWorkspaces`) only once it has seen activity, and whether the caller may add
    * workspaces to that space is checked then: a workspace whose owner may not ends up in their
    * personal space instead, with no error. Once a team space lists it, the workspace is open to
@@ -761,7 +767,7 @@ export interface AuthenticatedApi extends RpcTarget {
    * a workspace `spaceKey` only records where its owner grouped it, and whether the owner may add
    * workspaces to that space is not checked once the workspace is one.
    */
-  newWorkspace(spaceKey?: string): Promise<RpcStub<Overseer>>;
+  newWorkspace(spaceKey?: string, parentId?: string): Promise<RpcStub<Overseer>>;
 
   /**
    * List metadata about all the user's workspaces. Used to display the front-page listing.
@@ -6124,14 +6130,18 @@ export type ShareLinkInfo = {
 // deployment with, if they did (see `Overseer.setPublicAccess`): a user gets the highest of the
 // three roles, and only the workspace's own sharing lets them share it with others.
 //
+// A space's listing is a tree: each entry sits at the top or under another entry of the same
+// listing, in an order among its siblings (see `SpaceWorkspaceInfo.parentId`, `position`).
+//
 // A space is never published, only single workspaces are. Someone signed in who is not a member
-// of a space may open it while it lists a published workspace, as a visitor: they see its info
-// and the published entries of its listing, and nothing else of it (see `Space`).
+// of a space may open it while a published workspace sits at the top of its tree, as a visitor:
+// they see its info and the entries of its listing that are published and have no unpublished
+// entry above them, and nothing else of it (see `Space`).
 //
 // A listed workspace can have an address within its space, a slug (see
-// `SpaceWorkspaceInfo.slug`). The address belongs to the workspace's entry in that listing, so a
-// workspace that leaves the listing gives it up, and one moved to another space gets a new
-// address there.
+// `SpaceWorkspaceInfo.slug`), and a place in its tree. Both belong to the workspace's entry in
+// that listing, so a workspace that leaves the listing gives them up, and one moved to another
+// space gets a new address and place there.
 // =======================================================================================
 
 /**
@@ -6185,17 +6195,18 @@ export function isValidSpaceKey(key: string): boolean {
 /**
  * A member's role in a space. Every member holds exactly one, and being a member in any role is
  * what lets a user open the space whatever it lists and see every workspace listed in it; anyone
- * else sees only the published ones, while there are any (see `Space`). The role also decides
- * how the member may open those workspaces.
+ * else sees only the published ones that have no unpublished workspace above them in the
+ * space's tree, while one sits at the top of it (see `Space`). The role also decides how the
+ * member may open those workspaces.
  *
  * - "admin": opens the space's workspaces to build, exactly as "build" does. May also change the
- *   member list of a team space (`Space.setMemberRole`, `Space.removeMember`) and the address of
- *   any workspace the space lists (`Space.setWorkspaceSlug`).
+ *   member list of a team space (`Space.setMemberRole`, `Space.removeMember`) and the address and
+ *   place of any workspace the space lists (`Space.setWorkspaceSlug`, `Space.moveWorkspace`).
  * - "build" and "use": ordinary members, named after the `CollaboratorRole` levels each confers
  *   on the space's workspaces: "build" opens them to build, "use" to use. In the space itself
  *   the two confer the same thing: reading its info, its member list and its listing of
  *   workspaces, resolving an address in it, adding workspaces of their own to a team space,
- *   changing the address of a workspace of their own that it lists, and leaving it.
+ *   changing the address and place of a workspace of their own that it lists, and leaving it.
  *
  * In a workspace a member acts in the highest of the role their membership confers, their
  * effective role as a collaborator, if the workspace's own sharing gives them one, and the role
@@ -6292,12 +6303,12 @@ export function slugify(title: string): string {
 }
 
 /**
- * One workspace in a space's listing, as returned by `Space.listWorkspaces`. Its `slug` is the
- * space's own to give and change; the rest is what the space recorded when the workspace last
- * registered with it. Opening the workspace is `AuthenticatedApi.openGadget(id)`, which a
- * member of the space may do in the role their membership gives them, if that role reaches the
- * workspace (see `SpaceMemberRole`), and which anyone signed in may do while the workspace is
- * published (see `published`).
+ * One workspace in a space's listing, as returned by `Space.listWorkspaces`. Its `slug`,
+ * `parentId` and `position` are the space's own to give and change; the rest is what the space
+ * recorded when the workspace last registered with it. Opening the workspace is
+ * `AuthenticatedApi.openGadget(id)`, which a member of the space may do in the role their
+ * membership gives them, if that role reaches the workspace (see `SpaceMemberRole`), and which
+ * anyone signed in may do while the workspace is published (see `published`).
  *
  * No entry describes a workspace that holds restricted data or is owner-invites-only
  * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a workspace is never
@@ -6335,10 +6346,27 @@ export interface SpaceWorkspaceInfo {
   slug?: string;
 
   /**
+   * The id of the entry of this same listing that the workspace sits under in the space's tree;
+   * absent when it sits at the top. Set when the space first lists the workspace (see
+   * `AuthenticatedApi.newGadget`) and changed by `Space.moveWorkspace`. When the entry it sits
+   * under leaves the listing, the entries that sat directly under that one take its place: they
+   * move under its own parent, in their order, where it stood among its siblings.
+   */
+  parentId?: string;
+
+  /**
+   * The workspace's order among its siblings, the entries with the same `parentId`: lower comes
+   * first. Absent for an entry the space has never positioned, which comes after its positioned
+   * siblings, newest `created` first; the space positions every sibling of a group whenever it
+   * reorders that group. Only the order is meaningful, not the value.
+   */
+  position?: number;
+
+  /**
    * The role anyone signed in to this deployment may open the workspace with, when its owner
    * has published it (see `Overseer.setPublicAccess`); absent when it is not published. The
-   * entries with this set are the ones someone who is not a member of the space sees (see
-   * `Space`).
+   * entries someone who is not a member of the space sees are the ones that have this set and
+   * that sit under no entry without it, however far up the tree (see `Space`).
    *
    * A stored snapshot of `GadgetMetadata.publicAccess`, like `title`: `setPublicAccess` brings
    * it up to date before it returns, and where that failed it follows at the workspace's next
@@ -6368,13 +6396,14 @@ export interface SpaceWorkspaceResolution {
  * removed or demoted loses those powers at once. Dispose the stub when done.
  *
  * That user is either a member of the space or a visitor: someone signed in who is not a
- * member, to whom the space is open only while it lists at least one workspace published to the
- * deployment (`SpaceWorkspaceInfo.published`). A visitor may call `getInfo`, `listWorkspaces`
- * and `resolveWorkspace`, and through them sees the published workspaces and no other. Every
- * other method refuses a visitor, and every method refuses someone who is not a member once the
- * space lists nothing published, in both cases with the error `AuthenticatedApi.openSpace`
- * gives for a key no space has claimed. A member who is removed is from then on a visitor, or
- * refused if the space lists nothing published.
+ * member, to whom the space is open only while a workspace published to the deployment
+ * (`SpaceWorkspaceInfo.published`) sits at the top of its tree. A visitor may call `getInfo`,
+ * `listWorkspaces` and `resolveWorkspace`, and through them sees only the published workspaces
+ * whose every ancestor in the tree is published too (see `SpaceWorkspaceInfo.parentId`). Every
+ * other method refuses a visitor, and every method refuses someone who is not a member once no
+ * published workspace sits at the top of the tree, in both cases with the error
+ * `AuthenticatedApi.openSpace` gives for a key no space has claimed. A member who is removed is
+ * from then on a visitor, or refused if no published workspace sits at the top of the tree.
  */
 export interface Space extends RpcTarget {
   /**
@@ -6390,14 +6419,18 @@ export interface Space extends RpcTarget {
   listMembers(): Promise<SpaceMemberInfo[]>;
 
   /**
-   * List the workspaces that belong to the space, newest first by `created`. Available to every
-   * member, whatever their role, and to a visitor, who gets only the entries of published
-   * workspaces (`SpaceWorkspaceInfo.published`). A workspace is listed once it has seen
-   * activity, so one that is still provisional (see `AuthenticatedApi.newGadget`) is absent,
-   * and it stays listed after its owner stops being a member. An entry carries the workspace's
-   * address within the space once it has one (`SpaceWorkspaceInfo.slug`); a workspace that
-   * leaves the listing, for any of the reasons below or because it was moved or deleted, gives
-   * that address up.
+   * List the workspaces that belong to the space, in depth-first pre-order of the space's tree:
+   * each entry before the entries under it, and siblings in their order
+   * (`SpaceWorkspaceInfo.parentId`, `position`), so the tree can be rebuilt from the list alone.
+   * Available to every member, whatever their role, and to a visitor, who gets only the entries
+   * of published workspaces (`SpaceWorkspaceInfo.published`) whose every ancestor in the tree is
+   * published too: an unpublished entry hides everything under it. A workspace is listed once it
+   * has seen activity, so one that is still provisional (see `AuthenticatedApi.newGadget`) is
+   * absent, and it stays listed after its owner stops being a member. An entry carries the
+   * workspace's address within the space once it has one (`SpaceWorkspaceInfo.slug`); a
+   * workspace that leaves the listing, for any of the reasons below or because it was moved or
+   * deleted, gives that address up, and the entries directly under it take its place in the
+   * tree, in their order.
    *
    * A workspace that holds restricted data or is owner-invites-only
    * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is never listed, because a
@@ -6428,8 +6461,9 @@ export interface Space extends RpcTarget {
    * Find the workspace of this space that `slug` addresses: the one whose current slug it is,
    * otherwise the one that used to have it (`canonical` false). Null when no workspace listed
    * in the space has or had that slug. Available to every member, like the listing, and to a
-   * visitor, for whom only a published workspace resolves, under its current slug or a former
-   * one: a slug of any other workspace gives a visitor null, as a slug nothing has does.
+   * visitor, for whom only a workspace the listing shows them resolves, a published one whose
+   * every ancestor in the tree is published too, under its current slug or a former one: a slug
+   * of any other workspace gives a visitor null, as a slug nothing has does.
    *
    * Only listed workspaces resolve. One that left the listing, because it was deleted, moved to
    * another space, came to hold restricted data or became owner-invites-only, no longer does,
@@ -6460,6 +6494,23 @@ export interface Space extends RpcTarget {
    * setting one of its own former slugs makes that one current again, no longer a former one.
    */
   setWorkspaceSlug(id: string, slug: string): Promise<SpaceWorkspaceInfo>;
+
+  /**
+   * Move the workspace `id` to another place in the space's tree, taking the entries under it
+   * along as a subtree: under the entry `parentId`, or to the top of the tree when it is null,
+   * immediately before its new sibling `beforeId`. It goes after the last of its new siblings
+   * instead when `beforeId` is omitted, is `id` itself, or is not (or is no longer) an entry
+   * directly under `parentId`, so a client acting on a stale listing still lands somewhere
+   * sensible. Allowed to the same callers as `setWorkspaceSlug`: a member of the space who is
+   * the workspace's owner, as the listing records them, or an admin of the space. Any other
+   * member is refused, and so is anyone who is not a member. No right on the new parent is
+   * needed.
+   *
+   * Throws when the space does not list `id`, when it does not list `parentId` ("No such parent
+   * workspace in this space."), and when `parentId` is `id` or an entry under it, which would
+   * make the tree a cycle ("A workspace cannot be moved under itself.").
+   */
+  moveWorkspace(id: string, parentId: string | null, beforeId?: string): Promise<void>;
 
   /**
    * Set the role of the user with this username/email to exactly `role`: adds them if they are
