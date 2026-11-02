@@ -1,7 +1,7 @@
 import { Button, DropdownMenu, LayerCard, Text } from "@cloudflare/kumo";
 import { ContextMenu } from "@cloudflare/kumo/primitives/context-menu";
 import { cn } from "@cloudflare/kumo/utils";
-import { CaretDownIcon, DotsSixVerticalIcon, FolderIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, DotsSixVerticalIcon, DotsThreeIcon, FolderIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import React, {
   useEffect,
@@ -34,6 +34,15 @@ const itemIcon = (item: HierarchicalListItem) => item.icon ?? (
     : null
 );
 
+const withActionsButton = (row: ReactNode, actionsButton: ReactNode) => actionsButton
+  ? (
+    <div className="group/hierarchical-list-row relative">
+      {row}
+      {actionsButton}
+    </div>
+  )
+  : row;
+
 /** Render state for an item that is being renamed inline. */
 export type HierarchicalListRenameOptions = {
   /** Whether the given item is currently in rename mode. */
@@ -60,28 +69,43 @@ export type HierarchicalListProps = HierarchicalListExpansionProps & {
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
   /** Optional inline rename rendering and state. */
   rename?: HierarchicalListRenameOptions;
+  /**
+   * Gives every row with `renderContextMenu` content a visible "More actions" button at its end,
+   * opening the same menu. It follows its row in the Tab order and, on devices that hover, shows
+   * while its row is hovered, focused, or selected.
+   */
+  showRowActions?: boolean;
 };
+
+/** What opened a row's actions: the row itself (its context menu) or its button. */
+type ActionsSource = "row" | "button";
 
 type StyledRowProps = {
   rowProps: HierarchicalListPrimitiveRowProps;
   state: HierarchicalListPrimitiveRowState;
-  actionsOpen: boolean;
+  actionsOpenFrom: ActionsSource | null;
   showTouchDragHandle: boolean;
-  onActionsOpenChange: (open: boolean) => void;
+  showRowActions: boolean;
+  /** Opens the row's actions from `source`, or closes them given null. */
+  onActionsChange: (source: ActionsSource | null) => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
   rename?: HierarchicalListRenameOptions;
 };
 
+type OpenActions = { itemId: string; source: ActionsSource };
+
 const StyledRow = ({
   rowProps,
   state,
-  actionsOpen,
+  actionsOpenFrom,
   showTouchDragHandle,
-  onActionsOpenChange,
+  showRowActions,
+  onActionsChange,
   renderContextMenu,
   rename,
 }: StyledRowProps) => {
   const rowRef = useRef<HTMLButtonElement>(null);
+  const actionsButtonRef = useRef<HTMLButtonElement>(null);
   const wasRenamingRef = useRef(false);
   const [actionsClosing, setActionsClosing] = useState(false);
   const actionsClosedTimerRef = useRef<number | null>(null);
@@ -94,21 +118,26 @@ const StyledRow = ({
     pressed,
     coarsePointer,
   } = state;
+  const actionsOpen = actionsOpenFrom !== null;
   const highlighted = selected || actionsOpen || pressed;
   const passiveMessage = item.appearance === "message" && !item.interactive;
   const renameRequested = rename?.isRenaming(item) ?? false;
   const renaming = renameRequested && !actionsOpen && !actionsClosing;
-  const handleActionsOpenChange = (open: boolean) => {
+  // The menu a press outside closes reports it before the menu that press opens reports opening,
+  // so the newer source always wins.
+  const handleActionsOpenChange = (source: ActionsSource) => (open: boolean) => {
     if (actionsClosedTimerRef.current !== null) {
       window.clearTimeout(actionsClosedTimerRef.current);
       actionsClosedTimerRef.current = null;
     }
     if (!open && actionsOpen) setActionsClosing(true);
-    onActionsOpenChange(open);
+    onActionsChange(open ? source : null);
   };
-  const handleActionsOpenChangeComplete = (open: boolean) => {
+  const handleActionsOpenChangeComplete = (source: ActionsSource) => (open: boolean) => {
     if (!open) {
-      if (document.activeElement === document.body) rowRef.current?.focus();
+      if (document.activeElement === document.body) {
+        (source === "button" ? actionsButtonRef : rowRef).current?.focus();
+      }
       // Base UI restores final focus in a microtask after this callback. Preserve the trigger until
       // the next task so rename cannot replace it before that restoration completes.
       actionsClosedTimerRef.current = window.setTimeout(() => {
@@ -134,6 +163,7 @@ const StyledRow = ({
     wasRenamingRef.current = renaming;
   }, [renaming]);
   const contextMenu = renaming ? null : renderContextMenu?.(item);
+  const actionsButtonShown = showRowActions && Boolean(contextMenu);
   const contents = (
     <>
       {item.appearance === "message" ? (
@@ -221,13 +251,16 @@ const StyledRow = ({
       )}
     </>
   );
+  const touchDragHandleShown = state.draggable && showTouchDragHandle;
   const rowClassName = cn(
     rowProps.className,
     "group relative focus-visible:z-20",
-    "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 pr-3 text-left",
+    "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 text-left",
+    actionsButtonShown ? "pr-10" : "pr-3",
     !renaming && !passiveMessage && "active:!bg-kumo-recessed",
     !renaming && state.draggable && "cursor-grab active:cursor-grabbing",
-    !renaming && state.draggable && showTouchDragHandle && "[@media(any-pointer:coarse)]:pr-11",
+    !renaming && touchDragHandleShown && actionsButtonShown && "[@media(any-pointer:coarse)]:pr-22",
+    !renaming && (touchDragHandleShown !== actionsButtonShown) && "[@media(any-pointer:coarse)]:pr-11",
     highlighted && "bg-kumo-recessed",
     coarsePointer && !renaming && (
       highlighted
@@ -266,15 +299,54 @@ const StyledRow = ({
   );
 
   if (!contextMenu) return row;
-  return (
+
+  // A sibling of the row, which is a button and so cannot contain one. It sits over the row's end
+  // inset, beside its touch drag handle, and lets drag events through to the row during a drag.
+  const actionsButton = actionsButtonShown && (
+    <Button
+      ref={actionsButtonRef}
+      type="button"
+      variant="ghost"
+      shape="square"
+      size="sm"
+      icon={<DotsThreeIcon aria-hidden="true" size={16} weight="bold" />}
+      aria-label={`More actions for ${item.name}`}
+      data-hierarchical-list-row-actions=""
+      className={cn(
+        "absolute right-1.5 top-1/2 z-20 -translate-y-1/2 text-kumo-subtle",
+        "[@media(any-pointer:coarse)]:size-11",
+        touchDragHandleShown
+          ? "[@media(any-pointer:coarse)]:right-11"
+          : "[@media(any-pointer:coarse)]:right-0",
+        "in-data-[drag-active]:pointer-events-none",
+        "transition-opacity duration-150 ease-out motion-reduce:transition-none",
+        !highlighted && cn(
+          "[@media(hover:hover)]:opacity-0",
+          "group-hover/hierarchical-list-row:opacity-100",
+          "group-focus-within/hierarchical-list-row:opacity-100",
+        ),
+      )}
+    />
+  );
+  return withActionsButton(
     <ContextMenu.Root
-      open={actionsOpen}
-      onOpenChange={handleActionsOpenChange}
-      onOpenChangeComplete={handleActionsOpenChangeComplete}
+      open={actionsOpenFrom === "row"}
+      onOpenChange={handleActionsOpenChange("row")}
+      onOpenChangeComplete={handleActionsOpenChangeComplete("row")}
     >
       <ContextMenu.Trigger render={row} />
       <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
-    </ContextMenu.Root>
+    </ContextMenu.Root>,
+    actionsButton && (
+      <DropdownMenu
+        open={actionsOpenFrom === "button"}
+        onOpenChange={handleActionsOpenChange("button")}
+        onOpenChangeComplete={handleActionsOpenChangeComplete("button")}
+      >
+        <DropdownMenu.Trigger render={actionsButton} />
+        <DropdownMenu.Content align="end">{contextMenu}</DropdownMenu.Content>
+      </DropdownMenu>
+    ),
   );
 };
 
@@ -283,9 +355,10 @@ export const HierarchicalList = ({
   renderContextMenu,
   rename,
   showTouchDragHandle = true,
+  showRowActions = false,
   ...props
 }: HierarchicalListProps) => {
-  const [openActionsItemId, setOpenActionsItemId] = useState<string | null>(null);
+  const [openActions, setOpenActions] = useState<OpenActions | null>(null);
 
   return (
     <LayerCard className="bg-kumo-control p-1">
@@ -327,9 +400,12 @@ export const HierarchicalList = ({
           <StyledRow
             rowProps={rowProps}
             state={state}
-            actionsOpen={openActionsItemId === state.item.id}
+            actionsOpenFrom={openActions?.itemId === state.item.id ? openActions.source : null}
             showTouchDragHandle={showTouchDragHandle}
-            onActionsOpenChange={(open) => setOpenActionsItemId(open ? state.item.id : null)}
+            showRowActions={showRowActions}
+            onActionsChange={(source) => setOpenActions(source
+              ? { itemId: state.item.id, source }
+              : null)}
             renderContextMenu={renderContextMenu}
             rename={rename}
           />
