@@ -5,8 +5,8 @@
 //
 // Triggers a gadgets-internal pipeline on its default branch with the trigger token, passing the
 // head SHA as CLOUDFLARE_OS_SHA; the `public-consumer-build` job there checks the submodule out at
-// exactly that commit, builds and tests, and does nothing else
-// (drafts/gadgets-internal-consumer-build.patch in the automerge workspace adds it). Then polls the
+// exactly that commit, builds and tests, and does nothing else; gadgets-internal's .gitlab-ci.yml
+// has to add that job (and keep trigger pipelines out of its release chain). Then polls the
 // pipeline with a read-only token. The result is bound to the pipeline this run created: the
 // pipeline's id, its `trigger` source, its CLOUDFLARE_OS_SHA variable and the job's own pipeline
 // id must all match. It holds when that job succeeded.
