@@ -9,6 +9,7 @@
     "./action-files": "./src/action-files.ts",
     "./actions": "./src/actions.ts",
     "./auth-retry": "./src/auth-retry.ts",
+    "./central-oauth": "./src/central-oauth.ts",
     "./cache": "./src/cache.ts",
     "./connect-handshake": "./src/connect-handshake.ts",
     "./connect-nonce": "./src/connect-nonce.ts",

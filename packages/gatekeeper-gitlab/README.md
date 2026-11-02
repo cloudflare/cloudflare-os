@@ -213,3 +213,11 @@ above — or is a member only at Guest. Being able to open the project in GitLab
 even on an `internal` or `public` one: a project can hold confidential issues and internal notes
 that only members at those roles see, and the workspace may have read them. The remedy is for a
 project maintainer to add the collaborator as a Reporter (inherited group membership counts).
+
+## Managed central OAuth
+
+Managed installations can set `CENTRAL_GATEKEEPER_URL` and the installer-owned
+`CFOS_INSTALL_ID`, `CFOS_INSTALL_KEY_ID`, and `CFOS_INSTALL_PRIVATE_KEY` secrets instead of
+shipping `CLIENT_ID`/`CLIENT_SECRET`. The central service must have an OAuth app registered
+for `GITLAB_URL`. Its issuer is bound to the stored grant; changing the issuer requires a new
+connection/installation. Existing resource APIs and GitLab permissions still apply.

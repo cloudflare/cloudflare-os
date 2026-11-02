@@ -7,6 +7,7 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { UserAccount } from "../../src/gitlab.js";
 import { getRedirectUri, withAccountApi, type Env } from "../../src/gitlab-env.js";
 import { FakeGitLab, hooks, json, seedAccount, stageReconnect, tokenResponse, unwrap } from "./fake-gitlab.js";
 
@@ -531,5 +532,70 @@ describe("GatekeeperUserImpl identity", () => {
     expect(described.displayName).toBe("Ada");
     confirmed = false;
     expect(await unwrap(await hooks().userEmail(id))).toBeNull();
+  });
+});
+
+
+describe("managed GitLab connection", () => {
+  const grant = () => ({ credentialId: "c".repeat(64), accessToken: "managed-access",
+    expiresAt: Date.now() + 3_600_000, scopes: ["api", "write_repository"],
+    providerData: { origin: "https://gitlab.example.com" } });
+  async function managedEnv(): Promise<Env> {
+    const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    return { ...env, CENTRAL_GATEKEEPER_URL: "https://central.test", CFOS_INSTALL_ID: "install",
+      CFOS_INSTALL_KEY_ID: "key", CFOS_INSTALL_PRIVATE_KEY: btoa(String.fromCharCode(...new Uint8Array(
+        await crypto.subtle.exportKey("pkcs8", pair.privateKey) as ArrayBuffer))) };
+  }
+  it("stages a nonce-bound managed grant and commits it without storing a provider refresh token", async () => {
+    const id = await seedAccount({ accessToken: "old" });
+    await hooks().installCallback(id);
+    const configured = await managedEnv();
+    await runInDurableObject(accountStub(id), async (_instance, state) => {
+      const account = new UserAccount(state, configured);
+      await account.prepareReconnect("initiation");
+      const flow = await account.beginOAuthFlow("initiation", getRedirectUri(configured));
+      expect(await account.acceptCentralGrant(grant(), "wrong-nonce")).toBeNull();
+      const handoff = await account.acceptCentralGrant(grant(), flow!.oauthNonce);
+      expect(await account.acceptCentralGrant(grant(), flow!.oauthNonce)).toBeNull();
+      await account.commitReconnect(handoff!.ticket);
+      const stored = state.storage.kv.get<StoredGrant>("credentials")!;
+      expect(stored.refreshToken).toBe(`cgc1.${"c".repeat(64)}`);
+      expect(await account.getAccessToken()).toBe("managed-access");
+      await expect(account.acceptAuthCode("code", "nonce")).rejects.toThrow("Direct OAuth is disabled");
+    });
+  });
+  it("rejects a managed grant from a different GitLab issuer without replacing the live connection", async () => {
+    const id = await seedAccount({ accessToken: "old" });
+    await hooks().installCallback(id);
+    const configured = await managedEnv();
+    await runInDurableObject(accountStub(id), async (_instance, state) => {
+      const account = new UserAccount(state, configured);
+      await account.prepareReconnect("init");
+      const flow = await account.beginOAuthFlow("init", getRedirectUri(configured));
+      await expect(account.acceptCentralGrant({ ...grant(), providerData: { origin: "https://gitlab.com" } }, flow!.oauthNonce))
+        .rejects.toThrow("another instance");
+      expect(state.storage.kv.get<StoredGrant>("credentials")?.accessToken).toBe("old");
+    });
+  });
+  it("renews through the central service and disconnects only its opaque installation grant", async () => {
+    const id = await seedAccount({ accessToken: "expired" });
+    const configured = await managedEnv();
+    await runInDurableObject(accountStub(id), async (_instance, state) => {
+      const account = new UserAccount(state, configured);
+      state.storage.kv.put("credentials", { accessToken: "expired", refreshToken: `cgc1.${"c".repeat(64)}`,
+        expiresAt: 0, scopes: ["api"], providerOrigin: configured.GITLAB_URL });
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", async (url: URL, init: RequestInit) => {
+        calls.push(url.href);
+        const body = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
+        expect(body.credentialId).toBe("c".repeat(64));
+        expect(JSON.stringify(body)).not.toContain("test-client-secret");
+        return Response.json(url.pathname === "/refresh" ? { ok: true, grant: grant() } : { ok: true });
+      });
+      expect(await account.getAccessToken()).toBe("managed-access");
+      await account.revoke();
+      expect(calls).toEqual(["https://central.test/refresh", "https://central.test/revoke"]);
+      expect(state.storage.kv.get("credentials")).toBeUndefined();
+    });
   });
 });
