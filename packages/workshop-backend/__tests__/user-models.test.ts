@@ -218,6 +218,30 @@ describe("UserDurableObject gateway model modes", () => {
     expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
   }));
 
+  it("keeps a gateway model chosen as the quick model, falling back to the deployment's",
+      () => inGatewayUser(async user => {
+    const fallback = (await user.getChatContext(null)).quickModel;
+    expect(fallback?.provider).toBe("cloudflare");
+    expect(await user.getQuickModel()).toBeNull();
+
+    await user.setQuickModel(ENABLED_ID);
+    expect(await user.getQuickModel()).toBe(ENABLED_ID);
+    expect((await user.getChatContext(null)).quickModel)
+        .toMatchObject({ provider: "anthropic", model: ENABLED_ID });
+
+    // A choice that no longer resolves reads back as none, and quick tasks use the deployment's.
+    await user.setQuickModel("no-such-model");
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel).toEqual(fallback);
+  }));
+
+  it("falls back to the deployment's quick model when the chosen one is disabled",
+      () => inGatewayUser(async user => {
+    await user.setQuickModel(ENABLED_ID);
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel?.provider).toBe("cloudflare");
+  }, DISABLED));
+
   it("starts a new conversation on the first offered model when the preference is hidden",
       () => inGatewayUser(async user => {
     await user.setPreferredModel(HIDDEN_ID);

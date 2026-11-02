@@ -602,11 +602,12 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Set the model to use for simple quick tasks, like generating chat titles. Set null to
-   * disable quick model use (e.g. chats will be titled "New Chat").
+   * disable quick model use (e.g. chats will be titled "New Chat"); in AI Gateway mode, null and
+   * a model that no longer resolves leave quick tasks to the deployment's own quick model.
    */
   setQuickModel(id: string | null): Promise<void>;
 
-  /** Get the quick model setting. */
+  /** Get the quick model setting: null when unset or when the model no longer resolves. */
   getQuickModel(): Promise<null | string>;
 
   /**

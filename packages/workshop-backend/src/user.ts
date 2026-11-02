@@ -763,7 +763,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async getQuickModel(): Promise<null | string> {
     let result = this.storage.quickModel.get();
-    if (result && this.storage.aiModels.get(result)) {
+    // A gateway model is not stored here, so the choice is looked up the way a chat's model is.
+    if (result && this.#resolveModel(result, await getGatewayModels(this.env))) {
       return result;
     } else {
       return null;
@@ -897,19 +898,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
 
-    // Resolve the quick model (used for lightweight tasks like title generation).
-    if (models) {
-      // In AI Gateway mode, always use the hardcoded quick model.
-      result.quickModel = models.gateway.getQuickModelConfig();
-    } else {
-      let quickModelId = this.storage.quickModel.get();
-      if (quickModelId) {
-        let quickModel = this.storage.aiModels.get(quickModelId);
-        if (quickModel) {
-          result.quickModel = quickModel.config;
-        }
-      }
-    }
+    // Resolve the quick model (used for lightweight tasks like title generation): the user's
+    // choice while it resolves, else in AI Gateway mode the deployment's own.
+    let quickModelId = this.storage.quickModel.get();
+    result.quickModel = (quickModelId ? this.#resolveModel(quickModelId, models)?.config : undefined)
+        ?? models?.gateway.getQuickModelConfig();
     return result;
   }
 
