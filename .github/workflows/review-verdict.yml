@@ -1,0 +1,105 @@
+name: Review verdict
+
+# One model review per reviewer for each non-draft head, parsed into the `automerge-<model>.json`
+# artifact the risk-review gate reads. This workflow publishes nothing itself: no check run, no
+# comment, no `checks: write`. The reviewer reads a copy of the head built from git objects with
+# every instruction file taken from the base commit, and the gateway secrets reach only the step
+# that runs opencode.
+#
+# The scripts run from the head checkout. On `pull_request` this file is the head's too, so a base
+# checkout of the scripts would add no protection; instead, the gate gives no AI decision to a pull
+# request that touches this workflow or `scripts/automerge/**`, so every verdict it uses came from
+# the scripts on the base branch.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # A newer head makes this review stale; a cancelled run counts as no review of its head.
+  cancel-in-progress: true
+
+jobs:
+  verdict:
+    name: Verdict (${{ matrix.model }})
+    # Fork pull requests get no gateway secrets, and the gate ignores their artifacts; bot pull
+    # requests get Dependabot's secrets only.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+      github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      # Lists this workflow's earlier runs and jobs to count review rounds.
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [sol, opus]
+    env:
+      MODEL: ${{ matrix.model }}
+    steps:
+      # Full history for the merge base and earlier reviewed heads.
+      - name: Check out the head with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: "24.19.0"
+          run-install: false
+
+      - name: Prepare the review
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO_DIR: ${{ github.workspace }}
+          JOB_NAME: Verdict (${{ matrix.model }})
+        run: node scripts/automerge/verdict/verdict.ts prepare
+
+      # The platform binary straight from the registry, checked against a pinned sha256 so the
+      # reviewer cannot change under the same version. Bump the version and hash together, and
+      # check `opencode models cloudflare-ai-gateway --verbose` still lists both models' variants.
+      - name: Install opencode
+        if: steps.prepare.outputs.review == 'true'
+        env:
+          OPENCODE_TARBALL: https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-1.18.33.tgz
+          OPENCODE_SHA256: 149a676b59224b196626abda2fdbd34c8329ac326b57c4891ba3de446f3ca3c1
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/opencode.tgz" "$OPENCODE_TARBALL"
+          echo "$OPENCODE_SHA256  $RUNNER_TEMP/opencode.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/opencode"
+          tar -xzf "$RUNNER_TEMP/opencode.tgz" -C "$RUNNER_TEMP/opencode" --strip-components=1
+
+      - name: Review
+        if: steps.prepare.outputs.review == 'true'
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          OPENCODE_BIN: ${{ runner.temp }}/opencode/bin/opencode
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+        run: node scripts/automerge/verdict/verdict.ts review
+
+      - name: Write the verdict
+        if: ${{ !cancelled() }}
+        run: node scripts/automerge/verdict/verdict.ts finalize
+
+      - name: Upload the verdict
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-${{ matrix.model }}
+          path: ${{ runner.temp }}/automerge-${{ matrix.model }}.json
+          if-no-files-found: error
+          overwrite: true
