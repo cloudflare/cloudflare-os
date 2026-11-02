@@ -507,7 +507,8 @@ export interface AuthenticatedApi extends RpcTarget {
 
   // --- Spaces ---
   //
-  // A space is a key, a display name and a member list; see the "Spaces" section below.
+  // A space is a key, a display name, a member list and a listing of the workspaces that belong
+  // to it; see the "Spaces" section below.
 
   /**
    * List the spaces the caller is a member of: their personal space first, then the others by
@@ -730,8 +731,15 @@ export interface AuthenticatedApi extends RpcTarget {
    *   new*Gatekeeper() will not clear the provisional bit (as long as the gatekeeper isn't bound
    *   into a gadget), so provisional workspaces are useful to allow the user to write an initial
    *   chat message without explicitly creating a new workspace.
+   *
+   * `spaceKey` is the team space the workspace belongs to, and must satisfy
+   * `isValidTeamSpaceKey()` or this throws; omitted, the workspace belongs to the caller's
+   * personal space. Nothing else about the space is checked here. A workspace is listed by its
+   * space (`Space.listWorkspaces`) only once it has seen activity, and whether the caller may add
+   * workspaces to that space is checked then: a workspace whose owner may not ends up in their
+   * personal space instead, with no error.
    */
-  newWorkspace(): Promise<RpcStub<Overseer>>;
+  newWorkspace(spaceKey?: string): Promise<RpcStub<Overseer>>;
 
   /**
    * List metadata about all the user's workspaces. Used to display the front-page listing.
@@ -924,10 +932,17 @@ export interface AuthenticatedApi extends RpcTarget {
    * keyed by binding name. Throws if any are missing or if accountId/modelId are invalid.
    *
    * The returned Overseer can be used immediately (pipelining-friendly).
+   *
+   * `spaceKey` is the team space the new workspace belongs to, exactly as for `newGadget()`: it
+   * must satisfy `isValidTeamSpaceKey()` or this throws, and omitted means the caller's personal
+   * space. The workspace is listed by its space only once it has seen activity; whether the
+   * caller may add workspaces to that space is checked then, and a workspace whose owner may not
+   * ends up in their personal space instead, with no error.
    */
   newWorkspaceFromBlueprint(
     blueprintId: string,
-    bindings: Record<string, BlueprintBindingAssignment>
+    bindings: Record<string, BlueprintBindingAssignment>,
+    spaceKey?: string
   ): Promise<RpcStub<Overseer>>;
 
   /**
@@ -2347,6 +2362,22 @@ export type WorkspaceMetadata = {
   ownerInvitesOnly?: boolean;
 
   /**
+   * The team space this workspace belongs to; absent means its owner's personal space. It is
+   * only ever a team space key (see `isValidTeamSpaceKey`), never a personal one. Set by
+   * `AuthenticatedApi.newGadget` and `newGadgetFromBlueprint`, and changed by
+   * `Overseer.moveToSpace`. The server changes it as well, with no call asking it to: when the
+   * space it names refuses to list the workspace (see those methods for when that is decided),
+   * the key is cleared, or set back to the team space that still lists the workspace. Until its
+   * space has listed the workspace, the key says only where the workspace was asked to go.
+   *
+   * Set only on the owner's own record of the workspace, which is what
+   * `AuthenticatedApi.listGadgets` returns for a workspace the caller owns. A record of a
+   * workspace shared with the user (`owner` present) and the metadata an `Overseer` reports never
+   * carry it, so there its absence says nothing about where the workspace belongs.
+   */
+  spaceKey?: string;
+
+  /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,
    * the default gadget ID should be assumed. This is largely for backwards compatibility with
    * records that were stored before workspaces could have multiple gadgets.
@@ -2772,6 +2803,29 @@ export interface Overseer extends RpcTarget {
 
   /** Rename the workspace: change its title. */
   setTitle(title: string): Promise<void>;
+
+  /**
+   * Move this workspace to another space. Owner only: a collaborator is refused, whatever their
+   * role. `spaceKey` is a team space key, which must satisfy `isValidTeamSpaceKey()` or this
+   * throws, or null to return the workspace to its owner's personal space.
+   *
+   * After a move that succeeds the target space lists the workspace, the space it left no longer
+   * does, and `GadgetMetadata.spaceKey` on the owner's record follows. When the owner may not add
+   * workspaces to the target space (see `SpaceKind` for who may), this throws and the workspace
+   * is not moved.
+   *
+   * A move can also fail with no answer from a space, one that could not be reached for
+   * instance. This throws too, but `GadgetMetadata.spaceKey` may be left as the move would have
+   * set it, because the space may have carried out what it did not answer. A later sync of the
+   * workspace with its space, which its next activity, change of title or move starts, then
+   * either completes the move or returns the workspace to the space that still lists it. So
+   * after such a failure read `spaceKey` again.
+   *
+   * A workspace that has seen no activity yet is listed by no space, so for one the move is only
+   * recorded: it is checked when the workspace first sees activity, with the outcome
+   * `AuthenticatedApi.newGadget` describes.
+   */
+  moveToSpace(spaceKey: string | null): Promise<void>;
 
   /**
    * Instruct the workspace to delete itself, removing it from the User's workspace list and
@@ -5920,9 +5974,15 @@ export type ShareLinkInfo = {
 // =======================================================================================
 // Spaces
 //
-// A space is a named set of users: a key, a display name and a member list. Every user has one
-// personal space and may create team spaces. The space's member list is the only authority on
-// who belongs to it and in what role.
+// A space is a named set of users and a grouping of workspaces: a key, a display name, a member
+// list and a listing of the workspaces that belong to it. Every user has one personal space and
+// may create team spaces. Every workspace belongs to exactly one space: its owner's personal
+// space, unless the owner placed it in a team space.
+//
+// The space's member list is the only authority on who belongs to it and in what role. Being a
+// member lets a user see the space's listing of workspaces. The listing describes those
+// workspaces and grants nothing on them: whether a user can open one is decided by that
+// workspace's own sharing.
 // =======================================================================================
 
 /**
@@ -5930,9 +5990,11 @@ export type ShareLinkInfo = {
  *
  * - "personal": one per user, created the first time it is needed (see
  *   `AuthenticatedApi.listSpaces`). Its owner is its only admin: the owner can be neither demoted
- *   nor removed, and nobody else can be made admin. It can have other members.
+ *   nor removed, and nobody else can be made admin. It can have other members, but only its
+ *   owner adds workspaces to it.
  * - "team": created with `AuthenticatedApi.createSpace` and administered by its "admin" members,
- *   of whom there is always at least one.
+ *   of whom there is always at least one. Any member, whatever their role, may add workspaces
+ *   they own to it.
  */
 export type SpaceKind = "personal" | "team";
 
@@ -5971,11 +6033,12 @@ export function isValidSpaceKey(key: string): boolean {
 
 /**
  * A member's role in a space. Every member holds exactly one, and being a member in any role is
- * what lets a user open the space.
+ * what lets a user open the space and see the workspaces listed in it.
  *
  * - "admin": may also change the member list (`Space.setMemberRole`, `Space.removeMember`).
  * - "build" and "use": ordinary members, named after the `CollaboratorRole` levels. In the space
- *   itself the two confer the same thing: reading its info and member list, and leaving it.
+ *   itself the two confer the same thing: reading its info, its member list and its listing of
+ *   workspaces, adding workspaces of their own to a team space, and leaving it.
  */
 export type SpaceMemberRole = "admin" | "build" | "use";
 
@@ -6022,6 +6085,29 @@ export interface SpaceMemberInfo {
 }
 
 /**
+ * One workspace in a space's listing, as returned by `Space.listWorkspaces`. It is what the space
+ * recorded when the workspace last registered with it, so it describes the workspace without
+ * granting anything on it: opening the workspace is `AuthenticatedApi.openGadget(id)`, which
+ * decides access from the workspace's own sharing.
+ */
+export interface SpaceWorkspaceInfo {
+  /** The workspace's id, as in `GadgetMetadata.id`. */
+  id: string;
+
+  /** The workspace's title. A stored snapshot, which may trail a change of title. */
+  title: string;
+
+  /**
+   * The workspace's owner, who need not still be a member of the space. The display name is a
+   * stored snapshot and may trail a rename.
+   */
+  owner: AiChatAuthorInfo;
+
+  /** When the workspace was created. */
+  created: Date;
+}
+
+/**
  * A space opened by one user, obtained from `AuthenticatedApi.openSpace` or `createSpace`. The
  * stub acts as that user and carries no standing permission of its own: every method looks the
  * user's membership up again when it is called, so a stub held by someone who has since been
@@ -6036,6 +6122,23 @@ export interface Space extends RpcTarget {
    * owner is listed too, as its sole admin.
    */
   listMembers(): Promise<SpaceMemberInfo[]>;
+
+  /**
+   * List the workspaces that belong to the space, newest first by `created`. Available to every
+   * member, whatever their role. A workspace is listed once it has seen activity, so one that is
+   * still provisional (see `AuthenticatedApi.newGadget`) is absent, and it stays listed after
+   * its owner stops being a member.
+   *
+   * The listing trails the workspaces it describes. A workspace registers with its space in the
+   * background once it has seen activity, not within the call that caused the activity, so it
+   * appears a moment later. One that has seen activity and that no space lists yet, because it
+   * is older than the listing or its registration failed, appears at its next activity or change
+   * of title, or once a catch-up that its owner's `AuthenticatedApi.listSpaces` starts reaches it.
+   *
+   * Seeing a workspace listed is all that membership gives a user here: it does not let them open
+   * the workspace.
+   */
+  listWorkspaces(): Promise<SpaceWorkspaceInfo[]>;
 
   /**
    * Set the role of the user with this username/email to exactly `role`: adds them if they are
