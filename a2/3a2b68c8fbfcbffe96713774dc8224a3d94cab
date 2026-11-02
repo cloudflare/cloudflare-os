@@ -1,0 +1,27 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_1e2c74fa3cab0c::t_aa77e40573fbba 3,24,42,164-185,373,380
+packages/gatekeeper-kit/USAGE.md
+  s_1e2c74fa3cab0c::t_aa77e40573fbba 547-550
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_1e2c74fa3cab0c::t_aa77e40573fbba 19,77-81,386-392,538-542
+AGENTS.md
+  s_1e2c74fa3cab0c::t_aa77e40573fbba 64
+REVIEW.md
+  s_1e2c74fa3cab0c::t_03a02f45f9bd90 55-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a23a2b68c8fbfcbffe96713774dc8224a3d94cab",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

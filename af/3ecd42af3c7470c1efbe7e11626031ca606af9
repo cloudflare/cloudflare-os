@@ -1,0 +1,49 @@
+packages/api-cli/tsconfig.json
+  s_34892ac5042fc9::t_6fb63f60156174 2,8-10
+packages/api-cli/vite.config.ts
+  s_34892ac5042fc9::t_83461d02e0b102 2-4,20-23,37
+packages/api-schema/scripts/generate.ts
+  s_34892ac5042fc9::t_f3bb8d80d4d2b2 3,6,10-13,23-32,34,36,38-39,45-46,159-218,221-222,224-234,237-238,252-258,262,264-267
+  s_34892ac5042fc9::t_0554cb7b867cd6 239,248,268
+packages/api-cli/package.json
+  s_34892ac5042fc9::t_58195dfa67d27d 7
+packages/api-schema/vite.config.ts
+  s_34892ac5042fc9::t_58195dfa67d27d 3,5-22
+packages/integration-tests/vite.config.ts
+  s_34892ac5042fc9::t_83461d02e0b102 54-55,61
+packages/api-schema/src/schema.ts
+  s_34892ac5042fc9::t_a7310e1681a113 14
+packages/api-schema/src/extract.ts
+  s_34892ac5042fc9::t_a7310e1681a113 11,65-73,117
+  s_34892ac5042fc9::t_55db6dd5254848 110
+package.json
+  s_34892ac5042fc9::t_641fb2a31ea6b5 19,25,29
+.gitignore
+  s_34892ac5042fc9::t_641fb2a31ea6b5 16-19
+plans/capnweb-api-schema.md
+  s_34892ac5042fc9::t_9ec245a72942ea 143,342,397,399,416,424
+packages/api-cli/README.md
+  s_34892ac5042fc9::t_34b43ff7b3c80c 9-10,298-300,492-501,524-529,560-563
+packages/api-schema/README.md
+  s_34892ac5042fc9::t_5195b6fd6ce229 70-71,116,118-130,136-137
+packages/integration-tests/package.json
+  s_34892ac5042fc9::t_83461d02e0b102 15
+packages/api-cli/generator/generate.test.ts
+  s_34892ac5042fc9::t_6fb63f60156174 2-4,18,21-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "af3ecd42af3c7470c1efbe7e11626031ca606af9",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

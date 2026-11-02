@@ -1,0 +1,28 @@
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_7fc51d1a2fa564::t_b3e62bfa37ee5f 1910-1922,2222-2317
+packages/workshop-backend/src/ai-models.ts
+  s_7fc51d1a2fa564::t_c1476c71a7a8e9 6-7,42,1238
+  s_7fc51d1a2fa564::t_b3e62bfa37ee5f 79-81,537-539,581,598-600,659-668,790-811,1108-1109,1121-1138,1218-1222,1285-1298,1301
+docs/chatgpt-sign-in.md
+  s_7fc51d1a2fa564::t_b3e62bfa37ee5f 1-23
+packages/workshop-backend/src/overseer.ts
+  s_7fc51d1a2fa564::t_b3e62bfa37ee5f 7375-7383,7410,10866-10873,11587
+packages/workshop-backend/AGENTS.md
+  s_7fc51d1a2fa564::t_908429630b79c8 92-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "27c7064a2ebc0962444a4b0a150d636b7c2e8dbe",
+  "prompts": {},
+  "sessions": {
+    "s_7fc51d1a2fa564": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "588cd850-8c63-4107-819a-1d881489e682",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

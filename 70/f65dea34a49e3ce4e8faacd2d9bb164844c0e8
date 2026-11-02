@@ -1,0 +1,26 @@
+packages/gatekeeper-confluence/README.md
+  s_1e2c74fa3cab0c::t_dfcfa65d8aeb80 132-134
+packages/gatekeeper-confluence/__tests__/apply.test.ts
+  s_1e2c74fa3cab0c::t_58aab1c3ea114f 5,12,237-281
+  s_1e2c74fa3cab0c::t_96a20c2e14a28f 282-283
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_1e2c74fa3cab0c::t_cf80b128f7c0b7 17-19,389-426,440,544
+packages/gatekeeper-confluence/src/confluence.ts
+  s_1e2c74fa3cab0c::t_bd615f6f49c46c 67,644,692,739
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "70f65dea34a49e3ce4e8faacd2d9bb164844c0e8",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

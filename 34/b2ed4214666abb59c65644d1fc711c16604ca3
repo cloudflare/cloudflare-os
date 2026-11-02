@@ -1,0 +1,34 @@
+REVIEW.md
+  s_34892ac5042fc9::t_79dc56bed470b9 41-46
+packages/integration-tests/src/harness.ts
+  s_34892ac5042fc9::t_710eb99b1f3b84 118-123
+packages/workshop-backend/__tests__/cli-admins-only.test.ts
+  s_34892ac5042fc9::t_11f14902e64feb 1-151
+packages/workshop-backend/src/env.d.ts
+  s_34892ac5042fc9::t_ea67b680474bfb 13-17
+packages/workshop-backend/src/server.ts
+  s_34892ac5042fc9::t_569f9ff936d349 91-115,159,749-750,755-764,767,823,839,884,913,921,1065-1070,1072
+scripts/run-dev-server.ts
+  s_34892ac5042fc9::t_277127807029a6 574-575
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "34b2ed4214666abb59c65644d1fc711c16604ca3",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+packages/api-schema/src/extract.ts
+  s_bfd2947bc4cac9::t_70759986b2faf3 735-740
+  s_bfd2947bc4cac9::t_6de4b13d76cf0b 347-350,353,357-360
+  s_bfd2947bc4cac9::t_02aaed1af09ed4 7-12
+  s_bfd2947bc4cac9::t_b1f2ba754e40ce 6,361,393-395,428-430,512-513
+packages/api-cli/src/run.test.ts
+  s_bfd2947bc4cac9::t_cd03f47dafee80 61-63,690-697
+packages/api-cli/src/run.ts
+  s_bfd2947bc4cac9::t_b82a3214cd0559 666-668,1472-1473
+packages/api-schema/__tests__/extract.test.ts
+  s_bfd2947bc4cac9::t_1c63b38e3d88ef 267-278,436-452
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f0acc4df6663184d68e8d52dc295ff7cb571457a",
+  "prompts": {},
+  "sessions": {
+    "s_bfd2947bc4cac9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b0264d5-e72c-4a1d-b98d-75522f6a7c1e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

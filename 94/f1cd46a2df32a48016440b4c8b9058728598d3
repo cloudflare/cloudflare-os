@@ -1,0 +1,97 @@
+docs/testing.md
+  s_34892ac5042fc9::t_3fd2b884d52e75 8-9,11-12
+package.json
+  s_34892ac5042fc9::t_9fe6faa5e9620b 19
+packages/api-cli/generator/__fixtures__/src/table.ts
+  s_34892ac5042fc9::t_bc010a34dccfcc 1-4
+packages/api-cli/package.json
+  s_34892ac5042fc9::t_32bdbbf44758bc 1-20
+packages/api-cli/src/main.ts
+  s_34892ac5042fc9::t_9c3892e2bae1e2 1-101
+packages/api-cli/src/output.ts
+  s_34892ac5042fc9::t_17e410dcfaa8cc 1-28
+packages/api-cli/tsconfig.json
+  s_34892ac5042fc9::t_1e54487fadbdc8 1-22
+packages/api-cli/vite.config.ts
+  s_34892ac5042fc9::t_5763d693d30264 1-34
+pnpm-lock.yaml
+  s_34892ac5042fc9::t_2acb08e73ec203 85-106
+scripts/vitest-task.test.ts
+  s_34892ac5042fc9::t_9011e7be3b9128 23
+vite.config.ts
+  s_34892ac5042fc9::t_7c1cdd82c8e705 179-181,188-191
+packages/api-cli/README.md
+  s_34892ac5042fc9::t_a5ec8654464632 1-260
+packages/api-cli/generated/agent-types.ts
+  s_34892ac5042fc9::t_d4d0657e3df26e 1-7289
+packages/api-cli/generated/commands.ts
+  s_34892ac5042fc9::t_ec63adb46b3977 1-3524
+packages/api-cli/generator/__fixtures__/generated/commands.ts
+  s_34892ac5042fc9::t_b19f98d5f2a418 1-217
+packages/api-cli/generator/__fixtures__/generated/schema.json
+  s_34892ac5042fc9::t_2dd6bf01d1e5a8 1-571
+packages/api-cli/generator/emit.test.ts
+  s_34892ac5042fc9::t_e63224edc5a3d0 1-403
+packages/api-cli/generator/emit.ts
+  s_34892ac5042fc9::t_7498bbd3020994 1-535
+packages/api-cli/generator/generate.test.ts
+  s_34892ac5042fc9::t_d534517b4e89f7 1-42
+packages/api-cli/src/api.test.ts
+  s_34892ac5042fc9::t_a2691d548da1a6 1-591
+packages/api-cli/src/api.ts
+  s_34892ac5042fc9::t_9148ed10f783e7 1-214
+packages/api-cli/src/callbacks.test.ts
+  s_34892ac5042fc9::t_5c85c3549e2f57 1-158
+packages/api-cli/src/callbacks.ts
+  s_34892ac5042fc9::t_90a3bd7dcc65ee 1-100
+packages/api-cli/src/codec.test.ts
+  s_34892ac5042fc9::t_3ad6fba8df91ff 1-241
+packages/api-cli/src/codec.ts
+  s_34892ac5042fc9::t_7a5ca2bd75dfbc 1-376
+packages/api-cli/src/create-account.test.ts
+  s_34892ac5042fc9::t_7955a97fdead3d 1-67
+packages/api-cli/src/create-account.ts
+  s_34892ac5042fc9::t_f9f0e2d44d6924 1-154
+packages/api-cli/src/main.test.ts
+  s_34892ac5042fc9::t_babd80f6f31d6e 1-124
+packages/api-cli/src/paths.ts
+  s_34892ac5042fc9::t_d2a51e9bc5e04b 1-40
+packages/api-cli/src/run.test.ts
+  s_34892ac5042fc9::t_9bd172a66f5e8f 1-328
+packages/api-cli/src/run.ts
+  s_34892ac5042fc9::t_4d9d3f6f2d2d93 1-1108
+packages/api-cli/src/session.test.ts
+  s_34892ac5042fc9::t_0b37c7c96f89ce 1-238
+packages/api-cli/src/session.ts
+  s_34892ac5042fc9::t_37e28339d71e04 1-327
+packages/api-cli/src/table.ts
+  s_34892ac5042fc9::t_0d41fede221d3d 1-165
+packages/api-cli/src/test-server.ts
+  s_34892ac5042fc9::t_fa0adab7d72c7d 1-350
+packages/api-cli/src/type-text.ts
+  s_34892ac5042fc9::t_1898546d3d32cf 1-75
+packages/api-cli/src/types.test.ts
+  s_34892ac5042fc9::t_0eb4c76b0aa6ee 1-61
+packages/api-cli/src/types.ts
+  s_34892ac5042fc9::t_0e888d477789cd 1-34
+packages/api-schema/README.md
+  s_34892ac5042fc9::t_7e97a9aaee0a71 43-44,48-50,71-75,98-99
+packages/api-schema/scripts/generate.ts
+  s_34892ac5042fc9::t_c0e1e8765d59fb 5-10,19,21-23,55,57,63,70-75,80-81,85-87,89-91,93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "94f1cd46a2df32a48016440b4c8b9058728598d3",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

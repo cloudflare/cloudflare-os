@@ -1,0 +1,26 @@
+packages/gatekeeper-notion/__tests__/notion-actions.test.ts
+  s_1e2c74fa3cab0c::t_ac99ffc929829e 4,7-8,200-236
+  s_1e2c74fa3cab0c::t_52adacf6f95fd6 237
+packages/gatekeeper-notion/src/notion-actions.ts
+  s_1e2c74fa3cab0c::t_195427c18fef11 1155-1157
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_1e2c74fa3cab0c::t_195427c18fef11 546-548
+packages/gatekeeper-confluence/__tests__/apply.test.ts
+  s_1e2c74fa3cab0c::t_ac99ffc929829e 188-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "02f463671c4817047386f1b3ce97fdba4eeca02a",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

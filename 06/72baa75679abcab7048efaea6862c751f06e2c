@@ -1,0 +1,19 @@
+packages/gatekeeper-confluence/__tests__/configurator-frame.test.ts
+  s_1e2c74fa3cab0c::t_dea271d1900ba1 142-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0672baa75679abcab7048efaea6862c751f06e2c",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,65 @@
+.github/workflows/ci.yml
+  s_34892ac5042fc9::t_3cbbb8ef0cbbf8 58-60
+AGENTS.md
+  s_34892ac5042fc9::t_bcadf416ad13b4 78-81
+package.json
+  s_34892ac5042fc9::t_b63143df799c8f 24,27-29
+packages/api-schema/README.md
+  s_34892ac5042fc9::t_aba1856c7dd1da 1-79
+packages/api-schema/__tests__/__fixtures__/api.ts
+  s_34892ac5042fc9::t_35ffa58b74d94d 1-113
+packages/api-schema/__tests__/__fixtures__/schema.json
+  s_34892ac5042fc9::t_bcc40d125217a1 1-571
+packages/api-schema/__tests__/dts.test.ts
+  s_34892ac5042fc9::t_9541a2f5d8fe2d 1-1253
+packages/api-schema/__tests__/extract.test.ts
+  s_34892ac5042fc9::t_421419fd2059ec 1-299
+packages/api-schema/__tests__/tools.test.ts
+  s_34892ac5042fc9::t_e445f3c31b120f 1-415
+packages/api-schema/generated/workshop-api.agent.d.ts
+  s_34892ac5042fc9::t_7641408e5eb26e 1-3089
+packages/api-schema/generated/workshop-api.fragments.json
+  s_34892ac5042fc9::t_da1ef2dda0e3db 1-16
+packages/api-schema/generated/workshop-api.schema.json
+  s_34892ac5042fc9::t_22794e62326f68 1-12648
+packages/api-schema/generated/workshop-api.tools.json
+  s_34892ac5042fc9::t_e15611e63e48b6 1-16455
+packages/api-schema/package.json
+  s_34892ac5042fc9::t_493bf64ab2fb1b 1-27
+packages/api-schema/scripts/generate.ts
+  s_34892ac5042fc9::t_fcf5a70ca3b12f 1-105
+packages/api-schema/src/emit/dts.ts
+  s_34892ac5042fc9::t_802ee9beab0ea2 1-632
+packages/api-schema/src/emit/tools.ts
+  s_34892ac5042fc9::t_26e8483b187ffd 1-355
+packages/api-schema/src/extract.ts
+  s_34892ac5042fc9::t_1d2622be3c6140 1-519
+packages/api-schema/src/schema.ts
+  s_34892ac5042fc9::t_c1d44a65775029 1-101
+packages/api-schema/tsconfig.json
+  s_34892ac5042fc9::t_cbfd51e9916b9d 1-28
+packages/api-schema/vite.config.ts
+  s_34892ac5042fc9::t_c656d8e477a3e8 1-5
+packages/api-schema/vitest.config.ts
+  s_34892ac5042fc9::t_b041e78819c5c5 1-8
+plans/capnweb-api-schema.md
+  s_34892ac5042fc9::t_c74f4407763403 1-379
+pnpm-lock.yaml
+  s_34892ac5042fc9::t_73961ed97d30b5 85-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c572d27357a6a22f7fac7c504bc8cd3e206b2bfb",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

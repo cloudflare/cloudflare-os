@@ -1,0 +1,33 @@
+AGENTS.md
+  s_34892ac5042fc9::t_977de2f105def3 38
+packages/api-cli/README.md
+  s_34892ac5042fc9::t_ef5d43692e2b7a 17-19,154-161,188-207
+packages/api-cli/src/create-account.ts
+  s_34892ac5042fc9::t_5780797537225c 4,82-83
+packages/api-cli/src/session.test.ts
+  s_34892ac5042fc9::t_6b88a71999b7e1 3,16,146-147,159,229-236
+packages/api-cli/src/session.ts
+  s_34892ac5042fc9::t_9ddd39468ddce7 228-234,259
+packages/integration-tests/README.md
+  s_34892ac5042fc9::t_ad10af9d178904 21-23
+packages/integration-tests/__tests__/cli-admins-only.test.ts
+  s_34892ac5042fc9::t_a9d83d4c8cafff 1-102
+packages/workshop-backend/AGENTS.md
+  s_34892ac5042fc9::t_99b068c3298d9b 82-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3825e3245bfd6fa6c854ee6e9bad386409ef10e7",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+packages/gatekeeper-zoominfo/README.md
+  s_1e2c74fa3cab0c::t_0bfbea156c3e8e 71-72
+packages/gatekeeper-zoominfo/__tests__/zoominfo-actions.test.ts
+  s_1e2c74fa3cab0c::t_768f67e3aed82e 1-32
+packages/gatekeeper-zoominfo/package.json
+  s_1e2c74fa3cab0c::t_fe150991daf05b 9-10,22
+packages/gatekeeper-zoominfo/src/zoominfo-actions.ts
+  s_1e2c74fa3cab0c::t_1acf22dea70590 1-46
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_1e2c74fa3cab0c::t_7ac1fcbf2a2077 20,86,693,1111-1112
+packages/gatekeeper-zoominfo/vite.config.ts
+  s_1e2c74fa3cab0c::t_562012afd50cda 1-3
+packages/gatekeeper-zoominfo/vitest.config.ts
+  s_1e2c74fa3cab0c::t_d71fba63e71911 1-8
+pnpm-lock.yaml
+  s_1e2c74fa3cab0c::t_9ccfee69d4588e 1100-1102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c5901ed4ddf620c9181a64ad87a71a8525d0a0ee",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

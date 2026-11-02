@@ -1,0 +1,29 @@
+REVIEW.md
+  s_34892ac5042fc9::t_c314135fb969fd 41-46
+packages/integration-tests/src/harness.ts
+  s_34892ac5042fc9::t_28361771f0abb8 118-120,123
+packages/workshop-backend/__tests__/cli-admins-only.test.ts
+  s_34892ac5042fc9::t_7c9e965fc73e48 2-3,37-38,43,106-113,144,148-149
+packages/workshop-backend/src/env.d.ts
+  s_34892ac5042fc9::t_bd74073d0b8b42 13-17
+packages/workshop-backend/src/server.ts
+  s_34892ac5042fc9::t_2586b367945112 1065-1070
+scripts/run-dev-server.ts
+  s_34892ac5042fc9::t_d79f3bece37567 574-575
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e05746d7d68154789b8b0e0a2df9854bd82add7d",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

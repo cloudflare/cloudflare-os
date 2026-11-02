@@ -1,0 +1,110 @@
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_1e2c74fa3cab0c::t_f40541487ed15e 559-564
+packages/gatekeeper-google/__tests__/sheets-kinds.test.ts
+  s_1e2c74fa3cab0c::t_0ea1e4ccd4cd8b 1-104
+packages/gatekeeper-google/README.md
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 93
+  s_1e2c74fa3cab0c::t_9776a67a2ae47e 538-559
+  s_1e2c74fa3cab0c::t_58e307658dc846 581-583
+  s_1e2c74fa3cab0c::t_cfcea35115f740 162-171
+  s_1e2c74fa3cab0c::t_443e99e9bfd905 84
+  s_1e2c74fa3cab0c::t_551bf95da91def 310-312
+  s_1e2c74fa3cab0c::t_413242b86dd1fd 309
+  s_1e2c74fa3cab0c::t_9aa099a92f8bc6 95,446-458,477-481,577-580,612
+packages/gatekeeper-google/__tests__/workerd/sheets-actions.test.ts
+  s_1e2c74fa3cab0c::t_86dd592d2f7fa2 960-967
+  s_1e2c74fa3cab0c::t_b03e89df470606 49-53,58,916,927-928,968-969,1492,1629,1724,1786,2108,2116
+packages/gatekeeper-google/__tests__/calendar-hooks.ts
+  s_1e2c74fa3cab0c::t_53ebb2744edab0 1-88
+packages/gatekeeper-google/__tests__/worker.ts
+  s_1e2c74fa3cab0c::t_831246d12e2a61 221-223
+  s_1e2c74fa3cab0c::t_bac9a2c7db7ec6 25
+  s_1e2c74fa3cab0c::t_ab98f6921a1b71 115-124
+  s_1e2c74fa3cab0c::t_3a705cffe790da 98
+packages/gatekeeper-google/__tests__/calendar-verdict.test.ts
+  s_1e2c74fa3cab0c::t_b52f23bc76f995 1-190
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_1e2c74fa3cab0c::t_5c98e4ccd20d9b 195-196
+  s_1e2c74fa3cab0c::t_9172911bfbe990 192-194
+  s_1e2c74fa3cab0c::t_f65dd771f668a0 197
+  s_0ecbf80b6401a4::t_a243077ef9a6c6 13-14,18,191
+packages/gatekeeper-google/__tests__/env.d.ts
+  s_1e2c74fa3cab0c::t_d6ee830edba459 4,9
+packages/gatekeeper-google/__tests__/workerd/calendar-actions.test.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 15,18-21,25-33,55,57-60,63-64,66-68,172-185
+  s_1e2c74fa3cab0c::t_112136265117ab 1-14,16-17,22-24,34-54,56,61-62,65,69-171,186-209
+packages/gatekeeper-google/src/google.ts
+  s_1e2c74fa3cab0c::t_ff6ef65f36e802 2636
+  s_1e2c74fa3cab0c::t_5fd93e48399468 2928-2930,2932,2934-2935,2943
+  s_1e2c74fa3cab0c::t_3e540d14734d33 2444-2449
+  s_1e2c74fa3cab0c::t_76b8189f4fe58c 65-67
+  s_1e2c74fa3cab0c::t_0e6f26efd8ab3b 2958
+  s_1e2c74fa3cab0c::t_9d45ac9f145b61 2913
+  s_1e2c74fa3cab0c::t_d19f48e4eecfee 2675-2676,2681,2683
+  s_1e2c74fa3cab0c::t_af36dbb8eb04c3 2568-2580
+  s_1e2c74fa3cab0c::t_5b374c8ac1f85b 2501
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 63,2677-2680,2682,2685-2695
+  s_1e2c74fa3cab0c::t_a47225d7b2d90f 2581-2582
+packages/gatekeeper-google/src/calendar-verdict.ts
+  s_1e2c74fa3cab0c::t_7bf1c8c0b78a8a 1-107
+packages/gatekeeper-google/src/calendar-api.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 83-100,214,397-400,406,410-414,419,423-429
+packages/gatekeeper-google/vitest.docs-worker.config.ts
+  s_1e2c74fa3cab0c::t_b68033e7d93825 36
+  s_1e2c74fa3cab0c::t_f5a538c10e5641 22-23
+  s_1e2c74fa3cab0c::t_55e05a727b765d 9-10
+packages/gatekeeper-google/__tests__/sheets-formula.test.ts
+  s_1e2c74fa3cab0c::t_33e38c9aa9be72 3-5,370-371,394-447
+packages/gatekeeper-google/__tests__/slides-simulation.test.ts
+  s_1e2c74fa3cab0c::t_aa4ff2f6c0bb9e 4-5,7,353-408
+packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
+  s_1e2c74fa3cab0c::t_73aae6fd959902 10,33-34,401-402,654-678,1726-1727,1802,1893
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_1e2c74fa3cab0c::t_39850accb2911a 1023,1036,1056-1060,1063-1066,1073,1075-1079,1082-1085,1186-1209,1272
+packages/gatekeeper-google/__tests__/workerd/google-doc-actions.test.ts
+  s_1e2c74fa3cab0c::t_7a220d47c7fba6 714-734,2061,2064
+packages/gatekeeper-google/__tests__/workerd/slides-actions.test.ts
+  s_1e2c74fa3cab0c::t_4dbe5ae1f971b0 589,613-616,619-624,854-855,973,1033,1038,1044-1046,1048-1064,1102-1103,1293,1298,1307-1313,1315,1331
+packages/gatekeeper-google/src/chat.ts
+  s_1e2c74fa3cab0c::t_93562725639424 84-85,87,797-798
+packages/gatekeeper-google/src/creation.ts
+  s_1e2c74fa3cab0c::t_812283a50aade1 67,69
+packages/gatekeeper-google/src/gmail.ts
+  s_1e2c74fa3cab0c::t_3fc1f958c13ad4 4,283-294,299,303-304,308-311,321,4875-4877
+packages/gatekeeper-google/src/sheets-actions.ts
+  s_1e2c74fa3cab0c::t_56af201868fa32 41,78,83-101,104-106,112-118,417-418,420-421,454-457
+packages/gatekeeper-google/src/sheets-formula.ts
+  s_1e2c74fa3cab0c::t_9ab9071e3477f2 6-7,419-462,465-470,477
+packages/gatekeeper-google/src/sheets-simulation.ts
+  s_1e2c74fa3cab0c::t_8f69c9901cec9d 127-130,135
+packages/gatekeeper-google/src/slides-actions.ts
+  s_1e2c74fa3cab0c::t_a6e01f6e8ca5bb 42-46,49-56,76-104,106-108,110-111,550-551,553-554,594-598,601-602,625,627-628,647-648,679-680
+packages/gatekeeper-google/src/slides-simulation.ts
+  s_1e2c74fa3cab0c::t_ad9fc0cfd9a271 50-52,57,83-96,273,363,376
+packages/gatekeeper-google/src/slides-types.d.ts
+  s_1e2c74fa3cab0c::t_c64bd050a0d9e1 269-272,285-286,293,300,311-312
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c432363c10d0c9b2368849ef8fab1377ae527dea",
+  "prompts": {},
+  "sessions": {
+    "s_0ecbf80b6401a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a1b50ab3eca7539c8",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

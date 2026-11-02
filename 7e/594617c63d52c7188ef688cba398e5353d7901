@@ -1,0 +1,33 @@
+packages/api-cli/generated/agent-types.ts
+  s_34892ac5042fc9::t_47715c0a20cf5c 1274,11370,14831-14833
+packages/api-cli/generated/commands.ts
+  s_34892ac5042fc9::t_08da82741e428d 2240,3457
+packages/api-schema/generated/gatekeeper-apps/context.d.ts
+  s_34892ac5042fc9::t_979cbad088f573 190-192
+packages/api-schema/generated/gatekeeper-apps/context.schema.json
+  s_34892ac5042fc9::t_8702c92f0859d0 1112-1122,1134-1141
+packages/api-schema/generated/workshop-api.agent.d.ts
+  s_34892ac5042fc9::t_0312a916af52c9 1270
+packages/api-schema/generated/workshop-api.fragments.json
+  s_34892ac5042fc9::t_876a15e9470e71 13
+packages/api-schema/generated/workshop-api.schema.json
+  s_34892ac5042fc9::t_7dd55a2fa05e20 3695
+packages/api-schema/generated/workshop-api.tools.json
+  s_34892ac5042fc9::t_5741ab3daeda65 14786
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7e594617c63d52c7188ef688cba398e5353d7901",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
