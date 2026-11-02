@@ -1210,6 +1210,7 @@ describe("pending creation", () => {
 
     await inOverseer(name, async world => {
       let { impl } = world;
+      impl.env = { ...impl.env, BLUEPRINTS: { get: async () => null } };
       impl.ownerId = "owner";
       impl.traceAgentActionApproval = () => {};
       impl.wrapUserDo = (user: unknown) => user;
@@ -1248,7 +1249,7 @@ describe("pending creation", () => {
         expect(impl.storage.actions.get(before).description.subresources).toBeUndefined();
         expect(impl.storage.nextActionId.get()).toBe(before + 1);
         expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
-        expect(() => impl.getWebFetchEnv()).toThrow(/observed sensitive data/);
+        await expect(impl.getWebFetchEnv()).rejects.toThrow(/observed sensitive data/);
         for (let role of ["build", "use"] as const) {
           expect(impl.listObserverRequirements(role)).toEqual([]);
           await impl.ensureObserver("carol", world.clientUser("carol"), role);
