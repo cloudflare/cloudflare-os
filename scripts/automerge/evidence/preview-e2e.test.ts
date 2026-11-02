@@ -3,16 +3,17 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { asObject, parseJson, type Json } from "../proofs/json.ts";
 import {
-  deployedVersions, E2E_CONFIG, evaluateE2e, previewRun, servedVersion, servingError, testEnvironment,
+  deployedVersion, E2E_CONFIG, evaluateE2e, laterDeploy, previewRun, servedVersion, servingError, testEnvironment,
 } from "./preview-e2e.ts";
 import { fileResults, type TestRun } from "./vitest.ts";
 
 // Real inputs: vitest JSON reports of the e2e suite against `pnpm dev-server` (all ten flows
 // green; red with the phone menu button's label changed, so the three phone flows that open the
-// menu fail; and a suite whose hook failed before any flow ran), the Actions API listing of
-// preview.yml runs for #966's head 218afd5be, the smoke artifact smoke.ts wrote for #966's preview
-// without the Access service token, and the 302 #966's preview gives `/api/version` without Access
-// (recorded 2026-11-02 and 2026-11-03).
+// menu fail; and a suite whose hook failed before any flow ran), the Actions API listings of
+// preview.yml runs for #966's head 218afd5be and for its branch (four heads; 249e3f4fa's run
+// started after 218afd5be's), the record smoke.ts wrote for #966's preview without the Access
+// service token, and the 302 #966's preview gives `/api/version` without Access (recorded
+// 2026-11-02 and 2026-11-03).
 const DIR = new URL("./testdata/e2e/", import.meta.url);
 const load = (name: string): Json => parseJson(readFileSync(new URL(name, DIR), "utf8"));
 const run = (name: string): TestRun => ({
@@ -22,13 +23,14 @@ const run = (name: string): TestRun => ({
 
 const PR966_HEAD = "218afd5bef73a888911dd07e5afdb4b27f62d5db";
 const REPO = "cloudflare/cloudflare-os";
+const BRANCH = "stop-agent-not-an-error";
+const BRANCH_RUNS = load("preview-runs-branch-stop-agent-not-an-error.json");
 const BACKEND = "8a1f3c2e-5b7d-4e19-9c0a-2f6d4b8e1a37";
-const GATEKEEPER = "0c4d7e1a-93b2-4f68-a5d0-6e2b1f8c3a94";
 
-/** #966's recorded smoke artifact as it would read had the service token been set. */
-function smokeWith(workerVersions: Record<string, string>): Json {
-  const smoke = asObject(load("smoke-pr966-no-token.json"), "smoke");
-  return { ...smoke, status: "ok", holds: true, details: { ...asObject(smoke.details, "details"), worker_versions: workerVersions } };
+/** #966's recorded smoke record, under the deploy record's name and as it would read with the service token set. */
+function deployWith(version: string): Json {
+  const record = asObject(load("smoke-pr966-no-token.json"), "record");
+  return { ...record, name: "preview-deploy", status: "ok", holds: true, details: { ...asObject(record.details, "details"), backend_version: version } };
 }
 
 describe("evaluateE2e", () => {
@@ -61,33 +63,36 @@ describe("evaluateE2e", () => {
 });
 
 describe("binding to the head's deploy", () => {
-  it("reads every worker version the head's smoke recorded", () => {
-    assert.deepEqual(deployedVersions(smokeWith({ "workshop-backend": BACKEND }), PR966_HEAD), { versions: { "workshop-backend": BACKEND } });
+  it("reads the backend version the head's deploy recorded", () => {
+    assert.deepEqual(deployedVersion(deployWith(BACKEND), PR966_HEAD), { version: BACKEND });
   });
 
-  it("has no versions from #966's real smoke, which ran without the service token", () => {
-    assert.deepEqual(deployedVersions(load("smoke-pr966-no-token.json"), PR966_HEAD), {
-      error: "the head's smoke has status error, so no version was recorded",
-    });
+  it("has no version from #966's real record, which ran without the service token", () => {
+    const record = { ...asObject(load("smoke-pr966-no-token.json"), "record"), name: "preview-deploy" };
+    assert.deepEqual(deployedVersion(record, PR966_HEAD), { error: "the head's deploy record has status error, so no version was recorded" });
   });
 
-  it("has no versions from another head's smoke, or one that recorded only the backend's as a single field", () => {
-    assert.match(String(Object.values(deployedVersions(smokeWith({ "workshop-backend": BACKEND }), "0".repeat(40)))), /is for 218afd5b/);
-    const old = asObject(smokeWith({}), "smoke");
-    const backendOnly = { ...old, details: { ...asObject(old.details, "details"), worker_versions: null, backend_version: BACKEND } };
-    assert.deepEqual(deployedVersions(backendOnly, PR966_HEAD), { error: "the head's smoke recorded no worker versions" });
+  it("has no version from another head's record, or from a record under another name", () => {
+    assert.match(String(Object.values(deployedVersion(deployWith(BACKEND), "0".repeat(40)))), /is for 218afd5b/);
+    assert.deepEqual(deployedVersion(load("smoke-pr966-no-token.json"), PR966_HEAD), { error: "the record is not a preview-deploy artifact" });
   });
 
-  it("accepts the URL only while every recorded worker serves the head's version", () => {
-    assert.equal(servingError({ "workshop-backend": BACKEND }, { "workshop-backend": BACKEND }, "before"), undefined);
-    assert.equal(servingError({ "workshop-backend": BACKEND }, { "workshop-backend": "00000000-older-deploy" }, "after"),
-      `after the flows, workshop-backend served 00000000-older-deploy, not the head's ${BACKEND}`);
+  it("accepts the backend only while it serves the head's version", () => {
+    assert.equal(servingError(BACKEND, BACKEND, "before"), undefined);
+    assert.equal(servingError(BACKEND, "00000000-older-deploy", "after"), `after the flows, the backend served 00000000-older-deploy, not the head's ${BACKEND}`);
+    assert.equal(servingError(BACKEND, undefined, "before"), "before the flows, GET /api/version named no version");
   });
 
-  it("errors when a gatekeeper's version is recorded but cannot be read, though the backend matches", () => {
-    const deployed = { "workshop-backend": BACKEND, "gatekeeper-google": GATEKEEPER };
-    assert.equal(servingError(deployed, { "workshop-backend": BACKEND }, "before"),
-      "before the flows, no served version can be read for gatekeeper-google");
+  it("errors when a preview run for the branch started after the head's (#966: 249e3f4fa after 218afd5be)", () => {
+    const head = previewRun(load("preview-runs-pr966-218afd5be.json"), PR966_HEAD, REPO);
+    assert.equal(head.state, "done");
+    const started = head.state === "done" ? head.started : 0;
+    assert.equal(laterDeploy(BRANCH_RUNS, BRANCH, REPO, started, "after"),
+      "after the flows, preview run(s) 41519319069 (249e3f4fa) started after the head's");
+  });
+
+  it("finds no later run for the branch's newest head", () => {
+    assert.equal(laterDeploy(BRANCH_RUNS, BRANCH, REPO, Date.parse("2026-11-02T20:27:14Z"), "before"), undefined);
   });
 
   it("reads no version from #966's real Access redirect or a null version", () => {
@@ -106,7 +111,7 @@ describe("binding to the head's deploy", () => {
 describe("previewRun", () => {
   it("finds #966's finished preview deploy for its head", () => {
     assert.deepEqual(previewRun(load("preview-runs-pr966-218afd5be.json"), PR966_HEAD, REPO), {
-      state: "done", id: 41468082170, conclusion: "success",
+      state: "done", id: 41468082170, conclusion: "success", started: Date.parse("2026-11-02T15:05:03Z"),
     });
   });
 

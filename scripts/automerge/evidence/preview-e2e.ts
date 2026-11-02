@@ -5,17 +5,16 @@
 //
 // The preview is what .github/workflows/preview.yml deployed for the head. This waits for that
 // workflow's newest `pull_request` run on exactly the head SHA to finish, and requires that it
-// succeeded. The preview URL is per pull request, so a later deploy (a re-run of an older head, or
-// one that failed after its gatekeeper tier) can replace part of what it serves; the flows are
-// bound to the head by the version id of every worker the head's deploy recorded. The preview
-// run's smoke step (scripts/automerge/proofs/smoke.ts) must record them, keyed by package name, as
-// `details.worker_versions` in its `automerge-preview-smoke-<head sha>` artifact. Each must be
-// what that worker serves before and after the flows. Only the backend's served version can be
-// read today (`GET /api/version`), so a recorded router or gatekeeper version is unverifiable and
-// the evidence is `error`; so is no recorded versions, a mismatch, or no readable smoke artifact.
-// Previews sit behind Cloudflare Access, and the backend keys each user by the email in the Access
-// token, which a service token does not carry: the run needs an Access application token for a
-// user with an email, as E2E_ACCESS_TOKEN. Without it the producer reports `error`.
+// succeeded. The preview URL is per pull request, so any later deploy run for the branch (a re-run
+// of an older head, even one that failed after its gatekeeper tier) can replace part of what it
+// serves. So, before and after the flows, no preview run for the branch may have a latest attempt
+// that started after the head's, and the backend must serve the version id the head's deploy
+// recorded: `details.backend_version` in the run's `automerge-preview-deploy-<head sha>` artifact,
+// what `GET /api/version` answered right after the deploy. A later run, no recorded or served
+// version, a mismatch, or no readable record is `error`. Previews sit behind Cloudflare Access,
+// and the backend keys each user by the email in the Access token, which a service token does not
+// carry: the run needs an Access application token for a user with an email, as
+// E2E_ACCESS_TOKEN. Without it the producer reports `error`.
 //
 // The flows decide only what they saw: a failing flow fails the evidence, and a missing report, a
 // suite that crashed, or fewer than EXPECTED_TESTS passing flows is `error`.
@@ -29,10 +28,10 @@
 //
 //   node scripts/automerge/evidence/preview-e2e.ts --base-url <url> [--local]
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA; without --local also GITHUB_TOKEN, GH_TOKEN,
-//        GITHUB_REPOSITORY, E2E_ACCESS_TOKEN
+//        GITHUB_REPOSITORY, PREVIEW_BRANCH (the pull request's head branch), E2E_ACCESS_TOKEN
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -50,23 +49,37 @@ const DEADLINE_MS = 45 * 60 * 1000;
 export const EXPECTED_TESTS = 10;
 
 /** Where the head's preview deploy stands. */
-export type PreviewRun = { state: "absent" } | { state: "pending" } | { state: "done"; id: number; conclusion: string };
+export type PreviewRun =
+  | { state: "absent" } | { state: "pending" } | { state: "done"; id: number; conclusion: string; started: number };
 
 /** When a run's latest attempt started; a re-run makes an old run the newest. */
 function attemptStarted(run: JsonObject): number {
   return Date.parse(asString(run.run_started_at ?? run.created_at, "run start"));
 }
 
+/** This repository's `pull_request` runs of the preview workflow in a workflow-runs listing. */
+function previewRuns(listing: Json, repository: string): JsonObject[] {
+  return asArray(asObject(listing, "workflow runs").workflow_runs, "workflow_runs")
+    .map((run) => asObject(run, "run"))
+    .filter((run) => run.path === PREVIEW_WORKFLOW && run.event === "pull_request" &&
+      isObject(run.head_repository) && run.head_repository.full_name === repository);
+}
+
 /** The preview deploy run for `headSha`, from a workflow-runs listing: the newest attempt wins. */
 export function previewRun(listing: Json, headSha: string, repository: string): PreviewRun {
-  const runs = asArray(asObject(listing, "workflow runs").workflow_runs, "workflow_runs")
-    .map((run) => asObject(run, "run"))
-    .filter((run) => run.path === PREVIEW_WORKFLOW && run.event === "pull_request" && run.head_sha === headSha &&
-      isObject(run.head_repository) && run.head_repository.full_name === repository);
+  const runs = previewRuns(listing, repository).filter((run) => run.head_sha === headSha);
   if (runs.length === 0) return { state: "absent" };
   const newest = runs.toSorted((a, b) => attemptStarted(b) - attemptStarted(a))[0];
   if (newest.status !== "completed") return { state: "pending" };
-  return { state: "done", id: asNumber(newest.id, "run id"), conclusion: String(newest.conclusion) };
+  return { state: "done", id: asNumber(newest.id, "run id"), conclusion: String(newest.conclusion), started: attemptStarted(newest) };
+}
+
+/** Why a preview run for `branch` may have redeployed after the head's run started, or undefined. */
+export function laterDeploy(listing: Json, branch: string, repository: string, headStarted: number, when: string): string | undefined {
+  const later = previewRuns(listing, repository)
+    .filter((run) => run.head_branch === branch && attemptStarted(run) > headStarted)
+    .map((run) => `${String(run.id)} (${String(run.head_sha).slice(0, 9)})`);
+  return later.length === 0 ? undefined : `${when} the flows, preview run(s) ${later.join(", ")} started after the head's`;
 }
 
 /** Holds when every flow ran and passed; fails on a failing flow; errors on anything not seen. */
@@ -86,19 +99,13 @@ export function evaluateE2e(run: TestRun, details: JsonObject): Outcome {
   return holds(all);
 }
 
-/** The version id of every worker the head's smoke artifact recorded, or why there are none. */
-export function deployedVersions(smoke: Json, headSha: string): { versions: Record<string, string> } | { error: string } {
-  if (!isObject(smoke) || smoke.schema !== 1 || smoke.name !== "preview-smoke") return { error: "the smoke artifact is not a preview-smoke artifact" };
-  if (smoke.head_sha !== headSha) return { error: `the smoke artifact is for ${String(smoke.head_sha)}, not ${headSha}` };
-  if (smoke.status !== "ok") return { error: `the head's smoke has status ${String(smoke.status)}, so no version was recorded` };
-  const recorded = isObject(smoke.details) ? smoke.details.worker_versions : undefined;
-  if (!isObject(recorded) || Object.keys(recorded).length === 0) return { error: "the head's smoke recorded no worker versions" };
-  const versions: Record<string, string> = {};
-  for (const [worker, version] of Object.entries(recorded)) {
-    if (typeof version !== "string" || version === "") return { error: `the head's smoke recorded no version for ${worker}` };
-    versions[worker] = version;
-  }
-  return { versions };
+/** The backend version id the head's preview deploy recorded, or why there is none. */
+export function deployedVersion(record: Json, headSha: string): { version: string } | { error: string } {
+  if (!isObject(record) || record.schema !== 1 || record.name !== "preview-deploy") return { error: "the record is not a preview-deploy artifact" };
+  if (record.head_sha !== headSha) return { error: `the record is for ${String(record.head_sha)}, not ${headSha}` };
+  if (record.status !== "ok") return { error: `the head's deploy record has status ${String(record.status)}, so no version was recorded` };
+  const version = isObject(record.details) ? record.details.backend_version : undefined;
+  return typeof version === "string" && version !== "" ? { version } : { error: "the head's deploy recorded no backend version" };
 }
 
 /** One answer to `GET /api/version`. */
@@ -118,14 +125,10 @@ export function servedVersion(answer: VersionAnswer): string | undefined {
   }
 }
 
-/** Why the URL was not serving every worker of the head's deploy at one point, or undefined when it was. */
-export function servingError(deployed: Record<string, string>, served: Record<string, string | undefined>, when: string): string | undefined {
-  const problems = Object.entries(deployed).flatMap(([worker, version]) => {
-    const serving = served[worker];
-    if (serving === undefined) return [`no served version can be read for ${worker}`];
-    return serving === version ? [] : [`${worker} served ${serving}, not the head's ${version}`];
-  });
-  return problems.length === 0 ? undefined : `${when} the flows, ${problems.join("; ")}`;
+/** Why the backend was not serving the head's deploy at one point, or undefined when it was. */
+export function servingError(deployed: string, served: string | undefined, when: string): string | undefined {
+  if (served === undefined) return `${when} the flows, GET /api/version named no version`;
+  return served === deployed ? undefined : `${when} the flows, the backend served ${served}, not the head's ${deployed}`;
 }
 
 /** The e2e suite's environment: this one's, without the GitHub tokens the suite has no use for. */
@@ -150,12 +153,14 @@ async function versionAt(baseUrl: string, token: string): Promise<VersionAnswer>
   return { status: response.status, body: await response.text() };
 }
 
-/** Downloads and parses the head's smoke artifact from the preview run. */
-function smokeArtifact(repository: string, runId: number, head: string): Json {
-  const dir = mkdtempSync(join(tmpdir(), "automerge-smoke-"));
+/** Downloads and parses the head's deploy record, the artifact's one JSON file, from the preview run. */
+function deployRecord(repository: string, runId: number, head: string): Json {
+  const dir = mkdtempSync(join(tmpdir(), "automerge-preview-deploy-"));
   try {
-    execFileSync("gh", ["run", "download", String(runId), "--repo", repository, "--name", `automerge-preview-smoke-${head}`, "--dir", dir], { stdio: "inherit" });
-    return parseJson(readFileSync(join(dir, "automerge-preview-smoke.json"), "utf8"));
+    execFileSync("gh", ["run", "download", String(runId), "--repo", repository, "--name", `automerge-preview-deploy-${head}`, "--dir", dir], { stdio: "inherit" });
+    const files = readdirSync(dir).filter((name) => name.endsWith(".json"));
+    if (files.length !== 1) throw new Error(`the deploy artifact holds ${files.length} JSON files, not one`);
+    return parseJson(readFileSync(join(dir, files[0]), "utf8"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -176,7 +181,10 @@ async function main(): Promise<void> {
       return errored("E2E_ACCESS_TOKEN is not set: a preview needs an Access token for a user with an email (AUTOMERGE_PREVIEW_E2E_ACCESS_TOKEN)");
     }
     const repository = process.env.GITHUB_REPOSITORY;
-    if (!repository) throw new Error("GITHUB_REPOSITORY is required");
+    const branch = process.env.PREVIEW_BRANCH;
+    if (!repository || !branch) throw new Error("GITHUB_REPOSITORY and PREVIEW_BRANCH are required");
+    const branchRuns = () => github(
+      `repos/${repository}/actions/workflows/preview.yml/runs?branch=${encodeURIComponent(branch)}&event=pull_request&per_page=100`);
     const deadline = Date.now() + DEADLINE_MS;
     for (;;) {
       const preview = previewRun(await github(
@@ -185,15 +193,16 @@ async function main(): Promise<void> {
       if (preview.state === "done") {
         const details = { base_url: baseUrl, mode: "preview", preview_run: preview.id };
         if (preview.conclusion !== "success") return errored(`the preview deploy for ${head} concluded ${preview.conclusion}`, details);
-        const deployed = deployedVersions(smokeArtifact(repository, preview.id, head), head);
+        const deployed = deployedVersion(deployRecord(repository, preview.id, head), head);
         if ("error" in deployed) return errored(deployed.error, details);
-        const bound = { ...details, worker_versions: deployed.versions };
-        // Only the backend's version is readable from outside; servingError names every other.
-        const served = async () => ({ "workshop-backend": servedVersion(await versionAt(baseUrl, token)) });
-        const before = servingError(deployed.versions, await served(), "before");
+        const bound = { ...details, backend_version: deployed.version };
+        const unbound = async (when: string) =>
+          laterDeploy(await branchRuns(), branch, repository, preview.started, when) ??
+          servingError(deployed.version, servedVersion(await versionAt(baseUrl, token)), when);
+        const before = await unbound("before");
         if (before) return errored(before, bound);
         const run = runTests(E2E_CONFIG, [], env);
-        const after = servingError(deployed.versions, await served(), "after");
+        const after = await unbound("after");
         if (after) return errored(after, { ...bound, run: runDetails(run) });
         return evaluateE2e(run, bound);
       }
