@@ -129,6 +129,13 @@ describe("proof-actions credential rule", () => {
       "job extra is not a block mapping"],
     ["a multi-line plain scalar", withJobLines("    if: github.ref ==\n      'refs/heads/main'\n"), "cannot be parsed: line 22: an indented line after a scalar (a multi-line scalar is not accepted)"],
     ["a second document", `${ciAtBase}---\npermissions: write-all\n`, "cannot be parsed: line 90: a document marker or directive"],
+    ["`ſecrets`, which upper-cases to SECRETS", withJobLines("    env:\n      X: ${{ ſecrets.X }}\n"), "names secrets"],
+    // Other YAML parsers break lines at these, which would make the environment a key of the job.
+    ...["\r", "\u0085", "\u2028", "\u2029"].map((mark): [string, string, string] =>
+      [`a line broken by U+${mark.codePointAt(0)?.toString(16).padStart(4, "0")}`,
+        withJobLines(`    name: a${mark}    environment: production\n`),
+        "cannot be parsed: line 21: a control character, a line break other than LF or CRLF, or a byte order mark"]),
+    ["a byte order mark", `\ufeff${ciAtBase}`, "cannot be parsed: line 1: a control character, a line break other than LF or CRLF, or a byte order mark"],
   ];
   for (const [name, workflow, reason] of cases) {
     it(`fails ${name}`, () => {

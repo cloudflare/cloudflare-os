@@ -9,14 +9,16 @@
 //
 // The structure is read by a deliberately small YAML reader: block mappings, block sequences, block
 // scalars, single-line quoted and plain scalars, and single-line flow collections. Anything else,
-// including anchors, aliases, merge keys, tags, multi-line flow collections and multi-line plain or
-// quoted scalars, is a parse error, and a parse error fails the proof. GitHub reads anchors and
-// aliases, so a reader that skipped them could be shown a different permissions block than GitHub
-// runs with.
+// including anchors, aliases, merge keys, tags, multi-line flow collections, multi-line plain or
+// quoted scalars, and line breaks other than LF and CRLF, is a parse error, and a parse error fails
+// the proof. GitHub reads anchors and aliases, so a reader that skipped them could be shown a
+// different permissions block than GitHub runs with.
+
+type YamlMap = { kind: "map"; entries: Map<string, YamlNode> };
 
 /** A YAML node as this reader sees it. Flow collections stay as their source text. */
 export type YamlNode =
-  | { kind: "map"; entries: Map<string, YamlNode> }
+  | YamlMap
   | { kind: "seq"; items: YamlNode[] }
   | { kind: "scalar"; value: string }
   | { kind: "flow"; text: string };
@@ -30,6 +32,11 @@ class Reader {
 
   constructor(text: string) {
     this.lines = text.replace(/\r\n/g, "\n").split("\n");
+    // YAML parsers also break lines at a lone CR, NEL, LS and PS, so text after one is a new line to
+    // them and part of this line here. Those, other control characters and a byte order mark fail.
+    // oxlint-disable-next-line no-control-regex -- matching control characters is the point.
+    const odd = this.lines.findIndex((line) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\ufeff]/.test(line));
+    if (odd !== -1) this.fail("a control character, a line break other than LF or CRLF, or a byte order mark", odd);
   }
 
   fail(message: string, line = this.index): never {
@@ -151,14 +158,14 @@ function nestedValue(reader: Reader, owner: number): YamlNode {
   return { kind: "scalar", value: "" };
 }
 
-function parseMap(reader: Reader, indent: number): YamlNode {
+function parseMap(reader: Reader, indent: number): YamlMap {
   const entries = new Map<string, YamlNode>();
   while (reader.peek() === indent && !isSeqItem(reader.text(indent))) {
     const line = reader.index;
     const match = KEY.exec(reader.text(indent));
     if (!match) reader.fail(`not a mapping entry: ${reader.text(indent)}`);
     const key = keyName(match[1]);
-    if (key === "<<") reader.fail("a merge key");
+    if (key === "<<") reader.fail("a quoted << key");
     const folded = key.toLowerCase();
     if ([...entries.keys()].some((existing) => existing.toLowerCase() === folded)) reader.fail(`a duplicate key: ${key}`, line);
     const rest = match[2] ?? "";
@@ -205,7 +212,6 @@ export function parseWorkflow(text: string): Map<string, YamlNode> {
   if (first !== 0) reader.fail("the document does not start with a mapping at column 0");
   const root = parseMap(reader, 0);
   if (reader.peek() !== -1) reader.fail("text after the root mapping");
-  if (root.kind !== "map") throw new Error("the document is not a mapping");
   return root.entries;
 }
 
@@ -227,6 +233,13 @@ function decodedEscapes(text: string): string {
 const SECRETS = /\bsecrets\b/i;
 const WORKFLOW_CALL = /\bworkflow_call\b/i;
 
+/** Whether `word` is in `text` as written, with YAML escapes decoded, or after Unicode case mapping. */
+function mentions(word: RegExp, text: string): boolean {
+  // Case mapping, because `ſ` upper-cases to `S` and GitHub compares context names without case.
+  return [text, decodedEscapes(text)].some((variant) =>
+    word.test(variant) || word.test(variant.toUpperCase()) || word.test(variant.toLowerCase()));
+}
+
 /** Why `permissions` at `where` may grant more than read, or nothing when it cannot. */
 function permissionReasons(node: YamlNode, where: string): string[] {
   if (node.kind === "flow") return node.text.replace(/\s/g, "") === "{}" ? [] : [`${where} permissions are not {} or a block mapping`];
@@ -247,14 +260,12 @@ function permissionReasons(node: YamlNode, where: string): string[] {
  */
 export function workflowReasons(text: string): string[] {
   const reasons: string[] = [];
-  // Both words are matched on the raw text and again with YAML escapes decoded, so `\u0073ecrets`
-  // is still seen. A mention in a comment counts too: comments are not parsed here, and inside a
-  // block scalar a shell comment is still expression text GitHub evaluates.
-  const decoded = decodedEscapes(text);
-  if (SECRETS.test(text) || SECRETS.test(decoded)) reasons.push("names secrets");
+  // Matched on the whole text, so a mention in a comment counts too: comments are not parsed here,
+  // and inside a block scalar a shell comment is still expression text GitHub evaluates.
+  if (mentions(SECRETS, text)) reasons.push("names secrets");
   // A reusable workflow runs inside its callers, producers among them, and the gate knows
   // workflows only by path.
-  if (WORKFLOW_CALL.test(text) || WORKFLOW_CALL.test(decoded)) reasons.push("can be called by another workflow (workflow_call)");
+  if (mentions(WORKFLOW_CALL, text)) reasons.push("can be called by another workflow (workflow_call)");
   let root: Map<string, YamlNode>;
   try {
     root = parseWorkflow(text);
