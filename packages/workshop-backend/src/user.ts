@@ -34,7 +34,8 @@ const logger = createWorkshopLogger("workshop.user");
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
 
-// How many registerNotificationDevice() calls one user may make per minute.
+// How many notification-service calls (device authorizations and registrations) one user may make
+// per minute; see #countNotificationRegistration().
 const NOTIFICATION_REGISTRATIONS_PER_MINUTE = 20;
 
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
@@ -478,20 +479,42 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.passwordHashHash.get() !== null;
   }
 
-  /** Vouch for this authenticated user using the installation's registered signing identity. */
+  /**
+   * Vouch for this authenticated user using the installation's registered signing identity. Shares
+   * a 20-a-minute limit with the other notification device methods.
+   */
   async authorizeNotificationDevice(): Promise<string> {
+    this.#countNotificationRegistration();
     return authorizeDevice(this.env, this.#notificationSubject);
   }
 
   /**
    * Exchange a native app's one-time device registration, or a browser's Web Push subscription,
-   * for that device's push subscription. Throws, contacting nothing, past 20 calls in a minute.
+   * for that device's push subscription. Shares a 20-a-minute limit with the other notification
+   * device methods.
    */
   async registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
-    // Each call sends a signed request that reads and writes this installation's records at the
-    // central notification service, which all its users share, so one user's loop would make them
-    // hot for the whole installation. Refuse the excess before signing anything. Kept in memory:
-    // the DO is single-threaded, and a reset forgets at most a minute of calls.
+    this.#countNotificationRegistration();
+    this.#storeNotificationSubscription(
+        await registerDevice(this.env, registration, this.#notificationSubject));
+  }
+
+  /**
+   * Exchange a CFOS-authorized native registration under this User DO's central subject. Shares a
+   * 20-a-minute limit with the other notification device methods.
+   */
+  async registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    this.#countNotificationRegistration();
+    this.#storeNotificationSubscription(await registerAuthorizedDevice(
+        this.env, deviceRegistrationId, this.#notificationSubject));
+  }
+
+  // Counts one signed request to the notification service, throwing past 20 in a minute so the
+  // caller signs and sends nothing. Each request touches this installation's records at the
+  // central service, which all its users share, so one user's loop would make them hot for the
+  // whole installation. Kept in memory: the DO is single-threaded, and a reset forgets at most a
+  // minute of calls.
+  #countNotificationRegistration(): void {
     let now = Date.now();
     if (now - this.#registrationWindowStart >= 60_000) {
       this.#registrationWindowStart = now;
@@ -500,14 +523,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (++this.#registrationsInWindow > NOTIFICATION_REGISTRATIONS_PER_MINUTE) {
       throw new Error("Too many notification registrations. Try again in a minute.");
     }
-    this.#storeNotificationSubscription(
-        await registerDevice(this.env, registration, this.#notificationSubject));
-  }
-
-  /** Exchange a CFOS-authorized native registration under this User DO's central subject. */
-  async registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
-    this.#storeNotificationSubscription(await registerAuthorizedDevice(
-        this.env, deviceRegistrationId, this.#notificationSubject));
   }
 
   get #notificationSubject(): string {

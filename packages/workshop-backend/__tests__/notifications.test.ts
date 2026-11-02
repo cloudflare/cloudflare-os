@@ -361,18 +361,21 @@ describe("UserDurableObject notifications", () => {
         .toEqual({ failed: fails, first: [ONE, TWO], next });
   });
 
-  // One user's registration loop would otherwise heat the installation's shared central records.
-  it("refuses a 21st registration within a minute without contacting the service", async () => {
+  // A user's loop over any of these would otherwise heat the installation's shared central records.
+  it("refuses every device method past 20 calls a minute between them, contacting nothing", async () => {
     vi.useFakeTimers();
     let fetcher = stubService();
     await inUser(async user => {
-      for (let i = 0; i < 20; i++) await user.registerNotificationDevice("a".repeat(64));
+      for (let i = 0; i < 19; i++) await user.registerNotificationDevice("a".repeat(64));
+      await user.authorizeNotificationDevice();
       fetcher.mockClear();
+      await expect(user.authorizeNotificationDevice()).rejects.toThrow();
       await expect(user.registerNotificationDevice("b".repeat(64))).rejects.toThrow();
+      await expect(user.registerAuthorizedNotificationDevice("c".repeat(64))).rejects.toThrow();
       expect(fetcher).not.toHaveBeenCalled();
       await user.publishNotification(NOTIFICATION);
     });
-    expect(pushed(fetcher)).toEqual([mintedId(20)]);
+    expect(pushed(fetcher)).toEqual([mintedId(19)]);
   });
 
   it("accepts registrations again once the minute has passed", async () => {
