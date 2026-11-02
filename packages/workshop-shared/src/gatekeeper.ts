@@ -17,6 +17,7 @@
 // `Adapter` type is the root interface implemented by the service binding.
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import { codedErrorFamily } from "./coded-errors.js";
 
 /**
  * A pagination cursor.
@@ -278,6 +279,17 @@ export type AccountDescription = {
    * surfaces it as a nav entry / page using this title.
    */
   providesUi?: { title: string; icon?: AvatarImage };
+
+  /**
+   * If set, this account can sync a source it reaches (a tree of documents elsewhere, say) into a
+   * space, one workspace per source item (see GatekeeperUser.startSpaceSync). The workspaces are
+   * the syncing user's own, created from the blueprint `blueprintId`, which must be one the
+   * deployment ships: the Workshop refuses to start a sync for any other. `importMethods` names
+   * the methods of that blueprint's gadget a sync may call to fill a synced workspace in; no other
+   * method of it is reachable through a sync. Where the workspaces go and how they are published
+   * are decided by the Workshop, never by the account.
+   */
+  providesSpaceSync?: { blueprintId: string; importMethods: string[] };
 }
 
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
@@ -937,6 +949,35 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * the tickets its UI receives from the Workshop user picker (GatekeeperUserSelection).
    */
   startAppUi?(context: AppUiContext): Promise<GatekeeperUiFrame>;
+
+  // ---------------------------------------------------------------------------
+  // Space-sync capability. Present only on accounts whose describe() sets
+  // AccountDescription.providesSpaceSync; the Workshop gates calls on that flag, as above.
+
+  /**
+   * Start the space-sync job `request.jobId`: sync the resource `request.resourceUrl` into the
+   * space the user chose, through `target`, which acts for this job alone. Called when the user
+   * starts a sync (`AuthenticatedApi.startSpaceSync`), after the Workshop has recorded the job.
+   *
+   * Resolve once the job is accepted, and do its work in the background (e.g. in a Workflow),
+   * reporting through `target` until it reports "done" or "failed". A throw means the job never
+   * started: the Workshop marks it failed, with the thrown message, cut to
+   * MAX_SPACE_SYNC_MESSAGE_LENGTH, as its error, and then calls `cancelSpaceSync` in case the
+   * account kept anything of it.
+   *
+   * `target` may be stored for the job's lifetime and used from anywhere, since it is scoped to
+   * the job and checked against the Workshop's job record on every call (see SpaceSyncTarget).
+   */
+  startSpaceSync?(request: SpaceSyncRequest, target: Fetcher<SpaceSyncTarget>): Promise<void>;
+
+  /**
+   * Stop the work of the space-sync job `jobId`, best effort. Called after the Workshop has already
+   * marked the job cancelled, or failed when `startSpaceSync` threw, so its `target` refuses every
+   * further call whether or not this succeeds; the Workshop does not retry a failure. May arrive
+   * before `startSpaceSync` has returned. Must do nothing for a job that has already ended or that
+   * the account does not know.
+   */
+  cancelSpaceSync?(jobId: string): Promise<void>;
 
   // TODO:
   // - Query whether account has scope to access a particular URL.
@@ -1824,6 +1865,111 @@ export interface HookInitiator<Hook extends RpcTarget> extends WorkerEntrypoint 
    */
   startHook(): Promise<{callback: RpcStub<Hook>, approvalQueue: RpcStub<ApprovalQueue>}>;
 }
+
+/** What the Workshop passes to `GatekeeperUser.startSpaceSync` to start one space-sync job. */
+export type SpaceSyncRequest = {
+  /**
+   * The Workshop's id for the job, unique among the user's jobs. The account keys its own state
+   * for the job by it (a Workflow instance id, say), and `cancelSpaceSync` names the job by it.
+   */
+  jobId: string;
+
+  /**
+   * The resource to sync from, as the user picked it with the account's resource configurator
+   * (`startResourceConfigurator`). The Workshop has already checked that the deployment's admin
+   * settings allow it. The space, the place in its tree and the publication of the synced
+   * workspaces are not part of the request: they are the Workshop's, held in its job record.
+   */
+  resourceUrl: string;
+};
+
+/** The most warnings one progress report keeps (see `SpaceSyncProgress.warnings`). */
+export const MAX_SPACE_SYNC_WARNINGS = 50;
+
+/**
+ * The longest a warning or error message of a space sync is kept (see `SpaceSyncProgress`), in
+ * UTF-16 code units, as `String.prototype.slice` counts them.
+ */
+export const MAX_SPACE_SYNC_MESSAGE_LENGTH = 500;
+
+/**
+ * A space-sync job's progress as the account reports it with `SpaceSyncTarget.reportProgress`.
+ * Each report replaces the previous one whole, so it carries every warning so far, not only the
+ * new ones. The Workshop shows it to the syncing user as it stands, so its text must hold no
+ * secrets. It is bounded on arrival: the Workshop keeps the first `MAX_SPACE_SYNC_WARNINGS`
+ * warnings, cuts each warning and `error` to `MAX_SPACE_SYNC_MESSAGE_LENGTH`, and refuses a report
+ * whose `done` or `total` is not a non-negative integer, as `SPACE_SYNC_ERROR_CODES.notAllowed`.
+ */
+export type SpaceSyncProgress = {
+  /** "running" while work remains; "done" or "failed" ends the job (see `reportProgress`). */
+  state: "running" | "done" | "failed";
+
+  /** How many source items have been synced so far. */
+  done: number;
+
+  /** How many source items the job will sync in all, once the account knows. */
+  total?: number;
+
+  /** Source items skipped or synced only in part, each with why, for the user to follow up. */
+  warnings?: string[];
+
+  /** Why the job failed; meant for the "failed" state. */
+  error?: string;
+};
+
+/**
+ * The capability `GatekeeperUser.startSpaceSync` hands the account for one job: it acts for that
+ * job of that user through that account, and for nothing else. Unlike a hook's callback, it may be
+ * stored and used for the job's lifetime, because every call is checked anew against the
+ * Workshop's job record: once the job is cancelled or has ended, or the account has been
+ * disconnected, every call is refused with a code from `SPACE_SYNC_ERROR_CODES`, read with
+ * `getSpaceSyncErrorCode`, as is a malformed report (`notAllowed`). Each of those codes is final
+ * for the job, so the account should end the job's work on one rather than retry; any other
+ * failure may be transient.
+ */
+export interface SpaceSyncTarget extends WorkerEntrypoint {
+  /**
+   * Record the job's progress (see `SpaceSyncProgress`). A "done" or "failed" report finishes
+   * the job, after which every call, this one included, is refused as `finished`.
+   */
+  reportProgress(progress: SpaceSyncProgress): Promise<void>;
+}
+
+/**
+ * Stable error codes with which a `SpaceSyncTarget` refuses a call because its job may do nothing
+ * more. Each is final for the job: an account that reads one with `getSpaceSyncErrorCode` should
+ * end the job's work rather than retry.
+ */
+export const SPACE_SYNC_ERROR_CODES = {
+  /** The user cancelled the job, or disconnected the account it runs through. */
+  cancelled: "SPACE_SYNC_CANCELLED",
+  /** The account the job runs through is no longer connected. */
+  accountGone: "SPACE_SYNC_ACCOUNT_GONE",
+  /** The job may not do what the call asks: the target does not act for it, the report is
+   * malformed (see `SpaceSyncProgress`), or its user may no longer do that in the job's space. */
+  notAllowed: "SPACE_SYNC_NOT_ALLOWED",
+  /** The job has ended as "done" or "failed", or is no longer kept (see
+   * `AuthenticatedApi.listSpaceSyncJobs`; running jobs are never dropped). */
+  finished: "SPACE_SYNC_FINISHED",
+} as const;
+
+/** A code from `SPACE_SYNC_ERROR_CODES`. */
+export type SpaceSyncErrorCode =
+    typeof SPACE_SYNC_ERROR_CODES[keyof typeof SPACE_SYNC_ERROR_CODES];
+
+const spaceSyncErrors = codedErrorFamily<SpaceSyncErrorCode>({
+  [SPACE_SYNC_ERROR_CODES.cancelled]: "This space sync was cancelled.",
+  [SPACE_SYNC_ERROR_CODES.accountGone]:
+      "The account this space sync runs through is no longer connected.",
+  [SPACE_SYNC_ERROR_CODES.notAllowed]: "This space sync may not do that.",
+  [SPACE_SYNC_ERROR_CODES.finished]: "This space sync has already finished.",
+});
+
+/** Creates a space-sync refusal with a machine-readable code from `SPACE_SYNC_ERROR_CODES`. */
+export const createSpaceSyncError = spaceSyncErrors.create;
+
+/** Reads the machine-readable code from a space-sync refusal, if it carries one. */
+export const getSpaceSyncErrorCode = spaceSyncErrors.getCode;
 
 /**
  * git object name, aka "oid", aka "hash" (or "commit id/hash" when it refers to a commit

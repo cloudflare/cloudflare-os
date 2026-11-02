@@ -25,6 +25,7 @@
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { codedErrorFamily } from "./coded-errors.js";
 import type { CodeChange } from "./code-change.js";
 import type { GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
@@ -378,22 +379,6 @@ export interface ObserverConfigCallback extends RpcTarget {
   configure(needs: ObserverBindingNeed[]): Promise<ObserverAccountChoice[]>;
 }
 
-/** Builds the create/read helpers for a family of expected errors carrying stable
- * machine-readable codes. The per-code messages double as the classification fallback for errors
- * from older deployments that lost the code in transit, so changing one is a compatibility break. */
-function codedErrorFamily<Code extends string>(messages: Record<Code, string>) {
-  const codes = new Set<unknown>(Object.keys(messages));
-  return {
-    create: (code: Code): Error & { code: Code } =>
-        Object.assign(new Error(messages[code]), { code }),
-    getCode: (error: unknown): Code | undefined => {
-      const candidate = typeof error === "object" && error !== null && "code" in error
-          ? error.code : undefined;
-      return codes.has(candidate) ? candidate as Code : undefined;
-    },
-  };
-}
-
 /** Stable error codes attached to expected failures from `AuthenticatedApi.openWorkspace()`. */
 export const OPEN_WORKSPACE_ERROR_CODES = {
   workspaceNotFound: "WORKSPACE_NOT_FOUND",
@@ -580,6 +565,45 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   listPublishedSpaces(query?: string, cursor?: string):
       Promise<{ spaces: PublishedSpaceInfo[]; cursor?: string }>;
+
+  /**
+   * Start syncing a source into the space `spaceKey` through the caller's connected account
+   * `accountId`, whose description declares `providesSpaceSync`: the account creates one
+   * workspace of the caller's per source item, from the bundled blueprint it declares, under the
+   * entry `options.parentId` of the space's tree, or at its top when omitted. `options.resourceUrl`
+   * is the source, as picked with the account's resource configurator.
+   *
+   * Every workspace the sync creates is published to everyone signed in, with the job's
+   * `publication` role (see `SpaceSyncJobInfo`), though one placed under an unpublished entry is
+   * not visible until that entry is published; a client must say so in the dialog that starts
+   * the sync, before the user confirms.
+   *
+   * Refused unless the caller may add workspaces to the space (the owner of a personal space, any
+   * member of a team space), the account declares `providesSpaceSync` with a blueprint the
+   * deployment ships, the deployment's admin settings allow the account's gatekeeper and the
+   * resource, the space lists `options.parentId` if given, and the caller has no running job for
+   * this space. Otherwise the job is recorded and handed to the account, and the job is returned
+   * as recorded: "running", or "failed" with an `error` if the account could not start it.
+   */
+  startSpaceSync(accountId: number, spaceKey: string,
+      options: { resourceUrl: string; parentId?: string }): Promise<SpaceSyncJobInfo>;
+
+  /**
+   * List the caller's own space-sync jobs, newest first, or only those into `spaceKey` when it is
+   * given; another user's syncs into the same space are not listed. Every running job is kept,
+   * and the 20 most recently ended of those that have ended; an earlier ended job is dropped.
+   * Progress is as the account last reported it, and nothing is pushed: poll this to follow a job.
+   */
+  listSpaceSyncJobs(spaceKey?: string): Promise<SpaceSyncJobInfo[]>;
+
+  /**
+   * Cancel the caller's running space-sync job `jobId`. The job is marked "cancelled" first, so
+   * from then on the account's every call for it is refused (`SPACE_SYNC_ERROR_CODES.cancelled`),
+   * and the account is then asked to stop its work, best effort. Workspaces the sync has already
+   * created stay, as the caller's own. Does nothing for a job that has already ended; throws for
+   * a `jobId` the caller has no job of.
+   */
+  cancelSpaceSync(jobId: string): Promise<void>;
 
   /**
    * Change the user's password, if using password-based authentication.
@@ -914,7 +938,10 @@ export interface AuthenticatedApi extends RpcTarget {
       subscriber: RpcStub<ConnectedAccountsSubscriber>, filter?: ConnectedAccountsFilter)
       : Promise<RpcStub<{}>>;
 
-  /** Remove a connected account, revoking the token. */
+  /**
+   * Remove a connected account, revoking the token. The account's running space-sync jobs are
+   * cancelled first, as by `cancelSpaceSync`.
+   */
   disconnectAccount(accountId: number): Promise<void>;
 
   /**
@@ -6655,4 +6682,62 @@ export interface Space extends RpcTarget {
    * neither leave it nor be removed.
    */
   removeMember(profileId: string): Promise<void>;
+}
+
+/**
+ * One space-sync job, as `AuthenticatedApi.startSpaceSync` and `listSpaceSyncJobs` return it: a
+ * sync, run by one of the caller's connected accounts, of a source into a space (see
+ * `AccountDescription.providesSpaceSync`). The record is the Workshop's, kept with the caller's
+ * account; the account doing the work only reports progress into it.
+ */
+export interface SpaceSyncJobInfo {
+  /** The job's id, unique among the caller's jobs; pass it to `cancelSpaceSync`. */
+  jobId: string;
+
+  /** The caller's connected account that runs the job. */
+  accountId: number;
+
+  /** The gatekeeper vendor of that account, kept so the job still shows its source once the
+   * account is disconnected. */
+  vendorId: string;
+
+  /** The space the job syncs into. */
+  spaceKey: string;
+
+  /** The entry of the space's tree the synced workspaces go under; absent for its top. */
+  parentId?: string;
+
+  /**
+   * The role every workspace the job creates is published with to everyone signed in (see
+   * `Overseer.setPublicAccess`); one under an unpublished entry of the space's tree is not visible
+   * until that entry is published. Chosen by the Workshop when the job starts, never by the
+   * account: the publication the job's bundled blueprint declares
+   * (`BlueprintMetadata.publication`), or "use" when it declares none.
+   */
+  publication: CollaboratorRole;
+
+  /**
+   * "running" until the account reports the job "done" or "failed", or the caller cancels it or
+   * disconnects its account, which makes it "cancelled". Only "running" can change.
+   */
+  status: "running" | "done" | "failed" | "cancelled";
+
+  /**
+   * What the account last reported (see `SpaceSyncProgress` in
+   * `@gadgets/workshop-shared/gatekeeper`), bounded as described there; `warnings` is empty
+   * before the first report. Text the account supplies, shown as it stands.
+   */
+  progress: { done: number; total?: number; warnings: string[] };
+
+  /**
+   * Why a "failed" job failed: what the account reported, or what it threw when asked to start.
+   * Text the account supplies, bounded like `progress`.
+   */
+  error?: string;
+
+  /** When the job was started. */
+  created: Date;
+
+  /** When the job ended; absent while it is "running". */
+  finished?: Date;
 }
