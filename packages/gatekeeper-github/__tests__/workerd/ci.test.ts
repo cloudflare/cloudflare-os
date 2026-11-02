@@ -659,6 +659,22 @@ describe("pull request CI", () => {
     return github;
   }
 
+  it("starts CI's window when the pull request was opened, however old its head, and reads the push record once", async () => {
+    // A branch pushed an hour ago, its pull request opened just now: `on: pull_request` CI is only starting.
+    const github = pullScenario();
+    github.rollups.set(HEAD, { state: null, nodes: [], committedAt: Date.now() - 60 * MINUTE, workflows: true, parentHasCi: false });
+    const openedAgo = (minutes: number) =>
+      github.pulls.set(7, { ...pullResponse(7, HEAD), created_at: new Date(Date.now() - minutes * MINUTE).toISOString() });
+    openedAgo(2);
+    const gk = await gatekeeper(7);
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ state: "expected", phase: "notStarted" });
+
+    // Opened an hour ago too: the missing required checks need someone to act.
+    openedAgo(60);
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ state: "expected", phase: "blocked" });
+    expect(github.requestsTo(`${API_BASE}/activity`)).toHaveLength(2);
+  });
+
   it("reports the head's checks with what the base branch requires, and mergeState", async () => {
     pullScenario();
     const gk = await gatekeeper(7);
