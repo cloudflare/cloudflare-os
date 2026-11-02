@@ -362,6 +362,26 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      # The risk-review gate's evidence-eval (scripts/automerge/evidence/eval.ts), bound to this
+      # workflow's run on the pull request head. Report-only until calibrated (see eval.ts).
+      - name: evidence-eval
+        if: github.event_name == 'pull_request'
+        env:
+          AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: >-
+          node scripts/automerge/evidence/eval.ts
+          --comparison artifacts/comparison/comparison.json
+          --candidate "$GITHUB_SHA"
+
+      - name: Upload evidence-eval
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-evidence-eval
+          path: automerge-out/automerge-evidence-eval.json
+          if-no-files-found: error
+
       - name: Post the comparison on the pull request
         env:
           GITHUB_TOKEN: ${{ github.token }}
