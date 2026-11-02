@@ -72,6 +72,8 @@ export function headVerdict(tests: string[], head: TestRun[]): Outcome | undefin
     if (result.failed > 0) reasons.push(`${test} fails at head: ${result.failures.join("; ")}`);
     else if (result.status !== "passed" || result.passed === 0) unseen.push(`${test} ran no passing test at head (status ${result.status})`);
   }
+  // vitest exits non-zero for an unhandled error even when every reported test passed.
+  if (reasons.length === 0) for (const run of head) if (!run.exitOk) unseen.push(`vitest exited non-zero under ${run.config} at head with no failing test`);
   if (unseen.length > 0) return errored(unseen.join("; "), details);
   return reasons.length > 0 ? decide(reasons, details) : undefined;
 }
@@ -86,6 +88,7 @@ export function evaluateRedGreen(tests: string[], head: TestRun[], base: TestRun
   for (const [test, result] of found) {
     if (result.failed > 0) continue;
     if (result.status !== "passed" || result.passed === 0) unseen.push(`${test} ran no test on the base source (status ${result.status})`);
+    else if (!base.every((run) => run.exitOk)) unseen.push(`vitest exited non-zero on the base source with ${test} passing`);
     else reasons.push(`${test} passes on the base source, so it does not check the change`);
   }
   if (unseen.length > 0) return errored(unseen.join("; "), details);

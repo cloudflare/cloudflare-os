@@ -79,6 +79,8 @@ export function evaluateE2e(run: TestRun, details: JsonObject): Outcome {
   if (crashed.length > 0 || passed < EXPECTED_TESTS) {
     return errored(`ran ${passed} of ${EXPECTED_TESTS} flows${crashed.length > 0 ? `; ${crashed.join(", ")} did not finish` : ""}`, all);
   }
+  // vitest exits non-zero for an unhandled error even when every reported flow passed.
+  if (!run.exitOk) return errored("vitest exited non-zero with no failing flow", all);
   return holds(all);
 }
 

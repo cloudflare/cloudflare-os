@@ -47,6 +47,12 @@ describe("evaluateE2e", () => {
     assert.match(String(outcome.details.error), /^ran 0 of 10 flows; e2e\/workshop\.e2e\.ts did not finish/);
   });
 
+  it("errors when vitest exited non-zero though all ten flows passed", () => {
+    const outcome = evaluateE2e({ ...run("dev-server-green.json"), exitOk: false }, {});
+    assert.equal(outcome.status, "error");
+    assert.equal(outcome.details.error, "vitest exited non-zero with no failing flow");
+  });
+
   it("errors when the suite left no readable report", () => {
     assert.equal(evaluateE2e({ ...run("dev-server-green.json"), results: undefined }, {}).status, "error");
   });

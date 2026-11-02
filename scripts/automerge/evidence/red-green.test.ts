@@ -96,6 +96,16 @@ describe("evaluateRedGreen", () => {
     assert.match(String(outcome.details.error), /other\.test\.ts is missing from the head report/);
   });
 
+  it("errors when vitest exited non-zero at head though every test passed", () => {
+    const outcome = evaluateRedGreen(tests, [{ ...run("head"), exitOk: false }], [run("base")]);
+    assert.equal(outcome.status, "error");
+    assert.match(String(outcome.details.error), /exited non-zero under .* at head with no failing test/);
+  });
+
+  it("errors when vitest exited non-zero on the base source with the file passing", () => {
+    assert.equal(evaluateRedGreen(tests, [run("head")], [{ ...run("head"), exitOk: false }]).status, "error");
+  });
+
   it("errors when the head crashed, instead of counting it as a head failure", () => {
     assert.equal(headVerdict(tests, [crashed()])?.status, "error");
   });
