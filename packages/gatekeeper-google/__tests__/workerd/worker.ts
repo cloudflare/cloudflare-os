@@ -741,6 +741,17 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       .testCalendarDeliver(params, callback, approvalQueue, change);
   }
 
+  /** Call one method of a session the calendar facet starts, as a gadget calls its binding. */
+  async calendarSessionCall(
+      { facetName, id, props }: CalendarFacet, method: "createEvent" | "listEvents", args: unknown[],
+  ): Promise<unknown> {
+    using queue = new RpcStub(new TestApprovalQueue());
+    using session = await this.#calendar(facetName, id, props).startSession(queue as never) as
+      GoogleCalendarSession & Disposable;
+    const call = session[method] as (...args: unknown[]) => Promise<unknown>;
+    return await call(...args);
+  }
+
   /** Apply one of the calendar facet's queued actions, as approving it does. */
   async calendarApplyAction({ facetName, id, props }: CalendarFacet, actionId: number): Promise<void> {
     await this.#calendar(facetName, id, props).applyAction(actionId);

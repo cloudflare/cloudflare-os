@@ -283,11 +283,14 @@ export interface GoogleCalendarSession {
 
   /**
    * Have `hook.receiveEventChange()` called with each change to an event on this calendar, of the
-   * kinds in `options.changes` (by default, all of them). Events created and changes made through
-   * this API, by you or any Gadget, are never delivered, so hooks can't answer themselves or one
-   * another. Every other change is, whoever made it, including the user's own edits in Google
-   * Calendar. The hook starts disabled, and nothing is delivered until the user enables it. Every
-   * call creates a distinct hook, so subscribe once for each set of changes to watch.
+   * kinds in `options.changes` (by default, all of them). Events created and changes made on this
+   * calendar through this API, by you or any Gadget, are never delivered, so its hooks can't answer
+   * themselves or one another. Every other change is, whoever made it, including the user's own
+   * edits in Google Calendar and any event's deletion, even of one created through this API. A
+   * change made through this API also reaches other calendars, such as its attendees' copies of the
+   * event, and is delivered there like anyone's, so hooks on two calendars can still answer each
+   * other. The hook starts disabled, and nothing is delivered until the user enables it. Every call
+   * creates a distinct hook, so subscribe once for each set of changes to watch.
    *
    * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
    * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's

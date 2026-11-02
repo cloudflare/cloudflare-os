@@ -261,15 +261,15 @@ and a history ID, so a forged one can only make the worker read that mailbox's n
 the connected account's own credentials. Without its topic and the push service account a kind of
 hook is refused, and everything else works as before.
 
-Disconnecting a Google account drops its hooks from the mailbox's and each space's driver, so
-nothing goes on reading or renewing with credentials that are gone; a watch or subscription no
-hook uses any more lapses, as when the hooks are disabled.
+Disconnecting a Google account drops its hooks from the mailbox's and each space's driver, and from
+each calendar's (see below), so nothing goes on reading or renewing with credentials that are gone;
+a watch or subscription no hook uses any more lapses, as when the hooks are disabled.
 
 ## Google Calendar event hooks
 
 Gadgets can watch a connected calendar for new, updated and cancelled events
 (`subscribeEventChanges()` in `src/calendar-types.d.ts`). This needs no setup beyond the Calendar
-API the connection already uses.
+API the connection already uses: unlike Gmail's and Chat's hooks, Calendar's don't use Pub/Sub.
 
 Each connected account's calendar has one `CalendarHookDriver` (`src/calendar-hooks.ts`), shared by
 all of that connection's hooks on it. Enabling the first hook lists the calendar's events from a
@@ -290,14 +290,21 @@ seen it once.
 
 Calendar notifies of changes by webhook (`events.watch`), with no event in the notification. When
 `BASE_URL` is public https, the driver opens a channel posting to
-`${BASE_URL}/calendar/notifications/<driver>` and replaces it a day before its week is up; Google's
-push guide asks only that the address be https with a valid certificate. A notification counts only
-with its channel's random token, and then only prompts a read with the account's own credentials.
-Once Google's first notification on a channel arrives, the driver also reads the calendar hourly,
-for notifications Google drops. Until one arrives, as when Google can't reach the deployment, and on
+`${BASE_URL}/calendar/notifications/<driver>` and replaces it a day before it expires, or halfway
+through if Google gives it less than two days; Google's push guide asks only that the address be
+https with a valid certificate. A notification counts only with its channel's random token. Google's
+first one on a channel only shows that notifications arrive, and each later one prompts a read with
+the account's own credentials. Once that first one arrives, the driver also reads the calendar
+hourly, for notifications Google drops. Until one arrives, as when Google can't reach the deployment, and on
 a deployment without a public https URL, such as `pnpm dev-server`, it reads every two minutes.
 Behind Cloudflare Access, add a bypass for `/gatekeeper/google/calendar/notifications/*`, or hooks
 fall back to reading every two minutes.
+
+Each read is a Calendar API request, counted against the quota of the OAuth client's Cloud project.
+With notifications arriving, a hooked calendar costs about one request per change plus one an hour;
+read every two minutes, it costs 720 a day. Google's quota page sets a daily threshold of a million
+requests per project, which can't be raised and above which Google has said it will start charging,
+so about 1,400 calendars read every two minutes would use the whole of it.
 
 A read that fails, as when the account can no longer read the calendar, is retried after five
 minutes, doubling with each failure in a row up to hourly. A channel Google refuses is asked for

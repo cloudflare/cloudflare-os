@@ -6,7 +6,7 @@ import {env} from "cloudflare:workers";
 import {SELF, runDurableObjectAlarm, runInDurableObject} from "cloudflare:test";
 import {afterEach, beforeEach, expect, it, vi} from "vitest";
 import {CALENDAR_WRITE_MARK} from "../../src/calendar-api";
-import type {CalendarSubscribeOptions} from "../../src/calendar-types";
+import type {CalendarEvent, CalendarSubscribeOptions} from "../../src/calendar-types";
 import type {GoogleCalendarGatekeeperImplProps} from "../../src/google";
 import type {TestHooks} from "./worker";
 
@@ -127,6 +127,10 @@ function mockCalendar(): MockCalendar {
       await take("holdWatch");
       return json({kind: "api#channel", id, resourceId: channel.resourceId, expiration});
     }
+    if (path === "/events" && method === "GET" && url.searchParams.get("singleEvents") === "true") {
+      // listEvents(), which this fake answers with every event the calendar has.
+      return json({items: [...calendar.events.values()].filter(event => event.status !== "cancelled")});
+    }
     if (path === "/events" && method === "GET") {
       const syncToken = url.searchParams.get("syncToken");
       expect(url.searchParams.get("singleEvents")).toBe("false");
@@ -222,16 +226,21 @@ async function account(): Promise<string> {
   return userObject.id.toString();
 }
 
-type Connection = Awaited<ReturnType<typeof connect>>;
+type Connection = ReturnType<typeof calendarConnection>;
 
-/** One connection to the calendar with the account, its hook subscribed through the restored facet. */
-async function connect(userObjectId: string, options?: CalendarSubscribeOptions) {
+/** One connection to the calendar with the account, and the TestHooks object standing in for its Overseer. */
+function calendarConnection(userObjectId: string) {
   const name = `calendar-hooks-${crypto.randomUUID()}`;
   const props: GoogleCalendarGatekeeperImplProps = {userObjectId, calendarId: CALENDAR, availabilityMode: "thisCalendar"};
   const hooks = testEnv.TestHooks.get(testEnv.TestHooks.idFromName(name));
-  const facet = {facetName: `calendar-${name}`, id: testEnv.GoogleCalendarGatekeeperImpl.idFromName(name).toString(), props};
-  await hooks.calendarSubscribe(facet, options);
-  return {hooks, ...facet};
+  return {hooks, facetName: `calendar-${name}`, id: testEnv.GoogleCalendarGatekeeperImpl.idFromName(name).toString(), props};
+}
+
+/** A connection whose hook is subscribed through the restored facet. */
+async function connect(userObjectId: string, options?: CalendarSubscribeOptions): Promise<Connection> {
+  const connection = calendarConnection(userObjectId);
+  await connection.hooks.calendarSubscribe(facetOf(connection), options);
+  return connection;
 }
 
 /** Enable a connection's hook and wait for its driver to finish what that started. */
@@ -476,6 +485,32 @@ it("refuses options it can't honour", async () => {
   // The session's generated validation refuses what its types don't allow.
   await expect(connect(userObjectId, {changes: ["moved" as never]})).rejects.toThrow("subscribeEventChanges[1]");
   await expect(connect(userObjectId, {eventId: 7 as never})).rejects.toThrow("subscribeEventChanges[1]");
+});
+
+it("refuses a session argument of the wrong type when called, and lists events' kinds, queued ones included", async () => {
+  const calendar = mockCalendar();
+  const away = add(calendar, {eventType: "outOfOffice"});
+  const novel = add(calendar, {eventType: "someKindGoogleAddsLater"});
+  const connection = calendarConnection(await account());
+  const start = new Date(Date.now() + DAY);
+  const prep = {
+    title: "Prep", start: {kind: "dateTime", dateTime: start},
+    end: {kind: "dateTime", dateTime: new Date(start.getTime() + 30 * MINUTE)},
+  };
+
+  // A string where a Date belongs used to be queued, failing only once the creation was approved.
+  const misdated = {...prep, start: {kind: "dateTime", dateTime: start.toISOString()}};
+  await expect(connection.hooks.calendarSessionCall(facetOf(connection), "createEvent", [misdated]))
+    .rejects.toThrow("createEvent[0]");
+  await connection.hooks.calendarSessionCall(facetOf(connection), "createEvent", [prep]);
+
+  const events = await connection.hooks.calendarSessionCall(facetOf(connection), "listEvents",
+    [{timeMin: new Date(), timeMax: new Date(Date.now() + 30 * DAY)}]) as CalendarEvent[];
+  expect(events.map(({title, eventType, pending}) => ({title, eventType, pending}))).toEqual([
+    {title: "Prep", eventType: "default", pending: true},
+    {title: calendar.events.get(away)!.summary, eventType: "outOfOffice"},
+    {title: calendar.events.get(novel)!.summary},
+  ]);
 });
 
 it("delivers descriptions only to a hook that asks for them", async () => {
