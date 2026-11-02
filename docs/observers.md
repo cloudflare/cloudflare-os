@@ -35,8 +35,10 @@ people who *also* have access to it". (Maximally sensitive data gets an extra la
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
 puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
-that data (`AdminConfig.restrictedWebFetchHosts`, none by default), and every action requires manual
-approval (auto-approval rules are suspended), the approver checking the action text for restricted
+that data (`AdminConfig.restrictedWebFetchHosts`, none by default) or, where the admin allows it
+(`AdminConfig.restrictedWebFetchApprovals`, off by default), a URL a user approves for the turn, and
+every action requires manual approval (auto-approval rules are suspended), the approver checking
+the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
 is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
 against the producing gatekeeper, and anything that widens what they must be verified against
@@ -117,7 +119,7 @@ The check works as follows:
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
 | Server `openWorkspace` path | `packages/workshop-backend/src/server.ts` |
 | Access resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveAccess`, `computeEffectiveAccess`) |
-| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `getWebFetchEnv`, `submitAction`) |
+| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `authorizeWebFetch`, `submitAction`) |
 | `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation` sets `ownerInvitesOnly` and restarts the workspace if anyone lost access); `sharing.ts` (`computeEffectiveAccess` counts only direct owner grants; the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
 | Observation recording | `overseer.ts` `authorizeObservation()`; `ApprovalQueueImpl` |
 | Gatekeeper storage record | `overseer-storage.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
@@ -726,7 +728,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    for that admission. Scope widening restarts live sessions (see "Restarting when verification
    scope widens"). Setting `containsRestrictedData` also
    puts the workspace into a restricted mode: web fetches reach only the hosts an admin trusts with
-   that data, and every action requires manual approval (auto-approval rules are suspended), the
+   that data or, where the admin allows it, a URL a user approves, and every action requires manual
+   approval (auto-approval rules are suspended), the
    approver checking the action text for restricted data. An action whose description is not complete
    (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
    pushes are refused.
@@ -840,7 +843,8 @@ its resource types.
   or admits only an observer whose verifier stands for the very account the binding reads with,
   whose holder sees nothing new (MCP Server Portals).
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (web fetches reach only admin-trusted hosts, and every action requires manual approval —
+  mode (web fetches reach only admin-trusted hosts or user-approved URLs, and every action requires
+  manual approval —
   auto-approval rules are suspended — the approver checking the action text for restricted data) is
   available separately; combined with strategy A it makes the workspace effectively private once
   sensitive data is observed.

@@ -181,7 +181,7 @@ describe("agent resource discovery", () => {
     await withDiscovery([resource], async impl => {
       expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "ENVIRONMENT",
         reason: "Run tests", resourceUrl: url })).toMatchObject({ requested: false });
-      expect(impl.consumeCapturedConnectionRequests(1)).toEqual([]);
+      expect(impl.consumeCapturedDecisionRequests(1)).toEqual([]);
     });
   });
 
@@ -189,7 +189,7 @@ describe("agent resource discovery", () => {
     await withDiscovery([CREATION, EXISTING], async impl => {
       expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "DOCUMENT",
         reason: "Read a document" })).toMatchObject({ requested: true });
-      expect(impl.consumeCapturedConnectionRequests(1)).toMatchObject([{
+      expect(impl.consumeCapturedDecisionRequests(1)).toMatchObject([{
         type: "connectionRequest", resourceUrlPattern: EXISTING.urlPattern,
       }]);
     });

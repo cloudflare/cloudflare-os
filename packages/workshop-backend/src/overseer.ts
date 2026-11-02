@@ -69,7 +69,7 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import { WebFetchEnv } from "./web-fetch";
+import { WebFetchEnv, validateWebFetchUrl } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
 import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
 import { recordAnalytics } from "./analytics";
@@ -534,7 +534,8 @@ const ALARM_MAX_RETRIES = 6;
 const AGENT_RESUME_MAX_ATTEMPTS = 4;
 
 // The agent-authored records Overseer.waitForAgent() returns (see there).
-const WAIT_FOR_AGENT_RESULT_TYPES = new Set(["message", "error", "action", "connectionRequest"]);
+const WAIT_FOR_AGENT_RESULT_TYPES =
+    new Set(["message", "error", "action", "connectionRequest", "webFetchRequest"]);
 
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
@@ -5723,10 +5724,10 @@ class OverseerImpl implements AgentHooks {
   #capturedActions = new Map<number, {actions: number[], accessedGadget: boolean,
                                       awaitDecision: boolean}>();
 
-  // Maps chat ID to connectionRequest message bodies created by that chat's agent during the
-  // current step. Spliced into the chat log after the tool call returns (see
-  // consumeCapturedConnectionRequests), so they appear after the assistant's tool-call message.
-  #capturedConnectionRequests = new Map<number, AiChatMessageBody[]>();
+  // Maps chat ID to connectionRequest and webFetchRequest message bodies created by that chat's
+  // agent during the current step. Spliced into the chat log after the tool call returns (see
+  // consumeCapturedDecisionRequests), so they appear after the assistant's tool-call message.
+  #capturedDecisionRequests = new Map<number, AiChatMessageBody[]>();
 
   #getOrCreateCapturedActions(chatId: number) {
     let result = this.#capturedActions.get(chatId);
@@ -6289,14 +6290,35 @@ class OverseerImpl implements AgentHooks {
     await Promise.all(removals);
   }
 
-  // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
-  // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
-  async getWebFetchEnv(): Promise<WebFetchEnv> {
+  // Decides how webFetch may fetch `url` for the chat (see AgentHooks.authorizeWebFetch).
+  async authorizeWebFetch(chatId: number, url: string, mayRequestApproval: boolean)
+      : Promise<{env: WebFetchEnv} | {approvalMessage: string}> {
     // Once the workspace has observed restricted data, a URL can carry it to whoever sees the
-    // request, so only the hosts an admin trusts with that data are reachable.
-    let allowedHosts = this.storage.containsRestrictedData.get()
-        ? new Set((await readAdminConfig(this.env)).restrictedWebFetchHosts) : undefined;
-    if (allowedHosts?.size === 0) {
+    // request, so only the hosts an admin trusts with that data are reachable, or a URL a user
+    // approves where the admin allows that.
+    let config = this.storage.containsRestrictedData.get()
+        ? await readAdminConfig(this.env) : undefined;
+    let allowedHosts = config && new Set(config.restrictedWebFetchHosts);
+    if (config?.restrictedWebFetchApprovals && mayRequestApproval) {
+      let href = validateWebFetchUrl(url).href;
+      // An approved URL's redirects need no checks: the site picks them knowing only that URL.
+      if (this.#webFetchApproved(chatId, href)) {
+        allowedHosts = undefined;
+      } else {
+        try {
+          validateWebFetchUrl(href, allowedHosts);
+        } catch {
+          // What the trusted hosts refuse is what the user is asked to decide.
+          this.#captureDecisionRequest(chatId,
+              {type: "webFetchRequest", requestId: `${chatId}:${crypto.randomUUID()}`, url: href,
+               state: "pending"});
+          return {approvalMessage:
+              `This workspace has observed sensitive data, so fetching ${href} needs the user's ` +
+              `approval. The request was sent to the user and your turn will end now. If they ` +
+              `approve, you'll be resumed and can fetch it.`};
+        }
+      }
+    } else if (allowedHosts?.size === 0) {
       // TODO: Disallwing fetches is a bit draconian. Ideally, we would have some way to detect
       //   if a URL is well-known, and therefore not a leak problem. E.g. if the URL is already in
       //   a search index, then it's not leaking anything. If we had a search provider we could
@@ -6306,11 +6328,23 @@ class OverseerImpl implements AgentHooks {
           "from fetching from public web sites.");
     }
 
-    return {
+    return {env: {
       ai: this.env.WORKERS_AI,
       gateway: getAiGatewayConfig(this.env),
       allowedHosts,
-    };
+    }};
+  }
+
+  // Whether the user approved fetching `href` since the current turn began. A decision's nudge
+  // resumes the same turn, so only a new prompt or callback ends the approval.
+  #webFetchApproved(chatId: number, href: string): boolean {
+    for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
+      if (isTurnPrompt(msg) || msg.type === "agentCallback") return false;
+      if (msg.type === "webFetchRequest" && msg.state === "approved" && msg.url === href) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Record an observation that originated from a built-in agent tool (not a gatekeeper).
@@ -9696,6 +9730,7 @@ class OverseerImpl implements AgentHooks {
   #decisionWait(chatId: number) {
     let actionIds: number[] = [];
     let requestIds: string[] = [];
+    let connections = false;
     let titles: string[] = [];
     let pending = false;
     let denied = false;
@@ -9715,8 +9750,10 @@ class OverseerImpl implements AgentHooks {
           msg.author.type === "agent" && !msg.toolCalls?.length) return steered ? undefined : null;
       steered ||= msg.type === "message" && msg.steered === true;
       if (msg.author.type === "agent") agent ??= msg.author;
-      if (msg.type === "connectionRequest" && msg.author.type === "agent") {
+      if ((msg.type === "connectionRequest" || msg.type === "webFetchRequest") &&
+          msg.author.type === "agent") {
         requestIds.push(msg.requestId);
+        connections ||= msg.type === "connectionRequest";
         pending ||= msg.state === "pending";
         denied ||= msg.state === "denied";
       }
@@ -9732,7 +9769,7 @@ class OverseerImpl implements AgentHooks {
       }
     }
     return agent && (actionIds.length || requestIds.length)
-        ? {agent, actionIds, requestIds, titles: titles.toReversed(), pending, denied}
+        ? {agent, actionIds, requestIds, connections, titles: titles.toReversed(), pending, denied}
         : undefined;
   }
 
@@ -9763,7 +9800,9 @@ class OverseerImpl implements AgentHooks {
     if (wait.pending || this.isPreparingChatMessage(chatId)) return;
     let text = wait.titles.length
         ? `The changes you submitted have been approved and applied: ${wait.titles.map(t => `"${t}"`).join(", ")}. Reads now reflect them.`
-        : "The requested connections have been accepted. Continue using the connected resources.";
+        : wait.connections
+            ? "The requested connections have been accepted. Continue using the connected resources."
+            : "The web fetches you requested have been approved. Fetch those URLs now.";
     this.addChatMessages(chatId, record.initiator, [{type: "agentNudge", text}]);
     meta.activeAgent = wait.agent;
     meta.lastActive = this.getChatTimestamp();
@@ -9868,7 +9907,7 @@ class OverseerImpl implements AgentHooks {
   // Records a pending connection request. `requested` is true only when a request was actually
   // created (and an accept/deny card will appear); when false, the request was rejected for the
   // reason in `message` and the agent should fix it and retry — the turn must NOT end (see the
-  // `connectionRequested` flag in agent.ts).
+  // `decisionRequested` flag in agent.ts).
   async requestConnection(chatId: number, input: {
     vendorId: string;
     resourceUrl?: string;
@@ -9884,7 +9923,7 @@ class OverseerImpl implements AgentHooks {
         return { requested: false, message:
             `Cannot request an agent spawner with a resourceUrl; omit it.` };
       }
-      this.#captureConnectionRequest(chatId, {
+      this.#captureDecisionRequest(chatId, {
         type: "connectionRequest",
         requestId: `${chatId}:${crypto.randomUUID()}`,
         vendorId: input.vendorId,
@@ -9924,7 +9963,7 @@ class OverseerImpl implements AgentHooks {
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };
     }
 
-    this.#captureConnectionRequest(chatId, {
+    this.#captureDecisionRequest(chatId, {
       type: "connectionRequest",
       requestId: `${chatId}:${crypto.randomUUID()}`,
       vendorId: input.vendorId,
@@ -9946,20 +9985,20 @@ class OverseerImpl implements AgentHooks {
         `access to the resource; if they deny, your turn stays ended until the user messages you.` };
   }
 
-  // Holds a connection request until the agent loop records it with the step's messages (see
-  // consumeCapturedConnectionRequests).
-  #captureConnectionRequest(chatId: number, body: AiChatMessageBody): void {
-    let list = this.#capturedConnectionRequests.get(chatId);
+  // Holds a connection or web fetch request until the agent loop records it with the step's
+  // messages (see consumeCapturedDecisionRequests).
+  #captureDecisionRequest(chatId: number, body: AiChatMessageBody): void {
+    let list = this.#capturedDecisionRequests.get(chatId);
     if (!list) {
       list = [];
-      this.#capturedConnectionRequests.set(chatId, list);
+      this.#capturedDecisionRequests.set(chatId, list);
     }
     list.push(body);
   }
 
-  consumeCapturedConnectionRequests(chatId: number): AiChatMessageBody[] {
-    let result = this.#capturedConnectionRequests.get(chatId) ?? [];
-    this.#capturedConnectionRequests.delete(chatId);
+  consumeCapturedDecisionRequests(chatId: number): AiChatMessageBody[] {
+    let result = this.#capturedDecisionRequests.get(chatId) ?? [];
+    this.#capturedDecisionRequests.delete(chatId);
     return result;
   }
 
@@ -12550,20 +12589,28 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return (await Promise.all(perGatekeeper)).flat();
   }
 
-  // Find a pending connectionRequest message by id. The request id encodes the chat id as a prefix
-  // (`${chatId}:...`) so we only scan that thread's messages.
-  #findConnectionRequest(requestId: string): AiChatMessage & {type: "connectionRequest"} {
+  // The messages of the chat a connection or web fetch request was made in. The request id
+  // encodes the chat id as a prefix (`${chatId}:...`) so we only scan that thread's messages.
+  #requestChatMessages(requestId: string) {
     let colonIdx = requestId.indexOf(":");
-    if (colonIdx < 0) throw new Error(`Malformed connection request id: ${requestId}`);
+    if (colonIdx < 0) throw new Error(`Malformed request id: ${requestId}`);
     let chatId = Number(requestId.slice(0, colonIdx));
-    if (!Number.isFinite(chatId)) throw new Error(`Malformed connection request id: ${requestId}`);
+    if (!Number.isFinite(chatId)) throw new Error(`Malformed request id: ${requestId}`);
+    return this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)});
+  }
 
-    for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
-      if (msg.type === "connectionRequest" && msg.requestId === requestId) {
-        return msg as AiChatMessage & {type: "connectionRequest"};
-      }
+  #findConnectionRequest(requestId: string): AiChatMessage & {type: "connectionRequest"} {
+    for (let msg of this.#requestChatMessages(requestId)) {
+      if (msg.type === "connectionRequest" && msg.requestId === requestId) return msg;
     }
     throw new Error(`No such connection request: ${requestId}`);
+  }
+
+  #findWebFetchRequest(requestId: string): AiChatMessage & {type: "webFetchRequest"} {
+    for (let msg of this.#requestChatMessages(requestId)) {
+      if (msg.type === "webFetchRequest" && msg.requestId === requestId) return msg;
+    }
+    throw new Error(`No such web fetch request: ${requestId}`);
   }
 
 
@@ -12611,6 +12658,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // request; leaving it ended lets the user say what they want done instead, rather than forcing
     // the agent to guess from a bare "denied" signal. The denial is recorded in history and the
     // agent sees it the next time the user sends a message (see the connectionRequest history case).
+  }
+
+  approveWebFetchRequest(requestId: string): Promise<void> {
+    return this.#decideWebFetchRequest(requestId, "approved");
+  }
+
+  denyWebFetchRequest(requestId: string): Promise<void> {
+    return this.#decideWebFetchRequest(requestId, "denied");
+  }
+
+  // Records the decision and resumes the agent (or, on deny, leaves its turn ended; see
+  // resumeAgentAfterDecision).
+  async #decideWebFetchRequest(requestId: string, state: "approved" | "denied"): Promise<void> {
+    let msg = this.#findWebFetchRequest(requestId);
+    if (msg.state !== "pending") throw new Error(`Web fetch request is not pending: ${requestId}`);
+    msg.state = state;
+    msg.timestamp = this.impl.getChatTimestamp();
+    this.impl.storage.chats.put(msg);  // fires the subscriber update() → re-delivers the card
+    this.impl.resumeAgentAfterDecision(msg.chatId, requestId);
   }
 
   async subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date)
@@ -12795,8 +12861,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         deliverMessage(record);
       },
       update(oldRecord: AiChatMessage, newRecord: AiChatMessage): void {
-        // Chat messages are normally immutable, but connectionRequest messages are mutated in
-        // place when the user accepts/denies. Re-deliver so the client (which indexes by
+        // Chat messages are normally immutable, but connectionRequest and webFetchRequest messages
+        // are mutated in place when the user decides. Re-deliver so the client (which indexes by
         // sequence) replaces the cached message and re-renders the card.
         deliverMessage(newRecord);
       },
@@ -13044,9 +13110,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.waitForAgentIdle(chatId, starting && Promise.all(starting));
     this.impl.getChatMetaOrThrow(chatId);
     for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-      // What the agent wrote: its reply, the error that ended its turn, or the action or connection
-      // it stopped to wait on. Not the other records logged under it: the `changes` a step that
-      // replied and edited records after its reply, nor an agentNudge (as Stop logs one).
+      // What the agent wrote: its reply, the error that ended its turn, or the action, connection
+      // or web fetch it stopped to wait on. Not the other records logged under it: the `changes` a
+      // step that replied and edited records after its reply, nor an agentNudge (as Stop logs one).
       if (msg.author.type === "agent" && WAIT_FOR_AGENT_RESULT_TYPES.has(msg.type)) {
         return this.#getChatMessageForClient(msg);
       }
@@ -13557,6 +13623,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async acceptConnectionRequest(_requestId: string, _result: {gatekeeperId: number}): Promise<void> { this.#deny(); }
   async denyConnectionRequest(_requestId: string): Promise<void>  { this.#deny(); }
+  async approveWebFetchRequest(_requestId: string): Promise<void> { this.#deny(); }
+  async denyWebFetchRequest(_requestId: string): Promise<void> { this.#deny(); }
   async subscribeToActions(
       subscriber: RpcStub<ActionsSubscriber>, _startAfter?: Date): Promise<RpcStub<{}>> {
     // Inert: "use" sessions have no visibility into the action log. Signal a settled, empty log

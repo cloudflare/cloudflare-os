@@ -504,6 +504,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       banner: config.banner,
       accentColor: config.accentColor,
       restrictedWebFetchHosts: config.restrictedWebFetchHosts,
+      restrictedWebFetchApprovals: config.restrictedWebFetchApprovals,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
       gatewayModels: this.#listGatewayModels(config),
@@ -1139,6 +1140,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     let restrictedWebFetchHosts = parseRestrictedWebFetchHosts(hosts);
     await this.admin.updateAdminConfig({ restrictedWebFetchHosts });
     return restrictedWebFetchHosts;
+  }
+
+  async setRestrictedWebFetchApprovals(enabled: boolean): Promise<void> {
+    await this.admin.updateAdminConfig({ restrictedWebFetchApprovals: enabled });
   }
 
   setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void> {
