@@ -1,0 +1,37 @@
+packages/workshop-frontend/package.json
+  s_dd2417a6d5bd82::t_2b538da9ffa669 35
+packages/workshop-frontend/src/features/spaces/tree/SpaceTree.test.tsx
+  s_dd2417a6d5bd82::t_bed33e9602a7b0 1-366
+packages/workshop-frontend/src/features/spaces/tree/SpaceTree.tsx
+  s_dd2417a6d5bd82::t_2ea4a619913967 1-252
+packages/workshop-frontend/src/features/spaces/tree/SpaceViewToggle.test.tsx
+  s_dd2417a6d5bd82::t_fee79b496f6eb9 1-93
+packages/workshop-frontend/src/features/spaces/tree/SpaceViewToggle.tsx
+  s_dd2417a6d5bd82::t_bbaba556457bc6 1-32
+packages/workshop-frontend/src/features/spaces/tree/useSpaceViewMode.test.ts
+  s_dd2417a6d5bd82::t_1518e57755bb10 1-84
+packages/workshop-frontend/src/features/spaces/tree/useSpaceViewMode.ts
+  s_dd2417a6d5bd82::t_51be7b32d55cf2 1-67
+packages/workshop-frontend/src/features/spaces/tree/workspaceTree.test.ts
+  s_dd2417a6d5bd82::t_275cc1843f417d 1-361
+packages/workshop-frontend/src/features/spaces/tree/workspaceTree.ts
+  s_dd2417a6d5bd82::t_9bc6c5b26d993a 1-222
+packages/workshop-frontend/src/styles.css
+  s_dd2417a6d5bd82::t_259b5e5eb3f8e1 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "614240d6bf089809a8078304c629ab89ed7beed9",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
