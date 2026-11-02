@@ -497,12 +497,6 @@ function overwritePoint(text: string): number {
   return index;
 }
 
-function trailingCarriageReturns(text: string): string {
-  let start = text.length;
-  while (start > 0 && text[start - 1] === "\r") start--;
-  return text.slice(start);
-}
-
 /**
  * Splits decoded text into lines across writes, bounding an unterminated line: past
  * `PENDING_LIMIT` it is compacted to the text after its last overwrite point, and failing that only
@@ -513,8 +507,11 @@ class LineSplitter {
   #pending = "";
   #open = false;
   #overflow = false;
-  /** While overflowing: trailing `\r`s seen, which a following character would make an overwrite. */
-  #carriageReturns = "";
+  /**
+   * While overflowing: whether the text so far ends in `\r`, which a following character would make
+   * an overwrite. One flag suffices: only the last `\r` before that character matters.
+   */
+  #carriageReturn = false;
 
   constructor(emit: (line: string, truncated: boolean) => void) {
     this.#emit = emit;
@@ -539,21 +536,21 @@ class LineSplitter {
     this.#pending = "";
     this.#open = false;
     this.#overflow = false;
-    this.#carriageReturns = "";
+    this.#carriageReturn = false;
   }
 
   #append(text: string): void {
     this.#open = true;
     if (text === "") return;
     if (this.#overflow) {
-      const combined = this.#carriageReturns + text;
+      const combined = this.#carriageReturn ? `\r${text}` : text;
       const point = overwritePoint(combined);
       if (point === -1) {
-        this.#carriageReturns = trailingCarriageReturns(combined);
+        this.#carriageReturn = combined.endsWith("\r");
         return;
       }
       this.#overflow = false;
-      this.#carriageReturns = "";
+      this.#carriageReturn = false;
       this.#pending = combined.slice(point + 1);
     } else {
       this.#pending += text;
@@ -562,7 +559,7 @@ class LineSplitter {
     const point = overwritePoint(this.#pending);
     if (point !== -1) this.#pending = this.#pending.slice(point + 1);
     if (this.#pending.length > PENDING_LIMIT) {
-      this.#carriageReturns = trailingCarriageReturns(this.#pending);
+      this.#carriageReturn = this.#pending.endsWith("\r");
       this.#pending = leadingUnits(this.#pending, PENDING_LIMIT);
       this.#overflow = true;
     }

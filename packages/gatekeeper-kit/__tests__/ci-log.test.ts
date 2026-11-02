@@ -134,6 +134,23 @@ describe("readCiLog", () => {
     expect(progress.lines).toEqual(["100% done"]);
   });
 
+  it("streams an endless run of carriage returns without retaining the run", async () => {
+    // 16 MiB of bare `\r`s in 1024 chunks: no newline and no overwrite point. Remembering the whole
+    // run grew with the stream and rescanned it on every chunk, far past the test timeout.
+    const chunk = new TextEncoder().encode("\r".repeat(16 * 1024));
+    let remaining = 1024;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (remaining-- > 0) controller.enqueue(chunk);
+        else {
+          controller.enqueue(new TextEncoder().encode("done\nnext\n"));
+          controller.close();
+        }
+      },
+    });
+    expect(await readCiLog(body, "gitlab")).toEqual({ lines: ["done", "next"], firstLine: 1, totalLines: 2 });
+  });
+
   it("cuts an over-long line before a character that would straddle the cut, not through it", async () => {
     // The emoji is two UTF-16 code units, the first of them the 8192nd.
     const log = await readCiLog(stream(`${"x".repeat(8191)}😀 and more\n`), "github");
