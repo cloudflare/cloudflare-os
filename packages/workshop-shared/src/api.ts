@@ -399,6 +399,13 @@ export const OPEN_WORKSPACE_ERROR_CODES = {
   workspaceNotFound: "WORKSPACE_NOT_FOUND",
   workspaceAccessDenied: "WORKSPACE_ACCESS_DENIED",
   shareLinksDisabled: "SHARE_LINKS_DISABLED",
+  /**
+   * The caller holds no role on the workspace, which is published, and its space has answered
+   * that it is not visible (see `Overseer.setPublicAccess`): no space lists it yet, its own entry
+   * in the listing is not yet marked published, or a workspace above it in its space's tree is
+   * not published, so the publication admits nobody. The error names no workspace.
+   */
+  workspaceNotVisible: "WORKSPACE_NOT_VISIBLE",
 } as const;
 
 /** An expected failure code from `AuthenticatedApi.openWorkspace()`. */
@@ -411,6 +418,9 @@ const openWorkspaceErrors = codedErrorFamily<OpenWorkspaceErrorCode>({
   [OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled]:
       "Share links are disabled for this workspace because it contains sensitive data. " +
       "The owner must add each person directly.",
+  [OPEN_GADGET_ERROR_CODES.workspaceNotVisible]:
+      "This workspace is published, but not visible yet: its space does not list it yet, " +
+      "or a workspace above it there is not published.",
 });
 
 /** Creates an expected `openWorkspace()` error with a machine-readable code. */
@@ -718,7 +728,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * A user may open a workspace they own, one shared with them, one that their role in a space
    * reaches (see `SpaceMemberRole`) and one published to the deployment (see
    * `Overseer.setPublicAccess`), in the highest of the roles that the workspace's own sharing,
-   * that membership and that publication give them (see `CollaboratorRole`).
+   * that membership and that publication give them (see `CollaboratorRole`). The publication
+   * counts only while it is in effect: while the workspace is visible in its space (see
+   * `Overseer.setPublicAccess`).
    *
    * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
    * collaborator. If the key is invalid or expired, the call throws an exception. If the workspace
@@ -728,7 +740,12 @@ export interface AuthenticatedApi extends RpcTarget {
    * can be pipelined on the returned Overseer.
    *
    * To allow for pipelining, this throws an exception if the workspace doesn't exist. Expected
-   * missing and authorization failures carry a code from `OPEN_WORKSPACE_ERROR_CODES`.
+   * missing and authorization failures carry a code from `OPEN_WORKSPACE_ERROR_CODES`: a caller
+   * with no role on the workspace is refused with `workspaceNotVisible` when it is published and
+   * its space answers that it is not visible, one that no space lists included, and with
+   * `workspaceAccessDenied` otherwise. That includes a published workspace whose space could not
+   * be asked, or whose answer was overtaken by a change to its visibility: the publication then
+   * admits nobody, and the next open asks again.
    *
    * `configureObservers` is invoked only when the opening user is a non-owner who must choose
    * connected accounts for one or more gatekeeper bindings before they can observe the workspace
@@ -2373,11 +2390,11 @@ export type WorkspaceMetadata = {
   /**
    * The viewing user's role for this workspace: the highest of their effective role as a
    * collaborator (see `CollaboratorRole`), the role their membership of the workspace's space
-   * gives them (see `SpaceMemberRole`) and the role the workspace is published with (see
-   * `publicAccess`). The owner is always "build". Used by the frontend to decide whether to
-   * render the full editor ("build") or the UI-only shell ("use"). It does not say which of the
-   * three it came from, and only the first lets the user share the workspace. Absent implies
-   * "build" for backwards compatibility.
+   * gives them (see `SpaceMemberRole`) and the role the workspace is published with, while that
+   * publication is in effect (see `publicAccess`). The owner is always "build". Used by the
+   * frontend to decide whether to render the full editor ("build") or the UI-only shell
+   * ("use"). It does not say which of the three it came from, and only the first lets the user
+   * share the workspace. Absent implies "build" for backwards compatibility.
    *
    * On a record from `AuthenticatedApi.listGadgets` for a workspace shared with the user, this
    * is the role the workspace's own sharing gave them at their last open, to which neither
@@ -2420,10 +2437,16 @@ export type WorkspaceMetadata = {
    * it is not published. Set and withdrawn by the owner with `Overseer.setPublicAccess`.
    *
    * The role is a floor under every user's access, not a grant to anyone: a user who also holds
-   * a role as a collaborator or through a space opens in the highest of them (see `role`). It
-   * is never set while `containsRestrictedData` or `ownerInvitesOnly` is: such a workspace
-   * cannot be published, and a published one that comes to hold restricted data or becomes
-   * owner-invites-only stops being published at that moment, for good.
+   * a role as a collaborator or through a space opens in the highest of them (see `role`). The
+   * floor applies only while the workspace is visible in its space: while its space lists it
+   * and every workspace above it in the space's tree is published too (see
+   * `Overseer.setPublicAccess`, `SpaceWorkspaceInfo.hiddenBy`). While it is not, which it can
+   * stop being and become again, the workspace is published but admits nobody through the
+   * publication, and its collaborators and the members of its space open in their own roles
+   * either way. It is never set while
+   * `containsRestrictedData` or `ownerInvitesOnly` is: such a workspace cannot be published,
+   * and a published one that comes to hold restricted data or becomes owner-invites-only stops
+   * being published at that moment, for good.
    *
    * Carried by the metadata an `Overseer` reports to the owner and to anyone else who may build
    * in the workspace, and by the owner's own record of it (what `AuthenticatedApi.listGadgets`
@@ -2897,7 +2920,10 @@ export interface Overseer extends RpcTarget {
    * `SpaceMemberRole`), move with it: the target's members hold them, and the members of the
    * space it left no longer do, on the sessions they have open too, a moment later. A published
    * workspace (see `setPublicAccess`) stays published, and its entry in the target's listing
-   * says so as its entry in the space it left did.
+   * says so as its entry in the space it left did. But whether it is visible is for the target
+   * to answer anew, so a move that goes through, or fails with no answer (below), restarts the
+   * workspace if anyone opened it through the publication, and each open asks the target again;
+   * a move that is refused changes nothing.
    *
    * A move can also fail with no answer from a space, one that could not be reached for
    * instance. This throws too, but `GadgetMetadata.spaceKey` may be left as the move would have
@@ -2927,10 +2953,18 @@ export interface Overseer extends RpcTarget {
    * `role` is a floor under every user's access (see `GadgetMetadata.publicAccess`): a user
    * opens in the highest of it, their effective role as a collaborator and the role their
    * membership of the workspace's space gives them, and verifies the same connections before
-   * opening as a collaborator of that role (see `AuthenticatedApi.openGadget`). It makes nobody
-   * a collaborator and confers no power to share (see `CollaboratorRole`): someone who opens
-   * through it alone is not shown by `listCollaborators`, can add no collaborator and create no
-   * share link, and the workspace does not join their own `AuthenticatedApi.listGadgets`.
+   * opening as a collaborator of that role (see `AuthenticatedApi.openGadget`). The publication
+   * is in effect only while the workspace is visible in its space: while its space lists it
+   * (see `Space.listWorkspaces` for when a workspace is listed) and this entry and every entry
+   * above it in the space's tree are published (see `SpaceWorkspaceInfo.parentId`,
+   * `hiddenBy`). A published workspace that is not visible admits nobody through the
+   * publication, and a user with no other role on it is refused, with the coded error
+   * `workspaceNotVisible` from `OPEN_GADGET_ERROR_CODES` once the space has answered that it is
+   * not visible (see `AuthenticatedApi.openGadget`). Collaborators and members of the
+   * space open in their own roles either way. It makes nobody a collaborator and confers no
+   * power to share (see `CollaboratorRole`): someone who opens through it alone is not shown by
+   * `listCollaborators`, can add no collaborator and create no share link, and the workspace
+   * does not join their own `AuthenticatedApi.listGadgets`.
    *
    * Throws, whatever `role` is, while the workspace holds restricted data or is
    * owner-invites-only (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a
@@ -2940,19 +2974,24 @@ export interface Overseer extends RpcTarget {
    * Withdrawing the publication, or lowering its role, takes effect on the sessions already
    * open too: if anyone has opened the workspace through it, the workspace is restarted, so
    * every session of it, the owner's included, is disconnected and authorized afresh when it
-   * reopens. Raising the role disturbs nobody: it applies from each user's next open.
+   * reopens. The same happens when the workspace stops being visible while published: a
+   * workspace above it is unpublished, a move in the tree puts it under one that is not
+   * published, it leaves its space's listing, or its owner moves it to another space (see
+   * `moveToSpace`). Raising the role disturbs nobody, and neither does the workspace becoming
+   * visible: either applies from each user's next open.
    *
    * When this returns, `GadgetMetadata.publicAccess` on the owner's record follows, and so does
    * the workspace's entry in its space's listing (`SpaceWorkspaceInfo.published`), which is how
    * someone who is not a member of that space finds the workspace there (see `Space`). A
-   * workspace that no space lists, one that has seen no activity yet for instance, has no entry
-   * to mark and is published all the same, to whoever has its id; the entry is marked when a
-   * space comes to list it.
+   * workspace that no space lists yet, one that has seen no activity for instance, has no entry
+   * to mark: it is published, but not visible, so it admits nobody through the publication
+   * until a space lists it, and the entry is marked then.
    *
    * This can also throw after the change has taken effect in the workspace, when the owner's
    * record or the listing could not be brought up to date. They then follow at the workspace's
-   * next activity, change of title or move. So after such a failure read `publicAccess` from
-   * the workspace's metadata again.
+   * next activity, change of title or move, and until the entry is marked published the
+   * workspace is not visible. So after such a failure read `publicAccess` from the workspace's
+   * metadata again.
    */
   setPublicAccess(role: CollaboratorRole | null): Promise<void>;
 
@@ -6012,9 +6051,9 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
  *
  * A user may also hold a role on a workspace as a member of the space that lists it (see
  * `SpaceMemberRole`), and anyone signed in holds one on a workspace published to the deployment
- * (see `Overseer.setPublicAccess`). Neither is part of the effective role defined here: each
- * counts toward what the user may open and do in the workspace, never toward what they may
- * grant to others.
+ * while that publication is in effect (see `Overseer.setPublicAccess`). Neither is part of the
+ * effective role defined here: each counts toward what the user may open and do in the
+ * workspace, never toward what they may grant to others.
  */
 export type CollaboratorRole = "build" | "use";
 
@@ -6078,21 +6117,25 @@ export type CollaboratorInfo = {
  * share key revocation. Used by the preview/confirm flow, which must surface not only users who
  * lose access entirely but also users who would be downgraded to a lower role.
  *
- * On a workspace published to the deployment (see `GadgetMetadata.publicAccess`) both roles are
- * raised to the role it is published with, which the change does not take away. So nobody loses
- * access entirely there, and a collaborator whose effective role was no higher than the
- * published one is not affected.
+ * On a workspace whose publication counts here, both roles are raised to the role it is
+ * published with, which the change does not take away. So nobody loses access entirely there,
+ * and a collaborator whose effective role was no higher than the published one is not affected.
+ * A publication counts only while the workspace knows it to be in effect (see
+ * `Overseer.setPublicAccess`), which it learns from its space when someone opens the workspace
+ * through the publication and forgets when it restarts or the publication may have stopped
+ * being in effect. A publication that does not count raises neither role, so a user may be
+ * reported as losing access entirely who would still open the workspace through it.
  */
 export type AffectedCollaborator = {
   profile: AiChatAuthorInfo;
   addedBy: PermissionEdge[];
 
-  /** The effective role before the change, or the published role if that is higher. */
+  /** The effective role before the change, or the published role if that is higher and counts. */
   oldRole: CollaboratorRole;
 
   /**
-   * The effective role after the change, or the published role if that is higher. Null if the
-   * user loses access entirely.
+   * The effective role after the change, or the published role if that is higher and counts.
+   * Null if the user loses access entirely.
    */
   newRole: CollaboratorRole | null;
 };
@@ -6127,11 +6170,14 @@ export type ShareLinkInfo = {
 // member lets a user see the space's listing of workspaces and open the workspaces that it lists
 // and that belong to it, in the role their membership gives them (see `SpaceMemberRole`). A
 // workspace's own sharing applies alongside, and so does the role its owner published it to the
-// deployment with, if they did (see `Overseer.setPublicAccess`): a user gets the highest of the
-// three roles, and only the workspace's own sharing lets them share it with others.
+// deployment with, while that publication is in effect (see `Overseer.setPublicAccess`): a user
+// gets the highest of the three roles, and only the workspace's own sharing lets them share it
+// with others.
 //
 // A space's listing is a tree: each entry sits at the top or under another entry of the same
-// listing, in an order among its siblings (see `SpaceWorkspaceInfo.parentId`, `position`).
+// listing, in an order among its siblings (see `SpaceWorkspaceInfo.parentId`, `position`). A
+// workspace's publication is in effect only while its space lists it and every entry above it
+// is published too (see `SpaceWorkspaceInfo.hiddenBy`).
 //
 // A space is never published, only single workspaces are. Someone signed in who is not a member
 // of a space may open it while a published workspace sits at the top of its tree, as a visitor:
@@ -6210,7 +6256,8 @@ export function isValidSpaceKey(key: string): boolean {
  *
  * In a workspace a member acts in the highest of the role their membership confers, their
  * effective role as a collaborator, if the workspace's own sharing gives them one, and the role
- * the workspace is published to the deployment with, if it is (`GadgetMetadata.role`), and
+ * the workspace is published to the deployment with, if it is and that publication is in effect
+ * (`GadgetMetadata.role`, `Overseer.setPublicAccess`), and
  * verifies the same connections before opening as a collaborator of that role (see
  * `AuthenticatedApi.openGadget`). Membership confers no power to share a
  * workspace: what a user may grant is bounded by their effective role as a collaborator (see
@@ -6308,7 +6355,8 @@ export function slugify(title: string): string {
  * recorded when the workspace last registered with it. Opening the workspace is
  * `AuthenticatedApi.openGadget(id)`, which a member of the space may do in the role their
  * membership gives them, if that role reaches the workspace (see `SpaceMemberRole`), and which
- * anyone signed in may do while the workspace is published (see `published`).
+ * anyone signed in may do while the workspace is published and visible in the space (see
+ * `published`, `hiddenBy`).
  *
  * No entry describes a workspace that holds restricted data or is owner-invites-only
  * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a workspace is never
@@ -6370,11 +6418,23 @@ export interface SpaceWorkspaceInfo {
    *
    * A stored snapshot of `GadgetMetadata.publicAccess`, like `title`: `setPublicAccess` brings
    * it up to date before it returns, and where that failed it follows at the workspace's next
-   * activity, change of title or move. It decides what the space shows a visitor and nothing
-   * else: whether a user may open the workspace, and in what role, is decided by the workspace
-   * when it is opened.
+   * activity, change of title or move. It decides what the space shows a visitor; whether a
+   * user may open the workspace, and in what role, is decided by the workspace when it is
+   * opened. There the publication takes effect only while this entry and every entry above it
+   * are published, as the space answers at that moment (see `hiddenBy`); members of the space
+   * and the workspace's collaborators open in their own roles either way.
    */
   published?: CollaboratorRole;
+
+  /**
+   * Set on a published entry (see `published`) that sits under an unpublished one, however far
+   * up the tree: the id of the nearest unpublished entry above it. While this is set the
+   * publication admits nobody, and someone with no other role on the workspace is refused with
+   * the coded error `workspaceNotVisible` from `OPEN_GADGET_ERROR_CODES`. Only members of the
+   * space see it, since a visitor is never shown such an entry. Absent on an unpublished entry
+   * and on one whose every ancestor is published.
+   */
+  hiddenBy?: string;
 }
 
 /** What a slug resolved to in a space, as returned by `Space.resolveWorkspace`. */
@@ -6453,7 +6513,8 @@ export interface Space extends RpcTarget {
    *
    * A member may open each workspace listed that their role reaches (see `SpaceMemberRole`),
    * with `AuthenticatedApi.openGadget`, in the role their membership gives them. Anyone signed
-   * in may open a published one, in at least the role it is published with.
+   * in may open a published one whose every ancestor in the tree is published too (one without
+   * `SpaceWorkspaceInfo.hiddenBy`), in at least the role it is published with.
    */
   listWorkspaces(): Promise<SpaceWorkspaceInfo[]>;
 
@@ -6509,6 +6570,10 @@ export interface Space extends RpcTarget {
    * Throws when the space does not list `id`, when it does not list `parentId` ("No such parent
    * workspace in this space."), and when `parentId` is `id` or an entry under it, which would
    * make the tree a cycle ("A workspace cannot be moved under itself.").
+   *
+   * A move can end a publication's effect (see `Overseer.setPublicAccess`): under an entry that
+   * is unpublished, or has one above it, none of the moved entries is visible, and each of their
+   * workspaces restarts if anyone opened it through its publication.
    */
   moveWorkspace(id: string, parentId: string | null, beforeId?: string): Promise<void>;
 
