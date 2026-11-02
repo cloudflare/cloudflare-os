@@ -119,7 +119,7 @@ describe("issues", () => {
 
   it("reads confidential issues and internal notes like any other: observers must be Reporters, who see them on GitLab too", async () => {
     // Nothing here filters them, by design: the owner's token reads them, and the verifier admits
-    // an observer only at Reporter or above (see membershipGrantsFullRead), the role GitLab shows
+    // an observer only at Reporter or above (see hasProjectMembership), the role GitLab shows
     // them to. A change to either side has to be made with the other.
     const fake = fakeProject();
     const confidential = { ...fx.issueResponse.data, confidential: true };

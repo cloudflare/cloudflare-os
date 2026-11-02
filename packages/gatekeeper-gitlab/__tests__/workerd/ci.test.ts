@@ -14,7 +14,7 @@ import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
-import type { GitLabJobSummary, GitLabLogPage, GitLabTestCase } from "../../src/types.js";
+import type { GitLabJobSummary, GitLabLogPage, GitLabPipelineSummary, GitLabTestCase } from "../../src/types.js";
 import * as fx from "../fixtures/gitlab-docs.js";
 import { FakeGitLab, hooks, json, projectProps, seedAccount, stageReconnect, unwrap } from "./fake-gitlab.js";
 import type { ActionPresentation, GatekeeperProps, SessionStep } from "./worker.js";
@@ -500,6 +500,19 @@ describe("a merge request's CI", () => {
       .rejects.toThrow(/ran in someone\/fork, another project, so it cannot be opened/);
   });
 
+  it("looks a fork's project up once for a page of its pipelines", async () => {
+    // The merge request names its own project, so nothing before the listing looks the fork up.
+    const fake = mrFake(undefined);
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/pipelines\\?`), () => json([
+      pipeline(403, { project_id: FORK_ID }), pipeline(402, { project_id: FORK_ID }), pipeline(401, { project_id: FORK_ID }), pipeline(6),
+    ]));
+    const { props, name } = await setup(fake);
+    const listed = await session<GitLabPipelineSummary[]>(name, props,
+      { method: "getMergeRequest", args: ["133"] }, { method: "listPipelines", args: [], drain: true });
+    expect(listed.map(row => row.project?.path ?? null)).toEqual(["someone/fork", "someone/fork", "someone/fork", null]);
+    expect(fake.count("GET", new RegExp(`^/api/v4/projects/${FORK_ID}$`))).toBe(1);
+  });
+
   it("reads a head a queued push moved as notStarted without asking GitLab about CI", async () => {
     const fake = mrFake(pipeline(300));
     fake.branches.set("feature", HEAD);
@@ -919,10 +932,21 @@ describe("observers once logs are read", () => {
     await observer(name, props, "developer2");
   });
 
+  it("holds the Maintainer bar for a test report read by an account that is no member", async () => {
+    // An instance admin reads every project without a membership row, and downloads what a job
+    // restricts to Maintainers; "no row" is not "below Maintainer".
+    const fake = gateFake();
+    fake.ownerAccess = null;
+    const { props, name } = await setup(fake, { developer: 30, maintainer: 40 });
+    await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
+    await expect(observer(name, props, "developer")).rejects.toThrow(/Maintainer role or above/);
+    await observer(name, props, "maintainer");
+  });
+
   it.each(["getTestReport", "listFailedTests"] as const)(
     "refuses %s when a reconnect lands mid-read, rather than tracking it at the weaker bar", async method => {
-      // The Maintainer's role probe sees the connection move and answers "not a Maintainer", while
-      // the report beside it may have been fetched with the Maintainer's token.
+      // The role probe may read the new connection's user (a Developer, say) while the report beside
+      // it was fetched with the replaced Maintainer's token.
       const fake = gateFake();
       fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => json(fx.testReportResponse.data));
       fake.on("POST", /^\/oauth\/token/, () => json({ access_token: "bob", refresh_token: "bob-refresh", expires_in: 7200 }));

@@ -63,7 +63,8 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   `getJob(id)` for the bound project. A merge request binding has `listPipelines()`,
   `getPipeline(id?)` (the head's pipeline by default) and `getJob(id)`, limited to the merge
   request's pipelines and their child pipelines in the same project. A pipeline lists its jobs
-  (runner jobs, trigger jobs and external statuses, at most 1000), opens a same-project child
+  (runner jobs, trigger jobs and external statuses, at most 1000, so a larger pipeline has some
+  left out, even under a status filter), opens a same-project child
   pipeline, and reads its unit test report: totals, and the failed and errored cases with about
   4 KiB of output each. Pipelines of a fork's source project and downstream pipelines in other
   projects are data only.

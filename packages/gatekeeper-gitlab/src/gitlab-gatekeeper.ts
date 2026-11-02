@@ -99,6 +99,7 @@ import { describeGitLabAction } from "./gitlab-descriptions";
 import {
   VENDOR_ID,
   hasProjectMembership,
+  projectMembershipLevel,
   instanceUrl as instanceUrlOf,
   withAccountApi,
   type Env,
@@ -1596,7 +1597,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return new StreamingCursor<GitLabPipelineSummary>({
       fetchPage: async (page, perPage) => {
         const rows = await this.#withApi(api => api.listMergeRequestPipelines(projectPath, Number(realId), page, perPage));
-        return { items: await Promise.all(rows.items.map(row => this.#pipelineSummary(row, boundProjectId))), nextPage: rows.nextPage };
+        // A fork's pipelines all run in its one project: look each distinct project up once, as the
+        // rows would otherwise all miss the cache together.
+        const forks = new Set(rows.items.map(row => row.project_id).filter(id => id !== boundProjectId));
+        const refs = new Map(await Promise.all([...forks].map(async id => [id, await this.#projectRefById(id)] as const)));
+        return { items: rows.items.map(row => normalizePipelineSummary(row, refs.get(row.project_id))), nextPage: rows.nextPage };
       },
       pageSize,
     });
@@ -1727,23 +1732,21 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * A test-report read, with the set it discloses. GitLab filters reports by what the reading
    * account may download, so through a Maintainer they can include one a job restricts to
-   * Maintainers (`artifacts:access: maintainer`), and observers need Maintainer too. Below that,
-   * GitLab has already left those out, and Developer is exact. The role probe answers "no" when a
-   * reconnect lands mid-probe, while the report beside it may have used the replaced (Maintainer's)
-   * token, so the pair is fenced to one connection and refused if it moved.
+   * Maintainers (`artifacts:access: maintainer`), and observers need Maintainer too. Only a
+   * confirmed membership below Maintainer has had those left out, so only then is Developer exact:
+   * an instance admin who is no member downloads everything, and an unconfirmed role (a reconnect
+   * mid-probe) is treated the same. The report beside the probe may have used the replaced token,
+   * so the pair is fenced to one connection and refused if it moved.
    */
   async #readTestReport<T>(read: () => Promise<T>): Promise<{ set: CiDataSet; report: T }> {
     this.#requireObserverRoster();
     const account = this.#userAccount();
     const { generation } = await account.getUser();
-    const [maintainer, report] = await Promise.all([
-      hasProjectMembership(this.env, account, this.#projectPath(), MAINTAINER_ACCESS_LEVEL),
-      read(),
-    ]);
+    const [level, report] = await Promise.all([projectMembershipLevel(this.env, account, this.#projectPath()), read()]);
     if ((await account.getUser()).generation !== generation) {
       throw new Error("The GitLab connection changed during this read; read again.");
     }
-    return { set: maintainer ? "ci-test-reports" : "ci-logs", report };
+    return { set: level !== null && level < MAINTAINER_ACCESS_LEVEL ? "ci-logs" : "ci-test-reports", report };
   }
 
   async pipelineTestReport(pipelineId: number): Promise<{ set: CiDataSet; report: GitLabTestReportSummary }> {
