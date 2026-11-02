@@ -31,7 +31,8 @@
     "./response-body": "./src/response-body.ts",
     "./serial-queue": "./src/serial-queue.ts",
     "./simulation": "./src/simulation.ts",
-    "./single-flight": "./src/single-flight.ts"
+    "./single-flight": "./src/single-flight.ts",
+    "./subresource-ids": "./src/subresource-ids.ts"
   },
   "scripts": {
     "test:run": "vitest run && vitest run -c vitest.worker.config.ts",
