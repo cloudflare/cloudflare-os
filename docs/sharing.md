@@ -166,7 +166,7 @@ A gatekeeper whose data source requires each recipient to be granted access indi
 - **No redemption for people without owner grants.** Redeeming a still-active link throws the same message, coded `OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled`, for anyone the owner has not added directly, including people who joined through a link before the flag was set. The error page lets them retry once the owner adds them. A direct collaborator reopening an old link is let through, but no edge is added.
 - **Owner-only direct adds.** `addCollaborator` throws for non-owners, whose grants would count for nothing.
 
-The owner can still list, rename, and revoke links (which no longer grant anything) and remove collaborators. `WorkspaceMetadata.ownerInvitesOnly` reports the flag, and the Share modal hides link controls (and, for non-owners, the invite box).
+The owner can still list, rename, and revoke links (which no longer grant anything) and remove collaborators. `WorkspaceMetadata.ownerInvitesOnly` reports the flag, and the Share modal hides link controls (and, for non-owners, the invite box). A workspace with the flag set is not shown in any space's listing, and neither is one that holds restricted data (see docs/spaces.md, "Workspaces a space never lists").
 
 The policy lives in the Overseer, which passes it into `SharingManager` as a hook. Each grant checks it after its last await, right before the storage write, so an observation that sets the flag mid-call cannot slip a grant through.
 
