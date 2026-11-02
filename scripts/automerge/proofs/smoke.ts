@@ -17,7 +17,7 @@
 
 import { pathToFileURL } from "node:url";
 import { decide, errored, runProducer, type Outcome } from "./artifact.ts";
-import { isObject, parseJson } from "./json.ts";
+import { isObject, parseJson, type JsonObject } from "./json.ts";
 
 /** One response, as much of it as the checks read. */
 export interface Answer {
@@ -66,11 +66,17 @@ async function main(): Promise<void> {
     if (!/^https:\/\/[^/]+$/.test(base)) throw new Error(`expected the preview origin, got "${base}"`);
     const id = process.env.PREVIEW_ACCESS_CLIENT_ID ?? "";
     const secret = process.env.PREVIEW_ACCESS_CLIENT_SECRET ?? "";
+    // The bot path (preview.yml, workflow_run) names the Automerge evidence attempt whose bundle it
+    // deployed; the gate accepts the smoke only for that run's current attempt.
+    const runId = process.env.AUTOMERGE_TRIGGER_RUN_ID ?? "";
+    const attempt = process.env.AUTOMERGE_TRIGGER_RUN_ATTEMPT ?? "";
+    const trigger: JsonObject = runId === "" ? {} : { trigger: { run_id: Number(runId), run_attempt: Number(attempt) } };
     if (id === "" || secret === "") {
-      return errored("PREVIEW_ACCESS_CLIENT_ID and PREVIEW_ACCESS_CLIENT_SECRET are not configured", { url: base });
+      return errored("PREVIEW_ACCESS_CLIENT_ID and PREVIEW_ACCESS_CLIENT_SECRET are not configured", { url: base, ...trigger });
     }
     const headers = { "CF-Access-Client-Id": id, "CF-Access-Client-Secret": secret };
-    return evaluateSmoke(base, await get(`${base}/`, headers), await get(`${base}/api/version`, headers));
+    const outcome = evaluateSmoke(base, await get(`${base}/`, headers), await get(`${base}/api/version`, headers));
+    return { ...outcome, details: { ...outcome.details, ...trigger } };
   });
 }
 
