@@ -49,9 +49,6 @@ export type CiLog = {
   totalLines: number;
 };
 
-/** Which provider's log markup `normalizeCiLogLine` rewrites. */
-export type CiLogFlavor = "github" | "gitlab";
-
 /** Normalised lines longer than this many characters are cut, keeping their start. */
 const MAX_LINE_LENGTH = 8192;
 const TRUNCATED_SUFFIX = "… [line truncated]";
@@ -81,37 +78,40 @@ export class CiLogTooLargeError extends Error {
 }
 
 /**
- * Streams a raw log body, normalising each line for `flavor`, keeping only the tail that fits
+ * Streams a raw log body, rewriting each line with `normalizeLine`, keeping only the tail that fits
  * `retainBytes` (default 8 MiB) and refusing (throws CiLogTooLargeError) past `maxBytes` (default
  * 128 MiB).
  *
  * Decoding is incremental UTF-8 (invalid bytes become U+FFFD), lines split on `\n` across chunk
- * boundaries, and a final line without a newline still counts. Every normalised line is counted in
- * `totalLines`; dropped markup lines are not. `retainBytes` approximates the kept text's memory (two
+ * boundaries, a leading byte-order mark is dropped from each line, and a final line without a
+ * newline still counts. Every line `normalizeLine` keeps is counted in `totalLines`; lines it drops
+ * are not. `retainBytes` approximates the kept text's memory (two
  * bytes per UTF-16 code unit plus a small per-line overhead). Normalised lines longer than 8192
  * characters are cut to their start with a `… [line truncated]` suffix, which also bounds the
  * buffer an unterminated line can grow.
  * @param body Raw log body; cancelled when the read fails or exceeds `maxBytes`.
- * @param flavor Provider markup to normalise.
+ * @param normalizeLine Rewrites one raw line (without its `\n`; ANSI escapes and carriage returns
+ *   intact) into the text to keep, or returns `null` to drop it as markup. Compose `stripAnsi` and
+ *   `applyCarriageReturns` with the provider's own markup rules.
  * @param options Memory and size bounds, both positive safe integers.
  * @returns The normalised log tail with line accounting.
  *
  * @example
  * ```ts
- * const log = await readCiLog(response.body, "github");
+ * const log = await readCiLog(response.body, line => applyCarriageReturns(stripAnsi(line)));
  * return pageCiLog(log, options, job.status === "completed");
  * ```
  */
 export async function readCiLog(
   body: ReadableStream<Uint8Array>,
-  flavor: CiLogFlavor,
+  normalizeLine: (line: string) => string | null,
   options: { retainBytes?: number; maxBytes?: number } = {},
 ): Promise<CiLog> {
   const retainBytes = requirePositiveInt("retainBytes", options.retainBytes ?? DEFAULT_RETAIN_BYTES);
   const maxBytes = requirePositiveInt("maxBytes", options.maxBytes ?? DEFAULT_MAX_BYTES);
   const tail = new LineTail(retainBytes);
   const splitter = new LineSplitter((line, truncated) => {
-    const text = normalizeCiLogLine(line, flavor);
+    const text = normalizeLine(line.startsWith("\uFEFF") ? line.slice(1) : line);
     if (text === null) return;
     tail.push(truncated || text.length > MAX_LINE_LENGTH
       ? leadingUnits(text, MAX_LINE_LENGTH) + TRUNCATED_SUFFIX
@@ -137,54 +137,6 @@ export async function readCiLog(
   splitter.write(decoder.decode());
   splitter.end();
   return tail.result();
-}
-
-// CSI, OSC (BEL- or ST-terminated, or cut off), charset designation, other two-byte escapes, or a
-// lone ESC.
-// eslint-disable-next-line no-control-regex -- Terminal escape sequences start with ESC and BEL.
-const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[()*+][0-9A-Za-z]|[@-Z\\-_])?/g;
-const GITHUB_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}) /;
-const GITHUB_COMMAND = /^##\[(group|endgroup|error|warning|notice|debug)\]/;
-const GITLAB_SECTION = /section_(start|end):\d+:([A-Za-z0-9_.-]+)(?:\[[^\]\r]*\])?\r?/g;
-
-/**
- * Pure per-line normaliser (exported for tests/reuse); returns null to drop the line.
- *
- * Both flavours drop trailing carriage returns, a leading BOM, and ANSI/ESC sequences, and keep
- * only the text after the last remaining `\r` (a progress overwrite). GitHub: strips the leading
- * timestamp; `##[group]X` becomes `▶ X`; `##[endgroup]` is dropped; `##[error]`, `##[warning]`,
- * `##[notice]`, and `##[debug]` become `error: `, `warning: `, `notice: `, and `debug: `. GitLab:
- * `section_start` becomes `▶ ` and its heading (or the section name when the heading is empty);
- * a line holding only `section_end` markers is dropped. Everything else is kept verbatim.
- * @param line One raw line, without its `\n`.
- * @param flavor Provider markup to rewrite.
- * @returns The normalised text, or `null` when the line is markup only.
- */
-export function normalizeCiLogLine(line: string, flavor: CiLogFlavor): string | null {
-  let text = line.startsWith("\uFEFF") ? line.slice(1) : line;
-  if (flavor === "github") {
-    text = overwrite(stripAnsi(text.replace(GITHUB_TIMESTAMP, "")));
-    const command = GITHUB_COMMAND.exec(text);
-    if (command === null) return text;
-    const rest = text.slice(command[0].length);
-    switch (command[1]) {
-      case "group": return `▶ ${rest}`;
-      case "endgroup": return null;
-      default: return `${command[1]}: ${rest}`;
-    }
-  }
-  // Section markers precede their heading's `\r`, so they are read before overwriting.
-  text = stripAnsi(text);
-  const markers = [...text.matchAll(GITLAB_SECTION)];
-  if (markers.length === 0) return overwrite(text);
-  const start = markers.findLast(marker => marker[1] === "start");
-  if (start === undefined) {
-    const rest = overwrite(text.replace(GITLAB_SECTION, ""));
-    return rest === "" ? null : rest;
-  }
-  const heading = overwrite(text.slice(start.index + start[0].length).replace(GITLAB_SECTION, ""))
-    .trim();
-  return `▶ ${heading === "" ? start[2] : heading}`;
 }
 
 /**
@@ -283,7 +235,7 @@ const EVICTION_BATCH = 64;
  * async #readLog(jobId: string): Promise<CiLog> {
  *   const cached = this.#logs.get(jobId);
  *   if (cached && !(await this.#api.logErased(jobId))) return cached;
- *   const log = await readCiLog(await this.#api.fetchLog(jobId), "gitlab");
+ *   const log = await readCiLog(await this.#api.fetchLog(jobId), normalizeLogLine);
  *   if (await this.#api.jobFinished(jobId)) this.#logs.put(jobId, log);
  *   return log;
  * }
@@ -478,12 +430,28 @@ function positiveInt(label: string, value: unknown): number {
   }
 }
 
-function stripAnsi(text: string): string {
+// CSI, OSC (BEL- or ST-terminated, or cut off), charset designation, other two-byte escapes, or a
+// lone ESC.
+// eslint-disable-next-line no-control-regex -- Terminal escape sequences start with ESC and BEL.
+const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[()*+][0-9A-Za-z]|[@-Z\\-_])?/g;
+
+/**
+ * Removes terminal escape sequences: CSI (colours, cursor moves, erases), OSC (BEL- or
+ * ST-terminated, or cut off), charset designations, other two-byte escapes, and a lone ESC.
+ * @param text Raw text, possibly holding ESC sequences.
+ * @returns `text` without them; other characters are kept verbatim.
+ */
+export function stripAnsi(text: string): string {
   return text.includes("\x1b") ? text.replace(ANSI, "") : text;
 }
 
-/** Keeps the text after the last carriage return, ignoring trailing ones (a CRLF ending). */
-function overwrite(text: string): string {
+/**
+ * Applies carriage-return overwrites as a terminal shows them: keeps the text after the last `\r`,
+ * ignoring trailing ones (a CRLF ending). Progress output (`10%\r50%\r100%`) becomes `100%`.
+ * @param text One line, without its `\n`.
+ * @returns The text a terminal would show last.
+ */
+export function applyCarriageReturns(text: string): string {
   const trimmed = text.replace(/\r+$/, "");
   return trimmed.slice(trimmed.lastIndexOf("\r") + 1);
 }

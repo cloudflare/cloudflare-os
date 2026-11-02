@@ -1,6 +1,7 @@
 // GitHub CI: the GraphQL rollup query, and the pure mappings from GitHub's check runs, commit
-// statuses, Actions jobs and workflow runs to the agent-facing shapes in types.d.ts.
+// statuses, Actions jobs, workflow runs and job logs to the agent-facing shapes in types.d.ts.
 
+import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci-log";
 import type {
   GitHubAnnotation,
   GitHubCheckEntry,
@@ -505,6 +506,27 @@ export function annotationOf(annotation: GitHubCheckAnnotationResponse): GitHubA
     title: annotation.title ?? undefined,
     message: annotation.message,
   };
+}
+
+const LOG_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}) /;
+const LOG_COMMAND = /^##\[(group|endgroup|error|warning|notice|debug)\]/;
+
+/**
+ * One raw Actions job-log line as `readCiLog` keeps it, or null when it is markup only. Strips the
+ * leading timestamp, then ANSI escapes and carriage-return overwrites; `##[group]X` becomes `▶ X`,
+ * `##[endgroup]` is dropped, and `##[error]`, `##[warning]`, `##[notice]` and `##[debug]` become
+ * `error: `, `warning: `, `notice: ` and `debug: `. Everything else is kept verbatim.
+ */
+export function normalizeGitHubLogLine(line: string): string | null {
+  const text = applyCarriageReturns(stripAnsi(line.replace(LOG_TIMESTAMP, "")));
+  const command = LOG_COMMAND.exec(text);
+  if (command === null) return text;
+  const rest = text.slice(command[0].length);
+  switch (command[1]) {
+    case "group": return `▶ ${rest}`;
+    case "endgroup": return null;
+    default: return `${command[1]}: ${rest}`;
+  }
 }
 
 const MERGE_STATES: Record<string, GitHubPullRequestDetails["mergeState"]> = {

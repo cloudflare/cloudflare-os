@@ -1,6 +1,8 @@
 // The pure CI mappings of github-ci.ts: GitHub's check, status, job and workflow run states to
-// the agent-facing state and phase, the rollup and absence phases, and the smaller adapters.
+// the agent-facing state and phase, the rollup and absence phases, job-log lines, and the smaller
+// adapters.
 
+import { readCiLog } from "@gadgets/gatekeeper-kit/ci-log";
 import { describe, expect, it } from "vitest";
 import {
   CI_START_WINDOW_MS,
@@ -12,6 +14,7 @@ import {
   hasWorkflowFiles,
   jobSummaryOf,
   mergeStateOf,
+  normalizeGitHubLogLine,
   parseCiId,
   pendingDeploymentOf,
   phaseOf,
@@ -213,5 +216,42 @@ describe("adapters", () => {
     expect(mergeStateOf("behind")).toBe("behind");
     expect(mergeStateOf(null)).toBe("unknown");
     expect(mergeStateOf("sideways")).toBe("unknown");
+  });
+});
+
+describe("normalizeGitHubLogLine", () => {
+  const ESC = "\x1b";
+  const ts = "2024-05-01T12:34:56.1234567Z ";
+
+  it("strips the timestamp, ANSI sequences, and carriage-return overwrites, keeping the rest verbatim", () => {
+    expect(normalizeGitHubLogLine(`${ts}npm test`)).toBe("npm test");
+    expect(normalizeGitHubLogLine(`${ts}${ESC}[32;1mok${ESC}[0m done`)).toBe("ok done");
+    expect(normalizeGitHubLogLine(`${ESC}]0;title\x07${ESC}(Bplain`)).toBe("plain");
+    expect(normalizeGitHubLogLine(`${ts}downloading 10%\rdownloading 100%`)).toBe("downloading 100%");
+    expect(normalizeGitHubLogLine("windows line\r")).toBe("windows line");
+    expect(normalizeGitHubLogLine("  indented\tverbatim  ")).toBe("  indented\tverbatim  ");
+    // GitLab's section markers are not GitHub markup.
+    expect(normalizeGitHubLogLine("section_end:1:x")).toBe("section_end:1:x");
+  });
+
+  it("rewrites workflow commands", () => {
+    expect(normalizeGitHubLogLine(`${ts}##[group]Run actions/checkout@v4`)).toBe("▶ Run actions/checkout@v4");
+    expect(normalizeGitHubLogLine(`${ts}##[endgroup]`)).toBeNull();
+    expect(normalizeGitHubLogLine(`${ts}##[error]Process completed with exit code 1.`))
+      .toBe("error: Process completed with exit code 1.");
+    expect(normalizeGitHubLogLine(`${ts}##[warning]deprecated`)).toBe("warning: deprecated");
+    expect(normalizeGitHubLogLine(`${ts}##[notice]heads up`)).toBe("notice: heads up");
+    expect(normalizeGitHubLogLine(`${ts}##[debug]Evaluating`)).toBe("debug: Evaluating");
+  });
+
+  it("reads an Actions log through readCiLog, counting only the lines it keeps", async () => {
+    const body = new Response([
+      "\uFEFF2024-05-01T00:00:00.0000000Z ##[group]Setup\n",
+      "2024-05-01T00:00:01.0000000Z installing\n",
+      "2024-05-01T00:00:02.0000000Z ##[endgroup]\n",
+      "2024-05-01T00:00:03.0000000Z done\n",
+    ].join("")).body!;
+    expect(await readCiLog(body, normalizeGitHubLogLine))
+      .toEqual({ lines: ["▶ Setup", "installing", "done"], firstLine: 1, totalLines: 3 });
   });
 });

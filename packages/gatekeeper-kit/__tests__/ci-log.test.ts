@@ -3,14 +3,16 @@ import {
   CI_LOG_MAX_LINES,
   CiLogCache,
   CiLogTooLargeError,
-  normalizeCiLogLine,
+  applyCarriageReturns,
   pageCiLog,
   readCiLog,
+  stripAnsi,
   type CiLog,
 } from "../src/ci-log";
 import { fakeKv } from "./fake-kv";
 
 const ESC = "\x1b";
+const plain = (line: string): string => applyCarriageReturns(stripAnsi(line));
 
 function stream(...chunks: (string | Uint8Array)[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -32,50 +34,14 @@ function logOf(lines: string[], firstLine = 1): CiLog {
   return { lines, firstLine, totalLines: firstLine + lines.length - 1 };
 }
 
-describe("normalizeCiLogLine", () => {
-  it("strips ANSI sequences, a leading BOM, and keeps the text after the last carriage return", () => {
-    for (const flavor of ["github", "gitlab"] as const) {
-      expect(normalizeCiLogLine(`\uFEFF${ESC}[32;1mok${ESC}[0m done`, flavor)).toBe("ok done");
-      expect(normalizeCiLogLine(`${ESC}]0;title\x07${ESC}(Bplain`, flavor)).toBe("plain");
-      expect(normalizeCiLogLine("10%\r50%\r100%", flavor)).toBe("100%");
-      expect(normalizeCiLogLine("windows line\r", flavor)).toBe("windows line");
-      expect(normalizeCiLogLine("  indented\tverbatim  ", flavor)).toBe("  indented\tverbatim  ");
-    }
-  });
-
-  it("rewrites GitHub timestamps and workflow commands", () => {
-    const ts = "2024-05-01T12:34:56.1234567Z ";
-    expect(normalizeCiLogLine(`${ts}npm test`, "github")).toBe("npm test");
-    expect(normalizeCiLogLine(`${ts}##[group]Run actions/checkout@v4`, "github"))
-      .toBe("▶ Run actions/checkout@v4");
-    expect(normalizeCiLogLine(`${ts}##[endgroup]`, "github")).toBeNull();
-    expect(normalizeCiLogLine(`${ts}##[error]Process completed with exit code 1.`, "github"))
-      .toBe("error: Process completed with exit code 1.");
-    expect(normalizeCiLogLine(`${ts}##[warning]deprecated`, "github")).toBe("warning: deprecated");
-    expect(normalizeCiLogLine(`${ts}##[notice]heads up`, "github")).toBe("notice: heads up");
-    expect(normalizeCiLogLine(`${ts}##[debug]Evaluating`, "github")).toBe("debug: Evaluating");
-    expect(normalizeCiLogLine(`${ts}downloading 10%\rdownloading 100%`, "github"))
-      .toBe("downloading 100%");
-    // GitLab keeps GitHub markup verbatim.
-    expect(normalizeCiLogLine("##[group]x", "gitlab")).toBe("##[group]x");
-  });
-
-  it("turns GitLab section starts into headings and drops section ends", () => {
-    expect(normalizeCiLogLine(
-      `${ESC}[0Ksection_start:1700000000:step_script\r${ESC}[0K${ESC}[36;1mExecuting "step_script"${ESC}[0;m`,
-      "gitlab",
-    )).toBe('▶ Executing "step_script"');
-    expect(normalizeCiLogLine("section_start:1700000000:build[collapsed=true]\r\x1b[0K", "gitlab"))
-      .toBe("▶ build");
-    expect(normalizeCiLogLine(`${ESC}[0Ksection_end:1700000000:step_script\r${ESC}[0K`, "gitlab"))
-      .toBeNull();
-    // The runner often closes one section and opens the next on the same line.
-    expect(normalizeCiLogLine(
-      `${ESC}[0Ksection_end:1:step_script\r${ESC}[0K${ESC}[0Ksection_start:1:cleanup\r${ESC}[0KCleaning up`,
-      "gitlab",
-    )).toBe("▶ Cleaning up");
-    // GitHub keeps GitLab markup verbatim.
-    expect(normalizeCiLogLine("section_end:1:x", "github")).toBe("section_end:1:x");
+describe("stripAnsi and applyCarriageReturns", () => {
+  it("strip ANSI sequences and keep the text after the last carriage return", () => {
+    expect(stripAnsi(`${ESC}[32;1mok${ESC}[0m done`)).toBe("ok done");
+    expect(stripAnsi(`${ESC}]0;title\x07${ESC}(Bplain`)).toBe("plain");
+    expect(stripAnsi("  indented\tverbatim  ")).toBe("  indented\tverbatim  ");
+    expect(applyCarriageReturns("10%\r50%\r100%")).toBe("100%");
+    expect(applyCarriageReturns("windows line\r")).toBe("windows line");
+    expect(applyCarriageReturns("  indented\tverbatim  ")).toBe("  indented\tverbatim  ");
   });
 });
 
@@ -83,30 +49,30 @@ describe("readCiLog", () => {
   it("splits lines across chunk and multi-byte boundaries and keeps a final line without newline", async () => {
     const bytes = new TextEncoder().encode("é");
     const log = await readCiLog(stream("fir", "st\nsec", "ond\r", "\n", bytes.slice(0, 1), bytes.slice(1), "nd"),
-      "gitlab");
+      plain);
     expect(log).toEqual({ lines: ["first", "second", "énd"], firstLine: 1, totalLines: 3 });
   });
 
   it("does not count a trailing newline as a line, and counts empty lines", async () => {
-    expect(await readCiLog(stream("a\n\nb\n"), "github"))
+    expect(await readCiLog(stream("a\n\nb\n"), plain))
       .toEqual({ lines: ["a", "", "b"], firstLine: 1, totalLines: 3 });
-    expect(await readCiLog(stream(), "github")).toEqual({ lines: [], firstLine: 1, totalLines: 0 });
+    expect(await readCiLog(stream(), plain)).toEqual({ lines: [], firstLine: 1, totalLines: 0 });
   });
 
-  it("counts normalised lines only, dropping markup lines", async () => {
-    const log = await readCiLog(stream(
-      "2024-05-01T00:00:00.0000000Z ##[group]Setup\n",
-      "2024-05-01T00:00:01.0000000Z installing\n",
-      "2024-05-01T00:00:02.0000000Z ##[endgroup]\n",
-      "2024-05-01T00:00:03.0000000Z done\n",
-    ), "github");
-    expect(log).toEqual({ lines: ["▶ Setup", "installing", "done"], firstLine: 1, totalLines: 3 });
+  it("passes each raw line, less a leading BOM, to normalizeLine and counts only the lines it keeps", async () => {
+    const seen: string[] = [];
+    const log = await readCiLog(stream("\uFEFF# setup\n", `${ESC}[1mkeep\r\n`, "\uFEFF# done\n", "last"), line => {
+      seen.push(line);
+      return line.startsWith("#") ? null : line.toUpperCase();
+    });
+    expect(seen).toEqual(["# setup", `${ESC}[1mkeep\r`, "# done", "last"]);
+    expect(log).toEqual({ lines: [`${ESC}[1MKEEP\r`, "LAST"], firstLine: 1, totalLines: 2 });
   });
 
   it("keeps only the tail within retainBytes while counting every line", async () => {
     const body = numbered(1000).join("\n");
     // "line NNN" costs 2 * 8 + 16 = 32 bytes and "line 1000" 34: room for exactly 100 lines.
-    const log = await readCiLog(stream(body), "github", { retainBytes: 32 * 99 + 34 });
+    const log = await readCiLog(stream(body), plain, { retainBytes: 32 * 99 + 34 });
     expect(log.totalLines).toBe(1000);
     expect(log.lines.at(-1)).toBe("line 1000");
     expect(log.lines.length).toBe(100);
@@ -115,22 +81,22 @@ describe("readCiLog", () => {
   });
 
   it("refuses a body past maxBytes", async () => {
-    await expect(readCiLog(stream("a".repeat(10), "b".repeat(10)), "github", { maxBytes: 15 }))
+    await expect(readCiLog(stream("a".repeat(10), "b".repeat(10)), plain, { maxBytes: 15 }))
       .rejects.toBeInstanceOf(CiLogTooLargeError);
-    await expect(readCiLog(stream("a".repeat(15)), "github", { maxBytes: 15 })).resolves
+    await expect(readCiLog(stream("a".repeat(15)), plain, { maxBytes: 15 })).resolves
       .toMatchObject({ totalLines: 1 });
   });
 
   it("cuts an over-long line to its start, and keeps progress overwrites of one exactly", async () => {
     const huge = "x".repeat(100_000);
-    const log = await readCiLog(stream(huge.slice(0, 50_000), huge.slice(50_000), "\nnext\n"), "github");
+    const log = await readCiLog(stream(huge.slice(0, 50_000), huge.slice(50_000), "\nnext\n"), plain);
     expect(log.totalLines).toBe(2);
     expect(log.lines[0]!.startsWith("xxx")).toBe(true);
     expect(log.lines[0]!.endsWith("… [line truncated]")).toBe(true);
     expect(log.lines[0]!.length).toBeLessThan(10_000);
     expect(log.lines[1]).toBe("next");
 
-    const progress = await readCiLog(stream(huge, "\r", "100% done\r", "\n"), "github");
+    const progress = await readCiLog(stream(huge, "\r", "100% done\r", "\n"), plain);
     expect(progress.lines).toEqual(["100% done"]);
   });
 
@@ -148,17 +114,17 @@ describe("readCiLog", () => {
         }
       },
     });
-    expect(await readCiLog(body, "gitlab")).toEqual({ lines: ["done", "next"], firstLine: 1, totalLines: 2 });
+    expect(await readCiLog(body, plain)).toEqual({ lines: ["done", "next"], firstLine: 1, totalLines: 2 });
   });
 
   it("cuts an over-long line before a character that would straddle the cut, not through it", async () => {
     // The emoji is two UTF-16 code units, the first of them the 8192nd.
-    const log = await readCiLog(stream(`${"x".repeat(8191)}😀 and more\n`), "github");
+    const log = await readCiLog(stream(`${"x".repeat(8191)}😀 and more\n`), plain);
     expect(log.lines).toEqual([`${"x".repeat(8191)}… [line truncated]`]);
   });
 
   it("validates its bounds", async () => {
-    await expect(readCiLog(stream("a"), "github", { retainBytes: 0 })).rejects.toThrow(/retainBytes/);
+    await expect(readCiLog(stream("a"), plain, { retainBytes: 0 })).rejects.toThrow(/retainBytes/);
   });
 });
 

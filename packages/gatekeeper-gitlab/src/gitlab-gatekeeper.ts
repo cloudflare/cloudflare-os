@@ -130,6 +130,7 @@ import {
   normalizeCommitDetails,
   normalizeCommitStatus,
   normalizeCommitSummary,
+  normalizeGitLabLogLine,
   normalizeDiffFile,
   normalizeIssueDetails,
   normalizeIssueSummary,
@@ -1772,7 +1773,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       const body = await this.#withApi(api => api.getJobTrace(this.#projectPath(), jobId));
       try {
         // No log yet (a job that has not started) reads as empty.
-        log = body === null ? EMPTY_CI_LOG : await readCiLog(body, "gitlab");
+        log = body === null ? EMPTY_CI_LOG : await readCiLog(body, normalizeGitLabLogLine);
       } catch (error) {
         if (!(error instanceof CiLogTooLargeError)) throw error;
         throw new Error(`The log of job ${jobId} is too large to read here; open it on GitLab: ${job.web_url}`, { cause: error });

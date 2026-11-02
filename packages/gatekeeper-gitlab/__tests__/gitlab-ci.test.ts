@@ -1,7 +1,8 @@
 // Pure CI logic: GitLab statuses mapped to the phases callers poll on, the rule that decides
 // whether a merge request's head pipeline ran for its current head, where CI configuration
-// lives, which jobs' downstream pipelines open, and failed-test extraction.
+// lives, which jobs' downstream pipelines open, failed-test extraction, and job-log lines.
 
+import { readCiLog } from "@gadgets/gatekeeper-kit/ci-log";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fx from "./fixtures/gitlab-docs";
 import {
@@ -9,6 +10,7 @@ import {
   ciPhase,
   ciStatus,
   failedTestCases,
+  normalizeGitLabLogLine,
   normalizeJobSummary,
   normalizePipelineSummary,
   pipelineIsForHead,
@@ -114,5 +116,43 @@ describe("failedTestCases", () => {
     expect(cases[1].output!.startsWith("x".repeat(TEST_OUTPUT_MAX_CHARS))).toBe(true);
     expect(cases[1].output).toMatch(/\[output truncated\]$/);
     expect(cases[1].output!.length).toBeLessThan(TEST_OUTPUT_MAX_CHARS + 50);
+  });
+});
+
+describe("normalizeGitLabLogLine", () => {
+  const ESC = "\x1b";
+
+  it("strips ANSI sequences and carriage-return overwrites, keeping the rest verbatim", () => {
+    expect(normalizeGitLabLogLine(`${ESC}[32;1mok${ESC}[0m done`)).toBe("ok done");
+    expect(normalizeGitLabLogLine(`${ESC}]0;title\x07${ESC}(Bplain`)).toBe("plain");
+    expect(normalizeGitLabLogLine("10%\r50%\r100%")).toBe("100%");
+    expect(normalizeGitLabLogLine("windows line\r")).toBe("windows line");
+    expect(normalizeGitLabLogLine("  indented\tverbatim  ")).toBe("  indented\tverbatim  ");
+    // GitHub's workflow commands and timestamps are not GitLab markup.
+    expect(normalizeGitLabLogLine("##[group]x")).toBe("##[group]x");
+    expect(normalizeGitLabLogLine("2024-05-01T12:34:56Z npm test")).toBe("2024-05-01T12:34:56Z npm test");
+  });
+
+  it("turns section starts into headings and drops section ends", () => {
+    expect(normalizeGitLabLogLine(
+      `${ESC}[0Ksection_start:1700000000:step_script\r${ESC}[0K${ESC}[36;1mExecuting "step_script"${ESC}[0;m`,
+    )).toBe('▶ Executing "step_script"');
+    expect(normalizeGitLabLogLine(`section_start:1700000000:build[collapsed=true]\r${ESC}[0K`)).toBe("▶ build");
+    expect(normalizeGitLabLogLine(`${ESC}[0Ksection_end:1700000000:step_script\r${ESC}[0K`)).toBeNull();
+    // The runner often closes one section and opens the next on the same line.
+    expect(normalizeGitLabLogLine(
+      `${ESC}[0Ksection_end:1:step_script\r${ESC}[0K${ESC}[0Ksection_start:1:cleanup\r${ESC}[0KCleaning up`,
+    )).toBe("▶ Cleaning up");
+  });
+
+  it("reads a job trace through readCiLog, counting only the lines it keeps", async () => {
+    const body = new Response([
+      `\uFEFF${ESC}[0Ksection_start:1:step_script\r${ESC}[0KExecuting "step_script"\n`,
+      "$ npm test\r\n",
+      `${ESC}[0Ksection_end:1:step_script\r${ESC}[0K\n`,
+      "Job succeeded",
+    ].join("")).body!;
+    expect(await readCiLog(body, normalizeGitLabLogLine))
+      .toEqual({ lines: ['▶ Executing "step_script"', "$ npm test", "Job succeeded"], firstLine: 1, totalLines: 3 });
   });
 });

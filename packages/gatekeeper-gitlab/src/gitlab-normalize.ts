@@ -3,6 +3,7 @@
 // the listing cursors apply. No platform imports, so everything here runs under the package's
 // Node vitest project.
 
+import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci-log";
 import { parseUnifiedPatch } from "@gadgets/gatekeeper-kit/git-diff";
 import { stripTrailingSlashes, type GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type {
@@ -652,6 +653,28 @@ export function failedTestCases(response: GitLabTestReportResponse): GitLabTestC
     }
   }
   return cases;
+}
+
+const LOG_SECTION = /section_(start|end):\d+:([A-Za-z0-9_.-]+)(?:\[[^\]\r]*\])?\r?/g;
+
+/**
+ * One raw job-trace line as `readCiLog` keeps it, or null when it is markup only. Strips ANSI
+ * escapes and carriage-return overwrites; a `section_start` marker becomes `▶ ` and the section's
+ * heading (or its name when the heading is empty), and a line holding only `section_end` markers
+ * is dropped. Everything else is kept verbatim.
+ */
+export function normalizeGitLabLogLine(line: string): string | null {
+  // Section markers precede their heading's `\r`, so they are read before overwriting.
+  const text = stripAnsi(line);
+  const markers = [...text.matchAll(LOG_SECTION)];
+  if (markers.length === 0) return applyCarriageReturns(text);
+  const start = markers.findLast(marker => marker[1] === "start");
+  if (start === undefined) {
+    const rest = applyCarriageReturns(text.replace(LOG_SECTION, ""));
+    return rest === "" ? null : rest;
+  }
+  const heading = applyCarriageReturns(text.slice(start.index + start[0].length).replace(LOG_SECTION, "")).trim();
+  return `▶ ${heading === "" ? start[2] : heading}`;
 }
 
 // ---------------------------------------------------------------------------

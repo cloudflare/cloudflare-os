@@ -77,6 +77,7 @@ import {
   hasWorkflowFiles,
   jobSummaryOf,
   mergeStateOf,
+  normalizeGitHubLogLine,
   parseCiId,
   pendingDeploymentOf,
   phaseOf,
@@ -5782,7 +5783,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     let log = cache.get(cacheKey);
     if (log === undefined) {
       try {
-        log = await readCiLog(await this.#withApi(api => api.downloadJobLog(location)), "github");
+        log = await readCiLog(await this.#withApi(api => api.downloadJobLog(location)), normalizeGitHubLogLine);
       } catch (error) {
         if (!(error instanceof CiLogTooLargeError)) throw error;
         throw new Error(`The log of job ${jobId} is too large to read here; open it on GitHub: ${run.html_url}`,
