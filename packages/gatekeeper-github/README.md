@@ -38,7 +38,7 @@ for approval, and every read is logged as an observation.
 - **Checks on a commit.** `repo.getChecks(ref?)` and `pullRequest.getChecks(commitId?)` report
   the check runs (GitHub Actions jobs and other apps' checks) and commit statuses on a commit,
   from GraphQL's `statusCheckRollup`: the first 1000 entries, with an overall `state`, `counts` by
-  state over every entry, and a `phase`:
+  state over every entry (over the listed ones when GitHub cannot count them), and a `phase`:
   `active` (queued, running, or on a deployment wait timer: poll again), `blocked` (waits for a
   person, such as a deployment reviewer or a first-time contributor's approval), `done`, or for a
   commit nothing has reported on, `notStarted`. A commit reads `notStarted` while a push of it is

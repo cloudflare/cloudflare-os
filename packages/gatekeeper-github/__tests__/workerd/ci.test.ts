@@ -612,6 +612,15 @@ describe("getChecks: a commit nothing has reported on", () => {
     expect(gk.queue.cache.advertised).toEqual([]);
   });
 
+  it("does not advertise a commit only the workspace cache has, such as a queued push's intermediate one", async () => {
+    // No queued push names it as its head, so only `fromCache` keeps the hint from outliving a rejection.
+    fakeGitHub();
+    const gk = await gatekeeper();
+
+    expect(await gk.read([{ method: "getChecks", args: [PUSHED] }])).toMatchObject({ commitId: PUSHED, phase: "notStarted" });
+    expect(gk.queue.cache.advertised).toEqual([]);
+  });
+
   it("counts the window from when this gatekeeper applied the push", async () => {
     const github = fakeGitHub();
     const gk = await gatekeeper();

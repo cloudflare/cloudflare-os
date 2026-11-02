@@ -5586,16 +5586,18 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * CI on the commit `ref` reads at, as `resolveRef` resolves it: a branch with queued pushes reads
    * at its simulated head. A commit GitHub does not have yet, which only a queued push will
-   * deliver, has had nothing reported on it, and GitHub is not asked.
+   * deliver, has had nothing reported on it, and GitHub is not asked. `fromCache` as for
+   * `resolveRef`: the session must not advertise such a commit.
    */
-  async repoChecks(refOrDefault: string | undefined, gitCache: RpcStub<GitCache>): Promise<GitHubCommitChecks> {
+  async repoChecks(refOrDefault: string | undefined, gitCache: RpcStub<GitCache>)
+      : Promise<{ checks: GitHubCommitChecks, fromCache: boolean }> {
     const ref = refOrDefault ?? (await this.#getRepoMetadata()).defaultBranch;
     const { id, fromCache } = await this.resolveRef(ref, gitCache);
-    if (fromCache) return queuedCommitChecks(id);
+    if (fromCache) return { checks: queuedCommitChecks(id), fromCache };
     const read = await this.#commitChecks(id,
       { branch: isCommitOid(ref) ? undefined : ref.replace(/^refs\/heads\//, "") });
     if (read === undefined) throw new Error(`Commit ${id} was not found in ${this.#repoFullName()}.`);
-    return read.ci;
+    return { checks: read.ci, fromCache };
   }
 
   /**
@@ -6355,15 +6357,16 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
   }
 
   async getChecks(ref?: string): Promise<GitHubCommitChecks> {
-    const checks = await this.#gatekeeper.repoChecks(ref, await this.#gitCache.stub());
+    const { checks, fromCache } = await this.#gatekeeper.repoChecks(ref, await this.#gitCache.stub());
     await this.#approvalQueue.authorizeObservation({
       title: `Read CI on ${checks.commitId.slice(0, 12)}`,
       description: `Read the check runs and commit statuses on commit ${checks.commitId}`
         + `${ref === undefined ? " (head of the default branch)"
           : ref === checks.commitId ? "" : ` (resolved from "${ref}")`} in the GitHub repository.`,
     });
-    // A simulated head (a queued push's commit) is withheld from advertising.
-    await this.#gitCache.advertise([checks.commitId]);
+    // A cache-served commit is never advertised, for the same reasons as getCommit: an
+    // intermediate commit of a queued push is not on GitHub, and the hint would outlive a rejection.
+    if (!fromCache) await this.#gitCache.advertise([checks.commitId]);
     return checks;
   }
 
