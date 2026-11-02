@@ -161,6 +161,58 @@ export async function withAccountApi<T>(
 }
 
 /**
+ * The lowest role that sees everything a binding can disclose: the repository, confidential
+ * issues, and internal notes.
+ */
+export const REPORTER_ACCESS_LEVEL = 20;
+
+/** An account as the membership probe reaches it: its token, and the GitLab user behind it. */
+export type MemberAccount = AccountCredentials & {
+  getUser(): Promise<{ id: number; generation: string }>;
+};
+
+/**
+ * Whether `account`'s GitLab user holds an effective membership of at least `minAccessLevel`
+ * (never below Reporter) on the project, read with the account's own token: nothing (`[]`) for a
+ * non-member, 404 for a project the token cannot see at all (GitLab hides existence) -- the same
+ * answer here. The user id comes from the account, fenced to the connection that answered it: if
+ * a reconnect (possibly as another GitLab user) lands between the two reads, the membership row
+ * would be one user's and the token another's, so the answer is discarded and the probe fails
+ * closed. See the verifier in `gitlab.ts` for why membership, not the project's `permissions`.
+ */
+export async function hasProjectMembership(
+  env: Env, account: MemberAccount, projectPath: string, minAccessLevel = REPORTER_ACCESS_LEVEL,
+): Promise<boolean> {
+  try {
+    const user = await account.getUser();
+    const member = await withAccountApi(env, account, api => api.getProjectMember(projectPath, user.id), { replayable: true });
+    if ((await account.getUser()).generation !== user.generation) return false;
+    return membershipGrantsFullRead(member, minAccessLevel);
+  } catch (error) {
+    // 403 in some policy cases; the user lacks access either way.
+    if (error instanceof GitLabApiError && (error.status === 404 || error.status === 403)) return false;
+    throw error;
+  }
+}
+
+/**
+ * Decide from a user's effective membership (or its absence) whether they hold `minAccessLevel`
+ * (at least Reporter): not an invitation still awaiting acceptance, and not expired -- GitLab
+ * documents that from `expires_at` onward the user can no longer access the project, and a row it
+ * has not yet swept may still be listed with the date passed. The date is a day (`2026-09-18`),
+ * read as its UTC midnight; a date that does not parse expires too.
+ */
+function membershipGrantsFullRead(
+  member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
+  minAccessLevel: number,
+  now: Date = new Date(),
+): boolean {
+  if (member === null || member.membership_state === "awaiting") return false;
+  if (member.expires_at != null && !(Date.parse(member.expires_at) > now.getTime())) return false;
+  return member.access_level >= Math.max(REPORTER_ACCESS_LEVEL, minAccessLevel);
+}
+
+/**
  * The connectable resource types, with URL patterns on the configured instance. Ordered most
  * specific first: `:project+` also matches an issue or merge request URL, and resource
  * resolution is first-match. The issue and merge request patterns accept anything after the

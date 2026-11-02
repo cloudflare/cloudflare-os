@@ -96,6 +96,7 @@ import {
 import { describeGitLabAction } from "./gitlab-descriptions";
 import {
   VENDOR_ID,
+  hasProjectMembership,
   instanceUrl as instanceUrlOf,
   withAccountApi,
   type Env,
@@ -231,6 +232,13 @@ const OBSERVED_SET_PREFIX = "observedSet:";
 const CI_DATA_SET = "ci-logs";
 /** GitLab's Developer role, below which a member cannot read debug-trace job logs. */
 const DEVELOPER_ACCESS_LEVEL = 30;
+/**
+ * Whether this binding has stored every observer it admitted (`"complete"`), or was created by a
+ * version that stored none (`"legacy"`), so that a CI-data read could not leave out a Reporter
+ * still connected from before. Decided once, by the first start that finds no marker.
+ */
+const OBSERVER_ROSTER_KEY = "observerRoster";
+type ObserverRoster = "complete" | "legacy";
 /** A log with no lines: a job that has not written one yet. */
 const EMPTY_CI_LOG: CiLog = { lines: [], firstLine: 1, totalLines: 0 };
 /** The connected account: its user id, which tells its approvals and notes from others', and its actor. */
@@ -320,6 +328,21 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * in the same call that returns the ids, so a restart cannot leak an unfiltered id.
    */
   #servedSimulatedCommitIds = new Set<GitOid>();
+
+  /** Whether this binding's stored observers are all it has admitted; see `OBSERVER_ROSTER_KEY`. */
+  readonly #observerRoster: ObserverRoster;
+
+  constructor(ctx: DurableObjectState<GitLabGatekeeperImplProps>, env: Env) {
+    super(ctx, env);
+    // Synchronous, before anything this version writes: a binding with no storage yet is new, and
+    // one holding keys but no marker was used by a version that admitted observers unrecorded.
+    let roster = ctx.storage.kv.get<ObserverRoster>(OBSERVER_ROSTER_KEY);
+    if (roster === undefined) {
+      roster = [...ctx.storage.kv.list({ limit: 1 })].length === 0 ? "complete" : "legacy";
+      ctx.storage.kv.put<ObserverRoster>(OBSERVER_ROSTER_KEY, roster);
+    }
+    this.#observerRoster = roster;
+  }
 
   // -- identity ---------------------------------------------------------------------------
 
@@ -1494,7 +1517,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /** The pipeline a trigger job of `parentId` started in this project, or an error saying why `childId` is not one. */
   async #requireSameProjectDownstream(parentId: number, childId: number): Promise<void> {
     const boundProjectId = await this.#boundProjectId();
-    const triggers = await this.#listTriggerJobs(parentId, undefined);
+    const triggers = await this.#listTriggerJobs(parentId);
     const trigger = triggers.find(job => job.downstream_pipeline?.id === childId);
     if (trigger === undefined) {
       throw new Error(`Pipeline ${childId} was not started by a trigger job of pipeline ${parentId}.`);
@@ -1504,10 +1527,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
   }
 
-  async #listTriggerJobs(pipelineId: number, scope: string[] | undefined): Promise<GitLabJobResponse[] & { truncated?: true }> {
+  async #listTriggerJobs(pipelineId: number): Promise<GitLabJobResponse[] & { truncated?: true }> {
     const route = supportsTriggerJobsRoute(await this.#getVersion()) ? "trigger_jobs" : "bridges";
     return await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) => this.#withApi(api =>
-      api.listPipelineTriggerJobs(this.#projectPath(), pipelineId, { route, scope, page, perPage })));
+      api.listPipelineTriggerJobs(this.#projectPath(), pipelineId, { route, page, perPage })));
   }
 
   /**
@@ -1525,7 +1548,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       for (let depth = 0; depth < 2 && parents.length > 0; depth++) {
         const children: number[] = [];
         for (const parent of parents) {
-          for (const trigger of await this.#listTriggerJobs(parent, undefined)) {
+          for (const trigger of await this.#listTriggerJobs(parent)) {
             const downstream = trigger.downstream_pipeline;
             if (downstream?.project_id !== boundProjectId) continue;
             if (downstream.id === pipeline.id) return true;
@@ -1634,38 +1657,36 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * A pipeline's jobs, trigger jobs, and external statuses, oldest first (ids share one table, so
    * id order is creation order), at most `MAX_CI_ROWS`. GitLab's statuses listing holds the jobs
    * and trigger jobs too, without saying which is which, so an external status is a row neither
-   * of the other listings returned. The statuses are listed first, so a job created meanwhile is
-   * in the other listings rather than taken for one. With a status filter GitLab filters the job
-   * listings, so a job whose status moved out of the filter meanwhile is missing from them; such
-   * rows are listed again afterwards and kept only if their status did not change (a job's status
-   * only moves forward, so one unchanged across both reads had it in between too). When either
-   * job listing was cut short, statuses are left out rather than risk listing a job as one.
+   * of the other listings returned. Those two list only each job's latest attempt, and GitLab
+   * keeps one latest attempt per name in a pipeline (adding one, a retry or a newly reported
+   * status, marks every other of that name retried), so a status row named like a listed job or
+   * trigger job is one of its attempts, retried since the statuses were read. The statuses are
+   * listed first, so a job created meanwhile is in the other listings rather than taken for one.
+   * The job listings are not narrowed by the status filter, which is applied here: a job whose
+   * status moved out of it meanwhile is still recognised. When either job listing was cut short,
+   * statuses are left out rather than risk listing a job as one.
    */
   async pipelineJobs(pipelineId: number, filter: GitLabJobFilter | undefined, pageSize: number): Promise<Cursor<GitLabJobSummary>> {
-    // Statuses are checked against the union at the RPC boundary. GitLab's `scope[]` rejects
-    // "unknown", which is ours, so a filter naming it is applied locally only.
+    // Statuses are checked against the union at the RPC boundary.
     const statuses = filter?.status === undefined ? undefined : new Set(filter.status);
-    const scope = statuses === undefined || statuses.has("unknown") ? undefined : [...statuses];
     const pipeline = await this.#getRawPipeline(pipelineId);
     const boundProjectId = await this.#boundProjectId();
     const projectPath = this.#projectPath();
-    const listStatuses = async () => await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
+    const listedFirst = await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
       this.#withApi(api => api.listCommitStatuses(projectPath, pipeline.sha, { pipelineId, page, perPage })));
-    const listedFirst = await listStatuses();
     const [builds, triggers] = await Promise.all([
       this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
-        this.#withApi(api => api.listPipelineJobs(projectPath, pipelineId, { scope, page, perPage }))),
-      this.#listTriggerJobs(pipelineId, scope),
+        this.#withApi(api => api.listPipelineJobs(projectPath, pipelineId, page, perPage))),
+      this.#listTriggerJobs(pipelineId),
     ]);
-    const known = new Set([...builds, ...triggers].map(job => job.id));
+    const jobs = [...builds, ...triggers];
+    const ids = new Set(jobs.map(job => job.id));
+    const names = new Set(jobs.map(job => job.name));
     // A row without `pipeline_id` cannot be placed in a pipeline; drop it rather than guess.
-    let unplaced = builds.truncated || triggers.truncated ? []
-      : listedFirst.filter(row => row.pipeline_id === pipelineId && !known.has(row.id));
-    if (scope !== undefined && unplaced.length > 0) {
-      const now = new Map((await listStatuses()).map(row => [row.id, row.status]));
-      unplaced = unplaced.filter(row => now.get(row.id) === row.status);
-    }
-    const external = unplaced.map(row => normalizeCommitStatus(row, pipeline.web_url));
+    const external = builds.truncated || triggers.truncated ? []
+      : listedFirst
+        .filter(row => row.pipeline_id === pipelineId && !ids.has(row.id) && !names.has(row.name))
+        .map(row => normalizeCommitStatus(row, pipeline.web_url));
     const rows = [
       ...builds.map(job => normalizeJobSummary(job, "job", boundProjectId)),
       ...triggers.map(job => normalizeJobSummary(job, "trigger", boundProjectId)),
@@ -1683,12 +1704,27 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return childId;
   }
 
+  /**
+   * Refuses a job-log or test-report read on a binding created before observers were stored
+   * (`OBSERVER_ROSTER_KEY`): one it admitted then is still connected, unrecorded, so the read
+   * could not leave out a Reporter. The other CI reads are Reporter's and stay open.
+   */
+  #requireObserverRoster(): void {
+    if (this.#observerRoster === "legacy") {
+      throw new Error(
+        "This GitLab connection was created by an earlier version, so job logs and test reports cannot be read " +
+        "through it. Remove the GitLab connection and add it again.");
+    }
+  }
+
   async pipelineTestReport(pipelineId: number): Promise<GitLabTestReportSummary> {
+    this.#requireObserverRoster();
     return normalizeTestReportSummary(
       await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId)));
   }
 
   async pipelineFailedTests(pipelineId: number, pageSize: number): Promise<Cursor<GitLabTestCase>> {
+    this.#requireObserverRoster();
     let report;
     try {
       report = await this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId));
@@ -1709,9 +1745,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * One page of a job's log, with the job's name for the observation. The job is re-read first,
    * uncached: its status says whether the log is final, and a log someone erased (`erased_at`, or
-   * the job gone) must not be served from the cache of finished logs.
+   * the job gone) must not be served from the cache of finished logs. Nor one the account may no
+   * longer read: the job is Reporter's but a debug trace is Developer's, so a cached copy is
+   * served only while the account holds Developer; otherwise GitLab answers `/trace` itself.
    */
   async readJobLog(jobId: number, options: GitLabLogOptions | undefined): Promise<{ jobName: string; page: GitLabLogPage }> {
+    this.#requireObserverRoster();
     // Validates the options before anything is fetched.
     pageCiLog(EMPTY_CI_LOG, options, false);
     const cache = this.#ciLogCache();
@@ -1725,6 +1764,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
     const complete = ciPhase(ciStatus(job.status)) === "done";
     let log = complete ? cache.get(cacheKey) : undefined;
+    if (log !== undefined &&
+        !(await hasProjectMembership(this.env, this.#userAccount(), this.#projectPath(), DEVELOPER_ACCESS_LEVEL))) {
+      log = undefined;
+    }
     if (log === undefined) {
       const body = await this.#withApi(api => api.getJobTrace(this.#projectPath(), jobId));
       try {

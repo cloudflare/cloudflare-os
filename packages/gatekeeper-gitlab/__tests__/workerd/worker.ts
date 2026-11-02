@@ -14,7 +14,6 @@ import type {
   GitPullTransfer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabAction } from "../../src/gitlab-action-types.js";
-import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
 import type { GitLabGatekeeperImplProps } from "../../src/gitlab-env.js";
 import type {
   GitLabBranchSummary,
@@ -39,7 +38,7 @@ import type {
 
 export { default } from "../../src/gitlab.js";
 export * from "../../src/gitlab.js";
-import { GatekeeperUserImpl, GitLabVerifier } from "../../src/gitlab.js";
+import { GatekeeperUserImpl, GitLabGatekeeperImpl, GitLabVerifier } from "../../src/gitlab.js";
 
 /**
  * The account entrypoint, reachable for tests. Under the capnweb-validate *vite* plugin (which
@@ -53,6 +52,17 @@ export class TestUser extends GatekeeperUserImpl {}
 /** The verifier entrypoint, reachable for tests -- see `TestUser`. */
 export class TestVerifier extends GitLabVerifier {}
 
+/**
+ * The gatekeeper on storage a version before observer tracking left: keys its reads wrote, and no
+ * observer-roster marker. It seeds that storage before the production constructor looks at it.
+ */
+export class PreRosterGatekeeper extends GitLabGatekeeperImpl {
+  constructor(ctx: DurableObjectState<GatekeeperProps>, env: Cloudflare.Env) {
+    if ([...ctx.storage.kv.list({ limit: 1 })].length === 0) ctx.storage.kv.put("cacheGeneration", 1);
+    super(ctx, env);
+  }
+}
+
 export type GatekeeperProps = GitLabGatekeeperImplProps;
 
 /** What a session passes to `submitActionForApproval`; the gatekeeper renders the description. */
@@ -62,6 +72,7 @@ type UserProps = { userObjectId: string };
 
 type TestExports = {
   GitLabGatekeeperImpl(options: { props: GatekeeperProps }): DurableObjectClass<GitLabGatekeeperImpl>;
+  PreRosterGatekeeper(options: { props: GatekeeperProps }): DurableObjectClass<GitLabGatekeeperImpl>;
   TestUser(options: { props: UserProps }): {
     describe(): Promise<{ displayName?: string; uniqueName?: string }>;
     getAuthenticatedEmail(): Promise<string | null>;
@@ -312,6 +323,18 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   /** Restart the gatekeeper, as an eviction would: its storage stays, its memory does not. */
   restart(facetName: string): void {
+    this.ctx.facets.abort(facetName, new Error("test restart"));
+  }
+
+  /**
+   * Start `facetName` as a binding an earlier version created (see `PreRosterGatekeeper`), then
+   * restart it, so later calls reach the production class on that storage.
+   */
+  async startPreRosterBinding(facetName: string, props: GatekeeperProps): Promise<void> {
+    const facet = this.ctx.facets.get<GitLabGatekeeperImpl>(facetName, () => ({
+      class: (this.ctx.exports as unknown as TestExports).PreRosterGatekeeper({ props }),
+    })) as unknown as GatekeeperFacet;
+    await facet.isSimulatedCommitId("0");
     this.ctx.facets.abort(facetName, new Error("test restart"));
   }
 

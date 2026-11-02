@@ -1325,26 +1325,25 @@ export class GitLabApi {
   }
 
   /** One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only. */
-  async listPipelineJobs(projectPath: string, pipelineId: number, options: { scope?: string[]; page: number; perPage: number }):
+  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number):
       Promise<GitLabPage<GitLabJobResponse>> {
     return await this.#getPage<GitLabJobResponse>(
-      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`,
-      { scope: options.scope }, options.page, options.perPage);
+      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`, {}, page, perPage);
   }
 
   /**
-   * One page of a pipeline's trigger jobs. GitLab 19.2 renamed the route from `bridges` to
-   * `trigger_jobs` and deprecated the old name; the caller picks by version (`supportsTriggerJobsRoute`).
+   * One page of a pipeline's trigger jobs, latest attempts only. GitLab 19.2 renamed the route from
+   * `bridges` to `trigger_jobs` and deprecated the old name; the caller picks by version
+   * (`supportsTriggerJobsRoute`).
    */
   async listPipelineTriggerJobs(projectPath: string, pipelineId: number, options: {
     route: "trigger_jobs" | "bridges";
-    scope?: string[];
     page: number;
     perPage: number;
   }): Promise<GitLabPage<GitLabJobResponse>> {
     return await this.#getPage<GitLabJobResponse>(
       `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/${options.route}`,
-      { scope: options.scope }, options.page, options.perPage);
+      {}, options.page, options.perPage);
   }
 
   /**

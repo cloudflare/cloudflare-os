@@ -1,9 +1,11 @@
 // CI reads on the real gatekeeper Durable Object against a fake GitLab: a commit's and a merge
 // request's `ci` (the head pipeline, the stale-head rule, and the absence policy when there is no
 // pipeline), what a queued push reads as, which pipelines and jobs each binding may open,
-// `listJobs()` merging jobs, trigger jobs, and external statuses, failed tests, status read afresh
-// rather than cached, job logs (tail, search, a running job, the cache of finished logs and its
-// revalidation), and the observer gate that log and test-report reads raise to Developer.
+// `listJobs()` merging jobs, trigger jobs, and external statuses (retries and status changes
+// racing the listings included), failed tests, status read afresh rather than cached, job logs
+// (tail, search, a running job, the cache of finished logs and its revalidation against erasure
+// and the account's access), the observer gate that log and test-report reads raise to
+// Developer, and those reads refused on a binding an earlier version created.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -54,13 +56,16 @@ function commit(id: string, overrides: Record<string, unknown> = {}) {
 
 /**
  * GitLab with the project (id 1, default CI config), the owner's and observers' accounts (the
- * bearer token names the user), their memberships, an instance version that predates
- * `trigger_jobs`, commits served from `commits`, and the project's pipelines from `pipelines`.
+ * bearer token names the user), their memberships (the owner a Maintainer unless `ownerAccess`
+ * says otherwise), an instance version that predates `trigger_jobs`, commits served from
+ * `commits`, and the project's pipelines from `pipelines`.
  */
 class CiFake extends FakeGitLab {
   readonly commits = new Map<string, Record<string, unknown>>();
   readonly branches = new Map<string, string>();
   readonly members = new Map<string, number>();
+  /** The connected account's access level on the project; `null` for no membership. */
+  ownerAccess: number | null = 40;
   /** Shas at which `.gitlab-ci.yml` exists. */
   readonly ciConfigAt = new Set<string>();
   /** The project's pipelines, newest first; the listing filters them by `sha` as GitLab does. */
@@ -84,6 +89,9 @@ class CiFake extends FakeGitLab {
     });
     this.on("GET", new RegExp(`^/api/v4/projects/${P}/members/all\\?`), request => {
       const id = Number(request.url.searchParams.get("user_ids[]"));
+      if (id === fx.currentUserResponse.data.id) {
+        return json(this.ownerAccess === null ? [] : [{ id, username: fx.currentUserResponse.data.username, access_level: this.ownerAccess }]);
+      }
       const name = [...this.members.keys()].find(n => userId(n) === id);
       return json(name === undefined ? [] : [{ id, username: name, access_level: this.members.get(name) }]);
     });
@@ -512,16 +520,38 @@ describe("listJobs", () => {
     expect(rows[3]).toMatchObject({ stage: "external", description: "3 problems", targetUrl: "https://lint.example.com/1", allowFailure: true });
   });
 
-  it("filters by status through GitLab's scope[], keeping external statuses apart from jobs", async () => {
+  it("filters by status itself, keeping external statuses apart from jobs", async () => {
     const fake = jobsFake();
     const { props, name } = await setup(fake);
     const rows = await session<GitLabJobSummary[]>(name, props,
       { method: "getPipeline", args: ["6"] }, { method: "listJobs", args: [{ status: ["failed"] }], drain: true });
     expect(rows.map(row => [row.id, row.kind])).toEqual([["8", "job"], ["11", "status"]]);
+    // GitLab's scope[] would hide the jobs it is told apart from statuses by.
     const jobsRequest = fake.requests.find(r => r.url.pathname.endsWith("/pipelines/6/jobs"))!;
-    expect(jobsRequest.url.searchParams.getAll("scope[]")).toEqual(["failed"]);
+    expect(jobsRequest.url.searchParams.getAll("scope[]")).toEqual([]);
     await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listJobs", args: [{ status: ["broken"] }] }))
       .rejects.toThrow(/GitLabPipelineImpl\.listJobs/);
+  });
+
+  it("never takes a job or trigger job retried while it lists for an external status", async () => {
+    // The statuses still show failed job 100 and trigger job 90; by the time the job listings
+    // answer, retries have replaced them with 101 and 91, and those listings hold latest attempts only.
+    const fake = jobsFake();
+    fake.on("GET", STATUSES_ROUTE, () => json([...STATUSES,
+      { id: 90, name: "deploy", status: "failed", allow_failure: false, created_at: minutesAgo(3), pipeline_id: 6 },
+      { id: 100, name: "flaky", status: "failed", allow_failure: false, created_at: minutesAgo(3), pipeline_id: 6 }]));
+    fake.on("GET", JOBS_ROUTE, request => json(scoped(request, [...BUILDS, job(101, { status: "running", name: "flaky" })])));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), request => json(scoped(request, [
+      trigger(7, { id: 5, project_id: PROJECT_ID }), trigger(91, { id: 9, project_id: PROJECT_ID }, { status: "running", name: "deploy" }),
+    ])));
+    const { props, name } = await setup(fake);
+    const rows = await session<GitLabJobSummary[]>(name, props, ...listJobs());
+    expect(rows.map(row => [row.id, row.kind])).toEqual([
+      ["7", "trigger"], ["8", "job"], ["10", "job"], ["11", "status"], ["91", "trigger"], ["101", "job"],
+    ]);
+    // Filtered to what the retried attempts were, they are still not taken for statuses.
+    expect((await session<GitLabJobSummary[]>(name, props, ...listJobs({ status: ["failed"] }))).map(row => [row.id, row.kind]))
+      .toEqual([["8", "job"], ["11", "status"]]);
   });
 
   it("never takes a job created while it lists for an external status", async () => {
@@ -545,11 +575,10 @@ describe("listJobs", () => {
 
   it("never takes a job whose status left the filter while it lists for an external status", async () => {
     const fake = jobsFake();
-    // Job 15 is running when the statuses are first listed, and has succeeded by the time the jobs are.
-    let statusReads = 0;
+    // Job 15 is running when the statuses are listed, and has succeeded by the time the jobs are.
     fake.on("GET", JOBS_ROUTE, request => json(scoped(request, [...BUILDS, job(15, { status: "success", name: "slow" })])));
-    fake.on("GET", STATUSES_ROUTE, () => json([...STATUSES, { id: 15, name: "slow", status: statusReads++ === 0 ? "running" : "success",
-      allow_failure: false, created_at: minutesAgo(3), pipeline_id: 6 }]));
+    fake.on("GET", STATUSES_ROUTE, () => json([...STATUSES,
+      { id: 15, name: "slow", status: "running", allow_failure: false, created_at: minutesAgo(3), pipeline_id: 6 }]));
     const { props, name } = await setup(fake);
     expect(await session<GitLabJobSummary[]>(name, props, ...listJobs({ status: ["running"] }))).toEqual([]);
   });
@@ -677,6 +706,29 @@ describe("job logs", () => {
     expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(2);
   });
 
+  it("serves a cached log only while the account may still read debug traces", async () => {
+    const fake = logFake(() => "success");
+    fake.ownerAccess = 30;
+    let traceAllowed = true;
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/8/trace$`), () => traceAllowed
+      ? new Response(trace(300), { headers: { "content-type": "text/plain" } })
+      : json({ message: "403 Forbidden" }, { status: 403 }));
+    const { props, name } = await setup(fake);
+    await session(name, props, ...readLog());
+    await session(name, props, ...readLog());
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(1);
+
+    // Down to Reporter, which still reads the job but not a debug trace: GitLab decides, not the cache.
+    fake.ownerAccess = 20;
+    traceAllowed = false;
+    await expect(session(name, props, ...readLog())).rejects.toThrow(/403|Forbidden/i);
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(2);
+    // No longer a member at all: the same.
+    fake.ownerAccess = null;
+    await expect(session(name, props, ...readLog())).rejects.toThrow(/403|Forbidden/i);
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(3);
+  });
+
   it("refuses bad options before reading anything", async () => {
     const fake = logFake(() => "success");
     const { props, name } = await setup(fake);
@@ -726,5 +778,46 @@ describe("observers once logs are read", () => {
     const { props, name } = await setup(gateFake(), Object.fromEntries(names.map(member => [member, 20])));
     for (const member of names.slice(0, 50)) await observer(name, props, member);
     await expect(observer(name, props, names[50]!)).rejects.toThrow(/already answers for 50 collaborators/);
+  });
+
+  describe("on a binding an earlier version created", () => {
+    // That version stored no observers, so a Reporter it admitted may still be connected, unknown.
+    const REFUSED = "This GitLab connection was created by an earlier version, so job logs and test reports cannot be " +
+      "read through it. Remove the GitLab connection and add it again.";
+
+    function legacyFake(): CiFake {
+      const fake = gateFake();
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/jobs\\?`), () => json([job(8, { status: "success" })]));
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), () => json([]));
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/commits/${HEAD}/statuses\\?`), () => json([]));
+      return fake;
+    }
+
+    it("refuses job logs and test reports before reading them, and serves the other CI reads", async () => {
+      const fake = legacyFake();
+      const { props, name } = await setup(fake);
+      await hooks().startPreRosterBinding(name, props);
+      await expect(session(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" })).rejects.toThrow(REFUSED);
+      await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).rejects.toThrow(REFUSED);
+      await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests" })).rejects.toThrow(REFUSED);
+      expect(fake.count("GET", /\/trace$|\/test_report/)).toBe(0);
+
+      expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getDetails" })).toMatchObject({ id: "6" });
+      expect(await session(name, props, { method: "getJob", args: ["8"] }, { method: "getDetails" })).toMatchObject({ id: "8" });
+      expect((await session<GitLabJobSummary[]>(name, props, { method: "getPipeline", args: ["6"] }, { method: "listJobs", drain: true }))
+        .map(row => row.id)).toEqual(["8"]);
+      // Still refused after a restart: the decision is stored, not remade on storage this version wrote.
+      await hooks().restart(name);
+      await expect(session(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" })).rejects.toThrow(REFUSED);
+    });
+
+    it("but a new binding reads them, and still does after a restart", async () => {
+      const { props, name } = await setup(legacyFake());
+      await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getDetails" });
+      await hooks().restart(name);
+      expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))
+        .toMatchObject({ totalLines: 1 });
+      expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).toMatchObject({ total: 3363 });
+    });
   });
 });

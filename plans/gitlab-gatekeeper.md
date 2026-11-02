@@ -966,12 +966,23 @@ such read: from then on `addObserver` asks `hasProjectAccess(path, 30)`, and eve
 excludes stored observers below it. Observers are stored for this alone, so `removeObserver` is
 no longer a no-op. A binding that never reads a log or test report keeps the Reporter bar.
 
-Two consequences of storing them. A transition gap: observers admitted before this version were
-never stored, so a log or test-report read cannot exclude them until their next open, which runs
-`addObserver` (and so admission) again. And a cap: the tracker keeps at most 50 observers
-(`maxObservers`; the kit's default of 10 would refuse collaborators existing bindings already
-had), because each such read re-checks every stored observer's membership with GitLab, and the
-cap bounds that fan-out under the Workers subrequest limit.
+Two consequences of storing them. Bindings from before: observers admitted before this version
+were never stored, and the overseer neither re-admits a viewer already connected nor enforces
+anyone `excludeObservers` does not name, so a log or test-report read on such a binding could
+reach a Reporter admitted then. The gatekeeper therefore decides once, synchronously in its
+constructor before anything else touches storage, whether its roster is complete: storage
+without the `observerRoster` marker is empty on a new binding (`"complete"`) and holds keys on
+one an earlier version used (`"legacy"`); the answer is stored. A legacy binding refuses
+`readLog()`, `getTestReport()` and `listFailedTests()` before fetching anything — the connection
+must be removed and added again — and serves every other CI read. And a cap: the tracker keeps
+at most 50 observers (`maxObservers`; the kit's default of 10 would refuse collaborators
+existing bindings already had), because each such read re-checks every stored observer's
+membership with GitLab, and the cap bounds that fan-out under the Workers subrequest limit.
+
+The owner's own access is checked too: the job read that revalidates a cached log is Reporter's,
+a debug trace Developer's, so a cached log is served only while the connected account holds
+Developer on the project (the verifier's `members/all` probe, run with the owner's token);
+otherwise the read goes to `/trace` and GitLab decides.
 
 ### 9. Tests
 
@@ -1338,14 +1349,17 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   its own pipelines and their same-project children; fork and cross-project pipelines are data
   only); `GitLabPipeline` jobs
   (`…/jobs`, `…/trigger_jobs` or `…/bridges` by version, and external statuses from
-  `…/commits/:sha/statuses`), same-project downstreams, `test_report_summary` and the failed cases
-  of `test_report`; `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci-log`
-  leaf (streamed whole, tail kept, refused past 128 MiB; finished logs cached in chunks and
-  revalidated against `erased_at`). Reading a log or a test report raises observer admission to
-  Developer (§8). Still open: `retry`/`cancel`/`play` on jobs and pipelines (non-revertible
-  actions with their own kinds, simulated as `pending`/`canceling`, a retried job as a
-  provisional `~N`); `autoMerge` on `merge()` (below); and GitLab hooks, which this gatekeeper has
-  no infrastructure for, so agents poll `ci.phase`. Unprobed still: the trace endpoint's `Range`
+  `…/commits/:sha/statuses`; a status row whose id or name a job listing holds is a job, since
+  GitLab keeps one latest attempt per name in a pipeline, so a retry racing the listing is not
+  taken for a status, and the status filter is applied locally over unfiltered listings),
+  same-project downstreams, `test_report_summary` and the failed cases of `test_report`;
+  `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci-log` leaf (streamed
+  whole, tail kept, refused past 128 MiB; finished logs cached in chunks and revalidated against
+  `erased_at` and the account's Developer access). Reading a log or a test report raises observer
+  admission to Developer (§8). Still open: `retry`/`cancel`/`play` on jobs and pipelines
+  (non-revertible actions with their own kinds, simulated as `pending`/`canceling`, a retried job
+  as a provisional `~N`); `autoMerge` on `merge()` (below); and GitLab hooks, which this gatekeeper
+  has no infrastructure for, so agents poll `ci.phase`. Unprobed still: the trace endpoint's `Range`
   behaviour (the read takes the whole body), push events as a "became the head" source, and
   stale-head detection for merged-results pipelines beyond the parent check.
 - **Honouring both pull hints at once** if Gitaly accepts `combine:` / `tree:<depth≥1>` — the

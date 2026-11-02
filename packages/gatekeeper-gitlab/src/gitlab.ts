@@ -41,7 +41,6 @@ import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-k
 import { createPkce } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
 import {
-  GitLabApiError,
   buildAuthorizeUrl,
   exchangeAuthCode,
   refreshAccessToken,
@@ -51,11 +50,13 @@ import {
 import {
   AUTH_SCOPES,
   OAUTH_SCOPES,
+  REPORTER_ACCESS_LEVEL,
   VENDOR_ID,
   getBasePath,
   getBaseUrl,
   getRedirectUri,
   gitlabInstance,
+  hasProjectMembership,
   instanceUrl,
   oauthApp,
   supportedResources,
@@ -726,53 +727,13 @@ export interface GitLabVerifierApi extends GatekeeperUserVerifier {
   hasProjectAccess(projectPath: string, minAccessLevel?: number): Promise<boolean>;
 }
 
-/**
- * The lowest role that sees everything a binding can disclose: the repository, confidential
- * issues, and internal notes.
- */
-const REPORTER_ACCESS_LEVEL = 20;
-
-/**
- * Decide from a user's effective membership (or its absence) whether they see everything a
- * binding can disclose: Reporter or above, not an invitation still awaiting acceptance, and not
- * expired -- GitLab documents that from `expires_at` onward the user can no longer access the
- * project, and a row it has not yet swept may still be listed with the date passed. The date is
- * a day (`2026-09-18`), read as its UTC midnight; a date that does not parse expires too.
- */
-function membershipGrantsFullRead(
-  member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
-  minAccessLevel: number,
-  now: Date = new Date(),
-): boolean {
-  if (member === null || member.membership_state === "awaiting") return false;
-  if (member.expires_at != null && !(Date.parse(member.expires_at) > now.getTime())) return false;
-  return member.access_level >= Math.max(REPORTER_ACCESS_LEVEL, minAccessLevel);
-}
-
 @validateRpc()
 export class GitLabVerifier extends WorkerEntrypoint<Env, GitLabVerifierProps>
     implements GitLabVerifierApi {
   async hasProjectAccess(projectPath: string, minAccessLevel = REPORTER_ACCESS_LEVEL): Promise<boolean> {
     const { userObjectId } = this.ctx.props;
-    const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
-    try {
-      // What the observer holds on the project, read with their own token: nothing (`[]`) for a
-      // non-member, 404 for a project the token cannot see at all (GitLab hides existence) -- the
-      // same answer here. Their user id comes from the account, fenced to the connection that
-      // answered it: if a reconnect (possibly as another GitLab user) lands between the two reads,
-      // the membership row would be one user's and the token another's, so the answer is
-      // discarded and the probe fails closed -- the overseer re-runs it on the next open.
-      const user = await account.getUser();
-      const member = await accountReader(this.env, this.ctx.exports, userObjectId)(
-        api => api.getProjectMember(projectPath, user.id));
-      if ((await account.getUser()).generation !== user.generation) return false;
-      return membershipGrantsFullRead(member, minAccessLevel);
-    } catch (error) {
-      // 403 in some policy cases; the observer lacks access either way.
-      if (error instanceof GitLabApiError && (error.status === 404 || error.status === 403)) {
-        return false;
-      }
-      throw error;
-    }
+    // Fails closed on a reconnect mid-probe; the overseer re-runs it on the next open.
+    return await hasProjectMembership(this.env,
+      this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId)), projectPath, minAccessLevel);
   }
 }
