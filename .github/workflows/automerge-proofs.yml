@@ -1,9 +1,9 @@
 name: Automerge proofs
 
-# Rung 1 proofs that read the pull request's diff and never execute its code (BUILD-PLAN.md, trust
-# model). Each job writes one `automerge-<name>` artifact (scripts/automerge/proofs/artifact.ts);
-# the risk-review gate reads them, binding each to this file, the `pull_request` event, the head SHA
-# and the newest attempt. Nothing here posts a check or holds a secret.
+# Rung 1 proofs that read the pull request's diff and never execute its code. Each job writes one
+# `automerge-<name>` artifact (scripts/automerge/proofs/artifact.ts); the risk-review gate reads
+# them, binding each to this file, the `pull_request` event, the head SHA and the newest attempt.
+# Nothing here posts a check or holds a secret.
 #
 # The jobs check out the pull request's BASE and run the base's scripts; the head commit arrives as
 # objects only. A job that ran head code could upload an artifact under any name in its run, so

@@ -9,23 +9,33 @@
 // every mutant the base tests killed (or timed out) is still killed at head: an edit that weakens
 // a test without deleting a line kills fewer and fails.
 //
-// Scope follows the 2026-11-02 probe (evidence/build-research/probe-results.md): Stryker 10.1.1's
-// vitest runner worked on a workerd suite (typed-storage) and a Node suite (error-reporting).
-// Browser-mode, contract, eval and integration configs are out of scope, and so are tests outside
-// packages/ (scripts/ runs on `node --test`). Out-of-scope pull requests get status `error`.
+// Scope follows a 2026-11-02 probe: Stryker 10.1.1's vitest runner worked on a workerd suite
+// (typed-storage) and a Node suite (error-reporting).
+// A pull request that changes anything but tests in one package is not applicable. Tests that only
+// a browser-mode, contract, eval or integration config runs get status `error`, and so does an
+// edit to an existing helper, fixture or setup file (editedSupportFiles).
+//
+// The whole proof runs within a wall-clock budget, AUTOMERGE_MUTATION_BUDGET_MINUTES (default
+// DEFAULT_BUDGET_MINUTES). A heavy suite makes thousands of mutants (#943's base run had not
+// finished after 50 minutes), so a run still going at the deadline is killed and the result is
+// status `error`: a person reviews the pull request.
+//
+// Stryker is installed from ./stryker, its own pnpm workspace, rather than from the root lockfile
+// (see ./stryker/pnpm-workspace.yaml).
 //
 // This job runs the pull request's code and holds no secrets.
 //
-//   node scripts/automerge/proofs/tests.ts   (env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA)
+//   node scripts/automerge/proofs/tests.ts
+//   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA, AUTOMERGE_MUTATION_BUDGET_MINUTES
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, normalize, relative } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { decide, errored, notApplicable, runProducer, type Outcome } from "./artifact.ts";
 import type { FileDiff } from "./diff.ts";
-import { fileAt, mergeBase, pullRequestDiff } from "./git.ts";
+import { fileAt, git, mergeBase, pullRequestDiff } from "./git.ts";
 import { asArray, asObject, asString, parseJson, type JsonObject } from "./json.ts";
 
 /** Paths that hold tests, fixtures, helpers or setup rather than shipped code. */
@@ -37,7 +47,7 @@ const UNSUPPORTED_CONFIG = /\.(browser|contract|eval|integration)\.config\.ts$/;
 const KILLED = new Set(["Killed", "Timeout"]);
 const STRYKER_CONFIG = "stryker.automerge.json";
 const VITEST_CONFIG = "vitest.automerge.config.ts";
-const REPORT = "reports/automerge-mutation.json";
+const reportPath = (side: "base" | "head") => `reports/automerge-mutation-${side}.json`;
 
 /** The mutants a Stryker JSON report says the tests killed, keyed by place and replacement. */
 export function killedMutants(report: JsonObject): Set<string> {
@@ -112,30 +122,113 @@ export function importedSources(testPath: string, text: string, exists: (path: s
   return found;
 }
 
-function run(command: string, args: string[], cwd: string): string {
-  console.log(`running in ${cwd}: ${command} ${args.join(" ")}`);
-  return execFileSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: 256 * 1024 * 1024 });
+/** A step was still running when the proof's budget ran out. */
+export class OverBudget extends Error {}
+
+export const DEFAULT_BUDGET_MINUTES = 20;
+
+/** The budget in minutes: `value` when it is a positive whole number, the default when unset. */
+export function budgetMinutes(value: string | undefined): number {
+  if (value === undefined || value === "") return DEFAULT_BUDGET_MINUTES;
+  if (!/^[1-9]\d*$/.test(value)) throw new Error(`AUTOMERGE_MUTATION_BUDGET_MINUTES must be a positive whole number, got "${value}"`);
+  return Number(value);
+}
+
+/**
+ * Runs a command and returns its stdout when `capture` is set. Throws OverBudget if it is still
+ * running at `deadline` (epoch milliseconds). The command gets its own process group and the whole
+ * group is killed: Stryker and vitest start workers, workerd among them, that outlive their parent.
+ * The deadline settles the promise by itself, since a process outside the group can still hold the
+ * captured pipe open.
+ */
+export function runBounded(
+  command: string, args: string[], cwd: string, deadline: number, capture = false,
+): Promise<string> {
+  const line = `${command} ${args.join(" ")}`;
+  console.log(`running in ${cwd}: ${line}`);
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    reject(new OverBudget(`no time left to start ${line}`));
+    return promise;
+  }
+  const child = spawn(command, args, { cwd, detached: true, stdio: ["ignore", capture ? "pipe" : "inherit", "inherit"] });
+  const chunks: Buffer[] = [];
+  child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    child.stdout?.destroy();
+    child.unref();
+    try {
+      if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+    } catch (error) {
+      // ESRCH: the group has already exited, though something it started may still hold the pipe.
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
+        reject(error);
+        return;
+      }
+    }
+    reject(new OverBudget(`${line} was still running when the budget ran out`));
+  }, remaining);
+  child.on("error", (error) => {
+    clearTimeout(timer);
+    reject(error);
+  });
+  child.on("close", (code, signal) => {
+    clearTimeout(timer);
+    if (expired) return;
+    if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
+    else reject(new Error(`${line} exited with ${code ?? signal}`));
+  });
+  return promise;
+}
+
+/** Where the Stryker workspace is installed, inside the package under test. */
+const RUNNER_DIR = ".automerge-stryker";
+
+interface Runner {
+  stryker: string;
+  plugin: string;
+}
+
+/**
+ * Installs ./stryker inside `packageDir`, so that the vitest runner's `vitest` import resolves
+ * upward to the package's own vitest.
+ */
+async function installRunner(packageDir: string, deadline: number): Promise<Runner> {
+  const dir = join(packageDir, RUNNER_DIR);
+  rmSync(dir, { recursive: true, force: true });
+  cpSync(join(dirname(fileURLToPath(import.meta.url)), "stryker"), dir, { recursive: true });
+  await runBounded("pnpm", ["install", "--frozen-lockfile"], dir, deadline);
+  return {
+    stryker: join(process.cwd(), dir, "node_modules", ".bin", "stryker"),
+    plugin: createRequire(join(process.cwd(), dir, "package.json")).resolve("@stryker-mutator/vitest-runner"),
+  };
 }
 
 /** The supported vitest config in `packageDir` that lists every one of `tests`, if exactly one does. */
-function configFor(packageDir: string, tests: string[]): string {
-  const configs = run("git", ["ls-files", "--", `${packageDir}/vitest*.config.ts`], ".").split("\n")
+async function configFor(packageDir: string, tests: string[], deadline: number): Promise<string> {
+  const configs = git(["ls-files", "--", `${packageDir}/vitest*.config.ts`]).split("\n")
     .filter((path) => path !== "" && !UNSUPPORTED_CONFIG.test(path));
   const runnable = tests.filter((path) => RUNNABLE_TEST.test(path));
-  const matches = configs.filter((config) => {
-    const listed = parseJson(run("pnpm", ["exec", "vitest", "list", "--filesOnly", "--json", "--config", relative(packageDir, config)], packageDir));
+  const matches: string[] = [];
+  for (const config of configs) {
+    const listed = parseJson(await runBounded("pnpm",
+      ["exec", "vitest", "list", "--filesOnly", "--json", "--config", relative(packageDir, config)], packageDir, deadline, true));
     const files = new Set(asArray(listed, "vitest list").map((entry) => relative(".", asString(asObject(entry, "entry").file, "file"))));
-    return runnable.every((path) => files.has(path));
-  });
+    if (runnable.every((path) => files.has(path))) matches.push(config);
+  }
   if (matches.length !== 1) {
     throw new Error(`expected one supported vitest config listing ${runnable.join(", ")}, found ${matches.length}`);
   }
   return matches[0];
 }
 
-function runSide(plan: TestsPlan, config: string, tests: string[]): JsonObject {
+async function runSide(
+  plan: TestsPlan, runner: Runner, config: string, side: "base" | "head", tests: string[], deadline: number,
+): Promise<JsonObject> {
   const pkg = plan.packageDir;
-  const runner = createRequire(join(process.cwd(), "package.json")).resolve("@stryker-mutator/vitest-runner");
   const include = tests.filter((path) => RUNNABLE_TEST.test(path)).map((path) => relative(pkg, path));
   writeFileSync(join(pkg, VITEST_CONFIG), [
     `import config from "./${relative(pkg, config)}";`,
@@ -145,23 +238,59 @@ function runSide(plan: TestsPlan, config: string, tests: string[]): JsonObject {
   writeFileSync(join(pkg, STRYKER_CONFIG), JSON.stringify({
     testRunner: "vitest",
     // Stryker finds plugins next to its own package, which pnpm's layout does not share.
-    plugins: [runner],
+    plugins: [runner.plugin],
     vitest: { configFile: VITEST_CONFIG },
     // Stryker rewrites tsconfig files with the TypeScript JS API, which the workspace's TypeScript 7
     // no longer ships; vitest does not read tsconfig to run, so a missing file skips that step.
     tsconfigFile: "stryker-no-tsconfig.json",
+    ignorePatterns: [RUNNER_DIR],
     mutate: plan.mutate.map((path) => relative(pkg, path)),
     reporters: ["json", "clear-text"],
-    jsonReporter: { fileName: REPORT },
+    jsonReporter: { fileName: reportPath(side) },
     timeoutMS: 60_000,
   }, null, 2));
-  rmSync(join(pkg, REPORT), { force: true });
-  run("pnpm", ["exec", "stryker", "run", STRYKER_CONFIG], pkg);
-  return asObject(parseJson(readFileSync(join(pkg, REPORT), "utf8")), "Stryker report");
+  rmSync(join(pkg, reportPath(side)), { force: true });
+  await runBounded(runner.stryker, ["run", STRYKER_CONFIG], pkg, deadline);
+  return asObject(parseJson(readFileSync(join(pkg, reportPath(side)), "utf8")), "Stryker report");
+}
+
+/** Runs both sides of the proof, base tests and head tests, against the same source. */
+async function prove(plan: TestsPlan, tests: string[], from: string, deadline: number, details: JsonObject): Promise<Outcome> {
+  // Stryker drives vitest directly, which runs none of the test task's codegen (docs/testing.md).
+  await runBounded("pnpm", ["build"], ".", deadline);
+  let config: string;
+  try {
+    config = await configFor(plan.packageDir, plan.headTests, deadline);
+  } catch (error) {
+    if (error instanceof OverBudget) throw error;
+    return errored(error instanceof Error ? error.message : String(error), details);
+  }
+  const runner = await installRunner(plan.packageDir, deadline);
+  const headReport = await runSide(plan, runner, config, "head", plan.headTests, deadline);
+  for (const path of tests) {
+    const text = fileAt(from, path);
+    if (text === undefined) rmSync(path, { force: true });
+    else writeFileSync(path, text);
+  }
+  // New test files only: the base kills nothing, so there is no base run to make.
+  const baseReport = plan.baseTests.some((path) => RUNNABLE_TEST.test(path))
+    ? await runSide(plan, runner, config, "base", plan.baseTests, deadline)
+    : { files: {} };
+  return evaluateKills(baseReport, headReport, { ...details, config });
+}
+
+/**
+ * The changed files, present at base, that vitest does not run itself. The proof runs only the
+ * changed test files, so an edit to a helper or fixture that unchanged tests import would go unseen.
+ */
+export function editedSupportFiles(baseTests: string[]): string[] {
+  return baseTests.filter((path) => !RUNNABLE_TEST.test(path));
 }
 
 async function main(): Promise<void> {
   await runProducer("proof", "proof-tests", async ({ head, base }) => {
+    const minutes = budgetMinutes(process.env.AUTOMERGE_MUTATION_BUDGET_MINUTES);
+    const deadline = Date.now() + minutes * 60_000;
     const from = mergeBase(base, head);
     const files = pullRequestDiff(base, head);
     if (files.length === 0) return notApplicable("changes nothing");
@@ -176,28 +305,18 @@ async function main(): Promise<void> {
       for (const source of importedSources(path, fileAt(from, path) ?? "", existsSync)) mutate.add(source);
     }
     const plan: TestsPlan = { packageDir: scope.packageDir, baseTests, headTests, mutate: [...mutate].toSorted() };
-    const details = { package: plan.packageDir, tests: scope.tests, mutate: plan.mutate };
+    const details = { package: plan.packageDir, tests: scope.tests, mutate: plan.mutate, budget_minutes: minutes };
+    const support = editedSupportFiles(baseTests);
+    if (support.length > 0) {
+      return errored(`changes existing helpers, fixtures or setup that unchanged tests may use: ${support.slice(0, 5).join(", ")}`, details);
+    }
     if (plan.mutate.length === 0) return errored("the changed tests import no source file to mutate", details);
-    // Stryker drives vitest directly, which runs none of the test task's codegen (docs/testing.md).
-    run("pnpm", ["build"], ".");
-    let config: string;
     try {
-      config = configFor(plan.packageDir, headTests);
+      return await prove(plan, scope.tests, from, deadline, details);
     } catch (error) {
-      return errored(error instanceof Error ? error.message : String(error), details);
+      if (error instanceof OverBudget) return errored(`ran past the ${minutes}-minute budget: ${error.message}`, details);
+      throw error;
     }
-
-    const headReport = runSide(plan, config, headTests);
-    for (const path of scope.tests) {
-      const text = fileAt(from, path);
-      if (text === undefined) rmSync(path, { force: true });
-      else writeFileSync(path, text);
-    }
-    // New test files only: the base kills nothing, so there is no base run to make.
-    const baseReport = baseTests.some((path) => RUNNABLE_TEST.test(path))
-      ? runSide(plan, config, baseTests)
-      : { files: {} };
-    return evaluateKills(baseReport, headReport, { ...details, config });
   });
 }
 

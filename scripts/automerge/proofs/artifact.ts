@@ -1,6 +1,6 @@
-// The producer artifact the gate reads (BUILD-PLAN "Contract"): one `automerge-<name>.json` per
-// proof or evidence job. A producer writes one even when it fails, so the gate sees `error`
-// rather than guessing from a missing file; both send the pull request to a person.
+// The producer artifact the gate reads: one `automerge-<name>.json` per proof or evidence job. A
+// producer writes one even when it fails, so the gate sees `error` rather than guessing from a
+// missing file; both send the pull request to a person.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

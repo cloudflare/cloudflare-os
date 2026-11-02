@@ -93,17 +93,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # A test-only pull request's tests kill at least the mutants the base tests killed.
+  # A test-only pull request's tests kill at least the mutants the base tests killed. The proof
+  # stops itself at AUTOMERGE_MUTATION_BUDGET_MINUTES with status `error`; the job timeout leaves
+  # room for setup and the upload after it.
   tests:
     name: Test-only mutation proof
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 35
     permissions:
       contents: read
     env:
       AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      AUTOMERGE_MUTATION_BUDGET_MINUTES: "20"
     steps:
       - name: Check out the head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

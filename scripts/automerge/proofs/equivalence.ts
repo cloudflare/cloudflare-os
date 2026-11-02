@@ -9,7 +9,7 @@
 // itself differ between two builds of one tree, and those are ignored (`BUILD_IDENTITY`).
 //
 // Two builds of one tree were measured byte-identical on 2026-11-02 (91f4e7073, three builds in
-// two directories; evidence/build-research/probe-results.md).
+// two directories).
 //
 //   node scripts/automerge/proofs/equivalence.ts --base <manifest.json> --head <manifest.json>
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA
