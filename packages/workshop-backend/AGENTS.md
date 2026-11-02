@@ -93,5 +93,7 @@ them:
 
 ## Spaces
 
-Spaces — a key, a display name and a member list each, one `SpaceDurableObject` per space with the
-membership rules in the pure `SpaceModel` (`src/spaces.ts`) — are documented in `docs/spaces.md`.
+Spaces — a key, a display name, a member list and a listing of the workspaces that belong to it
+each, one `SpaceDurableObject` per space with its rules in the pure `SpaceModel` (`src/spaces.ts`),
+and each workspace's space recorded on its owner's record in `user.ts` — are documented in
+`docs/spaces.md`.
