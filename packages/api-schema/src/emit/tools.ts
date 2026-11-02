@@ -23,10 +23,10 @@
 // usual JSON spelling (an ISO date-time, base64, a decimal string) marked so the host can convert
 // it.
 //
-// Pure, as a forge plugin is (github.com/cloudflare/forge): no `node:` imports, no file
-// system, clock, randomness or environment. Tools are sorted by ID, `$defs` by name, and every
-// other list follows the schema's own (sorted or declared) order, so the same schema always yields
-// the same catalog.
+// Pure, as a forge plugin is (github.com/cloudflare/forge, meant to generate this pipeline once it
+// supports Cap'n Web): no `node:` imports, no file system, clock, randomness or environment. Tools
+// are sorted by ID, `$defs` by name, and every other list follows the schema's own (sorted or
+// declared) order, so the same schema always yields the same catalog.
 
 import type { ApiShape, Schema, SchemaMethod, ShapeDoc } from "../schema.ts";
 

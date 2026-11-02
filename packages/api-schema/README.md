@@ -8,8 +8,9 @@ each method's parameters, awaited result and doc comment, and the named types th
 that describes the API to a client or an agent is generated from that one JSON file, without
 reading TypeScript itself.
 
-This is the interim home of the format, called capnweb-schema. The proposal for where it goes
-next is [`plans/capnweb-api-schema.md`](../../plans/capnweb-api-schema.md).
+This is the interim home of the format, called capnweb-schema. The eventual goal is for
+[forge](https://github.com/cloudflare/forge) to generate this whole pipeline, as it does for OpenAPI
+APIs; generating it in this repository is an intermediate step until forge supports Cap'n Web.
 
 ## The format
 
@@ -149,15 +150,11 @@ everything else goes to stderr. A method the CLI cannot represent fails either, 
   option for a linked or vendored copy.
 - `src/emit/dts.ts` and `src/emit/tools.ts` are pure functions of a `Schema` and their options (a
   root service, the methods to omit): no `node:` imports, file system, clock, randomness or
-  environment, and deterministic output. That is the core of a
-  [forge](https://github.com/cloudflare/forge) plugin, which is where they are meant to go. The
-  port still has to name the files (done in `scripts/generate.ts` today), supply the options,
-  which a forge plugin has no input for yet, and hand them a `Schema`: a forge plugin reads
-  forge's IR, not capnweb-schema, so either an adapter rebuilds the schema from the IR or forge
-  passes the document through to plugins (the RFC's §6).
+  environment, and deterministic output: the shape of a forge plugin, so they can move to forge
+  with the rest of the pipeline once it supports Cap'n Web.
 
 `scripts/generate.ts` is the only product-specific file: it names `api.ts` and its tsconfig, the
 entry `PublicApi`, the constant `SERVICE_SALT`, the agent root `AuthenticatedApi` and the
-credential methods an agent never calls, and finds the gatekeeper app UIs by their package.json.
+credential methods an agent never calls, and finds the gatekeeper app UIs by their `src/app-api.ts`.
 It also renders the CLI's files, through `packages/api-cli/generator/emit.ts`, and it is still the
 only part that writes to disk.

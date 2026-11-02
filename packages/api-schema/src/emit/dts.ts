@@ -79,10 +79,11 @@
 // are reserved words or type operators, deterministically and without collisions: a valid name
 // always keeps itself, and a rewritten one takes the first free `_2`, `_3`, ... suffix.
 //
-// Pure, as a forge plugin is (github.com/cloudflare/forge): no `node:` imports, no file
-// system, clock, randomness or environment. Declarations are sorted by name (the root service
-// first, the helper aliases last) and members follow the schema's sorted order, properties before
-// methods and `[Symbol.dispose]()` last, so the same schema always yields the same text.
+// Pure, as a forge plugin is (github.com/cloudflare/forge, meant to generate this pipeline once it
+// supports Cap'n Web): no `node:` imports, no file system, clock, randomness or environment.
+// Declarations are sorted by name (the root service first, the helper aliases last) and members
+// follow the schema's sorted order, properties before methods and `[Symbol.dispose]()` last, so the
+// same schema always yields the same text.
 
 import type { ApiShape, ApiShapeParam, Schema, SchemaMethod, SchemaProperty, SchemaService, SchemaShape, ShapeDoc } from "../schema.ts";
 
