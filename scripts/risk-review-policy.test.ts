@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  addedClassDeletions,
   addedDependencies,
   classifyChangeset,
   isCatalogVersionBump,
@@ -15,7 +16,7 @@ import {
 } from "./risk-review-policy.ts";
 
 const NOW = new Date("2026-11-02T12:00:00Z");
-const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [] };
+const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] };
 const NO_ESCAPES: EscapeSnapshot = { windowDays: 90, files: [] };
 
 function file(filename: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
@@ -179,18 +180,11 @@ describe("classifyChangeset NEVER_AUTO", () => {
     assert.notDeepEqual(classify([file("pnpm-workspace.yaml")], { facts: { ...NO_FACTS, workspaceCatalogOnly: false } }).neverAuto, []);
   });
 
-  it("sends a Worker config diff that adds a Durable Object class deletion to a person", () => {
-    const adds = "@@ -40,2 +40,3 @@\n   { tag: 'v4', new_sqlite_classes: ['Notes'] },\n+  { tag: 'v5', deleted_classes: ['Notes'] },";
-    assert.match(classify([file("packages/gatekeeper-x/cloudflare.config.ts", { patch: adds })]).neverAuto.join("\n"), /Durable Object/);
-    assert.match(classify([file("packages/gatekeeper-x/wrangler.jsonc", { patch: adds.replace("deleted_classes", "deletedClasses") })]).neverAuto.join("\n"), /Durable Object/);
-    // A diff the API did not inline may hold one.
-    assert.notDeepEqual(classify([file("packages/gatekeeper-x/cloudflare.config.ts", { patch: undefined, changes: 9000 })]).neverAuto, []);
-  });
-
-  it("leaves a Worker config diff that only appends classes, or a deletion elsewhere, to the band", () => {
-    const appends = "@@ -40,2 +40,3 @@\n   { tag: 'v4', deleted_classes: ['Old'] },\n+  { tag: 'v5', new_sqlite_classes: ['Notes'] },";
-    assert.deepEqual(classify([file("packages/gatekeeper-x/cloudflare.config.ts", { patch: appends })]).neverAuto, []);
-    assert.deepEqual(classify([file("docs/migrations.md", { patch: "@@ -1 +1 @@\n+deleted_classes" })]).neverAuto, []);
+  it("sends a Durable Object class deletion to a person", () => {
+    const result = classify([file("packages/gatekeeper-x/cloudflare.config.ts")], {
+      facts: { ...NO_FACTS, deletedClasses: ["packages/gatekeeper-x/cloudflare.config.ts: Notes"] },
+    });
+    assert.match(result.neverAuto.join("\n"), /Durable Object/);
   });
 });
 
@@ -239,6 +233,25 @@ describe("isCatalogVersionBump", () => {
     assert.equal(isCatalogVersionBump(base, base.replace("zod: ^4.6.7", "zed: ^4.6.7")), false);
     assert.equal(isCatalogVersionBump(base, base.replace("'@types/node': 26.1.0", "'@types/node': 26.2.0")), false);
     assert.equal(isCatalogVersionBump("minimumReleaseAge: 1440\n", "minimumReleaseAge: 1\n"), false);
+  });
+});
+
+describe("addedClassDeletions", () => {
+  const base = "migrations: [\n  { tag: 'v1', new_sqlite_classes: ['Notes', 'Drafts'] },\n  { tag: 'v2', deleted_classes: [\n    'Old',\n  ] },\n],";
+
+  it("finds a class added to a deletion list, on its own line or in a new migration", () => {
+    assert.deepEqual(addedClassDeletions(base, base.replace("    'Old',\n", "    'Old',\n    'Drafts',\n")), ["Drafts"]);
+    assert.deepEqual(addedClassDeletions(base, base.replace("],", "  { tag: 'v3', deleted_classes: ['Notes'] },\n],")), ["Notes"]);
+    assert.deepEqual(addedClassDeletions(undefined, "{ \"deleted_classes\": [\"Notes\"] }"), ["Notes"]);
+  });
+
+  it("finds none when only other migrations or comments change", () => {
+    assert.deepEqual(addedClassDeletions(base, base.replace("],", "  { tag: 'v3', new_sqlite_classes: ['Inbox'] },\n],")), []);
+    assert.deepEqual(addedClassDeletions(base, `// Old was dropped in v2.\n${base}`), []);
+  });
+
+  it("cannot read a deletion list that is not a literal", () => {
+    assert.equal(addedClassDeletions(base, base.replace("[\n    'Old',\n  ]", "DROPPED")), undefined);
   });
 });
 

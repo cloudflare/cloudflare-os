@@ -19,9 +19,9 @@ export interface Producer {
   /**
    * Also accept a `workflow_run` run of `workflow` on the default branch, which runs `main`'s
    * definition when this workflow's run on the head finishes. Its artifact name carries the pull
-   * request's head SHA, since the run's own head is `main`'s, and it must have been created after
-   * that run's latest attempt started: a newer trigger run with no follow-up means the follow-up
-   * failed or has not run, so the input is absent.
+   * request's head SHA, since the run's own head is `main`'s, and its `details.trigger` names the run
+   * and attempt it followed, which must be this workflow's newest run on the head in its current
+   * attempt: a follow-up of an older run, or none at all, means the input is absent.
    */
   triggeredBy?: string;
 }
@@ -212,6 +212,7 @@ export interface WorkflowRun {
   created_at: string;
   /** When the latest attempt started; the API describes only the latest attempt. */
   run_started_at?: string;
+  run_attempt?: number;
 }
 
 /** An artifact, as the Actions API returns it. */
@@ -225,7 +226,7 @@ export interface Artifact {
 }
 
 /** When a run's latest attempt started; re-running an old run makes it the newest. */
-export function attemptStarted(run: WorkflowRun): number {
+function attemptStarted(run: WorkflowRun): number {
   return Date.parse(run.run_started_at ?? run.created_at);
 }
 
@@ -278,6 +279,21 @@ export function bindingError(run: WorkflowRun, expected: BindingExpectation): st
   if (identity) return identity;
   if (run.status !== "completed") return "still running";
   if (run.conclusion !== "success") return `concluded ${run.conclusion ?? "without a result"}`;
+  return undefined;
+}
+
+/**
+ * Checks that a follow-up run's artifact names `trigger`, the triggering workflow's newest run on
+ * the head, in its current attempt, as `details.trigger: { run_id, run_attempt }`.
+ *
+ * @returns Why the artifact does not follow it, or `undefined` when it does.
+ */
+export function followError(artifact: ProducerArtifact, trigger: WorkflowRun | undefined): string | undefined {
+  if (!trigger) return "the run it follows has not run on this head";
+  const named = asObject(artifact.details.trigger);
+  if (named?.run_id !== trigger.id || named.run_attempt !== (trigger.run_attempt ?? 1)) {
+    return `follows another run than ${trigger.path}'s newest on this head`;
+  }
   return undefined;
 }
 

@@ -35,6 +35,7 @@ import { basename } from "node:path/posix";
 import {
   AREAS,
   BANDS,
+  addedClassDeletions,
   addedDependencies,
   isCatalogVersionBump,
   asObject,
@@ -55,8 +56,8 @@ import {
 import {
   PRODUCERS,
   VERDICT_NAMES,
-  attemptStarted,
   bindingError,
+  followError,
   identityError,
   isProducerName,
   newestRun,
@@ -698,7 +699,7 @@ function contentsKind(file: ChangedFile): ContentsKind | undefined {
 }
 
 async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest, files: ChangedFile[]): Promise<ContentFacts> {
-  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [] };
+  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] };
   const needed = files.filter((file) => contentsKind(file) !== undefined);
   if (needed.length === 0) return facts;
   const { data } = await github.rest.repos.compareCommitsWithBasehead({
@@ -722,6 +723,13 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
         const names = unreadable ? undefined : addedDependencies(before, after);
         if (names === undefined) facts.newDependencies.push(`${file.filename}: unreadable`);
         else facts.newDependencies.push(...names.map((name) => `${file.filename}: ${name}`));
+        break;
+      }
+      case "worker-config": {
+        // Removing a Worker's config removes the Worker, and its Durable Objects with it.
+        const deleted = unreadable || after === undefined ? undefined : addedClassDeletions(before, after);
+        if (deleted === undefined) facts.deletedClasses.push(`${file.filename}: ${removed ? "removed" : "unreadable"}`);
+        else facts.deletedClasses.push(...deleted.map((name) => `${file.filename}: ${name}`));
         break;
       }
       case undefined:
@@ -786,11 +794,13 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
       continue;
     }
     const candidates = [...runs];
-    let follows: number | undefined;
+    let trigger: WorkflowRun | undefined;
     if ("triggeredBy" in producer) {
       const triggers = await runsOf(producer.triggeredBy);
-      const trigger = typeof triggers === "string" ? undefined : newestRun(triggers);
-      follows = trigger && attemptStarted(trigger);
+      const triggerExpected = { ...expected, producer: { kind: producer.kind, workflow: producer.triggeredBy } };
+      trigger = typeof triggers === "string"
+        ? undefined
+        : newestRun(triggers.filter((candidate) => identityError(candidate, triggerExpected) === undefined));
       const { data } = await github.rest.actions.listArtifactsForRepo({
         ...repo,
         name: `automerge-${name}-${pull.head.sha}`,
@@ -801,11 +811,9 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
     }
     // Only the producer's own runs compete to be the newest, so an unrelated run cannot mask them.
     const run = newestRun(candidates.filter((candidate) => identityError(candidate, expected) === undefined));
-    if (run?.event === "workflow_run" && (follows === undefined || Date.parse(run.created_at) < follows)) {
-      inputs[name] = { absent: `made before the newest ${"triggeredBy" in producer ? producer.triggeredBy : ""} run on this head` };
-      continue;
-    }
-    inputs[name] = await readProducer(github, repo, { name, run, pull, expected });
+    const input = await readProducer(github, repo, { name, run, pull, expected });
+    const follow = run?.event === "workflow_run" && "artifact" in input ? followError(input.artifact, trigger) : undefined;
+    inputs[name] = follow ? { absent: follow } : input;
   }
   return inputs;
 }

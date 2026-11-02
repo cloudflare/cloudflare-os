@@ -260,6 +260,8 @@ export interface ContentFacts {
   workspaceCatalogOnly: boolean;
   /** `path: name` for each dependency a `package.json` gained, or `path: unreadable`. */
   newDependencies: string[];
+  /** `path: class` for each Durable Object class a Worker config newly deletes, or `path: unreadable`. */
+  deletedClasses: string[];
 }
 
 /** The band, area and policy reasons of one change. */
@@ -331,8 +333,9 @@ export function classifyChangeset({ files, listed, facts, escapes, now }: {
   if (files.some((file) => pathsOf(file).includes(WORKSPACE_FILE)) && !facts.workspaceCatalogOnly) {
     neverAuto.push(`supply-chain policy (${WORKSPACE_FILE} beyond catalog versions)`);
   }
-  const deletions = files.filter(deletesDurableObjectClasses);
-  if (deletions.length > 0) neverAuto.push(`may delete Durable Object classes (${names(deletions)})`);
+  if (facts.deletedClasses.length > 0) {
+    neverAuto.push(`deletes Durable Object classes (${facts.deletedClasses.join(", ")})`);
+  }
 
   return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0) };
 }
@@ -440,23 +443,44 @@ function dependencyMap(text: string): Map<string, string> | undefined {
 }
 
 /**
- * Whether a Worker config's diff adds a line naming deleted Durable Object classes, the migration
- * that drops a class's data. Any added mention counts, so moving one around also needs a person, and
- * a diff the API did not inline counts as one.
+ * The class names in a Worker config's Durable Object deletion lists (`deleted_classes`), the
+ * migrations that drop a class's data. `undefined` when any mention of the key is not followed by a
+ * literal list, since its classes cannot be read.
  */
-function deletesDurableObjectClasses(file: ChangedFile): boolean {
-  if (!pathsOf(file).some((path) => matchesAny(path, WORKER_CONFIGS))) return false;
-  if (file.patch === undefined) return file.changes > 0;
-  return file.patch.split("\n").some((line) => /^\+(?!\+\+ )/.test(line) && /deleted_?[cC]lasses/.test(line));
+function deletedClassNames(text: string): string[] | undefined {
+  const mentions = text.match(/deleted_?[cC]lasses/g)?.length ?? 0;
+  const lists = [...text.matchAll(/deleted_?[cC]lasses["']?\s*:\s*\[([^\]]*)\]/g)];
+  if (lists.length !== mentions) return undefined;
+  return lists.flatMap((list) => [...(list[1] ?? "").matchAll(/["'`]([^"'`]+)["'`]/g)].map((name) => name[1] ?? ""));
+}
+
+/**
+ * The Durable Object classes a Worker config's head deletes beyond those its base already deleted,
+ * however the lists are laid out.
+ *
+ * @returns The new names, or `undefined` when either side's deletion lists cannot be read.
+ */
+export function addedClassDeletions(base: string | undefined, head: string): string[] | undefined {
+  const before = deletedClassNames(base ?? "");
+  const after = deletedClassNames(head);
+  if (!before || !after) return undefined;
+  const added: string[] = [];
+  for (const name of after) {
+    const index = before.indexOf(name);
+    if (index >= 0) before.splice(index, 1);
+    else added.push(name);
+  }
+  return added;
 }
 
 /** A file whose contents, not only its diff, the classifier reads. */
-export type ContentsKind = "workspace" | "manifest";
+export type ContentsKind = "workspace" | "manifest" | "worker-config";
 
 /** Whether the classifier needs a file's contents, not only its diff. */
 export function needsContents(filename: string): ContentsKind | undefined {
   if (filename === WORKSPACE_FILE) return "workspace";
-  return matchesPath(filename, "**/package.json") ? "manifest" : undefined;
+  if (matchesPath(filename, "**/package.json")) return "manifest";
+  return matchesAny(filename, WORKER_CONFIGS) ? "worker-config" : undefined;
 }
 
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;

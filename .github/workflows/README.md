@@ -30,7 +30,8 @@ and post nothing. The gate accepts an artifact only from a successful `pull_requ
 expected workflow file on the pull request's head, in this repository, and the run whose latest
 attempt started last wins even when it failed. The one exception is the bot preview's smoke, which
 `preview.yml` runs from `main` after Automerge evidence finishes: its artifact name carries the head
-SHA, and it counts only when made after the newest Automerge evidence run on that head started.
+SHA, and it counts only when it names, as the run it followed, the newest Automerge evidence run on
+that head in its current attempt.
 
 `automerge-bands.json` sets the mode. It ships in `shadow` with every band closed: the check
 mirrors today's rule (`reviewDecision` is `APPROVED`), is not required, and records the decision it

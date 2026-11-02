@@ -325,7 +325,7 @@ function inputs(overrides: Partial<PullInputs> = {}): PullInputs {
   return {
     pull: pullRequest(),
     files: [file("docs/automerge.md")],
-    facts: { workspaceCatalogOnly: true, newDependencies: [] },
+    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] },
     reviews: [],
     comments: [],
     lastPush: PUSHED,
@@ -641,9 +641,10 @@ describe("runRiskReview producer binding", () => {
   });
 });
 
-/** A follow-up Preview run's smoke artifact for the test head. */
-function smoke(producerRun: WorkflowRun, holds = true): ProducerRun {
-  return { run: producerRun, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", holds) } };
+/** A follow-up Preview run's smoke artifact for the test head, naming the run it followed. */
+function smoke(producerRun: WorkflowRun, trigger: WorkflowRun, holds = true): ProducerRun {
+  const details = { trigger: { run_id: trigger.id, run_attempt: trigger.run_attempt ?? 1 } };
+  return { run: producerRun, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", holds, { details }) } };
 }
 
 /** Decides the test pull request with these changed files and file contents. */
@@ -656,7 +657,7 @@ async function decideFiles(files: ChangedFile[], contents: Record<string, string
 }
 
 describe("runRiskReview preview smoke from main", () => {
-  const evidence = run(PRODUCERS["proof-equivalence"].workflow, { run_started_at: "2026-11-02T10:01:00Z" });
+  const evidence = run(PRODUCERS["proof-equivalence"].workflow, { run_attempt: 2, run_started_at: "2026-11-02T10:01:00Z" });
   const smokeRun = (overrides: Partial<WorkflowRun> = {}) =>
     run(PRODUCERS["preview-smoke"].workflow, { event: "workflow_run", head_branch: "main", head_sha: POLICY_SHA, created_at: "2026-11-02T10:20:00Z", run_started_at: "2026-11-02T10:20:00Z", ...overrides });
   const smokeInput = async (runs: ProducerRun[]) => {
@@ -665,18 +666,26 @@ describe("runRiskReview preview smoke from main", () => {
     return lastRecord(calls).pulls[0]?.inputs["preview-smoke"];
   };
 
-  it("accepts a smoke run on main made after the newest Automerge evidence run", async () => {
-    assert.deepEqual(await smokeInput([smoke(smokeRun())]), { status: "ok", holds: true });
+  it("accepts a smoke run on main that followed the newest Automerge evidence run's current attempt", async () => {
+    assert.deepEqual(await smokeInput([smoke(smokeRun(), evidence)]), { status: "ok", holds: true });
   });
 
-  it("treats a smoke run made before a newer Automerge evidence run as absent", async () => {
-    const stale = await smokeInput([smoke(smokeRun({ created_at: "2026-11-02T09:00:00Z", run_started_at: "2026-11-02T09:00:00Z" }))]);
-    assert.ok(stale && "absent" in stale && /made before/.test(stale.absent));
+  it("treats a smoke run that followed an older run or attempt as absent, however late it ran", async () => {
+    const older = run(PRODUCERS["proof-equivalence"].workflow, { run_started_at: "2026-11-02T09:00:00Z" });
+    for (const trigger of [older, { ...evidence, run_attempt: 1 }]) {
+      const stale = await smokeInput([smoke(smokeRun({ created_at: "2026-11-02T12:00:00Z", run_started_at: "2026-11-02T12:00:00Z" }), trigger)]);
+      assert.ok(stale && "absent" in stale && /follows another run/.test(stale.absent), JSON.stringify(stale));
+    }
   });
 
   it("does not let another workflow's artifact with the same name mask the real smoke", async () => {
-    const forged = smoke(run(".github/workflows/someone.yml", { created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z" }), false);
-    assert.deepEqual(await smokeInput([smoke(smokeRun()), forged]), { status: "ok", holds: true });
+    const forged = smoke(run(".github/workflows/someone.yml", { created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z" }), evidence, false);
+    assert.deepEqual(await smokeInput([smoke(smokeRun(), evidence), forged]), { status: "ok", holds: true });
+  });
+
+  it("does not let a fork's newer Automerge evidence run on the same commit displace the trigger", async () => {
+    const fork = run(PRODUCERS["proof-equivalence"].workflow, { head_repository: { full_name: "someone/cloudflare-os" }, run_started_at: "2026-11-02T11:00:00Z" });
+    assert.deepEqual(await smokeInput([{ run: fork, artifacts: {} }, smoke(smokeRun(), evidence)]), { status: "ok", holds: true });
   });
 });
 
@@ -691,6 +700,18 @@ describe("runRiskReview content rules", () => {
     assert.match(age.never_auto.join("\n"), /supply-chain/);
     const unread = await decideFiles(files, { [`${BASE}:pnpm-workspace.yaml`]: workspace });
     assert.match(unread.never_auto.join("\n"), /supply-chain/);
+  });
+
+  it("sends a Worker config that newly deletes a Durable Object class to a person", async () => {
+    const config = "packages/gatekeeper-x/cloudflare.config.ts";
+    const before = "migrations: [\n  { tag: 'v1', new_sqlite_classes: ['Notes'] },\n  { tag: 'v2', deleted_classes: [\n    'Old',\n  ] },\n]";
+    const files = [file(config)];
+    const added = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: before.replace("    'Old',\n", "    'Old',\n    'Notes',\n") });
+    assert.match(added.never_auto.join("\n"), /Durable Object classes \(packages\/gatekeeper-x\/cloudflare\.config\.ts: Notes\)/);
+    const unchanged = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: `// v2 dropped Old.\n${before}` });
+    assert.deepEqual(unchanged.never_auto, []);
+    const unread = await decideFiles(files, { [`${BASE}:${config}`]: before });
+    assert.match(unread.never_auto.join("\n"), /unreadable/);
   });
 
   it("rates a package.json that gains a dependency high, and one it cannot read too", async () => {
