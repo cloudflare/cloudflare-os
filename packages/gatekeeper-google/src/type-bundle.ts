@@ -9,8 +9,11 @@ export const DRIVE_TYPES_MODULE_PREFIX =
   'import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";\n' +
   'import type { GooglePresentationReadSession } from "./slides-read-types";\n\n';
 
-/** Module-only prefix of the Gmail declaration; the flat vendor bundle gets RpcStub from chat-types instead. */
-export const GMAIL_TYPES_MODULE_PREFIX = 'import type { RpcStub } from "cloudflare:workers";\n\n';
+/**
+ * Module-only prefix of the Gmail and Google Calendar declarations, which import only RpcStub; the
+ * flat vendor bundle gets RpcStub from chat-types instead.
+ */
+export const RPC_STUB_TYPES_MODULE_PREFIX = 'import type { RpcStub } from "cloudflare:workers";\n\n';
 
 /** Module-only prefix of the Google Slides declaration. */
 export const SLIDES_TYPES_MODULE_PREFIX =

@@ -22,7 +22,7 @@ const testEnv = env as unknown as {
 let SPACE: string;
 let THREAD: string;
 const PUSH_ACCOUNT = "push@test.iam.gserviceaccount.com";
-const PUSH_URL = "http://localhost:8787/gatekeeper/google/pubsub";
+const PUSH_URL = "https://gadgets.example.com/gatekeeper/google/pubsub";
 const CREATED = "google.workspace.chat.message.v1.created";
 const BATCH_CREATED = "google.workspace.chat.message.v1.batchCreated";
 

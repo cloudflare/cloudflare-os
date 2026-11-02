@@ -1,4 +1,4 @@
-import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub, restore } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
@@ -64,9 +64,13 @@ import {
 } from "./calendar-api";
 import type {
   CalendarAvailabilityMode, CalendarEvent, CalendarEventDraft, CalendarEventPatch,
-  CalendarListEventsOptions, CalendarSendUpdates, CalendarTime, GoogleCalendarCapabilities,
-  GoogleCalendarInfo, GoogleCalendarSession, PersonAvailability,
+  CalendarListEventsOptions, CalendarSendUpdates, CalendarSubscribeOptions, CalendarTime,
+  GoogleCalendarCapabilities, GoogleCalendarInfo, GoogleCalendarSession, PersonAvailability,
 } from "./calendar-types";
+import {
+  CalendarHookDeliveryImpl, handleCalendarNotification, subscribeCalendarEventChanges,
+  type CalendarEventHookTarget, type CalendarHookDelivery, type CalendarHookParams,
+} from "./calendar-hooks";
 import TYPES_CODE from "./types.txt";
 import CHAT_TYPES_CODE from "./chat-types.txt";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
@@ -117,7 +121,7 @@ import {
   type GoogleOAuthEnv,
 } from "./oauth";
 import {
-  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, RPC_STUB_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "./type-bundle";
 
 let googleDocTypesCode: string | undefined;
@@ -148,10 +152,12 @@ import type {GoogleChatGatekeeperImplProps} from "./chat";
 
 export { GmailGatekeeperImpl } from "./gmail";
 export { GoogleChatGatekeeperImpl } from "./chat";
+export { CalendarHookController, CalendarHookDriver } from "./calendar-hooks";
 export { ChatHookController, ChatHookDriver } from "./chat-hooks";
 export { GmailHookController, GmailHookDriver } from "./gmail-hooks";
 export { GoogleSheetsGatekeeperImpl } from "./sheets";
 export { GoogleSlidesGatekeeperImpl } from "./slides";
+import type { HookDriverRef } from "./hook-accounts";
 import { handlePubSubPush, type PushHooksEnv } from "./pubsub-push";
 
 // Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
@@ -226,7 +232,7 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
 
 const GOOGLE_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GOOGLE_LOGO_SVG)}`;
 
-/** Main HTTP entrypoint: OAuth flows and Pub/Sub pushes from Google. */
+/** Main HTTP entrypoint: OAuth flows, Pub/Sub pushes and Calendar notifications from Google. */
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
@@ -286,6 +292,8 @@ export default {
       return Response.redirect(newUrl.toString(), 302);
     } else if (relPath === "/pubsub" && req.method === "POST") {
       return handlePubSubPush(req, env, ctx.exports);
+    } else if (path.length === 3 && path[0] === "calendar" && path[1] === "notifications") {
+      return handleCalendarNotification(req, path[2], ctx.exports);
     } else if (relPath === "/oauth") {
       // Completion redirect.
 
@@ -422,18 +430,15 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 
   async getTypeScriptTypes(): Promise<string> {
     return [
-      stripTypeModulePrefix(TYPES_CODE, GMAIL_TYPES_MODULE_PREFIX), getGoogleDocTypesCode(),
-      getGoogleSheetsTypesCode(), getGoogleSlidesTypesCode(), CALENDAR_TYPES_CODE,
+      stripTypeModulePrefix(TYPES_CODE, RPC_STUB_TYPES_MODULE_PREFIX), getGoogleDocTypesCode(),
+      getGoogleSheetsTypesCode(), getGoogleSlidesTypesCode(),
+      stripTypeModulePrefix(CALENDAR_TYPES_CODE, RPC_STUB_TYPES_MODULE_PREFIX),
       BIGQUERY_TYPES_CODE, getDriveAgentTypesCode(), CHAT_TYPES_CODE,
     ].join("\n");
   }
 }
 
-/**
- * A hook driver holding some of an account's hooks, which the account tells to drop them when it
- * is disconnected: Gmail's per mailbox, Chat's per space.
- */
-export type HookDriverRef = { kind: "gmail" | "chat"; name: string };
+export type { HookDriverRef };
 
 /** What a reconnect flow obtains, held in escrow until commitReconnect() writes it live. */
 type StagedGoogleCredentials = {
@@ -760,10 +765,14 @@ export class UserAccount extends DurableObject<Env> {
    */
   async #forgetHooks(): Promise<void> {
     const userObjectId = this.ctx.id.toString();
+    const drivers = {
+      gmail: this.ctx.exports.GmailHookDriver,
+      chat: this.ctx.exports.ChatHookDriver,
+      calendar: this.ctx.exports.CalendarHookDriver,
+    };
     const results = await Promise.allSettled(
       [...this.ctx.storage.kv.list<HookDriverRef>({ prefix: "hookDriver:" })].map(([, { kind, name }]) =>
-        (kind === "gmail" ? this.ctx.exports.GmailHookDriver : this.ctx.exports.ChatHookDriver)
-          .getByName(name).forgetAccount(userObjectId)));
+        drivers[kind].getByName(name).forgetAccount(userObjectId)));
     for (const result of results) {
       if (result.status === "rejected") {
         logger.warn("failed to drop a disconnected account's hooks", {
@@ -2458,7 +2467,7 @@ type GoogleCalendarRevertInfo =
       sendUpdates: CalendarSendUpdates;
     };
 
-type GoogleCalendarGatekeeperImplProps = {
+export type GoogleCalendarGatekeeperImplProps = {
   userObjectId: string;
   calendarId: string;
   availabilityMode: CalendarAvailabilityMode;
@@ -2480,6 +2489,8 @@ function pendingCalendarEventFromDraft(
     ...(action.event.attendees ? {attendees: action.event.attendees} : {}),
     ...(action.event.transparency ? {transparency: action.event.transparency} : {}),
     ...(action.event.visibility ? {visibility: action.event.visibility} : {}),
+    // What createEvent() always makes, so a gadget telling meetings apart keeps the queued ones.
+    eventType: "default",
     pending: true,
   };
 }
@@ -2601,6 +2612,7 @@ export class GoogleCalendarGatekeeperImpl
       snippet: `Google Calendar: ${calendar.summary}.${availability}`,
       suggestedBindingName: "GOOGLE_CALENDAR",
       tsType: "GoogleCalendarSession",
+      hookTsType: "CalendarEventHook",
     };
   }
 
@@ -2614,15 +2626,34 @@ export class GoogleCalendarGatekeeperImpl
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<GoogleCalendarSession> {
+    return this.#session(approvalQueue.dup());
+  }
+
+  [restore](params: CalendarHookParams): CalendarHookDelivery {
+    // The binding's own props decide what is delivered: the calendar.
+    return new CalendarHookDeliveryImpl(this.ctx.props.calendarId, params,
+      new GoogleCalendarApi(opts => this.#getAccessToken(opts)),
+      approvalQueue => this.#session(approvalQueue.dup()));
+  }
+
+  /** A session on the bound calendar over `approvalQueue`, which it disposes once released. */
+  #session(approvalQueue: RpcStub<ApprovalQueue>): GoogleCalendarSessionImpl {
     let api = new GoogleCalendarApi(opts => this.#getAccessToken(opts));
     let pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
     return new GoogleCalendarSessionImpl(
       api,
       this.ctx.props.calendarId,
       this.ctx.props.availabilityMode,
-      approvalQueue.dup(),
+      approvalQueue,
       pendingActions,
       calendarIds => this.#observers.prepareObservation(calendarIds),
+      (hook, options) => subscribeCalendarEventChanges({
+        approvalQueue, hook, options,
+        userObjectId: this.ctx.props.userObjectId,
+        calendarId: this.ctx.props.calendarId,
+        restore: params => this.ctx.restore(params),
+        controller: props => this.ctx.exports.CalendarHookController({props}),
+      }),
     );
   }
 
@@ -2634,9 +2665,11 @@ export class GoogleCalendarGatekeeperImpl
     }
 
     let api = new GoogleCalendarApi(opts => this.#getAccessToken(opts));
+    // Each write marks the event afresh, so that hooks know the change for this gatekeeper's own.
+    let writeMark = crypto.randomUUID();
     switch (action.type) {
       case "createEvent": {
-        let created = await api.createEvent(action.calendarId, action.event, action.sendUpdates);
+        let created = await api.createEvent(action.calendarId, action.event, action.sendUpdates, writeMark);
         pendingActions.remove(actionId);
         this.ctx.storage.kv.put<GoogleCalendarRevertInfo>(this.#revertKey(actionId), {
           type: "createdEvent",
@@ -2651,7 +2684,7 @@ export class GoogleCalendarGatekeeperImpl
         let previous = priorCalendarPatch(oldEvent, action.patch);
         await api.patchEvent(
           action.calendarId, action.eventId,
-          eventPatchToGoogle(action.patch), action.sendUpdates);
+          eventPatchToGoogle(action.patch), action.sendUpdates, writeMark);
         pendingActions.remove(actionId);
         this.ctx.storage.kv.put<GoogleCalendarRevertInfo>(this.#revertKey(actionId), {
           type: "updatedEvent",
@@ -2688,12 +2721,13 @@ export class GoogleCalendarGatekeeperImpl
     let api = new GoogleCalendarApi(opts => this.#getAccessToken(opts));
     switch (revertInfo.type) {
       case "createdEvent":
+        // A deleted event carries no mark, so hooks are told of this one.
         await api.deleteEvent(revertInfo.calendarId, revertInfo.eventId, revertInfo.sendUpdates);
         break;
       case "updatedEvent":
         await api.patchEvent(
           revertInfo.calendarId, revertInfo.eventId,
-          eventPatchToGoogle(revertInfo.previous), revertInfo.sendUpdates);
+          eventPatchToGoogle(revertInfo.previous), revertInfo.sendUpdates, crypto.randomUUID());
         break;
       default: {
         const _exhaustive: never = revertInfo;
@@ -2701,10 +2735,6 @@ export class GoogleCalendarGatekeeperImpl
       }
     }
     this.ctx.storage.kv.delete(this.#revertKey(actionId));
-  }
-
-  async setHook(_hook: Fetcher | null): Promise<void> {
-    // No hooks for Google Calendar.
   }
 
   // Observer tracking combines strategy B for the selected calendar with strategy C for the
@@ -2743,6 +2773,7 @@ export class GoogleCalendarGatekeeperImpl
   }
 }
 
+@validateRpc()
 class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSession {
   #api: GoogleCalendarApi;
   #calendarId: string;
@@ -2750,6 +2781,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
   #approvalQueue: RpcStub<ApprovalQueue>;
   #pendingActions: PendingActionStore<GoogleCalendarAction>;
   #observeAvailabilityCalendars: (calendarIds: string[]) => Promise<ObserverCheck<string>>;
+  #subscribe: (hook: RpcStub<CalendarEventHookTarget>, options?: CalendarSubscribeOptions) => Promise<void>;
 
   constructor(
     api: GoogleCalendarApi,
@@ -2758,6 +2790,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     approvalQueue: RpcStub<ApprovalQueue>,
     pendingActions: PendingActionStore<GoogleCalendarAction>,
     observeAvailabilityCalendars: (calendarIds: string[]) => Promise<ObserverCheck<string>>,
+    subscribe: (hook: RpcStub<CalendarEventHookTarget>, options?: CalendarSubscribeOptions) => Promise<void>,
   ) {
     super();
     this.#api = api;
@@ -2766,6 +2799,11 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     this.#approvalQueue = approvalQueue;
     this.#pendingActions = pendingActions;
     this.#observeAvailabilityCalendars = observeAvailabilityCalendars;
+    this.#subscribe = subscribe;
+  }
+
+  [Symbol.dispose](): void {
+    this.#approvalQueue[Symbol.dispose]();
   }
 
   async getCapabilities(): Promise<GoogleCalendarCapabilities> {
@@ -2921,6 +2959,13 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       this.#pendingActions.remove(actionId);
       throw error;
     }
+  }
+
+  async subscribeEventChanges(
+    hook: RpcStub<CalendarEventHookTarget>,
+    options?: CalendarSubscribeOptions,
+  ): Promise<void> {
+    await this.#subscribe(hook, options);
   }
 }
 
