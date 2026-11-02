@@ -24,11 +24,13 @@ import {
 } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
-import type {
-  AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
-  Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
-  HookInitiator, HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame,
-  SupportedResource, VendorDescription,
+import {
+  getSpaceSyncErrorCode, type AccountDescription, type ActionDescription, type ActionKind,
+  type AgentCatalog, type ApprovalQueue, type ConnectHandoff, type Gatekeeper,
+  type GatekeeperConnectCallback, type GatekeeperUser, type GatekeeperUserVerifier,
+  type HookController, type HookInitiator, type HookTargetMetadata, type ResourceDescription,
+  type ResourceConfiguratorFrame, type SpaceSyncProgress, type SpaceSyncRequest,
+  type SpaceSyncTarget, type SupportedResource, type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
@@ -44,6 +46,13 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   description: "A resource that exists only so tests can bind something.",
   creatable: true,
 }];
+
+// The bundled blueprint the fixture's space syncs create their workspaces from: any one the
+// deployment ships will do, since the fixture writes nothing into them.
+const SPACE_SYNC_BLUEPRINT_ID = "format.document";
+
+// What startSpaceSync() reports before it resolves, so the job a start returns already shows it.
+const SPACE_SYNC_FIRST_REPORT: SpaceSyncProgress = { state: "running", done: 0, total: 2 };
 
 const TYPES_CODE = `
 /** A stand-in resource whose reads and writes are deterministic and audited. */
@@ -86,6 +95,16 @@ type TestActionState = {
   pending: PendingTestAction[];
   value?: number;
   applyCount: number;
+};
+
+/** A space-sync job startSpaceSync() accepted, kept until the test is done with it. */
+type SpaceSyncJob = {
+  label: string;
+  resourceUrl: string;
+  target: Fetcher<SpaceSyncTarget>;
+  cancelCount: number;
+  /** How the "done" report made from the last cancelSpaceSync() went: its refusal code, or "ok". */
+  cancelReport?: string;
 };
 
 type HookState = {
@@ -336,6 +355,71 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  /**
+   * Keeps the target, which its doc allows storing for the job's lifetime, so later reports go
+   * through the very stub the Workshop handed over, as a connector's background work would.
+   */
+  async startSpaceSync(label: string, { jobId, resourceUrl }: SpaceSyncRequest,
+      target: Fetcher<SpaceSyncTarget>): Promise<void> {
+    this.ctx.storage.kv.put<SpaceSyncJob>(
+        `space-sync:${jobId}`, { label, resourceUrl, target, cancelCount: 0 });
+    await target.reportProgress(SPACE_SYNC_FIRST_REPORT);
+  }
+
+  /**
+   * Records the call and keeps the target, so a test can show the Workshop now refuses it. First
+   * reports the job "done" through that target, as a connector winding down might, and records
+   * how that went: the Workshop must have ended the job before asking, so it is refused.
+   */
+  async recordSpaceSyncCancel(jobId: string): Promise<void> {
+    using job = this.#spaceSyncJob(jobId);
+    if (job === undefined) return;
+    let cancelReport = "ok";
+    try {
+      await job.target.reportProgress({ state: "done", done: 2, total: 2 });
+    } catch (err) {
+      cancelReport =
+          getSpaceSyncErrorCode(err) ?? (err instanceof Error ? err.message : String(err));
+    }
+    const { label, resourceUrl, target, cancelCount } = job;
+    this.ctx.storage.kv.put<SpaceSyncJob>(`space-sync:${jobId}`,
+        { label, resourceUrl, target, cancelCount: cancelCount + 1, cancelReport });
+  }
+
+  getSpaceSyncState(jobId: string) {
+    using job = this.#spaceSyncJob(jobId);
+    if (job === undefined) return { started: false };
+    const { label, resourceUrl, cancelCount, cancelReport } = job;
+    return { started: true, label, resourceUrl, cancelCount, cancelReport };
+  }
+
+  /** Returns rather than throws, so the refusal and its code reach the test as data. */
+  async reportSpaceSyncProgress(jobId: string, progress: SpaceSyncProgress)
+      : Promise<{ reported: true } | { error: string; code: string | null }> {
+    using job = this.#spaceSyncJob(jobId);
+    if (!job) return { error: "the test gatekeeper never started this space sync", code: null };
+    try {
+      await job.target.reportProgress(progress);
+      return { reported: true };
+    } catch (err) {
+      return {
+        error: err instanceof Error ? err.message : String(err),
+        code: getSpaceSyncErrorCode(err) ?? null,
+      };
+    }
+  }
+
+  /**
+   * The stored job `jobId`, disposable: each read restores a new stub of its target, which the
+   * caller disposes once done with it.
+   */
+  #spaceSyncJob(jobId: string): (SpaceSyncJob & Disposable) | undefined {
+    const job = this.ctx.storage.kv.get<SpaceSyncJob>(`space-sync:${jobId}`);
+    if (job === undefined) return undefined;
+    const target = job.target as Fetcher<SpaceSyncTarget> & Partial<Disposable>;
+    return { ...job, [Symbol.dispose]: () => target[Symbol.dispose]?.() };
+  }
+
   #hook(key: string): HookState {
     return this.ctx.storage.kv.get<HookState>(`hook:${key}`) ?? { disableCount: 0 };
   }
@@ -529,7 +613,18 @@ export class TestAccount
       uniqueName: this.ctx.props.label,
       avatar: AVATAR,
       singleton: { tsType: "TestThing" },
+      providesSpaceSync: { blueprintId: SPACE_SYNC_BLUEPRINT_ID, importMethods: [] },
     };
+  }
+
+  /** Accepts every job: the test drives its progress through `/control/space-sync-report`. */
+  async startSpaceSync(request: SpaceSyncRequest, target: Fetcher<SpaceSyncTarget>)
+      : Promise<void> {
+    await control(this.ctx.exports).startSpaceSync(this.ctx.props.label, request, target);
+  }
+
+  async cancelSpaceSync(jobId: string): Promise<void> {
+    await control(this.ctx.exports).recordSpaceSyncCancel(jobId);
   }
 
   async getSingletonGatekeeperClass(): Promise<DurableObjectClass<Gatekeeper<TestSession>>> {
@@ -1145,6 +1240,29 @@ export default {
       const { key } = body as Record<string, unknown>;
       if (!isNonEmptyString(key)) return badRequest("`key` must be a non-empty string");
       return Response.json(await control(ctx.exports).getHookState(key));
+    }
+
+    // Report a space-sync job's progress through the target its startSpaceSync() stored.
+    // Body: {"jobId": "...", "progress": SpaceSyncProgress}
+    // -> {"reported": true} | {"error": string, "code": string | null}
+    if (url.pathname === "/control/space-sync-report" && req.method === "POST") {
+      const { jobId, progress } = body as Record<string, unknown>;
+      if (!isNonEmptyString(jobId)) return badRequest("`jobId` must be a non-empty string");
+      if (typeof progress !== "object" || progress === null) {
+        return badRequest("`progress` must be an object");
+      }
+      // Its bounds go unchecked here: what the Workshop makes of a report is what tests ask.
+      return Response.json(await control(ctx.exports).reportSpaceSyncProgress(
+          jobId, progress as SpaceSyncProgress));
+    }
+
+    // Body: {"jobId": "..."}
+    // -> {"started": false}
+    //    | {"started": true, "label", "resourceUrl", "cancelCount": number, "cancelReport"?: string}
+    if (url.pathname === "/control/space-sync-state" && req.method === "POST") {
+      const { jobId } = body as Record<string, unknown>;
+      if (!isNonEmptyString(jobId)) return badRequest("`jobId` must be a non-empty string");
+      return Response.json(await control(ctx.exports).getSpaceSyncState(jobId));
     }
 
     // Map an external gadgetKey to the Overseer id the gateway targets -- the DO named
