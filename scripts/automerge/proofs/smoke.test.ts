@@ -11,7 +11,7 @@ import { evaluateSmoke, type Answer } from "./smoke.ts";
 const PREVIEW = "https://pr966-preview-router.example.workers.dev";
 const html: Answer = { status: 200, contentType: "text/html; charset=utf-8", location: "", body: "<!doctype html>" };
 const version: Answer = { status: 200, contentType: "application/json", location: "", body: '{"version":"r000966-91f4e70"}' };
-// What pr966's preview answered without a token on 2026-11-02 (probe-results.md, preview auth).
+// What pr966's preview answered without a token on 2026-11-02.
 const accessLogin: Answer = {
   status: 302, contentType: "", body: "",
   location: "https://cf-cloudflare-os-previews.cloudflareaccess.com/cdn-cgi/access/login/pr966-preview-router.example.workers.dev",
