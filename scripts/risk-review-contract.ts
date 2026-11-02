@@ -16,15 +16,6 @@ export interface Producer {
   kind: ProducerKind;
   /** The workflow file whose runs may publish it. */
   workflow: string;
-  /**
-   * Also accept a `workflow_run` run of `workflow` on the default branch, which runs `main`'s
-   * definition when this workflow's run on the head finishes. Its artifact name carries the pull
-   * request's head SHA in both routes, since a follow-up run's own head is `main`'s, and a follow-up
-   * run's `details.trigger` names the run
-   * and attempt it followed, which must be this workflow's newest run on the head in its current
-   * attempt: a follow-up of an older run, or none at all, means the input is absent.
-   */
-  triggeredBy?: string;
 }
 
 const VERDICTS = ".github/workflows/review-verdict.yml";
@@ -48,7 +39,7 @@ export const PRODUCERS = {
   "evidence-preview-e2e": { kind: "evidence", workflow: EVIDENCE },
   "evidence-mutation": { kind: "evidence", workflow: EVIDENCE },
   "evidence-red-green": { kind: "evidence", workflow: EVIDENCE },
-  "preview-smoke": { kind: "evidence", workflow: ".github/workflows/preview.yml", triggeredBy: EVIDENCE },
+  "preview-smoke": { kind: "evidence", workflow: EVIDENCE },
 } as const satisfies Record<string, Producer>;
 
 /** A producer's name. */
@@ -206,14 +197,12 @@ export interface WorkflowRun {
   event: string;
   path: string;
   head_sha: string;
-  head_branch: string | null;
   head_repository: { full_name: string } | null;
   status: string | null;
   conclusion: string | null;
   created_at: string;
   /** When the latest attempt started; the API describes only the latest attempt. */
   run_started_at?: string;
-  run_attempt?: number;
 }
 
 /** An artifact, as the Actions API returns it. */
@@ -223,7 +212,6 @@ export interface Artifact {
   size_in_bytes: number;
   expired: boolean;
   created_at: string | null;
-  workflow_run?: { id?: number } | null;
 }
 
 /** When a run's latest attempt started; re-running an old run makes it the newest. */
@@ -243,30 +231,26 @@ export function newestRun<T extends WorkflowRun>(runs: T[]): T | undefined {
   );
 }
 
-/** What a producer's run must match: the producer, the pull request's head, this repository and its default branch. */
+/** What a producer's run must match: the producer, the pull request's head and this repository. */
 export interface BindingExpectation {
   producer: Producer;
   headSha: string;
   repository: string;
-  defaultBranch: string;
 }
 
 /**
  * Checks that a run is one of the producer's own: from this repository, from the expected workflow
- * file, by the expected event, on the head (or, for a follow-up run, on the default branch). Only
- * such runs compete to be the newest, so an unrelated run cannot mask the producer's.
+ * file, by `pull_request` on the head. Only such runs compete to be the newest, so an unrelated run
+ * cannot mask the producer's.
  *
  * @returns Why the run is not the producer's, or `undefined` when it is.
  */
 export function identityError(run: WorkflowRun, expected: BindingExpectation): string | undefined {
-  const { producer, headSha, repository, defaultBranch } = expected;
+  const { producer, headSha, repository } = expected;
   if (run.path !== producer.workflow) return `ran from ${run.path}, not ${producer.workflow}`;
   if (run.head_repository?.full_name !== repository) return "ran from another repository";
-  if (run.event === "pull_request") return run.head_sha === headSha ? undefined : "ran on another head commit";
-  if (run.event === "workflow_run" && producer.triggeredBy !== undefined) {
-    return run.head_branch === defaultBranch ? undefined : `ran on ${run.head_branch ?? "no branch"}, not ${defaultBranch}`;
-  }
-  return `ran on ${run.event}`;
+  if (run.event !== "pull_request") return `ran on ${run.event}`;
+  return run.head_sha === headSha ? undefined : "ran on another head commit";
 }
 
 /**
@@ -280,21 +264,6 @@ export function bindingError(run: WorkflowRun, expected: BindingExpectation): st
   if (identity) return identity;
   if (run.status !== "completed") return "still running";
   if (run.conclusion !== "success") return `concluded ${run.conclusion ?? "without a result"}`;
-  return undefined;
-}
-
-/**
- * Checks that a follow-up run's artifact names `trigger`, the triggering workflow's newest run on
- * the head, in its current attempt, as `details.trigger: { run_id, run_attempt }`.
- *
- * @returns Why the artifact does not follow it, or `undefined` when it does.
- */
-export function followError(artifact: ProducerArtifact, trigger: WorkflowRun | undefined): string | undefined {
-  if (!trigger) return "the run it follows has not run on this head";
-  const named = asObject(artifact.details.trigger);
-  if (named?.run_id !== trigger.id || named.run_attempt !== (trigger.run_attempt ?? 1)) {
-    return `follows another run than ${trigger.path}'s newest on this head`;
-  }
   return undefined;
 }
 

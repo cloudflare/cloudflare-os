@@ -28,14 +28,13 @@ group events to it; the gate decides a merge group only when the merge queue lis
 Producer workflows (reviewer verdicts, rung 1 proofs, band evidence) upload one JSON artifact each
 and post nothing. The gate accepts an artifact only from a successful `pull_request` run of the
 expected workflow file on the pull request's head, in this repository, and the run whose latest
-attempt started last wins even when it failed. The one exception is the bot preview's smoke, which
-`preview.yml` runs from `main` after Automerge evidence finishes: its artifact name carries the head
-SHA, and it counts only when it names, as the run it followed, the newest Automerge evidence run on
-that head in its current attempt. A rung 1 proof also counts only for the commit the pull request would land on
-(its base, or the queue's commit under it in a merge group): `proof-actions` and `proof-deps` only
-while the files they read at their base (the touched workflows; `pnpm-workspace.yaml` and
-`pnpm-lock.yaml`) are the same readable blobs there, and `proof-equivalence` and `proof-tests` only when made against that commit with a
-head that contains it.
+attempt started last wins even when it failed. Dependabot pull requests get no deployed preview:
+their smoke runs in workerd, without secrets, in Automerge evidence. A rung 1 proof also counts only
+for the commit the pull request would land on (its base, or the queue's commit under it in a merge
+group): `proof-actions` and `proof-deps` only while the files they read at their base (the touched
+workflows; `pnpm-workspace.yaml` and `pnpm-lock.yaml`) are the same readable blobs there, and
+`proof-equivalence` and `proof-tests` only when made against that commit with a head that contains
+it.
 
 `automerge-bands.json` sets the mode. It ships in `shadow` with every band closed: the check
 mirrors today's rule (`reviewDecision` is `APPROVED`), is not required, and records the decision it

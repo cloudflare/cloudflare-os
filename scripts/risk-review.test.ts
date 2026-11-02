@@ -19,6 +19,7 @@ import {
   type Comment,
   type DecisionRecord,
   type GitHubClient,
+  type InputSummary,
   type Policy,
   type PullDecision,
   type PullInputs,
@@ -84,7 +85,6 @@ function run(path: string, overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     event: "pull_request",
     path,
     head_sha: HEAD,
-    head_branch: "kenton/topic",
     head_repository: { full_name: "cloudflare/cloudflare-os" },
     status: "completed",
     conclusion: "success",
@@ -163,7 +163,7 @@ function harness(options: HarnessOptions = {}) {
   for (const { run: producerRun, artifacts: files } of runs) {
     artifacts.set(producerRun.id, Object.entries(files).map(([name, text]) => {
       const id = ++ids;
-      zips.set(id, zip({ [`${name.replace(/-[0-9a-f]{40}$/, "")}.json`]: text }));
+      zips.set(id, zip({ [`${name}.json`]: text }));
       const uploaded = new Date(Date.parse(producerRun.run_started_at ?? producerRun.created_at) + 60_000).toISOString();
       return { id, name, size_in_bytes: text.length, expired: false, created_at: uploaded, workflow_run: { id: producerRun.id } };
     }));
@@ -208,8 +208,6 @@ function harness(options: HarnessOptions = {}) {
           if (options.uncomparable) throw notFound();
           return { data: { merge_base_commit: { sha: options.mergeBases?.[basehead] ?? basehead.split("...")[0] ?? "" } } };
         },
-        listPullRequestsAssociatedWithCommit: async ({ commit_sha }) =>
-          ({ data: [...pulls.values()].filter((pull) => pull.head.sha === commit_sha) }),
       },
       checks: {
         create: async ({ head_sha }) => {
@@ -240,14 +238,8 @@ function harness(options: HarnessOptions = {}) {
           const matching = runs.map(({ run: r }) => r).filter((r) => r.path.endsWith(`/${workflow_id}`) && r.head_sha === head_sha && r.event === event);
           return { data: { total_count: matching.length, workflow_runs: matching } };
         },
-        getWorkflowRun: async ({ run_id }) => {
-          const found = runs.find(({ run: r }) => r.id === run_id);
-          if (!found) throw notFound();
-          return { data: found.run };
-        },
         listWorkflowRunArtifacts: async ({ run_id, name }) =>
-          ({ data: { artifacts: (artifacts.get(run_id) ?? []).filter((a) => name === undefined || a.name === name) } }),
-        listArtifactsForRepo: async ({ name }) => ({ data: { artifacts: [...artifacts.values()].flat().filter((a) => a.name === name) } }),
+          ({ data: { artifacts: (artifacts.get(run_id) ?? []).filter((a) => a.name === name) } }),
         downloadArtifact: async ({ artifact_id }) => {
           const bytes = zips.get(artifact_id);
           if (!bytes) throw notFound();
@@ -610,13 +602,6 @@ describe("runRiskReview in shadow mode", () => {
     assert.equal(calls.updates.at(-1)?.conclusion, "success");
   });
 
-  it("decides a pull request again when a bot preview's smoke run finishes on main", async () => {
-    const smokeRun = run(PRODUCERS["preview-smoke"].workflow, { event: "workflow_run", head_branch: "main", head_sha: POLICY_SHA });
-    const { calls, evaluate } = harness({ runs: [{ run: smokeRun, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", true) } }] });
-    await evaluate("workflow_run", { workflow_run: { id: smokeRun.id, event: "workflow_run", head_sha: POLICY_SHA, head_branch: "main", head_repository: null }, repository: { default_branch: "main", full_name: "cloudflare/cloudflare-os" } });
-    assert.deepEqual(calls.checks.map(({ sha }) => sha), [HEAD]);
-  });
-
   it("does nothing for a comment on an issue, or for a pull request into another branch", async () => {
     const issue = JSON.parse(JSON.stringify(fixture("issue_comment.json")));
     issue.issue.pull_request = undefined;
@@ -729,12 +714,6 @@ describe("runRiskReview producer binding", () => {
   });
 });
 
-/** A follow-up Preview run's smoke artifact for the test head, naming the run it followed. */
-function smoke(producerRun: WorkflowRun, trigger: WorkflowRun, holds = true): ProducerRun {
-  const details = { trigger: { run_id: trigger.id, run_attempt: trigger.run_attempt ?? 1 } };
-  return { run: producerRun, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", holds, { details }) } };
-}
-
 /** Decides the test pull request with these changed files and file contents. */
 async function decideFiles(files: ChangedFile[], contents: Record<string, string>): Promise<PullDecision> {
   const { calls, evaluate } = harness({ files: { 7: files }, contents });
@@ -744,42 +723,36 @@ async function decideFiles(files: ChangedFile[], contents: Record<string, string
   return pull;
 }
 
-describe("runRiskReview preview smoke from main", () => {
-  const evidence = run(PRODUCERS["proof-equivalence"].workflow, { run_attempt: 2, run_started_at: "2026-11-02T10:01:00Z" });
-  const smokeRun = (overrides: Partial<WorkflowRun> = {}) =>
-    run(PRODUCERS["preview-smoke"].workflow, { event: "workflow_run", head_branch: "main", head_sha: POLICY_SHA, created_at: "2026-11-02T10:20:00Z", run_started_at: "2026-11-02T10:20:00Z", ...overrides });
-  const smokeInput = async (runs: ProducerRun[]) => {
-    const { calls, evaluate } = harness({ runs: [{ run: evidence, artifacts: {} }, ...runs] });
-    await evaluate("workflow_run", producerCompleted());
-    return lastRecord(calls).pulls[0]?.inputs["preview-smoke"];
+/** A run of `path` on the test head that uploaded a preview smoke artifact named `name`. */
+function smokeIn(path: string, name = "automerge-preview-smoke", holds = true): ProducerRun {
+  return {
+    run: run(path, { created_at: "2026-11-02T10:20:00Z", run_started_at: "2026-11-02T10:20:00Z" }),
+    artifacts: { [name]: proofJson("preview-smoke", "evidence", holds) },
   };
+}
 
-  it("accepts a smoke run on main that followed the newest Automerge evidence run's current attempt", async () => {
-    assert.deepEqual(await smokeInput([smoke(smokeRun(), evidence)]), { status: "ok", holds: true });
-  });
+/** The preview smoke input the gate reads for the test pull request, given these producer runs. */
+async function smokeInput(runs: ProducerRun[]): Promise<InputSummary | undefined> {
+  const { calls, evaluate } = harness({ runs });
+  await evaluate("workflow_run", producerCompleted());
+  return lastRecord(calls).pulls[0]?.inputs["preview-smoke"];
+}
 
-  it("treats a smoke run that followed an older run or attempt as absent, however late it ran", async () => {
-    const older = run(PRODUCERS["proof-equivalence"].workflow, { run_started_at: "2026-11-02T09:00:00Z" });
-    for (const trigger of [older, { ...evidence, run_attempt: 1 }]) {
-      const stale = await smokeInput([smoke(smokeRun({ created_at: "2026-11-02T12:00:00Z", run_started_at: "2026-11-02T12:00:00Z" }), trigger)]);
-      assert.ok(stale && "absent" in stale && /follows another run/.test(stale.absent), JSON.stringify(stale));
+describe("runRiskReview preview smoke", () => {
+  it("counts the smoke from Automerge evidence on the head, and not from preview.yml, whatever its artifact's name", async () => {
+    assert.deepEqual(await smokeInput([smokeIn(PRODUCERS["preview-smoke"].workflow)]), { status: "ok", holds: true });
+    // Recorded: a real pull_request run of preview.yml, moved onto the test head.
+    const preview: WorkflowRun = { ...JSON.parse(read("scripts/risk-review-fixtures/preview-run.json")), head_sha: HEAD };
+    for (const name of ["automerge-preview-smoke", `automerge-preview-smoke-${HEAD}`]) {
+      const input = await smokeInput([{ run: preview, artifacts: { [name]: proofJson("preview-smoke", "evidence", true) } }]);
+      assert.ok(input && "absent" in input, `${name}: ${JSON.stringify(input)}`);
     }
   });
 
-  it("accepts the smoke from a pull_request Preview run on the head, under the same head-named artifact", async () => {
-    const deploy = run(PRODUCERS["preview-smoke"].workflow, { created_at: "2026-11-02T10:20:00Z", run_started_at: "2026-11-02T10:20:00Z" });
-    const named = { run: deploy, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", true) } };
-    assert.deepEqual(await smokeInput([named]), { status: "ok", holds: true });
-  });
-
   it("does not let another workflow's artifact with the same name mask the real smoke", async () => {
-    const forged = smoke(run(".github/workflows/someone.yml", { created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z" }), evidence, false);
-    assert.deepEqual(await smokeInput([smoke(smokeRun(), evidence), forged]), { status: "ok", holds: true });
-  });
-
-  it("does not let a fork's newer Automerge evidence run on the same commit displace the trigger", async () => {
-    const fork = run(PRODUCERS["proof-equivalence"].workflow, { head_repository: { full_name: "someone/cloudflare-os" }, run_started_at: "2026-11-02T11:00:00Z" });
-    assert.deepEqual(await smokeInput([{ run: fork, artifacts: {} }, smoke(smokeRun(), evidence)]), { status: "ok", holds: true });
+    const forged = { ...smokeIn(".github/workflows/someone.yml", "automerge-preview-smoke", false) };
+    forged.run = { ...forged.run, created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z" };
+    assert.deepEqual(await smokeInput([smokeIn(PRODUCERS["preview-smoke"].workflow), forged]), { status: "ok", holds: true });
   });
 });
 

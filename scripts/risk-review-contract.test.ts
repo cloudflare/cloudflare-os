@@ -77,14 +77,10 @@ describe("parseProducerArtifact", () => {
   });
 });
 
-// A real `pull_request` run of preview.yml, recorded from the Actions API on 2026-11-02.
-const recorded: WorkflowRun = JSON.parse(readFileSync(new URL("./risk-review-fixtures/producer-run.json", import.meta.url), "utf8"));
-const binding = {
-  producer: PRODUCERS["preview-smoke"],
-  headSha: recorded.head_sha,
-  repository: "cloudflare/cloudflare-os",
-  defaultBranch: "main",
-};
+// A real `pull_request` run of workshop-evals-pr.yml, evidence-eval's producer, recorded from the
+// Actions API on 2026-11-03.
+const recorded: WorkflowRun = JSON.parse(readFileSync(new URL("./risk-review-fixtures/evals-run.json", import.meta.url), "utf8"));
+const binding = { producer: PRODUCERS["evidence-eval"], headSha: recorded.head_sha, repository: "cloudflare/cloudflare-os" };
 
 describe("bindingError", () => {
   it("binds a real pull_request run of the expected workflow on the head", () => {
@@ -97,6 +93,7 @@ describe("bindingError", () => {
     assert.match(bindingError({ ...recorded, head_repository: { full_name: "someone/cloudflare-os" } }, binding) ?? "", /another repository/);
     assert.match(bindingError({ ...recorded, event: "pull_request_target" }, binding) ?? "", /pull_request_target/);
     assert.match(bindingError({ ...recorded, event: "push" }, binding) ?? "", /push/);
+    assert.match(bindingError({ ...recorded, event: "workflow_run" }, binding) ?? "", /workflow_run/);
   });
 
   it("rejects an unfinished or unsuccessful latest attempt", () => {
@@ -106,13 +103,6 @@ describe("bindingError", () => {
     }
   });
 
-  it("accepts a workflow_run run on the default branch only for a producer that allows it", () => {
-    const onMain = { ...recorded, event: "workflow_run", head_branch: "main", head_sha: OTHER };
-    assert.equal(bindingError(onMain, binding), undefined);
-    assert.match(bindingError({ ...onMain, head_branch: "topic" }, binding) ?? "", /not main/);
-    const verdicts = { ...binding, producer: PRODUCERS.sol };
-    assert.match(bindingError({ ...onMain, path: PRODUCERS.sol.workflow }, verdicts) ?? "", /workflow_run/);
-  });
 });
 
 describe("newestRun", () => {

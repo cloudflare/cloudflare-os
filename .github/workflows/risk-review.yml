@@ -6,7 +6,7 @@ name: Risk review
 # gate's own decision (enforce).
 #
 # The gate is the only publisher. Producer workflows (Review verdict, Automerge proofs, Automerge
-# evidence, Workshop eval comparison, Preview) upload one JSON artifact each and post nothing; the
+# evidence, Workshop eval comparison) upload one JSON artifact each and post nothing; the
 # gate reads an artifact only from a run bound to the pull request's head. Their completion, and the
 # review relay, wake this workflow through `workflow_run`; maintainer comments wake it through
 # `issue_comment`. Both run this file and check out the script from the default branch, never the
@@ -23,7 +23,7 @@ name: Risk review
 # the App. There is no fallback to the job token, whose check runs any workflow could forge.
 on:
   workflow_run:
-    workflows: [Risk review trigger, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison, Preview]
+    workflows: [Risk review trigger, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison]
     types: [completed]
   issue_comment:
     types: [created, deleted]

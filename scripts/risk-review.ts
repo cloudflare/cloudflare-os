@@ -57,7 +57,6 @@ import {
   PRODUCERS,
   VERDICT_NAMES,
   bindingError,
-  followError,
   identityError,
   isProducerName,
   newestRun,
@@ -108,8 +107,7 @@ const PROOFS = ["proof-deps", "proof-equivalence", "proof-tests"] as const;
 export const GATE_WORKFLOWS: ReadonlySet<string> = new Set([
   ".github/workflows/risk-review.yml",
   ".github/workflows/risk-review-trigger.yml",
-  ...Object.values(PRODUCERS).flatMap((producer) =>
-    "triggeredBy" in producer ? [producer.workflow, producer.triggeredBy] : [producer.workflow]),
+  ...Object.values(PRODUCERS).map(({ workflow }) => workflow),
 ]);
 
 /** What the check run reports. */
@@ -611,8 +609,6 @@ export interface GitHubClient {
       getContent(args: RepoRef & { path: string; ref: string }): Promise<{ data: ContentEntry | ContentEntry[] }>;
       compareCommitsWithBasehead(args: RepoRef & { basehead: string; per_page: number }):
         Promise<{ data: { merge_base_commit: { sha: string } } }>;
-      listPullRequestsAssociatedWithCommit(args: RepoRef & { commit_sha: string; per_page: number }):
-        Promise<{ data: PullRequest[] }>;
     };
     checks: {
       create(args: RepoRef & { name: string; head_sha: string; status: "in_progress"; details_url: string }):
@@ -631,10 +627,8 @@ export interface GitHubClient {
     actions: {
       listWorkflowRuns(args: RepoRef & { workflow_id: string; head_sha: string; event: string; per_page: number }):
         Promise<{ data: { total_count: number; workflow_runs: WorkflowRun[] } }>;
-      getWorkflowRun(args: RepoRef & { run_id: number }): Promise<{ data: WorkflowRun }>;
-      listWorkflowRunArtifacts(args: RepoRef & { run_id: number; name?: string; per_page: number }):
+      listWorkflowRunArtifacts(args: RepoRef & { run_id: number; name: string; per_page: number }):
         Promise<{ data: { artifacts: Artifact[] } }>;
-      listArtifactsForRepo(args: RepoRef & { name: string; per_page: number }): Promise<{ data: { artifacts: Artifact[] } }>;
       downloadArtifact(args: RepoRef & { artifact_id: number; archive_format: "zip" }): Promise<{ data: ArrayBuffer }>;
     };
   };
@@ -652,7 +646,6 @@ export interface ActionsContext {
   payload: {
     repository?: { default_branch: string; full_name: string };
     workflow_run?: {
-      id: number;
       event: string;
       head_sha: string;
       head_branch: string | null;
@@ -856,10 +849,9 @@ async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: n
   return typeof decision === "string" ? decision : null;
 }
 
-async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest, context: ActionsContext):
+async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest):
   Promise<Partial<Record<ProducerName, ProducerInput>>> {
   const repository = `${repo.owner}/${repo.repo}`;
-  const defaultBranch = context.payload.repository?.default_branch ?? "main";
   const runsByWorkflow = new Map<string, WorkflowRun[] | string>();
   const runsOf = async (workflow: string) => {
     const cached = runsByWorkflow.get(workflow);
@@ -885,33 +877,15 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
   const inputs: Partial<Record<ProducerName, ProducerInput>> = {};
   for (const [name, producer] of Object.entries(PRODUCERS)) {
     if (!isProducerName(name)) continue;
-    const expected = { producer, headSha: pull.head.sha, repository, defaultBranch };
+    const expected = { producer, headSha: pull.head.sha, repository };
     const runs = await runsOf(producer.workflow);
     if (typeof runs === "string") {
       inputs[name] = { absent: runs };
       continue;
     }
-    const candidates = [...runs];
-    let trigger: WorkflowRun | undefined;
-    if ("triggeredBy" in producer) {
-      const triggers = await runsOf(producer.triggeredBy);
-      const triggerExpected = { ...expected, producer: { kind: producer.kind, workflow: producer.triggeredBy } };
-      trigger = typeof triggers === "string"
-        ? undefined
-        : newestRun(triggers.filter((candidate) => identityError(candidate, triggerExpected) === undefined));
-      const { data } = await github.rest.actions.listArtifactsForRepo({
-        ...repo,
-        name: `automerge-${name}-${pull.head.sha}`,
-        per_page: PER_PAGE,
-      });
-      const ids = new Set(data.artifacts.flatMap(({ workflow_run }) => (workflow_run?.id ? [workflow_run.id] : [])));
-      for (const run_id of ids) candidates.push((await github.rest.actions.getWorkflowRun({ ...repo, run_id })).data);
-    }
     // Only the producer's own runs compete to be the newest, so an unrelated run cannot mask them.
-    const run = newestRun(candidates.filter((candidate) => identityError(candidate, expected) === undefined));
-    const input = await readProducer(github, repo, { name, run, pull, expected });
-    const follow = run?.event === "workflow_run" && "artifact" in input ? followError(input.artifact, trigger) : undefined;
-    inputs[name] = follow ? { absent: follow } : input;
+    const run = newestRun(runs.filter((candidate) => identityError(candidate, expected) === undefined));
+    inputs[name] = await readProducer(github, repo, { name, run, pull, expected });
   }
   return inputs;
 }
@@ -925,8 +899,7 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
   if (!run) return { absent: "no run" };
   const error = bindingError(run, expected);
   if (error) return { absent: error };
-  // The preview smoke names the head it checked in both its routes; other producers run on the head.
-  const artifactName = "triggeredBy" in expected.producer ? `automerge-${name}-${pull.head.sha}` : `automerge-${name}`;
+  const artifactName = `automerge-${name}`;
   const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifactName, per_page: PER_PAGE });
   const artifact = pickArtifact(data.artifacts, artifactName, run);
   if (!artifact) return { absent: "the run's latest attempt uploaded no usable artifact" };
@@ -955,7 +928,7 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
     listAll((page) => github.rest.pulls.listReviewComments({ ...ref, ...page })),
     readLastPush(github, repo, pull.head.sha),
     readReviewDecision(github, repo, pull.number),
-    readProducers(github, repo, pull, context),
+    readProducers(github, repo, pull),
   ]);
   for (const [name, input] of Object.entries(producers)) {
     // Only a holding proof can count, so only it needs checking.
@@ -1054,34 +1027,19 @@ async function resolveTarget(github: GitHubClient, context: ActionsContext): Pro
   } else if (context.eventName === "workflow_run" && payload.workflow_run) {
     const run = payload.workflow_run;
     if (run.event === "merge_group") return resolveMergeGroup(github, context, run);
-    if (run.event === "workflow_run") {
-      // A producer run on `main`'s definition (the bot preview's smoke) names the head it checked in
-      // its artifact. The name only picks which pull request to decide again; the decision binds
-      // the artifact itself.
-      const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, per_page: PER_PAGE });
-      const head = data.artifacts.map(({ name }) => /^automerge-[\w-]+-([0-9a-f]{40})$/.exec(name)?.[1]).find(Boolean);
-      if (!head) return undefined;
-      const { data: pulls } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+    number = run.pull_requests?.find((pull) => pull.base.ref === defaultBranch)?.number;
+    // `pull_requests` is empty when the head is in a fork, so look the pull request up by head and
+    // base. GitHub allows one open pull request per pair.
+    if (number === undefined && run.head_repository && run.head_branch) {
+      const { data } = await github.rest.pulls.list({
         ...repo,
-        commit_sha: head,
+        state: "open",
+        head: `${run.head_repository.owner.login}:${run.head_branch}`,
+        base: defaultBranch,
         per_page: PER_PAGE,
+        page: 1,
       });
-      number = pulls.find((pull) => pull.state === "open" && pull.head.sha === head && pull.base.ref === defaultBranch)?.number;
-    } else {
-      number = run.pull_requests?.find((pull) => pull.base.ref === defaultBranch)?.number;
-      // `pull_requests` is empty when the head is in a fork, so look the pull request up by head and
-      // base. GitHub allows one open pull request per pair.
-      if (number === undefined && run.head_repository && run.head_branch) {
-        const { data } = await github.rest.pulls.list({
-          ...repo,
-          state: "open",
-          head: `${run.head_repository.owner.login}:${run.head_branch}`,
-          base: defaultBranch,
-          per_page: PER_PAGE,
-          page: 1,
-        });
-        number = data[0]?.number;
-      }
+      number = data[0]?.number;
     }
   }
   if (number === undefined) return undefined;
