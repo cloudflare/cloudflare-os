@@ -1,4 +1,4 @@
-// The search itself, apart from the Worker's entrypoints so it runs under Node in tests.
+// Web Search request handling, separate from the Worker's RPC entrypoints.
 
 import { z } from "zod";
 import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";

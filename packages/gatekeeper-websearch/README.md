@@ -117,6 +117,11 @@ outside AI Gateway.
 - **Local dev.** Start with `pnpm dev-server -- --use-workers-ai-binding`, which needs a Cloudflare
   login. Without the flag the Worker has no `AI` binding and every search fails.
 
+## Testing
+
+`pnpm --filter @gadgets/gatekeeper-websearch test:run` runs search and observer-access tests in
+workerd with RPC validation enabled. No live provider calls or Cloudflare login are needed.
+
 ## Known limits
 
 - **No approval.** A search is a read: recorded, not queued. Code that runs on a schedule can send

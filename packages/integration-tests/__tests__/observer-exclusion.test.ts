@@ -81,16 +81,17 @@ async function reopenAfterRestart(ws: Workspace) {
   await waitFor("the restart to fell the old workspace instance", () =>
     ws.session.readValue().then(() => null, () => true));
   return waitFor("the workspace to come back after the restart", async () => {
-    const publicApi = connect(harness.url);
+    using stack = new DisposableStack();
     try {
-      using api = await logIn(publicApi, ws.alice);
-      using overseer = await api.openWorkspace(ws.gadgetId);
-      using gatekeeper = await overseer.getGatekeeperById(ws.gatekeeperId);
-      const session = await gatekeeper.openSession() as RpcStub<TestSession>;
+      const publicApi = stack.use(connect(harness.url));
+      const api = stack.use(await logIn(publicApi, ws.alice));
+      // Keep the workspace's native RPC session alive until the returned read session is done.
+      const overseer = stack.use(await api.openWorkspace(ws.gadgetId));
+      const gatekeeper = stack.use(await overseer.getGatekeeperById(ws.gatekeeperId));
+      const session = stack.use(await gatekeeper.openSession() as RpcStub<TestSession>);
       await session.readValue();
-      return { session, [Symbol.dispose]: () => publicApi[Symbol.dispose]() };
+      return Object.assign(stack.move(), { session });
     } catch {
-      publicApi[Symbol.dispose]();
       return null;
     }
   });
