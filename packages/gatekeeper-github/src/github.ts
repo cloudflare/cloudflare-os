@@ -2801,7 +2801,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return this.#overlayIssueLike(await this.#getRemoteIssueDetails(logicalId), "issue", logicalId);
   }
 
-  async #getPullRequestDetails(logicalId: string, gitCache?: RpcStub<GitCache>): Promise<GitHubPullRequestDetails> {
+  async #getPullRequestDetails(logicalId: string, gitCache?: RpcStub<GitCache>, ttlMs = ENTITY_CACHE_TTL_MS)
+      : Promise<GitHubPullRequestDetails> {
     if (logicalId.startsWith("~")) {
       const provisional = this.#getProvisionalResource(logicalId);
       if (!provisional || provisional.kind !== "pull") {
@@ -2809,7 +2810,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       }
 
       if (provisional.realId) {
-        const remote = await this.#getRemotePullRequestDetails(provisional.realId);
+        const remote = await this.#getRemotePullRequestDetails(provisional.realId, ttlMs);
         return await this.#overlaySimulatedPullHead(
           this.#overlayIssueLike(remote, "pull", logicalId), gitCache);
       }
@@ -2824,7 +2825,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
 
     return await this.#overlaySimulatedPullHead(
-      this.#overlayIssueLike(await this.#getRemotePullRequestDetails(logicalId), "pull", logicalId),
+      this.#overlayIssueLike(await this.#getRemotePullRequestDetails(logicalId, ttlMs), "pull", logicalId),
       gitCache);
   }
 
@@ -2902,12 +2903,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return details;
   }
 
-  async #getRemotePullRequestDetails(realId: string): Promise<GitHubPullRequestDetails> {
+  async #getRemotePullRequestDetails(realId: string, ttlMs = ENTITY_CACHE_TTL_MS): Promise<GitHubPullRequestDetails> {
     // v2: the details gained `mergeState`, and etag revalidation can keep an old-shaped entry alive.
     const key = this.#cacheKey("pull-v2", realId);
     const details = await this.#loadCachedWithEtag<GitHubPullRequestDetails>(
       key,
-      ENTITY_CACHE_TTL_MS,
+      ttlMs,
       async etag => {
         const result = await this.#withApi(api =>
           api.getPullRequestConditional(this.ctx.props.owner, this.ctx.props.repo, Number(realId), { ifNoneMatch: etag })
@@ -5426,9 +5427,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   /**
    * When `sha` became a head, for the absence policy: this gatekeeper's record of pushing it, else
-   * GitHub's record of a push that left `branch` at it, else its committer date. GitHub's record
-   * is asked for only once the committer date is out of the window, since a push cannot predate
-   * its commit and so could only move the time later; it is best-effort.
+   * GitHub's record of an update (push, force push, creation) that left `branch` at it, else its
+   * committer date. GitHub's record is asked for only once the committer date is out of the window,
+   * since an update cannot predate its commit and so could only move the time later; it is best-effort.
    */
   async #becameHeadAt(
     sha: GitOid, branch: string | undefined, committedAt: number | undefined, now: number,
@@ -5437,10 +5438,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     if (applied !== undefined) return applied;
     if (branch !== undefined && (committedAt === undefined || now - committedAt >= CI_START_WINDOW_MS)) {
       try {
-        const pushes = await this.#withApi(api =>
-          api.listBranchPushes(this.ctx.props.owner, this.ctx.props.repo, branch));
-        const push = pushes.find(entry => entry.after === sha);
-        if (push !== undefined) return Date.parse(push.timestamp);
+        const updates = await this.#withApi(api =>
+          api.listBranchActivity(this.ctx.props.owner, this.ctx.props.repo, branch));
+        const update = updates.find(entry => entry.after === sha);
+        if (update !== undefined) return Date.parse(update.timestamp);
       } catch (error) {
         // Best-effort: a GitHub refusal, timeout or lost connection falls back to the committer
         // date rather than failing a read whose rollup is already in hand. Only an expired
@@ -5492,6 +5493,13 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         });
       }
       const commit = result.data.repository?.object;
+      // A field GitHub nulled with an error was not read, which is not absence: no commit, no CI,
+      // or no more entries would each mislead. Only the side fields the absence policy reads (the
+      // parent's rollup, the workflows tree) may fail without failing the read.
+      const unread = result.errors.some(error => !error.path?.some(key => key === "parents" || key === "workflows"));
+      if (unread && !commit?.statusCheckRollup?.contexts) {
+        throw new Error("GitHub could not read this commit's CI just now; read again shortly.");
+      }
       if (!commit?.committedDate) return undefined;
       const rollup = commit.statusCheckRollup ?? null;
       if (first === undefined) {
@@ -5592,11 +5600,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   /**
    * A pull request's details as CI reads see them (the head counting queued pushes), with its
-   * number on GitHub once it has one.
+   * number on GitHub once it has one. Revalidated on every read (a 304 is free): a push someone
+   * else made must not leave CI reading the previous head as current.
    */
   async #pullForCi(logicalId: string, gitCache: RpcStub<GitCache>)
       : Promise<{ details: GitHubPullRequestDetails; number: number | undefined }> {
-    const details = await this.#getPullRequestDetails(logicalId, gitCache);
+    const details = await this.#getPullRequestDetails(logicalId, gitCache, 0);
     const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId) : logicalId;
     return { details, number: realId === undefined ? undefined : Number(realId) };
   }
@@ -5673,11 +5682,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const sha = commitId ?? details.head.sha;
     if (!isCommitOid(sha)) throw new Error(`Pull request #${logicalId} has no head commit yet.`);
     await this.#assertPullCommitOf(logicalId, details, sha, gitCache);
-    // Only a commit a queued push will deliver is known not to be on GitHub; any other commit
-    // simulation served (an intermediate one of a stacked chain) is asked for, and reads as queued
-    // if GitHub does not have it yet.
+    // GitHub is asked even for a commit a queued push will deliver: the same commit may already be
+    // there under another branch, with CI. One it does not have yet reads as queued.
     const branch = isOwnHead(details) ? details.head.ref : undefined;
-    const [read, required] = this.isCommitPendingPush(sha) ? [undefined, []] : await Promise.all([
+    const [read, required] = await Promise.all([
       this.#commitChecks(sha, { branch, pullNumber: number }),
       this.#requiredContexts(details.base.ref),
     ]);
@@ -5786,9 +5794,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const cacheKey = String(jobId);
     const location = await this.#withApi(api => api.getWorkflowJobLogLocation(owner, repo, jobId));
     if (location === null) {
+      // Static, like every refusal here: nothing GitHub reported about the run is shown before it is observed.
       throw new Error(cache.delete(cacheKey)
-        ? `GitHub has deleted the log of job ${jobId}.`
-        : `GitHub has no log for job ${jobId}: it has been deleted, or is not available yet.`);
+        ? "GitHub has deleted this job's log."
+        : "GitHub has no log for this job: it has been deleted, or is not available yet.");
     }
     let log = cache.get(cacheKey);
     if (log === undefined) {
@@ -5796,7 +5805,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         log = await readCiLog(await this.#withApi(api => api.downloadJobLog(location)), normalizeGitHubLogLine);
       } catch (error) {
         if (!(error instanceof CiLogTooLargeError)) throw error;
-        throw new Error(`The log of job ${jobId} is too large to read here; open it on GitHub: ${run.html_url}`,
+        throw new Error("This job's log is too large to read here; open it on GitHub at getDetails().url.",
           { cause: error });
       }
       cache.put(cacheKey, log);
@@ -5826,15 +5835,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     });
   }
 
-  /**
-   * The workflow runs of a pull request's head commit. A head only a queued push will deliver has
-   * none yet, and GitHub is not asked.
-   */
+  /** The workflow runs of a pull request's head commit; none yet for one GitHub does not have. */
   async pullWorkflowRuns(logicalId: string, pageSize: number, gitCache: RpcStub<GitCache>)
       : Promise<Cursor<GitHubWorkflowRunSummary>> {
     const { details } = await this.#pullForCi(logicalId, gitCache);
     const sha = details.head.sha;
-    if (!isCommitOid(sha) || this.isCommitPendingPush(sha)) return new ArrayCursor([], pageSize);
+    if (!isCommitOid(sha)) return new ArrayCursor([], pageSize);
     return await this.listWorkflowRuns({ commitId: sha }, pageSize);
   }
 

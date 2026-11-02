@@ -49,6 +49,8 @@ type FakeRollup = {
   hiddenNodes?: Record<string, unknown>[];
   /** Whether GitHub left out the counts by state, as a partial error can. */
   countsMissing?: boolean;
+  /** The page (0-based) whose rollup GitHub nulls with an error, as a timeout on it does. */
+  failedPage?: number;
 };
 
 function checkRunNode(name: string, status: string, conclusion: string | null, extra: Record<string, unknown> = {}) {
@@ -158,8 +160,8 @@ class FakeGitHub {
   readonly pullCommits = new Map<number, string[]>();
   /** `base...head` → the commits GitHub's compare lists, oldest first. */
   readonly compares = new Map<string, { mergeBase: string; commits: string[] }>();
-  /** Pushes the activity API reports for any branch, newest first. */
-  pushes: { after: string; timestamp: string }[] = [];
+  /** Updates the activity API reports for any branch, newest first; `activity_type` defaults to push. */
+  pushes: { after: string; timestamp: string; activity_type?: string }[] = [];
   /** When set, the activity API fails with this status instead. */
   activityStatus?: number;
   /** When set, a request to the activity API rejects with this, as a timeout or lost connection does. */
@@ -236,7 +238,9 @@ class FakeGitHub {
       if (this.activityStatus !== undefined) {
         return Response.json({ message: "Server Error" }, { status: this.activityStatus });
       }
-      return Response.json(this.pushes.map(push => ({ ...push, activity_type: "push" })));
+      const kind = url.searchParams.get("activity_type");
+      return Response.json(this.pushes.map(push => ({ activity_type: "push", ...push }))
+        .filter(push => kind === null || push.activity_type === kind));
     }
     if ((match = rest.match(/^\/compare\/(.+)$/))) {
       const compare = this.compares.get(decodeURIComponent(match[1]));
@@ -318,6 +322,7 @@ class FakeGitHub {
     const nodes = [...hidden.map(() => null), ...listed];
     const offset = variables.after === null ? 0 : Number(variables.after);
     const end = offset + (rollup?.pageSize ?? nodes.length);
+    const failed = rollup?.failedPage !== undefined && offset === rollup.failedPage * (rollup.pageSize ?? nodes.length);
     const countBy = (typename: string, stateOf: (node: Record<string, unknown>) => string) => {
       const counts = new Map<string, number>();
       for (const node of [...hidden, ...listed].filter(candidate => candidate.__typename === typename)) {
@@ -326,13 +331,14 @@ class FakeGitHub {
       return [...counts].map(([state, count]) => ({ state, count }));
     };
     return {
+      ...failed ? { errors: [{ message: "Timeout", path: ["repository", "object", "statusCheckRollup"] }] } : {},
       data: {
         repository: {
           databaseId: 1,
           object: rollup === undefined ? null : {
             committedDate: new Date(rollup.committedAt).toISOString(),
             parents: { nodes: [{ statusCheckRollup: rollup.parentHasCi ? { state: "SUCCESS" } : null }] },
-            statusCheckRollup: rollup.state === null ? null : {
+            statusCheckRollup: rollup.state === null || failed ? null : {
               state: rollup.state,
               contexts: {
                 pageInfo: { hasNextPage: end < nodes.length, endCursor: end < nodes.length ? String(end) : null },
@@ -558,6 +564,16 @@ describe("getChecks: a commit nothing has reported on", () => {
     expect(await gk.read([{ method: "getChecks", args: ["main"] }])).toMatchObject({ phase: "notStarted" });
   });
 
+  it.each(["force_push", "branch_creation"])("takes a %s as the head time too", async kind => {
+    // An old commit made the head by a force push, or a branch created at it, outside this gatekeeper.
+    const github = fakeGitHub();
+    github.rollups.set(HEAD, empty({ committedAt: Date.now() - 60 * MINUTE }));
+    github.pushes = [{ after: HEAD, timestamp: new Date(Date.now() - 2 * MINUTE).toISOString(), activity_type: kind }];
+    const gk = await gatekeeper();
+
+    expect(await gk.read([{ method: "getChecks", args: ["main"] }])).toMatchObject({ phase: "notStarted" });
+  });
+
   it.each([
     ["refuses it", (github: FakeGitHub) => { github.activityStatus = 503; }],
     ["times out", (github: FakeGitHub) => { github.activityError = new DOMException("timed out", "TimeoutError"); }],
@@ -658,6 +674,15 @@ describe("pull request CI", () => {
       .toMatchObject({ state: "success", phase: "done", missingRequired: [] });
   });
 
+  it("reads CI at a head someone else pushed at once, not at the cached previous one", async () => {
+    const github = pullScenario();
+    const gk = await gatekeeper(7);
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ commitId: HEAD });
+
+    github.pulls.set(7, pullResponse(7, C1));
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ commitId: C1, state: "failure" });
+  });
+
   it("stops polling on a required check still missing ten minutes after the head arrived", async () => {
     // A required check that has not reported by then never will without someone acting: a
     // path-filtered workflow, or an app not installed on the repository.
@@ -711,6 +736,15 @@ describe("pull request CI", () => {
       .toEqual([["build", true], ["ci/extra", false]]);
     expect(checks.counts).toEqual({ success: 2 });
     expect(checks.missingRequired.toSorted()).toEqual(["deploy-preview", "lint"]);
+  });
+
+  it.each([0, 1])("refuses a rollup page GitHub nulled with an error (page %s) rather than read it as absent", async page => {
+    // Read as absent, an old commit's first page would be "no CI ran", and a later one would drop entries unflagged.
+    const github = pullScenario();
+    Object.assign(github.rollups.get(HEAD)!, { pageSize: 1, failedPage: page, committedAt: Date.now() - 60 * MINUTE });
+    const gk = await gatekeeper(7);
+
+    await expect(gk.read([{ method: "getChecks" }])).rejects.toThrow(/could not read this commit's CI just now/);
   });
 
   it("counts every check past the 1000 it lists, and names none missing then", async () => {
@@ -822,10 +856,9 @@ describe("pull request CI", () => {
     const gk = await gatekeeper(7);
     const push = await gk.queuePush("fix");
 
-    // Queued: nothing has run on it, and GitHub is not asked.
+    // Queued: nothing has run on it.
     expect(await gk.read([{ method: "getChecks" }]))
       .toEqual({ commitId: PUSHED, state: "none", phase: "notStarted", counts: {}, checks: [], missingRequired: [] });
-    expect(github.graphqlQueries).toEqual([]);
     expect(await gk.read([{ method: "listWorkflowRuns" }], true)).toEqual([]);
 
     github.respondToPush("unpack ok", "ok refs/heads/fix");
@@ -841,6 +874,20 @@ describe("pull request CI", () => {
     expect(checks).toMatchObject({ commitId: PUSHED, state: "success", phase: "done", counts: { success: 1 } });
     expect(checks.checks).toMatchObject([{ kind: "checkRun", name: "build", state: "success" }]);
     expect(await gk.read([{ method: "listWorkflowRuns" }], true)).toMatchObject([{ id: "900", commitId: PUSHED }]);
+  });
+
+  it("keeps reporting a head's CI while an unrelated branch push of the same commit is queued", async () => {
+    const github = pullScenario();
+    github.pulls.set(7, pullResponse(7, PUSHED));
+    github.pullCommits.set(7, [HEAD, PUSHED]);
+    github.rollups.set(PUSHED, { state: "FAILURE", nodes: [checkRunNode("build", "COMPLETED", "FAILURE")],
+      committedAt: Date.now(), workflows: true, parentHasCi: true });
+    github.runs.set(900, workflowRun(900, PUSHED));
+    const gk = await gatekeeper(7);
+    await gk.queuePush("release");
+
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ commitId: PUSHED, state: "failure", phase: "done" });
+    expect(await gk.read([{ method: "listWorkflowRuns" }], true)).toMatchObject([{ id: "900" }]);
   });
 });
 
@@ -957,7 +1004,7 @@ describe("check runs", () => {
     expect(github.requestsTo(BLOB_ORIGIN)).toHaveLength(1);
 
     github.logs.set(70, 410);
-    await expect(gk.read(readLog())).rejects.toThrow("GitHub has deleted the log of job 70.");
+    await expect(gk.read(readLog())).rejects.toThrow("GitHub has deleted this job's log.");
 
     // The cached copy is gone: a log GitHub serves again is downloaded afresh.
     github.logs.set(70, RAW_LOG);

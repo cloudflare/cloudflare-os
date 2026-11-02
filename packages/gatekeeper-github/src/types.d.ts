@@ -598,7 +598,11 @@ export type GitHubWorkflowRunFilter = GitHubPageOptions & {
   commitId?: string;
   /** Only runs triggered by this event, e.g. `"push"`. */
   event?: string;
-  /** Only runs in this state. */
+  /**
+   * Only runs in this state. `queued` asks GitHub for its `queued` runs only: runs still
+   * `pending` (waiting on a concurrency group) or `requested` read as `queued` too but are not
+   * listed by it; list without `state` to see them.
+   */
   state?: Exclude<GitHubCheckState, "unknown">;
 };
 

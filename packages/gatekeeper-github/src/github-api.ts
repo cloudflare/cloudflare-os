@@ -363,10 +363,13 @@ export type GitHubBranchProtectionChecksResponse = {
   checks?: Array<{ context: string }>;
 };
 
+/** A GraphQL error: `path` names the field it nulled, when it concerns one. */
+export type GitHubGraphqlError = { message: string; type?: string; path?: (string | number)[] };
+
 /** A GraphQL response: `data` may be partial when `errors` is set. */
 export type GitHubGraphqlResult<T> = {
   data: T;
-  errors: Array<{ message: string; type?: string }>;
+  errors: GitHubGraphqlError[];
 };
 
 export class GitHubApiError extends Error {
@@ -1627,7 +1630,7 @@ export class GitHubApi {
    * fields that failed are null and `errors` says why.
    */
   async graphql<T>(query: string, variables: Record<string, unknown>): Promise<GitHubGraphqlResult<T>> {
-    const { data } = await this.#request<{ data?: T | null; errors?: Array<{ message: string; type?: string }> }>(
+    const { data } = await this.#request<{ data?: T | null; errors?: GitHubGraphqlError[] }>(
       "POST", "/graphql", { body: { query, variables } });
     const errors = data.errors ?? [];
     if (data.data === undefined || data.data === null) {
@@ -1733,11 +1736,14 @@ export class GitHubApi {
       { query: { page, per_page: perPage, filter: attempt === undefined ? "latest" : undefined } })).data.jobs;
   }
 
-  /** The latest pushes to `branch`, newest first. */
-  async listBranchPushes(owner: string, repo: string, branch: string): Promise<GitHubActivityResponse[]> {
+  /**
+   * The latest updates to `branch`, newest first: pushes, force pushes, its creation, merges into
+   * it. Unfiltered by kind, since any of them can make a commit its head.
+   */
+  async listBranchActivity(owner: string, repo: string, branch: string): Promise<GitHubActivityResponse[]> {
     return (await this.#request<GitHubActivityResponse[]>(
       "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/activity`,
-      { query: { ref: `refs/heads/${branch}`, activity_type: "push", direction: "desc", per_page: 30 } })).data;
+      { query: { ref: `refs/heads/${branch}`, direction: "desc", per_page: 30 } })).data;
   }
 
   /** The rules every ruleset applies to `branch`. */

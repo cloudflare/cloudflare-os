@@ -64,7 +64,8 @@ for approval, and every read is logged as an observation.
   check runs. GitHub answers the logs endpoint with a redirect to its blob storage, which is
   fetched without the token. Finished logs are cached (see `storage-schema.md`) and revalidated
   against the logs endpoint before each use, so a deleted log stops being served.
-- **Workflow runs.** `repo.listWorkflowRuns()` filters by branch, commit, event and state;
+- **Workflow runs.** `repo.listWorkflowRuns()` filters by branch, commit, event and state (GitHub's
+  `queued` filter leaves out runs still `pending` on a concurrency group or `requested`);
   `pullRequest.listWorkflowRuns()` lists the head commit's. `getWorkflowRun(id)` opens one for
   `getDetails()` and `listJobs({ attempt? })`.
 
