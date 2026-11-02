@@ -308,7 +308,9 @@ so about 1,400 calendars read every two minutes would use the whole of it.
 
 A read that fails, as when the account can no longer read the calendar, is retried after five
 minutes, doubling with each failure in a row up to hourly. A channel Google refuses is asked for
-again after an hour, doubling up to daily, and the calendar is read every two minutes meanwhile.
+again after an hour, doubling up to daily, and the calendar is read every two minutes until one is
+open. A refused renewal leaves the old channel open until it expires, and reads stay hourly till
+then if its notifications were arriving.
 
 Every write the gatekeeper applies to an event sets its private extended property `gadgetsWrite`
 to a fresh value. Google keeps it on that calendar's copy of the event through edits made anywhere
