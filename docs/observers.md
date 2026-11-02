@@ -909,6 +909,7 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
 runs first). The Context Library is the first shipping gatekeeper to report subresources (§9.2).
+Scheduled Tasks and Web Search report `[]` on every read.
 The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAccess()` answers, what
 `addObserver()` must still enforce) is documented on those members in
 `workshop-shared/src/gatekeeper.ts`, and

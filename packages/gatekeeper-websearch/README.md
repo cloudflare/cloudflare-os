@@ -65,7 +65,8 @@ A query goes only to the provider that `search.ts` pins. The agent cannot choose
 it can with a `webFetch` URL, so a workspace that has observed restricted data can still search,
 as it can search GitHub or Slack through their gatekeepers.
 
-- **Observers.** `addObserver` admits every collaborator, because search results are public.
+- **Observers.** Each query reports `subresources: []`, and `addObserver` and
+  `verifyObserverAccess` admit every collaborator, because search results are public.
 - **Ambience.** The gatekeeper declares only that it can mint an account and that the account has
   a singleton. The admin's mode and the user's opt-in decide who gets it.
 

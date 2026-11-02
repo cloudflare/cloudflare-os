@@ -60,5 +60,5 @@ function describeSearch(query: string): ObservationDescription {
       `Searches the public web through AI Gateway, with the "${PROVIDER}" provider.`)
     .inline("Query", query)
     .finish();
-  return { title: "Search the web", description, fields };
+  return { title: "Search the web", description, fields, subresources: [] };
 }
