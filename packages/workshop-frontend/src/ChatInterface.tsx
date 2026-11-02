@@ -104,6 +104,7 @@ import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
+import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
 import { actionLogResumed, useActionEntries } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
@@ -3106,6 +3107,12 @@ function ChatInterface({
     () => currentMessages.some(
       (msg) => msg.type === "connectionRequest" && msg.state === "pending",
     ),
+    [currentMessages],
+  );
+  // Like a connection request, a pending web fetch request holds the agent's turn, oldest first.
+  const pendingWebFetchRequestIds = useMemo(
+    () => currentMessages.flatMap((msg) =>
+      msg.type === "webFetchRequest" && msg.state === "pending" ? [msg.requestId] : []),
     [currentMessages],
   );
   // A pending awaitDecision action also blocks the composer: the agent turn is suspended until the
@@ -6226,6 +6233,14 @@ function ChatInterface({
 
                         {msg.type === "connectionRequest" && renderConnectionRequestCard(msg)}
 
+                        {msg.type === "webFetchRequest" && (
+                          <WebFetchRequestCard
+                            overseer={overseer}
+                            request={msg}
+                            pendingRequestIds={pendingWebFetchRequestIds}
+                          />
+                        )}
+
                         {msg.type === "useGadget" && (
                           <div className="max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
                             <Tooltip content={`Used the gadget at ${formatFullTimestamp(msg.timestamp)}`} asChild>
@@ -6597,7 +6612,9 @@ function ChatInterface({
                         ? "Set up or deny the connection request above to continue."
                         : hasPendingAwaitedAction
                           ? "Approve or reject the pending action above to continue."
-                          : undefined
+                          : pendingWebFetchRequestIds.length > 0
+                            ? "Approve or deny the web fetch request above to continue."
+                            : undefined
                     }
                     draftUpdateBanner={(() => {
                       if (!currentChatMetadata ||
