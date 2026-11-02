@@ -74,7 +74,11 @@ export function rung3Decision(record: JsonObject, number: number): { area: strin
   for (const entry of record.pulls) {
     if (!isObject(entry) || entry.number !== number || !isObject(entry.would)) continue;
     const { decision, area } = entry.would;
-    if (decision === "auto" && typeof area === "string" && RUNG3_AREAS.includes(area)) {
+    // `would` is eligibility; the merge was the gate's own only if its rule passed with no person's
+    // approval counted.
+    const gatePassed = isObject(entry.gate) && entry.gate.passes === true;
+    const noApprover = Array.isArray(entry.approvers) && entry.approvers.length === 0;
+    if (decision === "auto" && gatePassed && noApprover && typeof area === "string" && RUNG3_AREAS.includes(area)) {
       return { area, band: typeof entry.band === "string" ? entry.band : "unknown" };
     }
   }

@@ -7,8 +7,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
  *
  * Signs in one of two ways. With `E2E_ACCESS_TOKEN`, a Cloudflare Access application token for a
  * user with an email (a PR preview: the backend keys users by the token's email claim, so a
- * service token, which has none, cannot sign in). Without it, a fresh password account through
- * the signup page (a local `pnpm dev-server`, where signups are open).
+ * service token, which has none, cannot sign in). The preview under test is the pull request's own
+ * code and Access forwards the identity to it, so the token must belong to a test user that Access
+ * admits to the previews application and nothing else. Without it, a fresh password account
+ * through the signup page (a local `pnpm dev-server`, where signups are open).
  *
  * Nothing here asks a model for anything: the composer flow drafts a message but does not send it.
  */
@@ -72,7 +74,10 @@ for (const { name, phone, options } of VIEWPORTS) {
 
     beforeAll(async () => {
       const context = await browser.newContext(options)
-      if (accessToken) await context.addCookies([{ name: 'CF_Authorization', value: accessToken, url: baseUrl }])
+      // HttpOnly, as Access sets it, so the page's own scripts cannot read the token.
+      if (accessToken) {
+        await context.addCookies([{ name: 'CF_Authorization', value: accessToken, url: baseUrl, httpOnly: true, secure: true, sameSite: 'Lax' }])
+      }
       page = await context.newPage()
       page.on('pageerror', (error) => pageErrors.push(error.message))
       await signIn(page)

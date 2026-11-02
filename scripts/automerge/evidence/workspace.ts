@@ -78,7 +78,8 @@ export function affectedDeployables(packages: WorkspacePackage[], changedPaths: 
   for (const path of changedPaths) {
     const match = /^packages\/([^/]+)\/(.+)$/.exec(path);
     if (match) {
-      if (!/(^|\/)[^/]+\.md$/.test(match[2])) touched.add(match[1]);
+      // Package-local Markdown can ship (bundled blueprints' files), so every package file counts.
+      touched.add(match[1]);
     } else if (!NO_BUILD_INPUT.test(path)) {
       return deployables;
     }

@@ -18,6 +18,7 @@ const record = {
   schema: 1, mode: "enforce", event: "pull_request_review", sha: "a".repeat(40), policy_sha: "b".repeat(40),
   conclusion: "success", reason: "the gate's rule holds",
   pulls: [{ number: 932, head_sha: "a".repeat(40), base_sha: "b".repeat(40), band: "low", area: "kernel-small",
+    approvers: [], gate: { passes: true, reason: "the gate's rule holds" },
     would: { decision: "auto", area: "kernel-small", reasons: [] } }],
 };
 

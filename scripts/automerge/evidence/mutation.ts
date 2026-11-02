@@ -95,6 +95,7 @@ export function evaluateMutation(tallies: Map<string, Tally>, unmeasured: string
     if (score === null) reasons.push(`${pkg}: Stryker made no scorable mutant on the changed lines`);
     else if (score < MIN_SCORE) reasons.push(`${pkg}: mutation score ${score} on the changed lines is below ${MIN_SCORE}`);
   }
+  if (unmeasured.length > 0) reasons.push(`changed source in ${unmeasured.join(", ")} has no ${CONFIG} to measure it`);
   return decide(reasons, { min_score: MIN_SCORE, calibrated: false, packages, unmeasured });
 }
 

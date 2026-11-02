@@ -136,14 +136,16 @@ jobs:
           path: automerge-out/automerge-proof-tests.json
           if-no-files-found: error
 
-  # Band evidence. Each job writes one `automerge-evidence-<name>` artifact and succeeds when its
-  # producer could only report `error`, so one producer cannot void the run.
+  # Band evidence. Each job writes one `automerge-evidence-<name>` artifact. The gate reads no
+  # artifact from a run that concluded failure, so each job is `continue-on-error`: one that breaks
+  # (a failed install, a timeout) leaves only its own artifact absent.
 
   # Every Worker the change can reach still bundles with `wrangler deploy --dry-run`.
   deploy-dry-run:
     name: Deploy dry run
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 40
     permissions:
       contents: read
@@ -184,6 +186,7 @@ jobs:
     name: Red then green
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 60
     permissions:
       contents: read
@@ -226,6 +229,7 @@ jobs:
     name: Consumer build
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 75
     permissions:
       contents: read
@@ -267,6 +271,7 @@ jobs:
     name: Preview end-to-end
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 70
     permissions:
       actions: read
@@ -331,6 +336,7 @@ jobs:
     name: Changed-line mutation score
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 35
     permissions:
       contents: read
