@@ -14,7 +14,7 @@ import type { ObservationGate, ObservationScope } from "@gadgets/gatekeeper-kit/
 import { commitIdsOfSummary, isCommitOid } from "@gadgets/gatekeeper-kit/git-objects";
 import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import type { EntityKind } from "./gitlab-action-types";
-import type { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
+import type { CiDataSet, GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
 import { commitIdsOfMergeRequestSummary } from "./gitlab-normalize";
 import type {
   GitLabBranchFilter,
@@ -74,10 +74,11 @@ function pageSize(options: GitLabPageOptions | undefined, fallback = 50): number
 }
 
 /**
- * What a job-log or test-report read discloses: CI data, which GitLab shows only to Developers,
- * so the first such read raises the bar for observers (see `GitLabGatekeeperImpl#observers`).
+ * What a job-log or test-report read discloses: CI data, which GitLab shows only to Developers, or
+ * for some test reports Maintainers, so the first such read raises the bar for observers (see
+ * `GitLabGatekeeperImpl#observers`, which also picks a test report's set).
  */
-const CI_DATA: ObservationScope = { kind: "collections", ids: ["ci-logs"] };
+const ciData = (set: CiDataSet): ObservationScope => ({ kind: "collections", ids: [set] });
 
 /** What every other pipeline or job read discloses: what admission to the project already covers. */
 const BASELINE: ObservationScope = { kind: "baseline" };
@@ -520,8 +521,8 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
 
 /**
  * A pipeline of the bound project, opened by a project or merge request session (which checked
- * it may be opened). Its reads go through its own observation gate, test reports with the
- * `CI_DATA` scope.
+ * it may be opened). Its reads go through its own observation gate, test reports with a CI-data
+ * scope.
  */
 @validateRpc()
 export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
@@ -565,28 +566,28 @@ export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
   }
 
   async getTestReport(): Promise<GitLabTestReportSummary> {
-    const report = await this.#gatekeeper.pipelineTestReport(this.#pipelineId);
+    const { set, report } = await this.#gatekeeper.pipelineTestReport(this.#pipelineId);
     await this.#observations.authorize({
       title: `Read test report of pipeline #${this.#pipelineId}`,
       description: `Read the unit test totals of CI pipeline #${this.#pipelineId}: ` +
         `${report.total} tests, ${report.failed} failed, ${report.errored} errored.`,
-    }, CI_DATA);
+    }, ciData(set));
     return report;
   }
 
   async listFailedTests(options?: GitLabPageOptions): Promise<Cursor<GitLabTestCase>> {
-    const cases = await this.#gatekeeper.pipelineFailedTests(this.#pipelineId, pageSize(options));
+    const { set, cases } = await this.#gatekeeper.pipelineFailedTests(this.#pipelineId, pageSize(options));
     await this.#observations.authorize({
       title: `Read failed tests of pipeline #${this.#pipelineId}`,
       description: `Read the failed and errored test cases, with their output, from CI pipeline #${this.#pipelineId}'s test reports.`,
-    }, CI_DATA);
+    }, ciData(set));
     return cases;
   }
 }
 
 /**
  * A job run by a runner in the bound project, opened by a project or merge request session. Its
- * reads go through its own observation gate, logs with the `CI_DATA` scope.
+ * reads go through its own observation gate, logs with the `ci-logs` scope.
  */
 @validateRpc()
 export class GitLabJobImpl extends RpcTarget implements GitLabJob {
@@ -623,7 +624,7 @@ export class GitLabJobImpl extends RpcTarget implements GitLabJob {
     await this.#observations.authorize({
       title: `Read log of job \`${jobName}\` #${this.#jobId}, ${range}`,
       description: `Read ${range}${search} of the log of CI job \`${jobName}\` #${this.#jobId} (${page.totalLines} lines in all).`,
-    }, CI_DATA);
+    }, ciData("ci-logs"));
     return page;
   }
 }

@@ -2,7 +2,7 @@
 // whether a merge request's head pipeline ran for its current head, where CI configuration
 // lives, which jobs' downstream pipelines open, failed-test extraction, and job-log lines.
 
-import { readCiLog } from "@gadgets/gatekeeper-kit/ci-log";
+import { readCiLog } from "@gadgets/gatekeeper-kit/ci";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fx from "./fixtures/gitlab-docs";
 import {

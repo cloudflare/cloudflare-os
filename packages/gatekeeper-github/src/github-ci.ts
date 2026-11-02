@@ -1,8 +1,7 @@
 // GitHub CI: the GraphQL rollup query, and the pure mappings from GitHub's check runs, commit
 // statuses, Actions jobs, workflow runs and job logs to the agent-facing shapes in types.d.ts.
 
-import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci-log";
-import { CI_START_WINDOW_MS } from "@gadgets/gatekeeper-kit/ci-start";
+import { applyCarriageReturns, CI_START_WINDOW_MS, stripAnsi } from "@gadgets/gatekeeper-kit/ci";
 import type {
   GitHubAnnotation,
   GitHubCheckEntry,
@@ -187,17 +186,24 @@ export function countStates(states: Iterable<GitHubCheckState>): Partial<Record<
   return counts;
 }
 
-/** The counts GraphQL reports for the whole rollup, past any entry it was not paged through. */
+/**
+ * The counts GraphQL reports for the whole rollup, past any entry it was not paged through. GitHub
+ * lists every state, mostly with a zero count, so those are skipped before mapping: `COMPLETED`
+ * only ever appears empty, a finished run being counted under its conclusion.
+ */
 export function countsFromRollup(
   checkRuns: readonly { state: string; count: number }[],
   statusContexts: readonly { state: string; count: number }[],
 ): Partial<Record<GitHubCheckState, number>> {
   const counts: Partial<Record<GitHubCheckState, number>> = {};
-  const add = (state: GitHubCheckState, count: number) => {
-    if (count > 0) counts[state] = (counts[state] ?? 0) + count;
+  const add = (rows: readonly { state: string; count: number }[], stateOf: (state: string) => GitHubCheckState) => {
+    for (const { state, count } of rows.filter(row => row.count > 0)) {
+      const mapped = stateOf(state);
+      counts[mapped] = (counts[mapped] ?? 0) + count;
+    }
   };
-  for (const { state, count } of checkRuns) add(checkRunCountState(state), count);
-  for (const { state, count } of statusContexts) add(statusContextStateOf(state), count);
+  add(checkRuns, checkRunCountState);
+  add(statusContexts, statusContextStateOf);
   return counts;
 }
 

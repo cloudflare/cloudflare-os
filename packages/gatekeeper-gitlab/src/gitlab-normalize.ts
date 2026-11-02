@@ -3,7 +3,7 @@
 // the listing cursors apply. No platform imports, so everything here runs under the package's
 // Node vitest project.
 
-import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci-log";
+import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci";
 import { parseUnifiedPatch } from "@gadgets/gatekeeper-kit/git-diff";
 import { stripTrailingSlashes, type GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type {

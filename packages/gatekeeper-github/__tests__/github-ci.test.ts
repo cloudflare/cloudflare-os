@@ -2,9 +2,8 @@
 // the agent-facing state and phase, the rollup and absence phases, job-log lines, and the smaller
 // adapters.
 
-import { readCiLog } from "@gadgets/gatekeeper-kit/ci-log";
-import { CI_START_WINDOW_MS } from "@gadgets/gatekeeper-kit/ci-start";
-import { describe, expect, it } from "vitest";
+import { CI_START_WINDOW_MS, readCiLog } from "@gadgets/gatekeeper-kit/ci";
+import { describe, expect, it, vi } from "vitest";
 import {
   absencePhaseOf,
   actionsJobIdOf,
@@ -104,6 +103,16 @@ describe("commit statuses and the rollup", () => {
       [{ state: "SUCCESS", count: 3 }, { state: "WAITING", count: 1 }, { state: "IN_PROGRESS", count: 0 }],
       [{ state: "ERROR", count: 1 }, { state: "FAILURE", count: 2 }, { state: "PENDING", count: 1 }],
     )).toEqual({ success: 3, waiting: 1, failure: 3, inProgress: 1 });
+  });
+
+  it("skips the zero-count states GitHub lists, without warning about COMPLETED", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(countsFromRollup([{ state: "COMPLETED", count: 0 }, { state: "SUCCESS", count: 1 }], [])).toEqual({ success: 1 });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

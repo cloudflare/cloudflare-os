@@ -24,9 +24,9 @@ import {
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog, validateCiLogOptions,
-} from "@gadgets/gatekeeper-kit/ci-log";
-import { AppliedPushLog, CI_START_WINDOW_MS } from "@gadgets/gatekeeper-kit/ci-start";
+  AppliedPushLog, CI_START_WINDOW_MS, CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog,
+  validateCiLogOptions,
+} from "@gadgets/gatekeeper-kit/ci";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import { ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
@@ -230,12 +230,21 @@ const MAX_CI_ROWS = 1000;
  */
 const PUSH_EVENTS_SEARCHED = 100;
 /**
- * The observed-set marker of the CI-data gate (see `#observers`): job logs and test reports. Its
- * prefix keeps it clear of the kit's reserved `observer*` families.
+ * The observed-set markers of the CI-data gate (see `#observers`). Their prefix keeps them clear of
+ * the kit's reserved `observer*` families.
  */
 const OBSERVED_SET_PREFIX = "observedSet:";
 /** GitLab's Developer role, below which a member cannot read debug-trace job logs. */
 const DEVELOPER_ACCESS_LEVEL = 30;
+/** GitLab's Maintainer role, below which a member cannot read artifacts a job restricts to it. */
+const MAINTAINER_ACCESS_LEVEL = 40;
+/** A set the CI-data gate tracks: what a job-log or test-report read discloses. */
+export type CiDataSet = "ci-logs" | "ci-test-reports";
+/** The role an observer needs on the project for each set; see `#observers`. */
+const CI_DATA_ACCESS_LEVELS: Record<CiDataSet, number> = {
+  "ci-logs": DEVELOPER_ACCESS_LEVEL,
+  "ci-test-reports": MAINTAINER_ACCESS_LEVEL,
+};
 /**
  * Whether this binding has stored every observer it admitted (`"complete"`), or was created by a
  * version that stored none (`"legacy"`), so that a CI-data read could not leave out a Reporter
@@ -1715,25 +1724,37 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
   }
 
-  async pipelineTestReport(pipelineId: number): Promise<GitLabTestReportSummary> {
-    this.#requireObserverRoster();
-    return normalizeTestReportSummary(
-      await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId)));
+  /**
+   * The set a test-report read discloses. GitLab filters reports by what the reading account may
+   * download, so through a Maintainer they can include one a job restricts to Maintainers
+   * (`artifacts:access: maintainer`), and observers need Maintainer too. Below that, GitLab has
+   * already left those out, and Developer is exact.
+   */
+  async #testReportSet(): Promise<CiDataSet> {
+    return await hasProjectMembership(this.env, this.#userAccount(), this.#projectPath(), MAINTAINER_ACCESS_LEVEL)
+      ? "ci-test-reports" : "ci-logs";
   }
 
-  async pipelineFailedTests(pipelineId: number, pageSize: number): Promise<Cursor<GitLabTestCase>> {
+  async pipelineTestReport(pipelineId: number): Promise<{ set: CiDataSet; report: GitLabTestReportSummary }> {
     this.#requireObserverRoster();
-    let report;
-    try {
-      report = await this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId));
-    } catch (error) {
+    const [set, report] = await Promise.all([
+      this.#testReportSet(),
+      this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId)),
+    ]);
+    return { set, report: normalizeTestReportSummary(report) };
+  }
+
+  async pipelineFailedTests(pipelineId: number, pageSize: number): Promise<{ set: CiDataSet; cases: Cursor<GitLabTestCase> }> {
+    this.#requireObserverRoster();
+    const report = this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId)).catch((error: unknown) => {
       // The client reports a body past its cap as a 502 caused by the cap.
       if (!(error instanceof GitLabApiError && error.cause instanceof ResponseTooLargeError)) throw error;
       throw new Error(
         `Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its totals, ` +
         `and the failing jobs' logs for details.`, { cause: error });
-    }
-    return new ArrayCursor(failedTestCases(report), pageSize);
+    });
+    const [set, body] = await Promise.all([this.#testReportSet(), report]);
+    return { set, cases: new ArrayCursor(failedTestCases(body), pageSize) };
   }
 
   async jobDetails(jobId: number): Promise<GitLabJobDetails> {
@@ -1843,12 +1864,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * via the verifier; the overseer re-runs `addObserver` on every open, so lost access is caught
    * promptly.
    *
-   * CI job logs and test reports are the exception (strategy C, one set): a job run with
+   * CI job logs and test reports are the exception (strategy C, two sets): a job run with
    * `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, which GitLab shows
-   * only to Developers and above (https://docs.gitlab.com/ci/variables/variables_troubleshooting/).
-   * So once this binding has read one (its one tracked set, `ci-logs`, the sessions' `CI_DATA`
-   * scope, is pending or observed), admission needs Developer, and the read that first marks the
-   * set excludes stored observers below it. Observers are stored for that reason alone.
+   * only to Developers and above (https://docs.gitlab.com/ci/variables/variables_troubleshooting/),
+   * and a job can restrict its artifacts, test reports included, to Maintainers
+   * (https://docs.gitlab.com/ci/yaml/#artifactsaccess). So once this binding has read either, the
+   * read that first marks its set excludes stored observers below its role
+   * (`CI_DATA_ACCESS_LEVELS`), and admission needs every marked set's role: `ci-logs` (Developer)
+   * for job logs and test reports read below Maintainer, `ci-test-reports` (Maintainer) for test
+   * reports read as one (`#testReportSet`). Observers are stored for that reason alone.
    */
   #observerStrategy: ObserverStrategy | undefined;
 
@@ -1857,7 +1881,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       kv: this.ctx.storage.kv,
       collectionPrefix: OBSERVED_SET_PREFIX,
       vendorId: VENDOR_ID,
-      maxTrackedCollections: 1,
+      maxTrackedCollections: 2,
       // Sharing had no cap before observers were stored, so the kit's default (10) would refuse
       // collaborators bindings already had. Each job-log or test-report read checks every stored
       // observer's membership with GitLab, so the cap bounds that fan-out: 50 keeps a read well
@@ -1870,14 +1894,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             `so they cannot be allowed to observe data this workspace read from it.`);
         }
       },
-      hasCollectionAccess: async (verifier, setIds) => {
-        const developer = await verifier.hasProjectAccess(this.#projectPath(), DEVELOPER_ACCESS_LEVEL);
-        return setIds.map(() => developer);
-      },
-      denyMessage: () =>
-        "This workspace has read CI job logs or test reports from this GitLab project, which GitLab " +
-        "shows only to members with the Developer role or above, so this collaborator cannot be " +
-        "allowed to observe them.",
+      hasCollectionAccess: async (verifier, setIds) => await Promise.all(setIds.map(id =>
+        Object.hasOwn(CI_DATA_ACCESS_LEVELS, id)
+          ? verifier.hasProjectAccess(this.#projectPath(), CI_DATA_ACCESS_LEVELS[id as CiDataSet])
+          : false)),
+      denyMessage: setId => setId === "ci-test-reports"
+        ? "This workspace has read CI test reports from this GitLab project through a Maintainer's connection, " +
+          "which can include reports GitLab shows only to members with the Maintainer role or above, so this " +
+          "collaborator cannot be allowed to observe them."
+        : "This workspace has read CI job logs or test reports from this GitLab project, which GitLab " +
+          "shows only to members with the Developer role or above, so this collaborator cannot be " +
+          "allowed to observe them.",
     });
   }
 
@@ -1892,7 +1919,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * An observation gate over this binding's observer strategy and its own duplicate of `queue`,
    * for a pipeline or job capability, which authorizes its reads through it (CI-data reads with
-   * the `CI_DATA` scope) and disposes it with itself.
+   * a `CiDataSet`) and disposes it with itself.
    */
   observationGate(queue: RpcStub<ApprovalQueue>): ObservationGate {
     return new ObservationGate(queue.dup(), this.#observers());

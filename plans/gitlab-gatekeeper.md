@@ -960,13 +960,22 @@ The CI reads (Punted) make one exception to "Reporter sees everything a binding 
 CI/CD variable, masked or not, into its log, and "access to debug logging is restricted to users
 with the Developer, Maintainer, or Owner role"
 (docs.gitlab.com/ci/variables/variables_troubleshooting); the gatekeeper does not try to tell
-debug logs from others, and a failed test's recorded output is job output too. So the binding's
-strategy is the kit's `trackedCollectionObservers` with one set, `ci-logs`, marked by the first
-such read (pipeline and job capabilities authorize through their own `ObservationGate`, those
-reads with that collection): from then on `addObserver` asks `hasProjectAccess(path, 30)`, and
-every such read excludes stored observers below it. Observers are stored for this alone, so
-`removeObserver` is no longer a no-op. A binding that never reads a log or test report keeps the
-Reporter bar.
+debug logs from others, and a failed test's recorded output is job output too. And **a test
+report read through a Maintainer needs Maintainer (40)**: a job can restrict its artifacts, test
+reports included, to Maintainers with `artifacts:access: maintainer` (GitLab 18.4,
+docs.gitlab.com/ci/yaml/#artifactsaccess), and GitLab's report endpoints filter by what the
+reading account may download, so a Maintainer's read can carry reports a Developer could not see.
+Below Maintainer GitLab has already left them out, so Developer is exact there. The jobs API does
+not expose a job's `access`, so the gatekeeper cannot tell which reports were restricted; a
+per-artifact check is left open. So the binding's strategy is the kit's
+`trackedCollectionObservers` with two sets: `ci-logs` (Developer), marked by the first job-log
+read or test-report read below Maintainer, and `ci-test-reports` (Maintainer), marked by a
+test-report read whose connected account holds Maintainer, checked with the owner's token
+alongside the report. Pipeline and job capabilities authorize through their own
+`ObservationGate`, those reads with their set: from then on `addObserver` asks
+`hasProjectAccess(path, level)` for each marked set, and every such read excludes stored
+observers below its set's role. Observers are stored for this alone, so `removeObserver` is no
+longer a no-op. A binding that never reads a log or test report keeps the Reporter bar.
 
 Two consequences of storing them. Bindings from before: observers admitted before this version
 were never stored, and the overseer neither re-admits a viewer already connected nor enforces
@@ -1360,10 +1369,11 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   GitLab keeps one latest attempt per name in a pipeline, so a retry racing the listing is not
   taken for a status, and the status filter is applied locally over unfiltered listings),
   same-project downstreams, `test_report_summary` and the failed cases of `test_report`;
-  `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci-log` leaf (streamed
+  `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci` leaf (streamed
   whole, tail kept, refused past 128 MiB; finished logs cached in chunks and revalidated against
   `erased_at` and the account's Developer access). Reading a log or a test report raises observer
-  admission to Developer (§8). Still open: `retry`/`cancel`/`play` on jobs and pipelines
+  admission to Developer, or Maintainer for a test report read as one (§8). Still open:
+  per-artifact checks in place of that Maintainer bar; `retry`/`cancel`/`play` on jobs and pipelines
   (non-revertible actions with their own kinds, simulated as `pending`/`canceling`, a retried job
   as a provisional `~N`); `autoMerge` on `merge()` (below); and GitLab hooks, which this gatekeeper
   has no infrastructure for, so agents poll `ci.phase`. Unprobed still: the trace endpoint's `Range`

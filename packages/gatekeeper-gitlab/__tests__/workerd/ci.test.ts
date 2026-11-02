@@ -6,7 +6,8 @@
 // racing the listings included), failed tests, status read afresh rather than cached, job logs
 // (tail, search, a running job, the cache of finished logs and its revalidation against erasure
 // and the account's access), the observer gate that log and test-report reads raise to
-// Developer, and those reads refused on a binding an earlier version created.
+// Developer (Maintainer for a Maintainer's test report), and those reads refused on a binding an
+// earlier version created.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -884,7 +885,7 @@ describe("observers once logs are read", () => {
     await observer(name, props, "developer");
   });
 
-  it("hides the first log read from a Reporter already observing, and so does a test report", async () => {
+  it("hides the first log read from a Reporter already observing, and a Maintainer's test report from a Developer", async () => {
     const { props, name } = await setup(gateFake(), { reporter: 20, developer: 30 });
     await observer(name, props, "reporter");
     await observer(name, props, "developer");
@@ -893,7 +894,28 @@ describe("observers once logs are read", () => {
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
     const log = await hooks().queueLog(name);
     expect(log.observations).toEqual(["Read pipeline #6", "Read log of job `rubocop` #8, lines 1–1", "Read test report of pipeline #6"]);
-    expect(log.excluded).toEqual([undefined, ["reporter"], ["reporter"]]);
+    expect(log.excluded).toEqual([undefined, ["reporter"], ["developer", "reporter"]]);
+  });
+
+  it("admits only Maintainers once a Maintainer has read a test report", async () => {
+    // Through a Maintainer, GitLab includes reports a job restricts to Maintainers.
+    const { props, name } = await setup(gateFake(), { developer: 30, maintainer: 40 });
+    await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
+    await expect(observer(name, props, "developer")).rejects.toThrow(/through a Maintainer's connection.*Maintainer role or above/);
+    await observer(name, props, "maintainer");
+  });
+
+  it("keeps the Developer bar for a test report a Developer read", async () => {
+    // GitLab has already left out what a Developer may not download.
+    const fake = gateFake();
+    fake.ownerAccess = 30;
+    const { props, name } = await setup(fake, { reporter: 20, reporter2: 20, developer: 30, developer2: 30 });
+    await observer(name, props, "reporter");
+    await observer(name, props, "developer");
+    await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
+    expect((await hooks().queueLog(name)).excluded.at(-1)).toEqual(["reporter"]);
+    await expect(observer(name, props, "reporter2")).rejects.toThrow(/Developer role or above/);
+    await observer(name, props, "developer2");
   });
 
   it("shares a binding with up to 50 collaborators", async () => {

@@ -79,9 +79,13 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, and GitLab shows such
   logs only to Developers and above
   ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed test's
-  recorded output comes from the job that ran it, so test reports count too. Collaborators
-  already observing are checked again at Developer on each of those reads, and left out of them
-  if they fall short. A connection made before this version did not record its collaborators, so
+  recorded output comes from the job that ran it, so test reports count too. When the connected
+  account is a **Maintainer**, a test report it reads needs **Maintainer** instead: a job can
+  restrict its reports to Maintainers
+  ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)), and GitLab includes
+  those for a Maintainer. Collaborators already observing are checked again at that role on each
+  of those reads, and left out of them if they fall short. A connection made before this version
+  did not record its collaborators, so
   those reads cannot leave out one admitted then: on it, job logs and test reports are refused
   (every other CI read works) until the GitLab connection is removed and added again.
 
@@ -273,6 +277,13 @@ The collaborator is a member below **Developer**, and the workspace has read a j
 report, which raises the bar from Reporter to Developer (see [CI status](#ci-status)). A project
 maintainer can grant the collaborator Developer; otherwise share a workspace that has not read
 CI job logs or test reports.
+
+### "This workspace has read CI test reports from this GitLab project through a Maintainer's connection …"
+
+The connected account is a Maintainer, so the test reports it read may include ones a job keeps
+from anyone below Maintainer, and the collaborator is below Maintainer (see [CI status](#ci-status)).
+A project owner can grant the collaborator Maintainer; otherwise share a workspace whose test
+reports were read through a Developer's connection, or none at all.
 
 ### "This GitLab connection was created by an earlier version, so job logs and test reports cannot be read …"
 
