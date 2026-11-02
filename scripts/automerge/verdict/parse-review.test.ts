@@ -47,9 +47,27 @@ describe("parseReview", () => {
     assert.deepEqual(findings.map(finding => finding.severity), ["P1", "P1", "P1", "P1", "P0", "P0"]);
   });
 
-  it("counts a tagged heading outside the findings section", () => {
-    const { findings } = parsed(review("None.", "### [P0] Data loss on reset\nMERGE-CONFIDENCE: 9"));
-    assert.deepEqual(findings.map(finding => finding.severity), ["P0"]);
+  it("counts a tagged heading outside the findings section or nested in an entry", () => {
+    const { findings } = parsed(review("None.", "### [P0] Data loss on reset\n## [P1] Another\nMERGE-CONFIDENCE: 9"));
+    assert.deepEqual(findings.map(finding => finding.severity), ["P0", "P1"]);
+    const nested = parsed(review("### [P3] Minor naming\n`a.ts:1`\n#### [P0] Authentication bypass\n`b.ts:2`",
+      "MERGE-CONFIDENCE: 10"));
+    assert.deepEqual(nested.findings.map(finding => finding.severity), ["P3", "P0"]);
+  });
+
+  it("counts a tagged line in any markdown shape, inside an entry or after None.", () => {
+    const { findings } = parsed(review(
+      "### [P3] Issues in foo.ts\n`foo.ts:1`\n**[P1] Missing await**\n- [P0] Token logged\n1. [P2] Typo\n" +
+      "###\u00a0[P0] Non-breaking space",
+      "MERGE-CONFIDENCE: 9"));
+    assert.deepEqual(findings.map(finding => finding.severity), ["P3", "P1", "P0", "P2", "P0"]);
+    const afterNone = parsed(review("None.\n\n## [P1] Lost write", "MERGE-CONFIDENCE: 9"));
+    assert.deepEqual(afterNone.findings.map(finding => finding.severity), ["P1"]);
+  });
+
+  it("does not count a tag in the middle of body text", () => {
+    const { findings } = parsed(review("### [P2] Name\n`a.ts:1`\nUnlike the [P0] rule, this is minor.", "MERGE-CONFIDENCE: 7"));
+    assert.deepEqual(findings.map(finding => finding.severity), ["P2"]);
   });
 
   it("fails when the score is missing", () => {

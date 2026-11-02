@@ -6,10 +6,11 @@ name: Review verdict
 # every instruction file taken from the base commit, and the gateway secrets reach only the step
 # that runs opencode.
 #
-# The scripts run from the head checkout. On `pull_request` this file is the head's too, so a base
-# checkout of the scripts would add no protection; instead, the gate gives no AI decision to a pull
-# request that touches this workflow or `scripts/automerge/**`, so every verdict it uses came from
-# the scripts on the base branch.
+# The scripts run from the head checkout, so this job runs pull request code next to the gateway
+# secrets. That adds no exposure: on `pull_request` this file is the head's too, so any same-repo
+# pull request could already change what the job runs, as it can for Bonk's workflow. Fork pull
+# requests never get here. Verdict trust comes from the gate, which gives no AI decision to a pull
+# request that touches this workflow or `scripts/automerge/**`.
 
 on:
   pull_request:

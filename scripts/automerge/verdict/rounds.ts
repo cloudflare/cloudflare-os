@@ -20,10 +20,12 @@ export interface RoundPlan {
 }
 
 /**
- * This head's round. `isAncestor` says whether the previous head is still in the head's history;
- * after a force-push it may not be, and the round reviews the full diff rather than guess.
+ * This head's round. Every earlier head counts toward the round, even one whose run cannot be
+ * trusted, so the limit cannot be put off. `canReviewSince` says whether the changes since the
+ * previous head are a fair stand-in for the pull request (see `verdict.ts`); when not, round 3
+ * reviews the full diff.
  */
-export function planRound(headSha: string, reviewed: ReviewedHead[], isAncestor: (sha: string) => boolean): RoundPlan {
+export function planRound(headSha: string, reviewed: ReviewedHead[], canReviewSince: (sha: string) => boolean): RoundPlan {
   const earlier = new Map<string, string>();
   for (const { sha, reviewedAt } of reviewed) {
     if (sha === headSha) continue;
@@ -33,10 +35,11 @@ export function planRound(headSha: string, reviewed: ReviewedHead[], isAncestor:
   const round = earlier.size + 1;
   if (round !== DIFF_ONLY_ROUND) return { round, reviewFromSha: null };
   const [previous] = [...earlier].toSorted(([, a], [, b]) => (a < b ? 1 : a > b ? -1 : 0));
-  return { round, reviewFromSha: isAncestor(previous[0]) ? previous[0] : null };
+  return { round, reviewFromSha: canReviewSince(previous[0]) ? previous[0] : null };
 }
 
-async function githubJson(path: string, token: string): Promise<Json> {
+/** One authenticated GitHub REST read. */
+export async function githubJson(path: string, token: string): Promise<Json> {
   const response = await fetch(`https://api.github.com/${path}`, {
     headers: {
       Accept: "application/vnd.github+json",
@@ -60,7 +63,6 @@ export interface RunQuery {
   headRef: string;
   /** The reviewer's job name, such as `Verdict (sol)`. */
   jobName: string;
-  token: string;
 }
 
 /**
@@ -69,13 +71,13 @@ export interface RunQuery {
  * A run that lists no pull request still counts when it ran on this branch: GitHub leaves the list
  * empty in some cases, and an extra round sends the pull request to a person sooner, never later.
  */
-export async function fetchReviewedHeads(query: RunQuery): Promise<ReviewedHead[]> {
-  const { repository, workflowFile, pullNumber, headRef, jobName, token } = query;
+export async function fetchReviewedHeads(query: RunQuery, getJson: (path: string) => Promise<Json>): Promise<ReviewedHead[]> {
+  const { repository, workflowFile, pullNumber, headRef, jobName } = query;
   const runs: Json[] = [];
   for (let page = 1; ; page++) {
-    const batch = list(field(await githubJson(`repos/${repository}/actions/workflows/${workflowFile}/runs?` +
-      `event=pull_request&status=completed&branch=${encodeURIComponent(headRef)}&per_page=${PER_PAGE}&page=${page}`,
-    token), "workflow_runs"));
+    const batch = list(field(await getJson(`repos/${repository}/actions/workflows/${workflowFile}/runs?` +
+      `event=pull_request&status=completed&branch=${encodeURIComponent(headRef)}&per_page=${PER_PAGE}&page=${page}`),
+    "workflow_runs"));
     runs.push(...batch);
     if (batch.length < PER_PAGE) break;
   }
@@ -90,8 +92,8 @@ export async function fetchReviewedHeads(query: RunQuery): Promise<ReviewedHead[
       (pulls.length > 0 && !pulls.includes(pullNumber)) || reviewed.some(head => head.sha === sha)) {
       continue;
     }
-    const jobs = list(field(await githubJson(`repos/${repository}/actions/runs/${id}/jobs?filter=all&per_page=${PER_PAGE}`,
-      token), "jobs"));
+    const jobs = list(field(await getJson(`repos/${repository}/actions/runs/${id}/jobs?filter=all&per_page=${PER_PAGE}`),
+      "jobs"));
     if (jobs.some(job => field(job, "name") === jobName && field(job, "conclusion") === "success")) {
       reviewed.push({ sha, reviewedAt: createdAt });
     }

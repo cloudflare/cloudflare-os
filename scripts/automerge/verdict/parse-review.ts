@@ -31,6 +31,9 @@ const LEADING_TAG = /^\[(P[0-3])\]\s+(.+)$/;
 const LOCATION = /^`?([^\s`:]+):(\d+)(?:-\d+)?`?$/;
 const SCORE = /^MERGE-CONFIDENCE: (10|[0-9])$/;
 const FENCE = /^\s*(```|~~~)/;
+/** Markdown that can open a line before a tag: headings, emphasis, quotes, bullets, numbering. */
+const LINE_MARKUP = /^[\s#*_>+\-\d.)]*/;
+const LINE_TAG = /^[\s#*_>+\-\d.)]*\[P[0-3]\]/;
 
 function isSeverity(value: string): value is Severity {
   return SEVERITIES.some(severity => severity === value);
@@ -128,13 +131,14 @@ export function parseReview(raw: string): ParseResult {
     }
   }
 
-  // A tagged heading outside the findings section is still a finding.
+  // Any other line that opens with a tag is still a finding, whatever markdown wraps it: a deeper
+  // heading inside an entry, a bold or bulleted line, or a heading outside the findings section.
   for (const [index, { text, fenced }] of lines.entries()) {
-    if (fenced || (index > findingsStart && index < findingsEnd) || !/^#{3,} /.test(text)) continue;
+    const counted = index > findingsStart && index < findingsEnd && text.startsWith("### ");
+    if (fenced || counted) continue;
+    if (!LINE_TAG.test(text)) continue;
     const tags = [...text.matchAll(TAG)].map(match => match[1]).filter(isSeverity);
-    if (tags.length > 0) {
-      findings.push({ severity: mostSevere(tags), title: text.replace(/^#+ /, "").trim(), path: null, line: null });
-    }
+    findings.push({ severity: mostSevere(tags), title: text.replace(LINE_MARKUP, "").trim(), path: null, line: null });
   }
 
   return { ok: true, review: { findings, needsPerson, mergeConfidence: Number(score[1]) } };

@@ -1,6 +1,6 @@
 // Replays the verdict runner over the regression set and past merged pull requests:
 //   node scripts/automerge/verdict/backtest.ts [--past <n>] [--no-regression] [--models sol,opus]
-//       [--out <file.jsonl>] [--confirm-spend]
+//       [--out <file.jsonl>] [--ref <ref>] [--policy-ref <ref>] [--confirm-spend]
 // Without --confirm-spend it prints a token and cost estimate and calls no model. With it, it needs
 // OPENCODE_BIN and the CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID and CLOUDFLARE_API_TOKEN values,
 // and writes one line per review to --out.
@@ -100,6 +100,8 @@ function main(): void {
       out: { type: "string", default: "backtest.jsonl" },
       "confirm-spend": { type: "boolean", default: false },
       ref: { type: "string", default: "origin/main" },
+      // The rules every replayed review runs under, so results compare across cases.
+      "policy-ref": { type: "string", default: "origin/main" },
     },
   });
   const repo = git(process.cwd(), ["rev-parse", "--show-toplevel"]);
@@ -145,6 +147,8 @@ function main(): void {
   if (!opencodeBin || Object.values(gateway).some(value => value === "")) {
     throw new Error("--confirm-spend needs OPENCODE_BIN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID and CLOUDFLARE_API_TOKEN");
   }
+  const policySha = git(repo, ["rev-parse", values["policy-ref"]]);
+  console.log(`reviewing under REVIEW.md and instruction files from ${policySha}`);
   for (const testCase of cases) {
     const missing = [testCase.headSha, testCase.baseSha]
       .filter(sha => spawnSync("git", ["-C", repo, "cat-file", "-e", `${sha}^{commit}`]).status !== 0);
@@ -153,16 +157,23 @@ function main(): void {
     for (const model of models) {
       const workDir = mkdtempSync(join(tmpdir(), `backtest-${testCase.id}-${model}-`));
       const started = Date.now();
+      const pr = { headSha: testCase.headSha, baseSha, title: testCase.title, body: "" };
+      // A named case: one case that cannot be prepared or reviewed is recorded, and the rest run.
+      let runnerError: string | null = null;
       try {
-        const pr = { headSha: testCase.headSha, baseSha, title: testCase.title, body: "" };
-        prepareInputs(repo, workDir, model, pr, { round: 1, reviewFromSha: null });
+        prepareInputs(repo, workDir, model, pr, { round: 1, reviewFromSha: null }, policySha);
         runReview(workDir, model, opencodeBin, gateway);
+      } catch (error) {
+        runnerError = error instanceof Error ? error.message : String(error);
+      }
+      try {
         const verdict = buildVerdict(workDir, model, pr);
         appendFileSync(values.out, `${JSON.stringify({ case: testCase.id, catchable: testCase.catchable,
-          lines_changed: testCase.linesChanged, wall_ms: Date.now() - started, verdict })}\n`);
+          lines_changed: testCase.linesChanged, wall_ms: Date.now() - started, runner_error: runnerError, verdict })}\n`);
         console.log(`${testCase.id} ${model}: ${verdict.status} confidence ${verdict.merge_confidence}, ` +
           `${verdict.findings.filter(finding => finding.severity === "P0" || finding.severity === "P1").length} P0/P1, ` +
-          `needs a person ${verdict.needs_person.length}, tokens ${JSON.stringify(verdict.details.tokens)}`);
+          `needs a person ${verdict.needs_person.length}, tokens ${JSON.stringify(verdict.details.tokens)}` +
+          (runnerError === null ? "" : `, runner error: ${runnerError}`));
       } finally {
         rmSync(workDir, { recursive: true, force: true });
       }

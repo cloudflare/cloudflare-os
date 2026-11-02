@@ -42,7 +42,7 @@
       "title": "Add local Workshop trajectory evals",
       "head_sha": "8007122dc8d938b5d41eaefa8d754915df3285ad",
       "base_sha": "85facf205b2f5288b00445fa75b6f1451f400580",
-      "lines_changed": 2017,
+      "lines_changed": 3277,
       "code_reader_could_catch": true,
       "escapes": [
         {
@@ -337,5 +337,6 @@
         }
       ]
     }
-  ]
+  ],
+  "lines_changed_rule": "lines_changed counts added plus removed lines in base_sha...head_sha, the diff the reviewer reads"
 }

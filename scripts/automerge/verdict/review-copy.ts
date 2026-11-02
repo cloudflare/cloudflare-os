@@ -5,8 +5,13 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** File names an agent reads as instructions, matched at any depth and in any case. */
-const INSTRUCTION_FILES = new Set(["agents.md", "claude.md", "review.md", "contributing.md", "opencode.json", "opencode.jsonc"]);
+/**
+ * File names an agent reads as instructions, matched at any depth and in any case. opencode 1.18.33
+ * attaches the nearest AGENTS.md, CLAUDE.md or CONTEXT.md to every file its read tool returns, even
+ * with project config disabled (measured 2026-11-02), so a nested one is as live as the root one.
+ */
+const INSTRUCTION_FILES = new Set(["agents.md", "claude.md", "context.md", "review.md", "contributing.md",
+  "opencode.json", "opencode.jsonc"]);
 /** Directories an agent loads skills, agents, tools, plugins or config from, matched at any depth. */
 const INSTRUCTION_DIRS = new Set([".agents", ".opencode", ".claude"]);
 const REGULAR_FILE_MODES = new Set(["100644", "100755"]);

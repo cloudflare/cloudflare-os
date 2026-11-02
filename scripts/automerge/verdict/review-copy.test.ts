@@ -15,7 +15,7 @@ function listFiles(root: string, dir = root): string[] {
 describe("isInstructionPath", () => {
   it("matches instruction files and directories at any depth and in any case", () => {
     for (const path of ["AGENTS.md", "packages/x/AGENTS.md", "a/b/c/d/agents.md", "CLAUDE.md", "pkg/Claude.md",
-      "REVIEW.md", "docs/review.md", "CONTRIBUTING.md", "opencode.json", "packages/x/opencode.jsonc",
+      "REVIEW.md", "docs/review.md", "packages/ui/src/CONTEXT.md", "CONTRIBUTING.md", "opencode.json", "packages/x/opencode.jsonc",
       ".agents/skills/x/SKILL.md", "packages/x/.agents/skills/y/SKILL.md", ".opencode/tool/run.ts",
       "packages/x/.opencode/plugin/p.js", ".claude/settings.json", "deep/.Claude/commands/c.md"]) {
       assert.equal(isInstructionPath(path), true, path);
@@ -47,6 +47,7 @@ describe("buildReviewCopy", () => {
     "packages/x/AGENTS.md": "head package guide",
     "packages/y/deep/er/AGENTS.md": "new nested guide",
     "packages/y/CLAUDE.md": "head claude",
+    "packages/y/src/CONTEXT.md": "head context",
     "REVIEW.md": "head review rules",
     ".agents/skills/s/SKILL.md": "head skill",
     ".agents/skills/new/SKILL.md": "new skill",
@@ -72,7 +73,7 @@ describe("buildReviewCopy", () => {
   it("leaves out symlinks and reports what it replaced", () => {
     assert.equal(existsSync(join(out, "src/env")), false);
     assert.deepEqual(copy.skipped, ["src/env"]);
-    assert.equal(copy.headInstructionPaths.length, 11);
+    assert.equal(copy.headInstructionPaths.length, 12);
     assert.equal(statSync(join(out, "src/a.ts")).mode & 0o111, 0);
   });
 
