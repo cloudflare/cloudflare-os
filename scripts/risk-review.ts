@@ -68,6 +68,7 @@ import {
   type Artifact,
   type BindingExpectation,
   type Fingerprint,
+  type ProducerArtifact,
   type ProducerInput,
   type ProducerName,
   type WorkflowRun,
@@ -585,6 +586,8 @@ type Page = { per_page: number; page: number };
 /** A file or directory entry from `repos.getContent`. */
 interface ContentEntry {
   type: string;
+  /** The blob SHA, for a file. */
+  sha?: string;
   content?: string;
   encoding?: string;
 }
@@ -696,6 +699,72 @@ async function readFile(github: GitHubClient, repo: RepoRef, path: string, ref: 
   } catch (error) {
     if (error instanceof Error && isNotFound(error)) return undefined;
     throw error;
+  }
+}
+
+/** A file's blob SHA at a commit, or `undefined` when it is not a file there. */
+async function readBlobSha(github: GitHubClient, repo: RepoRef, path: string, ref: string): Promise<string | undefined> {
+  try {
+    const { data } = await github.rest.repos.getContent({ ...repo, path, ref });
+    return Array.isArray(data) || data.type !== "file" ? undefined : data.sha;
+  } catch (error) {
+    if (error instanceof Error && isNotFound(error)) return undefined;
+    throw error;
+  }
+}
+
+async function mergeBaseOf(github: GitHubClient, repo: RepoRef, base: string, head: string): Promise<string> {
+  const { data } = await github.rest.repos.compareCommitsWithBasehead({ ...repo, basehead: `${base}...${head}`, per_page: 1 });
+  return data.merge_base_commit.sha;
+}
+
+/**
+ * Why a rung 1 proof, made against the commit it names as its base, does not hold for the base this
+ * decision is about (the pull request's base, or what a merge group puts under it), or `undefined`
+ * when it does. Each proof read something from its base; that must be the same at the decision's.
+ *
+ * - `proof-actions` read every touched workflow at its base, for credentials: each must be the same
+ *   blob at both commits.
+ * - `proof-deps` read the release-age policy in `pnpm-workspace.yaml` at the merge base of its base
+ *   and the head: that blob must match the decision base's.
+ * - `proof-equivalence` and `proof-tests` built or ran the whole tree at that merge base, which no
+ *   file list can bound: they hold only when made against the decision base and the head already
+ *   contains it, so the merge base they built is the decision base and the head is what merges.
+ */
+async function staleProofError(github: GitHubClient, repo: RepoRef, { name, artifact, pull, files, decisionBase }: {
+  name: ProducerName;
+  artifact: ProducerArtifact;
+  pull: PullRequest;
+  files: ChangedFile[];
+  decisionBase: string;
+}): Promise<string | undefined> {
+  const proofBase = artifact.base_sha;
+  const sameBlob = async (path: string, at: string) => {
+    const [before, after] = await Promise.all([readBlobSha(github, repo, path, at), readBlobSha(github, repo, path, decisionBase)]);
+    return before !== undefined && before === after;
+  };
+  switch (name) {
+    case "proof-actions": {
+      if (proofBase === decisionBase) return undefined;
+      const same = await Promise.all(files.map(({ filename }) => sameBlob(filename, proofBase)));
+      return same.every(Boolean) ? undefined : `a workflow it read changed between ${proofBase.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
+    }
+    case "proof-deps": {
+      const from = await mergeBaseOf(github, repo, proofBase, pull.head.sha);
+      if (from === decisionBase) return undefined;
+      return await sameBlob("pnpm-workspace.yaml", from)
+        ? undefined
+        : `pnpm-workspace.yaml changed between ${from.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
+    }
+    case "proof-equivalence":
+    case "proof-tests": {
+      if (proofBase !== decisionBase) return `made against ${proofBase.slice(0, 7)}, not ${decisionBase.slice(0, 7)}`;
+      return await mergeBaseOf(github, repo, decisionBase, pull.head.sha) === decisionBase
+        ? undefined
+        : `the head does not contain ${decisionBase.slice(0, 7)}`;
+    }
+    default:
+      return undefined;
   }
 }
 
@@ -861,7 +930,14 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
 }
 
 /** Reads everything the decision needs about one pull request. */
-export async function readPullInputs(github: GitHubClient, context: ActionsContext, pull: PullRequest): Promise<PullInputs> {
+/**
+ * Reads everything the decision needs about one pull request.
+ *
+ * @param decisionBase The commit the pull request would land on: its base, or, in a merge group, the
+ *     commit the queue puts under it.
+ */
+export async function readPullInputs(github: GitHubClient, context: ActionsContext, pull: PullRequest, decisionBase: string):
+  Promise<PullInputs> {
   const repo = context.repo;
   const ref = { ...repo, pull_number: pull.number };
   const files = await listAll((page) => github.rest.pulls.listFiles({ ...ref, ...page }));
@@ -874,6 +950,11 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
     readReviewDecision(github, repo, pull.number),
     readProducers(github, repo, pull, context),
   ]);
+  for (const [name, input] of Object.entries(producers)) {
+    if (!isProducerName(name) || !input || !("artifact" in input)) continue;
+    const stale = await staleProofError(github, repo, { name, artifact: input.artifact, pull, files, decisionBase });
+    if (stale) producers[name] = { absent: stale };
+  }
   return { pull, files, facts, reviews, comments: [...issueComments, ...reviewComments], lastPush, reviewDecision, producers };
 }
 
@@ -881,7 +962,8 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
 interface Target {
   sha: string;
   policySha: string;
-  pulls: PullRequest[];
+  /** Each pull request, and the commit it would land on. */
+  pulls: { pull: PullRequest; base: string }[];
   mergeGroup: boolean;
   /** Set when the event names a commit but its pull requests cannot be told apart. */
   problem?: string;
@@ -899,7 +981,8 @@ async function openPullIntoDefault(github: GitHubClient, context: ActionsContext
  * base that is no entry's commit. `undefined` when no queue entry has that commit, so a branch that
  * only looks like a merge group's is never decided as one.
  */
-export function mergeGroupPulls(entries: Json, headSha: string): { numbers: number[]; baseSha: string } | undefined {
+export function mergeGroupPulls(entries: Json, headSha: string):
+  { pulls: { number: number; base: string }[]; baseSha: string } | undefined {
   const nodes = asObject(asObject(asObject(asObject(entries)?.repository)?.mergeQueue)?.entries)?.nodes;
   if (!Array.isArray(nodes)) return undefined;
   const byHead = new Map<string, { base: string; number: number }>();
@@ -912,14 +995,14 @@ export function mergeGroupPulls(entries: Json, headSha: string): { numbers: numb
       byHead.set(head, { base, number });
     }
   }
-  const numbers: number[] = [];
+  const pulls: { number: number; base: string }[] = [];
   let sha = headSha;
   for (let entry = byHead.get(sha); entry; entry = byHead.get(sha)) {
-    if (numbers.length >= byHead.size) return undefined;
-    numbers.unshift(entry.number);
+    if (pulls.length >= byHead.size) return undefined;
+    pulls.unshift({ number: entry.number, base: entry.base });
     sha = entry.base;
   }
-  return numbers.length > 0 ? { numbers, baseSha: sha } : undefined;
+  return pulls.length > 0 ? { pulls, baseSha: sha } : undefined;
 }
 
 async function resolveMergeGroup(github: GitHubClient, context: ActionsContext, run: { head_sha: string; head_branch: string | null }):
@@ -939,11 +1022,15 @@ async function resolveMergeGroup(github: GitHubClient, context: ActionsContext, 
   const group = mergeGroupPulls(response, run.head_sha);
   // The queue's ref names its newest pull request: gh-readonly-queue/<base>/pr-<number>-<base sha>.
   const named = /^gh-readonly-queue\/[^/]+\/pr-(\d+)-/.exec(run.head_branch ?? "")?.[1];
-  if (!group || Number(named) !== group.numbers.at(-1)) return undefined;
+  if (!group || Number(named) !== group.pulls.at(-1)?.number) return undefined;
   const target = { sha: run.head_sha, policySha: group.baseSha, mergeGroup: true };
-  const pulls = await Promise.all(group.numbers.map((number) => openPullIntoDefault(github, context, number)));
-  const open = pulls.filter((pull) => pull !== undefined);
-  if (open.length !== group.numbers.length) {
+  // Each pull request lands on the queue's commit under it, which holds the entries ahead of it.
+  const pulls = await Promise.all(group.pulls.map(async ({ number, base }) => {
+    const pull = await openPullIntoDefault(github, context, number);
+    return pull && { pull, base };
+  }));
+  const open = pulls.filter((entry) => entry !== undefined);
+  if (open.length !== group.pulls.length) {
     return { ...target, pulls: [], problem: "a pull request in the group is not open into the default branch" };
   }
   return { ...target, pulls: open };
@@ -990,7 +1077,7 @@ async function resolveTarget(github: GitHubClient, context: ActionsContext): Pro
   }
   if (number === undefined) return undefined;
   const pull = await openPullIntoDefault(github, context, number);
-  return pull && { sha: pull.head.sha, policySha: context.sha, pulls: [pull], mergeGroup: false };
+  return pull && { sha: pull.head.sha, policySha: context.sha, pulls: [{ pull, base: pull.base.sha }], mergeGroup: false };
 }
 
 /**
@@ -1066,8 +1153,8 @@ export async function runRiskReview({ github, context, core, app, now = new Date
     github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion, output });
   try {
     const policy = await readPolicy(github, repo, target.policySha);
-    const pulls = await Promise.all(target.pulls.map(async (pull) => {
-      const inputs = await readPullInputs(github, context, pull);
+    const pulls = await Promise.all(target.pulls.map(async ({ pull, base }) => {
+      const inputs = await readPullInputs(github, context, pull, base);
       return { inputs, decision: decide(inputs, policy, now) };
     }));
     const decisions = pulls.map(({ decision }) => decision);

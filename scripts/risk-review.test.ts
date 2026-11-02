@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
@@ -141,6 +142,8 @@ interface HarnessOptions {
   mergeQueue?: Json;
   /** Check runs another run created on the commit after this one, to test the takeover check. */
   newerCheckRun?: boolean;
+  /** Merge bases by `base...head`, where the head does not simply contain the base. */
+  mergeBases?: Record<string, string>;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -196,9 +199,11 @@ function harness(options: HarnessOptions = {}) {
         getContent: async ({ path, ref }) => {
           const text = contents.get(`${ref}:${path}`);
           if (text === undefined) throw notFound();
-          return { data: { type: "file", encoding: "base64", content: Buffer.from(text).toString("base64") } };
+          const sha = createHash("sha1").update(text).digest("hex");
+          return { data: { type: "file", sha, encoding: "base64", content: Buffer.from(text).toString("base64") } };
         },
-        compareCommitsWithBasehead: async ({ basehead }) => ({ data: { merge_base_commit: { sha: basehead.split("...")[0] ?? "" } } }),
+        compareCommitsWithBasehead: async ({ basehead }) =>
+          ({ data: { merge_base_commit: { sha: options.mergeBases?.[basehead] ?? basehead.split("...")[0] ?? "" } } }),
         listPullRequestsAssociatedWithCommit: async ({ commit_sha }) =>
           ({ data: [...pulls.values()].filter((pull) => pull.head.sha === commit_sha) }),
       },
@@ -649,7 +654,12 @@ describe("runRiskReview on a merge group", () => {
   };
 
   it("maps a merge group's commit to its two pull requests and its base", () => {
-    assert.deepEqual(mergeGroupPulls(queue, group.head_sha), { numbers: [939, 943], baseSha: group.base_sha });
+    const [first, second] = JSON.parse(read("scripts/risk-review-fixtures/merge_queue.json")).repository.mergeQueue.entries.nodes;
+    assert.deepEqual(mergeGroupPulls(queue, group.head_sha), {
+      pulls: [{ number: 939, base: group.base_sha }, { number: 943, base: first.headCommit.oid }],
+      baseSha: group.base_sha,
+    });
+    assert.equal(second.headCommit.oid, group.head_sha);
     assert.equal(mergeGroupPulls(queue, HEAD), undefined);
     assert.equal(mergeGroupPulls(null, group.head_sha), undefined);
   });
@@ -812,6 +822,94 @@ describe("runRiskReview failure", () => {
     const { calls, evaluate } = harness({ broken: true });
     await assert.rejects(evaluate("workflow_run", producerCompleted()), /HTTP 502/);
     assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["failure"]);
+  });
+});
+
+type RungOneProof = "proof-actions" | "proof-deps" | "proof-equivalence" | "proof-tests";
+
+/** A run of the proof's workflow on the test head, with a holding proof made against `BASE`. */
+function proofRun(name: RungOneProof): ProducerRun {
+  return { run: run(PRODUCERS[name].workflow), artifacts: { [`automerge-${name}`]: proofJson(name, "proof", true) } };
+}
+
+describe("runRiskReview proof freshness", () => {
+  // The relay's run for the recorded merge group; #943's slot holds a Dependabot bump of #621's
+  // ci.yml change, and lands on the group commit for #939.
+  const { merge_group: group } = JSON.parse(read("scripts/risk-review-fixtures/merge_group.json"));
+  const [first] = JSON.parse(read("scripts/risk-review-fixtures/merge_queue.json")).repository.mergeQueue.entries.nodes;
+  const landsOn: string = first.headCommit.oid;
+  const relayed = {
+    workflow_run: {
+      id: 3,
+      event: "merge_group",
+      head_sha: group.head_sha,
+      head_branch: group.head_ref.replace("refs/heads/", ""),
+      head_repository: { owner: { login: "cloudflare" }, full_name: "cloudflare/cloudflare-os" },
+      pull_requests: [],
+    },
+    repository: { default_branch: "main", full_name: "cloudflare/cloudflare-os" },
+  };
+  const recorded = JSON.parse(read("scripts/risk-review-fixtures/dependabot-actions-621.json"));
+  const ciOnly: ChangedFile[] = recorded.files.filter(({ filename }: ChangedFile) => filename === ".github/workflows/ci.yml");
+  const ci = read(".github/workflows/ci.yml");
+  const workspace = read("pnpm-workspace.yaml");
+  const bot = { login: "dependabot[bot]", type: "Bot" };
+  const queued = [pullRequest({ number: 939, head: { sha: "9".repeat(40) } }), pullRequest({ number: 943, user: bot })];
+  const policyAt = (sha: string) => ({
+    [`${sha}:${POLICY_FILES.maintainers}`]: MAINTAINERS,
+    [`${sha}:${POLICY_FILES.bands}`]: read(POLICY_FILES.bands),
+    [`${sha}:${POLICY_FILES.escapes}`]: NO_ESCAPES,
+  });
+  const queuedInput = async (name: RungOneProof, files: ChangedFile[], contents: Record<string, string>) => {
+    const { calls, evaluate } = harness({
+      pulls: queued,
+      files: { 943: files },
+      mergeQueue: fixture("merge_queue.json"),
+      runs: [proofRun(name)],
+      contents: { ...policyAt(group.base_sha), ...contents },
+    });
+    await evaluate("workflow_run", relayed);
+    return lastRecord(calls).pulls.find(({ number }) => number === 943)?.inputs[name];
+  };
+
+  it("counts proof-actions in the queue only while every workflow it read is unchanged under the pull request", async () => {
+    const same = await queuedInput("proof-actions", ciOnly, { [`${BASE}:.github/workflows/ci.yml`]: ci, [`${landsOn}:.github/workflows/ci.yml`]: ci });
+    assert.deepEqual(same, { status: "ok", holds: true });
+    const secret = ci.replace("permissions:", "env:\n  TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}\npermissions:");
+    assert.notEqual(secret, ci);
+    const changed = await queuedInput("proof-actions", ciOnly, { [`${BASE}:.github/workflows/ci.yml`]: ci, [`${landsOn}:.github/workflows/ci.yml`]: secret });
+    assert.ok(changed && "absent" in changed && /changed between/.test(changed.absent), JSON.stringify(changed));
+    const unread = await queuedInput("proof-actions", ciOnly, { [`${BASE}:.github/workflows/ci.yml`]: ci });
+    assert.ok(unread && "absent" in unread, JSON.stringify(unread));
+  });
+
+  it("counts proof-deps in the queue only while the release-age policy it read is unchanged", async () => {
+    const files = [file("packages/ui/package.json"), file("pnpm-lock.yaml")];
+    const same = await queuedInput("proof-deps", files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${landsOn}:pnpm-workspace.yaml`]: workspace });
+    assert.deepEqual(same, { status: "ok", holds: true });
+    const stricter = workspace.replace(/^minimumReleaseAge: \d+$/m, "minimumReleaseAge: 20160");
+    assert.notEqual(stricter, workspace);
+    const changed = await queuedInput("proof-deps", files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${landsOn}:pnpm-workspace.yaml`]: stricter });
+    assert.ok(changed && "absent" in changed && /pnpm-workspace\.yaml changed/.test(changed.absent), JSON.stringify(changed));
+  });
+
+  it("counts proof-equivalence and proof-tests only when made against the commit the pull request lands on", async () => {
+    for (const name of ["proof-equivalence", "proof-tests"] as const) {
+      const { calls, evaluate } = harness({ runs: [proofRun(name)] });
+      await evaluate("workflow_run", producerCompleted());
+      assert.deepEqual(lastRecord(calls).pulls[0]?.inputs[name], { status: "ok", holds: true }, name);
+      const inQueue = await queuedInput(name, [file("docs/automerge.md")], {});
+      assert.ok(inQueue && "absent" in inQueue && /made against/.test(inQueue.absent), `${name}: ${JSON.stringify(inQueue)}`);
+    }
+  });
+
+  it("counts proof-equivalence and proof-tests only when the head contains its base", async () => {
+    for (const name of ["proof-equivalence", "proof-tests"] as const) {
+      const { calls, evaluate } = harness({ runs: [proofRun(name)], mergeBases: { [`${BASE}...${HEAD}`]: "e".repeat(40) } });
+      await evaluate("workflow_run", producerCompleted());
+      const input = lastRecord(calls).pulls[0]?.inputs[name];
+      assert.ok(input && "absent" in input && /does not contain/.test(input.absent), `${name}: ${JSON.stringify(input)}`);
+    }
   });
 });
 
