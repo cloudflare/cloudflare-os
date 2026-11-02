@@ -10808,6 +10808,35 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Calls `method` on this workspace's default gadget, as it runs on main, with the one argument
+   * `argsJson` encodes, for a space sync filling the workspace in, and returns nothing of what it
+   * returns (see UserDurableObject.writeSyncedWorkspace). Called only by its owner's User DO,
+   * `ownerId`, which has checked that the sync may call that method, and refused for anyone else.
+   * Never on a client capability. A throw from the gadget is replaced by an error that does not
+   * quote it, since what the gadget throws could disclose the workspace's content to the account
+   * running the sync.
+   */
+  async writeForSpaceSync(ownerId: string, method: string, argsJson: string): Promise<void> {
+    if (this.impl.ownerId !== ownerId) throw new Error("Only the workspace owner can write to it.");
+    let gadgetId = this.impl.resolveGadgetId(undefined);
+    this.impl.getGadgetRecord(gadgetId);  // validate it exists
+    // Typed for Cap'n Web by getGadgetFacet(), but called here through native Worker RPC.
+    using gadget = await this.impl.getGadgetFacet(gadgetId) as unknown as NativeRpcStub<any>;
+    let result: unknown;
+    try {
+      result = await gadget[method](JSON.parse(argsJson));
+    } catch (error) {
+      this.impl.logger.warn("a space sync's write to a workspace's gadget failed", {
+        event: "space.sync.write.failed", operation: method, error,
+      });
+      // oxlint-disable-next-line eslint/preserve-caught-error -- a cause could quote content.
+      throw new Error("The workspace's gadget failed to take the write.");
+    }
+    // Discarded, with any stubs it holds.
+    (result as Partial<Disposable> | null | undefined)?.[Symbol.dispose]?.();
+  }
+
+  /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openWorkspaceInternal() to detect Durable Object disconnects.
    */
@@ -10815,6 +10844,38 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
              notifyClosed: NativeRpcStub<() => void>,
              shareKey?: string,
              configureObservers?: RpcStub<ObserverConfigCallback>): Promise<Overseer> {
+    let overseer =
+        await this.openSession(userId, profileId, notifyClosed, shareKey, configureObservers);
+    this.impl.recordGadgetAnalytics({
+      event_name: "gadget_opened",
+      user_id: userId,
+      source: shareKey ? "share_key" : "direct",
+    });
+    return overseer;
+  }
+
+  /**
+   * `open()` for the workspace's owner, by their own User DO acting for them with no client
+   * session behind it, as when a space sync creates, retitles or replaces the workspace (see
+   * UserDurableObject.ensureSyncedWorkspace). It is therefore not counted as the owner opening
+   * the workspace. Refused for anyone but the owner. `notifyClosed` is as for `open()`.
+   */
+  async openAsOwner(ownerId: string, profileId: string,
+                    notifyClosed: NativeRpcStub<() => void>): Promise<Overseer> {
+    if (this.impl.ownerId && this.impl.ownerId !== ownerId) {
+      throw new Error("Only the workspace owner can open it this way.");
+    }
+    // A first open makes `ownerId` the owner only once their User DO confirms the workspace.
+    return this.openSession(ownerId, profileId, notifyClosed);
+  }
+
+  // What open() and openAsOwner() share. Not JS-private, so that a test may run open() on a
+  // stand-in for this object (see openFakeOverseer() in __tests__/fixtures.ts).
+  private async openSession(userId: string, profileId: string,
+                            notifyClosed: NativeRpcStub<() => void>,
+                            shareKey?: string,
+                            configureObservers?: RpcStub<ObserverConfigCallback>)
+      : Promise<Overseer> {
     let firstOpen = !this.impl.ownerId;
     if (firstOpen) {
       // This Overseer hasn't been initialized yet.
@@ -10935,12 +10996,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         await this.impl.syncOutputsTo(clientUser);
       })();
     }
-
-    this.impl.recordGadgetAnalytics({
-      event_name: "gadget_opened",
-      user_id: userId,
-      source: shareKey ? "share_key" : "direct",
-    });
 
     if (role === "use") {
       // "use" collaborators get a restricted capability exposing only the gadget UI.

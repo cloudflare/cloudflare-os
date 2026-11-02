@@ -174,7 +174,25 @@ export type GadgetRecord = WorkspaceMetadata & {
    * workspaces only, and never sent to a client.
    */
   placement?: { parentId?: string };
+
+  /**
+   * Set on the user's own workspaces that a space sync created (see
+   * UserDurableObject.ensureSyncedWorkspace()): the connected account that synced it, the
+   * bundled blueprint it was created from, whose import methods alone a sync may call on it, and
+   * the address of the source item it was synced from, which a re-sync syncs it from again
+   * (UserDurableObject.resyncWorkspace()). A client is shown the account alone
+   * (GadgetMetadata.syncedFrom).
+   */
+  syncedFrom?: { accountId: number; blueprintId: string; sourceUrl: string };
 };
+
+/**
+ * The workspace a space sync keeps for one source item (see
+ * UserDurableObject.ensureSyncedWorkspace()), keyed by a digest of the space, the account, the
+ * blueprint and the item's source URL, since that URL may be longer than a storage key. It counts only while the
+ * user's own record of `workspaceId` exists and belongs to that space.
+ */
+export type SyncedWorkspaceRecord = { key: string; workspaceId: string };
 
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
@@ -265,6 +283,12 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // ended of those that have ended.
       spaceSyncJobs: collection<SpaceSyncJobInfo>()({
         primaryKey: "jobId",
+      }),
+      // For each source item a space sync of the user's brought into a space, the workspace it
+      // was synced into. Written before that workspace is created, so that no creation leaves a
+      // workspace no record leads back to.
+      syncedWorkspaces: collection<SyncedWorkspaceRecord>()({
+        primaryKey: "key",
       }),
     },
     singletons: {

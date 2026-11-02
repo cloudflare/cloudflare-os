@@ -225,6 +225,9 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   cancelSpaceSync(jobId: string): Promise<void> {
     return this.#user.cancelSpaceSync(jobId);
   }
+  resyncWorkspace(workspaceId: string): Promise<SpaceSyncJobInfo> {
+    return this.#user.resyncWorkspace(workspaceId);
+  }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
     return this.#user.changePassword(oldHash, newHash);
   }

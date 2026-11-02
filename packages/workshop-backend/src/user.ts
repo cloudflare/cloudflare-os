@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, SpaceInfo, isValidTeamSpaceKey, SpaceSyncJobInfo } from '@gadgets/workshop-shared/api';
-import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, SpaceSyncProgress, MAX_SPACE_SYNC_WARNINGS, MAX_SPACE_SYNC_MESSAGE_LENGTH, SPACE_SYNC_ERROR_CODES, createSpaceSyncError } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, SpaceSyncProgress, MAX_SPACE_SYNC_WARNINGS, MAX_SPACE_SYNC_MESSAGE_LENGTH, SPACE_SYNC_ERROR_CODES, createSpaceSyncError, SpaceSyncItem, SpaceSyncWrite, MAX_SPACE_SYNC_SOURCE_URL_LENGTH, MAX_SPACE_SYNC_TITLE_LENGTH, MAX_SPACE_SYNC_WRITE_BYTES } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -9,7 +9,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
-  type WorkspaceRestrictions,
+  type WorkspaceRestrictions, type SyncedWorkspaceRecord,
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
@@ -35,6 +35,7 @@ import {
   personalSpaceClaim, checkTeamSpaceKey, noSuchSpace, type WorkspaceRegistration, checkSpaceKey,
 } from "./spaces.js";
 import { BUNDLED_BLUEPRINTS } from "./generated/bundled-blueprints.js";
+import { newWorkspaceFromBlueprint } from "./blueprint-instantiation.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -87,6 +88,30 @@ type SpaceSyncAccountStub = Required<Pick<GatekeeperUser, "startSpaceSync" | "ca
 // A message an account supplies for a space-sync job, as the job keeps it (see SpaceSyncProgress).
 function clipSpaceSyncMessage(message: string): string {
   return message.slice(0, MAX_SPACE_SYNC_MESSAGE_LENGTH);
+}
+
+// The key in syncedWorkspaces of the workspace account `accountId` syncs from `sourceUrl` into
+// space `spaceKey` with blueprint `blueprintId`: a digest of the four, since a source URL may be
+// longer than a storage key.
+async function syncedWorkspaceKey(spaceKey: string, accountId: number, blueprintId: string,
+    sourceUrl: string): Promise<string> {
+  let digest = await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify([spaceKey, accountId, blueprintId, sourceUrl])));
+  return new Uint8Array(digest).toHex();
+}
+
+// `value` as JSON, or undefined if JSON cannot carry it or it takes more than `maxBytes` as
+// UTF-8, which is never fewer than its length.
+function boundedJson(value: unknown, maxBytes: number): string | undefined {
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+  if (json === undefined || json.length > maxBytes
+      || new TextEncoder().encode(json).byteLength > maxBytes) return undefined;
+  return json;
 }
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
@@ -212,11 +237,12 @@ function isRegistered(record: GadgetRecord, spaceKey: string | undefined): boole
 }
 
 // A gadget record as it leaves this object: without `registered`, `publicAccessRevision` and
-// `placement`, which are its own bookkeeping.
+// `placement`, which are its own bookkeeping, and with only the account of `syncedFrom`.
 function withoutBookkeeping<T extends GadgetRecord>({
-  registered: _registered, publicAccessRevision: _revision, placement: _placement, ...gadget
+  registered: _registered, publicAccessRevision: _revision, placement: _placement, syncedFrom,
+  ...gadget
 }: T) {
-  return gadget;
+  return { ...gadget, ...(syncedFrom && { syncedFrom: { accountId: syncedFrom.accountId } }) };
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -1572,14 +1598,37 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // (SpaceSyncLoopback) acts for that one job, and only while it is "running" and the account
   // is connected. A job that has ended never runs again, so ending it revokes the loopback.
 
-  /**
-   * AuthenticatedApi.startSpaceSync. Whether the account is still connected and whether a job
-   * already runs into the space are decided after the calls to other objects, with nothing
-   * awaited between that and recording the job, so that two starts cannot both pass.
-   */
+  /** AuthenticatedApi.startSpaceSync. */
   async startSpaceSync(accountId: number, spaceKey: string,
       { resourceUrl, parentId }: { resourceUrl: string; parentId?: string })
       : Promise<SpaceSyncJobInfo> {
+    return this.#startSpaceSync(accountId, spaceKey, resourceUrl, parentId);
+  }
+
+  /**
+   * AuthenticatedApi.resyncWorkspace: a job of the scope "item" into the space the user's own
+   * workspace `id` belongs to now, from the source item it was synced from, refused as a start
+   * is. With the job, the workspace becomes the one ensureSyncedWorkspace() keeps for that item
+   * in that space, so that the job fills it in again wherever it has moved since.
+   */
+  async resyncWorkspace(id: string): Promise<SpaceSyncJobInfo> {
+    let record = this.storage.gadgets.get(id);
+    if (!record || record.owner) throw new Error("No such workspace belonging to user.");
+    if (!record.syncedFrom) throw new Error("This workspace was not created by a space sync.");
+    let { accountId, blueprintId, sourceUrl } = record.syncedFrom;
+    let spaceKey = record.spaceKey ?? await this.#ensurePersonalSpace();
+    return this.#startSpaceSync(accountId, spaceKey, sourceUrl, undefined, {
+      key: await syncedWorkspaceKey(spaceKey, accountId, blueprintId, sourceUrl), workspaceId: id,
+    });
+  }
+
+  // Starts a job, of the scope "item" when `resyncing` is the workspace it re-syncs, as
+  // syncedWorkspaces is to keep it. Whether the account is still connected, whether a job
+  // already runs into the space, and whether that workspace is still in it, are decided after
+  // the calls to other objects, with nothing awaited between that and recording the job, so
+  // that two starts cannot both pass.
+  async #startSpaceSync(accountId: number, spaceKey: string, resourceUrl: string,
+      parentId?: string, resyncing?: SyncedWorkspaceRecord): Promise<SpaceSyncJobInfo> {
     checkSpaceKey(spaceKey);
     let blueprintId =
         this.storage.connectedAccounts.get(accountId)?.description.providesSpaceSync?.blueprintId;
@@ -1588,7 +1637,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!blueprint) {
       throw new Error("This account syncs with a blueprint this deployment does not ship.");
     }
-    await this.#space(spaceKey).checkPlacement(this.storage.profile.get().id, parentId);
+    let placement =
+        await this.#space(spaceKey).placementFor(this.storage.profile.get().id, parentId);
+    if (!placement) throw noSuchSpace();
+    if (placement.parentId !== parentId) {
+      throw new Error("This space does not list that workspace.");
+    }
     // The chokepoint where admin settings are enforced; the class it mints is not needed.
     await this.getGatekeeperClassFor(accountId, resourceUrl);
 
@@ -1597,10 +1651,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (this.#spaceSyncJobs().some(job => job.spaceKey === spaceKey && job.status === "running")) {
       throw new Error("A sync into this space is already running.");
     }
+    if (resyncing) {
+      let workspace = this.storage.gadgets.get(resyncing.workspaceId);
+      if (!workspace || !this.#belongsTo(workspace, spaceKey)) {
+        throw new Error("This workspace moved while its re-sync was starting.");
+      }
+      if (workspace.syncedFrom?.blueprintId !== blueprintId) {
+        throw new Error("This account now syncs with another blueprint than this workspace's.");
+      }
+      // A creation for the item that an ended job left under way would be shared with this job,
+      // which would then fill in the workspace it creates rather than this one.
+      if (this.#ensuringWorkspaces.has(resyncing.key)) {
+        throw new Error("An earlier sync is still creating a workspace for this source.");
+      }
+      this.storage.syncedWorkspaces.put(resyncing);
+    }
     let jobId = crypto.randomUUID();
     let job: SpaceSyncJobInfo = {
       jobId, accountId, vendorId: record.vendorId, spaceKey,
-      ...(parentId !== undefined && { parentId }),
+      ...(parentId !== undefined && { parentId }), blueprintId,
       publication: blueprint.publication ?? "use", status: "running",
       progress: { done: 0, warnings: [] }, created: new Date(),
     };
@@ -1608,8 +1677,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let target = this.ctx.exports.SpaceSyncLoopback(
         { props: { userId: this.ctx.id.toString(), accountId, jobId } });
     try {
-      await (record.account as unknown as SpaceSyncAccountStub)
-          .startSpaceSync({ jobId, resourceUrl }, target);
+      await (record.account as unknown as SpaceSyncAccountStub).startSpaceSync(
+          { jobId, resourceUrl, ...(resyncing && { scope: "item" as const }) },
+          target);
     } catch (error) {
       logger.warn("an account failed to start a space sync", {
         event: "space.sync.start.failed", vendorId: record.vendorId, accountId, error,
@@ -1659,6 +1729,172 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         ...(state === "failed" && error !== undefined && { error: clipSpaceSyncMessage(error) }),
       });
     }
+  }
+
+  /**
+   * SpaceSyncTarget.ensureWorkspace, for the loopback acting for job `jobId` through account
+   * `accountId`: the user's workspace for the source item `item` in the job's space, created if
+   * there is none, once that space lists it. Refused as #syncPlacement() refuses, and as
+   * notAllowed for a malformed source URL.
+   *
+   * One workspace per space, account, blueprint and source URL, kept in syncedWorkspaces. Concurrent calls
+   * for an item share one creation (#ensuringWorkspaces), and a creation records the id it
+   * creates the workspace under before it starts, so that the next call finds one that a crash
+   * or a lost reply cut short: it finishes a workspace that was made, waiting for its space to
+   * list it, and deletes one made only in part, which no space lists yet, before creating
+   * another.
+   */
+  async ensureSyncedWorkspace(accountId: number, jobId: string,
+      { sourceUrl, title, parentId }: SpaceSyncItem): Promise<{ workspaceId: string }> {
+    let { spaceKey, blueprintId } = this.#runningSpaceSync(accountId, jobId);
+    if (sourceUrl === "" || sourceUrl.length > MAX_SPACE_SYNC_SOURCE_URL_LENGTH) {
+      throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.notAllowed);
+    }
+    let key = await syncedWorkspaceKey(spaceKey, accountId, blueprintId, sourceUrl);
+    let { job, placement } = await this.#syncPlacement(accountId, jobId, parentId);
+    let ensuring = this.#ensuringWorkspaces.get(key);
+    if (!ensuring) {
+      ensuring = this.#ensureSyncedWorkspace(key, job, {
+        sourceUrl, title: title.slice(0, MAX_SPACE_SYNC_TITLE_LENGTH),
+        parentId: placement.parentId ?? job.parentId,
+      }).finally(() => this.#ensuringWorkspaces.delete(key));
+      this.#ensuringWorkspaces.set(key, ensuring);
+    }
+    return { workspaceId: await ensuring };
+  }
+
+  /**
+   * SpaceSyncTarget.writeWorkspace, for the loopback acting for job `jobId` through account
+   * `accountId`: calls `write.method` with `write.args`, as JSON carries them, on the default
+   * gadget of the user's own workspace `workspaceId` (OverseerDurableObject.writeForSpaceSync).
+   * Refused as #syncedWorkspace() refuses, and as notAllowed unless both the account's
+   * declaration and the job's bundled blueprint, which the workspace was created from, list the
+   * method, it is neither `then` nor a name Object.prototype has, and the arguments are within
+   * MAX_SPACE_SYNC_WRITE_BYTES.
+   */
+  async writeSyncedWorkspace(accountId: number, jobId: string, workspaceId: string,
+      { method, args }: SpaceSyncWrite): Promise<void> {
+    let { declared, bundled } = await this.#syncedWorkspace(accountId, jobId, workspaceId);
+    let json = boundedJson(args, MAX_SPACE_SYNC_WRITE_BYTES);
+    // The account's declaration is not validated on arrival, so its list may be anything. A name
+    // the gadget's stub would answer from Object.prototype, or `then`, which would make it look
+    // like a promise, is never one of the gadget's own methods, whatever the lists say.
+    if (![declared.importMethods, bundled.importMethods]
+        .every(methods => Array.isArray(methods) && methods.includes(method))
+        || method === "then" || method in Object.prototype || json === undefined) {
+      throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.notAllowed);
+    }
+    let overseers = this.ctx.exports.OverseerDurableObject;
+    await overseers.get(overseers.idFromString(workspaceId))
+        .writeForSpaceSync(this.ctx.id.toString(), method, json);
+  }
+
+  /**
+   * SpaceSyncTarget.setWorkspaceTitle, for the loopback acting for job `jobId` through account
+   * `accountId`: retitles the user's own workspace `workspaceId` as its owner does, and waits
+   * for its space's listing to follow. Refused as #syncedWorkspace() refuses.
+   */
+  async setSyncedWorkspaceTitle(accountId: number, jobId: string, workspaceId: string,
+      title: string): Promise<void> {
+    await this.#syncedWorkspace(accountId, jobId, workspaceId);
+    using workspace = await this.#openOwnWorkspace(workspaceId);
+    await workspace.setTitle(title.slice(0, MAX_SPACE_SYNC_TITLE_LENGTH));
+    await this.#inSpaceOrder(() => this.#syncSpace(workspaceId));
+  }
+
+  // The creations ensureSyncedWorkspace() has under way, by their key in syncedWorkspaces.
+  #ensuringWorkspaces = new Map<string, Promise<string>>();
+
+  // The creation behind ensureSyncedWorkspace() of the workspace for `item` of `job`, whose key
+  // in syncedWorkspaces is `key`, placed under `item.parentId`. Returns its id.
+  async #ensureSyncedWorkspace(key: string, job: SpaceSyncJobInfo,
+      { sourceUrl, title, parentId }: SpaceSyncItem): Promise<string> {
+    let kept = this.storage.syncedWorkspaces.get(key)?.workspaceId;
+    let record = kept === undefined ? undefined : this.storage.gadgets.get(kept);
+    if (record && this.#belongsTo(record, job.spaceKey)) {
+      if (isFullyCreated(record)) return this.#finishSyncedWorkspace(record.id, job, sourceUrl);
+      using unfinished = await this.#openOwnWorkspace(record.id);
+      await unfinished.deleteSelf();
+    }
+    let id = this.ctx.exports.OverseerDurableObject.newUniqueId().toString();
+    this.storage.syncedWorkspaces.put({ key, workspaceId: id });
+    using _created = await newWorkspaceFromBlueprint(this.ctx, this.env,
+        this.ctx.exports.UserDurableObject.get(this.ctx.id),
+        workspaceId => this.#openOwnWorkspace(workspaceId),
+        job.blueprintId, {}, {
+          id, title, spaceKey: isValidTeamSpaceKey(job.spaceKey) ? job.spaceKey : undefined,
+          parentId, publicAccess: job.publication,
+        });
+    return this.#finishSyncedWorkspace(id, job, sourceUrl);
+  }
+
+  // Marks the user's own workspace `id` as synced by `job` from `sourceUrl`, and waits for its
+  // space to list it as it is now. Returns its id, or is refused as workspaceGone if it no longer
+  // belongs to the job's space by then: that space refused it, so it fell back (see #syncSpace()).
+  async #finishSyncedWorkspace(id: string, { accountId, blueprintId, spaceKey }: SpaceSyncJobInfo,
+      sourceUrl: string): Promise<string> {
+    this.#amendGadget(id, record => { record.syncedFrom = { accountId, blueprintId, sourceUrl }; });
+    await this.#inSpaceOrder(() => this.#syncSpace(id));
+    let record = this.storage.gadgets.get(id);
+    if (!record || !this.#belongsTo(record, spaceKey)) {
+      throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.workspaceGone);
+    }
+    return id;
+  }
+
+  // Job `jobId` as #runningSpaceSync() finds it, once its space has confirmed that the user may
+  // still add workspaces to it, with where it would place one asked for under `parentId` (see
+  // SpaceModel.placementFor) and what its account declares (#syncDeclaration()). Refused as
+  // notAllowed while they may not.
+  async #syncPlacement(accountId: number, jobId: string, parentId?: string) {
+    let { spaceKey } = this.#runningSpaceSync(accountId, jobId);
+    let placement =
+        await this.#space(spaceKey).placementFor(this.storage.profile.get().id, parentId);
+    if (!placement) throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.notAllowed);
+    // The job may have ended while its space was asked.
+    let job = this.#runningSpaceSync(accountId, jobId);
+    return { job, placement, ...this.#syncDeclaration(job) };
+  }
+
+  // What #syncPlacement() returns, once the user's own workspace `workspaceId` is one that
+  // account `accountId` synced with the job's blueprint and that belongs to the job's space.
+  // Refused as workspaceGone otherwise.
+  async #syncedWorkspace(accountId: number, jobId: string, workspaceId: string) {
+    let checked = await this.#syncPlacement(accountId, jobId);
+    let record = this.storage.gadgets.get(workspaceId);
+    let synced = record?.syncedFrom;
+    if (!record || !isFullyCreated(record) || synced?.accountId !== accountId
+        || synced.blueprintId !== checked.job.blueprintId
+        || !this.#belongsTo(record, checked.job.spaceKey)) {
+      throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.workspaceGone);
+    }
+    return checked;
+  }
+
+  // What the connected account running `job` declares for space sync, and the bundled blueprint
+  // the job was started with. Refused as notAllowed once the account declares none, or names
+  // another blueprint than it did then, or the deployment no longer ships that one.
+  #syncDeclaration({ accountId, blueprintId }: SpaceSyncJobInfo) {
+    let declared = this.storage.connectedAccounts.get(accountId)?.description.providesSpaceSync;
+    let bundled = BUNDLED_BLUEPRINTS.find(entry => entry.blueprintId === blueprintId);
+    if (!declared || declared.blueprintId !== blueprintId || !bundled) {
+      throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.notAllowed);
+    }
+    return { declared, bundled };
+  }
+
+  // Whether `record` is of the user's own workspace and it belongs to space `spaceKey`.
+  #belongsTo(record: GadgetRecord, spaceKey: string): boolean {
+    return !record.owner && (record.spaceKey ?? this.storage.personalSpaceKey.get()) === spaceKey;
+  }
+
+  // Opens the user's own workspace `id` as its owner, for kernel code acting for them with no
+  // client session behind it (OverseerDurableObject.openAsOwner). The caller disposes what this
+  // returns.
+  #openOwnWorkspace(id: string) {
+    let overseers = this.ctx.exports.OverseerDurableObject;
+    return overseers.get(overseers.idFromString(id))
+        .openAsOwner(this.ctx.id.toString(), this.storage.profile.get().id, () => {});
   }
 
   // The jobs kept, newest first.

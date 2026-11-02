@@ -240,8 +240,8 @@ describe("starting a space sync", () => {
 
     expect(job).toEqual({
       jobId: expect.any(String), accountId: docs.accountId, vendorId: VENDOR,
-      spaceKey: alice.personal, publication: "build", status: "running",
-      progress: { done: 0, warnings: [] }, created: expect.any(Date),
+      spaceKey: alice.personal, blueprintId: BUNDLED.build, publication: "build",
+      status: "running", progress: { done: 0, warnings: [] }, created: expect.any(Date),
     });
     expect(docs.started).toEqual([
       { request: { jobId: job.jobId, resourceUrl: SOURCE }, target: expect.any(SpaceSyncLoopback) },
@@ -622,7 +622,8 @@ describe("the jobs kept", () => {
     // started, and two, older than all of them, still running.
     let planted = (n: number, status: SpaceSyncJobInfo["status"]): SpaceSyncJobInfo => ({
       jobId: `planted-${n}`, accountId: docs.accountId, vendorId: VENDOR,
-      spaceKey: `team-${n}`, publication: "use", status, progress: { done: 0, warnings: [] },
+      spaceKey: `team-${n}`, blueprintId: BUNDLED.build, publication: "use", status,
+      progress: { done: 0, warnings: [] },
       created: minute(n), ...(status !== "running" && { finished: minute(100 - n) }),
     });
     await runInDurableObject(alice.user, (instance: UserDurableObject) => {

@@ -79,6 +79,7 @@ export async function openFakeOverseer(
   let userId = role === "build" ? ownerId : "viewer-id";
   let overseer = {
     open: OverseerDurableObject.prototype.open,
+    openSession: OverseerDurableObject.prototype["openSession"],
     impl: {
       ownerId,
       assertGatekeeperUsable: () => {},
@@ -112,6 +113,6 @@ export async function openFakeOverseer(
       }),
       ...opts.impl,
     },
-  } satisfies Pick<OverseerDurableObject, "open"> & { impl: object };
+  } satisfies Pick<OverseerDurableObject, "open"> & { openSession: unknown; impl: object };
   return overseer.open(userId, `${userId}-profile`, new NativeRpcStub<() => void>(() => {}));
 }

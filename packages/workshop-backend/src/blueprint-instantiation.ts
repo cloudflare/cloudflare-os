@@ -16,6 +16,11 @@ import type { UserDurableObject } from "./user.js";
 
 /** What a workspace created from a blueprint is called, where it goes and how it is published. */
 export type BlueprintInstantiationOptions = {
+  /**
+   * The new workspace's Overseer id, which the caller allocated with `newUniqueId()` to record it
+   * before the workspace exists; omitted, a fresh one.
+   */
+  id?: string;
   /** The workspace's title; omitted, the blueprint's. */
   title?: string;
   /**
@@ -51,13 +56,13 @@ export function fromApiOptions(options: Parameters<AuthenticatedApi["newGadgetFr
  * opens a workspace for that user, gives them on it. The caller disposes what this returns.
  */
 export async function newWorkspaceFromBlueprint(
-    ctx: ExecutionContext,
+    ctx: ExecutionContext | DurableObjectState,
     env: Cloudflare.Env,
     user: DurableObjectStub<UserDurableObject>,
     open: (id: string) => Promise<NativeRpcStub<Overseer>>,
     blueprintId: string,
     bindings: Record<string, BlueprintBindingAssignment>,
-    { title, spaceKey, parentId, publicAccess }: BlueprintInstantiationOptions = {},
+    { id: givenId, title, spaceKey, parentId, publicAccess }: BlueprintInstantiationOptions = {},
 ): Promise<NativeRpcStub<Overseer>> {
   if (spaceKey !== undefined) checkTeamSpaceKey(spaceKey);
   let overseers = ctx.exports.OverseerDurableObject;
@@ -68,7 +73,7 @@ export async function newWorkspaceFromBlueprint(
   title ??= kvRecord.metadata.title;
 
   // 2. Create new Overseer DO (same as newWorkspace()).
-  let id = overseers.newUniqueId().toString();
+  let id = givenId ?? overseers.newUniqueId().toString();
   await user.newGadget(id, title, spaceKey, parentId);
   // Released if a later step throws; on return it passes to the caller.
   using owned = new DisposableStack();

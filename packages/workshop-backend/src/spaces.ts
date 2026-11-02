@@ -351,15 +351,13 @@ export class SpaceModel {
   }
 
   /**
-   * Refuses unless `profileId` may add workspaces they own to the space (see
-   * `canAddWorkspaces`), as `noSuchSpace` does, and, given a `parentId`, unless the space lists
-   * that entry to place them under.
+   * Null unless `profileId` may add workspaces they own to the space (see `canAddWorkspaces`),
+   * and otherwise the entry a workspace of theirs asking to go under `parentId` would be placed
+   * under now: that one, if the space lists it, or none, the top of the tree.
    */
-  checkPlacement(profileId: string, parentId?: string): void {
-    if (!this.canAddWorkspaces(profileId)) throw noSuchSpace();
-    if (parentId !== undefined && !this.storage.workspaces.get(parentId)) {
-      throw new Error("This space does not list that workspace.");
-    }
+  placementFor(profileId: string, parentId?: string): { parentId?: string } | null {
+    if (!this.canAddWorkspaces(profileId)) return null;
+    return parentId !== undefined && this.storage.workspaces.get(parentId) ? { parentId } : {};
   }
 
   /**
@@ -946,12 +944,12 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * `SpaceModel.checkPlacement`. Called only by the User DO of `profileId`, which states its own
-   * user's profile id, before it starts a space sync that will add workspaces of theirs here
-   * (see `UserDurableObject.startSpaceSync`).
+   * `SpaceModel.placementFor`. Called only by the User DO of `profileId`, which states its own
+   * user's profile id, when it starts a space sync that will add workspaces of theirs here and
+   * whenever that sync adds or fills one in (see `UserDurableObject.startSpaceSync`).
    */
-  async checkPlacement(profileId: string, parentId?: string): Promise<void> {
-    this.#model.checkPlacement(profileId, parentId);
+  async placementFor(profileId: string, parentId?: string): Promise<{ parentId?: string } | null> {
+    return this.#model.placementFor(profileId, parentId);
   }
 
   /**
