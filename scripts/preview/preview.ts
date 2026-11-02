@@ -5,9 +5,6 @@
 //
 //   node scripts/preview/preview.ts config          regenerate wrangler.staging.jsonc only
 //   node scripts/preview/preview.ts deploy          build + deploy the preview instance
-//   node scripts/preview/preview.ts deploy --prebuilt <release dir>
-//                                                    deploy a build-release.ts output unbundled,
-//                                                    building nothing (see prebuilt.ts)
 //   node scripts/preview/preview.ts delete          tear it down
 //   node scripts/preview/preview.ts sweep           tear down every abandoned preview
 //   ... --dry-run                                    print the plan, touch no network
@@ -54,7 +51,6 @@ import {
   writePreviewConfig,
   type StagingConfig,
 } from "./staging-config.ts";
-import { readReleaseManifest, stagePrebuilt } from "./prebuilt.ts";
 
 /** The subcommands this script accepts. */
 type Command = "config" | "deploy" | "delete" | "sweep";
@@ -126,7 +122,7 @@ interface FetchedPullRequest {
   state?: string;
 }
 
-const USAGE = "Usage: preview.ts <config|deploy|delete|sweep> [--dry-run] [--prebuilt <release dir>]";
+const USAGE = "Usage: preview.ts <config|deploy|delete|sweep> [--dry-run]";
 const OUTPUT_DIR = join(ROOT, "output");
 const PREVIEW_COMMENT = join(OUTPUT_DIR, "preview-comment.md");
 // The router preview's origin, for the smoke step (scripts/automerge/proofs/smoke.ts).
@@ -158,17 +154,12 @@ const WRANGLER_PACKAGE = "https://pkg.pr.new/wrangler@14416";
 // 4.135.0 or later for it.
 const RELEASED_WRANGLER = join(ROOT, "node_modules", ".bin", "wrangler");
 
-function parseArgs(argv: string[]): { command: Command; dryRun: boolean; prebuilt: string | undefined } {
+function parseArgs(argv: string[]): { command: Command; dryRun: boolean } {
   const command = argv[0] as Command;
   if (!["config", "deploy", "delete", "sweep"].includes(command)) throw new Error(USAGE);
-  let dryRun = false;
-  let prebuilt: string | undefined;
-  for (let i = 1; i < argv.length; i++) {
-    if (argv[i] === "--dry-run") dryRun = true;
-    else if (argv[i] === "--prebuilt" && command === "deploy" && argv[i + 1]) prebuilt = argv[++i];
-    else throw new Error(`unknown argument: ${argv[i]}\n${USAGE}`);
-  }
-  return { command, dryRun, prebuilt };
+  const unknown = argv.slice(1).filter((arg) => arg !== "--dry-run");
+  if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}\n${USAGE}`);
+  return { command, dryRun: argv.includes("--dry-run") };
 }
 
 function runAsync(
@@ -598,7 +589,7 @@ function tiers(packages: readonly DeployablePackage[]): {
   };
 }
 
-async function deploy({ dryRun, prebuilt }: { dryRun: boolean; prebuilt: string | undefined }): Promise<void> {
+async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
   // First, before a single config is written: a missing CF_ACCESS_AUD/CF_ACCESS_ISS has to fail
   // here rather than after eighteen previews are live with whatever auth they defaulted to, and a
   // gatekeeper's OAuth app split across a renamed secret rather than after that gatekeeper is live
@@ -607,12 +598,6 @@ async function deploy({ dryRun, prebuilt }: { dryRun: boolean; prebuilt: string 
   const oauthApps = resolveGatekeeperSecrets();
   const { previewName, workersDevHost, baseUrl, packages } = generatePreviewConfigs();
   const { gatekeepers, backend, router } = tiers(packages);
-  if (prebuilt) {
-    const manifest = readReleaseManifest(prebuilt);
-    for (const pkg of packages) {
-      writePreviewConfig(pkg.dir, stagePrebuilt(pkg, readConfig(pkg.dir), prebuilt, manifest));
-    }
-  }
 
   if (dryRun) {
     console.log(`\ndry-run plan for preview "${previewName}" at ${baseUrl}:`);
@@ -633,7 +618,7 @@ async function deploy({ dryRun, prebuilt }: { dryRun: boolean; prebuilt: string 
 
   const wrangler = preparePreviewWrangler();
   try {
-    await waitForAll(prebuilt ? [wrangler.ready] : [wrangler.ready, buildWorkspace()]);
+    await waitForAll([wrangler.ready, buildWorkspace()]);
 
     // Keyed by worker name, because that is what a service binding names.
     const gatekeeperPreviews = await mapWithConcurrency(gatekeepers, GATEKEEPER_CONCURRENCY,

@@ -91,12 +91,6 @@ export interface StagingConfig extends WranglerConfig {
   ai?: BindingDecl;
   /** Passed through untouched from the committed config. */
   unsafe?: unknown;
-  /** Upload `main` and its sibling modules as they are; set by `deploy --prebuilt` (prebuilt.ts). */
-  no_bundle?: boolean;
-  /** With `no_bundle`, upload the other modules under `base_dir` that `rules` match. */
-  find_additional_modules?: boolean;
-  /** The directory module names are relative to. */
-  base_dir?: string;
   /** The per-preview overrides. */
   previews?: PreviewOverrides;
 }

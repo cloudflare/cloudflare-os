@@ -34,11 +34,8 @@ wrangler.staging.jsonc
 # Site-specific dev server configs.
 wrangler.dev.jsonc
 
-# Scratch output from scripts/preview (the PR-preview comment body and URL), and the release build
-# `preview.ts deploy --prebuilt` stages per worker.
+# Scratch output from scripts/preview (the PR-preview comment body and URL).
 /output/
-.preview-prebuilt/
-.preview-prebuilt-assets/
 
 # Mutation runs (scripts/automerge/proofs/tests.ts).
 stryker.automerge.json

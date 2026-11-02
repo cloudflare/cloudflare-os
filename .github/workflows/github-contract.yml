@@ -55,12 +55,13 @@ jobs:
         if: steps.contract.outputs.configured == 'true'
         run: corepack enable
 
+      # No cache in a job that holds a credential (the cache note in preview.yml's header).
       - name: Set up Vite+, Node.js and dependencies
         if: steps.contract.outputs.configured == 'true'
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: true
+          cache: false
           run-install: true
 
       - name: Check GitHub's contract
