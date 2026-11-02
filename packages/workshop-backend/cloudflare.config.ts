@@ -80,4 +80,6 @@ export const migrations: DurableObjectMigration[] = [
   { tag: "v3", new_sqlite_classes: ["UserDirectoryDurableObject"] },
   // Spaces: one SpaceDurableObject per space, addressed by the space's key.
   { tag: "v4", new_sqlite_classes: ["SpaceDurableObject"] },
+  // The space directory: one SpaceDirectoryDurableObject listing the spaces open to visitors.
+  { tag: "v5", new_sqlite_classes: ["SpaceDirectoryDurableObject"] },
 ];

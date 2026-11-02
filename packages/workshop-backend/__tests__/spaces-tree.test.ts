@@ -614,8 +614,9 @@ describe("a space whose entries were stored before it had a tree", () => {
     expect(await space(key).open(mallory.profile.id)).toBeNull();
 
     await evictDurableObject(space(key));
-    expect(await tree()).toEqual(
-        { version: 1, roots: ["feb", "jan", "mar"], publishedRoots: ["jan", "mar"] });
+    expect(await tree()).toEqual({
+      version: SPACE_STORAGE_VERSION, roots: ["feb", "jan", "mar"], publishedRoots: ["jan", "mar"],
+    });
     expect(await listing(key, alice)).toEqual(["mar", "feb", "jan"]);
     expect(await listing(key, mallory)).toEqual(["mar", "jan"]);
 
@@ -629,7 +630,8 @@ describe("a space whose entries were stored before it had a tree", () => {
     // Woken again, it builds nothing: an entry stored the old way since stays out of the index.
     await writeLegacy(legacy("apr", 4));
     await evictDurableObject(space(key));
-    expect(await tree()).toMatchObject({ version: 1, roots: ["jan", "mar", "new"] });
+    expect(await tree())
+        .toMatchObject({ version: SPACE_STORAGE_VERSION, roots: ["jan", "mar", "new"] });
   });
 
   it("stores a space it claims at the current version, so that it has nothing to build",

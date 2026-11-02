@@ -1,10 +1,10 @@
 // Spaces: a space is a key, a display name, a member list and a listing of the workspaces that
 // belong to it (see docs/spaces.md).
 //
-// Each space is one Durable Object (`SpaceDurableObject`), addressed by the space's key. There is
-// no directory of spaces: a key is taken once the object under it has been claimed, and that
-// object's member list is the only authority on who belongs to the space. Every member's User DO
-// keeps a presentation-only mirror of their memberships, which the space pushes to.
+// Each space is one Durable Object (`SpaceDurableObject`), addressed by the space's key. Nothing
+// else holds keys: a key is taken once the object under it has been claimed, and that object's
+// member list is the only authority on who belongs to the space. Every member's User DO keeps a
+// presentation-only mirror of their memberships, which the space pushes to.
 //
 // The listing of workspaces runs the other way. Which space a workspace belongs to is recorded by
 // its owner's User DO, which registers the workspace here and keeps the entry current; the space
@@ -33,7 +33,9 @@
 // with the rest). Someone who is not a member may open the space while such an entry sits at
 // the top of its tree, as a visitor: they see its info and the published entries with no
 // unpublished entry above them, and nothing else of it. A visitor holds no role in the space,
-// so the space gives them none on a workspace and no lease.
+// so the space gives them none on a workspace and no lease. While it is open to visitors, the
+// space is listed in the space directory (`SpaceDirectoryDurableObject`), a presentation-only
+// mirror for finding it, which the space pushes to (see `SpaceModel.listed`).
 //
 // Those same entries are the visible ones, and a workspace's publication admits anyone only
 // while it is visible, which its Overseer asks through its owner's User DO and the space
@@ -47,7 +49,7 @@
 //
 // The rules live in `SpaceModel`, pure logic over typed storage so it is unit-testable; the
 // Durable Object is a thin shell adding the account lookup, the mirror pushes and the alarm that
-// delivers the revocations.
+// delivers the revocations and the pushes to the space directory.
 
 import { DurableObject } from "cloudflare:workers";
 import { RpcTarget } from "capnweb";
@@ -59,8 +61,8 @@ import {
 } from "@gadgets/workshop-shared/api";
 import {
   makeSpaceStorage, migrateSpaceStorage, PUBLICATION_LEASE, SPACE_STORAGE_VERSION,
-  type SpaceLease, type SpaceRecord, type SpaceRevocation, type SpaceStorage,
-  type SpaceWorkspaceRecord,
+  type SpaceDirectoryState, type SpaceLease, type SpaceRecord, type SpaceRevocation,
+  type SpaceStorage, type SpaceWorkspaceRecord,
 } from "./storage-schema/space-storage.js";
 import { PLACEHOLDER_TITLES } from "./storage-schema/overseer-storage.js";
 import { createWorkshopLogger } from "./observability";
@@ -77,9 +79,13 @@ const MAX_SPACE_NAME_LENGTH = 100;
 const MAX_FORMER_SLUGS = 32;
 
 // The revocations one run of the alarm attempts, and the bounds of the wait before a revocation
-// is attempted again, which doubles each time its attempt fails.
+// or a push to the space directory is attempted again, which doubles each time its attempt fails.
 const REVOCATION_BATCH = 16;
-const REVOCATION_RETRY_MS = { first: 1_000, longest: 5 * 60_000 };
+const RETRY_MS = { first: 1_000, longest: 5 * 60_000 };
+
+// The longest the alarm waits on the space directory to take a push, after which it counts the
+// push as not taken, so that a directory which does not answer holds up the revocations no longer.
+const DIRECTORY_PUSH_TIMEOUT_MS = 5_000;
 
 // The most steps a walk up the tree takes before taking it for a cycle, which only corrupt
 // storage holds: the space refuses every move that would close one.
@@ -179,6 +185,13 @@ function inOrder(a: SpaceWorkspaceRecord, b: SpaceWorkspaceRecord): number {
       || b.created.getTime() - a.created.getTime();
 }
 
+// `delivery`, whose attempt at `now` failed, due again after a wait twice as long as its last,
+// within `RETRY_MS`.
+function retried<T extends { due: number; retryMs: number }>(delivery: T, now: number): T {
+  let retryMs = Math.min(RETRY_MS.longest, delivery.retryMs * 2 || RETRY_MS.first);
+  return { ...delivery, due: now + retryMs, retryMs };
+}
+
 // Puts `entry` under `parentId`, or at the top of the tree when it is undefined, in the record
 // alone: the caller writes it.
 function setParent(entry: SpaceWorkspaceRecord, parentId: string | undefined): void {
@@ -246,8 +259,17 @@ export class SpaceModel {
     let info = this.info;
     let role = this.roleOf(profileId);
     if (role) return info && { ...info, role };
+    return this.listed ? info : undefined;
+  }
+
+  /**
+   * Whether the space is open to visitors, because a published workspace sits at the top of its
+   * tree (see `infoFor`), and so belongs in the space directory. Every change that can flip it
+   * records the new answer for the directory (see `#relist`).
+   */
+  get listed(): boolean {
     let [publishedRoot] = this.storage.workspaces.byPublishedRoot.list({ limit: 1 });
-    return publishedRoot && info;
+    return publishedRoot !== undefined;
   }
 
   /** Space.listMembers: any member. A personal space lists its owner alone (see `roleOf`). */
@@ -376,6 +398,7 @@ export class SpaceModel {
       this.storage.workspaces.put(entry);
     }
     if (unpublished) this.#revokeHidden();
+    this.#relist();
     return true;
   }
 
@@ -400,6 +423,7 @@ export class SpaceModel {
     this.storage.workspaces.delete(id);
     this.#renumber(siblings);
     this.#revoke(this.storage.leases.list({ prefix: `${id}:` }));
+    this.#relist();
   }
 
   /**
@@ -462,12 +486,40 @@ export class SpaceModel {
 
   /**
    * Keeps `revocation`, whose attempt at `now` its workspace's Overseer did not answer, for
-   * another after a wait twice as long as its last, within `REVOCATION_RETRY_MS`.
+   * another after a wait twice as long as its last, within `RETRY_MS`.
    */
   deferred(revocation: SpaceRevocation, now: number): void {
-    let { first, longest } = REVOCATION_RETRY_MS;
-    let retryMs = Math.min(longest, revocation.retryMs * 2 || first);
-    this.storage.revocations.put({ ...revocation, due: now + retryMs, retryMs });
+    this.storage.revocations.put(retried(revocation, now));
+  }
+
+  /**
+   * The state last recorded for the space directory (see `#relist`), while it is still to push:
+   * at `due`, which is later than now while it waits out a failed attempt.
+   */
+  get pendingDirectoryPush(): SpaceDirectoryState | undefined {
+    let state = this.storage.directory.get();
+    return state?.pushed === false ? state : undefined;
+  }
+
+  /**
+   * Records that the space directory took `state`, unless a newer state has been recorded since,
+   * which is still to push.
+   */
+  directoryPushed(state: SpaceDirectoryState): void {
+    if (this.storage.directory.get()?.rev === state.rev) {
+      this.storage.directory.put({ ...state, pushed: true });
+    }
+  }
+
+  /**
+   * Keeps `state`, whose push at `now` the space directory did not take, for another attempt as
+   * a revocation is kept (see `deferred`), unless a newer state has been recorded since, which
+   * is due at once.
+   */
+  directoryPushDeferred(state: SpaceDirectoryState, now: number): void {
+    if (this.storage.directory.get()?.rev === state.rev) {
+      this.storage.directory.put(retried(state, now));
+    }
   }
 
   /**
@@ -599,6 +651,7 @@ export class SpaceModel {
     this.storage.workspaces.put(entry);
     this.#renumber(siblings);
     if (reparented) this.#revokeHidden();
+    this.#relist();
   }
 
   // Refuses `parentId` as the parent of entry `id`: an entry the listing does not hold, and `id`
@@ -694,6 +747,18 @@ export class SpaceModel {
     }));
   }
 
+  // Records whether the space is `listed`, for the space directory, if the state it last recorded
+  // says otherwise, or is absent while it is listed: with a higher `rev`, not yet pushed, and due
+  // at once. Called after every change that can flip it, which writes an entry's `published` or
+  // `parentId`; any other change leaves the state as it is.
+  #relist(): void {
+    let isListed = this.listed;
+    let state = this.storage.directory.get();
+    if (isListed === (state?.listed ?? false)) return;
+    this.storage.directory.put(
+        { listed: isListed, rev: (state?.rev ?? 0) + 1, pushed: false, due: 0, retryMs: 0 });
+  }
+
   // Queues a revocation of `lease`, due at once.
   #queue({ workspace, profile }: SpaceLease): void {
     let seq = this.storage.nextRevocation.get();
@@ -739,8 +804,9 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
     this.#model = new SpaceModel(storage);
     // Before any event is delivered, the storage is brought up to date, and then a personal
     // space's members besides its owner are removed, their mirrors told without waiting
-    // (`#mirror` logs a failure, healed on the member's next open). A failure is logged, not
-    // thrown, which would reset the object, and what it leaves undone is done on a later wake.
+    // (`#mirror` logs a failure, healed on the member's next open), and the alarm is set for what
+    // is left to deliver. A failure is logged, not thrown, which would reset the object, and what
+    // it leaves undone is done on a later wake.
     // Until then whoever is left in a personal space has no role, and the tree's indexes miss
     // the entries stored before them: none of those opens the space to a non-member (see
     // `SpaceModel.infoFor`), and placing, moving or dropping an entry may misorder its siblings,
@@ -749,7 +815,7 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
       try {
         migrateSpaceStorage(storage);
         let pruned = this.#model.pruneNonOwnerMembers();
-        if (pruned.length > 0) await this.#deliverRevocations();
+        await this.#setAlarm();
         for (let profileId of pruned) void this.#mirror(profileId);
       } catch (error) {
         logger.error("failed to bring a space up to date as it woke", {
@@ -802,7 +868,7 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
     let profile = await this.ctx.exports.UserDurableObject.getByName(username).whoamiIfExists();
     if (!profile) return null;
     let member = this.#model.setMemberRole(caller, profile, role);
-    await this.#deliverRevocations();
+    await this.#setAlarm();
     await this.#mirror(profile.id);
     return member;
   }
@@ -810,7 +876,7 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   /** Space.removeMember, as `caller`. */
   async removeMember(caller: string, profileId: string): Promise<void> {
     let removed = this.#model.removeMember(caller, profileId);
-    await this.#deliverRevocations();
+    await this.#setAlarm();
     if (removed) await this.#mirror(profileId);
   }
 
@@ -833,7 +899,7 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   async moveWorkspace(caller: string, id: string, parentId: string | null, beforeId?: string)
       : Promise<void> {
     this.#model.moveWorkspace(caller, id, parentId, beforeId);
-    await this.#deliverRevocations();
+    await this.#setAlarm();
   }
 
   /**
@@ -843,14 +909,14 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   async attachWorkspaces(owner: AiChatAuthorInfo, registrations: WorkspaceRegistration[])
       : Promise<boolean> {
     let attached = this.#model.attachWorkspaces(owner, registrations);
-    await this.#deliverRevocations();
+    await this.#setAlarm();
     return attached;
   }
 
   /** `SpaceModel.detachWorkspace`. Called only by the User DO of `ownerId`, as above. */
   async detachWorkspace(id: string, ownerId: string): Promise<void> {
     this.#model.detachWorkspace(id, ownerId);
-    await this.#deliverRevocations();
+    await this.#setAlarm();
   }
 
   /**
@@ -872,13 +938,14 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
    * that the profile no longer holds a role through this space, or for a publication lease that
    * the workspace may no longer be visible (`OverseerDurableObject.revokeSpaceAccess`), and takes
    * it off the queue only once that call has returned. One whose call fails is kept for a later
-   * run (`SpaceModel.deferred`), which holds up no other. While any remain the alarm is set
-   * again, for when the next is due.
+   * run (`SpaceModel.deferred`), which holds up no other. Beside them it pushes the space's
+   * state to the space directory, if that is due, waiting on it for a bounded time (see
+   * `#pushToDirectory`). While anything remains the alarm is set again, for when the next is due.
    */
   async alarm(): Promise<void> {
     let overseers = this.ctx.exports.OverseerDurableObject;
     let due = this.#model.dueRevocations(Date.now(), REVOCATION_BATCH);
-    await Promise.all(due.map(async revocation => {
+    await Promise.all([this.#pushToDirectory(), ...due.map(async revocation => {
       try {
         await overseers.get(overseers.idFromString(revocation.workspace))
             .revokeSpaceAccess(revocation.profile);
@@ -890,16 +957,45 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
           durableObjectId: this.ctx.id.toString(), error,
         });
       }
-    }));
-    await this.#deliverRevocations();
+    })]);
+    await this.#setAlarm();
   }
 
-  // Sets the alarm for when the next queued revocation is due, which for one just queued is
-  // now. Called in the same turn as the change that may have queued one, so that the two are
-  // stored together.
-  async #deliverRevocations(): Promise<void> {
-    let due = this.#model.nextRevocationDue();
-    if (due !== undefined) await this.ctx.storage.setAlarm(Math.max(due, Date.now()));
+  // Pushes whether the space is listed to the space directory, if a push is due (see
+  // `SpaceModel.pendingDirectoryPush`). Best-effort: the directory is a mirror, and a push it
+  // does not take within `DIRECTORY_PUSH_TIMEOUT_MS` is kept for a later run of the alarm, which
+  // waits longer each time. One that lands after all is harmless: the directory keeps the newest.
+  async #pushToDirectory(): Promise<void> {
+    let state = this.#model.pendingDirectoryPush;
+    if (!state || state.due > Date.now()) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.ctx.exports.SpaceDirectoryDurableObject.getByName("")
+            .syncSpace(this.#model.info!, state.listed, state.rev),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("The space directory did not answer in time.")),
+              DIRECTORY_PUSH_TIMEOUT_MS);
+        }),
+      ]);
+      this.#model.directoryPushed(state);
+    } catch (error) {
+      this.#model.directoryPushDeferred(state, Date.now());
+      logger.warn("failed to push a space's listing to the space directory", {
+        event: "space.directory.push.failed", durableObjectId: this.ctx.id.toString(), error,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Sets the alarm for when the next queued revocation or push to the space directory is due,
+  // which for one just queued is now. Called in the same turn as the change that may have queued
+  // one, so that the two are stored together.
+  async #setAlarm(): Promise<void> {
+    let due = Math.min(this.#model.nextRevocationDue() ?? Infinity,
+        this.#model.pendingDirectoryPush?.due ?? Infinity);
+    if (due < Infinity) await this.ctx.storage.setAlarm(Math.max(due, Date.now()));
   }
 
   // Bring `profileId`'s mirror of this space in line with their membership as it stands now.

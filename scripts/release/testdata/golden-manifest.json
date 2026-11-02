@@ -1449,6 +1449,12 @@
             "SpaceDurableObject"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "SpaceDirectoryDurableObject"
+          ],
+          "tag": "v5"
         }
       ],
       "modules": [

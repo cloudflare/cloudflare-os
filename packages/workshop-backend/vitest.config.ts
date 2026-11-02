@@ -102,6 +102,7 @@ export default defineConfig({
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
           TEST_SPACE: { className: 'SpaceDurableObject', useSQLite: true },
+          TEST_SPACE_DIRECTORY: { className: 'SpaceDirectoryDurableObject', useSQLite: true },
         },
       },
     }),

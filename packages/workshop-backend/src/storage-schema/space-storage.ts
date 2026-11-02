@@ -40,6 +40,15 @@ export const PUBLICATION_LEASE = "";
  */
 export type SpaceRevocation = SpaceLease & { seq: number; due: number; retryMs: number };
 
+/**
+ * What the space last decided about its row in the space directory (see
+ * SpaceModel.listed): whether it is `listed` there, as of `rev`, which counts those decisions
+ * so that the directory keeps the newest, and whether the directory has taken it, `pushed`.
+ * `due` and `retryMs` are as a revocation's, for the push.
+ */
+export type SpaceDirectoryState =
+    { listed: boolean; rev: number; pushed: boolean; due: number; retryMs: number };
+
 export function makeSpaceStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     singletons: {
@@ -47,9 +56,12 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       info: <SpaceRecord | undefined>undefined,
       // The `seq` of the next entry of `revocations`.
       nextRevocation: 0,
+      // Absent while the space has never been listed in the space directory, and so is in it
+      // nowhere (see SpaceModel.listed).
+      directory: <SpaceDirectoryState | undefined>undefined,
       // The version of the stored shape: 0 while the entries of `workspaces` may predate its
-      // indexes `byParent` and `byPublishedRoot`, 1 once those are built (see
-      // migrateSpaceStorage()) or since the claim, for a space claimed with them.
+      // indexes `byParent` and `byPublishedRoot`, 1 once those are built, 2 once `directory` is
+      // too (see migrateSpaceStorage()), or since the claim, for a space claimed with them.
       version: 0,
     },
     collections: {
@@ -125,19 +137,30 @@ export type SpaceStorage = ReturnType<typeof makeSpaceStorage>;
  * to, and the one a claim stores (see SpaceModel.claim()), since a new space has nothing to
  * migrate. The migration names its versions literally, as each is fixed for good.
  */
-export const SPACE_STORAGE_VERSION = 1;
+export const SPACE_STORAGE_VERSION = 2;
 
 /**
  * Brings a space's storage up to the current `version`, before anything else touches it. From
  * 0 to 1 it builds `byParent` and `byPublishedRoot` over the entries already stored: an index is
  * kept only as records are written, so until then it misses them, and updating one of them
- * would corrupt it. A space whose key is unclaimed holds no entry and is left as it is, unwritten.
+ * would corrupt it. From 1 to 2 it records a space that has a published entry at the top of its
+ * tree as listed in the space directory, not yet pushed, which its alarm then does. One that has
+ * none is in the directory nowhere already, and one that holds a state for it keeps that state,
+ * which a change recorded while a failed attempt at this step left the space at version 1. A
+ * space whose key is unclaimed holds no entry and is left as it is, unwritten.
  */
 export function migrateSpaceStorage(storage: SpaceStorage): void {
-  if (storage.version.get() >= 1 || !storage.info.get()) return;
+  let version = storage.version.get();
+  if (version >= 2 || !storage.info.get()) return;
   storage.transaction(() => {
-    storage.workspaces.byParent.rebuild();
-    storage.workspaces.byPublishedRoot.rebuild();
-    storage.version.put(1);
+    if (version < 1) {
+      storage.workspaces.byParent.rebuild();
+      storage.workspaces.byPublishedRoot.rebuild();
+    }
+    let [publishedRoot] = storage.workspaces.byPublishedRoot.list({ limit: 1 });
+    if (publishedRoot && !storage.directory.get()) {
+      storage.directory.put({ listed: true, rev: 1, pushed: false, due: 0, retryMs: 0 });
+    }
+    storage.version.put(2);
   });
 }
