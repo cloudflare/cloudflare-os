@@ -1725,36 +1725,43 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * The set a test-report read discloses. GitLab filters reports by what the reading account may
-   * download, so through a Maintainer they can include one a job restricts to Maintainers
-   * (`artifacts:access: maintainer`), and observers need Maintainer too. Below that, GitLab has
-   * already left those out, and Developer is exact.
+   * A test-report read, with the set it discloses. GitLab filters reports by what the reading
+   * account may download, so through a Maintainer they can include one a job restricts to
+   * Maintainers (`artifacts:access: maintainer`), and observers need Maintainer too. Below that,
+   * GitLab has already left those out, and Developer is exact. The role probe answers "no" when a
+   * reconnect lands mid-probe, while the report beside it may have used the replaced (Maintainer's)
+   * token, so the pair is fenced to one connection and refused if it moved.
    */
-  async #testReportSet(): Promise<CiDataSet> {
-    return await hasProjectMembership(this.env, this.#userAccount(), this.#projectPath(), MAINTAINER_ACCESS_LEVEL)
-      ? "ci-test-reports" : "ci-logs";
+  async #readTestReport<T>(read: () => Promise<T>): Promise<{ set: CiDataSet; report: T }> {
+    this.#requireObserverRoster();
+    const account = this.#userAccount();
+    const { generation } = await account.getUser();
+    const [maintainer, report] = await Promise.all([
+      hasProjectMembership(this.env, account, this.#projectPath(), MAINTAINER_ACCESS_LEVEL),
+      read(),
+    ]);
+    if ((await account.getUser()).generation !== generation) {
+      throw new Error("The GitLab connection changed during this read; read again.");
+    }
+    return { set: maintainer ? "ci-test-reports" : "ci-logs", report };
   }
 
   async pipelineTestReport(pipelineId: number): Promise<{ set: CiDataSet; report: GitLabTestReportSummary }> {
-    this.#requireObserverRoster();
-    const [set, report] = await Promise.all([
-      this.#testReportSet(),
-      this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId)),
-    ]);
+    const { set, report } = await this.#readTestReport(() =>
+      this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId)));
     return { set, report: normalizeTestReportSummary(report) };
   }
 
   async pipelineFailedTests(pipelineId: number, pageSize: number): Promise<{ set: CiDataSet; cases: Cursor<GitLabTestCase> }> {
-    this.#requireObserverRoster();
-    const report = this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId)).catch((error: unknown) => {
-      // The client reports a body past its cap as a 502 caused by the cap.
-      if (!(error instanceof GitLabApiError && error.cause instanceof ResponseTooLargeError)) throw error;
-      throw new Error(
-        `Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its totals, ` +
-        `and the failing jobs' logs for details.`, { cause: error });
-    });
-    const [set, body] = await Promise.all([this.#testReportSet(), report]);
-    return { set, cases: new ArrayCursor(failedTestCases(body), pageSize) };
+    const { set, report } = await this.#readTestReport(() =>
+      this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId)).catch((error: unknown) => {
+        // The client reports a body past its cap as a 502 caused by the cap.
+        if (!(error instanceof GitLabApiError && error.cause instanceof ResponseTooLargeError)) throw error;
+        throw new Error(
+          `Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its totals, ` +
+          `and the failing jobs' logs for details.`, { cause: error });
+      }));
+    return { set, cases: new ArrayCursor(failedTestCases(report), pageSize) };
   }
 
   async jobDetails(jobId: number): Promise<GitLabJobDetails> {

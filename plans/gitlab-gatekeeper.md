@@ -971,11 +971,14 @@ per-artifact check is left open. So the binding's strategy is the kit's
 `trackedCollectionObservers` with two sets: `ci-logs` (Developer), marked by the first job-log
 read or test-report read below Maintainer, and `ci-test-reports` (Maintainer), marked by a
 test-report read whose connected account holds Maintainer, checked with the owner's token
-alongside the report. Pipeline and job capabilities authorize through their own
-`ObservationGate`, those reads with their set: from then on `addObserver` asks
-`hasProjectAccess(path, level)` for each marked set, and every such read excludes stored
-observers below its set's role. Observers are stored for this alone, so `removeObserver` is no
-longer a no-op. A binding that never reads a log or test report keeps the Reporter bar.
+alongside the report. The probe answers "no" when a reconnect lands mid-probe, though the report
+may have been fetched with the replaced Maintainer's token, so the pair is fenced to one
+connection generation and refused ("read again") if it moved. Pipeline and job capabilities
+authorize through their own `ObservationGate`, those reads with their set: from then on
+`addObserver` asks `hasProjectAccess(path, level)` for each marked set, and every such read
+excludes stored observers below its set's role. Observers are stored for this alone, so
+`removeObserver` is no longer a no-op. A binding that never reads a log or test report keeps the
+Reporter bar.
 
 Two consequences of storing them. Bindings from before: observers admitted before this version
 were never stored, and the overseer neither re-admits a viewer already connected nor enforces

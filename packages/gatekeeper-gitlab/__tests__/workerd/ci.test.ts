@@ -9,13 +9,14 @@
 // Developer (Maintainer for a Maintainer's test report), and those reads refused on a binding an
 // earlier version created.
 
+import { env, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type { GitLabJobSummary, GitLabLogPage, GitLabTestCase } from "../../src/types.js";
 import * as fx from "../fixtures/gitlab-docs.js";
-import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap } from "./fake-gitlab.js";
+import { FakeGitLab, hooks, json, projectProps, seedAccount, stageReconnect, unwrap } from "./fake-gitlab.js";
 import type { ActionPresentation, GatekeeperProps, SessionStep } from "./worker.js";
 
 afterEach(() => {
@@ -917,6 +918,36 @@ describe("observers once logs are read", () => {
     await expect(observer(name, props, "reporter2")).rejects.toThrow(/Developer role or above/);
     await observer(name, props, "developer2");
   });
+
+  it.each(["getTestReport", "listFailedTests"] as const)(
+    "refuses %s when a reconnect lands mid-read, rather than tracking it at the weaker bar", async method => {
+      // The Maintainer's role probe sees the connection move and answers "not a Maintainer", while
+      // the report beside it may have been fetched with the Maintainer's token.
+      const fake = gateFake();
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => json(fx.testReportResponse.data));
+      fake.on("POST", /^\/oauth\/token/, () => json({ access_token: "bob", refresh_token: "bob-refresh", expires_in: 7200 }));
+      let reconnected = false;
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/members/all\\?`), async request => {
+        if (Number(request.url.searchParams.get("user_ids[]")) !== fx.currentUserResponse.data.id) return json([]);
+        if (!reconnected) {
+          reconnected = true;
+          // Made here: the handler runs in the gatekeeper's object, not the test's context.
+          const account = env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(props.userObjectId));
+          await runInDurableObject(account, async instance => {
+            await instance.commitReconnect(await stageReconnect(instance, "code-bob"));
+          });
+        }
+        return json([{ id: fx.currentUserResponse.data.id, access_level: 40 }]);
+      });
+      const { props, name } = await setup(fake);
+      await hooks().installCallback(props.userObjectId);
+      const read: SessionStep = method === "listFailedTests" ? { method, drain: true } : { method };
+      await expect(session(name, props, { method: "getPipeline", args: ["6"] }, read))
+        .rejects.toThrow(/GitLab connection changed during this read/);
+      expect((await hooks().queueLog(name)).observations).toEqual([]);
+      // Under the new connection the read goes through.
+      await session(name, props, { method: "getPipeline", args: ["6"] }, read);
+    });
 
   it("shares a binding with up to 50 collaborators", async () => {
     const names = Array.from({ length: 51 }, (_, i) => `member${i}`);
