@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "kind": "evidence",
+  "name": "evidence-red-green",
+  "head_sha": "024caa73b98c91eb3267f5af092ec5abbda9e842",
+  "base_sha": "d18bcb6f5e98fedc108d33dc1d519828cc2bb3aa",
+  "status": "ok",
+  "holds": true,
+  "details": {
+    "tests": [
+      "packages/typed-storage/__tests__/index.test.ts"
+    ],
+    "head": [
+      {
+        "config": "packages/typed-storage/vitest.config.ts",
+        "files": [
+          "packages/typed-storage/__tests__/index.test.ts"
+        ],
+        "passed": true,
+        "tests": 63,
+        "failed_tests": 0,
+        "failed_suites": 0,
+        "failures": [],
+        "seconds": 12
+      }
+    ],
+    "base": [
+      {
+        "config": "packages/typed-storage/vitest.config.ts",
+        "files": [
+          "packages/typed-storage/__tests__/index.test.ts"
+        ],
+        "passed": false,
+        "tests": 63,
+        "failed_tests": 4,
+        "failed_suites": 3,
+        "failures": [
+          "non-unique index by number lists integer keys as keyString() encodes them",
+          "non-unique index by array supports listKeys",
+          "non-unique index by array supports reading each group while iterating its keys",
+          "non-unique index by array supports delete"
+        ],
+        "seconds": 2.7,
+        "tail": "JSON report written to /var/folders/wx/xvn4t9d14lv1y03s21vvp30m0000gn/T/automerge-vitest-yCIhrb/report.json\n"
+      }
+    ]
+  },
+  "findings": [],
+  "needs_person": [],
+  "merge_confidence": null,
+  "round": null,
+  "review_from_sha": null,
+  "fingerprint": null
+}

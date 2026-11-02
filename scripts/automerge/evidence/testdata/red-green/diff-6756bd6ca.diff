@@ -1,0 +1,178 @@
+diff --git a/packages/workshop-backend/__tests__/agent-compaction.test.ts b/packages/workshop-backend/__tests__/agent-compaction.test.ts
+index de0805e86..f35a6bb20 100644
+--- a/packages/workshop-backend/__tests__/agent-compaction.test.ts
++++ b/packages/workshop-backend/__tests__/agent-compaction.test.ts
+@@ -111 +111 @@ describe("compaction trigger", () => {
+-    for (let model of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]) {
++    for (let model of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]) {
+diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
+index eaab04266..a3313aab6 100644
+--- a/packages/workshop-backend/__tests__/ai-models.test.ts
++++ b/packages/workshop-backend/__tests__/ai-models.test.ts
+@@ -421,0 +422 @@ describe("getModel direct routing (no gateway)", () => {
++    ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000],
+@@ -422,0 +424 @@ describe("getModel direct routing (no gateway)", () => {
++    ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", 1_050_000],
+@@ -452 +454 @@ describe("getModel direct routing (no gateway)", () => {
+-  it.each(["claude-opus-5-5", "claude-fable-5-1"])(
++  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"])(
+@@ -476 +478,3 @@ describe("getModel direct routing (no gateway)", () => {
+-  it("does not try to disable reasoning for GPT-6 Astra", async () => {
++  // pi maps these models' "off" thinking level to nothing, since they can't turn reasoning off.
++  it.each(["gpt-6-astra", "gpt-6.1-sol"])(
++      "does not try to disable reasoning for %s", async (model) => {
+@@ -479 +483 @@ describe("getModel direct routing (no gateway)", () => {
+-      model: "gpt-6-astra",
++      model,
+diff --git a/packages/workshop-backend/package.json b/packages/workshop-backend/package.json
+index c2d112bac..67f478bc7 100644
+--- a/packages/workshop-backend/package.json
++++ b/packages/workshop-backend/package.json
+@@ -18,2 +18,2 @@
+-    "@earendil-works/pi-agent-core": "0.87.1",
+-    "@earendil-works/pi-ai": "0.87.1",
++    "@earendil-works/pi-agent-core": "0.99.1",
++    "@earendil-works/pi-ai": "0.99.1",
+diff --git a/packages/workshop-shared/src/api.ts b/packages/workshop-shared/src/api.ts
+index c11832da1..81028dcdd 100644
+--- a/packages/workshop-shared/src/api.ts
++++ b/packages/workshop-shared/src/api.ts
+@@ -1401,0 +1402 @@ const SUGGESTED_MODEL_CATALOG = {
++    "claude-sonnet-5-5": {name: "Claude Sonnet 5.5", contextWindow: 1000000},
+@@ -1409,0 +1411,4 @@ const SUGGESTED_MODEL_CATALOG = {
++    "gpt-6.1-sol": {
++      name: "GPT-6.1 Sol", contextWindow: 1050000, outputLimit: 128000,
++      compactionInputBudget: 272000,
++    },
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 0df529807..3ae7dc87e 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1019,2 +1019,2 @@ importers:
+-        specifier: 0.87.1
+-        version: 0.87.1(supports-color@10.2.2)(ws@8.21.3)(zod@4.5.4)
++        specifier: 0.99.1
++        version: 0.99.1(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.6.12)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.3)(zod@4.5.4)
+@@ -1022,2 +1022,2 @@ importers:
+-        specifier: 0.87.1
+-        version: 0.87.1(supports-color@10.2.2)(ws@8.21.3)(zod@4.5.4)
++        specifier: 0.99.1
++        version: 0.99.1(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.6.12)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.3)(zod@4.5.4)
+@@ -1706,2 +1706,2 @@ packages:
+-  '@earendil-works/chord@0.87.1':
+-    resolution: {integrity: sha512-bg7IkJGFcEaMqqYgOGUiq5Ky9RghpRfrlZ8I/v/1b4bBZ02A7t3E+6uhPRbadwWb/kWsnVFbZsqOKRN4a3LLCg==}
++  '@earendil-works/chord@0.99.1':
++    resolution: {integrity: sha512-4xyn0IBzJ+Xu/iOGi2hjXJGAR61QEhEWZsIqTDqr+GmItdquYwBO5jYFnqGiBaTqlY12/EpM7QHoEKSHbyvOug==}
+@@ -1710,2 +1710,2 @@ packages:
+-  '@earendil-works/pi-agent-core@0.87.1':
+-    resolution: {integrity: sha512-Zev3B0HK7YS5A4EZQ2XnEqiJuirx6QBiltJ+LpmjV5a/+2IU0cfKtIfnkNkORK707XOvKBY2WRtk7cAwHpbh2Q==}
++  '@earendil-works/pi-agent-core@0.99.1':
++    resolution: {integrity: sha512-zywvWnj5FujeuFI/x/CJHwwxhcLIQgjqseTA+bQgX4O8gJTcgjRd/I8SZnQDqJvxC9QcV12ujiGLviv6EgwcCg==}
+@@ -1714,2 +1714,2 @@ packages:
+-  '@earendil-works/pi-ai@0.87.1':
+-    resolution: {integrity: sha512-X/3PfQBnnoeVdO9Cv8zHghUMglzlgNZYGNzoPnbRoGnHl3Rw3TlA2UKSUB7BRHUOxMryHXYa8dnjWZlbRheDZA==}
++  '@earendil-works/pi-ai@0.99.1':
++    resolution: {integrity: sha512-4nV9JKc94iPX8bwdGPc2nTuVPKIPsffhnp3WoN9NYCNqbtoOF8LhYcIs/+Sn/alroqJK/5QRu6/Z6Ck+n0hyBA==}
+@@ -1719,2 +1719,2 @@ packages:
+-  '@earendil-works/pi-telemetry@0.87.1':
+-    resolution: {integrity: sha512-MC6TRQH5lgMXpcN+Vku2WMI2T8BsiUPzMQHGo81uqFZD3/9O79WWJAysEDGuzduP6R4tvtgwMLwmqIxynM10JQ==}
++  '@earendil-works/pi-telemetry@0.99.1':
++    resolution: {integrity: sha512-9PBPjGk+TXRtuMianpqBbHBpYpyKusESF6rwdmgD0WTZSTUQXhcKEO0hAINRLuSwy4V7yPvXV+EVV0ONY7mbpQ==}
+@@ -2821,4 +2820,0 @@ packages:
+-  '@smithy/core@3.31.1':
+-    resolution: {integrity: sha512-CyogUINxvi7C7LDsh8Syo6hVJOT9ckz4rG8dRZfTJ8r91HkMY59PnNooaj7WcHyxEkxPfBAmbgztZU+xTo76lg==}
+-    engines: {node: '>=18.0.0'}
+-
+@@ -2845,4 +2840,0 @@ packages:
+-  '@smithy/types@4.16.1':
+-    resolution: {integrity: sha512-0JFs3V2y2M9tKW5na/qxe69Zv+uxLMO7QBbhxF/FHu/Gp2NFZAAL9tWl9PU02xxo07pb3G9FTyjNc6D5uZrJIg==}
+-    engines: {node: '>=18.0.0'}
+-
+@@ -4762,2 +4754,3 @@ packages:
+-  openai@6.40.0:
+-    resolution: {integrity: sha512-MWtTjd/gQt4jpbji61NTgFWJLoY/PdRJ6wG9/ZDRMYNMlBKrCrSlkLI+KgHP1vR1qT6LKSAyAqIxno6lcK9JiA==}
++  openai@7.19.0:
++    resolution: {integrity: sha512-MX2s3u2L5racTO0CC/SWpCOasJQBCJrqLKXK+l82cAhdeF8mPMBEe/gxMm0ZFa2xpKpOFLRjxv5afYEZbBXmbQ==}
++    engines: {node: '>=22.0.0'}
+@@ -4765 +4758,5 @@ packages:
+-      ws: ^8.18.0
++      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
++      '@smithy/hash-node': '>=4.3.0 <5'
++      '@smithy/signature-v4': '>=5.4.0 <6'
++      undici: '>=5 <9'
++      ws: ^8.21.0
+@@ -4767,0 +4765,8 @@ packages:
++      '@aws-sdk/credential-provider-node':
++        optional: true
++      '@smithy/hash-node':
++        optional: true
++      '@smithy/signature-v4':
++        optional: true
++      undici:
++        optional: true
+@@ -6290 +6295 @@ snapshots:
+-  '@earendil-works/chord@0.87.1':
++  '@earendil-works/chord@0.99.1':
+@@ -6294 +6299 @@ snapshots:
+-  '@earendil-works/pi-agent-core@0.87.1(supports-color@10.2.2)(ws@8.21.3)(zod@4.5.4)':
++  '@earendil-works/pi-agent-core@0.99.1(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.6.12)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.3)(zod@4.5.4)':
+@@ -6296,3 +6301,3 @@ snapshots:
+-      '@earendil-works/chord': 0.87.1
+-      '@earendil-works/pi-ai': 0.87.1(supports-color@10.2.2)(ws@8.21.3)(zod@4.5.4)
+-      '@earendil-works/pi-telemetry': 0.87.1
++      '@earendil-works/chord': 0.99.1
++      '@earendil-works/pi-ai': 0.99.1(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.6.12)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.3)(zod@4.5.4)
++      '@earendil-works/pi-telemetry': 0.99.1
+@@ -6303,0 +6309 @@ snapshots:
++      - '@aws-sdk/credential-provider-node'
+@@ -6304,0 +6311,2 @@ snapshots:
++      - '@smithy/hash-node'
++      - '@smithy/signature-v4'
+@@ -6307,0 +6316 @@ snapshots:
++      - undici
+@@ -6312 +6321 @@ snapshots:
+-  '@earendil-works/pi-ai@0.87.1(supports-color@10.2.2)(ws@8.21.3)(zod@4.5.4)':
++  '@earendil-works/pi-ai@0.99.1(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.6.12)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.3)(zod@4.5.4)':
+@@ -6316 +6325 @@ snapshots:
+-      '@earendil-works/pi-telemetry': 0.87.1
++      '@earendil-works/pi-telemetry': 0.99.1
+@@ -6321 +6330 @@ snapshots:
+-      openai: 6.40.0(ws@8.21.3)(zod@4.5.4)
++      openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.6.12)(undici@7.29.0)(ws@8.21.3)(zod@4.5.4)
+@@ -6324,0 +6334 @@ snapshots:
++      - '@aws-sdk/credential-provider-node'
+@@ -6325,0 +6336,2 @@ snapshots:
++      - '@smithy/hash-node'
++      - '@smithy/signature-v4'
+@@ -6328,0 +6341 @@ snapshots:
++      - undici
+@@ -6333 +6346 @@ snapshots:
+-  '@earendil-works/pi-telemetry@0.87.1': {}
++  '@earendil-works/pi-telemetry@0.99.1': {}
+@@ -7073,5 +7085,0 @@ snapshots:
+-  '@smithy/core@3.31.1':
+-    dependencies:
+-      '@smithy/types': 4.16.1
+-      tslib: 2.8.1
+-
+@@ -7085,2 +7093,2 @@ snapshots:
+-      '@smithy/core': 3.31.1
+-      '@smithy/types': 4.16.1
++      '@smithy/core': 3.34.1
++      '@smithy/types': 4.18.0
+@@ -7103,6 +7111,2 @@ snapshots:
+-      '@smithy/core': 3.31.1
+-      '@smithy/types': 4.16.1
+-      tslib: 2.8.1
+-
+-  '@smithy/types@4.16.1':
+-    dependencies:
++      '@smithy/core': 3.34.1
++      '@smithy/types': 4.18.0
+@@ -9117 +9121 @@ snapshots:
+-  openai@6.40.0(ws@8.21.3)(zod@4.5.4):
++  openai@7.19.0(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.6.12)(undici@7.29.0)(ws@8.21.3)(zod@4.5.4):
+@@ -9118,0 +9123,3 @@ snapshots:
++      '@aws-sdk/credential-provider-node': 3.972.83
++      '@smithy/signature-v4': 5.6.12
++      undici: 7.29.0

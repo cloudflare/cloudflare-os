@@ -27,8 +27,8 @@ function changed(commit: string): string[] {
   return readFileSync(new URL(`files-${commit}.txt`, DIR), "utf8").split("\n").filter((line) => line !== "");
 }
 
-const ok: CommandResult = { ok: true, code: 0, seconds: 2, tail: "" };
-const failed: CommandResult = { ok: false, code: 1, seconds: 3, tail: "✘ [ERROR] Could not resolve \"./chat-cards\"" };
+const ok: CommandResult = { ok: true, code: 0, seconds: 2, tail: "", stdout: "" };
+const failed: CommandResult = { ok: false, code: 1, seconds: 3, tail: "✘ [ERROR] Could not resolve \"./chat-cards\"", stdout: "" };
 
 describe("affectedDeployables", () => {
   const packages = workspace();

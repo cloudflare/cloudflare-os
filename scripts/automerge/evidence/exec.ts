@@ -14,6 +14,8 @@ export interface CommandResult {
   seconds: number;
   /** The last part of stdout and stderr together. */
   tail: string;
+  /** All of stdout, for commands whose output is data. */
+  stdout: string;
 }
 
 /**
@@ -32,5 +34,6 @@ export function runCommand(command: string, args: string[], cwd: string, env: No
     code: result.status,
     seconds: Math.round((performance.now() - started) / 100) / 10,
     tail: output.slice(-TAIL_CHARS),
+    stdout: result.stdout,
   };
 }
