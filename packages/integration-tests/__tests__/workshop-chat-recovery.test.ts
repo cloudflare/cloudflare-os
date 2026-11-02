@@ -179,6 +179,9 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
   await waitForIdleChat(ws, chatId);
 
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  // Stopping is not a failure: the turn ends on a stop, not an error.
+  expect(history.filter(message => message.type === "error")).toEqual([]);
+  expect(history.at(-1)?.type).toBe("agentStopped");
   const gadgetId = history.flatMap(message =>
     message.type === "changes" ? message.createdGadgets ?? [] : [])[0]?.gadgetId;
   if (gadgetId === undefined) throw new Error("The stopped turn recorded no created gadget");
@@ -198,6 +201,25 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
     message.type === "message" && message.author.type === "agent" &&
     message.message === "I can continue.")).toHaveLength(1);
   expect(model.remainingSteps()).toBe(0);
+});
+
+it.concurrent("a session observing a turn the user stops elsewhere reports it cancelled", async () => {
+  const model = models.script([{ pending: true }]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: model.userModel,
+    usernamePrefix: "observedstop",
+  });
+  const turn = session.runTurn("Never answered.");
+  await waitFor("the pending model request", async () => model.requests.length === 1 || null);
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    const [chat] = await ws.listChats();
+    await ws.stopAgent(chat!.id);
+  });
+
+  const result = await turn;
+  expect(result.outcome).toEqual({ status: "cancelled", message: "The agent was stopped" });
+  expect(result.history.at(-1)?.type).toBe("agentStopped");
 });
 
 it.concurrent("resubscribing during a running turn replays exactly what history lacks", async () => {

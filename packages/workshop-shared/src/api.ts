@@ -4137,9 +4137,9 @@ export type AiChatMessageBody = {
   resources: AlwaysAvailableResource[];
 } | {
   /**
-   * Indicates that the agent run ended with an error (e.g. LLM API failure, abort, server
-   * restart). This is displayed to the user with a "retry" button, but is NOT included in the
-   * chat log sent to the LLM so the agent does not react to it.
+   * Indicates that the agent run ended with an error (e.g. LLM API failure, server restart).
+   * This is displayed to the user with a "retry" button, but is NOT included in the chat log
+   * sent to the LLM so the agent does not react to it.
    */
   type: "error";
   message: string;
@@ -4148,6 +4148,13 @@ export type AiChatMessageBody = {
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry).
    */
   code?: string;
+} | {
+  /**
+   * Indicates that a user stopped the agent run (see `Overseer.stopAgent`). Unlike an error it
+   * is not a failure, but like one it ends the run, is displayed with a "retry" button, and is
+   * NOT included in the chat log sent to the LLM.
+   */
+  type: "agentStopped";
 } | {
   /**
    * Indicates that a call was delivered to the agent: a method was called on its `self` object

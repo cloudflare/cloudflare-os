@@ -123,6 +123,17 @@ type PendingTurnEvent =
   | { type: "metadata"; chat: AiChatMetadata; latestSequence: number }
   | { type: "message"; entry: AiChatMessage };
 
+type EarlyOutcome = Extract<AgentTurnOutcome, { status: "error" | "cancelled" }>;
+
+// How a turn that ended on `entry` came out, if it is an error or stop row.
+function earlyOutcome(entry: AiChatMessage): EarlyOutcome | undefined {
+  if (entry.type === "agentStopped") return { status: "cancelled", message: "The agent was stopped" };
+  if (entry.type !== "error") return undefined;
+  return entry.code === undefined
+    ? { status: "error", message: entry.message }
+    : { status: "error", message: entry.message, code: entry.code };
+}
+
 class TurnObserver {
   readonly result: Promise<AgentTurnOutcome>;
   readonly timeoutFailure: Promise<never>;
@@ -140,10 +151,7 @@ class TurnObserver {
   // the chat's idle metadata before or after them.
   #agentReplied = false;
   #idle: boolean | undefined;
-  #error: {
-    outcome: Extract<AgentTurnOutcome, { status: "error" }>;
-    sequence: number;
-  } | undefined;
+  #endedEarly: { outcome: EarlyOutcome; sequence: number } | undefined;
   #startSequence = -1;
   #endSequence: number | undefined;
   #outcome: AgentTurnOutcome | undefined;
@@ -247,12 +255,10 @@ class TurnObserver {
         entry.sequence > this.#startSequence) {
       this.#agentReplied = true;
     }
-    if (entry.type === "error" && this.#outcome === undefined &&
+    const ended = earlyOutcome(entry);
+    if (ended !== undefined && this.#outcome === undefined &&
         !(this.#sawActive && entry.sequence <= this.#startSequence)) {
-      const outcome: Extract<AgentTurnOutcome, { status: "error" }> = entry.code === undefined
-        ? { status: "error", message: entry.message }
-        : { status: "error", message: entry.message, code: entry.code };
-      this.#error = { outcome, sequence: entry.sequence };
+      this.#endedEarly = { outcome: ended, sequence: entry.sequence };
     }
     if (this.#idle === true && !this.#sawActive) this.#finishIdle();
   }
@@ -262,25 +268,26 @@ class TurnObserver {
     if (chat.activeAgent !== undefined) {
       if (!this.#sawActive) {
         if (this.#startSequence < 0) this.#startSequence = latestSequence;
-        if (this.#error !== undefined && this.#error.sequence <= this.#startSequence) {
-          this.#error = undefined;
+        if (this.#endedEarly !== undefined && this.#endedEarly.sequence <= this.#startSequence) {
+          this.#endedEarly = undefined;
         }
       }
       this.#sawActive = true;
     } else if (this.#sawActive) {
       this.#endSequence = latestSequence;
-      this.#finish(this.#error?.outcome ?? { status: "completed" });
+      this.#finish(this.#endedEarly?.outcome ?? { status: "completed" });
     } else {
       this.#finishIdle();
     }
   }
 
   // The chat is idle and this observer never saw it active: finished only if the replay shows the
-  // agent answered (or failed) the prompt. No end sequence: the snapshot reads the full history.
+  // agent answered (or failed, or was stopped on) the prompt. No end sequence: the snapshot reads
+  // the full history.
   #finishIdle(): void {
     if (!this.#promptSeen) return;
-    const failed = this.#error !== undefined && this.#error.sequence > this.#startSequence
-      ? this.#error.outcome
+    const failed = this.#endedEarly !== undefined && this.#endedEarly.sequence > this.#startSequence
+      ? this.#endedEarly.outcome
       : undefined;
     if (failed !== undefined || this.#agentReplied) {
       this.#finish(failed ?? { status: "completed" });
@@ -893,13 +900,15 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       ? loadedHistory
       : loadedHistory.filter(message => message.sequence <= endSequence);
     const newMessages = history.filter(message => message.sequence > startSequence);
-    const error = newMessages.find(message => message.type === "error");
     let outcome: AgentTurnOutcome = observedOutcome;
-    if (error !== undefined && observedOutcome.status !== "timedOut" &&
-        observedOutcome.status !== "cancelled") {
-      outcome = error.code === undefined
-        ? { status: "error", message: error.message }
-        : { status: "error", message: error.message, code: error.code };
+    if (observedOutcome.status !== "timedOut" && observedOutcome.status !== "cancelled") {
+      for (const message of newMessages) {
+        const ended = earlyOutcome(message);
+        if (ended !== undefined) {
+          outcome = ended;
+          break;
+        }
+      }
     }
     let metadata = chats.find(chat => chat.id === chatId);
     if (metadata === undefined) throw new Error(`Chat ${chatId} disappeared`);
