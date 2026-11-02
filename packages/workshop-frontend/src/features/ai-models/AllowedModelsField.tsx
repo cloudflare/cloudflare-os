@@ -42,8 +42,10 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
   /** Called with the list to store, or undefined to unset it. */
   onChange: (allowedModels: string[] | undefined) => void
 }) => {
-  // The staged names, or null while the field shows the server's list.
-  const [draft, setDraft] = useState<string[] | null>(null)
+  // The staged names and the server's list they were staged from, or null while the field shows
+  // the server's list. A draft is shown only while the server's list is still the one it was
+  // staged from, so a save the server refuses keeps it and one that lands retires it.
+  const [draft, setDraft] = useState<{ from: string; names: string[] } | null>(null)
   const [query, setQuery] = useState('')
   // The typed text that was refused, which the field reports until the text changes.
   const [refused, setRefused] = useState<string | null>(null)
@@ -62,18 +64,22 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
   const listboxId = useId()
   const alert = useFieldErrorAlert()
 
-  const names = draft ?? allowedModels ?? []
+  const held = (allowedModels ?? []).join(',')
+  const names = draft !== null && draft.from === held ? draft.names : allowedModels ?? []
   const typed = query.trim()
   const lowered = typed.toLowerCase()
   const matches = suggestions.filter(({ name, description }) => !names.includes(name) &&
     (name.toLowerCase().includes(lowered) || description.toLowerCase().includes(lowered)))
-  const options: Option[] = [
-    ...matches.map((suggestion) => ({ ...suggestion, typed: false })),
-    ...(typed && !typed.includes(',') && !names.includes(typed) &&
-      !matches.some(({ name }) => name === typed)
-      ? [{ name: typed, description: 'Use the text as a gateway model name', typed: true }]
-      : []),
-  ]
+  const typedOption: Option[] = typed && !typed.includes(',') && !names.includes(typed) &&
+    !matches.some(({ name }) => name === typed)
+    ? [{ name: typed, description: 'Use the text as a gateway model name', typed: true }]
+    : []
+  const suggested = matches.map((suggestion) => ({ ...suggestion, typed: false }))
+  // A typed gateway name leads, so that Enter adds what was typed rather than a longer suggestion
+  // it is the start of; text that is no such name is a search, whose matches lead.
+  const options: Option[] = isAllowedModelName(typed)
+    ? [...typedOption, ...suggested]
+    : [...suggested, ...typedOption]
   const open = !listDismissed && !busy && options.length > 0
   const active = Math.min(activeIndex, options.length - 1)
 
@@ -108,7 +114,7 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
   const optionId = (index: number) => `${listboxId}-option-${index}`
 
   const stage = (next: string[]) => {
-    setDraft(next)
+    setDraft({ from: held, names: next })
     alert.clear()
   }
 
@@ -170,7 +176,6 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
     if (busy) return
     const saved = typed ? add(typed) : names
     if (saved === null) return
-    setDraft(null)
     setListDismissed(true)
     const list = saved.length > 0 ? saved : undefined
     if (list?.join(',') !== allowedModels?.join(',')) onChange(list)

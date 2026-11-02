@@ -5,6 +5,7 @@ describe('allowedModelSuggestions', () => {
   const MODELS = [
     { provider: 'cloudflare' as const, id: '@cf/zai-org/glm-5.2', name: 'GLM 5.2 (Workers AI)' },
     { provider: 'cloudflare' as const, id: '@cf/cloudflare/clef', name: 'Clef (Workers AI)' },
+    { provider: 'cloudflare' as const, id: '@hf/acme/model', name: 'Acme (Workers AI)' },
     { provider: 'openai' as const, id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { provider: 'anthropic' as const, id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
     { provider: 'google' as const, id: 'gemini-4-pro', name: 'Gemini 4 Pro' },
@@ -14,7 +15,8 @@ describe('allowedModelSuggestions', () => {
     expect(allowedModelSuggestions(['cloudflare', 'openai', 'anthropic', 'google'], MODELS))
       .toEqual([
         { name: '@cf/*/*', description: 'Every Cloudflare Workers AI model' },
-        // Clef is a decision model, which the router never picks.
+        // Clef is a decision model, which the router never picks, and the router's pool holds
+        // only @cf/ Workers AI models.
         { name: '@cf/zai-org/glm-5.2', description: 'GLM 5.2 (Workers AI)' },
         { name: 'openai/*', description: 'Every OpenAI model' },
         { name: 'openai/gpt-6-luna', description: 'GPT-6 Luna' },

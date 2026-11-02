@@ -567,6 +567,32 @@ describe('GatewayModelRow', () => {
         { allowedModels: ['anthropic/*', 'openai/gpt-6-luna', 'openai/*'] })
     })
 
+    it('adds a typed gateway name with Enter rather than a longer suggestion it starts',
+      async () => {
+        await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
+        await type(field(), 'openai/gpt-6')
+        expect(options()[0]).toBe('Add “openai/gpt-6” exactlyUse the text as a gateway model name')
+        await press('Enter')
+        expect(chips()).toEqual(['openai/gpt-6'])
+      })
+
+    it('keeps the staged names through a save the server refuses', async () => {
+      const held = { ...AUTO, settings: { allowedModels: ['anthropic/*'] } }
+      const { onSettingsChange, show } = await render({ model: held })
+      await type(field(), 'openai/*,')
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+        { allowedModels: ['anthropic/*', 'openai/*'] })
+
+      // The server refused, so the re-read still holds the old list.
+      await show({ model: held })
+      expect(chips()).toEqual(['anthropic/*', 'openai/*'])
+
+      // Once a list lands, the field shows the server's.
+      await show({ model: { ...AUTO, settings: { allowedModels: ['@cf/*/*'] } } })
+      expect(chips()).toEqual(['@cf/*/*'])
+    })
+
     it('highlights no suggestion until the arrow keys pick one, which Enter then adds', async () => {
       const { onSettingsChange } = await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
       await act(async () => { field().focus() })

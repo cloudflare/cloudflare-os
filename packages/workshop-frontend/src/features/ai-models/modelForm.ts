@@ -53,13 +53,17 @@ export const isAllowedModelName = (name: string): boolean => ALLOWED_MODEL_NAME.
 export type AllowedModelSuggestion = { name: string; description: string }
 
 // How Auto Router names the models of each provider it routes to, as the server's
-// AUTO_ROUTER_PROVIDER_NAMES does: every model of the provider, and the prefix that makes one of
-// its model IDs a gateway name, where that is certain. Anthropic's gateway names differ from its
-// API's model IDs, so only its wildcard is suggested. Google is absent from the router's pool.
-const AUTO_ROUTER_NAMES: Partial<Record<AiModelProvider, { every: string; prefix?: string }>> = {
-  anthropic: { every: 'anthropic/*' },
-  openai: { every: 'openai/*', prefix: 'openai/' },
-  cloudflare: { every: '@cf/*/*', prefix: '' },
+// AUTO_ROUTER_PROVIDER_NAMES does: every model of the provider, the start the server requires of
+// a name of the provider's (`starts`), and the prefix that makes one of its model IDs a gateway
+// name, where that is certain. Anthropic's gateway names differ from its API's model IDs, so only
+// its wildcard is suggested. Workers AI models keep their own names, of which only @cf/ ones are
+// in the router's pool. Google is absent from the pool.
+const AUTO_ROUTER_NAMES: Partial<
+  Record<AiModelProvider, { every: string; starts: string; prefix?: string }>
+> = {
+  anthropic: { every: 'anthropic/*', starts: 'anthropic/' },
+  openai: { every: 'openai/*', starts: 'openai/', prefix: 'openai/' },
+  cloudflare: { every: '@cf/*/*', starts: '@cf/', prefix: '' },
 }
 
 /**
@@ -81,8 +85,10 @@ export const allowedModelSuggestions = (
     add({ name: names.every, description: `Every ${PROVIDER_LABELS[provider]} model` })
     if (names.prefix === undefined) continue
     for (const model of models) {
-      if (model.provider !== provider || modelKind(provider, model.id) !== 'language') continue
-      add({ name: `${names.prefix}${model.id}`, description: model.name })
+      const name = `${names.prefix}${model.id}`
+      if (model.provider !== provider || modelKind(provider, model.id) !== 'language' ||
+        !name.startsWith(names.starts)) continue
+      add({ name, description: model.name })
     }
   }
   return suggestions.filter(({ name }) => isAllowedModelName(name))
