@@ -11,7 +11,7 @@
 // observer-verification-failure.test.ts); gatekeeper facets, User DOs, verifiers, and the sharing
 // graph are the fakes.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type {
@@ -798,6 +798,39 @@ describe("observations reporting subresources", () => {
     expect(rows(impl, WORKSPACE)).toEqual(readable ? ["2:x"] : []);
     expect(impl.storage.nextActionId.get()).toBe(before + (readable ? 1 : 0));
     if (!readable) expect(impl.storage.actions.get(before)).toBeUndefined();
+  }));
+
+  // The collaborator's verifier lookup is the workspace's own call to a user object, so its
+  // loop-limit rejection restarts the workspace (see OverseerImpl.restartIfLoopLimited); the
+  // connection's access check is the gatekeeper's, so its rejection does not.
+  it("restart the workspace when a collaborator's verifier lookup hits the loop limit", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    world.roles.set("carol", "build");
+    impl.storage.observers.put(
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+    let loopLimit = new Error("Subrequest depth limit exceeded. This request looped back into " +
+        "the Workers runtime too many times.");
+    // Old enough to restart: streamGeneration is the instance's creation time.
+    vi.spyOn(Date, "now").mockReturnValue(impl.streamGeneration + 60_000);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let read = () => impl.authorizeObservation(CONN, withSubresources(["x"]), { from: "user" });
+    try {
+      fakeFacets(impl, { verify: () => { throw loopLimit; } });
+      await expect(read()).rejects.toThrow(/could not be confirmed/);
+      expect(world.restarts).toEqual([]);
+
+      fakeFacets(impl);
+      world.verifiers.set("carol", loopLimit);
+      await expect(read()).rejects.toThrow(/could not be confirmed/);
+      expect(world.restarts).toEqual(
+          ["Gadget restarted because its subrequest depth was exhausted."]);
+      expect(rows(impl, WORKSPACE)).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   }));
 });
 

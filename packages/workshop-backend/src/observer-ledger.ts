@@ -111,6 +111,9 @@ export interface ObserverLedgerHost {
   getGatekeeperFacet(id: number): Promise<Fetcher<Gatekeeper<any>>>;
   creationPending(id: WorkpieceId): boolean;
 
+  /** Wraps a user DO stub so a loop-limit rejection of a call through it restarts the workspace. */
+  wrapUserDo(stub: DurableObjectStub<UserDurableObject>): DurableObjectStub<UserDurableObject>;
+
   /** Throws (retryably) while the connection is held back pending a restart. */
   assertGatekeeperUsable(id: number): void;
 
@@ -219,7 +222,8 @@ export class ObserverLedger {
       try {
         // Looked up for every observer even when one would do: a disconnected account is refused.
         let observers = await Promise.all(unverified.map(async observer => {
-          let user = this.host.users.get(this.host.users.idFromName(observer.profileId));
+          let user = this.host.wrapUserDo(
+              this.host.users.get(this.host.users.idFromName(observer.profileId)));
           let verifier = await requireVerifier(user, observer.accountId, vendorId);
           return {id: observer.observerId, verifier};
         }));
