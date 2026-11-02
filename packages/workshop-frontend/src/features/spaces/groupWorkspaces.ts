@@ -3,8 +3,10 @@ import type {
   SpaceInfo,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
-import { isOwnPersonalSpace } from './spaceKinds'
+import { publicationHeldBack, type PublicationHeldBack } from './PublishedIndicator'
+import { isOwnPersonalSpace, spaceLabel } from './spaceKinds'
 import { asMemberListing, type SpaceListing, type SpaceListings } from './useSpaceListings'
+import type { WorkspaceRowListing } from './workspaceAddress'
 
 /**
  * One row of a section.
@@ -25,7 +27,8 @@ export type WorkspaceRow =
  *   space once the list of spaces has it.
  * - `space`: a space the user is a member of, with what it lists (see `spaceRows`). `listing` is
  *   how far the read of that listing got; until it is `ready` the rows are only the user's own
- *   workspaces. On the workspaces page these are every space but the user's own personal one.
+ *   workspaces. On the workspaces page these are every space but the user's own personal one,
+ *   each shown as a card while the page is not searched.
  * - `elsewhere`: the user's own workspaces in a team space that is not among their spaces, which
  *   is where a workspace stays when its owner leaves a space.
  * - `shared`: workspaces shared with the user that no space section shows.
@@ -35,6 +38,53 @@ export type WorkspaceSection = { rows: WorkspaceRow[] } & (
   | { kind: 'space'; space: SpaceInfo; listing: SpaceListing['status'] }
   | { kind: 'elsewhere' | 'shared' }
 )
+
+/** What a section is called where it is shown: its heading, or the space a search result is in. */
+export const sectionTitle = (section: WorkspaceSection): string => {
+  switch (section.kind) {
+    case 'personal': return 'Personal'
+    case 'space': return spaceLabel(section.space)
+    case 'elsewhere': return 'In other spaces'
+    case 'shared': return 'Shared with me'
+  }
+}
+
+/**
+ * What the entry a space lists a workspace under gives the workspace's row: `WorkspaceRowListing`,
+ * and whether an unpublished workspace above it in the space's tree holds its publication back.
+ */
+export type SpaceRowListing = WorkspaceRowListing & { heldBack: PublicationHeldBack | undefined }
+
+const rowEntry = (row: WorkspaceRow) => (row.kind === 'record' ? row.entry : row.workspace)
+
+/**
+ * What the entry `section`'s space lists a workspace under gives the workspace's row (see
+ * `SpaceRowListing`), or nothing outside a space's section or without an entry. The workspace
+ * that holds the entry's publication back is named when it is one of the section's rows. With
+ * `onAddressChange`, the row of an entry the user may change offers it: for a member of the space
+ * the ones they own, as the listing records the owner, and every one for an admin of the space.
+ */
+export const rowListing = ({ section, entry, userId, onAddressChange }: {
+  section: WorkspaceSection
+  entry: SpaceWorkspaceInfo | undefined
+  /** The user's profile id, once known. */
+  userId: string | undefined
+  onAddressChange?: (entry: SpaceWorkspaceInfo) => void
+}): SpaceRowListing | undefined => {
+  if (section.kind !== 'space' || !entry) return undefined
+  const { space } = section
+  // The space changes an address only for one of its members: a workspace's owner who is not
+  // one, as its owner who left the space is, is refused like anyone else.
+  const mayChange = space.role === 'admin'
+    || (space.role !== undefined && entry.owner.id === userId)
+  const entries = section.rows.flatMap(row => rowEntry(row) ?? [])
+  return {
+    address: entry.slug === undefined ? undefined : { spaceKey: space.key, slug: entry.slug },
+    published: entry.published,
+    heldBack: publicationHeldBack(entries, entry),
+    onAddressChange: onAddressChange && mayChange ? () => onAddressChange(entry) : undefined,
+  }
+}
 
 const record = (gadget: GadgetMetadataWithTimestamps, entry?: SpaceWorkspaceInfo): WorkspaceRow =>
   ({ kind: 'record', id: gadget.id, gadget, entry })

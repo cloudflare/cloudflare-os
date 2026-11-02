@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type {
   AiChatAuthorInfo,
   GadgetMetadataWithTimestamps,
+  SpaceInfo,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
-import { groupWorkspaces, type WorkspaceSection } from './groupWorkspaces'
+import { groupWorkspaces, rowListing, type WorkspaceSection } from './groupWorkspaces'
 import type { SpaceListings } from './useSpaceListings'
 
 const ME: AiChatAuthorInfo = { type: 'user', id: 'me@example.com', name: 'Me' }
@@ -168,5 +169,55 @@ describe('groupWorkspaces', () => {
     expect(shown).toEqual([
       'adas-notes', 'adas-other', 'adas-own', 'left-behind', 'moving', 'roadmap', 'solo',
     ])
+  })
+})
+
+// The section of `space` on the workspaces page, with these entries as its rows.
+const sectionOf = (space: SpaceInfo, ...entries: SpaceWorkspaceInfo[]): WorkspaceSection => ({
+  kind: 'space',
+  space,
+  listing: 'ready',
+  rows: entries.map(workspace => ({ kind: 'listed', id: workspace.id, workspace })),
+})
+
+// Whether the row of `entry` in `space` offers the user an address change.
+const offersAddressChange = (space: SpaceInfo, entry: SpaceWorkspaceInfo) =>
+  rowListing({ section: sectionOf(space), entry, userId: ME.id, onAddressChange: () => {} })?.onAddressChange !== undefined
+
+describe('rowListing', () => {
+  const entry = { ...listedBy(ADA, 'brief'), slug: 'brief', published: 'use' } as const
+  const own = listedBy(ME, 'roadmap')
+
+  it('gives the row the entry’s address and publication, and nothing outside a space or without an entry', () => {
+    const platform = sectionOf(PLATFORM)
+    expect(rowListing({ section: platform, entry, userId: ME.id })).toEqual({
+      address: { spaceKey: 'platform', slug: 'brief' },
+      published: 'use',
+      heldBack: undefined,
+      onAddressChange: undefined,
+    })
+    expect(rowListing({ section: platform, entry: own, userId: ME.id })?.address).toBeUndefined()
+    expect(rowListing({ section: { kind: 'shared', rows: [] }, entry, userId: ME.id })).toBeUndefined()
+    expect(rowListing({ section: platform, entry: undefined, userId: ME.id })).toBeUndefined()
+  })
+
+  it('says a publication is held back, naming the workspace that holds it when the section has it', () => {
+    const handbook = listedBy(ADA, 'handbook')
+    const held = { ...entry, parentId: 'handbook', hiddenBy: 'handbook' }
+    expect(rowListing({ section: sectionOf(PLATFORM, handbook, held), entry: held, userId: ME.id })?.heldBack)
+      .toEqual({ blockerTitle: 'handbook' })
+    expect(rowListing({ section: sectionOf(PLATFORM, held), entry: held, userId: ME.id })?.heldBack)
+      .toEqual({ blockerTitle: undefined })
+    // A blocker with no title is named the way an untitled workspace is everywhere else.
+    const untitled = { ...handbook, title: '' }
+    expect(rowListing({ section: sectionOf(PLATFORM, untitled, held), entry: held, userId: ME.id })?.heldBack)
+      .toEqual({ blockerTitle: 'Untitled Workspace' })
+  })
+
+  it('offers an address change on every entry to an admin, on their own to a member, and on none to a visitor', () => {
+    expect([offersAddressChange(PLATFORM, entry), offersAddressChange(PLATFORM, own)]).toEqual([true, true])
+    expect([offersAddressChange(ATLAS, entry), offersAddressChange(ATLAS, own)]).toEqual([false, true])
+    // The owner of a workspace who is no longer a member of its space is refused like anyone.
+    expect(offersAddressChange({ key: 'former', name: 'Former', kind: 'team' }, own)).toBe(false)
   })
 })
