@@ -210,7 +210,7 @@ Importing a version 2 archive stores the same release commit under a new bluepri
 
 ## Admin Features and Featured Blueprints
 
-Deployments can optionally configure a set of admin usernames through the backend worker's `ADMINS` binding as an array of usernames.
+Deployments can optionally configure a set of admins through the backend worker's `ADMINS` binding, an array of usernames or sign-in emails. Entries match regardless of the case of ASCII letters, since an identity provider may capitalize an email differently than it was typed.
 
 Admins get access to two extra RPCs:
 

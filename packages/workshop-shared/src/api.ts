@@ -604,6 +604,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * Set the model to use for simple quick tasks, like generating chat titles. Set null to
    * disable quick model use (e.g. chats will be titled "New Chat"); in AI Gateway mode, null and
    * a model that no longer resolves leave quick tasks to the deployment's own quick model.
+   * Throws for a model on a deployment that applies Cloudflare usage limits, whose quick tasks
+   * always run on its own quick model, since they count against no limit.
    */
   setQuickModel(id: string | null): Promise<void>;
 

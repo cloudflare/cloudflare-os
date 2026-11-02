@@ -7,7 +7,8 @@ import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
 
-// The model used for quick tasks like title generation when AI Gateway mode is active.
+// The model used for quick tasks like title generation in AI Gateway mode while the user has
+// chosen none, and always on a deployment that applies Cloudflare usage limits.
 //
 // This 70B model is quite fast and cheap and produces pretty good titles. The cost is insignificant
 // compared to the actual coding model so there's not much reason to use a smaller model.
@@ -151,10 +152,10 @@ export class AiGatewayConfig {
   }
 
   /**
-   * Get the AiModelConfig for the quick model (used for title generation).
+   * Get the AiModelConfig for the deployment's own quick model (used for title generation where
+   * the user's choice is not).
    */
   getQuickModelConfig(): AiModelConfig | undefined {
-    // Always use Workers AI here.
     return {
       provider: "cloudflare",
       model: QUICK_MODEL_ID,

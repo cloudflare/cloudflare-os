@@ -12,6 +12,13 @@ describe("isDeploymentAdmin", () => {
     expect(isDeploymentAdmin(env, "someone@example.com")).toBe(false);
   });
 
+  it("folds only ASCII letters, so a look-alike character matches no admin", () => {
+    // The Kelvin sign lowercases to "k" under toLowerCase().
+    let env = withAdmins(["kim@example.com"]);
+    expect(isDeploymentAdmin(env, "\u212Aim@example.com")).toBe(false);
+    expect(isDeploymentAdmin(env, "Kim@example.com")).toBe(true);
+  });
+
   it("reads a list given as a JSON string", () => {
     let env = withAdmins(JSON.stringify(["Admin@Example.com"]));
     expect(isDeploymentAdmin(env, "admin@example.com")).toBe(true);

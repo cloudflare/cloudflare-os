@@ -24,8 +24,9 @@ export function hasAuthGatekeepers(env: Cloudflare.Env): boolean {
 
 /**
  * Whether the user `name` is one of the deployment admins the ADMINS binding lists. Names match
- * regardless of case: the list is typed by hand, while a sign-in names its user by the email as
- * the identity provider spells it, or by a password username, which is stored lowercased.
+ * regardless of the case of ASCII letters, as Cloudflare Access matches its email rules: the
+ * list is typed by hand, while a sign-in names its user by the email as the identity provider
+ * spells it, or by a password username, which is stored lowercased.
  */
 export function isDeploymentAdmin(env: Cloudflare.Env, name: string): boolean {
   let admins: unknown = env.ADMINS;
@@ -41,9 +42,13 @@ export function isDeploymentAdmin(env: Cloudflare.Env, name: string): boolean {
     throw new TypeError("ADMINS must be configured as an array of usernames.");
   }
 
-  let lowered = name.toLowerCase();
-  return admins.some(admin => typeof admin === "string" && admin.toLowerCase() === lowered);
+  let lowered = asciiLowerCase(name);
+  return admins.some(admin => typeof admin === "string" && asciiLowerCase(admin) === lowered);
 }
+
+// Only ASCII letters are folded: toLowerCase() also folds some other characters onto ASCII ones,
+// such as the Kelvin sign onto "k", which would let a look-alike name match an admin's.
+const asciiLowerCase = (text: string) => text.replace(/[A-Z]/g, letter => letter.toLowerCase());
 
 /**
  * Whether username/password login + signup is available. Enabled by default. An installation can

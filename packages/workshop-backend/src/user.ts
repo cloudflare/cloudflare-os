@@ -14,6 +14,7 @@ import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
 import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
+import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
@@ -758,17 +759,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async setQuickModel(id: string | null): Promise<void> {
+    if (id !== null && isCloudflareLimitsEnabled(this.env)) {
+      throw new Error("Quick tasks run on the deployment's own model while it applies " +
+          "Cloudflare usage limits.");
+    }
     this.storage.quickModel.put(id);
   }
 
   async getQuickModel(): Promise<null | string> {
-    let result = this.storage.quickModel.get();
-    // A gateway model is not stored here, so the choice is looked up the way a chat's model is.
-    if (result && this.#resolveModel(result, await getGatewayModels(this.env))) {
-      return result;
-    } else {
-      return null;
-    }
+    return this.#chosenQuickModel(await getGatewayModels(this.env))?.profile.id ?? null;
+  }
+
+  // The quick model the user chose, while it resolves. A gateway model is not stored here, so
+  // the choice is looked up the way a chat's model is. Quick tasks are counted against no usage
+  // limit, so a deployment that applies Cloudflare limits keeps them on its own quick model.
+  #chosenQuickModel(models: GatewayModels | null): UserAiModelRecord | undefined {
+    let id = this.storage.quickModel.get();
+    if (!id || isCloudflareLimitsEnabled(this.env)) return undefined;
+    return this.#resolveModel(id, models);
   }
 
   async getPreferredModel(): Promise<string | null> {
@@ -899,10 +907,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     // Resolve the quick model (used for lightweight tasks like title generation): the user's
-    // choice while it resolves, else in AI Gateway mode the deployment's own.
-    let quickModelId = this.storage.quickModel.get();
-    result.quickModel = (quickModelId ? this.#resolveModel(quickModelId, models)?.config : undefined)
-        ?? models?.gateway.getQuickModelConfig();
+    // choice where it may be used (see #chosenQuickModel), else in AI Gateway mode the
+    // deployment's own.
+    result.quickModel = this.#chosenQuickModel(models)?.config ??
+        models?.gateway.getQuickModelConfig();
     return result;
   }
 
