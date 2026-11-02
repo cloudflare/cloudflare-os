@@ -4,7 +4,8 @@ import { describe, it } from "node:test";
 import type { FileDiff } from "./diff.ts";
 import { asObject, parseJson, type JsonObject } from "./json.ts";
 import {
-  budgetMinutes, DEFAULT_BUDGET_MINUTES, evaluateKills, importedSources, killedMutants, OverBudget, planScope, runBounded,
+  budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, importedSources, killedMutants, OverBudget,
+  planScope, runBounded,
 } from "./tests.ts";
 
 // Stryker JSON reports from real proof runs on packages/error-reporting (2026-11-02), cut down to
@@ -73,6 +74,12 @@ describe("proof-tests scope", () => {
     assert.deepEqual(importedSources("packages/p/src/x.test.ts", text, (path) => present.has(path)),
       ["packages/p/src/index.ts", "packages/p/src/util.tsx", "packages/p/src/index.ts"]);
   });
+
+  it("flags edited helpers and fixtures, which unchanged tests may import", () => {
+    assert.deepEqual(editedSupportFiles([
+      "packages/p/src/a.test.ts", "packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json",
+    ]), ["packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json"]);
+  });
 });
 
 describe("proof-tests budget", () => {
@@ -98,6 +105,19 @@ describe("proof-tests budget", () => {
     await assert.rejects(runBounded(process.execPath, ["-e", "setInterval(() => {}, 1000)"], ".", started + 300), OverBudget);
     assert.ok(Date.now() - started < 30_000);
   });
+
+  // The command exits at once and leaves a child holding the captured stdout: the deadline, not
+  // the pipe closing, has to settle the run.
+  for (const detached of [false, true]) {
+    it(`settles at the deadline while a ${detached ? "detached " : ""}child holds stdout`, async () => {
+      const child = `setTimeout(() => {}, 10000)`;
+      const wrapper = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], ` +
+        `{ detached: ${detached}, stdio: ["ignore", "inherit", "ignore"] }).unref()`;
+      const started = Date.now();
+      await assert.rejects(runBounded(process.execPath, ["-e", wrapper], ".", started + 500, true), OverBudget);
+      assert.ok(Date.now() - started < 5_000, "settled by the child's exit rather than the deadline");
+    });
+  }
 
   it("starts nothing once the deadline has passed", async () => {
     await assert.rejects(runBounded(process.execPath, ["-e", ""], ".", Date.now() - 1), OverBudget);

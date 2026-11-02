@@ -9,10 +9,11 @@
 // every mutant the base tests killed (or timed out) is still killed at head: an edit that weakens
 // a test without deleting a line kills fewer and fails.
 //
-// Scope follows the 2026-11-02 probe (evidence/build-research/probe-results.md): Stryker 10.1.1's
-// vitest runner worked on a workerd suite (typed-storage) and a Node suite (error-reporting).
+// Scope follows a 2026-11-02 probe: Stryker 10.1.1's vitest runner worked on a workerd suite
+// (typed-storage) and a Node suite (error-reporting).
 // A pull request that changes anything but tests in one package is not applicable. Tests that only
-// a browser-mode, contract, eval or integration config runs get status `error`.
+// a browser-mode, contract, eval or integration config runs get status `error`, and so does an
+// edit to an existing helper, fixture or setup file (editedSupportFiles).
 //
 // The whole proof runs within a wall-clock budget, AUTOMERGE_MUTATION_BUDGET_MINUTES (default
 // DEFAULT_BUDGET_MINUTES). A heavy suite makes thousands of mutants (#943's base run had not
@@ -137,6 +138,8 @@ export function budgetMinutes(value: string | undefined): number {
  * Runs a command and returns its stdout when `capture` is set. Throws OverBudget if it is still
  * running at `deadline` (epoch milliseconds). The command gets its own process group and the whole
  * group is killed: Stryker and vitest start workers, workerd among them, that outlive their parent.
+ * The deadline settles the promise by itself, since a process outside the group can still hold the
+ * captured pipe open.
  */
 export function runBounded(
   command: string, args: string[], cwd: string, deadline: number, capture = false,
@@ -152,10 +155,21 @@ export function runBounded(
   const child = spawn(command, args, { cwd, detached: true, stdio: ["ignore", capture ? "pipe" : "inherit", "inherit"] });
   const chunks: Buffer[] = [];
   child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
-  let killed = false;
+  let expired = false;
   const timer = setTimeout(() => {
-    killed = true;
-    if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+    expired = true;
+    child.stdout?.destroy();
+    child.unref();
+    try {
+      if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+    } catch (error) {
+      // ESRCH: the group has already exited, though something it started may still hold the pipe.
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
+        reject(error);
+        return;
+      }
+    }
+    reject(new OverBudget(`${line} was still running when the budget ran out`));
   }, remaining);
   child.on("error", (error) => {
     clearTimeout(timer);
@@ -163,8 +177,8 @@ export function runBounded(
   });
   child.on("close", (code, signal) => {
     clearTimeout(timer);
-    if (killed) reject(new OverBudget(`${line} was still running when the budget ran out`));
-    else if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
+    if (expired) return;
+    if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
     else reject(new Error(`${line} exited with ${code ?? signal}`));
   });
   return promise;
@@ -265,6 +279,14 @@ async function prove(plan: TestsPlan, tests: string[], from: string, deadline: n
   return evaluateKills(baseReport, headReport, { ...details, config });
 }
 
+/**
+ * The changed files, present at base, that vitest does not run itself. The proof runs only the
+ * changed test files, so an edit to a helper or fixture that unchanged tests import would go unseen.
+ */
+export function editedSupportFiles(baseTests: string[]): string[] {
+  return baseTests.filter((path) => !RUNNABLE_TEST.test(path));
+}
+
 async function main(): Promise<void> {
   await runProducer("proof", "proof-tests", async ({ head, base }) => {
     const minutes = budgetMinutes(process.env.AUTOMERGE_MUTATION_BUDGET_MINUTES);
@@ -284,6 +306,10 @@ async function main(): Promise<void> {
     }
     const plan: TestsPlan = { packageDir: scope.packageDir, baseTests, headTests, mutate: [...mutate].toSorted() };
     const details = { package: plan.packageDir, tests: scope.tests, mutate: plan.mutate, budget_minutes: minutes };
+    const support = editedSupportFiles(baseTests);
+    if (support.length > 0) {
+      return errored(`changes existing helpers, fixtures or setup that unchanged tests may use: ${support.slice(0, 5).join(", ")}`, details);
+    }
     if (plan.mutate.length === 0) return errored("the changed tests import no source file to mutate", details);
     try {
       return await prove(plan, scope.tests, from, deadline, details);
