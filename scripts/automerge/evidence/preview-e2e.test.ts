@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { asObject, parseJson, type Json } from "../proofs/json.ts";
-import { deployedVersion, E2E_CONFIG, evaluateE2e, previewRun, servingError, type VersionAnswer } from "./preview-e2e.ts";
+import {
+  deployedVersions, E2E_CONFIG, evaluateE2e, previewRun, servedVersion, servingError, testEnvironment,
+} from "./preview-e2e.ts";
 import { fileResults, type TestRun } from "./vitest.ts";
 
 // Real inputs: vitest JSON reports of the e2e suite against `pnpm dev-server` (all ten flows
@@ -20,13 +22,13 @@ const run = (name: string): TestRun => ({
 
 const PR966_HEAD = "218afd5bef73a888911dd07e5afdb4b27f62d5db";
 const REPO = "cloudflare/cloudflare-os";
-const VERSION = "8a1f3c2e-5b7d-4e19-9c0a-2f6d4b8e1a37";
-const ok = (version: string): VersionAnswer => ({ status: 200, body: JSON.stringify({ version }) });
+const BACKEND = "8a1f3c2e-5b7d-4e19-9c0a-2f6d4b8e1a37";
+const GATEKEEPER = "0c4d7e1a-93b2-4f68-a5d0-6e2b1f8c3a94";
 
 /** #966's recorded smoke artifact as it would read had the service token been set. */
-function smokeWith(version: string): Json {
+function smokeWith(workerVersions: Record<string, string>): Json {
   const smoke = asObject(load("smoke-pr966-no-token.json"), "smoke");
-  return { ...smoke, status: "ok", holds: true, details: { ...asObject(smoke.details, "details"), backend_version: version } };
+  return { ...smoke, status: "ok", holds: true, details: { ...asObject(smoke.details, "details"), worker_versions: workerVersions } };
 }
 
 describe("evaluateE2e", () => {
@@ -59,29 +61,45 @@ describe("evaluateE2e", () => {
 });
 
 describe("binding to the head's deploy", () => {
-  it("reads the version the head's smoke recorded", () => {
-    assert.deepEqual(deployedVersion(smokeWith(VERSION), PR966_HEAD), { version: VERSION });
+  it("reads every worker version the head's smoke recorded", () => {
+    assert.deepEqual(deployedVersions(smokeWith({ "workshop-backend": BACKEND }), PR966_HEAD), { versions: { "workshop-backend": BACKEND } });
   });
 
-  it("has no version from #966's real smoke, which ran without the service token", () => {
-    assert.deepEqual(deployedVersion(load("smoke-pr966-no-token.json"), PR966_HEAD), {
+  it("has no versions from #966's real smoke, which ran without the service token", () => {
+    assert.deepEqual(deployedVersions(load("smoke-pr966-no-token.json"), PR966_HEAD), {
       error: "the head's smoke has status error, so no version was recorded",
     });
   });
 
-  it("has no version from another head's smoke", () => {
-    assert.match(String(Object.values(deployedVersion(smokeWith(VERSION), "0".repeat(40)))), /is for 218afd5b/);
+  it("has no versions from another head's smoke, or one that recorded only the backend's as a single field", () => {
+    assert.match(String(Object.values(deployedVersions(smokeWith({ "workshop-backend": BACKEND }), "0".repeat(40)))), /is for 218afd5b/);
+    const old = asObject(smokeWith({}), "smoke");
+    const backendOnly = { ...old, details: { ...asObject(old.details, "details"), worker_versions: null, backend_version: BACKEND } };
+    assert.deepEqual(deployedVersions(backendOnly, PR966_HEAD), { error: "the head's smoke recorded no worker versions" });
   });
 
-  it("accepts the URL only while it serves the head's version", () => {
-    assert.equal(servingError(VERSION, ok(VERSION), "before"), undefined);
-    assert.match(String(servingError(VERSION, ok("00000000-older-deploy"), "after")), /served backend version 00000000-older-deploy/);
+  it("accepts the URL only while every recorded worker serves the head's version", () => {
+    assert.equal(servingError({ "workshop-backend": BACKEND }, { "workshop-backend": BACKEND }, "before"), undefined);
+    assert.equal(servingError({ "workshop-backend": BACKEND }, { "workshop-backend": "00000000-older-deploy" }, "after"),
+      `after the flows, workshop-backend served 00000000-older-deploy, not the head's ${BACKEND}`);
   });
 
-  it("errors on #966's real Access redirect and on a null version", () => {
+  it("errors when a gatekeeper's version is recorded but cannot be read, though the backend matches", () => {
+    const deployed = { "workshop-backend": BACKEND, "gatekeeper-google": GATEKEEPER };
+    assert.equal(servingError(deployed, { "workshop-backend": BACKEND }, "before"),
+      "before the flows, no served version can be read for gatekeeper-google");
+  });
+
+  it("reads no version from #966's real Access redirect or a null version", () => {
     const redirect = asObject(load("api-version-pr966-unauthenticated.json"), "answer");
-    assert.match(String(servingError(VERSION, { status: Number(redirect.status), body: "" }, "before")), /answered 302 with no version/);
-    assert.match(String(servingError(VERSION, { status: 200, body: '{"version":null}' }, "before")), /answered 200 with no version/);
+    assert.equal(servedVersion({ status: Number(redirect.status), body: "" }), undefined);
+    assert.equal(servedVersion({ status: 200, body: '{"version":null}' }), undefined);
+    assert.equal(servedVersion({ status: 200, body: JSON.stringify({ version: BACKEND }) }), BACKEND);
+  });
+
+  it("keeps the GitHub tokens out of the e2e suite's environment", () => {
+    const env = testEnvironment({ GITHUB_TOKEN: "ghs_x", GH_TOKEN: "ghs_y", E2E_ACCESS_TOKEN: "jwt", PATH: "/usr/bin" }, "https://preview.example");
+    assert.deepEqual(env, { E2E_ACCESS_TOKEN: "jwt", PATH: "/usr/bin", E2E_BASE_URL: "https://preview.example" });
   });
 });
 

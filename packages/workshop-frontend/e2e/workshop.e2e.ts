@@ -28,7 +28,8 @@ const VIEWPORTS: { name: string; phone: boolean; options: BrowserContextOptions 
 let browser: Browser
 
 beforeAll(async () => {
-  browser = await chromium.launch()
+  // The pages are the pull request's code, and this process holds the Access token.
+  browser = await chromium.launch({ chromiumSandbox: true })
 })
 
 afterAll(async () => {

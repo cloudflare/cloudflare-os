@@ -5,15 +5,17 @@
 //
 // The preview is what .github/workflows/preview.yml deployed for the head. This waits for that
 // workflow's newest `pull_request` run on exactly the head SHA to finish, and requires that it
-// succeeded. The preview URL is per pull request, so a later deploy (a re-run of an older head)
-// can replace what it serves; the flows are bound to the head by the backend's Worker version id.
-// The preview run's smoke step (scripts/automerge/proofs/smoke.ts) records, in its
-// `automerge-preview-smoke-<head sha>` artifact, the id `GET /api/version` answered right after the
-// head deployed. The URL must answer that same id before and after the flows; no id, a different
-// one, or no readable smoke artifact is `error`. Previews sit behind Cloudflare Access, and the
-// backend keys each user by the email in the Access token, which a service token does not carry:
-// the run needs an Access application token for a user with an email, as E2E_ACCESS_TOKEN.
-// Without it the producer reports `error`.
+// succeeded. The preview URL is per pull request, so a later deploy (a re-run of an older head, or
+// one that failed after its gatekeeper tier) can replace part of what it serves; the flows are
+// bound to the head by the version id of every worker the head's deploy recorded. The preview
+// run's smoke step (scripts/automerge/proofs/smoke.ts) must record them, keyed by package name, as
+// `details.worker_versions` in its `automerge-preview-smoke-<head sha>` artifact. Each must be
+// what that worker serves before and after the flows. Only the backend's served version can be
+// read today (`GET /api/version`), so a recorded router or gatekeeper version is unverifiable and
+// the evidence is `error`; so is no recorded versions, a mismatch, or no readable smoke artifact.
+// Previews sit behind Cloudflare Access, and the backend keys each user by the email in the Access
+// token, which a service token does not carry: the run needs an Access application token for a
+// user with an email, as E2E_ACCESS_TOKEN. Without it the producer reports `error`.
 //
 // The flows decide only what they saw: a failing flow fails the evidence, and a missing report, a
 // suite that crashed, or fewer than EXPECTED_TESTS passing flows is `error`.
@@ -84,13 +86,19 @@ export function evaluateE2e(run: TestRun, details: JsonObject): Outcome {
   return holds(all);
 }
 
-/** The backend version id the head's smoke artifact recorded, or why there is none. */
-export function deployedVersion(smoke: Json, headSha: string): { version: string } | { error: string } {
+/** The version id of every worker the head's smoke artifact recorded, or why there are none. */
+export function deployedVersions(smoke: Json, headSha: string): { versions: Record<string, string> } | { error: string } {
   if (!isObject(smoke) || smoke.schema !== 1 || smoke.name !== "preview-smoke") return { error: "the smoke artifact is not a preview-smoke artifact" };
   if (smoke.head_sha !== headSha) return { error: `the smoke artifact is for ${String(smoke.head_sha)}, not ${headSha}` };
   if (smoke.status !== "ok") return { error: `the head's smoke has status ${String(smoke.status)}, so no version was recorded` };
-  const version = isObject(smoke.details) ? smoke.details.backend_version : undefined;
-  return typeof version === "string" && version !== "" ? { version } : { error: "the head's smoke recorded no backend version" };
+  const recorded = isObject(smoke.details) ? smoke.details.worker_versions : undefined;
+  if (!isObject(recorded) || Object.keys(recorded).length === 0) return { error: "the head's smoke recorded no worker versions" };
+  const versions: Record<string, string> = {};
+  for (const [worker, version] of Object.entries(recorded)) {
+    if (typeof version !== "string" || version === "") return { error: `the head's smoke recorded no version for ${worker}` };
+    versions[worker] = version;
+  }
+  return { versions };
 }
 
 /** One answer to `GET /api/version`. */
@@ -110,11 +118,20 @@ export function servedVersion(answer: VersionAnswer): string | undefined {
   }
 }
 
-/** Why the URL was not serving the head's deploy at one point, or undefined when it was. */
-export function servingError(deployed: string, answer: VersionAnswer, when: string): string | undefined {
-  const served = servedVersion(answer);
-  if (served === undefined) return `${when} the flows, GET /api/version answered ${answer.status} with no version`;
-  return served === deployed ? undefined : `${when} the flows, the preview served backend version ${served}, not the head's ${deployed}`;
+/** Why the URL was not serving every worker of the head's deploy at one point, or undefined when it was. */
+export function servingError(deployed: Record<string, string>, served: Record<string, string | undefined>, when: string): string | undefined {
+  const problems = Object.entries(deployed).flatMap(([worker, version]) => {
+    const serving = served[worker];
+    if (serving === undefined) return [`no served version can be read for ${worker}`];
+    return serving === version ? [] : [`${worker} served ${serving}, not the head's ${version}`];
+  });
+  return problems.length === 0 ? undefined : `${when} the flows, ${problems.join("; ")}`;
+}
+
+/** The e2e suite's environment: this one's, without the GitHub tokens the suite has no use for. */
+export function testEnvironment(env: NodeJS.ProcessEnv, baseUrl: string): NodeJS.ProcessEnv {
+  const { GITHUB_TOKEN: _github, GH_TOKEN: _gh, ...rest } = env;
+  return { ...rest, E2E_BASE_URL: baseUrl };
 }
 
 async function github(path: string): Promise<Json> {
@@ -149,7 +166,7 @@ async function main(): Promise<void> {
   await runProducer("evidence", "evidence-preview-e2e", async ({ head }): Promise<Outcome> => {
     const baseUrl = values["base-url"];
     if (!baseUrl) throw new Error("--base-url is required");
-    const env: NodeJS.ProcessEnv = { ...process.env, E2E_BASE_URL: baseUrl };
+    const env = testEnvironment(process.env, baseUrl);
     if (values.local) {
       delete env.E2E_ACCESS_TOKEN;
       return evaluateE2e(runTests(E2E_CONFIG, [], env), { base_url: baseUrl, mode: "local", bound: false });
@@ -168,13 +185,15 @@ async function main(): Promise<void> {
       if (preview.state === "done") {
         const details = { base_url: baseUrl, mode: "preview", preview_run: preview.id };
         if (preview.conclusion !== "success") return errored(`the preview deploy for ${head} concluded ${preview.conclusion}`, details);
-        const deployed = deployedVersion(smokeArtifact(repository, preview.id, head), head);
+        const deployed = deployedVersions(smokeArtifact(repository, preview.id, head), head);
         if ("error" in deployed) return errored(deployed.error, details);
-        const bound = { ...details, backend_version: deployed.version };
-        const before = servingError(deployed.version, await versionAt(baseUrl, token), "before");
+        const bound = { ...details, worker_versions: deployed.versions };
+        // Only the backend's version is readable from outside; servingError names every other.
+        const served = async () => ({ "workshop-backend": servedVersion(await versionAt(baseUrl, token)) });
+        const before = servingError(deployed.versions, await served(), "before");
         if (before) return errored(before, bound);
         const run = runTests(E2E_CONFIG, [], env);
-        const after = servingError(deployed.version, await versionAt(baseUrl, token), "after");
+        const after = servingError(deployed.versions, await served(), "after");
         if (after) return errored(after, { ...bound, run: runDetails(run) });
         return evaluateE2e(run, bound);
       }

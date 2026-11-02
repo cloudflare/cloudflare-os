@@ -68,21 +68,31 @@ export interface AutoMerged {
   band: string;
 }
 
-/** The rung 3 auto decision a decision record holds for pull request `number`, if any. */
-export function rung3Decision(record: JsonObject, number: number): { area: string; band: string } | undefined {
-  if (record.mode !== "enforce" || !Array.isArray(record.pulls)) return undefined;
-  for (const entry of record.pulls) {
-    if (!isObject(entry) || entry.number !== number || !isObject(entry.would)) continue;
-    const { decision, area } = entry.would;
-    // `would` is eligibility; the merge was the gate's own only if its rule passed with no person's
-    // approval counted.
-    const gatePassed = isObject(entry.gate) && entry.gate.passes === true;
-    const noApprover = Array.isArray(entry.approvers) && entry.approvers.length === 0;
-    if (decision === "auto" && gatePassed && noApprover && typeof area === "string" && RUNG3_AREAS.includes(area)) {
-      return { area, band: typeof entry.band === "string" ? entry.band : "unknown" };
-    }
+/** What a decision record says about one pull request: a rung 3 auto-merge, not one, or unreadable. */
+export type Rung3Reading = { auto: { area: string; band: string } } | { notAuto: true } | { unreadable: string };
+
+/**
+ * Reads pull request `number`'s decision from a record. A record in shadow mode merged nothing. A
+ * truncated record, or an entry missing the pull request, `approvers`, `gate` or `would`, cannot
+ * say whether a person approved, so it is unreadable rather than "not auto-merged".
+ */
+export function rung3Decision(record: JsonObject, number: number): Rung3Reading {
+  if (record.mode === "shadow") return { notAuto: true };
+  if (record.mode !== "enforce") return { unreadable: `mode is ${JSON.stringify(record.mode ?? null)}` };
+  if (record.truncated === true) return { unreadable: "the record was truncated" };
+  const entry = Array.isArray(record.pulls) ? record.pulls.find((pull) => isObject(pull) && pull.number === number) : undefined;
+  if (!isObject(entry)) return { unreadable: `the record has no entry for #${number}` };
+  if (!Array.isArray(entry.approvers) || !isObject(entry.gate) || !isObject(entry.would)) {
+    return { unreadable: `the entry for #${number} lacks approvers, gate or would` };
   }
-  return undefined;
+  const { decision, area } = entry.would;
+  // `would` is eligibility; the merge was the gate's own only if its rule passed with no person's
+  // approval counted.
+  if (decision === "auto" && entry.gate.passes === true && entry.approvers.length === 0 &&
+      typeof area === "string" && RUNG3_AREAS.includes(area)) {
+    return { auto: { area, band: typeof entry.band === "string" ? entry.band : "unknown" } };
+  }
+  return { notAuto: true };
 }
 
 /** Up to `size` pull requests, the same ones for every run in the week starting `weekStart`. */
@@ -186,8 +196,13 @@ async function main(): Promise<void> {
       unreadable.push(number);
       continue;
     }
-    const decision = rung3Decision(record, number);
-    if (decision) auto.push({ number, title: asString(item.title, "title"), url: asString(item.html_url, "url"), ...decision });
+    const reading = rung3Decision(record, number);
+    if ("unreadable" in reading) {
+      console.log(`#${number}: ${reading.unreadable}`);
+      unreadable.push(number);
+    } else if ("auto" in reading) {
+      auto.push({ number, title: asString(item.title, "title"), url: asString(item.html_url, "url"), ...reading.auto });
+    }
   }
   if (auto.length === 0 && unreadable.length === 0) {
     console.log(`No pull request merged through rung 3 between ${weekStart} and ${weekEnd}.`);

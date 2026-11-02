@@ -2,19 +2,21 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { asObject, parseJson, type Json, type JsonObject } from "../proofs/json.ts";
-import { evaluatePipeline, triggeredPipeline } from "./consumer-build.ts";
+import { CONSUMER_REF, evaluatePipeline, triggeredPipeline } from "./consumer-build.ts";
 
-// Real gadgets-internal (project 14584) API responses recorded 2026-11-02 with `glab api`:
-// merge-request pipelines 5206949 (passed) and 5206731 (its `test` job failed), their jobs and
-// their variables (none). No trigger pipeline exists yet, so the bound cases take these pipelines
-// with the source and variable a trigger would give them, and judge their real `test` job.
+// Real gadgets-internal (project 14584) API responses recorded with `glab api`: merge-request
+// pipelines 5206949 (passed) and 5206731 (its `test` job failed with script_failure, and its
+// preview-delete is manual), their jobs and their variables (none), and main pipeline 5208594, whose
+// deploy-internal failed with runner_system_failure. No trigger pipeline exists yet, so the bound
+// cases take these pipelines with the source, ref and variable a trigger would give them, and
+// judge their real jobs.
 const DIR = new URL("./testdata/consumer/", import.meta.url);
 const load = (name: string): Json => parseJson(readFileSync(new URL(name, DIR), "utf8"));
 const PUBLIC_SHA = "91f4e707360a147ed01a69594e607d2b007dd718";
 
 function asTriggered(id: number): { pipeline: JsonObject; variables: Json; jobs: Json } {
   return {
-    pipeline: { ...asObject(load(`pipeline-${id}.json`), "pipeline"), source: "trigger" },
+    pipeline: { ...asObject(load(`pipeline-${id}.json`), "pipeline"), source: "trigger", ref: CONSUMER_REF },
     variables: [{ variable_type: "env_var", key: "CLOUDFLARE_OS_SHA", value: PUBLIC_SHA }],
     jobs: load(`jobs-${id}.json`),
   };
@@ -29,18 +31,31 @@ describe("evaluatePipeline", () => {
     assert.equal(outcome.details.pipeline_url, "https://gitlab.cfdata.org/cloudflare/developers/gadgets-internal/-/pipelines/5206949");
   });
 
-  it("does not hold when the job failed (5206731)", () => {
+  it("does not hold when the job's script failed (5206731)", () => {
     const { pipeline, variables, jobs } = asTriggered(5206731);
     const outcome = evaluatePipeline(5206731, PUBLIC_SHA, pipeline, variables, jobs, "test");
     assert.equal(outcome.status, "ok");
     assert.deepEqual(outcome.details.reasons, ["test failed"]);
   });
 
-  it("errors when the job never ran (5206949's manual preview-delete), instead of failing", () => {
-    const { pipeline, variables, jobs } = asTriggered(5206949);
-    const outcome = evaluatePipeline(5206949, PUBLIC_SHA, pipeline, variables, jobs, "preview-delete");
+  it("errors when the job failed on a runner fault (5208594), instead of failing", () => {
+    const { pipeline, variables, jobs } = asTriggered(5208594);
+    const outcome = evaluatePipeline(5208594, PUBLIC_SHA, pipeline, variables, jobs, "deploy-internal");
+    assert.equal(outcome.status, "error");
+    assert.equal(outcome.details.error, "deploy-internal failed with runner_system_failure, not its script");
+  });
+
+  it("errors when the job never ran (5206731's manual preview-delete), instead of failing", () => {
+    const { pipeline, variables, jobs } = asTriggered(5206731);
+    const outcome = evaluatePipeline(5206731, PUBLIC_SHA, pipeline, variables, jobs, "preview-delete");
     assert.equal(outcome.status, "error");
     assert.equal(outcome.details.error, "preview-delete ended manual without running to a result");
+  });
+
+  it("errors on a trigger pipeline that ran on main (5208594's ref), not the consumer-build branch", () => {
+    const { pipeline, variables, jobs } = asTriggered(5208594);
+    const outcome = evaluatePipeline(5208594, PUBLIC_SHA, { ...pipeline, ref: "main" }, variables, jobs, "deploy-internal");
+    assert.equal(outcome.details.error, "pipeline 5208594 ran on main, not automerge-consumer-build");
   });
 
   it("errors on the recorded merge-request pipeline: not one a trigger made", () => {
@@ -70,12 +85,13 @@ describe("evaluatePipeline", () => {
 });
 
 describe("triggeredPipeline", () => {
-  it("rejects a pipeline on another ref", () => {
-    assert.throws(() => triggeredPipeline(load("pipeline-5206949.json")), /refs\/merge-requests\/636\/head, not main/);
+  it("rejects a pipeline on another ref, main included", () => {
+    assert.throws(() => triggeredPipeline(load("pipeline-5206949.json")), /refs\/merge-requests\/636\/head, not automerge-consumer-build/);
+    assert.throws(() => triggeredPipeline(load("pipeline-5208594.json")), /on main, not automerge-consumer-build/);
   });
 
-  it("reads the id and URL of a main pipeline", () => {
-    const response = { ...asObject(load("pipeline-5206949.json"), "p"), ref: "main" };
+  it("reads the id and URL of a consumer-build pipeline", () => {
+    const response = { ...asObject(load("pipeline-5206949.json"), "p"), ref: CONSUMER_REF };
     assert.deepEqual(triggeredPipeline(response), {
       id: 5206949, url: "https://gitlab.cfdata.org/cloudflare/developers/gadgets-internal/-/pipelines/5206949",
     });

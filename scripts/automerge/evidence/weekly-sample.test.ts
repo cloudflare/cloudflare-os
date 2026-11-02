@@ -50,17 +50,33 @@ describe("decisions", () => {
     // The summary in the shape the gate's renderOutput writes: the decision JSON fenced first.
     const parsed = decisionFromSummary("```json\n" + JSON.stringify(record) + "\n```\n\n**enforce**: the gate's rule holds");
     assert.ok(parsed);
-    assert.deepEqual(rung3Decision(parsed, 932), { area: "kernel-small", band: "low" });
+    assert.deepEqual(rung3Decision(parsed, 932), { auto: { area: "kernel-small", band: "low" } });
   });
 
-  it("ignores another pull request, shadow mode, a person decision and rung 2", () => {
+  it("reads shadow mode, a person decision and rung 2 as not auto-merged", () => {
     const parsed = asObject(parseJson(JSON.stringify(record)), "record");
-    assert.equal(rung3Decision(parsed, 933), undefined);
-    assert.equal(rung3Decision({ ...parsed, mode: "shadow" }, 932), undefined);
+    assert.deepEqual(rung3Decision({ ...parsed, mode: "shadow" }, 932), { notAuto: true });
     const pull = { ...record.pulls[0], would: { decision: "person", area: null, reasons: ["low score"] } };
-    assert.equal(rung3Decision(asObject(parseJson(JSON.stringify({ ...record, pulls: [pull] })), "r"), 932), undefined);
+    assert.deepEqual(rung3Decision(asObject(parseJson(JSON.stringify({ ...record, pulls: [pull] })), "r"), 932), { notAuto: true });
     const scored = { ...record.pulls[0], would: { decision: "auto", area: "scored", reasons: [] } };
-    assert.equal(rung3Decision(asObject(parseJson(JSON.stringify({ ...record, pulls: [scored] })), "r"), 932), undefined);
+    assert.deepEqual(rung3Decision(asObject(parseJson(JSON.stringify({ ...record, pulls: [scored] })), "r"), 932), { notAuto: true });
+  });
+
+  // The gate's renderOutput falls back first to entries without `approvers`, then to no entries.
+  it("reads a truncated record as unreadable, in both of the gate's fallbacks", () => {
+    const { approvers: _approvers, ...withoutApprovers } = record.pulls[0];
+    const first = asObject(parseJson(JSON.stringify({ ...record, pulls: [withoutApprovers], truncated: true })), "r");
+    const second = asObject(parseJson(JSON.stringify({ ...record, pulls: [], truncated: true })), "r");
+    assert.deepEqual(rung3Decision(first, 932), { unreadable: "the record was truncated" });
+    assert.deepEqual(rung3Decision(second, 932), { unreadable: "the record was truncated" });
+  });
+
+  it("reads a record without the pull request, or an entry without approvers or gate, as unreadable", () => {
+    const parsed = asObject(parseJson(JSON.stringify(record)), "record");
+    assert.deepEqual(rung3Decision(parsed, 933), { unreadable: "the record has no entry for #933" });
+    const { gate: _gate, ...withoutGate } = record.pulls[0];
+    assert.deepEqual(rung3Decision(asObject(parseJson(JSON.stringify({ ...record, pulls: [withoutGate] })), "r"), 932),
+      { unreadable: "the entry for #932 lacks approvers, gate or would" });
   });
 
   it("reads nothing from a summary without the fenced JSON", () => {

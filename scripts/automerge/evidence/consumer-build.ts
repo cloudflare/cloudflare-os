@@ -3,16 +3,21 @@
 // evidence-consumer-build: gadgets-internal, the internal deployment that pins this repository as
 // its `public` submodule, still builds and passes its tests at the pull request's head.
 //
-// Triggers a gadgets-internal pipeline on its default branch with the trigger token, passing the
-// head SHA as CLOUDFLARE_OS_SHA; the `public-consumer-build` job there checks the submodule out at
-// exactly that commit, builds and tests, and does nothing else; gadgets-internal's .gitlab-ci.yml
-// has to add that job (and keep trigger pipelines out of its release chain). Then polls the
-// pipeline with a read-only token. The result is bound to the pipeline this run created: the
-// pipeline's id, its `trigger` source, its CLOUDFLARE_OS_SHA variable and the job's own pipeline
-// id must all match. It holds when that job succeeded.
+// Triggers a gadgets-internal pipeline on its unprotected `automerge-consumer-build` branch with
+// the trigger token, passing the head SHA as CLOUDFLARE_OS_SHA; the `public-consumer-build` job
+// there builds and tests gadgets-internal main with its `public` submodule at exactly that commit,
+// and does nothing else. Never `main`: the job runs the pull request's code, which must not see
+// gadgets-internal's protected variables or main-scoped credentials. gadgets-internal's
+// .gitlab-ci.yml has to add that job and keep every other job and include off trigger pipelines,
+// and the trigger token must not exist before it does. Then polls the pipeline with a read-only
+// token. The result is bound to the pipeline this run created: its id, its `trigger` source, its
+// ref, its CLOUDFLARE_OS_SHA variable and the job's own pipeline id must all match. It holds when
+// that job succeeded and fails when its script failed; a job that failed for any other reason (a
+// runner fault, a timeout) or never ran is `error`.
 //
-// This job holds the two GitLab tokens and runs no pull request code: it checks out the base.
-// Without either token it reports `error`, which sends the pull request to a person.
+// This job holds the two GitLab tokens and runs no pull request code here: it checks out the
+// base. The workflow starts it only for a maintainer's pull request (trust.ts). Without either
+// token it reports `error`, which sends the pull request to a person.
 //
 //   node scripts/automerge/evidence/consumer-build.ts
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA, GITLAB_TRIGGER_TOKEN, GITLAB_READ_TOKEN
@@ -24,7 +29,7 @@ import { asArray, asNumber, asObject, asString, isObject, parseJson, type Json, 
 
 export const GITLAB_API = "https://gitlab.cfdata.org/api/v4";
 export const PROJECT_ID = 14584;
-export const CONSUMER_REF = "main";
+export const CONSUMER_REF = "automerge-consumer-build";
 export const JOB_NAME = "public-consumer-build";
 export const SHA_VARIABLE = "CLOUDFLARE_OS_SHA";
 /** GitLab pipeline states after which nothing more runs. */
@@ -32,7 +37,7 @@ const FINISHED = new Set(["success", "failed", "canceled", "skipped"]);
 const POLL_MS = 30_000;
 const DEADLINE_MS = 60 * 60 * 1000;
 
-/** What the trigger call returned, checked: a pipeline on the consumer's default branch. */
+/** What the trigger call returned, checked: a pipeline on the consumer-build branch. */
 export function triggeredPipeline(response: Json): { id: number; url: string } {
   const pipeline = asObject(response, "trigger response");
   if (pipeline.ref !== CONSUMER_REF) throw new Error(`the trigger created a pipeline on ${String(pipeline.ref)}, not ${CONSUMER_REF}`);
@@ -50,6 +55,7 @@ export function evaluatePipeline(
 ): Outcome {
   if (pipeline.id !== pipelineId) return errored(`asked for pipeline ${pipelineId}, read ${String(pipeline.id)}`);
   if (pipeline.source !== "trigger") return errored(`pipeline ${pipelineId} has source ${String(pipeline.source)}, not trigger`);
+  if (pipeline.ref !== CONSUMER_REF) return errored(`pipeline ${pipelineId} ran on ${String(pipeline.ref)}, not ${CONSUMER_REF}`);
   const pinned = asArray(variables, "pipeline variables").filter((entry) => isObject(entry) && entry.key === SHA_VARIABLE);
   const value = pinned.length === 1 && isObject(pinned[0]) ? pinned[0].value : undefined;
   if (value !== publicSha) return errored(`pipeline ${pipelineId} sets ${SHA_VARIABLE}=${String(value ?? "nothing")}, not ${publicSha}`);
@@ -65,9 +71,11 @@ export function evaluatePipeline(
     job_url: asString(job.web_url, "job url"), job_status: status,
   };
   if (!finished(pipeline)) return errored(`pipeline ${pipelineId} is still ${String(pipeline.status)}`, details);
-  // Only a job that ran to an end is a result; canceled, skipped or manual means it was not seen.
+  // Only a job that ran to an end is a result; canceled, skipped or manual means it was not seen,
+  // and so does a failure the job's own script did not cause.
   if (status === "success") return decide([], details);
-  if (status === "failed") return decide([`${jobName} failed`], details);
+  if (status === "failed" && job.failure_reason === "script_failure") return decide([`${jobName} failed`], details);
+  if (status === "failed") return errored(`${jobName} failed with ${String(job.failure_reason ?? "no failure reason")}, not its script`, details);
   return errored(`${jobName} ended ${status} without running to a result`, details);
 }
 
