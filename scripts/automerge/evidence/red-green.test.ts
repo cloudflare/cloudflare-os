@@ -2,32 +2,31 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { parseDiff } from "../proofs/diff.ts";
-import { asArray, asNumber, asObject, asString, parseJson, type Json } from "../proofs/json.ts";
-import { evaluateRedGreen, planRedGreen } from "./red-green.ts";
-import { listedFiles, summarizeReport, type TestRun } from "./vitest.ts";
+import { asObject, parseJson } from "../proofs/json.ts";
+import { evaluateRedGreen, headVerdict, planRedGreen } from "./red-green.ts";
+import { fileResults, listedFiles, type FileResult, type TestRun } from "./vitest.ts";
 
-// `git diff -U0` of real merged commits against their parents, and the artifact red-green.ts wrote
-// for #932 (024caa73b, typed-storage distinct keys) on 2026-11-02: its new tests passed at head and
-// four of them failed on the base source.
+// `git diff -U0` of real merged commits against their parents, and the vitest JSON reports of
+// #932's changed test file (024caa73b, typed-storage distinct keys) recorded 2026-11-03: at head
+// (63 pass) and with src/index.ts put back to its parent (4 fail). The crash case is a real report
+// whose file failed in a hook before any test ran (the e2e suite, every test skipped).
 const DIR = new URL("./testdata/red-green/", import.meta.url);
 const diff = (commit: string) => parseDiff(readFileSync(new URL(`diff-${commit}.diff`, DIR), "utf8"));
+const TEST = "packages/typed-storage/__tests__/index.test.ts";
+const CONFIG = "packages/typed-storage/vitest.config.ts";
 
-function recordedRuns(side: "head" | "base"): TestRun[] {
-  const artifact = asObject(parseJson(readFileSync(new URL("pr932-artifact.json", DIR), "utf8")), "artifact");
-  return asArray(asObject(artifact.details, "details")[side], side).map((entry: Json) => {
-    const run = asObject(entry, "run");
-    return {
-      config: asString(run.config, "config"),
-      files: asArray(run.files, "files").map((file) => asString(file, "file")),
-      passed: run.passed === true,
-      tests: asNumber(run.tests, "tests"),
-      failedTests: asNumber(run.failed_tests, "failed_tests"),
-      failedSuites: asNumber(run.failed_suites, "failed_suites"),
-      failures: asArray(run.failures, "failures").map((name) => asString(name, "failure")),
-      seconds: asNumber(run.seconds, "seconds"),
-      tail: typeof run.tail === "string" ? run.tail : "",
-    };
-  });
+function results(url: URL): FileResult[] {
+  return fileResults(asObject(parseJson(readFileSync(url, "utf8")), "report"), "/workspace");
+}
+
+function run(side: "head" | "base", files = [TEST]): TestRun {
+  return { config: CONFIG, files, results: results(new URL(`pr932-vitest-${side}.json`, DIR)), exitOk: side === "head", seconds: 3, tail: "" };
+}
+
+/** The real crashed e2e report, relabelled as #932's test file so only its statuses matter. */
+function crashed(): TestRun {
+  const [file] = results(new URL("../e2e/dev-server-suite-error.json", DIR));
+  return { config: CONFIG, files: [TEST], results: [{ ...file, path: TEST }], exitOk: false, seconds: 3, tail: "" };
 }
 
 describe("planRedGreen", () => {
@@ -54,25 +53,51 @@ describe("planRedGreen", () => {
 });
 
 describe("evaluateRedGreen", () => {
-  const tests = ["packages/typed-storage/__tests__/index.test.ts"];
+  const tests = [TEST];
 
-  it("holds on #932: green at head, red on the base source", () => {
-    const outcome = evaluateRedGreen(tests, recordedRuns("head"), recordedRuns("base"));
+  it("holds on #932: 63 pass at head, 4 fail on the base source", () => {
+    const outcome = evaluateRedGreen(tests, [run("head")], [run("base")]);
+    assert.equal(outcome.status, "ok");
     assert.equal(outcome.holds, true);
   });
 
-  it("does not hold when the tests pass on the base source too", () => {
-    const outcome = evaluateRedGreen(tests, recordedRuns("head"), recordedRuns("head"));
-    assert.deepEqual(outcome.details.reasons, ["the changed tests also pass on the base source, so they do not check the change"]);
+  it("does not hold when the file passes on the base source too", () => {
+    const outcome = evaluateRedGreen(tests, [run("head")], [run("head")]);
+    assert.deepEqual(outcome.details.reasons, [`${TEST} passes on the base source, so it does not check the change`]);
   });
 
-  it("does not hold when the tests fail at head", () => {
-    const outcome = evaluateRedGreen(tests, recordedRuns("base"), []);
-    assert.deepEqual(outcome.details.reasons, ["the changed tests fail at head under packages/typed-storage/vitest.config.ts"]);
+  it("does not hold when the file fails at head, and skips the base", () => {
+    const outcome = headVerdict(tests, [run("base")]);
+    assert.equal(outcome?.status, "ok");
+    assert.equal(outcome?.holds, false);
+    assert.match(String(asObject(outcome?.details ?? {}, "details").reasons), /fails at head: non-unique index by number/);
   });
 
   it("does not hold when the change adds no test", () => {
     assert.deepEqual(evaluateRedGreen([], [], []).details.reasons, ["the change adds or changes no test file"]);
+  });
+
+  it("errors when the base left no readable report, instead of counting it red", () => {
+    const outcome = evaluateRedGreen(tests, [run("head")], [{ ...run("base"), results: undefined }]);
+    assert.equal(outcome.status, "error");
+    assert.match(String(outcome.details.error), /no readable vitest report on the base source/);
+  });
+
+  it("errors when the base file crashed before any test ran, instead of counting it red", () => {
+    const outcome = evaluateRedGreen(tests, [run("head")], [crashed()]);
+    assert.equal(outcome.status, "error");
+    assert.match(String(outcome.details.error), /ran no test on the base source \(status failed\)/);
+  });
+
+  it("errors when a changed test file is missing from a report", () => {
+    const other = "packages/typed-storage/__tests__/other.test.ts";
+    const outcome = evaluateRedGreen([TEST, other], [run("head", [TEST, other])], [run("base", [TEST, other])]);
+    assert.equal(outcome.status, "error");
+    assert.match(String(outcome.details.error), /other\.test\.ts is missing from the head report/);
+  });
+
+  it("errors when the head crashed, instead of counting it as a head failure", () => {
+    assert.equal(headVerdict(tests, [crashed()])?.status, "error");
   });
 });
 
@@ -82,9 +107,8 @@ describe("vitest reports", () => {
     assert.deepEqual(listedFiles(json, "/repo"), ["packages/typed-storage/__tests__/index.test.ts"]);
   });
 
-  it("counts a run as passed only when vitest exited 0 and reported success", () => {
-    const report = { success: true, numTotalTests: 1, numFailedTests: 0, numFailedTestSuites: 0, testResults: [] };
-    assert.equal(summarizeReport("c", [], report, true, 1, "").passed, true);
-    assert.equal(summarizeReport("c", [], report, false, 1, "boom").passed, false);
+  it("counts each file's passing, failing and unrun tests", () => {
+    const [base] = results(new URL("pr932-vitest-base.json", DIR));
+    assert.deepEqual({ ...base, failures: base.failures.length }, { path: TEST, status: "failed", passed: 59, failed: 4, notRun: 0, failures: 4 });
   });
 });

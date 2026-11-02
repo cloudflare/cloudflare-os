@@ -318,6 +318,8 @@ jobs:
         if: ${{ hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # The producer downloads the preview run's smoke artifact with `gh run download`.
+          GH_TOKEN: ${{ github.token }}
           E2E_ACCESS_TOKEN: ${{ secrets.AUTOMERGE_PREVIEW_E2E_ACCESS_TOKEN }}
           PREVIEW_URL: ${{ steps.preview.outputs.url }}
         run: node scripts/automerge/evidence/preview-e2e.ts --base-url "$PREVIEW_URL"

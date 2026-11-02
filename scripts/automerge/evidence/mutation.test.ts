@@ -38,16 +38,20 @@ describe("evaluateMutation", () => {
 
   it("does not hold below the minimum score", () => {
     const t = { detected: 1, undetected: 3, excluded: 2, survivors: [] };
-    const outcome = evaluateMutation(new Map([["packages/typed-storage", t]]), ["packages/workshop-frontend"]);
-    assert.deepEqual(outcome.details.reasons, [
-      `packages/typed-storage: mutation score 0.25 on the changed lines is below ${MIN_SCORE}`,
-      "changed source in packages/workshop-frontend has no vitest.config.ts to measure it",
-    ]);
-    assert.deepEqual(outcome.details.unmeasured, ["packages/workshop-frontend"]);
+    const outcome = evaluateMutation(new Map([["packages/typed-storage", t]]), []);
+    assert.equal(outcome.status, "ok");
+    assert.deepEqual(outcome.details.reasons, [`packages/typed-storage: mutation score 0.25 on the changed lines is below ${MIN_SCORE}`]);
   });
 
-  it("does not hold when no mutant could be scored", () => {
+  it("errors when changed source went unmeasured, even beside a passing package", () => {
+    const t = tally(report("error-reporting-green-head"));
+    const outcome = evaluateMutation(new Map([["packages/error-reporting", t]]), ["packages/workshop-frontend"]);
+    assert.equal(outcome.status, "error");
+    assert.equal(outcome.details.error, "changed source in packages/workshop-frontend has no vitest.config.ts to measure it");
+  });
+
+  it("errors when no mutant could be scored", () => {
     const outcome = evaluateMutation(new Map([["packages/typed-storage", { detected: 0, undetected: 0, excluded: 4, survivors: [] }]]), []);
-    assert.equal(outcome.holds, false);
+    assert.equal(outcome.status, "error");
   });
 });

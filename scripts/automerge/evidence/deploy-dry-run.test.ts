@@ -98,4 +98,11 @@ describe("evaluateDryRuns", () => {
     const outcome = evaluateDryRuns(failed, []);
     assert.deepEqual(outcome.details.reasons, ["pnpm build exited 1"]);
   });
+
+  it("errors when a signal ended a dry run before it finished, instead of failing", () => {
+    const killed: CommandResult = { ok: false, code: null, seconds: 600, tail: "", stdout: "" };
+    const outcome = evaluateDryRuns(ok, [{ package: "router", result: killed }]);
+    assert.equal(outcome.status, "error");
+    assert.equal(outcome.details.error, "a signal ended router before it finished");
+  });
 });

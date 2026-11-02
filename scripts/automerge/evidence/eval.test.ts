@@ -33,10 +33,10 @@ describe("evaluateComparison", () => {
     assert.equal(outcome.details.compared, 7);
   });
 
-  it("does not hold on #950's inconclusive comparison", () => {
+  it("errors on #950's inconclusive comparison: nothing was compared", () => {
     const outcome = evaluateComparison(recorded("run-41111649796-pr950"), PR950);
-    assert.equal(outcome.holds, false);
-    assert.deepEqual(outcome.details.reasons, ["no eval task could be compared"]);
+    assert.equal(outcome.status, "error");
+    assert.equal(outcome.details.error, "no eval task could be compared");
   });
 
   it("does not hold on a regression and names the task", () => {

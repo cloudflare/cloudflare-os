@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "kind": "evidence",
+  "name": "preview-smoke",
+  "head_sha": "218afd5bef73a888911dd07e5afdb4b27f62d5db",
+  "base_sha": "91f4e707360a147ed01a69594e607d2b007dd718",
+  "status": "error",
+  "holds": false,
+  "details": {
+    "url": "https://pr966-stop-agent-no-d7bfa577-router.PREVIEW_HOST",
+    "error": "PREVIEW_ACCESS_CLIENT_ID and PREVIEW_ACCESS_CLIENT_SECRET are not configured"
+  },
+  "findings": [],
+  "needs_person": [],
+  "merge_confidence": null,
+  "round": null,
+  "review_from_sha": null,
+  "fingerprint": null
+}

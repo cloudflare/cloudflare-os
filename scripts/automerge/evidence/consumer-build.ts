@@ -65,7 +65,10 @@ export function evaluatePipeline(
     job_url: asString(job.web_url, "job url"), job_status: status,
   };
   if (!finished(pipeline)) return errored(`pipeline ${pipelineId} is still ${String(pipeline.status)}`, details);
-  return decide(status === "success" ? [] : [`${jobName} ended ${status}`], details);
+  // Only a job that ran to an end is a result; canceled, skipped or manual means it was not seen.
+  if (status === "success") return decide([], details);
+  if (status === "failed") return decide([`${jobName} failed`], details);
+  return errored(`${jobName} ended ${status} without running to a result`, details);
 }
 
 async function gitlab(path: string, init: { token: string; form?: URLSearchParams }): Promise<Json> {

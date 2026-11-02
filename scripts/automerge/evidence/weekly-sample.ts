@@ -91,8 +91,14 @@ export function sample(pulls: AutoMerged[], weekStart: string, size = SAMPLE_SIZ
   return pulls.toSorted((a, b) => key(a).localeCompare(key(b))).slice(0, size).toSorted((a, b) => a.number - b.number);
 }
 
-/** The issue for a week's sample. */
-export function issueFor(weekStart: string, weekEnd: string, all: AutoMerged[], picked: AutoMerged[]): { title: string; body: string } {
+/**
+ * The issue for a week's sample. `unreadable` are merged pull requests with no `risk-review` decision
+ * the sampler could read: whether they merged without a person is unknown, so they are listed for
+ * a person to check rather than counted either way.
+ */
+export function issueFor(
+  weekStart: string, weekEnd: string, all: AutoMerged[], picked: AutoMerged[], unreadable: number[],
+): { title: string; body: string } {
   return {
     title: `Rung 3 weekly sample: ${weekStart} to ${weekEnd}`,
     body: [
@@ -100,6 +106,9 @@ export function issueFor(weekStart: string, weekEnd: string, all: AutoMerged[], 
       `This samples ${picked.length}. Read each one as a reviewer would, and say here whether it should have needed a person.`,
       "",
       ...picked.map((pull) => `- [ ] #${pull.number} ${pull.title} (${pull.area}, ${pull.band})`),
+      ...(unreadable.length > 0
+        ? ["", `No readable risk-review decision, so whether a person approved is unknown: ${unreadable.map((n) => `#${n}`).join(", ")}.`]
+        : []),
       "",
       "Filed by `.github/workflows/automerge-weekly-sample.yml`.",
     ].join("\n"),
@@ -161,6 +170,7 @@ async function main(): Promise<void> {
   }
 
   const auto: AutoMerged[] = [];
+  const unreadable: number[] = [];
   for (const item of merged) {
     const number = asNumber(item.number, "number");
     const pull = asObject(await json(`repos/${repo}/pulls/${number}`), "pull");
@@ -172,15 +182,19 @@ async function main(): Promise<void> {
       .toSorted((a, b) => asNumber(b.id, "id") - asNumber(a.id, "id"))[0];
     const summary = newest && isObject(newest.output) ? newest.output.summary : undefined;
     const record = typeof summary === "string" ? decisionFromSummary(summary) : undefined;
-    const decision = record ? rung3Decision(record, number) : undefined;
+    if (!record) {
+      unreadable.push(number);
+      continue;
+    }
+    const decision = rung3Decision(record, number);
     if (decision) auto.push({ number, title: asString(item.title, "title"), url: asString(item.html_url, "url"), ...decision });
   }
-  if (auto.length === 0) {
+  if (auto.length === 0 && unreadable.length === 0) {
     console.log(`No pull request merged through rung 3 between ${weekStart} and ${weekEnd}.`);
     return;
   }
   const picked = sample(auto, weekStart);
-  const issue = issueFor(weekStart, weekEnd, auto, picked);
+  const issue = issueFor(weekStart, weekEnd, auto, picked, unreadable);
   const assignee = process.env.SAMPLE_ASSIGNEE;
   const created = await github(`repos/${repo}/issues`, {
     method: "POST",

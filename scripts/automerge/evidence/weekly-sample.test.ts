@@ -79,11 +79,21 @@ describe("sample", () => {
     assert.deepEqual(sample(pulls.toReversed(), "2026-11-02"), first);
     assert.deepEqual(first.map((pull) => pull.number), first.map((pull) => pull.number).toSorted((a, b) => a - b));
   });
-
   it("files one issue listing the sample", () => {
-    const issue = issueFor("2026-10-26", "2026-11-02", pulls, pulls.slice(0, 2));
+    const issue = issueFor("2026-10-26", "2026-11-02", pulls, pulls.slice(0, 2), []);
     assert.equal(issue.title, "Rung 3 weekly sample: 2026-10-26 to 2026-11-02");
     assert.match(issue.body, /^8 pull request\(s\) merged/);
     assert.match(issue.body, /- \[ \] #900 PR 900 \(kernel-small, low\)/);
+    assert.doesNotMatch(issue.body, /No readable risk-review decision/);
+  });
+
+  it("lists merges with no readable decision instead of counting them as not auto-merged", () => {
+    const issue = issueFor("2026-10-26", "2026-11-02", [], [], [951, 966]);
+    assert.match(issue.body, /No readable risk-review decision, so whether a person approved is unknown: #951, #966\./);
+  });
+
+  it("does not count an eligible pull request a person approved", () => {
+    const approved = { ...record.pulls[0], approvers: ["kentonv"], gate: { passes: true, reason: "approved" } };
+    assert.equal(rung3Decision(asObject(parseJson(JSON.stringify({ ...record, pulls: [approved] })), "r"), 932), undefined);
   });
 });

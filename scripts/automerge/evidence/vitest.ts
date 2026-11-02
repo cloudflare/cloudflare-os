@@ -4,7 +4,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { asArray, asNumber, asObject, asString, parseJson, type JsonObject } from "../proofs/json.ts";
+import { asArray, asObject, asString, parseJson, type JsonObject } from "../proofs/json.ts";
 import { runCommand } from "./exec.ts";
 
 /** Test files vitest runs, as opposed to the helpers and fixtures beside them. */
@@ -72,39 +72,52 @@ export function listedFiles(json: string, root: string): string[] {
   return asArray(parseJson(json), "vitest list").map((entry) => relative(root, asString(asObject(entry, "entry").file, "file")));
 }
 
-/** What one vitest run of chosen files reported. */
+/** What a vitest report says about one test file. */
+export interface FileResult {
+  /** Relative to the repository root. */
+  path: string;
+  /** The file's own status: `failed` also when it crashed before or between its tests. */
+  status: string;
+  passed: number;
+  failed: number;
+  /** Tests that did not run: skipped, pending or todo. */
+  notRun: number;
+  /** Full names of its failing tests, at most 20. */
+  failures: string[];
+}
+
+/** What one vitest run of chosen files reported, or that it left no report to read. */
 export interface TestRun {
   config: string;
   files: string[];
-  /** vitest exited 0 and reported success. */
-  passed: boolean;
-  tests: number;
-  failedTests: number;
-  failedSuites: number;
-  /** Full names of the failing tests, at most 20. */
-  failures: string[];
+  /** Undefined when vitest wrote no report that parses: nothing about the tests was seen. */
+  results: FileResult[] | undefined;
+  /** vitest's exit status was 0. */
+  exitOk: boolean;
   seconds: number;
-  /** The end of vitest's output, kept when the run did not pass. */
+  /** The end of vitest's output, kept when the run did not exit 0. */
   tail: string;
 }
 
-/** Reads a vitest JSON report into a run summary. */
-export function summarizeReport(config: string, files: string[], report: JsonObject, exitOk: boolean, seconds: number, tail: string): TestRun {
-  const failures: string[] = [];
-  for (const suite of asArray(report.testResults, "testResults")) {
-    for (const assertion of asArray(asObject(suite, "suite").assertionResults, "assertionResults")) {
+/** The per-file results in a vitest JSON report, with paths relative to `root`. */
+export function fileResults(report: JsonObject, root: string): FileResult[] {
+  return asArray(report.testResults, "testResults").map((entry) => {
+    const suite = asObject(entry, "suite");
+    const result: FileResult = {
+      path: relative(root, asString(suite.name, "suite name")), status: asString(suite.status, "suite status"),
+      passed: 0, failed: 0, notRun: 0, failures: [],
+    };
+    for (const assertion of asArray(suite.assertionResults, "assertionResults")) {
       const a = asObject(assertion, "assertion");
-      if (a.status === "failed") failures.push(asString(a.fullName, "fullName"));
+      const status = asString(a.status, "assertion status");
+      if (status === "passed") result.passed++;
+      else if (status === "failed") {
+        result.failed++;
+        if (result.failures.length < 20) result.failures.push(asString(a.fullName, "fullName"));
+      } else result.notRun++;
     }
-  }
-  const passed = exitOk && report.success === true;
-  return {
-    config, files, passed,
-    tests: asNumber(report.numTotalTests, "numTotalTests"),
-    failedTests: asNumber(report.numFailedTests, "numFailedTests"),
-    failedSuites: asNumber(report.numFailedTestSuites, "numFailedTestSuites"),
-    failures: failures.slice(0, 20), seconds, tail: passed ? "" : tail,
-  };
+    return result;
+  });
 }
 
 /** Runs `files` (repo-relative; none means every file the config includes) under `config` from its package directory. */
@@ -118,16 +131,13 @@ export function runTests(config: string, files: string[], env: NodeJS.ProcessEnv
       "exec", "vitest", "run", "--config", relative(pkg, config), "--reporter=json", `--outputFile=${out}`,
       ...files.map((file) => relative(pkg, file)),
     ], pkg, env);
-    let report: JsonObject;
+    let results: FileResult[] | undefined;
     try {
-      report = asObject(parseJson(readFileSync(out, "utf8")), "vitest report");
-    } catch {
-      return {
-        config, files, passed: false, tests: 0, failedTests: 0, failedSuites: files.length, failures: [],
-        seconds: result.seconds, tail: result.tail,
-      };
+      results = fileResults(asObject(parseJson(readFileSync(out, "utf8")), "vitest report"), process.cwd());
+    } catch (error) {
+      console.error(`no readable vitest report: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return summarizeReport(config, files, report, result.ok, result.seconds, result.tail);
+    return { config, files, results, exitOk: result.ok, seconds: result.seconds, tail: result.ok ? "" : result.tail };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -136,7 +146,8 @@ export function runTests(config: string, files: string[], env: NodeJS.ProcessEnv
 /** A run as artifact details. */
 export function runDetails(run: TestRun): JsonObject {
   return {
-    config: run.config, files: run.files, passed: run.passed, tests: run.tests, failed_tests: run.failedTests,
-    failed_suites: run.failedSuites, failures: run.failures, seconds: run.seconds, ...(run.tail ? { tail: run.tail } : {}),
+    config: run.config, files: run.files, exit_ok: run.exitOk, seconds: run.seconds,
+    results: run.results === undefined ? null : run.results.map((r) => ({ ...r })),
+    ...(run.tail ? { tail: run.tail } : {}),
   };
 }

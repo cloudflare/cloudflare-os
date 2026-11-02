@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { decide, notApplicable, runProducer, type Outcome } from "../proofs/artifact.ts";
+import { decide, errored, notApplicable, runProducer, type Outcome } from "../proofs/artifact.ts";
 import { pullRequestDiff } from "../proofs/git.ts";
 import type { JsonObject } from "../proofs/json.ts";
 import { runCommand, type CommandResult } from "./exec.ts";
@@ -27,8 +27,13 @@ export interface DryRun {
   result: CommandResult;
 }
 
-/** Holds when the build and every dry run succeeded. */
+/**
+ * Holds when the build and every dry run succeeded. A command a signal ended (a timeout, the
+ * runner running out of memory) did not finish, so it says nothing about the bundle: `error`.
+ */
 export function evaluateDryRuns(build: CommandResult, runs: DryRun[]): Outcome {
+  const killed = [{ name: "pnpm build", result: build }, ...runs.map((run) => ({ name: run.package, result: run.result }))]
+    .filter((entry) => entry.result.code === null).map((entry) => entry.name);
   const failed = runs.filter((run) => !run.result.ok);
   const reasons = [
     ...(build.ok ? [] : [`pnpm build exited ${String(build.code)}`]),
@@ -40,10 +45,12 @@ export function evaluateDryRuns(build: CommandResult, runs: DryRun[]): Outcome {
       ? { ok: true, seconds: run.result.seconds }
       : { ok: false, seconds: run.result.seconds, code: run.result.code, tail: run.result.tail };
   }
-  return decide(reasons, {
+  const details: JsonObject = {
     build: build.ok ? { ok: true, seconds: build.seconds } : { ok: false, code: build.code, tail: build.tail },
     packages,
-  });
+  };
+  if (killed.length > 0) return errored(`a signal ended ${killed.join(", ")} before it finished`, details);
+  return decide(reasons, details);
 }
 
 async function main(): Promise<void> {

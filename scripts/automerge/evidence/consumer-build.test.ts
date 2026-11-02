@@ -33,7 +33,14 @@ describe("evaluatePipeline", () => {
     const { pipeline, variables, jobs } = asTriggered(5206731);
     const outcome = evaluatePipeline(5206731, PUBLIC_SHA, pipeline, variables, jobs, "test");
     assert.equal(outcome.status, "ok");
-    assert.deepEqual(outcome.details.reasons, ["test ended failed"]);
+    assert.deepEqual(outcome.details.reasons, ["test failed"]);
+  });
+
+  it("errors when the job never ran (5206949's manual preview-delete), instead of failing", () => {
+    const { pipeline, variables, jobs } = asTriggered(5206949);
+    const outcome = evaluatePipeline(5206949, PUBLIC_SHA, pipeline, variables, jobs, "preview-delete");
+    assert.equal(outcome.status, "error");
+    assert.equal(outcome.details.error, "preview-delete ended manual without running to a result");
   });
 
   it("errors on the recorded merge-request pipeline: not one a trigger made", () => {

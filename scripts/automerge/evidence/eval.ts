@@ -53,9 +53,9 @@ export function evaluateComparison(comparison: Json, candidateSha: string): Outc
   const compared = rows.filter((row) => isObject(row) && row.reason === null).length;
   const regressed = regressedRows(rows);
   if (verdict === "regressed" && regressed.length === 0) return errored("verdict is regressed but no compared row fell");
-  const reasons = verdict === "regressed"
-    ? [`pass rate fell beyond noise for ${regressed.join(", ")}`]
-    : verdict === "inconclusive" ? ["no eval task could be compared"] : [];
+  // Nothing could be compared: no measurement to judge, which is not a regression.
+  if (verdict === "inconclusive") return errored("no eval task could be compared", { verdict, rows: rows.length, compared });
+  const reasons = verdict === "regressed" ? [`pass rate fell beyond noise for ${regressed.join(", ")}`] : [];
   return decide(reasons, {
     verdict, report_only: true, candidate_sha: candidateSha, baseline_sha: asString(comparison.baselineSha, "baselineSha"),
     rows: rows.length, compared, regressed,

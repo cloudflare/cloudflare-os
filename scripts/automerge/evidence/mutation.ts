@@ -84,19 +84,22 @@ export function tally(report: JsonObject): Tally {
   return result;
 }
 
-/** Holds when every measured package's score reaches MIN_SCORE. */
+/** Holds when every measured package's score reaches MIN_SCORE; errors when any changed source went unmeasured. */
 export function evaluateMutation(tallies: Map<string, Tally>, unmeasured: string[]): Outcome {
   const reasons: string[] = [];
+  const unseen: string[] = [];
   const packages: JsonObject = {};
   for (const [pkg, t] of tallies) {
     const scored = t.detected + t.undetected;
     const score = scored === 0 ? null : Math.round((t.detected / scored) * 1000) / 1000;
     packages[pkg] = { score, detected: t.detected, undetected: t.undetected, excluded: t.excluded, survivors: t.survivors.slice(0, 30) };
-    if (score === null) reasons.push(`${pkg}: Stryker made no scorable mutant on the changed lines`);
+    if (score === null) unseen.push(`${pkg}: Stryker made no scorable mutant on the changed lines`);
     else if (score < MIN_SCORE) reasons.push(`${pkg}: mutation score ${score} on the changed lines is below ${MIN_SCORE}`);
   }
-  if (unmeasured.length > 0) reasons.push(`changed source in ${unmeasured.join(", ")} has no ${CONFIG} to measure it`);
-  return decide(reasons, { min_score: MIN_SCORE, calibrated: false, packages, unmeasured });
+  if (unmeasured.length > 0) unseen.push(`changed source in ${unmeasured.join(", ")} has no ${CONFIG} to measure it`);
+  const details = { min_score: MIN_SCORE, calibrated: false, packages, unmeasured };
+  if (unseen.length > 0) return errored(unseen.join("; "), details);
+  return decide(reasons, details);
 }
 
 async function main(): Promise<void> {
