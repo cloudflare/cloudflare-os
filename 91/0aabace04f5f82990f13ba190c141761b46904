@@ -1,0 +1,21 @@
+docs/sharing.md
+  s_dd2417a6d5bd82::t_0519abfeb05f87 169
+docs/spaces.md
+  s_dd2417a6d5bd82::t_d03bacb852a056 5,83,85,91,93,95,97-109,115,119,123-127,133,144,148,153-155,157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "910aabace04f5f82990f13ba190c141761b46904",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
