@@ -2,7 +2,8 @@
 // its owner's record and its entry in its space's listing say so, and someone who is not a member
 // of that space sees the space's published entries and nothing else of it. Everything runs
 // against real Durable Objects: the workspace's Overseer, its owner's User DO and the space. What
-// SharingManager makes of the published role is in sharing.test.ts.
+// SharingManager makes of the published role is in sharing.test.ts, and what a visitor sees of a
+// space's tree is in spaces-tree.test.ts.
 
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
@@ -589,7 +590,8 @@ const visit = async (key: string, as: Account) =>
 // Every call of a `Space` that someone the space is not open to makes, each refused alike.
 const refusals = (as: Space, id: string) => Promise.all([
   as.getInfo(), as.listWorkspaces(), as.resolveWorkspace("roadmap"), as.listMembers(),
-  as.setWorkspaceSlug(id, "plan"), as.setMemberRole("anyone", "use"), as.removeMember("anyone"),
+  as.setWorkspaceSlug(id, "plan"), as.moveWorkspace(id, null), as.setMemberRole("anyone", "use"),
+  as.removeMember("anyone"),
 ].map(call => outcome(call)));
 // The keys of the spaces a user's own list of spaces holds.
 const mirror = async (of: Account) => (await of.user.listSpaces()).map(info => info.key);
@@ -637,7 +639,7 @@ describe("a space, to someone who is not a member of it", () => {
     expect(await space(key).resolveWorkspace(alice.profile.id, "notes"))
         .toMatchObject({ workspace: { id: notes } });
 
-    expect((await refusals(visitor, roadmap)).slice(3)).toEqual(Array(4).fill(NO_SUCH_SPACE));
+    expect((await refusals(visitor, roadmap)).slice(3)).toEqual(Array(5).fill(NO_SUCH_SPACE));
     expect((await space(key).listMembers(alice.profile.id)).map(member => member.profile.id))
         .not.toContain(mallory.profile.id);
   });
@@ -664,7 +666,7 @@ describe("a space, to someone who is not a member of it", () => {
     await state(roadmap);
     expect((await visitor.listWorkspaces()).map(listed => listed.id)).toEqual([notes]);
     await alice.user.setGadgetSpace(notes, null, { ...NEITHER, publicAccess: "build" });
-    expect(await refusals(visitor, roadmap)).toEqual(Array(7).fill(NO_SUCH_SPACE));
+    expect(await refusals(visitor, roadmap)).toEqual(Array(8).fill(NO_SUCH_SPACE));
     expect(await space(key).open(mallory.profile.id)).toBeNull();
     // The workspace took its publication to the space it moved to, which is open for it now.
     using moved = await visit(alice.personal, mallory);

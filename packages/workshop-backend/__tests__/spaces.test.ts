@@ -335,7 +335,7 @@ describe("SpaceModel workspaces", () => {
     expect(titles(model)).toEqual({});
   });
 
-  it("lists workspaces newest first, to members only", () => {
+  it("lists workspaces that asked for no place newest first, to members only", () => {
     let model = teamSpace();
     model.setMemberRole(ALICE.id, BOB, "use");
     model.attachWorkspaces(ALICE, [
@@ -436,6 +436,7 @@ describe("SpaceDurableObject", () => {
       await expectRejection(space.listWorkspaces(bob.id), NO_SUCH_SPACE);
       await expectRejection(space.resolveWorkspace(bob.id, "roadmap"), NO_SUCH_SPACE);
       await expectRejection(space.setWorkspaceSlug(bob.id, "ws", "roadmap"), NO_SUCH_SPACE);
+      await expectRejection(space.moveWorkspace(bob.id, "ws", null), NO_SUCH_SPACE);
       await expectRejection(space.setMemberRole(bob.id, bob.id, "admin"), NO_SUCH_SPACE);
       await expectRejection(space.removeMember(bob.id, bob.id), NO_SUCH_SPACE);
     }
@@ -482,6 +483,7 @@ describe("SpaceDurableObject", () => {
     await expectRejection(asCarol.listWorkspaces(), NO_SUCH_SPACE);
     await expectRejection(asCarol.resolveWorkspace("roadmap"), NO_SUCH_SPACE);
     await expectRejection(asCarol.setWorkspaceSlug("ws", "roadmap"), NO_SUCH_SPACE);
+    await expectRejection(asCarol.moveWorkspace("ws", null), NO_SUCH_SPACE);
     await expectRejection(asCarol.setMemberRole(carol.id, "use"), NO_SUCH_SPACE);
     await expectRejection(asCarol.removeMember(carol.id), NO_SUCH_SPACE);
     expect(await env.TEST_SPACE.getByName(key).open(carol.id)).toBeNull();

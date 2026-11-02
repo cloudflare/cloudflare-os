@@ -381,10 +381,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#openWorkspaceInternal(id, shareKey, configureObservers);
   }
 
-  async newWorkspace(spaceKey?: string): Promise<RpcStub<Overseer>> {
+  async newWorkspace(spaceKey?: string, parentId?: string): Promise<RpcStub<Overseer>> {
     if (spaceKey !== undefined) checkTeamSpaceKey(spaceKey);
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newWorkspace(id, DEFAULT_WORKSPACE_TITLE, spaceKey);
+    await this.#user.newWorkspace(id, DEFAULT_WORKSPACE_TITLE, spaceKey, parentId);
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
       user_id: this.#userId.toString(),

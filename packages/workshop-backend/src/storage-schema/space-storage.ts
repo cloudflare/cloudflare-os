@@ -37,6 +37,10 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       info: <SpaceRecord | undefined>undefined,
       // The `seq` of the next entry of `revocations`.
       nextRevocation: 0,
+      // The version of the stored shape: 0 while the entries of `workspaces` may predate its
+      // indexes `byParent` and `byPublishedRoot`, 1 once those are built (see
+      // migrateSpaceStorage()) or since the claim, for a space claimed with them.
+      version: 0,
     },
     collections: {
       // The authority on who belongs to the space and in what role. A personal space's owner is
@@ -51,14 +55,21 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       // updates or drops it. While an entry stands, each member of the space holds a role on its
       // workspace (see SpaceModel.workspaceRole()).
       //
-      // The indexes are the space's slugs: each slug in use names one entry, and a former slug
-      // names the entry that gave it up. An entry with no slug yields no key for either, so it is
-      // in neither index, and deleting an entry frees every slug it held.
+      // `bySlug` and `byFormerSlug` are the space's slugs: each slug in use names one entry, and a
+      // former slug names the entry that gave it up. An entry with no slug yields no key for
+      // either, so it is in neither index, and deleting an entry frees every slug it held.
       //
-      // `byPublished` holds the entries of workspaces published to the deployment, by the role
-      // each is published with: all that someone who is not a member sees of the space, and
-      // while it is empty the space is closed to them (see SpaceModel.infoFor()). An entry that
-      // is not published yields no key, as every entry written before the index did.
+      // The entries form a tree, whose shape (`parentId`, `position`) is the space's alone, like
+      // the slugs: an owner's update keeps it, and the space writes it on any entry (see
+      // SpaceModel.moveWorkspace()). `byParent` holds each entry under the one it sits under, or
+      // under "" at the top of the tree, where a null key would leave it out of the index.
+      //
+      // `byPublishedRoot` holds the entries at the top of the tree that are published to the
+      // deployment, by the role each is published with. Someone who is not a member sees only
+      // the published entries with no unpublished entry above them, so while this is empty they
+      // see none, and the space is closed to them (see SpaceModel.infoFor()). Storage may still
+      // hold rows under the name `byPublished`, an index of every published entry declared
+      // before this one, which nothing reads: that name is not to be declared again.
       workspaces: collection<SpaceWorkspaceRecord>()({
         primaryKey: "id",
         uniqueIndexes: {
@@ -66,7 +77,10 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
         },
         nonUniqueIndexes: {
           byFormerSlug(record: SpaceWorkspaceRecord) { return record.formerSlugs ?? []; },
-          byPublished(record: SpaceWorkspaceRecord) { return record.published ?? null; },
+          byParent(record: SpaceWorkspaceRecord) { return record.parentId ?? ""; },
+          byPublishedRoot(record: SpaceWorkspaceRecord) {
+            return record.parentId === undefined ? record.published ?? null : null;
+          },
         },
       }),
       // Every (workspace, member) the space has answered with a role and not taken back since
@@ -94,3 +108,25 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
 }
 
 export type SpaceStorage = ReturnType<typeof makeSpaceStorage>;
+
+/**
+ * The current version of a space's stored shape: the one migrateSpaceStorage() brings a space up
+ * to, and the one a claim stores (see SpaceModel.claim()), since a new space has nothing to
+ * migrate. The migration names its versions literally, as each is fixed for good.
+ */
+export const SPACE_STORAGE_VERSION = 1;
+
+/**
+ * Brings a space's storage up to the current `version`, before anything else touches it. From
+ * 0 to 1 it builds `byParent` and `byPublishedRoot` over the entries already stored: an index is
+ * kept only as records are written, so until then it misses them, and updating one of them
+ * would corrupt it. A space whose key is unclaimed holds no entry and is left as it is, unwritten.
+ */
+export function migrateSpaceStorage(storage: SpaceStorage): void {
+  if (storage.version.get() >= 1 || !storage.info.get()) return;
+  storage.transaction(() => {
+    storage.workspaces.byParent.rebuild();
+    storage.workspaces.byPublishedRoot.rebuild();
+    storage.version.put(1);
+  });
+}

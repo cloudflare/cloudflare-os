@@ -13,6 +13,12 @@
 // the listing, which only follows its owner's record. An entry's address within the space, its
 // slug, is the space's alone: the space gives it, and no other object knows it.
 //
+// The listing is a tree: an entry sits at the top or under another entry of the same listing, in
+// an order among its siblings. That place is the space's alone too, like the slug: the owner or
+// an admin moves the entry (see `SpaceModel.moveWorkspace`), and a registration places only an
+// entry that is new, where its owner asks. When an entry leaves the listing, the entries directly
+// under it take its place.
+//
 // A member's role applies to the workspaces the space lists. The owner's User DO asks, for a
 // workspace whose record points here, which role a profile's membership gives them on it (see
 // `SpaceModel.workspaceRole`), and the space answers with one only for a workspace it lists
@@ -24,9 +30,10 @@
 //
 // A space is never published, but a workspace can be, to everyone signed in to the deployment,
 // and its entry says so (`SpaceWorkspaceInfo.published`, which its owner's User DO registers
-// with the rest). Someone who is not a member may open the space while it lists such an entry,
-// as a visitor: they see its info and its published entries, and nothing else of it. A visitor
-// holds no role in the space, so the space gives them none on a workspace and no lease.
+// with the rest). Someone who is not a member may open the space while such an entry sits at
+// the top of its tree, as a visitor: they see its info and the published entries with no
+// unpublished entry above them, and nothing else of it. A visitor holds no role in the space,
+// so the space gives them none on a workspace and no lease.
 //
 // Trust: every method `SpaceDurableObject` exposes takes the acting user as a plain parameter,
 // exactly like `OverseerDurableObject.open(userId, profileId, ...)`. Its only callers are
@@ -47,8 +54,8 @@ import {
   type SpaceMemberRole, type SpaceWorkspaceInfo, type SpaceWorkspaceResolution,
 } from "@gadgets/workshop-shared/api";
 import {
-  makeSpaceStorage, type SpaceLease, type SpaceRecord, type SpaceRevocation, type SpaceStorage,
-  type SpaceWorkspaceRecord,
+  makeSpaceStorage, migrateSpaceStorage, SPACE_STORAGE_VERSION, type SpaceLease,
+  type SpaceRecord, type SpaceRevocation, type SpaceStorage, type SpaceWorkspaceRecord,
 } from "./storage-schema/space-storage.js";
 import { PLACEHOLDER_TITLES } from "./storage-schema/overseer-storage.js";
 import { createWorkshopLogger } from "./observability";
@@ -69,6 +76,10 @@ const MAX_FORMER_SLUGS = 32;
 const REVOCATION_BATCH = 16;
 const REVOCATION_RETRY_MS = { first: 1_000, longest: 5 * 60_000 };
 
+// The most steps a walk up the tree takes before taking it for a cycle, which only corrupt
+// storage holds: the space refuses every move that would close one.
+const MAX_TREE_HOPS = 10_000;
+
 /**
  * The space a claim asks for. Whoever claims it becomes its first admin and, if it is personal,
  * its owner (see `SpaceModel.claim`).
@@ -77,10 +88,15 @@ export type SpaceClaim = Pick<SpaceRecord, "key" | "name" | "kind">;
 
 /**
  * What the owner of a workspace registers with a space: the workspace's entry in the listing,
- * less the owner, whom the registering User DO states once for all of them, and the slug, which
- * is the space's to give.
+ * less the owner, whom the registering User DO states once for all of them, and the slug and the
+ * place in the tree, which are the space's to give. Its `placement` asks the space to place the
+ * workspace at the end of the entries under `parentId`, or at the top of the tree, which the
+ * space heeds only when it first lists the workspace. A new entry registered without one gets no
+ * position, and so sorts with the entries the space has never positioned (see `inOrder`).
  */
-export type WorkspaceRegistration = Omit<SpaceWorkspaceInfo, "owner" | "slug">;
+export type WorkspaceRegistration =
+    Omit<SpaceWorkspaceInfo, "owner" | "slug" | "parentId" | "position">
+    & { placement?: { parentId?: string } };
 
 /** Refuses a key that cannot name a space, before a Durable Object is addressed by it. */
 export function checkSpaceKey(key: string): void {
@@ -150,6 +166,20 @@ function listed({ formerSlugs: _formerSlugs, ...workspace }: SpaceWorkspaceRecor
   return workspace;
 }
 
+// The order of siblings in the tree: by position, then the entries the space has never
+// positioned, newest first. Two entries without a position compare as Infinity - Infinity, NaN,
+// which falls through to `created` as a tie does.
+function inOrder(a: SpaceWorkspaceRecord, b: SpaceWorkspaceRecord): number {
+  return (a.position ?? Infinity) - (b.position ?? Infinity)
+      || b.created.getTime() - a.created.getTime();
+}
+
+// Puts `entry` under `parentId`, or at the top of the tree when it is undefined, in the record
+// alone: the caller writes it.
+function setParent(entry: SpaceWorkspaceRecord, parentId: string | undefined): void {
+  if (parentId === undefined) delete entry.parentId; else entry.parentId = parentId;
+}
+
 /**
  * The rules of one space, over its typed storage: who its members are, which workspaces it
  * lists, the slug each is addressed by, and the role each member holds on them. No RPC and no
@@ -191,26 +221,28 @@ export class SpaceModel {
     }
     let { key, name, kind } = claim;
     // One transaction: a claim that fails part way must leave the key unclaimed, not held by a
-    // space with no admin.
+    // space with no admin. A new space's storage is already of the current version.
     this.storage.transaction(() => {
       this.storage.info.put({ key, name, kind, ...(kind === "personal" && { owner: creator }) });
       this.storage.members.put({ profile: creator, role: "admin", added: new Date() });
+      this.storage.version.put(SPACE_STORAGE_VERSION);
     });
     return true;
   }
 
   /**
    * The space as `profileId` sees it: with their role if they are a member, without one if they
-   * are a visitor, someone who is not a member of a space that lists a published workspace.
-   * Undefined if they cannot see it: the key is unclaimed, or they are not a member and the
-   * space lists nothing published, which callers must not tell apart (see `noSuchSpace`).
+   * are a visitor, someone who is not a member of a space with a published workspace at the top
+   * of its tree. Undefined if they cannot see it: the key is unclaimed, or they are not a member
+   * and no published workspace sits at the top of the tree, so none is visible to them, which
+   * callers must not tell apart (see `noSuchSpace`).
    */
   infoFor(profileId: string): SpaceInfo | undefined {
     let info = this.info;
     let role = this.roleOf(profileId);
     if (role) return info && { ...info, role };
-    let [published] = this.storage.workspaces.byPublished.list({ limit: 1 });
-    return published && info;
+    let [publishedRoot] = this.storage.workspaces.byPublishedRoot.list({ limit: 1 });
+    return publishedRoot && info;
   }
 
   /** Space.listMembers: any member. A personal space lists its owner alone (see `roleOf`). */
@@ -301,7 +333,11 @@ export class SpaceModel {
    *
    * An entry keeps its slug and former slugs through an update, so no later title moves a slug.
    * One that has no slug is given one (see `#deriveSlug`) the first time it is written with a
-   * title that is not one of `PLACEHOLDER_TITLES`.
+   * title that is not one of `PLACEHOLDER_TITLES`. Its place in the tree is kept likewise, so
+   * only a new entry is placed, and only if it is registered with a `placement`: under the
+   * `parentId` that asks for if the space lists that one, and otherwise at the top of the tree,
+   * at a position that counts its siblings there, which puts it after every one the space has
+   * positioned (see `inOrder`).
    */
   attachWorkspaces(owner: AiChatAuthorInfo, registrations: WorkspaceRegistration[]): boolean {
     let mayAdd = this.canAddWorkspaces(owner.id);
@@ -309,13 +345,20 @@ export class SpaceModel {
       let entry = this.storage.workspaces.get(id);
       if (entry ? entry.owner.id !== owner.id : !mayAdd) return false;
     }
-    for (let { id, title, created, published } of registrations) {
-      let entry: SpaceWorkspaceRecord =
-          { ...this.storage.workspaces.get(id), id, title, owner, created, published };
+    for (let { id, title, created, published, placement } of registrations) {
+      let existing = this.storage.workspaces.get(id);
+      let entry: SpaceWorkspaceRecord = { ...existing, id, title, owner, created, published };
       // A registration says whether the workspace is published, so one that does not ends it.
       if (!published) delete entry.published;
       if (entry.slug === undefined && !PLACEHOLDER_TITLES.includes(title)) {
         entry.slug = this.#deriveSlug(title);
+      }
+      // A new entry is not stored yet, so a parent the space lists is another entry.
+      if (!existing && placement) {
+        let { parentId } = placement;
+        let parentListed = parentId !== undefined && !!this.storage.workspaces.get(parentId);
+        setParent(entry, parentListed ? parentId : undefined);
+        entry.position = this.#siblings(entry.parentId).length;
       }
       this.storage.workspaces.put(entry);
     }
@@ -324,11 +367,23 @@ export class SpaceModel {
 
   /**
    * Drop workspace `id` from the listing if `ownerId` is who it is listed under. Its slug and
-   * former slugs go with the entry, and are free again, and every lease on it is revoked.
+   * former slugs go with the entry, and are free again, and every lease on it is revoked. The
+   * entries directly under it take its place in the tree: they move under its parent, in their
+   * order, where it stood among its siblings.
    */
   detachWorkspace(id: string, ownerId: string): void {
-    if (this.storage.workspaces.get(id)?.owner.id !== ownerId) return;
+    let entry = this.storage.workspaces.get(id);
+    if (entry?.owner.id !== ownerId) return;
+    let children = this.#siblings(id);
+    let siblings = this.#siblings(entry.parentId)
+        .flatMap(sibling => sibling.id === id ? children : [sibling]);
+    // Every child changes parent, so each is written; the renumbering writes what else changes.
+    for (let child of children) {
+      setParent(child, entry.parentId);
+      this.storage.workspaces.put(child);
+    }
     this.storage.workspaces.delete(id);
+    this.#renumber(siblings);
     this.#revoke(this.storage.leases.list({ prefix: `${id}:` }));
   }
 
@@ -383,18 +438,56 @@ export class SpaceModel {
     this.storage.revocations.put({ ...revocation, due: now + retryMs, retryMs });
   }
 
-  /** Space.listWorkspaces: any member, and a visitor for the published entries; newest first. */
+  /**
+   * Space.listWorkspaces: any member, and a visitor for the published entries with no
+   * unpublished entry above them, each positioned among the siblings they are shown, so that no
+   * gap tells of one hidden from them. In depth-first pre-order: each entry before the entries
+   * under it, and siblings in their order (see `inOrder`).
+   */
   listWorkspaces(caller: string): SpaceWorkspaceInfo[] {
-    let { workspaces } = this.storage;
-    return [...(this.#visiting(caller) ? workspaces.byPublished.list() : workspaces.list())]
-        .map(listed).toSorted((a, b) => b.created.getTime() - a.created.getTime());
+    let visiting = this.#visiting(caller);
+    let entries = [...this.storage.workspaces.list()];
+    let ids = new Set(entries.map(entry => entry.id));
+    // An entry whose parent the listing does not hold, which only corrupt storage leaves, is
+    // shown at the top of the tree.
+    for (let entry of entries) {
+      if (entry.parentId !== undefined && !ids.has(entry.parentId)) delete entry.parentId;
+    }
+    // An unpublished entry is left out for a visitor, and so is everything under it, which is
+    // reached only through it.
+    let shown = visiting ? entries.filter(entry => entry.published) : entries;
+    let children = Map.groupBy(shown.toSorted(inOrder), entry => entry.parentId);
+    // The positioned siblings sort first, so each one's index is its rank among those shown.
+    if (visiting) {
+      for (let siblings of children.values()) {
+        siblings.forEach((entry, index) => {
+          if (entry.position !== undefined) entry.position = index;
+        });
+      }
+    }
+    // Each entry is reached only through its one parent, so this ends, and leaves out an entry
+    // on a cycle, which corrupt storage alone could hold.
+    let pending = children.get(undefined)?.toReversed() ?? [];
+    let listing: SpaceWorkspaceInfo[] = [];
+    while (pending.length > 0) {
+      let entry = pending.pop()!;
+      listing.push(listed(entry));
+      pending.push(...(children.get(entry.id) ?? []).toReversed());
+    }
+    return listing;
   }
 
-  /** Space.resolveWorkspace: any member, and a visitor for the slugs of published entries. */
+  /**
+   * Space.resolveWorkspace: any member, and a visitor for the slugs of the entries the listing
+   * shows them, each as it shows it.
+   */
   resolveWorkspace(caller: string, slug: string): SpaceWorkspaceResolution | null {
     let visiting = this.#visiting(caller);
     let resolution = this.#resolve(slug);
-    return resolution && (!visiting || resolution.workspace.published) ? resolution : null;
+    if (!resolution || !visiting) return resolution ?? null;
+    let { id } = resolution.workspace;
+    let workspace = this.listWorkspaces(caller).find(shown => shown.id === id);
+    return workspace ? { ...resolution, workspace } : null;
   }
 
   /**
@@ -405,12 +498,7 @@ export class SpaceModel {
    * slug stops resolving to the other workspace.
    */
   setWorkspaceSlug(caller: string, id: string, slug: string): SpaceWorkspaceInfo {
-    let role = this.#requireMember(caller);
-    let entry = this.storage.workspaces.get(id);
-    if (!entry) throw new Error("This space does not list that workspace.");
-    if (role !== "admin" && entry.owner.id !== caller) {
-      throw new Error("Only a workspace's owner or an admin of this space can change its slug.");
-    }
+    let entry = this.#editable(caller, id, "change its slug");
     if (entry.slug === slug) return listed(entry);
     // slugify() never returns the empty string, so this refuses one too.
     if (slugify(slug) !== slug) {
@@ -431,6 +519,83 @@ export class SpaceModel {
     entry = { ...entry, slug, formerSlugs };
     this.storage.workspaces.put(entry);
     return listed(entry);
+  }
+
+  /**
+   * Space.moveWorkspace: the same callers as `setWorkspaceSlug`. Puts the entry of workspace
+   * `id`, and with it the entries under it, under `parentId`, or at the top of the tree when it
+   * is null, immediately before its sibling `beforeId`, or after the last of its siblings when
+   * `beforeId` is not one of them.
+   */
+  moveWorkspace(caller: string, id: string, parentId: string | null, beforeId?: string): void {
+    this.#move(this.#editable(caller, id, "move it"), parentId ?? undefined, beforeId);
+  }
+
+  // The entry of workspace `id`, for a `caller` who may change its slug and its place in the
+  // tree: a member who is the owner it is listed under, or an admin. Anyone else is refused, as
+  // someone who may not `act`.
+  #editable(caller: string, id: string, act: string): SpaceWorkspaceRecord {
+    let role = this.#requireMember(caller);
+    let entry = this.storage.workspaces.get(id);
+    if (!entry) throw new Error("This space does not list that workspace.");
+    if (role !== "admin" && entry.owner.id !== caller) {
+      throw new Error(`Only a workspace's owner or an admin of this space can ${act}.`);
+    }
+    return entry;
+  }
+
+  // Puts `entry` under `parentId` (see `moveWorkspace`), positioning the siblings it leaves and
+  // the ones it joins.
+  #move(entry: SpaceWorkspaceRecord, parentId: string | undefined, beforeId?: string): void {
+    this.#checkParent(parentId, entry.id);
+    if (entry.parentId !== parentId) this.#renumber(this.#siblings(entry.parentId, entry.id));
+    let siblings = this.#siblings(parentId, entry.id);
+    let before = siblings.findIndex(sibling => sibling.id === beforeId);
+    siblings.splice(before < 0 ? siblings.length : before, 0, entry);
+    setParent(entry, parentId);
+    // Written whether or not the renumbering writes it, which it does only for a new position.
+    this.storage.workspaces.put(entry);
+    this.#renumber(siblings);
+  }
+
+  // Refuses `parentId` as the parent of entry `id`: an entry the listing does not hold, and `id`
+  // itself or an entry under it, which would close a cycle. The top of the tree, undefined, is
+  // never refused.
+  #checkParent(parentId: string | undefined, id: string): void {
+    if (parentId === undefined) return;
+    let parent = this.storage.workspaces.get(parentId);
+    if (!parent) throw new Error("No such parent workspace in this space.");
+    for (let ancestor of this.#ancestry(parent)) {
+      if (ancestor.id === id) throw new Error("A workspace cannot be moved under itself.");
+    }
+  }
+
+  // The entries directly under `parentId`, or at the top of the tree when it is undefined, in
+  // their order, less `excluding`.
+  #siblings(parentId: string | undefined, excluding?: string): SpaceWorkspaceRecord[] {
+    return [...this.storage.workspaces.byParent.get(parentId ?? "")]
+        .filter(entry => entry.id !== excluding).toSorted(inOrder);
+  }
+
+  // Positions `siblings`, which are in the order they are to have, from 0, writing each entry
+  // whose position that changes and no other. An entry the space never positioned gets one.
+  #renumber(siblings: SpaceWorkspaceRecord[]): void {
+    siblings.forEach((entry, position) => {
+      if (entry.position === position) return;
+      entry.position = position;
+      this.storage.workspaces.put(entry);
+    });
+  }
+
+  // `entry`, then each entry above it in the tree, up to one at the top. A parent the listing
+  // does not hold ends the walk, as if the entry under it sat at the top.
+  *#ancestry(entry: SpaceWorkspaceInfo | undefined): Generator<SpaceWorkspaceInfo> {
+    for (let hops = 0; entry; hops++) {
+      if (hops > MAX_TREE_HOPS) throw new Error("The space's tree is cyclic.");
+      yield entry;
+      entry = entry.parentId === undefined
+          ? undefined : this.storage.workspaces.get(entry.parentId);
+    }
   }
 
   // The slug `title` leads to, or with the first of `-2`, `-3`, ... appended that makes it one no
@@ -482,7 +647,8 @@ export class SpaceModel {
   }
 
   // Refuses a `caller` the space is not open to, and says whether they see it as a visitor,
-  // who is shown only its published entries, and not as a member.
+  // who is shown only the published entries with no unpublished entry above them, and not as a
+  // member.
   #visiting(caller: string): boolean {
     let info = this.infoFor(caller);
     if (!info) throw noSuchSpace();
@@ -507,19 +673,25 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
-    this.#model = new SpaceModel(makeSpaceStorage(ctx.storage));
-    // A personal space's members besides its owner are removed before any event is delivered,
-    // their mirrors told without waiting (`#mirror` logs a failure, healed on the member's next
-    // open). A failure is logged, not thrown, which would reset the object: whoever it leaves has
-    // no role and is removed on a later wake.
+    let storage = makeSpaceStorage(ctx.storage);
+    this.#model = new SpaceModel(storage);
+    // Before any event is delivered, the storage is brought up to date, and then a personal
+    // space's members besides its owner are removed, their mirrors told without waiting
+    // (`#mirror` logs a failure, healed on the member's next open). A failure is logged, not
+    // thrown, which would reset the object, and what it leaves undone is done on a later wake.
+    // Until then whoever is left in a personal space has no role, and the tree's indexes miss
+    // the entries stored before them: none of those opens the space to a non-member (see
+    // `SpaceModel.infoFor`), and placing, moving or dropping an entry may misorder its siblings,
+    // leave an entry under one that left, or fail.
     void ctx.blockConcurrencyWhile(async () => {
       try {
+        migrateSpaceStorage(storage);
         let pruned = this.#model.pruneNonOwnerMembers();
         if (pruned.length > 0) await this.#deliverRevocations();
         for (let profileId of pruned) void this.#mirror(profileId);
       } catch (error) {
-        logger.error("failed to remove the members of a personal space", {
-          event: "space.members.prune.failed", durableObjectId: this.ctx.id.toString(), error,
+        logger.error("failed to bring a space up to date as it woke", {
+          event: "space.wake.failed", durableObjectId: this.ctx.id.toString(), error,
         });
       }
     });
@@ -535,11 +707,12 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Open the space as `caller`, a profile id. Returns the capability handed to their client, or
-   * null if they cannot open it: the key is unclaimed, or they are not a member and the space
-   * lists nothing published, which the answer does not tell apart. The caller's mirror is
-   * brought in line first (see `#mirror`), so a push that was lost heals the next time they open
-   * the space. A visitor gets the same capability as a member, which decides on each call what
-   * its caller may do, and their mirror gets nothing: it holds memberships only.
+   * null if they cannot open it: the key is unclaimed, or they are not a member and no published
+   * workspace sits at the top of the space's tree, which the answer does not tell apart. The
+   * caller's mirror is brought in line first (see `#mirror`), so a push that was lost heals the
+   * next time they open the space. A visitor gets the same capability as a member, which decides
+   * on each call what its caller may do, and their mirror gets nothing: it holds memberships
+   * only.
    */
   async open(caller: string): Promise<Space | null> {
     await this.#mirror(caller);
@@ -592,6 +765,12 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   /** Space.setWorkspaceSlug, as `caller`. */
   async setWorkspaceSlug(caller: string, id: string, slug: string): Promise<SpaceWorkspaceInfo> {
     return this.#model.setWorkspaceSlug(caller, id, slug);
+  }
+
+  /** Space.moveWorkspace, as `caller`. */
+  async moveWorkspace(caller: string, id: string, parentId: string | null, beforeId?: string)
+      : Promise<void> {
+    this.#model.moveWorkspace(caller, id, parentId, beforeId);
   }
 
   /**
@@ -703,6 +882,10 @@ class SpaceClientInterface extends RpcTarget implements Space {
 
   setWorkspaceSlug(id: string, slug: string): Promise<SpaceWorkspaceInfo> {
     return this.space.setWorkspaceSlug(this.caller, id, slug);
+  }
+
+  moveWorkspace(id: string, parentId: string | null, beforeId?: string): Promise<void> {
+    return this.space.moveWorkspace(this.caller, id, parentId, beforeId);
   }
 
   setMemberRole(username: string, role: SpaceMemberRole): Promise<SpaceMemberInfo | null> {

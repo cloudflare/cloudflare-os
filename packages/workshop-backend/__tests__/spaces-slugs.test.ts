@@ -8,7 +8,7 @@ import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import { slugify, type AiChatAuthorInfo, type SpaceWorkspaceInfo } from "@gadgets/workshop-shared/api";
 import { SpaceModel, teamSpaceClaim, type SpaceDurableObject } from "../src/spaces.js";
 import { DEFAULT_WORKSPACE_TITLE } from "../src/storage-schema/overseer-storage.js";
-import { makeSpaceStorage } from "../src/storage-schema/space-storage.js";
+import { makeSpaceStorage, migrateSpaceStorage } from "../src/storage-schema/space-storage.js";
 import type { UserDurableObject } from "../src/user.js";
 import { makeMockStorage } from "./mock-storage.js";
 // Load the whole backend up front, so that its slow load is not billed to the first test.
@@ -242,19 +242,25 @@ describe("SpaceModel slugs", () => {
     let before = createTypedStorage(raw, {
       collections: { workspaces: collection<SpaceWorkspaceInfo>()({ primaryKey: "id" }) },
     });
-    let { model } = teamSpace(raw);
+    let { model, storage } = teamSpace(raw);
     let old = { id: "old", title: "Plan", owner: BOB, created: CREATED };
     before.workspaces.put(old);
     before.workspaces.put({ ...old, id: "gone" });
+    before.workspaces.put({ ...old, id: "older" });
+    // What a space claimed then, which stored no version, does as it wakes, before anything
+    // touches its entries.
+    storage.version.put(0);
+    migrateSpaceStorage(storage);
 
     expect(model.listWorkspaces(ALICE.id).find(w => w.id === "old")).toEqual(old);
     expect(resolve(model, "plan")).toBeNull();
-    // Dropped like any other, and renamed like any other that has no slug.
+    // Dropped like any other, and renamed like any other that has no slug. Dropping one
+    // positions the entries it was listed among.
     model.detachWorkspace("gone", BOB.id);
-    expect(model.setWorkspaceSlug(BOB.id, "old", "roadmap")).toEqual({ ...old, slug: "roadmap" });
+    expect(model.setWorkspaceSlug(BOB.id, "old", "roadmap"))
+        .toEqual({ ...old, slug: "roadmap", position: 0 });
 
     // One that is next written with the title it already had gets its slug then.
-    before.workspaces.put({ ...old, id: "older" });
     model.attachWorkspaces(BOB, [ws("older", "Plan")]);
     expect(slugs(model)).toEqual({ old: "roadmap", older: "plan" });
   });

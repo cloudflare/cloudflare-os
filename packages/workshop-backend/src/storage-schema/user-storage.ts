@@ -161,6 +161,19 @@ export type GadgetRecord = WorkspaceMetadata & {
    * a client.
    */
   registered?: { spaceKey: string; title?: string; published?: CollaboratorRole };
+
+  /**
+   * Where the workspace asks to sit in its space's tree: at the end of the entries under
+   * `parentId` of that space's listing (see AuthenticatedApi.newGadget), or at the top of the
+   * tree, which only a space listing it for the first time heeds. Set when the workspace is
+   * created, and for the top of the tree whenever the record is pointed at a space, as a move
+   * does; sent with every registration until a space acknowledges one, and dropped then, so that
+   * it never places the workspace a second time. A record without one, as one written before
+   * records had one, registers without it, and is listed with no position, among the entries
+   * its space never positioned (see SpaceWorkspaceInfo.position). Set on the user's own
+   * workspaces only, and never sent to a client.
+   */
+  placement?: { parentId?: string };
 };
 
 /**

@@ -175,12 +175,19 @@ function mirrorRestrictions(record: GadgetRecord, stated: WorkspaceRestrictions)
 }
 
 // What a space is told of the workspace of `record`, one of the user's own that has seen
-// activity, and what the marker then says the space acknowledged, with that space's key.
-function registrationOf({ id, title, created, publicAccess }: GadgetRecord): WorkspaceRegistration {
-  return { id, title, created, ...(publicAccess && { published: publicAccess }) };
+// activity, and what the record notes once space `spaceKey` has acknowledged that: the marker,
+// and that its placement is used up, since only a space listing the workspace anew heeds one.
+function registrationOf({ id, title, created, publicAccess, placement }: GadgetRecord)
+    : WorkspaceRegistration {
+  return {
+    id, title, created, ...(publicAccess && { published: publicAccess }),
+    ...(placement && { placement }),
+  };
 }
-function acknowledged(spaceKey: string, { title, published }: WorkspaceRegistration) {
-  return { spaceKey, title, ...(published && { published }) };
+function acknowledge(
+    record: GadgetRecord, spaceKey: string, { title, published }: WorkspaceRegistration): void {
+  record.registered = { spaceKey, title, ...(published && { published }) };
+  delete record.placement;
 }
 
 // Whether `record` is listed as it should be: acknowledged as it is now by space `spaceKey`, or
@@ -192,10 +199,11 @@ function isRegistered(record: GadgetRecord, spaceKey: string | undefined): boole
           && registered.published === record.publicAccess;
 }
 
-// A gadget record as it leaves this object: without `registered` and `publicAccessRevision`,
-// which are its own bookkeeping.
-function withoutBookkeeping<T extends GadgetRecord>(
-    { registered: _registered, publicAccessRevision: _revision, ...gadget }: T) {
+// A gadget record as it leaves this object: without `registered`, `publicAccessRevision` and
+// `placement`, which are its own bookkeeping.
+function withoutBookkeeping<T extends GadgetRecord>({
+  registered: _registered, publicAccessRevision: _revision, placement: _placement, ...gadget
+}: T) {
   return gadget;
 }
 
@@ -1039,11 +1047,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Records a new, provisional workspace of the user's. `spaceKey` is the team space it belongs
    * to, which the caller has checked is a team space key and nothing more; omitted, it belongs
-   * to the personal space. No space hears of it until it sees activity (see #syncSpace()).
+   * to the personal space. `parentId` is the entry of that space's listing it asks to be placed
+   * under, which nobody has checked; omitted, it asks for the top of the tree (see
+   * GadgetRecord.placement). No space hears of it until it sees activity (see #syncSpace()).
    */
-  async newWorkspace(id: string, title: string, spaceKey?: string): Promise<void> {
+  async newWorkspace(id: string, title: string, spaceKey?: string, parentId?: string)
+      : Promise<void> {
     let created = new Date();
-    this.storage.gadgets.put({id, title, created, ...(spaceKey !== undefined && {spaceKey})});
+    this.storage.gadgets.put({
+      id, title, created, ...(spaceKey !== undefined && {spaceKey}),
+      placement: parentId === undefined ? {} : {parentId},
+    });
   }
 
   async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {
@@ -1303,11 +1317,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   // Points the record of workspace `id` at team space `spaceKey`, or with none at the personal
-  // space. Only ever called within #inSpaceOrder(), so a reconciliation never sees the record
-  // repointed under it.
+  // space, at the top of whose tree a space that lists it anew places it: a parent the record
+  // asked for was an entry of the space it pointed at. Only ever called within #inSpaceOrder(),
+  // so a reconciliation never sees the record repointed under it.
   #pointGadget(id: string, spaceKey: string | undefined): void {
     this.#amendGadget(id, record => {
       if (spaceKey === undefined) delete record.spaceKey; else record.spaceKey = spaceKey;
+      record.placement = {};
     });
   }
 
@@ -1343,7 +1359,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     this.#amendGadget(id, gadget => {
       if (spaceKey === undefined) delete gadget.registered;
-      else gadget.registered = acknowledged(spaceKey, registration);
+      else acknowledge(gadget, spaceKey, registration);
     });
     return true;
   }
@@ -1517,8 +1533,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error("A personal space refused workspaces of its owner's.");
     }
     for (let registration of page) {
-      this.#amendGadget(
-          registration.id, record => { record.registered = acknowledged(spaceKey, registration); });
+      this.#amendGadget(registration.id, record => acknowledge(record, spaceKey, registration));
     }
     return page.length === SPACES_BACKFILL_PAGE ? page.at(-1)!.id : undefined;
   }

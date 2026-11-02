@@ -151,6 +151,7 @@ describe("a workspace's place in a space", () => {
     expect(workspaces.map(workspace => workspace.id).toSorted()).toEqual([provisional, active].toSorted());
     expect(workspaces.find(workspace => workspace.id === active)).toEqual({
       id: active, title: "Untitled", owner: alice.profile, created: expect.any(Date), slug: "untitled",
+      position: 0,
     });
   });
 
