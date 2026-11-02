@@ -26,7 +26,7 @@
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
     "esbuild": "^0.28.2",
-    "preact": "^11.0.1",
+    "preact": "^11.0.2",
     "tailwindcss": "^4.3.3",
     "typescript6": "catalog:"
   },
