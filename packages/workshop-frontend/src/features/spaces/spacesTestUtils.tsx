@@ -42,14 +42,17 @@ export const member = (profile: AiChatAuthorInfo, role: SpaceMemberRole): SpaceM
   added: new Date('2026-09-01T00:00:00Z'),
 })
 
-export const teamSpace = (key: string, name: string, role: SpaceMemberRole = 'admin'): SpaceInfo => ({
+/** A space's info as it is produced for one of its members, whose role it has. */
+export type MemberSpaceInfo = SpaceInfo & { role: SpaceMemberRole }
+
+export const teamSpace = (key: string, name: string, role: SpaceMemberRole = 'admin'): MemberSpaceInfo => ({
   key,
   name,
   kind: 'team',
   role,
 })
 
-export const personalSpace = (owner: AiChatAuthorInfo, role: SpaceMemberRole): SpaceInfo => ({
+export const personalSpace = (owner: AiChatAuthorInfo, role: SpaceMemberRole): MemberSpaceInfo => ({
   key: `~${owner.id.split('@')[0]}`,
   name: owner.name,
   kind: 'personal',
@@ -73,7 +76,10 @@ export function fakeApi(methods: FakeApi = {}, { spacesFlag = true } = {}): RpcS
 }
 
 /**
- * A `Space` as `ME` holds it, over a member list the test can read back and a listing.
+ * A `Space` as `ME` holds it, over a member list the test can read back and a listing. While
+ * `ME` is not in the member list they are a visitor: the space shows them its info with no role
+ * and the published entries of its listing, refuses them its members, and refuses them
+ * everything once no entry is published.
  * `setMemberRole`, `removeMember` and `setWorkspaceSlug` apply the change and enforce no rule: a
  * test that needs a refusal replaces the method (`space.setMemberRole.mockRejectedValueOnce(...)`).
  * A slug resolves to the entry that has it, as its current one; a test that needs a former slug
@@ -83,23 +89,25 @@ export function fakeSpace(info: SpaceInfo, members: SpaceMemberInfo[], workspace
   let current = [...members]
   let listed = [...workspaces]
   const roleOf = (id: string) => current.find(entry => entry.profile.id === id)?.role
+  // The entries the space shows `ME`.
+  const shown = () => {
+    if (roleOf(ME.id)) return listed
+    const published = listed.filter(entry => entry.published !== undefined)
+    if (published.length === 0) throw notAMember()
+    return published
+  }
   const space = {
     getInfo: vi.fn<Space['getInfo']>(async () => {
-      const role = roleOf(ME.id)
-      if (!role) throw notAMember()
-      return { ...info, role }
+      shown()
+      return { ...info, role: roleOf(ME.id) }
     }),
     listMembers: vi.fn<Space['listMembers']>(async () => {
       if (!roleOf(ME.id)) throw notAMember()
       return [...current]
     }),
-    listWorkspaces: vi.fn<Space['listWorkspaces']>(async () => {
-      if (!roleOf(ME.id)) throw notAMember()
-      return listed
-    }),
+    listWorkspaces: vi.fn<Space['listWorkspaces']>(async () => shown()),
     resolveWorkspace: vi.fn<Space['resolveWorkspace']>(async (slug) => {
-      if (!roleOf(ME.id)) throw notAMember()
-      const workspace = listed.find(entry => entry.slug === slug)
+      const workspace = shown().find(entry => entry.slug === slug)
       return workspace ? { workspace, canonical: true } : null
     }),
     setWorkspaceSlug: vi.fn<Space['setWorkspaceSlug']>(async (id, slug) => {

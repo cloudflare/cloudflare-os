@@ -16,7 +16,7 @@ import {
   teamSpace,
   unmountAll,
 } from './spacesTestUtils'
-import { useSpaceListings } from './useSpaceListings'
+import { asMemberListing, useSpaceListings } from './useSpaceListings'
 
 const ADA = person('ada@example.com', 'Ada')
 const DAY = new Date('2026-09-01T00:00:00Z')
@@ -50,8 +50,8 @@ describe('useSpaceListings', () => {
     await settle()
 
     expect(current.listings).toEqual({
-      design: { status: 'ready', workspaces: [] },
-      platform: { status: 'ready', workspaces: [workspace('w-plan')] },
+      design: { status: 'ready', workspaces: [], asMember: true },
+      platform: { status: 'ready', workspaces: [workspace('w-plan')], asMember: true },
     })
     expect(openSpace.mock.calls).toEqual([['design'], ['platform']])
     for (const each of Object.values(opened)) expect(each[Symbol.dispose]).toHaveBeenCalledOnce()
@@ -75,9 +75,26 @@ describe('useSpaceListings', () => {
     expect(current.listings).toEqual({
       broken: { status: 'failed' },
       left: { status: 'refused' },
-      platform: { status: 'ready', workspaces: [workspace('w-plan')] },
+      platform: { status: 'ready', workspaces: [workspace('w-plan')], asMember: true },
     })
     expect(broken[Symbol.dispose]).toHaveBeenCalledOnce()
+  })
+
+  it('tells a listing read as a visitor, the published entries only, from a member’s', async () => {
+    const published: SpaceWorkspaceInfo = { ...workspace('w-brief'), published: 'use' }
+    const spaces: Record<string, unknown> = {
+      visited: space('visited', [workspace('w-plan'), published], false),
+      platform: space('platform', [workspace('w-plan'), published]),
+    }
+    await mount(<Probe keys={['visited', 'platform']} />, fakeApi({ openSpace: (key: string) => spaces[key] }))
+    await settle()
+
+    expect(current.listings).toEqual({
+      visited: { status: 'ready', workspaces: [published], asMember: false },
+      platform: { status: 'ready', workspaces: [workspace('w-plan'), published], asMember: true },
+    })
+    expect(asMemberListing(current.listings.visited)).toEqual({ status: 'refused' })
+    expect(asMemberListing(current.listings.platform)).toBe(current.listings.platform)
   })
 
   it('reads one space again on reload, and leaves the others unread', async () => {
@@ -90,7 +107,7 @@ describe('useSpaceListings', () => {
     listed = [workspace('w-next'), workspace('w-plan')]
     await act(() => current.reload('platform'))
 
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: listed })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: listed, asMember: true })
     expect(openSpace.mock.calls).toEqual([['design'], ['platform'], ['platform']])
   })
 
@@ -108,7 +125,7 @@ describe('useSpaceListings', () => {
     await act(async () => older.resolve([workspace('w-old')]))
     await settle()
 
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')], asMember: true })
     expect(first[Symbol.dispose]).toHaveBeenCalledOnce()
   })
 
@@ -129,8 +146,8 @@ describe('useSpaceListings', () => {
     await settle()
 
     expect(current.listings).toEqual({
-      platform: { status: 'ready', workspaces: [workspace('w-new')] },
-      design: { status: 'ready', workspaces: [] },
+      platform: { status: 'ready', workspaces: [workspace('w-new')], asMember: true },
+      design: { status: 'ready', workspaces: [], asMember: true },
     })
   })
 
@@ -156,7 +173,7 @@ describe('useSpaceListings', () => {
     await act(async () => flags.resolve({ spaces: true }))
     await settle()
     expect(openSpace.mock.calls).toEqual([['platform']])
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [], asMember: true })
   })
 
   it('reads nothing while the flag is off', async () => {
@@ -175,7 +192,7 @@ describe('useSpaceListings', () => {
       fakeApi({ openSpace: () => space('platform', [workspace('w-old')]) }),
     )
     await settle()
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-old')] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-old')], asMember: true })
 
     const next = space('platform', [])
     next.listWorkspaces.mockImplementation(() => late.promise)
@@ -185,6 +202,6 @@ describe('useSpaceListings', () => {
 
     await act(async () => late.resolve([workspace('w-new')]))
     await settle()
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')], asMember: true })
   })
 })

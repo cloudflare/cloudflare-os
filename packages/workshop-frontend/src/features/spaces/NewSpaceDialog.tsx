@@ -64,8 +64,10 @@ export const NewSpaceDialog = ({ onClose, onCreated }: {
   // Creates the space, resolving to whether it now exists as the user's, and to false for a key
   // that is someone else's. A key refused as taken may be this dialog's own: an attempt that
   // ended with no answer may have created the space, and a key is never released, not even to
-  // whoever claimed it. The space then counts the user as a member, under the name that attempt
-  // gave it, and opening it to ask is also what puts it in the user's list.
+  // whoever claimed it. The space then has the user as its admin, under the name that attempt
+  // gave it, and opening it to ask is also what puts it in the user's list. A name alone proves
+  // nothing: anyone signed in may read the info of a space that lists a published workspace, with
+  // no role in it.
   const createSpace = async (): Promise<boolean> => {
     try {
       const space = await authenticatedApi.createSpace(key, trimmedName)
@@ -79,7 +81,8 @@ export const NewSpaceDialog = ({ onClose, onCreated }: {
       // space it resolves to.
       const space = authenticatedApi.openSpace(key)
       try {
-        return (await space.getInfo()).name === lost.name
+        const info = await space.getInfo()
+        return info.role === 'admin' && info.name === lost.name
       } catch (openErr) {
         if (isNotAMemberError(openErr)) return false
         throw openErr

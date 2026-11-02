@@ -27,7 +27,8 @@ const sharedWithMe = (id: string): GadgetMetadataWithTimestamps =>
 const listedBy = (owner: AiChatAuthorInfo, id: string): SpaceWorkspaceInfo =>
   ({ id, title: id, owner, created: DAY })
 
-const ready = (...workspaces: SpaceWorkspaceInfo[]) => ({ status: 'ready', workspaces }) as const
+// A listing read by a member of the space.
+const ready = (...workspaces: SpaceWorkspaceInfo[]) => ({ status: 'ready', workspaces, asMember: true }) as const
 
 const group = (gadgets: GadgetMetadataWithTimestamps[], listings: SpaceListings, spaces = SPACES) =>
   groupWorkspaces({ gadgets, spaces: [...spaces], listings, userId: ME.id })

@@ -9,13 +9,13 @@ import type {
   AuthenticatedApi,
   GadgetMetadataWithTimestamps,
   Overseer,
-  SpaceInfo,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
 import { Route as SpaceRoute } from '../../routes/spaces.$spaceKey'
 import { Route as WorkspacesRoute } from '../../routes/workspaces'
 import {
   ME,
+  alerts,
   button,
   click,
   deferred,
@@ -25,6 +25,7 @@ import {
   labeledInput,
   member,
   mountRouted,
+  notAMember,
   person,
   personalSpace,
   pressEscape,
@@ -76,22 +77,23 @@ type FakeApiMethods = Parameters<typeof fakeApi>[0]
  * The app with the space page and the workspaces page, at `at`, for a user with the spaces and
  * workspaces above. Each space is one object however often it is opened, so a change made
  * through one open is what the next one reads. `strangerTo` is a space that does not count the
- * user as a member. `chrome` is rendered beside the page, as the sidebar is. `session` is the
- * same user's session again, as a reconnect replaces it, with the methods it is given in place
- * of its own.
+ * user as a member. `listed` is what each space lists, in place of the above. `chrome` is
+ * rendered beside the page, as the sidebar is. `session` is the same user's session again, as a
+ * reconnect replaces it, with the methods it is given in place of its own.
  */
-const renderAt = async (at: string, { spacesFlag = true, strangerTo, api, chrome }: {
+const renderAt = async (at: string, { spacesFlag = true, strangerTo, listed = LISTED, api, chrome }: {
   spacesFlag?: boolean
   strangerTo?: string
+  listed?: Record<string, SpaceWorkspaceInfo[]>
   api?: FakeApiMethods
   chrome?: ReactNode
 } = {}) => {
   let spaces = SPACES
   const opened = new Map<string, ReturnType<typeof fakeSpace>>()
   const openSpace = vi.fn<(key: string) => unknown>((key) => {
-    const info: SpaceInfo = spaces.find(space => space.key === key)!
+    const info = spaces.find(space => space.key === key)!
     const space = opened.get(key)
-      ?? fakeSpace(info, key === strangerTo ? [] : [member(ME, info.role)], LISTED[key])
+      ?? fakeSpace(info, key === strangerTo ? [] : [member(ME, info.role)], listed[key])
     opened.set(key, space)
     return space
   })
@@ -265,6 +267,26 @@ describe('a space’s page', () => {
     expect(rowOf('Ada’s plan').getAttribute('href')).toBe('/spaces/platform/plan')
   })
 
+  it('says the user is no longer a member when the listing is read again as a visitor’s', async () => {
+    const { space } = await renderAt('/spaces/design', {
+      listed: {
+        ...LISTED,
+        design: [listedBy(ME, 'w-notes', 'Notes', 'notes'), { ...listedBy(ADA, 'w-brief', 'Brief', 'brief'), published: 'use' }],
+      },
+    })
+
+    // An admin removes the user while they change an address, which reads the listing again.
+    await chooseAction('Notes', 'Change address')
+    await space('design').removeMember(ME.id)
+    await type(labeledInput('Address'), 'my-notes')
+    await click(button('Save'))
+    await settle()
+
+    expect(alerts()).toEqual(['You are no longer a member of this space.'])
+    expect(rowTitles()).toEqual(['Notes'])
+    expect(document.body.textContent).not.toContain('Not listed by this space')
+  })
+
   it('returns to the workspaces page, whose heading takes the focus, when the user leaves the space', async () => {
     const { router } = await renderAt('/spaces/design')
 
@@ -358,6 +380,90 @@ describe('a space’s page', () => {
 
     expect(showsNotFound()).toBe(true)
     expect(heading()).toBeUndefined()
+  })
+
+  it('says which of the workspaces it lists are published, and with what role', async () => {
+    await renderAt('/spaces/design', {
+      listed: {
+        design: [
+          { ...listedBy(ME, 'w-notes', 'Notes', 'notes'), published: 'build' },
+          { ...listedBy(ADA, 'w-brief', 'Brief', 'brief'), published: 'use' },
+          listedBy(ADA, 'w-draft', 'Draft', 'draft'),
+        ],
+      },
+      api: { listGadgets: async () => [{ ...mine('w-notes', 'Notes', 'design'), publicAccess: 'build' as const }] },
+    })
+
+    expect(rowOf('Notes').textContent).toContain('Published · Can build')
+    expect(rowOf('Brief').textContent).toContain('Published · Can use')
+    expect(rowOf('Draft').textContent).not.toContain('Published')
+  })
+
+  describe('for a visitor, who is not a member of the space', () => {
+    // Design lists one published workspace at an address, one published that has no address yet,
+    // and one that is not published.
+    const PUBLISHING: Record<string, SpaceWorkspaceInfo[]> = {
+      design: [
+        { ...listedBy(ADA, 'w-brief', 'Brief', 'brief'), published: 'use' },
+        { ...listedBy(ADA, 'w-handbook', 'Handbook'), published: 'build' },
+        listedBy(ADA, 'w-draft', 'Draft', 'draft'),
+      ],
+    }
+
+    it('shows the space’s name and the published workspaces it lists as plain rows, and says that is what they are', async () => {
+      await renderAt('/spaces/design', { strangerTo: 'design', listed: PUBLISHING })
+
+      expect(heading()).toBe('Design')
+      expect(document.body.textContent).toContain(
+        'These are workspaces of this space that their owners have published to everyone signed in to this deployment.')
+      expect(rowTitles()).toEqual(['Brief', 'Handbook'])
+      expect(rowOf('Brief').getAttribute('href')).toBe('/spaces/design/brief')
+      expect(rowOf('Brief').textContent).toContain('Owned by Ada')
+      expect(rowOf('Brief').textContent).toContain('Published · Can use')
+      expect(rowOf('Handbook').getAttribute('href')).toBe('/workspace/w-handbook')
+      expect(rowOf('Handbook').textContent).toContain('Published · Can build')
+    })
+
+    it('offers nothing that is a member’s', async () => {
+      const { space } = await renderAt('/spaces/design', { strangerTo: 'design', listed: PUBLISHING })
+
+      expect(document.body.textContent).not.toContain('Your role')
+      expect(hasButton('Members of Design')).toBe(false)
+      expect([...document.body.querySelectorAll('a')].map(anchor => anchor.getAttribute('aria-label')))
+        .not.toContain('New workspace in Design')
+      expect(searchField()).toBeNull()
+      // No row has a menu: a visitor changes no address.
+      expect(rowOf('Brief').querySelector('button')).toBeNull()
+      expect(rowOf('Handbook').querySelector('button')).toBeNull()
+      // The space is asked for nothing it refuses a visitor but its members, once.
+      expect(space('design').listMembers).toHaveBeenCalledOnce()
+    })
+
+    it('shows only what is published of a listing read while the user was still a member', async () => {
+      const { space } = await renderAt('/spaces/design', { listed: PUBLISHING })
+      expect(rowTitles()).toContain('Draft')
+
+      // An admin removes the user, and the page learns of it from the members dialog.
+      await click(button('Members of Design'))
+      await settle()
+      await space('design').removeMember(ME.id)
+      await pressEscape()
+      await settle()
+
+      expect(heading()).toBe('Design')
+      expect(rowTitles()).toEqual(['Brief', 'Handbook'])
+      expect(hasButton('Members of Design')).toBe(false)
+    })
+
+    it('is not found once the space no longer lists anything published', async () => {
+      const design = fakeSpace(DESIGN, [], PUBLISHING.design)
+      // The publications were withdrawn between the space's two answers.
+      design.listWorkspaces.mockRejectedValue(notAMember())
+      await renderAt('/spaces/design', { api: { openSpace: () => design } })
+
+      expect(showsNotFound()).toBe(true)
+      expect(heading()).toBeUndefined()
+    })
   })
 
   it('is not found, and asks about no space, for a key that cannot name one', async () => {

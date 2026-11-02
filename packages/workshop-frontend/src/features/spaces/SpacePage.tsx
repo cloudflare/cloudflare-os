@@ -15,8 +15,9 @@ import { SpaceNotFound } from './SpaceNotFound'
 import { SPACE_ROLE_LABELS } from './spaceRoles'
 import { SpaceSectionRows } from './SpaceSectionRows'
 import { useSpace } from './useSpace'
-import { useSpaceListings, type SpaceListing } from './useSpaceListings'
+import { asMemberListing, useSpaceListings, type SpaceListing } from './useSpaceListings'
 import { useLastKnown, type Spaces } from './useSpaces'
+import { VisitedSpace } from './VisitedSpace'
 import { WorkspaceAddressDialog } from './WorkspaceAddressDialog'
 
 const LISTING_LOADING: SpaceListing = { status: 'loading' }
@@ -60,6 +61,10 @@ const UnlistedWorkspaces = ({ children }: { children: ReactNode }) => {
  * listing has been read these are shown apart and said to be so, since no other member sees
  * them here.
  *
+ * A user who is not a member of the space is a visitor, to whom the space is open while it
+ * lists a workspace published to everyone signed in: they get its name and those workspaces
+ * (see `VisitedSpace`), and none of the above.
+ *
  * A space that refuses the user is shown as nothing being there, which is also all the space
  * says of a key no space has claimed.
  */
@@ -86,10 +91,17 @@ export const SpacePage = ({ spaceKey, spaces }: {
   // the user has typed into the list and opened from it.
   const info = useLastKnown(state.status === 'ready' ? state.info : null, state.status !== 'loading')
   const label = info ? spaceLabel(info) : null
+  const role = info?.role
   const listing = listings[spaceKey] ?? LISTING_LOADING
+  // What the member's view below shows: the role in the header is the one the space last gave,
+  // and a listing read since as a visitor's says it no longer does.
+  const memberListing = asMemberListing(listing)
   useDocumentTitle(label)
 
   if (state.status === 'refused') return <SpaceNotFound />
+  // The space stopped listing anything published after it answered a visitor with its info: it
+  // is no longer open to them.
+  if (info && role === undefined && listing.status === 'refused') return <SpaceNotFound />
 
   const retry = async () => {
     setRetrying(true)
@@ -142,7 +154,15 @@ export const SpacePage = ({ spaceKey, spaces }: {
           </WorkshopButton>
         </div>
       )}
-      {info && label && (
+      {info && label && role === undefined && (
+        <VisitedSpace
+          spaceKey={spaceKey}
+          label={label}
+          listing={listing}
+          onListingReload={() => reload(spaceKey)}
+        />
+      )}
+      {info && label && role !== undefined && (
         <>
           <header className="flex flex-col items-stretch gap-4 px-3 pb-3 pt-6 sm:flex-row sm:items-end sm:justify-between sm:pt-10">
             <div className="min-w-0">
@@ -156,7 +176,7 @@ export const SpacePage = ({ spaceKey, spaces }: {
                 {label}
               </h1>
               <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-                Your role: {SPACE_ROLE_LABELS[info.role]}
+                Your role: {SPACE_ROLE_LABELS[role]}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -172,13 +192,13 @@ export const SpacePage = ({ spaceKey, spaces }: {
                   const rows = matchingRows(spaceRows({
                     gadgets,
                     space: info,
-                    workspaces: listing.status === 'ready' ? listing.workspaces : [],
+                    workspaces: memberListing.status === 'ready' ? memberListing.workspaces : [],
                     userId: currentUser?.id,
                   }), search)
                   if (search !== '' && rows.length === 0) {
                     return <div className="py-12 text-center text-sm text-kumo-inactive">No workspaces found</div>
                   }
-                  const read = listing.status === 'ready'
+                  const read = memberListing.status === 'ready'
                   const unlisted = read ? rows.filter(isUnlisted) : []
                   const listed = read ? rows.filter(row => !isUnlisted(row)) : rows
                   return (
@@ -186,7 +206,7 @@ export const SpacePage = ({ spaceKey, spaces }: {
                       {/* A space whose only rows are unlisted ones is not said to have none. */}
                       {(listed.length > 0 || unlisted.length === 0) && (
                         <SpaceSectionRows
-                          section={{ kind: 'space', space: info, listing: listing.status, rows: listed }}
+                          section={{ kind: 'space', space: info, listing: memberListing.status, rows: listed }}
                           label={label}
                           renderRow={renderRow}
                           onListingReload={reload}

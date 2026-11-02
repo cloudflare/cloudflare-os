@@ -192,6 +192,20 @@ describe('a workspace’s address in a space', () => {
     expect(space[Symbol.dispose]).toHaveBeenCalledOnce()
   })
 
+  it('opens a published workspace at its address for a visitor, and finds no other there', async () => {
+    const draft = { ...ROADMAP, id: 'w-draft', title: 'Draft', slug: 'draft' }
+    // The space as someone who is not a member holds it: one workspace published, one not.
+    const visited = () => fakeSpace(DESIGN, [], [{ ...ROADMAP, published: 'use' }, draft])
+
+    await renderAt('/spaces/design/roadmap', { space: visited() })
+    expect(editor()?.textContent).toBe('w-roadmap')
+    unmountAll()
+
+    await renderAt('/spaces/design/draft', { space: visited() })
+    expect(showsNotFound()).toBe(true)
+    expect(editor()).toBeNull()
+  })
+
   it('is not found, and asks about no space, for a key that cannot name one', async () => {
     const { openSpace } = await renderAt('/spaces/Not%20A%20Key/roadmap')
 

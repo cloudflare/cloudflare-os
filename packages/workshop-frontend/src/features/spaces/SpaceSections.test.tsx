@@ -82,7 +82,7 @@ const renderPage = async ({ at = '/workspaces', spacesFlag = true, gadgets = GAD
   api?: Partial<{ [K in keyof AuthenticatedApi]: unknown }>
   chrome?: ReactNode
 } = {}) => {
-  let spaces: SpaceInfo[] = [PERSONAL, ADAS, DESIGN, PLATFORM]
+  let spaces = [PERSONAL, ADAS, DESIGN, PLATFORM]
   const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => spaces)
   const openSpace = vi.fn<(key: string) => unknown>((key) => {
     const info = spaces.find(space => space.key === key)!
@@ -216,6 +216,15 @@ describe('the workspaces page', () => {
       expect(openSpace).not.toHaveBeenCalled()
     })
 
+    it('says nothing of publication on a row', async () => {
+      await renderPage({
+        spacesFlag: false,
+        gadgets: [{ ...mine('w-solo', 'Solo notes'), publicAccess: 'build' }],
+      })
+
+      expect(rowOf('Solo notes').textContent).not.toContain('Published')
+    })
+
     it('offers no move on a row', async () => {
       await renderPage({ spacesFlag: false })
 
@@ -239,6 +248,54 @@ describe('the workspaces page', () => {
       expect(sectionNamed('Platform').textContent).toContain('Your role: Admin')
       // The user's own personal space is not opened: its section is their own records.
       expect(openSpace.mock.calls.map(([key]) => key)).toEqual([ADAS.key, 'design', 'platform'])
+    })
+
+    it('says which workspaces are published, and with what role', async () => {
+      await renderPage({
+        gadgets: [
+          { ...mine('w-solo', 'Solo notes'), publicAccess: 'build' },
+          mine('w-roadmap', 'Roadmap', 'platform'),
+        ],
+        api: {
+          openSpace: (key: string) => {
+            const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+            return fakeSpace(info, [member(ME, info.role)], key === 'platform'
+              ? [
+                  listedBy(ME, 'w-roadmap', 'Roadmap'),
+                  { ...listedBy(ADA, 'w-plan', 'Ada’s plan'), published: 'use' },
+                ]
+              : [])
+          },
+        },
+      })
+
+      // The user's own by their record of it, another member's by the space's entry for it.
+      expect(rowOf('Solo notes').textContent).toContain('Published · Can build')
+      expect(rowOf('Ada’s plan').textContent).toContain('Published · Can use')
+      expect(rowOf('Roadmap').textContent).not.toContain('Published')
+    })
+
+    it('marks a row published once its Share dialog has published the workspace', async () => {
+      const overseer = {
+        getMetadata: async () => mine('w-solo', 'Solo notes'),
+        listCollaborators: async () => [],
+        listShareLinks: async () => [],
+        listObserverRequirements: async () => [],
+        setPublicAccess: vi.fn<Overseer['setPublicAccess']>(async () => {}),
+        [Symbol.dispose]: vi.fn<() => void>(),
+      }
+      await renderPage({ api: { openGadget: () => overseer } })
+      expect(rowOf('Solo notes').textContent).not.toContain('Published')
+
+      await rowActions('Solo notes')
+      await chooseMenuItem('Share')
+      await settle()
+      await click(button('Access for anyone signed in to this deployment'))
+      await chooseMenuItem('Can use')
+      await settle()
+
+      expect(overseer.setPublicAccess).toHaveBeenCalledExactlyOnceWith('use')
+      expect(rowOf('Solo notes').textContent).toContain('Published · Can use')
     })
 
     it('links a row to its address in the space once the space’s listing gives it one', async () => {
@@ -528,6 +585,20 @@ describe('the workspaces page', () => {
 
       expect(alerts()).toEqual(['You are no longer a member of this space.'])
       expect(sectionNamed('Design').textContent).toContain('You are no longer a member of this space.')
+    })
+
+    it('says so when a space in the user’s list now shows them only the workspaces published in it', async () => {
+      // The user's list still has them as Platform's admin; the space reads them as a visitor.
+      const openSpace = vi.fn<(key: string) => unknown>((key) => {
+        const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        return fakeSpace(info, key === 'platform' ? [] : [member(ME, info.role)], key === 'platform'
+          ? [listedBy(ME, 'w-roadmap', 'Roadmap'), { ...listedBy(ADA, 'w-plan', 'Ada’s plan'), published: 'use' }]
+          : LISTED[key])
+      })
+      await renderPage({ api: { openSpace } })
+
+      expect(alerts()).toEqual(['You are no longer a member of this space.'])
+      expect(sections().find(([name]) => name === 'Platform')).toEqual(['Platform', ['Roadmap']])
     })
 
     it('lists what is shared with the user and no space shows under its own heading', async () => {

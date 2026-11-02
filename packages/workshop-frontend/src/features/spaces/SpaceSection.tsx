@@ -50,7 +50,7 @@ export const SpaceSection = ({ section, renderRow, onMembersOpen, onListingReloa
               )
             : title}
         </h2>
-        {section.kind === 'space' && (
+        {section.kind === 'space' && section.space.role && (
           <p className="text-[12px] leading-4 text-kumo-subtle">
             Your role: {SPACE_ROLE_LABELS[section.space.role]}
           </p>

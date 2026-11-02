@@ -9,7 +9,8 @@ import { isNotAMemberError } from './spaceErrors'
  * What a workspace's address, /spaces/<spaceKey>/<slug>, leads to for the signed-in user.
  *
  * - `loading`: not known yet.
- * - `ready`: the workspace the slug addresses, and whether the slug is its current one.
+ * - `ready`: the workspace the slug addresses, and whether the slug is its current one. For a
+ *   user who is not a member of the space, only a published workspace is there (see `Space`).
  * - `not-found`: nothing is there for this user. The `spaces` flag is off, the key is malformed,
  *   the space refused them (which is also its answer for a key no space has claimed), or no
  *   workspace the space lists has or had the slug.

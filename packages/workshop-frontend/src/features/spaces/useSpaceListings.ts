@@ -10,13 +10,23 @@ import { isNotAMemberError } from './spaceErrors'
  * What one space lists, as last read for the signed-in user.
  *
  * - `loading`: not read yet.
- * - `ready`: the workspaces the space lists, newest first.
- * - `refused`: the space does not count the user as a member.
+ * - `ready`: the workspaces the space lists, newest first, and whether the space counted the
+ *   user as a member when it was read. For a visitor, someone who is not a member of the space
+ *   (see `Space`), these are only the published ones.
+ * - `refused`: the space is not open to the user, who is not a member of it and for whom it
+ *   lists nothing published.
  * - `failed`: it could not be read for another reason; `reload` reads it again.
  */
 export type SpaceListing =
   | { status: 'loading' | 'refused' | 'failed' }
-  | { status: 'ready'; workspaces: SpaceWorkspaceInfo[] }
+  | { status: 'ready'; workspaces: SpaceWorkspaceInfo[]; asMember: boolean }
+
+/**
+ * The listing as a view of the space for its members takes it. One read as a visitor says the
+ * space no longer counts the user as a member, which is what a refusal says there.
+ */
+export const asMemberListing = (listing: SpaceListing): SpaceListing =>
+  listing.status === 'ready' && !listing.asMember ? { status: 'refused' } : listing
 
 /** Each space's listing by space key. A space with no entry has not been read yet. */
 export type SpaceListings = Readonly<Record<string, SpaceListing>>
@@ -54,12 +64,14 @@ export const useSpaceListings = (keys: readonly string[]): {
     const load = async (key: string) => {
       const request = (latest.get(key) ?? 0) + 1
       latest.set(key, request)
-      // Not awaited: the read is pipelined on the open, a refused open rejects it with the
-      // refusal, and disposing the promise disposes the space it resolves to.
+      // Not awaited: the reads are pipelined on the open, a refused open rejects them with the
+      // refusal, and disposing the promise disposes the space it resolves to. The info says
+      // whether the listing is a member's: a visitor's has a published entry or more.
       const space = authenticatedApi.openSpace(key)
       let listing: SpaceListing
       try {
-        listing = { status: 'ready', workspaces: await space.listWorkspaces() }
+        const [info, workspaces] = await Promise.all([space.getInfo(), space.listWorkspaces()])
+        listing = { status: 'ready', workspaces, asMember: info.role !== undefined }
       } catch (err) {
         if (isNotAMemberError(err)) {
           listing = { status: 'refused' }

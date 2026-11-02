@@ -72,7 +72,10 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
   const [notice, setNotice] = useState('')
   const [retrying, setRetrying] = useState(false)
 
-  const ready = state.status === 'ready' ? state : null
+  // A space that lists a published workspace stays open to someone it has stopped counting as
+  // a member, as a visitor, to whom it shows no members and whom it gives nothing to leave.
+  const ready = state.status === 'ready' && state.info.role !== undefined ? state : null
+  const notAMember = state.status === 'refused' || (state.status === 'ready' && !ready)
   const members = ready?.members ?? NO_MEMBERS
   // Memoized because the composer restarts its search whenever this array changes identity.
   const memberIds = useMemo(() => members.map(({ profile }) => profile.id), [members])
@@ -243,7 +246,7 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
         {state.status === 'loading' && (
           <p role="status" className="text-[13px] leading-[18px] text-kumo-subtle">Loading members…</p>
         )}
-        {state.status === 'refused' && (
+        {notAMember && (
           <p role="alert" className="text-[13px] leading-[18px] text-kumo-default">
             You are no longer a member of this space.
           </p>

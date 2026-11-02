@@ -10,9 +10,13 @@ import { isNotAMemberError } from './spaceErrors'
  * One space as the signed-in user sees it.
  *
  * - `loading`: not read yet.
- * - `ready`: its info (with the user's own role) and members, as last read.
- * - `refused`: the space no longer counts the user as a member (or never did: the server gives
- *   one answer for both, and for a key no space has claimed).
+ * - `ready`: its info and members, as last read. For a member the info has their own role. For a
+ *   visitor, someone who is not a member and to whom the space is open while it lists a
+ *   published workspace (see `Space`), the info has no `role` and `members` is empty: the space
+ *   does not show a visitor its members.
+ * - `refused`: the space is not open to the user, who is not a member of it and for whom it
+ *   lists nothing published (the server gives that one answer for a key no space has claimed
+ *   too).
  * - `failed`: it could not be read for another reason; `refresh` opens it again.
  */
 export type SpaceState =
@@ -37,6 +41,17 @@ export type OpenSpace = {
 }
 
 const LOADING: SpaceState = { status: 'loading' }
+const NO_MEMBERS: SpaceMemberInfo[] = []
+
+// The space's members, or null when it refuses them, as it does to a visitor.
+const membersIfShown = async (space: RpcStub<Space>) => {
+  try {
+    return await space.listMembers()
+  } catch (err) {
+    if (isNotAMemberError(err)) return null
+    throw err
+  }
+}
 
 /**
  * Opens the space with this key for as long as the component is mounted with it, and reads its
@@ -44,7 +59,8 @@ const LOADING: SpaceState = { status: 'loading' }
  * changes. What the space lists is not read here (see `useSpaceListings`).
  *
  * A space re-checks the user's membership on every call, so a space that opened may start
- * refusing: every read here, including the one after a `change`, turns that into `refused`.
+ * refusing, or go on as a visitor's: every read here, including the one after a `change`, turns
+ * the first into `refused` and the second into info with no `role`.
  *
  * Like `useSpaces`, the hook asks a session for nothing before that session's own flags say the
  * `spaces` flag is on. Until then the space is `loading` and not open.
@@ -81,8 +97,12 @@ export const useSpace = (key: string): OpenSpace => {
       const space = stub
       let state: SpaceState
       try {
-        const [info, members] = await Promise.all([space.getInfo(), space.listMembers()])
-        state = { status: 'ready', info, members }
+        const [info, members] = await Promise.all([space.getInfo(), membersIfShown(space)])
+        state = members
+          ? { status: 'ready', info, members }
+          // Refused its members by a space that answered with its info, the user is a visitor,
+          // whatever role that info, read a moment earlier, may still have had.
+          : { status: 'ready', info: { ...info, role: undefined }, members: NO_MEMBERS }
       } catch (err) {
         if (isNotAMemberError(err)) {
           state = { status: 'refused' }

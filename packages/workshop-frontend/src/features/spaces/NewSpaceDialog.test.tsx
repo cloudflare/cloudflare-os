@@ -15,6 +15,7 @@ import {
   labeledInput,
   member,
   mount,
+  person,
   teamSpace,
   type,
   unmountAll,
@@ -23,6 +24,7 @@ import {
 type CreateSpace = (key: string, name: string) => Promise<Disposable>
 
 const KEY_RULE = '2 to 32 lowercase letters, digits or dashes, starting with a letter or digit.'
+const ADA = person('ada@example.com', 'Ada')
 const TAKEN = 'A space with the key “platform” already exists. Choose another key.'
 
 const taken = async (): Promise<never> => { throw new Error('A space with this key already exists.') }
@@ -185,6 +187,12 @@ describe('NewSpaceDialog', () => {
 
     it.each([
       ['a space the user is not a member of', () => fakeSpace(teamSpace('platform', 'Platform'), [])],
+      ['a space of that name the user visits, because it lists a published workspace',
+        () => fakeSpace(teamSpace('platform', 'Platform'), [], [
+          { id: 'w-brief', title: 'Brief', owner: ADA, created: new Date('2026-01-01'), published: 'use' },
+        ])],
+      ['a space of that name the user is a member but not an admin of',
+        () => fakeSpace(teamSpace('platform', 'Platform'), [member(ADA, 'admin'), member(ME, 'build')])],
       ['a space of another name the user is a member of',
         () => fakeSpace(teamSpace('platform', 'Platform engineering'), [member(ME, 'use')])],
     ])('shows the key as taken when it is %s', async (_whose, existing) => {

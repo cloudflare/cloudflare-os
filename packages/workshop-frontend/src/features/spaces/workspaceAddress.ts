@@ -1,3 +1,5 @@
+import type { CollaboratorRole } from '@gadgets/workshop-shared/api'
+
 /**
  * A workspace's address within a space: the key of a space that lists it and the slug its entry
  * there has (`SpaceWorkspaceInfo.slug`), which together are the URL /spaces/<spaceKey>/<slug>.
@@ -17,11 +19,14 @@ export const isWorkspaceAddressPath = (pathname: string): boolean =>
 
 /**
  * What the row of a workspace gains from the entry a space lists it under: where the row links
- * to and, for a user who may change that address, the way to.
+ * to, whether the entry says the workspace is published and, for a user who may change that
+ * address, the way to.
  */
 export type WorkspaceRowListing = {
   /** The entry's address, once it has a slug. The row links there in place of /workspace/<id>. */
   address: WorkspaceAddress | undefined
+  /** The role the entry says the workspace is published with (`SpaceWorkspaceInfo.published`). */
+  published: CollaboratorRole | undefined
   /** Offers 'Change address' on the row. */
   onAddressChange: (() => void) | undefined
 }

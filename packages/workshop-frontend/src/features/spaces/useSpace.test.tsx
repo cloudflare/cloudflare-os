@@ -163,6 +163,31 @@ describe('useSpace', () => {
     expect(current.state).toEqual({ status: 'refused' })
   })
 
+  it('reads a space that lists a published workspace, for a user who is not a member, as a visitor’s', async () => {
+    const space = fakeSpace(teamSpace('platform', 'Platform'), [member(ADA, 'admin'), member(ME, 'use')], [{
+      id: 'w-handbook',
+      title: 'Handbook',
+      owner: ADA,
+      created: new Date('2026-09-01T00:00:00Z'),
+      published: 'use',
+    }])
+    await mount(<Probe spaceKey="platform" />, fakeApi({ openSpace: () => space.stub }))
+    await settle()
+    expect(current.state).toMatchObject({ status: 'ready', info: { role: 'use' } })
+
+    // The user is removed while the space is open: it goes on showing them what it published.
+    await space.removeMember(ME.id)
+    await act(() => current.refresh())
+
+    expect(current.state).toEqual({
+      status: 'ready',
+      info: { key: 'platform', name: 'Platform', kind: 'team', role: undefined },
+      members: [],
+    })
+    // The space still reads, so it is not opened again.
+    expect(space[Symbol.dispose]).not.toHaveBeenCalled()
+  })
+
   it.each([
     { cause: 'failed', broken: lost, status: 'failed' },
     { cause: 'was refused', broken: unopened, status: 'refused' },

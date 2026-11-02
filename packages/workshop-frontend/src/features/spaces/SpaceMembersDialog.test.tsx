@@ -3,7 +3,12 @@
 
 import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AuthenticatedApi, SpaceInfo, SpaceMemberInfo } from '@gadgets/workshop-shared/api'
+import type {
+  AuthenticatedApi,
+  SpaceInfo,
+  SpaceMemberInfo,
+  SpaceWorkspaceInfo,
+} from '@gadgets/workshop-shared/api'
 import { SpaceMembersDialog } from './SpaceMembersDialog'
 import {
   ME,
@@ -39,8 +44,9 @@ const render = async (
   info: SpaceInfo,
   members: SpaceMemberInfo[],
   api: Partial<{ [K in keyof AuthenticatedApi]: unknown }> = {},
+  workspaces: SpaceWorkspaceInfo[] = [],
 ) => {
-  const space = fakeSpace(info, members)
+  const space = fakeSpace(info, members, workspaces)
   const onClose = vi.fn<() => void>()
   const onLeft = vi.fn<() => void>()
   await mount(
@@ -317,6 +323,27 @@ describe('SpaceMembersDialog', () => {
       expect(alerts()).toEqual(['You are no longer a member of this space.'])
       expect(document.body.querySelector('ul[aria-label="Members"]')).toBeNull()
       expect(peopleField()).toBeNull()
+    })
+
+    it('says the same, and offers no leave, when the space goes on showing the viewer what it published', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { space } = await render(
+        teamSpace('platform', 'Platform'),
+        [member(ME, 'admin'), member(ADA, 'admin')],
+        {},
+        [{ id: 'w-handbook', title: 'Handbook', owner: ADA, created: new Date('2026-09-01T00:00:00Z'), published: 'use' }],
+      )
+      // Another admin removed the viewer after the dialog opened: the space now holds them a
+      // visitor, whom it shows its info and refuses everything of its members.
+      await space.removeMember(ME.id)
+      space.removeMember.mockRejectedValueOnce(notAMember())
+
+      await click(button('Remove Ada'))
+      await settle()
+
+      expect(alerts()).toEqual(['You are no longer a member of this space.'])
+      expect(document.body.querySelector('ul[aria-label="Members"]')).toBeNull()
+      expect(hasButton('Leave space')).toBe(false)
     })
   })
 

@@ -4,7 +4,7 @@ import type {
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
 import { isOwnPersonalSpace } from './spaceKinds'
-import type { SpaceListing, SpaceListings } from './useSpaceListings'
+import { asMemberListing, type SpaceListing, type SpaceListings } from './useSpaceListings'
 
 /**
  * One row of a section.
@@ -115,7 +115,7 @@ export const groupWorkspaces = ({ gadgets, spaces, listings, userId }: {
   const shown = new Set<string>()
 
   const spaceSections = otherSpaces.map((space): WorkspaceSection => {
-    const listing: SpaceListing = listings[space.key] ?? { status: 'loading' }
+    const listing = asMemberListing(listings[space.key] ?? { status: 'loading' })
     const workspaces = listing.status === 'ready' ? listing.workspaces : []
     return {
       kind: 'space',

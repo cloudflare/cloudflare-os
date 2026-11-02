@@ -4,11 +4,12 @@ import { useState, useEffect, useRef, type ReactNode, type Ref } from 'react';
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
-import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute, SpaceInfo } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute, SpaceInfo, CollaboratorRole } from '@gadgets/workshop-shared/api';
 import { WorkspaceNotificationsMenu } from '../features/notifications/WorkspaceNotificationsMenu';
 import { describeMute } from '../features/notifications/notificationMute';
 import ShareModal from '../ShareModal'
 import { hasMoveTarget, MoveToSpaceDialog } from '../features/spaces/MoveToSpaceDialog'
+import { PublishedBadge } from '../features/spaces/PublishedBadge'
 import { isOwnPersonalSpace } from '../features/spaces/spaceKinds'
 import type { WorkspaceRowListing } from '../features/spaces/workspaceAddress'
 import { WorkspaceLink } from '../features/spaces/WorkspaceLink'
@@ -49,7 +50,7 @@ function AppRow({
   onInfo,
   onTogglePin,
   onRename,
-  onNotificationMuteChange, onMove, menuButtonRef, listing,
+  onNotificationMuteChange, onMove, menuButtonRef, listing, published,
 }: {
   gadget: WorkspaceMetadataWithTimestamps
   onDelete: (gadget: WorkspaceMetadataWithTimestamps) => void
@@ -65,6 +66,11 @@ function AppRow({
   onMove?: (gadget: WorkspaceMetadataWithTimestamps) => void
   /** What the entry a space lists the workspace under gives the row, where the caller has one. */
   listing?: WorkspaceRowListing
+  /**
+   * The role the workspace is published with, said on the row while the list is laid out under
+   * spaces.
+   */
+  published?: CollaboratorRole
   menuButtonRef?: Ref<HTMLButtonElement>
 }) {
   const [isRenaming, setIsRenaming] = useState(false)
@@ -131,6 +137,7 @@ function AppRow({
           {muteDescription && (
             <BellSlash size={12} alt={muteDescription} className="text-kumo-inactive flex-shrink-0" />
           )}
+          {published && <PublishedBadge role={published} />}
         </div>
         {gadget.owner && (
           <p className="text-xs text-kumo-subtle truncate mt-0.5">
@@ -430,6 +437,10 @@ export default function GadgetList({ showHeader = true, sections }: {
       key={gadget.id}
       gadget={gadget}
       listing={listing}
+      // The user's own workspace says so by their record of it, which the Share dialog keeps up
+      // to date below; another person's by the entry a space lists it under, since the user's
+      // record of a workspace shared with them does not say whether it is published.
+      published={sections ? (gadget.owner ? listing?.published : gadget.publicAccess) : undefined}
       onDelete={handleDelete}
       onShare={handleShare}
       onInfo={setInfoTarget}
@@ -595,6 +606,8 @@ export default function GadgetList({ showHeader = true, sections }: {
           metadata={shareTarget}
           currentUser={userInfo}
           authenticatedApi={authenticatedApi}
+          onPublicAccessChange={(role) => setGadgets(prev => prev.map(g =>
+            g.id === shareTarget.id ? { ...g, publicAccess: role ?? undefined } : g))}
         />
       )}
 

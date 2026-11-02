@@ -21,6 +21,12 @@ import { ServerConfigContext } from './ServerConfigContext'
 
 const toastAdd = vi.hoisted(() => vi.fn<(toast: unknown) => void>())
 
+// The UI flags as the dialog reads them: off, as they are by default, unless a test turns one on.
+const uiFlags = vi.hoisted(() => ({ spaces: false }))
+vi.mock('./FeatureFlagsContext', () => ({
+  useUiFeatureFlag: (name: 'spaces') => ({ enabled: uiFlags[name], loading: false }),
+}))
+
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
 testGlobal.IS_REACT_ACT_ENVIRONMENT = true
@@ -137,6 +143,8 @@ type OverseerOverrides = {
     role: CollaboratorRole,
     note?: string,
   ) => Promise<CollaboratorInfo | null>
+  setPublicAccess?: (role: CollaboratorRole | null) => Promise<void>
+  getMetadata?: () => Promise<GadgetMetadata>
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
@@ -154,6 +162,8 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     })),
     createShareLink: async () => ({ key: 'secret', linkId: 'link-1' }),
     updateShareLink: overrides.updateShareLink ?? (async () => {}),
+    setPublicAccess: overrides.setPublicAccess ?? (async () => {}),
+    getMetadata: overrides.getMetadata ?? (async () => METADATA),
   } as unknown as RpcStub<Overseer>
 }
 
@@ -247,6 +257,21 @@ function stagedNames(rendered: HTMLElement): string[] {
 
 function profileFor(userId: string, role: CollaboratorRole, name: string): CollaboratorInfo {
   return { profile: { type: 'user', id: userId, name }, role, addedBy: [] }
+}
+
+// The text of every alert on show.
+function alerts(rendered: HTMLElement) {
+  return [...rendered.querySelectorAll('[role="alert"]')].map(alert => alert.textContent)
+}
+
+// The name of the group the focus is in, which a screen reader says as the focus enters it.
+function focusedGroupName() {
+  const group = document.activeElement?.closest('[role="group"]')
+  return group && document.getElementById(group.getAttribute('aria-labelledby')!)?.textContent
+}
+
+function fakeSetPublicAccess() {
+  return vi.fn<(role: CollaboratorRole | null) => Promise<void>>(async () => {})
 }
 
 // jsdom has no ResizeObserver; the stub records each observer so a test can fire its callback
@@ -1356,5 +1381,217 @@ describe('ShareModal', () => {
 
     expect(updateShareLink).not.toHaveBeenCalled()
     expect(rendered.querySelector('input[aria-label="Share link name"]')).toBeNull()
+  })
+
+  describe('publishing to everyone signed in', () => {
+    const WHO = 'Anyone signed in to this deployment'
+    const CONTROL = 'Access for anyone signed in to this deployment'
+    const RECONNECTS = 'Everyone currently in the workspace will be reconnected.'
+    const SHARED_WITH_ME = {
+      ...METADATA,
+      owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
+    } as GadgetMetadata
+
+    const publishedWith = (role: CollaboratorRole): GadgetMetadata => ({ ...METADATA, publicAccess: role })
+    const hasControl = (rendered: HTMLElement) =>
+      rendered.querySelector(`button[aria-label="${CONTROL}"]`) !== null
+
+    beforeEach(() => { uiFlags.spaces = true })
+    afterEach(() => {
+      uiFlags.spaces = false
+      vi.restoreAllMocks()
+    })
+
+    it('is absent while the spaces flag is off', async () => {
+      uiFlags.spaces = false
+      const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), publishedWith('use'))
+
+      expect(rendered.textContent).not.toContain(WHO)
+      expect(hasControl(rendered)).toBe(false)
+    })
+
+    it.each<[CollaboratorRole | undefined, string]>([
+      [undefined, 'No access'],
+      ['use', 'Can use'],
+      ['build', 'Can build'],
+    ])('shows the owner what the workspace is published with (%s)', async (publicAccess, label) => {
+      const rendered = await render(
+        fakeOverseer(), fakeAuthenticatedApi(), { ...METADATA, publicAccess })
+
+      expect(rendered.textContent).toContain(WHO)
+      expect(button(rendered, CONTROL).textContent).toBe(label)
+    })
+
+    it('says what publishing to build gives everyone signed in, beyond its gadgets and chat', async () => {
+      const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), publishedWith('build'))
+
+      expect(rendered.textContent).toContain(
+        'see who has access to it, its share links and who is in it, but cannot share, move, publish or delete it.')
+    })
+
+    it('tells someone who is not the owner the role of a published workspace, and nothing of any other', async () => {
+      const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), SHARED_WITH_ME)
+      expect(rendered.textContent).not.toContain(WHO)
+
+      await updateMetadata({ ...SHARED_WITH_ME, publicAccess: 'use' })
+      expect(rendered.textContent).toContain(WHO)
+      expect(rendered.textContent).toContain('Can use')
+      expect(hasControl(rendered)).toBe(false)
+    })
+
+    it('publishes, and raises the role, at once', async () => {
+      const setPublicAccess = fakeSetPublicAccess()
+      const rendered = await render(fakeOverseer({ setPublicAccess }))
+
+      await click(roleOption(rendered, 'Can use'))
+      expect(setPublicAccess).toHaveBeenLastCalledWith('use')
+      expect(button(rendered, CONTROL).textContent).toBe('Can use')
+
+      await click(roleOption(rendered, 'Can build'))
+      expect(setPublicAccess).toHaveBeenLastCalledWith('build')
+      expect(button(rendered, CONTROL).textContent).toBe('Can build')
+      expect(setPublicAccess).toHaveBeenCalledTimes(2)
+      expect(rendered.textContent).not.toContain(RECONNECTS)
+    })
+
+    it('says everyone will be reconnected before it lowers the role or withdraws the publication', async () => {
+      const setPublicAccess = fakeSetPublicAccess()
+      const rendered = await render(
+        fakeOverseer({ setPublicAccess }), fakeAuthenticatedApi(), publishedWith('build'))
+
+      await click(roleOption(rendered, 'Can use'))
+      expect(rendered.textContent).toContain(RECONNECTS)
+      expect(setPublicAccess).not.toHaveBeenCalled()
+      expect(button(rendered, CONTROL).textContent).toBe('Can build')
+
+      await click(button(rendered, 'Change to Can use'))
+      expect(setPublicAccess).toHaveBeenCalledExactlyOnceWith('use')
+      expect(rendered.textContent).not.toContain(RECONNECTS)
+      expect(button(rendered, CONTROL).textContent).toBe('Can use')
+
+      await click(roleOption(rendered, 'No access'))
+      expect(rendered.textContent).toContain(RECONNECTS)
+      expect(setPublicAccess).toHaveBeenCalledTimes(1)
+
+      await click(button(rendered, 'Change to No access'))
+      expect(setPublicAccess).toHaveBeenLastCalledWith(null)
+      expect(button(rendered, CONTROL).textContent).toBe('No access')
+    })
+
+    it('moves the focus into the warning, and back to the control when the warning is gone', async () => {
+      const setPublicAccess = fakeSetPublicAccess()
+      const rendered = await render(
+        fakeOverseer({ setPublicAccess }), fakeAuthenticatedApi(), publishedWith('build'))
+
+      await click(roleOption(rendered, 'Can use'))
+      expect(document.activeElement).toBe(button(rendered, 'Cancel'))
+      expect(focusedGroupName()).toBe(RECONNECTS)
+      await click(button(rendered, 'Cancel'))
+      expect(document.activeElement).toBe(button(rendered, CONTROL))
+
+      await click(roleOption(rendered, 'No access'))
+      expect(focusedGroupName()).toBe(RECONNECTS)
+      await click(button(rendered, 'Change to No access'))
+      expect(setPublicAccess).toHaveBeenCalledExactlyOnceWith(null)
+      expect(document.activeElement).toBe(button(rendered, CONTROL))
+    })
+
+    it('gives the focus back to the control once a publish is saved', async () => {
+      const answer = deferred<void>()
+      const rendered = await render(fakeOverseer({ setPublicAccess: () => answer.promise }))
+
+      const option = roleOption(rendered, 'Can use')
+      option.focus()
+      await click(option)
+      expect(button(rendered, CONTROL).disabled).toBe(true)
+
+      await act(async () => answer.resolve())
+      expect(button(rendered, CONTROL).textContent).toBe('Can use')
+      expect(document.activeElement).toBe(button(rendered, CONTROL))
+    })
+
+    it('leaves the publication as it is when the warning is declined', async () => {
+      const setPublicAccess = fakeSetPublicAccess()
+      const rendered = await render(
+        fakeOverseer({ setPublicAccess }), fakeAuthenticatedApi(), publishedWith('use'))
+
+      await click(roleOption(rendered, 'No access'))
+      await click(button(rendered, 'Cancel'))
+
+      expect(setPublicAccess).not.toHaveBeenCalled()
+      expect(rendered.textContent).not.toContain(RECONNECTS)
+      expect(button(rendered, CONTROL).textContent).toBe('Can use')
+    })
+
+    it.each<[string, Partial<GadgetMetadata>, string]>([
+      ['holds restricted data', { containsRestrictedData: true },
+        'Not available: this workspace has read sensitive data.'],
+      ['is owner-invites-only', { containsRestrictedData: true, ownerInvitesOnly: true },
+        'Not available: only the owner can add people to this workspace.'],
+    ])('is not offered, and says why, while the workspace %s', async (_which, restriction, reason) => {
+      const rendered = await render(
+        fakeOverseer(), fakeAuthenticatedApi(), { ...METADATA, ...restriction })
+
+      expect(rendered.textContent).toContain(WHO)
+      expect(rendered.textContent).toContain(reason)
+      expect(hasControl(rendered)).toBe(false)
+    })
+
+    it('shows the server’s refusal in the row', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const refusal = 'This workspace holds restricted data, so it cannot be published.'
+      const rendered = await render(fakeOverseer({
+        setPublicAccess: async () => { throw new Error(refusal) },
+      }))
+
+      await click(roleOption(rendered, 'Can use'))
+
+      expect(alerts(rendered)).toEqual([refusal])
+      expect(button(rendered, CONTROL).textContent).toBe('No access')
+      expect(toastAdd).not.toHaveBeenCalled()
+    })
+
+    it('stops offering the control when a refusal comes of a flag set since the workspace was read', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const refusal = 'A workspace that contains sensitive data cannot be published.'
+      const rendered = await render(fakeOverseer({
+        setPublicAccess: async () => { throw new Error(refusal) },
+        getMetadata: async () => ({ ...METADATA, containsRestrictedData: true }),
+      }))
+
+      await click(roleOption(rendered, 'Can use'))
+
+      expect(alerts(rendered)).toEqual([refusal])
+      expect(rendered.textContent).toContain('Not available: this workspace has read sensitive data.')
+      expect(hasControl(rendered)).toBe(false)
+    })
+
+    it('keeps what newer metadata says over the answer to an earlier request', async () => {
+      const answer = deferred<void>()
+      const rendered = await render(fakeOverseer({ setPublicAccess: () => answer.promise }))
+
+      await click(roleOption(rendered, 'Can use'))
+      // The workspace says it is published with the role asked for, then the owner raises it in
+      // another tab, before the request is answered.
+      await updateMetadata(publishedWith('use'))
+      await updateMetadata(publishedWith('build'))
+      await act(async () => answer.resolve())
+
+      expect(button(rendered, CONTROL).textContent).toBe('Can build')
+    })
+
+    it('shows what the workspace says is in effect after a change that failed', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const rendered = await render(fakeOverseer({
+        // The workspace took the change, and could not bring its owner's record up to date.
+        setPublicAccess: async () => { throw new Error('Could not update the listing.') },
+        getMetadata: async () => publishedWith('use'),
+      }))
+
+      await click(roleOption(rendered, 'Can use'))
+
+      expect(alerts(rendered)).toEqual(['Could not update the listing.'])
+      expect(button(rendered, CONTROL).textContent).toBe('Can use')
+    })
   })
 })
