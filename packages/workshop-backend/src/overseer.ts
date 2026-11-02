@@ -7447,11 +7447,8 @@ class OverseerImpl implements AgentHooks {
           // before the error or stop, which must stay last for Retry to show.
           if (failure) {
             this.postAgentErrorMessage(chatId, aiModel.profile, failure.message, failure.code);
-          } else if (stopped && this.storage.chatMeta.get(chatId)) {
-            this.storage.chats.put({
-              chatId, sequence: this.nextChatSequence(chatId), timestamp: this.getChatTimestamp(),
-              author: aiModel.profile, type: "agentStopped",
-            });
+          } else if (stopped) {
+            this.addChatMessages(chatId, aiModel.profile, [{type: "agentStopped"}]);
           }
 
           // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
