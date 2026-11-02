@@ -103,8 +103,8 @@ export function summarizeReport(config: string, files: string[], report: JsonObj
   };
 }
 
-/** Runs `files` (repo-relative) under `config` from its package directory. */
-export function runTests(config: string, files: string[]): TestRun {
+/** Runs `files` (repo-relative; none means every file the config includes) under `config` from its package directory. */
+export function runTests(config: string, files: string[], env: NodeJS.ProcessEnv = process.env): TestRun {
   const pkg = packageOf(config);
   if (!pkg) throw new Error(`${config} is not in a package`);
   const dir = mkdtempSync(join(tmpdir(), "automerge-vitest-"));
@@ -113,7 +113,7 @@ export function runTests(config: string, files: string[]): TestRun {
     const result = runCommand("pnpm", [
       "exec", "vitest", "run", "--config", relative(pkg, config), "--reporter=json", `--outputFile=${out}`,
       ...files.map((file) => relative(pkg, file)),
-    ], pkg);
+    ], pkg, env);
     let report: JsonObject;
     try {
       report = asObject(parseJson(readFileSync(out, "utf8")), "vitest report");

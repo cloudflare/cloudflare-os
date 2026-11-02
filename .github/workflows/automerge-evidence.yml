@@ -256,3 +256,68 @@ jobs:
           name: automerge-evidence-consumer-build
           path: automerge-out/automerge-evidence-consumer-build.json
           if-no-files-found: error
+
+  # The head's preview passes the core Workshop flows at desktop and phone sizes. This job holds
+  # the Access token, so it checks out the base: the flows and the producer are the base's, and only
+  # the preview under test is the head's. A base without the producer uploads nothing (absent).
+  preview-e2e:
+    name: Preview end-to-end
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      actions: read
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HAS_ACCESS_TOKEN: ${{ secrets.AUTOMERGE_PREVIEW_E2E_ACCESS_TOKEN != '' }}
+    steps:
+      - name: Check out the base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      # Without the token the producer reports `error` straight away and needs no browser.
+      - name: Install Chromium
+        if: ${{ env.HAS_ACCESS_TOKEN == 'true' && hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
+
+      # The router's preview URL, as preview.yml names it (scripts/preview/staging-config.ts).
+      - name: Find the preview URL
+        id: preview
+        if: ${{ hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
+        env:
+          PREVIEW_NAME: ${{ github.head_ref }}
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
+        run: |
+          url=$(node --input-type=module -e 'import { resolvePreviewName, routerPreviewUrl } from "./scripts/preview/staging-config.ts"; console.log(routerPreviewUrl(resolvePreviewName(), process.env.PREVIEW_WORKERS_DEV_HOST));')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: evidence-preview-e2e
+        if: ${{ hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          E2E_ACCESS_TOKEN: ${{ secrets.AUTOMERGE_PREVIEW_E2E_ACCESS_TOKEN }}
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+        run: node scripts/automerge/evidence/preview-e2e.ts --base-url "$PREVIEW_URL"
+
+      - name: Upload evidence-preview-e2e
+        if: ${{ !cancelled() && hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-evidence-preview-e2e
+          path: automerge-out/automerge-evidence-preview-e2e.json
+          if-no-files-found: error
