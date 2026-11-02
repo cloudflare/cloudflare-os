@@ -13,6 +13,7 @@ import {
   OBSERVER_ATTEMPT_LIFETIME_MS,
   OBSERVER_DENIED,
   OBSERVER_WITHHELD,
+  observerAccessVerifier,
   ObserverTracker,
   openObservers,
   privateObservers,
@@ -66,6 +67,9 @@ function refusal(message = "a collaborator may not see this"): Error {
 }
 
 const someUser = {} as Fetcher<GatekeeperUserVerifier>;
+
+// A fixed ACL verifier, as the overseer hands one to the strategy and the access verifier.
+const user = (value: V) => value as unknown as Fetcher<GatekeeperUserVerifier>;
 
 afterEach(() => void vi.useRealTimers());
 
@@ -817,6 +821,36 @@ describe("ObservationGate", () => {
     expect(authorizeObservation).toHaveBeenCalledWith(description);
   });
 
+  it("hands subresources to the Workshop without tracking them, while recorded history still gates admission", async () => {
+    const authorizeObservation = vi.fn(async () => {});
+    const hasCollectionAccess = vi.fn(async (value: V, collectionIds: readonly string[]) =>
+      collectionIds.map(collectionId => value.allowed.includes(collectionId)));
+    const strategy = trackedCollectionObservers<V>({ kv: makeKv(), hasCollectionAccess });
+    const gate = new ObservationGate(fakeAuthorizer(authorizeObservation), strategy);
+    await gate.authorize(read, { kind: "collections", ids: ["before"] });
+    await strategy.addObserver("x", user(verifier("before")));
+    hasCollectionAccess.mockClear();
+
+    await gate.authorize(read, { kind: "subresources", ids: ["after", "after", "other"] });
+
+    // The Workshop alone checks a converted read: no exclusions, and no oracle call here...
+    expect(authorizeObservation).toHaveBeenLastCalledWith({ ...read, subresources: ["after", "other"] });
+    expect(hasCollectionAccess).not.toHaveBeenCalled();
+    // ...so it narrows no later admission, while the read made before conversion still does.
+    await expect(strategy.addObserver("y", user(verifier("before")))).resolves.toBeUndefined();
+    await expect(strategy.addObserver("z", user(verifier("after", "other")))).rejects.toThrow(OBSERVER_DENIED);
+  });
+
+  it("reports an empty subresource list rather than omitting it, which would make the read legacy", async () => {
+    // Where the strategy checks only at admission, as for a single-ACL binding.
+    const authorizeObservation = vi.fn(async () => {});
+
+    await new ObservationGate(fakeAuthorizer(authorizeObservation), aclObservers({ hasAccess: async () => true }))
+      .authorize(read, { kind: "subresources", ids: [] });
+
+    expect(authorizeObservation).toHaveBeenCalledWith({ ...read, subresources: [] });
+  });
+
   it("refuses collection ids under a strategy that cannot check them", async () => {
     // The hierarchical trap: org-level admission, project-level ACLs. Correctly supplying the
     // project ids used to disclose them with nothing consulted.
@@ -1086,5 +1120,105 @@ describe("ObservationGate", () => {
 
     expect(await gate.getGitCache()).toBe(cache);
     expect(getGitCache).toHaveBeenCalledOnce();
+  });
+});
+
+describe("observerAccessVerifier", () => {
+  const verify = observerAccessVerifier<V>({
+    hasCollectionAccess: async (value, collectionIds) => {
+      value.batches.push(collectionIds);
+      return collectionIds.map(collectionId => value.allowed.includes(collectionId));
+    },
+  });
+
+  it("allows only the observers whose own account can read every subresource", async () => {
+    const both = verifier("a", "b");
+    const one = verifier("a");
+
+    await expect(verify([
+      { id: "both", verifier: user(both) },
+      { id: "one", verifier: user(one) },
+      { id: "reordered", verifier: user(verifier("b", "a")) },
+    ], ["a", "b"])).resolves.toEqual({ allowedObserverIds: ["both", "reordered"] });
+    expect(one.batches).toEqual([["a", "b"]]);
+  });
+
+  it("judges an observer by the verifier each call brings, caching nothing between calls", async () => {
+    await expect(verify([{ id: "x", verifier: user(verifier("a")) }], ["a"]))
+      .resolves.toEqual({ allowedObserverIds: ["x"] });
+    // The same collaborator, back having chosen another account.
+    await expect(verify([{ id: "x", verifier: user(verifier()) }], ["a"]))
+      .resolves.toEqual({ allowedObserverIds: [] });
+  });
+
+  it("grants only on a literal true for every subresource", async () => {
+    // A sparse answer models one that skipped a subresource, which survives V8 serialization.
+    const sparse: boolean[] = [];
+    sparse.length = 2;
+    const answers: unknown[][] = [[true, "yes"], [true, null], sparse];
+    const check = observerAccessVerifier<unknown>({
+      hasCollectionAccess: async () => answers.shift() as boolean[],
+    });
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(check([{ id: "x", verifier: someUser }], ["a", "b"]))
+        .resolves.toEqual({ allowedObserverIds: [] });
+    }
+  });
+
+  it("throws when the verdicts do not line up with the subresources, even with every one true", async () => {
+    // Longer than the question is the worse half: read positionally, it would admit.
+    for (const verdicts of [[true], [true, true, true]]) {
+      const check = observerAccessVerifier<unknown>({ hasCollectionAccess: async () => verdicts });
+      await expect(check([{ id: "x", verifier: someUser }], ["a", "b"])).rejects.toThrow(/different number/);
+    }
+  });
+
+  it("propagates an oracle that cannot tell, rather than only denying that observer", async () => {
+    const failure = new Error("credentials expired");
+    const check = observerAccessVerifier<unknown>({ hasCollectionAccess: async () => { throw failure; } });
+
+    await expect(check([{ id: "x", verifier: someUser }], ["a"])).rejects.toBe(failure);
+  });
+
+  it("refuses to answer for no subresources rather than admitting everyone vacuously", async () => {
+    const hasCollectionAccess = vi.fn(async () => [] as boolean[]);
+
+    await expect(observerAccessVerifier<unknown>({ hasCollectionAccess })([{ id: "x", verifier: someUser }], []))
+      .rejects.toThrow(/no subresources/);
+    expect(hasCollectionAccess).not.toHaveBeenCalled();
+  });
+
+  it("hands each verifier its own copy, so a destructive oracle cannot empty a later question", async () => {
+    const chunking = observerAccessVerifier<V>({
+      concurrency: 1,
+      hasCollectionAccess: async (value, collectionIds) => {
+        const verdicts = collectionIds.map(collectionId => value.allowed.includes(collectionId));
+        (collectionIds as string[]).splice(0);
+        return verdicts;
+      },
+    });
+
+    await expect(chunking([
+      { id: "full", verifier: user(verifier("a", "b")) },
+      { id: "partial", verifier: user(verifier("a")) },
+    ], ["a", "b"])).resolves.toEqual({ allowedObserverIds: ["full"] });
+  });
+
+  it("bounds how many verifiers it asks at once", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const check = observerAccessVerifier<unknown>({
+      concurrency: 2,
+      hasCollectionAccess: async (_verifier, collectionIds) => {
+        peak = Math.max(peak, ++inFlight);
+        await Promise.resolve();
+        inFlight -= 1;
+        return collectionIds.map(() => true);
+      },
+    });
+
+    await check(["a", "b", "c", "d", "e"].map(id => ({ id, verifier: someUser })), ["secret"]);
+    expect(peak).toBe(2);
   });
 });
