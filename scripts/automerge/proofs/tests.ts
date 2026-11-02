@@ -46,7 +46,7 @@ const UNSUPPORTED_CONFIG = /\.(browser|contract|eval|integration)\.config\.ts$/;
 const KILLED = new Set(["Killed", "Timeout"]);
 const STRYKER_CONFIG = "stryker.automerge.json";
 const VITEST_CONFIG = "vitest.automerge.config.ts";
-const REPORT = "reports/automerge-mutation.json";
+const reportPath = (side: "base" | "head") => `reports/automerge-mutation-${side}.json`;
 
 /** The mutants a Stryker JSON report says the tests killed, keyed by place and replacement. */
 export function killedMutants(report: JsonObject): Set<string> {
@@ -211,7 +211,9 @@ async function configFor(packageDir: string, tests: string[], deadline: number):
   return matches[0];
 }
 
-async function runSide(plan: TestsPlan, runner: Runner, config: string, tests: string[], deadline: number): Promise<JsonObject> {
+async function runSide(
+  plan: TestsPlan, runner: Runner, config: string, side: "base" | "head", tests: string[], deadline: number,
+): Promise<JsonObject> {
   const pkg = plan.packageDir;
   const include = tests.filter((path) => RUNNABLE_TEST.test(path)).map((path) => relative(pkg, path));
   writeFileSync(join(pkg, VITEST_CONFIG), [
@@ -230,17 +232,16 @@ async function runSide(plan: TestsPlan, runner: Runner, config: string, tests: s
     ignorePatterns: [RUNNER_DIR],
     mutate: plan.mutate.map((path) => relative(pkg, path)),
     reporters: ["json", "clear-text"],
-    jsonReporter: { fileName: REPORT },
+    jsonReporter: { fileName: reportPath(side) },
     timeoutMS: 60_000,
   }, null, 2));
-  rmSync(join(pkg, REPORT), { force: true });
+  rmSync(join(pkg, reportPath(side)), { force: true });
   await runBounded(runner.stryker, ["run", STRYKER_CONFIG], pkg, deadline);
-  return asObject(parseJson(readFileSync(join(pkg, REPORT), "utf8")), "Stryker report");
+  return asObject(parseJson(readFileSync(join(pkg, reportPath(side)), "utf8")), "Stryker report");
 }
 
 /** Runs both sides of the proof, base tests and head tests, against the same source. */
-async function prove(plan: TestsPlan, scope: { tests: string[] }, from: string, deadline: number): Promise<Outcome> {
-  const details = { package: plan.packageDir, tests: scope.tests, mutate: plan.mutate };
+async function prove(plan: TestsPlan, tests: string[], from: string, deadline: number, details: JsonObject): Promise<Outcome> {
   // Stryker drives vitest directly, which runs none of the test task's codegen (docs/testing.md).
   await runBounded("pnpm", ["build"], ".", deadline);
   let config: string;
@@ -251,15 +252,15 @@ async function prove(plan: TestsPlan, scope: { tests: string[] }, from: string, 
     return errored(error instanceof Error ? error.message : String(error), details);
   }
   const runner = await installRunner(plan.packageDir, deadline);
-  const headReport = await runSide(plan, runner, config, plan.headTests, deadline);
-  for (const path of scope.tests) {
+  const headReport = await runSide(plan, runner, config, "head", plan.headTests, deadline);
+  for (const path of tests) {
     const text = fileAt(from, path);
     if (text === undefined) rmSync(path, { force: true });
     else writeFileSync(path, text);
   }
   // New test files only: the base kills nothing, so there is no base run to make.
   const baseReport = plan.baseTests.some((path) => RUNNABLE_TEST.test(path))
-    ? await runSide(plan, runner, config, plan.baseTests, deadline)
+    ? await runSide(plan, runner, config, "base", plan.baseTests, deadline)
     : { files: {} };
   return evaluateKills(baseReport, headReport, { ...details, config });
 }
@@ -285,7 +286,7 @@ async function main(): Promise<void> {
     const details = { package: plan.packageDir, tests: scope.tests, mutate: plan.mutate, budget_minutes: minutes };
     if (plan.mutate.length === 0) return errored("the changed tests import no source file to mutate", details);
     try {
-      return await prove(plan, scope, from, deadline);
+      return await prove(plan, scope.tests, from, deadline, details);
     } catch (error) {
       if (error instanceof OverBudget) return errored(`ran past the ${minutes}-minute budget: ${error.message}`, details);
       throw error;
