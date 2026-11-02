@@ -22,7 +22,7 @@ import { AddGatewayModelForm } from './AddGatewayModelForm'
 import { GatewayModelRow, MODES } from './GatewayModelRow'
 import { GatewayProviders } from './GatewayProviders'
 import { rpcFailureDescription } from '../../rpcErrors'
-import { PROVIDER_LABELS, REASONING_LEVEL_LABELS } from './modelForm'
+import { PROVIDER_LABELS, REASONING_LEVEL_LABELS, allowedModelSuggestions } from './modelForm'
 import { fetchModelsDev, suggestModels } from './modelsDev'
 import { useGatewayTests } from './useGatewayTests'
 
@@ -270,6 +270,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   }
   const added = gatewayModels.models.filter((model) => model.added)
   const { userModelsEnabled, defaultReasoning } = gatewayModels
+  const poolSuggestions = allowedModelSuggestions(gatewayModels.providers, gatewayModels.models)
   const suggestions = gatewayModels.modelsDevSuggestions
     ? {
         models: suggestModels(
@@ -350,6 +351,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                   model={model}
                   defaultReasoning={defaultReasoning}
                   poolProviders={gatewayModels.providers}
+                  poolSuggestions={poolSuggestions}
                   busy={busy}
                   test={modelTests.tests.get(model.id)}
                   onModeChange={(mode) => requestMode(model, mode)}

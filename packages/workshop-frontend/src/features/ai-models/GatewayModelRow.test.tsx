@@ -15,6 +15,7 @@ import type {
   ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
 import { GatewayModelRow } from './GatewayModelRow'
+import type { AllowedModelSuggestion } from './modelForm'
 import type { GatewayTestState } from './useGatewayTests'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -165,6 +166,7 @@ describe('GatewayModelRow', () => {
     defaultReasoning?: ReasoningLevel | null
     behavesLikeName?: string
     poolProviders?: AiModelProvider[]
+    poolSuggestions?: AllowedModelSuggestion[]
     busy?: boolean
     removable?: boolean
     test?: GatewayTestState
@@ -182,8 +184,8 @@ describe('GatewayModelRow', () => {
     // Shows the row as a re-read of the settings reported it.
     const show = (
       {
-        model, defaultReasoning = null, behavesLikeName, poolProviders, busy = false, removable,
-        test,
+        model, defaultReasoning = null, behavesLikeName, poolProviders, poolSuggestions,
+        busy = false, removable, test,
       }: Shown,
     ) =>
       act(async () => root!.render(
@@ -193,6 +195,7 @@ describe('GatewayModelRow', () => {
             defaultReasoning={defaultReasoning}
             behavesLikeName={behavesLikeName}
             poolProviders={poolProviders}
+            poolSuggestions={poolSuggestions}
             busy={busy}
             test={test}
             onModeChange={onModeChange}
@@ -489,12 +492,33 @@ describe('GatewayModelRow', () => {
       expect(describedBy(field())).toContain('No provider is on for Auto to pick from')
     })
 
-    it('saves the names typed, trimmed and once each, beside the model’s other settings',
-      async () => {
+    // The names staged as chips, in order.
+    const chips = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .map((b) => b.getAttribute('aria-label') ?? '')
+      .filter((label) => label.startsWith('Remove ') && label.endsWith(' from the allowed models of Auto'))
+      .map((label) => label.slice('Remove '.length, -' from the allowed models of Auto'.length))
+    const options = () => {
+      const list = document.getElementById(field().getAttribute('aria-controls') ?? '')
+      return Array.from(list?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
+        .map((option) => option.textContent)
+    }
+    const press = (key: string) => act(async () => {
+      field().dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    })
+    const SUGGESTIONS: AllowedModelSuggestion[] = [
+      { name: 'anthropic/*', description: 'Every Anthropic model' },
+      { name: 'openai/*', description: 'Every OpenAI model' },
+      { name: 'openai/gpt-6-luna', description: 'GPT-6 Luna' },
+    ]
+
+    it('stages names typed with commas, trimmed and once each, and saves them beside the model’s '
+      + 'other settings', async () => {
       const { onSettingsChange, show } = await render({
         model: { ...AUTO, settings: { compactionInputBudget: 100000 } },
       })
       await type(field(), ' anthropic/* ,openai/gpt-6-luna, anthropic/*, ')
+      expect(chips()).toEqual(['anthropic/*', 'openai/gpt-6-luna'])
+      expect(field().value).toBe('')
 
       await click(save())
 
@@ -509,35 +533,74 @@ describe('GatewayModelRow', () => {
           },
         },
       })
-      expect(field().value).toBe('anthropic/*, openai/gpt-6-luna')
+      expect(chips()).toEqual(['anthropic/*', 'openai/gpt-6-luna'])
+    })
+
+    it('suggests the names not yet listed, and adds a typed name exactly', async () => {
+      const { onSettingsChange } = await render({
+        model: { ...AUTO, settings: { allowedModels: ['anthropic/*'] } },
+        poolSuggestions: SUGGESTIONS,
+      })
+      await act(async () => { field().focus() })
+      expect(options()).toEqual([
+        'openai/*Every OpenAI model', 'openai/gpt-6-lunaGPT-6 Luna',
+      ])
+
+      await type(field(), 'luna')
+      expect(options()).toEqual([
+        'openai/gpt-6-lunaGPT-6 Luna', 'Add “luna” exactlyUse the text as a gateway model name',
+      ])
+      await press('Enter')
+      expect(chips()).toEqual(['anthropic/*', 'openai/gpt-6-luna'])
+
+      await type(field(), '@cf/zai-org/glm-5.2')
+      expect(options()).toEqual(['Add “@cf/zai-org/glm-5.2” exactly'
+        + 'Use the text as a gateway model name'])
+      await press('Enter')
+      // Backspace in an empty field takes back the last name staged.
+      await press('Backspace')
+      await type(field(), 'openai/*')
+      await press('Enter')
+
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+        { allowedModels: ['anthropic/*', 'openai/gpt-6-luna', 'openai/*'] })
     })
 
     it('refuses a name that is no gateway model name without sending it, and points at the field',
       async () => {
         const { onSettingsChange } = await render({ model: AUTO })
         await type(field(), 'anthropic/*, claude opus')
+        expect(chips()).toEqual(['anthropic/*'])
 
         await click(save())
 
         expect(onSettingsChange).not.toHaveBeenCalled()
+        expect(field().value).toBe('claude opus')
         expect(field().getAttribute('aria-invalid')).toBe('true')
         expect(describedBy(field())).toContain('“claude opus” is not a gateway model name')
         expect(document.activeElement).toBe(field())
+
+        // A correction clears the refusal.
+        await type(field(), 'anthropic/claude-opus-5.5')
+        expect(field().getAttribute('aria-invalid')).toBe('false')
       })
 
-    it('unsets the list when a blank field is saved, or Reset is pressed', async () => {
+    it('unsets the list when every name is removed and saved, or Reset is pressed', async () => {
       const held = { ...AUTO, settings: { allowedModels: ['anthropic/*'] } }
       const { onSettingsChange } = await render({ model: held })
-      await type(field(), '  ')
+      await click(button('Remove anthropic/* from the allowed models of Auto'))
+      expect(chips()).toEqual([])
+      expect(document.activeElement).toBe(field())
       await click(save())
       expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
 
       onSettingsChange.mockClear()
-      await type(field(), 'openai/*')
+      await type(field(), 'openai/*,')
       await click(button('Reset the allowed models of Auto'))
       expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
       expect(document.activeElement).toBe(field())
-      expect(field().value).toBe('anthropic/*')
+      expect(chips()).toEqual(['anthropic/*'])
     })
 
     it('sends nothing when the list the model has is saved again', async () => {
