@@ -152,6 +152,7 @@ export { ChatHookController, ChatHookDriver } from "./chat-hooks";
 export { GmailHookController, GmailHookDriver } from "./gmail-hooks";
 export { GoogleSheetsGatekeeperImpl } from "./sheets";
 export { GoogleSlidesGatekeeperImpl } from "./slides";
+import type { HookDriverRef } from "./hook-accounts";
 import { handlePubSubPush, type PushHooksEnv } from "./pubsub-push";
 
 // Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
@@ -429,11 +430,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 }
 
-/**
- * A hook driver holding some of an account's hooks, which the account tells to drop them when it
- * is disconnected: Gmail's per mailbox, Chat's per space.
- */
-export type HookDriverRef = { kind: "gmail" | "chat"; name: string };
+export type { HookDriverRef };
 
 /** What a reconnect flow obtains, held in escrow until commitReconnect() writes it live. */
 type StagedGoogleCredentials = {
