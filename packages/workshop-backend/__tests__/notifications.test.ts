@@ -362,16 +362,18 @@ describe("UserDurableObject notifications", () => {
   });
 
   // A user's loop over any of these would otherwise heat the installation's shared central records.
-  it("refuses every device method past 20 calls a minute between them, contacting nothing", async () => {
+  it("refuses every device method past 20 calls a minute between them, contacting nothing, while deliveries still go out",
+      async () => {
     vi.useFakeTimers();
     let fetcher = stubService();
     await inUser(async user => {
       for (let i = 0; i < 19; i++) await user.registerNotificationDevice("a".repeat(64));
       await user.authorizeNotificationDevice();
       fetcher.mockClear();
-      await expect(user.authorizeNotificationDevice()).rejects.toThrow();
-      await expect(user.registerNotificationDevice("b".repeat(64))).rejects.toThrow();
-      await expect(user.registerAuthorizedNotificationDevice("c".repeat(64))).rejects.toThrow();
+      await expect(user.authorizeNotificationDevice()).rejects.toThrow("Too many");
+      await expect(user.registerNotificationDevice("b".repeat(64))).rejects.toThrow("Too many");
+      await expect(user.registerAuthorizedNotificationDevice("c".repeat(64)))
+          .rejects.toThrow("Too many");
       expect(fetcher).not.toHaveBeenCalled();
       await user.publishNotification(NOTIFICATION);
     });
@@ -383,7 +385,7 @@ describe("UserDurableObject notifications", () => {
     let fetcher = stubService();
     await inUser(async user => {
       for (let i = 0; i < 20; i++) await user.registerNotificationDevice("a".repeat(64));
-      await expect(user.registerNotificationDevice("a".repeat(64))).rejects.toThrow();
+      await expect(user.registerNotificationDevice("a".repeat(64))).rejects.toThrow("Too many");
       vi.advanceTimersByTime(60_000);
       await user.registerNotificationDevice("b".repeat(64));
     });

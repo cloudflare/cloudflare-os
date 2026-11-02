@@ -64,10 +64,12 @@ Data boundaries:
 - A browser's Web Push endpoint and keys pass through the User DO to the service with that DO's
   opaque subject; the installation stores only the subscription id the service returns for them.
 
-Each User DO accepts at most 20 calls a minute between `authorizeNotificationDevice`,
-`registerNotificationDevice` and `registerAuthorizedNotificationDevice`, native and browser alike,
-and refuses the rest before signing anything: every such call is a signed request that touches
-records at the central service the whole installation shares, so one user's loop would make them hot.
+`authorizeNotificationDevice`, `registerNotificationDevice` and
+`registerAuthorizedNotificationDevice` share one limit per User DO, native and browser alike: 20
+calls per fixed minute-long window, which opens at the first call after the previous window ends.
+Calls past 20 are refused until the window ends, before anything is signed: every such call is a
+signed request that touches records at the central service the whole installation shares, so one
+user's loop would make them hot.
 
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting
