@@ -1,14 +1,21 @@
 name: Risk review trigger
 
-# Relays review events to risk-review.yml, which re-evaluates the pull request from the base branch
-# through `workflow_run`. This file runs as the pull request's copy, so it holds no permissions and
-# does nothing, and a pull request can change or delete it. Then an approval never refreshes the
-# status, which fails closed, but neither does a revoked one, which does not: the ruleset's one
-# required approving review is the backstop, since the app never approves a medium- or high-risk
-# change and GitHub itself blocks a merge on an outstanding change request. Keep that rule.
+# Relays pull request, review and review-comment events to risk-review.yml, which decides again from
+# the default branch through `workflow_run`. These events run the pull request's own copy of this
+# file, so it holds no permissions and does nothing, and a pull request can change or delete it.
+# A pull request that breaks it leaves its check stale until a producer run or a maintainer comment
+# wakes the gate, and a revoked approval or a new review hold may not refresh it at all. The merge
+# group backstops that: the gate decides every queued pull request again, from current reviews,
+# comments and base policy, before it merges.
 on:
+  pull_request:
+    branches: [main]
+    # `edited` covers a new base, `assigned` and `unassigned` the director of an agent's pull request.
+    types: [opened, synchronize, reopened, ready_for_review, edited, assigned, unassigned]
   pull_request_review:
-    types: [submitted, dismissed]
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, deleted]
 
 permissions: {}
 
@@ -18,4 +25,4 @@ jobs:
     timeout-minutes: 1
     steps:
       - name: Hand off to Risk review
-        run: echo "risk-review.yml re-evaluates this pull request."
+        run: echo "risk-review.yml decides this pull request again."

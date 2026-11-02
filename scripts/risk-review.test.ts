@@ -1,691 +1,709 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
+import { PRODUCERS, type Artifact, type WorkflowRun } from "./risk-review-contract.ts";
+import { BASE, HEAD, proofJson, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
 import {
-  askClef,
-  authorizeRiskReview,
-  buildClefState,
-  classifyChangeset,
-  evaluateGate,
-  pathFloor,
+  CLOSED_BANDS,
+  MAX_DECISION_CHARS,
+  POLICY_FILES,
+  decide,
+  mergeGroupPulls,
+  parseBands,
+  renderOutput,
   runRiskReview,
-  tallyReviews,
   type ActionsContext,
   type ActionsCore,
-  type ChangedFile,
-  type ClefVerdict,
+  type Comment,
+  type DecisionRecord,
   type GitHubClient,
+  type Policy,
+  type PullInputs,
+  type PullRequest,
   type Review,
-  type RiskPullRequest,
 } from "./risk-review.ts";
+import { parseMaintainers, type ChangedFile, type Json } from "./risk-review-policy.ts";
 
-const workflow = readFileSync(new URL("../.github/workflows/risk-review.yml", import.meta.url), "utf8");
-const triggerWorkflow = readFileSync(
-  new URL("../.github/workflows/risk-review-trigger.yml", import.meta.url),
-  "utf8",
-);
+const ROOT = new URL("../", import.meta.url);
+const read = (path: string) => readFileSync(new URL(path, ROOT), "utf8");
+const fixture = (name: string): Json => JSON.parse(read(`scripts/risk-review-fixtures/${name}`));
 
-const HEAD = "a".repeat(40);
-const OLD = "b".repeat(40);
-const lowVerdict: ClefVerdict = { probabilities: { low: 0.9, medium: 0.08, high: 0.02 }, steering: 0 };
+const NOW = new Date("2026-11-02T12:00:00Z");
+const PUSHED = "2026-11-02T10:00:00Z";
+const POLICY_SHA = "f".repeat(40);
+const APP = { id: 4242, login: "risk-review[bot]" };
+const MAINTAINERS = "ndisidore\nMaximo-Guk\nAshishKumar4\nmaxwellpeterson\ndcartertwo\nkentonv\nderegtd\nFBalint\n";
+const FINGERPRINT = { model: "openai/gpt-6.1-sol", opencode: "1.18.33", review_md: "d".repeat(40), prompt: "e".repeat(64) };
+const NO_ESCAPES = JSON.stringify({ schema: 1, window_days: 90, files: [] });
 
-function verdict(low: number, medium: number, high: number, steering = 0): ClefVerdict {
-  return { probabilities: { low, medium, high }, steering };
+function bandsJson(mode: "shadow" | "enforce", appApprovalsCount: boolean, open: { area: string; band: string; evidence?: string[] }[]): string {
+  const bands = JSON.parse(read(POLICY_FILES.bands));
+  bands.mode = mode;
+  bands.app_approvals_count = appApprovalsCount;
+  for (const { area, band, evidence = [] } of open) {
+    bands.areas[area][band] = {
+      open: true,
+      threshold: area === "proven" ? null : 7,
+      reviewer_fingerprint: area === "proven" ? null : { sol: FINGERPRINT, opus: FINGERPRINT },
+      evidence,
+    };
+  }
+  return JSON.stringify(bands);
 }
 
 function file(filename: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
+  return { filename, status: "modified", additions: 3, deletions: 1, changes: 4, patch: "@@ -1 +1 @@\n-a\n+b", ...overrides };
+}
+
+function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
   return {
-    filename,
-    status: "modified",
-    additions: 1,
-    deletions: 1,
-    changes: 2,
-    patch: "@@ -1 +1 @@\n-a\n+b",
+    number: 7,
+    node_id: "PR_kwDOSA1",
+    state: "open",
+    draft: false,
+    user: { login: "kentonv", type: "User" },
+    assignees: [],
+    head: { sha: HEAD },
+    base: { sha: BASE, ref: "main" },
+    changed_files: 1,
     ...overrides,
   };
 }
 
-let reviewIds = 0;
-
-function review(login: string, state: string, commit = HEAD, type = "User"): Review {
-  return { id: ++reviewIds, user: { login, type }, state, commit_id: commit };
+let ids = 0;
+function review(login: string, state: string, overrides: Partial<Review> = {}): Review {
+  return { id: ++ids, user: { login, type: "User" }, state, commit_id: HEAD, submitted_at: "2026-11-02T11:00:00Z", ...overrides };
 }
 
-const APP = "risk-review[bot]";
-
-describe("pathFloor", () => {
-  it("puts all of workshop-backend, the gate itself and the security chokepoints at high", () => {
-    for (const path of [
-      "packages/workshop-backend/src/overseer.ts",
-      "packages/workshop-backend/__tests__/user.test.ts",
-      "packages/workshop-backend/README.md",
-      ".github/workflows/risk-review.yml",
-      "scripts/risk-review.ts",
-      "scripts/release/manifest-lib.ts",
-      "packages/workshop-shared/src/api.ts",
-      "packages/mcp-shared/src/tools.ts",
-      "packages/workshop-frontend/src/routes/connect.handoff.tsx",
-    ]) {
-      assert.equal(pathFloor(path), "high", path);
-    }
-  });
-
-  it("puts shared code, gatekeepers, dependencies and worker config at medium", () => {
-    for (const path of [
-      "packages/workshop-shared/src/blueprints.ts",
-      "packages/gatekeeper-github/src/index.ts",
-      "packages/router/src/index.ts",
-      "packages/workshop-frontend/package.json",
-      "pnpm-lock.yaml",
-      "packages/router/wrangler.jsonc",
-      "scripts/worker-config.ts",
-      "scripts/preview/preview.ts",
-      "vite.config.ts",
-      "packages/workshop-frontend/vite.config.ts",
-      "packages/bundled-blueprints/blueprints/notes/blueprint.json",
-      "packages/configurator-ui/build/frame.ts",
-    ]) {
-      assert.equal(pathFloor(path), "medium", path);
-    }
-  });
-
-  it("puts the instructions the AI reviewer follows at medium", () => {
-    for (const path of [
-      "REVIEW.md",
-      "AGENTS.md",
-      "packages/ui/AGENTS.md",
-      ".agents/skills/write-gatekeeper/SKILL.md",
-    ]) {
-      assert.equal(pathFloor(path), "medium", path);
-    }
-  });
-
-  it("matches across dot-segments, which matchesGlob alone skips", () => {
-    assert.equal(pathFloor("packages/workshop-backend/src/.internal/x.ts"), "high");
-    assert.equal(pathFloor("packages/workshop-backend/.dev.vars"), "high");
-    assert.equal(pathFloor("packages/gatekeeper-x/src/.hidden.ts"), "medium");
-    assert.equal(pathFloor("packages/x/.config/package.json"), "medium");
-    assert.equal(pathFloor("packages/workshop-backend"), "low");
-    assert.equal(pathFloor("packages/workshop-backend-old/src/x.ts"), "low");
-  });
-
-  it("leaves docs, other tests and the frontend to the classifier", () => {
-    for (const path of [
-      "docs/testing.md",
-      "README.md",
-      "packages/gatekeeper-github/__tests__/index.test.ts",
-      "packages/workshop-frontend/src/App.tsx",
-      "packages/workshop-frontend/src/routes/connect.tsx",
-    ]) {
-      assert.equal(pathFloor(path), "low", path);
-    }
-  });
-});
-
-describe("buildClefState", () => {
-  it("shows where a renamed file came from", () => {
-    const { state } = buildClefState([
-      file("docs/preview.yml", { status: "renamed", previous_filename: ".github/workflows/preview.yml" }),
-    ]);
-    assert.match(state, /^--- \.github\/workflows\/preview\.yml → docs\/preview\.yml \(renamed/);
-  });
-
-  it("puts higher-floor files first", () => {
-    const { state, complete } = buildClefState([
-      file("docs/a.md"),
-      file("packages/router/src/index.ts"),
-      file("packages/workshop-shared/src/api.ts"),
-    ]);
-    assert.ok(state.indexOf("api.ts") < state.indexOf("router"));
-    assert.ok(state.indexOf("router") < state.indexOf("docs/a.md"));
-    assert.equal(complete, true);
-  });
-
-  it("treats a text diff the API did not inline as unseen, but not a binary file", () => {
-    assert.equal(buildClefState([file("icon.png", { patch: undefined, changes: 0 })]).complete, true);
-    assert.equal(buildClefState([file("big.ts", { patch: undefined, changes: 9000 })]).complete, false);
-  });
-
-  it("measures the limit in bytes, which bound tokens where characters do not", () => {
-    // 100,000 digits are 100,000 tokens to a tokenizer that splits digits.
-    assert.equal(buildClefState([file("docs/digits.md", { patch: "1".repeat(100_000) })]).complete, false);
-    // 20,000 characters, but 80,000 UTF-8 bytes.
-    assert.equal(buildClefState([file("docs/emoji.md", { patch: "😀".repeat(20_000) })]).complete, false);
-    assert.equal(buildClefState([file("docs/small.md", { patch: "x".repeat(60_000) })]).complete, true);
-  });
-
-  it("stops at the size limit and reports the rest unseen", () => {
-    const huge = file("docs/huge.md", { patch: "x".repeat(70_000) });
-    const { state, complete } = buildClefState([file("docs/a.md"), huge]);
-    assert.ok(!state.includes("huge.md"));
-    assert.equal(complete, false);
-  });
-});
-
-function classify(overrides: Partial<Parameters<typeof classifyChangeset>[0]>) {
-  return classifyChangeset({ files: [file("docs/a.md")], complete: true, clef: lowVerdict, ...overrides });
-}
-
-describe("classifyChangeset", () => {
-  it("rates a confidently low change low", () => {
-    assert.deepEqual(classify({}), { tier: "low", reasons: [] });
-  });
-
-  it("lets Clef raise the tier but never lower a path floor", () => {
-    assert.equal(classify({ files: [file("packages/workshop-backend/src/user.ts")] }).tier, "high");
-    assert.equal(classify({ files: [file("packages/gatekeeper-x/src/index.ts")] }).tier, "medium");
-    assert.equal(
-      classify({ files: [file("packages/gatekeeper-x/src/index.ts")], clef: verdict(0.1, 0.2, 0.7) }).tier,
-      "high",
-    );
-  });
-
-  it("escalates when Clef is unsure", () => {
-    assert.equal(classify({ clef: verdict(0.65, 0.25, 0.1) }).tier, "medium");
-    assert.equal(classify({ clef: verdict(0.5, 0.2, 0.3) }).tier, "high");
-    assert.equal(classify({ clef: verdict(0.71, 0.2, 0.09) }).tier, "low");
-  });
-
-  it("needs a human when the classifier did not see the whole change", () => {
-    assert.equal(classify({ complete: false }).tier, "medium");
-    // Unlisted files' paths went unchecked, so they could be anything.
-    assert.equal(classify({ listed: false }).tier, "high");
-    assert.equal(classify({ clef: { error: "HTTP 500" } }).tier, "medium");
-  });
-
-  it("rates a diff that addresses the classifier high", () => {
-    assert.equal(classify({ clef: verdict(1, 0, 0, 0.8) }).tier, "high");
-  });
-
-  it("rates a rename out of a high-risk path high", () => {
-    const rename = file("docs/preview.yml", {
-      status: "renamed",
-      previous_filename: ".github/workflows/preview.yml",
-      additions: 0,
-      deletions: 0,
-      changes: 0,
-      patch: undefined,
-    });
-    const { tier, reasons } = classify({ files: [rename], complete: buildClefState([rename]).complete });
-    assert.equal(tier, "high");
-    assert.match(reasons[0], /^high: .*\.github\/workflows\/preview\.yml → docs\/preview\.yml/);
-  });
-
-  it("names the files behind a floor", () => {
-    const { reasons } = classify({ files: [file("packages/workshop-shared/src/api.ts")] });
-    assert.match(reasons[0], /^high: .*packages\/workshop-shared\/src\/api\.ts/);
-  });
-});
-
-describe("tallyReviews", () => {
-  const maintainers = new Set(["alice", "bob", "carol", "author"]);
-  const tally = (reviews: Review[]) => tallyReviews(reviews, { headSha: HEAD, author: "author", maintainers });
-
-  it("counts only approvals of the head commit", () => {
-    assert.deepEqual(tally([review("alice", "APPROVED"), review("bob", "APPROVED", OLD)]).approvers, ["alice"]);
-  });
-
-  it("ignores bots, the author, and reviewers without write access", () => {
-    const { approvers } = tally([
-      review("bonk[bot]", "APPROVED", HEAD, "Bot"),
-      review("author", "APPROVED"),
-      review("outsider", "APPROVED"),
-    ]);
-    assert.deepEqual(approvers, []);
-  });
-
-  it("uses each reviewer's latest decisive review", () => {
-    assert.deepEqual(tally([review("alice", "CHANGES_REQUESTED", OLD), review("alice", "APPROVED")]), {
-      approvers: ["alice"],
-      blockers: [],
-    });
-    assert.deepEqual(
-      tally([review("alice", "APPROVED"), review("alice", "COMMENTED"), review("alice", "DISMISSED")]),
-      { approvers: [], blockers: [] },
-    );
-    assert.deepEqual(tally([review("bob", "CHANGES_REQUESTED", OLD)]).blockers, ["bob"]);
-  });
-});
-
-function gate(overrides: Partial<Parameters<typeof evaluateGate>[0]>) {
-  return evaluateGate({ tier: "low", approvers: [], blockers: [], directors: undefined, headSha: HEAD, ...overrides });
-}
-
-describe("evaluateGate", () => {
-  it("passes low risk with no approvals", () => {
-    assert.deepEqual(gate({}), { state: "success", description: "low risk: approved on automated review" });
-  });
-
-  it("requires one approval for medium and for high risk", () => {
-    assert.deepEqual(gate({ tier: "medium" }), {
-      state: "failure",
-      description: "medium risk: needs a maintainer's approval of aaaaaaa",
-    });
-    assert.equal(gate({ tier: "medium", approvers: ["alice"] }).state, "success");
-    assert.deepEqual(gate({ tier: "high" }), {
-      state: "failure",
-      description: "high risk: needs a maintainer's approval of aaaaaaa",
-    });
-    assert.deepEqual(gate({ tier: "high", approvers: ["alice"] }), {
-      state: "success",
-      description: "high risk: approved by @alice",
-    });
-  });
-
-  it("blocks on an outstanding change request", () => {
-    assert.equal(gate({ approvers: ["alice"], blockers: ["bob"] }).description, "Changes requested by @bob");
-  });
-
-  it("requires the director of an agent's pull request to approve it, even at low risk", () => {
-    assert.match(gate({ approvers: ["alice"], directors: [] }).description, /Assign/);
-    assert.equal(gate({ directors: ["dave"] }).state, "failure");
-    assert.equal(gate({ approvers: ["alice"], directors: ["dave"] }).state, "failure");
-    assert.equal(gate({ approvers: ["dave"], directors: ["dave"] }).state, "success");
-  });
-});
-
-describe("askClef", () => {
-  const config = { accountId: "acct", apiToken: "token", gatewayId: "gw" };
-
-  it("reads the verdict out of the REST API's result wrapper", async () => {
-    let request: { url: string; init?: RequestInit } | undefined;
-    const answer = await askClef("diff", config, async (url, init) => {
-      request = { url: String(url), init };
-      return Response.json({
-        result: {
-          answers: {
-            tier: { type: "choice", choice: "low", probabilities: { low: 0.9, medium: 0.1, high: 0 } },
-            steering: { type: "noul", noul: 0.01 },
-          },
-        },
-      });
-    });
-
-    assert.deepEqual(answer, { probabilities: { low: 0.9, medium: 0.1, high: 0 }, steering: 0.01 });
-    assert.ok(request);
-    assert.equal(request.url, "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
-    const headers = request.init?.headers as Record<string, string> | undefined;
-    assert.equal(headers?.["cf-aig-gateway-id"], "gw");
-    assert.equal(JSON.parse(String(request.init?.body)).model, "clef");
-  });
-
-  it("turns every failure into an error verdict", async () => {
-    assert.deepEqual(await askClef("diff", {}), { error: "Workers AI credentials are not configured" });
-    assert.deepEqual(await askClef("diff", config, async () => new Response("", { status: 403 })), {
-      error: "HTTP 403",
-    });
-    for (const answers of [
-      {},
-      { tier: { probabilities: {} }, steering: { noul: 0 } },
-      { tier: { probabilities: [0.9, 0.1, 0] }, steering: { noul: 0 } },
-      { tier: { probabilities: { low: 0.9, medium: 0.1 } }, steering: { noul: 0 } },
-      { tier: { probabilities: { low: 0.9, medium: "0.1", high: 0 } }, steering: { noul: 0 } },
-      { tier: { probabilities: { low: 0.9, medium: 0.1, high: 1.5 } }, steering: { noul: 0 } },
-      { tier: { probabilities: { low: 0.9, medium: 0.1, high: 0 } }, steering: { noul: Number.NaN } },
-    ]) {
-      assert.deepEqual(
-        await askClef("diff", config, async () => Response.json({ result: { answers } })),
-        { error: "unexpected response shape" },
-        JSON.stringify(answers),
-      );
-    }
-    assert.deepEqual(
-      await askClef("diff", config, async () => {
-        throw new TypeError("fetch failed");
-      }),
-      { error: "TypeError" },
-    );
-  });
-});
-
-async function clefAnswers() {
-  return Response.json({
-    result: {
-      answers: { tier: { probabilities: { low: 0.95, medium: 0.04, high: 0.01 } }, steering: { noul: 0 } },
-    },
-  });
-}
-
-interface RecordedStatus {
-  sha: string;
-  state: string;
-  description: string;
-  context: string;
-  target_url: string;
-}
-
-function harness({
-  pullRequest = {},
-  files = [file("docs/a.md")],
-  reviews = [],
-  permissions = {},
-  payload = { pull_request: { number: 7 } },
-}: {
-  pullRequest?: Partial<RiskPullRequest> | null;
-  files?: ChangedFile[];
-  reviews?: Review[];
-  permissions?: Record<string, string>;
-  payload?: Omit<ActionsContext["payload"], "repository">;
-}) {
-  const statuses: RecordedStatus[] = [];
-  const reviewCalls: { call: string; commit_id?: string; review_id?: number; body?: string }[] = [];
-  const listed: unknown[] = [];
-  const outputs: Record<string, string> = {};
-  const routes = { list: Symbol("list"), listFiles: Symbol("listFiles"), listReviews: Symbol("listReviews") };
-  const pull: RiskPullRequest = {
-    number: 7,
-    state: pullRequest === null ? "closed" : "open",
-    user: { login: "author", type: "User" },
-    assignees: [],
-    head: { sha: HEAD },
-    base: { ref: "main" },
-    changed_files: files.length,
-    ...pullRequest,
+function run(path: string, overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    id: ++ids,
+    event: "pull_request",
+    path,
+    head_sha: HEAD,
+    head_branch: "kenton/topic",
+    head_repository: { full_name: "cloudflare/cloudflare-os" },
+    status: "completed",
+    conclusion: "success",
+    created_at: "2026-11-02T10:01:00Z",
+    run_started_at: "2026-11-02T10:01:00Z",
+    ...overrides,
   };
+}
+
+/** A run of a producer workflow with one artifact per entry. */
+interface ProducerRun {
+  run: WorkflowRun;
+  artifacts: Record<string, string>;
+}
+
+function verdicts(overrides: { sol?: Record<string, Json | undefined>; opus?: Record<string, Json | undefined> } = {}): ProducerRun {
+  return {
+    run: run(PRODUCERS.sol.workflow),
+    artifacts: {
+      "automerge-sol": verdictJson({ name: "sol", fingerprint: FINGERPRINT, ...overrides.sol }),
+      "automerge-opus": verdictJson({ name: "opus", fingerprint: FINGERPRINT, ...overrides.opus }),
+    },
+  };
+}
+
+/** What the gate did through the fake client. */
+interface Calls {
+  checks: { id: number; sha: string }[];
+  updates: { id: number; conclusion: string; summary: string; title: string }[];
+  approvals: string[];
+  dismissals: number[];
+  enqueued: { id: string | number | undefined; head: string | number | undefined }[];
+}
+
+function notFound(): Error {
+  return Object.assign(new Error("Not Found"), { status: 404 });
+}
+
+function page<T>(items: T[], { page: number, per_page }: { page: number; per_page: number }): { data: T[] } {
+  return { data: items.slice((number - 1) * per_page, number * per_page) };
+}
+
+interface HarnessOptions {
+  pulls?: PullRequest[];
+  files?: Record<number, ChangedFile[]>;
+  reviews?: Record<number, Review[]>;
+  comments?: Record<number, Comment[]>;
+  reviewDecision?: Record<number, string | null>;
+  runs?: ProducerRun[];
+  repoArtifacts?: Record<string, { artifact: Artifact; run: WorkflowRun }[]>;
+  policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
+  contents?: Record<string, string>;
+  lastPush?: string | undefined;
+  mergeQueue?: Json;
+  /** Check runs another run created on the commit after this one, to test the takeover check. */
+  newerCheckRun?: boolean;
+}
+
+function harness(options: HarnessOptions = {}) {
+  const pulls = new Map((options.pulls ?? [pullRequest()]).map((pull) => [pull.number, pull]));
+  const policy = { maintainers: MAINTAINERS, bands: read(POLICY_FILES.bands), escapes: NO_ESCAPES, ...options.policy };
+  const contents = new Map(Object.entries({
+    [`${POLICY_SHA}:${POLICY_FILES.maintainers}`]: policy.maintainers,
+    [`${POLICY_SHA}:${POLICY_FILES.bands}`]: policy.bands,
+    [`${POLICY_SHA}:${POLICY_FILES.escapes}`]: policy.escapes,
+    ...options.contents,
+  }));
+  const runs = options.runs ?? [];
+  const artifacts = new Map<number, Artifact[]>();
+  const zips = new Map<number, Uint8Array>();
+  for (const { run: producerRun, artifacts: files } of runs) {
+    artifacts.set(producerRun.id, Object.entries(files).map(([name, text]) => {
+      const id = ++ids;
+      zips.set(id, zip({ [`${name.replace(/-[0-9a-f]{40}$/, "")}.json`]: text }));
+      return { id, name, size_in_bytes: text.length, expired: false, created_at: "2026-11-02T10:05:00Z", workflow_run: { id: producerRun.id } };
+    }));
+  }
+  const calls: Calls = { checks: [], updates: [], approvals: [], dismissals: [], enqueued: [] };
+
   const github: GitHubClient = {
     rest: {
       pulls: {
-        get: async () => ({ data: pull }),
-        createReview: async ({ commit_id, event, body }) => {
-          reviewCalls.push({ call: event, commit_id, body });
+        get: async ({ pull_number }) => {
+          const pull = pulls.get(pull_number);
+          if (!pull) throw notFound();
+          return { data: pull };
+        },
+        list: async ({ head }) => ({ data: [...pulls.values()].filter(() => head.endsWith(":kenton/topic") || head.endsWith(":chore/classify-changsets")) }),
+        listFiles: async (args) => page(options.files?.[args.pull_number] ?? [file("docs/automerge.md")], args),
+        listReviews: async (args) => page(options.reviews?.[args.pull_number] ?? [], args),
+        listReviewComments: async (args) => page([], args),
+        createReview: async ({ commit_id }) => {
+          calls.approvals.push(commit_id);
+          return {};
         },
         dismissReview: async ({ review_id }) => {
-          reviewCalls.push({ call: "DISMISS", review_id });
+          calls.dismissals.push(review_id);
+          return {};
         },
-        ...routes,
+      },
+      issues: {
+        listComments: async (args) => page(options.comments?.[args.issue_number] ?? [], args),
       },
       repos: {
-        getCollaboratorPermissionLevel: async ({ username }) => ({
-          data: { permission: permissions[username] ?? "read" },
-        }),
-        createCommitStatus: async (status) => {
-          statuses.push(status);
+        getContent: async ({ path, ref }) => {
+          const text = contents.get(`${ref}:${path}`);
+          if (text === undefined) throw notFound();
+          return { data: { type: "file", encoding: "base64", content: Buffer.from(text).toString("base64") } };
         },
-        // The latest status per context, as GitHub combines them.
-        getCombinedStatusForRef: async ({ ref }) => ({
-          data: { statuses: statuses.filter(({ sha }) => sha === ref).slice(-1) },
+        compareCommitsWithBasehead: async ({ basehead }) => ({ data: { merge_base_commit: { sha: basehead.split("...")[0] ?? "" } } }),
+        listPullRequestsAssociatedWithCommit: async ({ commit_sha }) =>
+          ({ data: [...pulls.values()].filter((pull) => pull.head.sha === commit_sha) }),
+      },
+      checks: {
+        create: async ({ head_sha }) => {
+          const id = ++ids;
+          calls.checks.push({ id, sha: head_sha });
+          return { data: { id } };
+        },
+        update: async ({ check_run_id, conclusion, output }) => {
+          calls.updates.push({ id: check_run_id, conclusion, ...output });
+          return {};
+        },
+        listForRef: async ({ ref }) => ({
+          data: {
+            check_runs: [
+              ...calls.checks.filter(({ sha }) => sha === ref),
+              ...(options.newerCheckRun ? [{ id: Number.MAX_SAFE_INTEGER }] : []),
+            ],
+          },
         }),
+        listSuitesForRef: async () => {
+          const created = "lastPush" in options ? options.lastPush : PUSHED;
+          const suites = created === undefined ? [] : [{ created_at: created }, { created_at: "2026-11-02T10:30:00Z" }];
+          return { data: { total_count: suites.length, check_suites: suites } };
+        },
+      },
+      actions: {
+        listWorkflowRuns: async ({ workflow_id, head_sha, event }) => {
+          const matching = runs.map(({ run: r }) => r).filter((r) => r.path.endsWith(`/${workflow_id}`) && r.head_sha === head_sha && r.event === event);
+          return { data: { total_count: matching.length, workflow_runs: matching } };
+        },
+        getWorkflowRun: async ({ run_id }) => {
+          const found = runs.find(({ run: r }) => r.id === run_id) ??
+            Object.values(options.repoArtifacts ?? {}).flat().find(({ run: r }) => r.id === run_id);
+          if (!found) throw notFound();
+          return { data: found.run };
+        },
+        listWorkflowRunArtifacts: async ({ run_id, name }) =>
+          ({ data: { artifacts: (artifacts.get(run_id) ?? []).filter((a) => name === undefined || a.name === name) } }),
+        listArtifactsForRepo: async ({ name }) => ({ data: { artifacts: (options.repoArtifacts?.[name] ?? []).map(({ artifact }) => artifact) } }),
+        downloadArtifact: async ({ artifact_id }) => {
+          const bytes = zips.get(artifact_id);
+          if (!bytes) throw notFound();
+          return { data: bytes.slice().buffer };
+        },
       },
     },
-    paginate: async <T>(route: unknown, args: unknown) => {
-      if (route === routes.list) listed.push(args);
-      const results = { [routes.list]: [pull], [routes.listFiles]: files, [routes.listReviews]: reviews };
-      return (results[route as symbol] ?? []) as T[];
+    graphql: async (query, variables): Promise<Json> => {
+      if (query.includes("enqueuePullRequest")) {
+        calls.enqueued.push({ id: variables.id, head: variables.head });
+        return { enqueuePullRequest: { mergeQueueEntry: { id: "MQE_1" } } };
+      }
+      if (query.includes("mergeQueue(")) return options.mergeQueue ?? null;
+      const number = Number(variables.number);
+      const decision = options.reviewDecision?.[number];
+      return { repository: { pullRequest: { reviewDecision: decision === undefined ? "REVIEW_REQUIRED" : decision, mergeQueueEntry: null } } };
     },
-  };
-  const summary: ActionsCore["summary"] = {
-    addHeading: () => summary,
-    addList: () => summary,
-    write: async () => undefined,
   };
   const core: ActionsCore = {
     notice: () => {},
-    setOutput: (name, value) => {
-      outputs[name] = value;
-    },
-    summary,
+    summary: { addRaw: () => core.summary, write: async () => ({}) },
   };
-  const contextFor = (runId: number): ActionsContext => ({
-    repo: { owner: "cloudflare", repo: "cloudflare-os" },
-    serverUrl: "https://github.com",
-    runId,
-    payload: { repository: { default_branch: "main" }, ...payload },
-  });
-  const authorize = (runId = 1) =>
-    authorizeRiskReview({ github, context: contextFor(runId), core, approver: APP });
-  const evaluate = (runId = 1) =>
-    runRiskReview({
-      github,
-      context: contextFor(runId),
-      core,
-      clef: { accountId: "a", apiToken: "t" },
-      approver: APP,
-      fetchImpl: clefAnswers,
-    });
+  const evaluate = (eventName: string, payload: Json) => {
+    const context: ActionsContext = {
+      eventName,
+      sha: POLICY_SHA,
+      runId: 99,
+      serverUrl: "https://github.com",
+      repo: { owner: "cloudflare", repo: "cloudflare-os" },
+      payload: JSON.parse(JSON.stringify(payload)),
+    };
+    return runRiskReview({ github, context, core, app: APP, now: NOW });
+  };
+  return { calls, evaluate };
+}
+
+/** A `workflow_run` payload for a producer run finishing on the test pull request's head. */
+function producerCompleted(): Json {
   return {
-    statuses,
-    reviewCalls,
-    listed,
-    outputs,
-    authorize,
-    evaluate,
-    /** One workflow run: `authorize`, then the classifier. */
-    run: async (runId = 1) => {
-      await authorize(runId);
-      await evaluate(runId);
+    action: "completed",
+    workflow_run: {
+      id: 1,
+      event: "pull_request",
+      head_sha: HEAD,
+      head_branch: "kenton/topic",
+      head_repository: { owner: { login: "cloudflare" }, full_name: "cloudflare/cloudflare-os" },
+      pull_requests: [{ number: 7, base: { ref: "main" } }],
     },
+    repository: { default_branch: "main", full_name: "cloudflare/cloudflare-os" },
   };
 }
 
-describe("authorizeRiskReview", () => {
-  for (const permission of ["admin", "maintain", "write"]) {
-    it(`runs straight away for an author with ${permission} permission`, async () => {
-      const { outputs, authorize } = harness({ permissions: { author: permission } });
-      await authorize();
-      assert.deepEqual(outputs, { author: "maintainer" });
-    });
-  }
+function lastRecord(calls: Calls): DecisionRecord {
+  const summary = calls.updates.at(-1)?.summary ?? "";
+  const json = /^```json\n(.*)\n```/s.exec(summary)?.[1];
+  assert.ok(json, "the summary leads with the decision JSON");
+  return JSON.parse(json);
+}
 
-  it("holds anyone else's pull request for approval, bots included", async () => {
-    const outsider = harness({ permissions: { author: "triage" } });
-    await outsider.authorize();
-    assert.deepEqual(outsider.outputs, { author: "other" });
-    assert.deepEqual(outsider.statuses.map(({ sha, state, description }) => ({ sha, state, description })), [
-      { sha: HEAD, state: "pending", description: "Waiting for a maintainer to approve the run" },
-    ]);
-
-    const bot = harness({ pullRequest: { user: { login: "bonk[bot]", type: "Bot" } } });
-    await bot.authorize();
-    assert.deepEqual(bot.outputs, { author: "other" });
+describe("parseBands", () => {
+  it("ships every band closed, in shadow mode, with App approvals not counted", () => {
+    const { config, problem } = parseBands(read(POLICY_FILES.bands));
+    assert.equal(problem, undefined);
+    assert.equal(config.mode, "shadow");
+    assert.equal(config.appApprovalsCount, false);
+    for (const bands of Object.values(config.areas)) for (const rule of Object.values(bands)) assert.equal(rule.open, false);
   });
 
-  it("routes nowhere when the pull request is closed", async () => {
-    const { outputs, statuses, authorize } = harness({ pullRequest: null });
-    await authorize();
-    assert.deepEqual(outputs, { author: "" });
-    assert.deepEqual(statuses, []);
-  });
-
-  it("leaves a pull request into another branch alone, since the status is the head's", async () => {
-    const { outputs, statuses, authorize } = harness({ pullRequest: { base: { ref: "feature" } } });
-    await authorize();
-    assert.deepEqual(outputs, { author: "" });
-    assert.deepEqual(statuses, []);
-  });
-
-  it("ignores the app's own reviews, which cannot change the verdict", async () => {
-    const { outputs, statuses, authorize } = harness({
-      payload: {
-        workflow_run: {
-          actor: { login: APP },
-          head_branch: "topic",
-          head_repository: { owner: { login: "cloudflare" } },
-        },
-      },
-    });
-    await authorize();
-    assert.deepEqual(outputs, { author: "" });
-    assert.deepEqual(statuses, []);
-  });
-
-  it("looks a reviewed pull request up by head and default branch", async () => {
-    const { outputs, listed, authorize } = harness({
-      payload: {
-        workflow_run: {
-          actor: { login: "alice" },
-          head_branch: "topic",
-          head_repository: { owner: { login: "someone" } },
-        },
-      },
-      permissions: { author: "write" },
-    });
-    await authorize();
-    assert.deepEqual(outputs, { author: "maintainer" });
-    assert.deepEqual(listed, [{
-      owner: "cloudflare",
-      repo: "cloudflare-os",
-      state: "open",
-      head: "someone:topic",
-      base: "main",
-      per_page: 100,
-    }]);
+  it("closes every band in shadow mode when the file is missing or malformed", () => {
+    assert.deepEqual(parseBands(undefined).config, CLOSED_BANDS);
+    assert.deepEqual(parseBands("{").config, CLOSED_BANDS);
+    const open = JSON.parse(bandsJson("enforce", true, [{ area: "scored", band: "low" }]));
+    open.areas.scored.low.threshold = null;
+    const parsed = parseBands(JSON.stringify(open));
+    assert.deepEqual(parsed.config, CLOSED_BANDS);
+    assert.match(parsed.problem ?? "", /threshold/);
+    open.areas.scored.low.threshold = 7;
+    open.areas.scored.low.evidence = ["evidence-from-anywhere"];
+    assert.deepEqual(parseBands(JSON.stringify(open)).config, CLOSED_BANDS);
   });
 });
 
-describe("runRiskReview", () => {
-  it("passes a low-risk change with no human review", async () => {
-    const { statuses, run } = harness({});
-    await run();
-    assert.deepEqual(statuses.map(({ sha, state }) => ({ sha, state })), [
-      { sha: HEAD, state: "pending" },
-      { sha: HEAD, state: "success" },
-    ]);
+function inputs(overrides: Partial<PullInputs> = {}): PullInputs {
+  return {
+    pull: pullRequest(),
+    files: [file("docs/automerge.md")],
+    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] },
+    reviews: [],
+    comments: [],
+    lastPush: PUSHED,
+    reviewDecision: "REVIEW_REQUIRED",
+    producers: {},
+    ...overrides,
+  };
+}
+
+function policyWith(bands: string, maintainers = parseMaintainers(MAINTAINERS)): Policy {
+  const { config } = parseBands(bands);
+  return {
+    sha: POLICY_SHA,
+    maintainers,
+    bands: config,
+    escapes: { windowDays: 90, files: [] },
+  };
+}
+
+const OPEN_SCORED = policyWith(bandsJson("enforce", true, [{ area: "scored", band: "low" }]));
+
+function verdictInput(name: "sol" | "opus", overrides: Record<string, Json | undefined> = {}) {
+  return { artifact: { ...JSON.parse(verdictJson({ name, fingerprint: FINGERPRINT, ...overrides })), name } };
+}
+
+const PERFECT = { sol: verdictInput("sol"), opus: verdictInput("opus") };
+
+describe("decide", () => {
+  it("lets a maintainer's low-risk change through an open band when both verdicts clear it", () => {
+    const decision = decide(inputs({ producers: PERFECT }), OPEN_SCORED, NOW);
+    assert.deepEqual(decision.would, { decision: "auto", area: "scored", reasons: [] });
   });
 
-  it("holds a workshop-backend change for a maintainer's approval of the head commit", async () => {
-    const { statuses, run } = harness({
-      files: [file("packages/workshop-backend/src/overseer.ts")],
-      reviews: [review("alice", "APPROVED", OLD)],
-      permissions: { alice: "maintain" },
-    });
-    await run();
-    assert.equal(statuses.at(-1)?.description, "high risk: needs a maintainer's approval of aaaaaaa");
+  it("never lets an AI decide on a policy file, whatever the verdicts and bands", () => {
+    for (const path of [".github/workflows/review-verdict.yml", "scripts/automerge/verdict/run.ts", "REVIEW.md", "packages/ui/AGENTS.md"]) {
+      const decision = decide(inputs({ files: [file(path)], producers: PERFECT }), policyWith(bandsJson("enforce", true,
+        ["scored", "kernel", "agent-facing-api"].flatMap((area) => ["low", "medium", "high"].map((band) => ({ area, band }))))), NOW);
+      assert.equal(decision.would.decision, "person", path);
+      assert.match(decision.would.reasons.join("\n"), /policy:/, path);
+    }
   });
 
-  it("rates a pull request high when GitHub did not list all its files", async () => {
-    const { statuses, reviewCalls, run } = harness({ pullRequest: { changed_files: 3001 } });
-    await run();
-    assert.equal(statuses.at(-1)?.description, "high risk: needs a maintainer's approval of aaaaaaa");
-    assert.deepEqual(reviewCalls, []);
+  it("holds a pull request a maintainer commented on after the last push", () => {
+    // A real review from #845: deregtd commented after 795f5aa4 was pushed.
+    const recorded = fixture("pull_request_review.json");
+    const { review: recordedReview } = JSON.parse(JSON.stringify(recorded));
+    const decision = decide(inputs({
+      reviews: [recordedReview],
+      lastPush: "2026-10-22T05:00:00Z",
+      producers: PERFECT,
+    }), OPEN_SCORED, NOW);
+    assert.equal(decision.would.decision, "person");
+    assert.deepEqual(decision.holds, ["@deregtd commented after the last push"]);
   });
 
-  it("asks an agent's pull request for its director's approval", async () => {
-    const { statuses, run } = harness({
-      pullRequest: {
-        user: { login: "bonk[bot]", type: "Bot" },
-        assignees: [{ login: "dave", type: "User" }],
-      },
-      reviews: [review("alice", "APPROVED")],
-      permissions: { alice: "write", dave: "write" },
-    });
-    await run();
-    assert.equal(statuses.at(-1)?.state, "failure");
-    assert.match(statuses.at(-1)?.description ?? "", /@dave/);
+  it("does not hold for the author, a non-maintainer, a bot, an approval, or a comment before the push", () => {
+    const comments: Comment[] = [
+      { user: { login: "kentonv", type: "User" }, created_at: "2026-11-02T11:00:00Z" },
+      { user: { login: "outsider", type: "User" }, created_at: "2026-11-02T11:00:00Z" },
+      { user: { login: "ask-bonk[bot]", type: "Bot" }, created_at: "2026-11-02T11:00:00Z" },
+      { user: { login: "deregtd", type: "User" }, created_at: "2026-11-02T09:00:00Z" },
+    ];
+    const decision = decide(inputs({ comments, reviews: [review("Maximo-Guk", "APPROVED")], producers: PERFECT }), OPEN_SCORED, NOW);
+    assert.deepEqual(decision.holds, []);
+    assert.equal(decision.would.decision, "auto");
   });
 
-  it("approves a low-risk head as the app, once", async () => {
-    const first = harness({});
-    await first.run();
-    assert.deepEqual(first.reviewCalls, [
-      { call: "APPROVE", commit_id: HEAD, body: "low risk: approved on automated review" },
-    ]);
-
-    const again = harness({ reviews: [review(APP, "APPROVED", HEAD, "Bot")] });
-    await again.run();
-    assert.deepEqual(again.reviewCalls, []);
-
-    const pushed = harness({ reviews: [review(APP, "APPROVED", OLD, "Bot")] });
-    await pushed.run();
-    assert.deepEqual(pushed.reviewCalls.map(({ call, commit_id }) => ({ call, commit_id })), [
-      { call: "APPROVE", commit_id: HEAD },
-    ]);
+  it("holds when the push time is unknown", () => {
+    assert.equal(decide(inputs({ lastPush: undefined, producers: PERFECT }), OPEN_SCORED, NOW).would.decision, "person");
   });
 
-  it("withdraws the app's approval once a change is no longer low risk or fails the gate", async () => {
-    const appApproval = review(APP, "APPROVED", HEAD, "Bot");
-    const rated = harness({ files: [file("packages/router/src/index.ts")], reviews: [appApproval] });
-    await rated.run();
-    assert.deepEqual(rated.reviewCalls, [{ call: "DISMISS", review_id: appApproval.id }]);
-
-    const blocked = harness({
-      reviews: [appApproval, review("bob", "CHANGES_REQUESTED")],
-      permissions: { bob: "write" },
-    });
-    await blocked.run();
-    assert.deepEqual(blocked.reviewCalls, [{ call: "DISMISS", review_id: appApproval.id }]);
+  it("reads maintainers from the list only, case-insensitively, and from nowhere when it is missing", () => {
+    const outsider = decide(inputs({ pull: pullRequest({ user: { login: "contributor", type: "User" } }), producers: PERFECT }), OPEN_SCORED, NOW);
+    assert.equal(outsider.would.decision, "person");
+    assert.match(outsider.would.reasons.join("\n"), /not a maintainer/);
+    const approved = inputs({ reviews: [review("maximo-guk", "APPROVED")] });
+    assert.deepEqual(decide(approved, OPEN_SCORED, NOW).approvers, ["maximo-guk"]);
+    const nobody = policyWith(bandsJson("enforce", true, [{ area: "scored", band: "low" }]), parseMaintainers(undefined));
+    assert.deepEqual(decide(approved, nobody, NOW).approvers, []);
+    assert.equal(decide(inputs({ producers: PERFECT }), nobody, NOW).would.decision, "person");
   });
 
-  it("does not count the app's own approval as a maintainer's", async () => {
-    const { statuses, reviewCalls, run } = harness({
-      files: [file("packages/router/src/index.ts")],
-      reviews: [review(APP, "APPROVED", HEAD, "Bot")],
-      permissions: { [APP]: "write" },
-    });
-    await run();
-    assert.equal(statuses.at(-1)?.state, "failure");
-    assert.equal(reviewCalls[0].call, "DISMISS");
+  it("counts a missing, failed or malformed verdict as absent", () => {
+    for (const producers of [
+      {},
+      { sol: PERFECT.sol },
+      { ...PERFECT, opus: { absent: "malformed merge_confidence" } },
+      { ...PERFECT, opus: verdictInput("opus", { status: "error", merge_confidence: null }) },
+    ]) {
+      assert.equal(decide(inputs({ producers }), OPEN_SCORED, NOW).would.decision, "person", JSON.stringify(producers));
+    }
   });
 
-  it("does not restore a verdict a later run withdrew while this one read the reviews", async () => {
-    const { statuses, reviewCalls, authorize, evaluate } = harness({ reviews: [review("alice", "APPROVED")] });
-    await authorize(1);
-    await authorize(2);
-    await evaluate(1);
-    assert.deepEqual(reviewCalls, []);
-    assert.deepEqual(statuses.map(({ state, target_url }) => ({ state, run: target_url.split("/").at(-1) })), [
-      { state: "pending", run: "1" },
-      { state: "pending", run: "2" },
-    ]);
+  it("closes the band for a verdict from another reviewer configuration", () => {
+    const opus = verdictInput("opus", { fingerprint: { ...FINGERPRINT, prompt: "0".repeat(64) } });
+    const decision = decide(inputs({ producers: { ...PERFECT, opus } }), OPEN_SCORED, NOW);
+    assert.equal(decision.would.decision, "person");
+    assert.match(decision.would.reasons.join("\n"), /configuration other than the band's/);
+  });
+
+  it("sends a P0 or P1 finding, a NEEDS-A-PERSON line, a missing score or a score under the threshold to a person", () => {
+    for (const sol of [
+      { findings: [{ severity: "P1", title: "Missing await", path: "a.ts", line: 1 }] },
+      { needs_person: ["changes the RPC API"] },
+      { merge_confidence: null },
+      { merge_confidence: 6 },
+    ]) {
+      assert.equal(decide(inputs({ producers: { ...PERFECT, sol: verdictInput("sol", sol) } }), OPEN_SCORED, NOW).would.decision, "person", JSON.stringify(sol));
+    }
+  });
+
+  it("requires the band's evidence to hold", () => {
+    const policy = policyWith(bandsJson("enforce", true, [{ area: "scored", band: "low", evidence: ["evidence-deploy-dry-run"] }]));
+    assert.equal(decide(inputs({ producers: PERFECT }), policy, NOW).would.decision, "person");
+    const dryRun = { artifact: { ...JSON.parse(proofJson("evidence-deploy-dry-run", "evidence", true)), name: "evidence-deploy-dry-run" } };
+    assert.equal(decide(inputs({ producers: { ...PERFECT, "evidence-deploy-dry-run": dryRun } }), policy, NOW).would.decision, "auto");
+  });
+
+  it("proves a Dependabot pull request only when its dependency proof and preview smoke both hold", () => {
+    const policy = policyWith(bandsJson("enforce", true, [{ area: "proven", band: "medium" }]));
+    const pull = pullRequest({ user: { login: "dependabot[bot]", type: "Bot" } });
+    const files = [file("packages/ui/package.json")];
+    const deps = { artifact: { ...JSON.parse(proofJson("proof-deps", "proof", true)), name: "proof-deps" } };
+    const smoke = { artifact: { ...JSON.parse(proofJson("preview-smoke", "evidence", true)), name: "preview-smoke" } };
+    assert.equal(decide(inputs({ pull, files, producers: { "proof-deps": deps } }), policy, NOW).would.decision, "person");
+    assert.deepEqual(decide(inputs({ pull, files, producers: { "proof-deps": deps, "preview-smoke": smoke } }), policy, NOW).would,
+      { decision: "auto", area: "proven", reasons: [] });
+    // Dependabot never qualifies through AI verdicts.
+    assert.equal(decide(inputs({ pull, files, producers: PERFECT }), OPEN_SCORED, NOW).would.decision, "person");
+  });
+
+  it("requires a human assignee's approval on a pull request an agent opened", () => {
+    const pull = pullRequest({ user: { login: "ask-bonk[bot]", type: "Bot" }, assignees: [{ login: "kentonv", type: "User" }] });
+    assert.match(decide(inputs({ pull, reviews: [review("deregtd", "APPROVED")] }), OPEN_SCORED, NOW).gate.reason, /@kentonv/);
+    assert.equal(decide(inputs({ pull, reviews: [review("kentonv", "APPROVED")] }), OPEN_SCORED, NOW).gate.passes, true);
+    assert.match(decide(inputs({ pull: { ...pull, assignees: [] } }), OPEN_SCORED, NOW).gate.reason, /assign/);
+  });
+
+  it("needs a maintainer's approval of the head commit, and blocks on a change request", () => {
+    assert.equal(decide(inputs({ reviews: [review("deregtd", "APPROVED", { commit_id: BASE })] }), OPEN_SCORED, NOW).gate.passes, false);
+    assert.equal(decide(inputs({ reviews: [review("deregtd", "APPROVED")] }), OPEN_SCORED, NOW).gate.passes, true);
+    const blocked = decide(inputs({ reviews: [review("deregtd", "APPROVED"), review("kentonv", "CHANGES_REQUESTED", { user: { login: "FBalint", type: "User" } })] }), OPEN_SCORED, NOW);
+    assert.equal(blocked.gate.passes, false);
   });
 });
+
+describe("runRiskReview in shadow mode", () => {
+  it("mirrors today's rule on the head and records the decision, from the shipped bands file", async () => {
+    const cases: [string | null, string][] = [["APPROVED", "success"], ["REVIEW_REQUIRED", "failure"], [null, "failure"]];
+    for (const [decision, conclusion] of cases) {
+      const { calls, evaluate } = harness({ reviewDecision: { 7: decision } });
+      await evaluate("workflow_run", producerCompleted());
+      assert.deepEqual(calls.checks.map(({ sha }) => sha), [HEAD]);
+      assert.equal(calls.updates.at(-1)?.conclusion, conclusion);
+      const record = lastRecord(calls);
+      assert.equal(record.mode, "shadow");
+      assert.equal(record.pulls[0]?.would.decision, "person");
+    }
+  });
+
+  it("cannot approve or enqueue, even when a band is open and every input passes", async () => {
+    const { calls, evaluate } = harness({
+      policy: { bands: bandsJson("shadow", true, [{ area: "scored", band: "low" }]) },
+      runs: [verdicts()],
+    });
+    await evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(calls).pulls[0]?.would.decision, "auto");
+    assert.equal(calls.updates.at(-1)?.conclusion, "failure");
+    assert.deepEqual(calls.approvals, []);
+    assert.deepEqual(calls.enqueued, []);
+    assert.deepEqual(calls.dismissals, []);
+  });
+
+  it("decides the pull request a recorded review relay run names", async () => {
+    // Recorded: the relay's run for deregtd's review of #845 (pull_request_review), and that review.
+    const relay = fixture("workflow_run.json");
+    const reviewEvent = JSON.parse(JSON.stringify(fixture("pull_request_review.json")));
+    const pull = pullRequest({ number: 845, user: { login: "ndisidore", type: "User" }, head: { sha: reviewEvent.pull_request.head.sha }, base: { sha: reviewEvent.pull_request.base.sha, ref: "main" } });
+    const { calls, evaluate } = harness({ pulls: [pull], reviews: { 845: [reviewEvent.review] }, lastPush: "2026-10-22T05:00:00Z" });
+    await evaluate("workflow_run", relay);
+    assert.deepEqual(calls.checks.map(({ sha }) => sha), [reviewEvent.pull_request.head.sha]);
+    const record = lastRecord(calls);
+    assert.equal(record.pulls[0]?.number, 845);
+    assert.deepEqual(record.pulls[0]?.holds, ["@deregtd commented after the last push"]);
+  });
+
+  it("decides the pull request a recorded maintainer comment is on", async () => {
+    const pull = pullRequest({ number: 881, user: { login: "maxwellpeterson", type: "User" } });
+    const { calls, evaluate } = harness({ pulls: [pull], reviewDecision: { 881: "APPROVED" } });
+    await evaluate("issue_comment", fixture("issue_comment.json"));
+    assert.deepEqual(calls.checks.map(({ sha }) => sha), [HEAD]);
+    assert.equal(calls.updates.at(-1)?.conclusion, "success");
+  });
+
+  it("decides a pull request again when a bot preview's smoke run finishes on main", async () => {
+    const smokeRun = run(PRODUCERS["preview-smoke"].workflow, { event: "workflow_run", head_branch: "main", head_sha: POLICY_SHA });
+    const { calls, evaluate } = harness({ runs: [{ run: smokeRun, artifacts: { [`automerge-preview-smoke-${HEAD}`]: proofJson("preview-smoke", "evidence", true) } }] });
+    await evaluate("workflow_run", { workflow_run: { id: smokeRun.id, event: "workflow_run", head_sha: POLICY_SHA, head_branch: "main", head_repository: null }, repository: { default_branch: "main", full_name: "cloudflare/cloudflare-os" } });
+    assert.deepEqual(calls.checks.map(({ sha }) => sha), [HEAD]);
+  });
+
+  it("does nothing for a comment on an issue, or for a pull request into another branch", async () => {
+    const issue = JSON.parse(JSON.stringify(fixture("issue_comment.json")));
+    issue.issue.pull_request = undefined;
+    const first = harness({ pulls: [pullRequest({ number: 881 })] });
+    await first.evaluate("issue_comment", issue);
+    assert.deepEqual(first.calls.checks, []);
+    const second = harness({ pulls: [pullRequest({ base: { sha: BASE, ref: "release" } })] });
+    await second.evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(second.calls.checks, []);
+  });
+
+  it("leaves the commit to a later run that has created a newer check run", async () => {
+    const { calls, evaluate } = harness({ reviewDecision: { 7: "APPROVED" }, newerCheckRun: true });
+    await evaluate("workflow_run", producerCompleted());
+    assert.equal(calls.updates.at(-1)?.conclusion, "cancelled");
+  });
+});
+
+describe("runRiskReview on a merge group", () => {
+  const group = fixture("merge_group.json");
+  const queue = fixture("merge_queue.json");
+  const pulls = [939, 943].map((number) => pullRequest({ number, head: { sha: String(number).repeat(14).slice(0, 40) } }));
+
+  it("maps a merge group to its two pull requests and decides each on the group's commit", () => {
+    const { merge_group } = JSON.parse(JSON.stringify(group));
+    assert.deepEqual(mergeGroupPulls(queue, merge_group), [939, 943]);
+    assert.equal(mergeGroupPulls(queue, { ...merge_group, base_sha: HEAD }), undefined);
+    assert.equal(mergeGroupPulls(null, merge_group), undefined);
+  });
+
+  it("posts the aggregate on the group's head, reading policy at its base", async () => {
+    const { merge_group } = JSON.parse(JSON.stringify(group));
+    const { calls, evaluate } = harness({
+      pulls,
+      mergeQueue: queue,
+      reviewDecision: { 939: "APPROVED", 943: "APPROVED" },
+      contents: {
+        [`${merge_group.base_sha}:${POLICY_FILES.maintainers}`]: MAINTAINERS,
+        [`${merge_group.base_sha}:${POLICY_FILES.bands}`]: read(POLICY_FILES.bands),
+        [`${merge_group.base_sha}:${POLICY_FILES.escapes}`]: NO_ESCAPES,
+      },
+    });
+    await evaluate("merge_group", group);
+    assert.deepEqual(calls.checks.map(({ sha }) => sha), [merge_group.head_sha]);
+    const record = lastRecord(calls);
+    assert.equal(record.conclusion, "success");
+    assert.equal(record.policy_sha, merge_group.base_sha);
+    assert.equal(record.bands_problem, undefined);
+    assert.deepEqual(record.pulls.map(({ number }) => number), [939, 943]);
+  });
+
+  it("fails the group when one pull request fails, or when the group does not map", async () => {
+    const first = harness({ pulls, mergeQueue: queue, reviewDecision: { 939: "APPROVED", 943: "CHANGES_REQUESTED" } });
+    await first.evaluate("merge_group", group);
+    assert.equal(first.calls.updates.at(-1)?.conclusion, "failure");
+    const second = harness({ pulls, mergeQueue: null, reviewDecision: { 939: "APPROVED", 943: "APPROVED" } });
+    await second.evaluate("merge_group", group);
+    assert.equal(second.calls.updates.at(-1)?.conclusion, "failure");
+    assert.match(lastRecord(second.calls).reason, /does not map/);
+  });
+});
+
+describe("runRiskReview producer binding", () => {
+  const open = { policy: { bands: bandsJson("shadow", true, [{ area: "scored", band: "low" }]) } };
+
+  it("reads both verdicts from a bound run", async () => {
+    const { calls, evaluate } = harness({ ...open, runs: [verdicts()] });
+    await evaluate("workflow_run", producerCompleted());
+    const sol = lastRecord(calls).pulls[0]?.inputs.sol;
+    assert.equal(sol && "status" in sol ? sol.status : undefined, "ok");
+    assert.equal(lastRecord(calls).pulls[0]?.would.decision, "auto");
+  });
+
+  it("lets a newer failed attempt beat an older success", async () => {
+    const failed = { run: run(PRODUCERS.sol.workflow, { created_at: "2026-11-02T10:30:00Z", conclusion: "failure" }), artifacts: {} };
+    const { calls, evaluate } = harness({ ...open, runs: [verdicts(), failed] });
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.sol, { absent: "concluded failure" });
+  });
+
+  it("rejects a verdict from a fork, or one made for another head or base", async () => {
+    for (const runs of [
+      [{ ...verdicts(), run: run(PRODUCERS.sol.workflow, { head_repository: { full_name: "someone/cloudflare-os" } }) }],
+      [verdicts({ sol: { head_sha: "c".repeat(40) } })],
+      [verdicts({ sol: { base_sha: "c".repeat(40) } })],
+    ]) {
+      const { calls, evaluate } = harness({ ...open, runs });
+      await evaluate("workflow_run", producerCompleted());
+      const record = lastRecord(calls);
+      assert.ok(record.pulls[0]?.inputs.sol && "absent" in record.pulls[0].inputs.sol);
+      assert.equal(record.pulls[0]?.would.decision, "person");
+    }
+  });
+});
+
+describe("runRiskReview in enforce mode", () => {
+  it("approves the head and enqueues it for an open band when App approvals count", async () => {
+    const { calls, evaluate } = harness({ policy: { bands: bandsJson("enforce", true, [{ area: "scored", band: "low" }]) }, runs: [verdicts()] });
+    await evaluate("workflow_run", producerCompleted());
+    assert.equal(calls.updates.at(-1)?.conclusion, "success");
+    assert.deepEqual(calls.approvals, [HEAD]);
+    assert.deepEqual(calls.enqueued, [{ id: "PR_kwDOSA1", head: HEAD }]);
+  });
+
+  it("enqueues only after a maintainer approves when App approvals do not count", async () => {
+    const bands = bandsJson("enforce", false, [{ area: "scored", band: "low" }]);
+    const waiting = harness({ policy: { bands }, runs: [verdicts()] });
+    await waiting.evaluate("workflow_run", producerCompleted());
+    assert.equal(waiting.calls.updates.at(-1)?.conclusion, "failure");
+    assert.deepEqual(waiting.calls.enqueued, []);
+    const approved = harness({ policy: { bands }, runs: [verdicts()], reviews: { 7: [review("deregtd", "APPROVED")] } });
+    await approved.evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(approved.calls.approvals, []);
+    assert.equal(approved.calls.enqueued.length, 1);
+  });
+
+  it("withdraws a standing App approval once the pull request needs a person", async () => {
+    const appApproval: Review = { id: 555, user: { login: APP.login, type: "Bot" }, state: "APPROVED", commit_id: HEAD };
+    const { calls, evaluate } = harness({ policy: { bands: bandsJson("enforce", true, []) }, reviews: { 7: [appApproval] } });
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(calls.dismissals, [555]);
+    assert.deepEqual(calls.enqueued, []);
+  });
+});
+
+describe("renderOutput", () => {
+  it("keeps the decision JSON first and under the limit, however long the reasons", () => {
+    const decision = decide(inputs({ producers: PERFECT }), OPEN_SCORED, NOW);
+    const long = { ...decision, would: { ...decision.would, reasons: Array.from({ length: 5_000 }, (_, index) => `reason ${index} `.repeat(4)) } };
+    const record: DecisionRecord = { schema: 1, mode: "shadow", event: "merge_group", sha: HEAD, policy_sha: POLICY_SHA, conclusion: "failure", reason: "x", pulls: [long] };
+    const { summary } = renderOutput(record);
+    const json = /^```json\n(.*)\n```/s.exec(summary)?.[1] ?? "";
+    assert.ok(json.length <= MAX_DECISION_CHARS);
+    assert.ok(summary.length <= 65_535);
+    assert.equal(JSON.parse(json).truncated, true);
+  });
+});
+
+const gateWorkflow = read(".github/workflows/risk-review.yml");
+const relayWorkflow = read(".github/workflows/risk-review-trigger.yml");
 
 describe("risk-review workflows", () => {
-  it("runs the classifier from the base branch only", () => {
-    assert.doesNotMatch(workflow, /^\s+pull_request:/m);
-    assert.doesNotMatch(workflow, /^\s+pull_request_review:/m);
-    assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
-    assert.doesNotMatch(workflow, /github\.event\.pull_request\.head\.(ref|repo)/);
+  it("runs only from main's definition: no pull_request_target, pull_request or review triggers", () => {
+    const triggers = /^on:\n((?: .*\n|\n)*?)^\S/m.exec(gateWorkflow)?.[1] ?? "";
+    assert.deepEqual([...triggers.matchAll(/^ {2}(\w+):/gm)].map((match) => match[1]), ["workflow_run", "issue_comment", "merge_group"]);
   });
 
-  it("classifies only pull requests into main", () => {
-    assert.match(workflow, /pull_request_target:\n(?:\s+#.*\n)*\s+branches: \[main\]/);
+  it("wakes on every producer workflow and the review relay", () => {
+    const names = /workflows: \[([^\]]*)\]/.exec(gateWorkflow)?.[1]?.split(",").map((name) => name.trim()) ?? [];
+    assert.ok(names.includes(/^name: (.+)$/m.exec(relayWorkflow)?.[1] ?? ""));
+    for (const { workflow } of Object.values(PRODUCERS)) {
+      if (!existsSync(new URL(workflow, ROOT))) continue;
+      const name = /^name: (.+)$/m.exec(read(workflow))?.[1];
+      assert.ok(name && names.includes(name), `${workflow} (${name}) wakes the gate`);
+    }
   });
 
-  it("serializes authorize and the classifiers per head commit", () => {
-    assert.match(workflow, /\n {2}authorize:\n[\s\S]*?concurrency: &serialize\n/);
-    assert.equal(workflow.match(/concurrency: \*serialize/g)?.length, 2);
+  it("posts only as the App, from the environment that holds its key, with no job-token fallback", () => {
+    assert.match(gateWorkflow, /environment: risk-review\n/);
+    assert.match(gateWorkflow, /github-token: \$\{\{ steps\.app\.outputs\.token \}\}\n/);
+    assert.doesNotMatch(gateWorkflow, /github\.token/);
+    assert.match(gateWorkflow, /permission-checks: write/);
+    assert.doesNotMatch(gateWorkflow, /statuses/);
   });
 
-  it("reclassifies when the base changes, but not on other edits", () => {
-    assert.match(workflow, /types: \[[^\]]*\bedited\b/);
-    assert.match(workflow, /github\.event\.action != 'edited' \|\| github\.event\.changes\.base/);
+  it("checks the script out from the default branch, or the merge group's base", () => {
+    assert.match(gateWorkflow, /ref: \$\{\{ github\.event\.merge_group\.base_sha \|\| github\.workflow_sha \}\}/);
+    assert.doesNotMatch(gateWorkflow, /github\.event\.(pull_request|workflow_run)\.head\.(ref|sha|repo)/);
   });
 
-  it("holds every author but a maintainer behind the approval environment", () => {
-    assert.match(workflow, /if: needs\.authorize\.outputs\.author == 'maintainer'/);
-    assert.match(
-      workflow,
-      /if: needs\.authorize\.outputs\.author == 'other'\n(?:.*\n)*?\s+environment: risk-review-external/,
-    );
-    // Only the two classify jobs may see the Clef credentials.
-    const authorizeJob = /\n {2}authorize:\n([\s\S]*?)\n {2}\w+:\n/.exec(workflow)?.[1];
-    assert.ok(authorizeJob);
-    assert.doesNotMatch(authorizeJob, /CF_AI_GATEWAY/);
+  it("relays pull request and review events from a workflow with no permissions or secrets", () => {
+    assert.match(relayWorkflow, /^permissions: \{\}$/m);
+    assert.doesNotMatch(relayWorkflow, /secrets\./);
+    for (const event of ["pull_request", "pull_request_review", "pull_request_review_comment"]) {
+      assert.match(relayWorkflow, new RegExp(`^ {2}${event}:`, "m"));
+    }
   });
 
-  it("lets authorize withdraw the status without the Clef credentials", () => {
-    assert.match(workflow, /\n {2}authorize:\n[\s\S]*?statuses: write[\s\S]*?\n {2}maintainer:/);
-  });
-
-  it("posts every status as the app, from environments that hold its key", () => {
-    const jobs = workflow.slice(workflow.indexOf("\njobs:\n")).split(/\n {2}(?=\w+:\n)/).slice(1);
-    assert.deepEqual(jobs.map((job) => /environment: ([\w-]+)/.exec(job)?.[1]), [
-      "risk-review",
-      "risk-review",
-      "risk-review-external",
-    ]);
-    assert.equal(workflow.match(/github-token: \$\{\{ steps\.app\.outputs\.token \|\| github\.token \}\}/g)?.length, 2);
-    assert.match(workflow, /- \*app-token\n/);
-    // authorize needs the app's login too, to ignore the app's own reviews.
-    assert.equal(workflow.match(/approver: process\.env\.RISK_REVIEW_APPROVER/g)?.length, 2);
-  });
-
-  it("relays reviews from a workflow with no permissions", () => {
-    const name = /^name: (.+)$/m.exec(triggerWorkflow)?.[1];
-    assert.ok(name);
-    assert.match(workflow, new RegExp(`workflows: \\[${name}\\]`));
-    assert.match(triggerWorkflow, /^permissions: \{\}$/m);
-    assert.doesNotMatch(triggerWorkflow, /secrets\./);
+  it("gives no producer workflow checks: write, so only the gate publishes", () => {
+    for (const workflow of new Set(Object.values(PRODUCERS).map(({ workflow: path }) => path))) {
+      if (existsSync(new URL(workflow, ROOT))) assert.doesNotMatch(read(workflow), /checks: write/, workflow);
+    }
+    assert.doesNotMatch(relayWorkflow, /checks: write/);
   });
 });

@@ -15,12 +15,11 @@ This policy may change in the future as the project matures. Until then, thank y
 Lint, build and tests ([`ci.yml`](.github/workflows/ci.yml)) run on every pull request, including
 those from forks.
 
-[`risk-review.yml`](.github/workflows/risk-review.yml) classifies a pull request as low, medium
-or high risk from the paths it touches and the
-[Clef](https://developers.cloudflare.com/workers-ai/models/clef/) decision model. A medium- or
-high-risk change needs a maintainer to approve its head commit before its `risk-review` status
-passes. On
-your pull request, the classifier itself runs only after a maintainer approves the run.
+[`risk-review.yml`](.github/workflows/risk-review.yml) posts a `risk-review` check on your pull
+request. It rates the change from the paths and lines it touches, and records whether the
+auto-merge rules would let it merge without a person. For now that record changes nothing: the
+check only mirrors whether the pull request is approved, and it is not required. It never runs your
+code.
 
 Preview deployments ([`preview.yml`](.github/workflows/preview.yml)) do **not**, this is
 deliberate. Deploying a preview requires a Cloudflare API token that can create Workers
