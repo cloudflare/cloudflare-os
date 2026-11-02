@@ -45,14 +45,18 @@ vendor this one as a submodule:
 `__tests__/workshop-properties.test.ts` uses [fast-check](https://fast-check.dev/) to generate
 sequences of the operations a real client performs and replays each against the Workshop, checking
 the result against a small model: decisions on staged writes (with and without an auto-approval
-rule), chats with shared and same-named attachments created and deleted, and two editors
-inserting, deleting and resending stale code changes before an accept. Each run takes a fresh
-account, so runs and shrink attempts are independent. Scenarios a fixed seed might miss are
-pinned as fast-check `examples`, which run on every seed.
+rule, while the provider may fail one apply), chats with shared and same-named attachments created
+and deleted, and two editors inserting, deleting and resending stale code changes before an
+accept. `__tests__/observer-reverification.test.ts` adds one for a collaborator's opens while
+their connections' credentials lapse and are repaired. Each run takes a fresh account, so runs
+and shrink attempts are independent. Scenarios a fixed seed might miss are pinned as fast-check
+`examples`, which run on every seed.
 
 Every run is real RPC, so a property costs hundreds of milliseconds per run and `numRuns` is kept
 small; `interruptAfterTimeLimit` bounds the shrink of a failing property inside the test timeout
-(`@gadgets/scripts/property-runs`).
+(`@gadgets/scripts/property-runs`). workshop-backend's in-isolate properties (sharing, blueprint
+releases, streamed tool input) share those options, and its `vitest.config.ts` forwards
+`FAST_CHECK_SEED` into workerd.
 
 `FAST_CHECK_SEED` pins the seed of every property, so the same cases run each time. CI sets it, so
 a pull request's result depends only on its code. Without it, each run draws a fresh seed, but a
