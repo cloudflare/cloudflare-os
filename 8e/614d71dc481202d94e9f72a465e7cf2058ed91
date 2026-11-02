@@ -1,0 +1,59 @@
+packages/workshop-backend/__tests__/space-directory.test.ts
+  s_dd2417a6d5bd82::t_a9746e3f1eb46b 1-590
+  s_1da8b1c2e6d0c9::t_91ebc291cb24fc 328-330,393-407
+  s_1da8b1c2e6d0c9::t_4af9e442008d31 1-178,193-321,332-333,335-392,408-590
+  s_1da8b1c2e6d0c9::t_78087a22b55f31 179-192
+  s_1da8b1c2e6d0c9::t_8c0b9b58549881 322-327,331,334
+packages/workshop-backend/__tests__/spaces-tree.test.ts
+  s_dd2417a6d5bd82::t_1171acca10bf7a 617-619,633-634
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 617-619,633-634
+packages/workshop-backend/cloudflare.config.ts
+  s_dd2417a6d5bd82::t_5a77bd22278db6 83-84
+  s_1da8b1c2e6d0c9::t_9263bcaef8a6c5 83-84
+packages/workshop-backend/src/server.ts
+  s_dd2417a6d5bd82::t_63fe1e7ea62b6c 4,27,78-80,208-212
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 27,78-80,208-211
+  s_1da8b1c2e6d0c9::t_082f4fc7a61c61 212
+packages/workshop-backend/src/space-directory.ts
+  s_dd2417a6d5bd82::t_773ccb57a7b3f6 1-90
+  s_1da8b1c2e6d0c9::t_377023a460a7fa 1-90
+packages/workshop-backend/src/spaces.ts
+  s_dd2417a6d5bd82::t_14e15243ce133c 4-7,36-38,52,64-65,82,84-88,188-194,262-270,272,401,426,489,492-522,654,750-761,807-809,818,871,879,902,912,919,941-943,948,960-989,992-998
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 4-7,36-38,52,64-65,82,84-88,188-194,262-270,272,401,426,489,492-522,654,750-761,807-809,818,871,879,902,912,919,941-943,948,960-989,992-998
+packages/workshop-backend/src/storage-schema/space-storage.ts
+  s_dd2417a6d5bd82::t_c0cd38e8b940fe 43-51,59-61,63-64,140,146-150,153-154,156-164
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 43-51,59-61,63-64,140,146-150,153-154,156-164
+packages/workshop-backend/vitest.config.ts
+  s_dd2417a6d5bd82::t_46900be8019c61 105
+  s_1da8b1c2e6d0c9::t_0f8c713b1fa134 105
+packages/workshop-backend/wrangler.jsonc
+  s_dd2417a6d5bd82::t_8e8835ae7d22fc 85-90
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 85-90
+scripts/release/testdata/golden-manifest.json
+  s_dd2417a6d5bd82::t_477e7ecaa2aa63 1452-1457
+  s_1da8b1c2e6d0c9::t_1ab1a28f51f82f 1452-1457
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8e614d71dc481202d94e9f72a465e7cf2058ed91",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

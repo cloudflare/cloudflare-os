@@ -1,0 +1,21 @@
+packages/workshop-shared/src/api.ts
+  s_1da8b1c2e6d0c9::t_e39c37d255e3b8 553,2550-2551,2555-2572
+  s_1da8b1c2e6d0c9::t_8f55f834a410be 554-557
+  s_1da8b1c2e6d0c9::t_dddf45520a6255 2573
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8e44c86f10a738a504618fb0f9b2e424f36e3b62",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
