@@ -1,7 +1,16 @@
 packages/integration-tests/__tests__/workshop-space-sync-writes.test.ts
   s_dd2417a6d5bd82::t_184dbdb7530de6 1-298
+  s_1da8b1c2e6d0c9::t_b389a146716623 1-7,10-24,27-91,101-133,150-180,182-219,222,224,227-255,257-279,294-298
+  s_1da8b1c2e6d0c9::t_8a8cc20be6eed7 8-9,92-100,181,280-286,292-293
+  s_1da8b1c2e6d0c9::t_c33c668738193a 134-149,220-221,226,256
+  s_1da8b1c2e6d0c9::t_b16196db6a2106 223,225
+  s_1da8b1c2e6d0c9::t_9299735447d435 25-26,287-291
 packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
   s_dd2417a6d5bd82::t_ff84aa8ff9bb58 33-34,105-106,365,367-368,387-391,397-425,428-441,445,1303-1304,1311-1354
+  s_1da8b1c2e6d0c9::t_0ca1d2aabefa32 412-420,1311-1312
+  s_1da8b1c2e6d0c9::t_dbc3cdd1e608b7 105-106,365,367-368,387-391,397-411,421-425,428-441,445,1303-1304,1313-1314,1317-1324,1329-1353
+  s_1da8b1c2e6d0c9::t_13dcf583c26e15 1315-1316,1325-1328
+  s_1da8b1c2e6d0c9::t_291e88f062d8f1 1354
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -9,6 +18,14 @@ packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
   "base_commit_sha": "e36fec558888cd964c1f077ae1dd4cda2e64d15a",
   "prompts": {},
   "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_dd2417a6d5bd82": {
       "agent_id": {
         "tool": "claude",

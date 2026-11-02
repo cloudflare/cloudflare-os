@@ -1,13 +1,26 @@
 packages/workshop-frontend/src/GadgetEditor.tsx
   s_dd2417a6d5bd82::t_eb0fb2d241bb95 477,1170-1171
   s_dd2417a6d5bd82::t_c7806370ab57e7 2,73,465-470,472,518,1052,1056,1197,1209,1219,1230,1333,1338,1349,1357
+  s_dd2417a6d5bd82::t_71249bb9ff6d86 465-466,469
+  s_dd2417a6d5bd82::t_4f7c3eae7cee6a 73,467-468,472,518,1052,1197,1219,1333,1349
+  s_dd2417a6d5bd82::t_5e5d8ae10d3ea8 2,470
+  s_dd2417a6d5bd82::t_65342520a972e5 1056,1209,1230,1338,1357
 packages/workshop-frontend/src/workspaceSearch.test.tsx
   s_dd2417a6d5bd82::t_c7806370ab57e7 1-109
+  s_dd2417a6d5bd82::t_d88a6c47080a2e 4,29-32
+  s_dd2417a6d5bd82::t_c3cae2ba496a5e 1-3,5-28,33-109
 packages/workshop-frontend/src/workspaceSearch.ts
   s_dd2417a6d5bd82::t_eb0fb2d241bb95 12-16,37
   s_dd2417a6d5bd82::t_c7806370ab57e7 1-11,17-36,38-59
+  s_dd2417a6d5bd82::t_cc637044441492 54
+  s_dd2417a6d5bd82::t_e29503db341ace 4-6,11,17-27,32-36,38
+  s_dd2417a6d5bd82::t_71249bb9ff6d86 7-10
+  s_dd2417a6d5bd82::t_4f7c3eae7cee6a 1-3,39-53,55-59
+  s_dd2417a6d5bd82::t_a8fd27c7bef0c0 28-31
 packages/workshop-frontend/src/routes/workspace.$id.tsx
   s_dd2417a6d5bd82::t_c7806370ab57e7 3,5-7,11-12
+  s_dd2417a6d5bd82::t_dcbe80f61972e9 5-7
+  s_dd2417a6d5bd82::t_c79065ed9f3763 3,11-12
 ---
 {
   "schema_version": "authorship/3.0.0",

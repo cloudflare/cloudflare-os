@@ -1,0 +1,26 @@
+packages/workshop-shared/src/api.ts
+  s_dd2417a6d5bd82::t_93e7e752856281 5923-5925,6027-6028
+  s_dd2417a6d5bd82::t_aea8198324eebe 513
+  s_dd2417a6d5bd82::t_01be53a1d864b0 5919-5922,5926-5966,5970-5990,5993-6026,6029-6046,6048-6055,6058-6062
+  s_dd2417a6d5bd82::t_8ce00023ed7367 5967-5969
+  s_dd2417a6d5bd82::t_c0f244da7f787e 508-512,514-539
+  s_dd2417a6d5bd82::t_b47c9146a54373 5991-5992
+  s_dd2417a6d5bd82::t_9749056199e364 6056-6057
+  s_dd2417a6d5bd82::t_d3552c227491c6 6047
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2ffbf1e7668ad3531c151252afb4f4b3e3433c21",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
