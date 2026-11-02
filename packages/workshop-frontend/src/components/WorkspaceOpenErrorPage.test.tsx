@@ -87,6 +87,16 @@ describe('WorkspaceOpenErrorPage', () => {
       .toEqual(['Go to workspaces', 'Try again'])
   })
 
+  it('tells a visitor a published workspace is not visible yet, naming no workspace', async () => {
+    const { container: renderedContainer } = await render('not-visible')
+
+    expect(renderedContainer.querySelector('h1')?.textContent).toBe("This workspace isn't visible yet")
+    expect(renderedContainer.textContent)
+      .toContain("It's published, but a workspace above it in its space isn't.")
+    expect([...renderedContainer.querySelectorAll('button')].map(button => button.textContent))
+      .toEqual(['Go to workspaces', 'Try again'])
+  })
+
   it('keeps unexpected failures retryable', async () => {
     const { container: renderedContainer } = await render('unexpected')
 
@@ -106,6 +116,9 @@ describe('WorkspaceOpenErrorPage', () => {
     expect(classifyWorkspaceOpenFailure(
       createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled),
     )).toBe('share-links-disabled')
+    expect(classifyWorkspaceOpenFailure(
+      createOpenGadgetError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible),
+    )).toBe('not-visible')
     expect(classifyWorkspaceOpenFailure(
       new Error(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied),
     )).toBe('unexpected')

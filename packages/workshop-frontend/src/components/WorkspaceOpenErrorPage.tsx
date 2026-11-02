@@ -1,4 +1,4 @@
-import { LinkBreak, Lock, MagnifyingGlass, WarningCircle } from '@phosphor-icons/react'
+import { EyeSlash, LinkBreak, Lock, MagnifyingGlass, WarningCircle } from '@phosphor-icons/react'
 import { useEffect, useId, useRef } from 'react'
 import {
   getOpenWorkspaceErrorCode,
@@ -7,7 +7,7 @@ import {
 import { WorkshopButton } from './WorkshopControls'
 
 export type WorkspaceOpenFailureKind =
-  'access-denied' | 'not-found' | 'share-links-disabled' | 'unexpected'
+  'access-denied' | 'not-found' | 'share-links-disabled' | 'not-visible' | 'unexpected'
 
 const CONTENT = {
   'access-denied': {
@@ -28,6 +28,13 @@ const CONTENT = {
     Icon: LinkBreak,
     retryable: true,
   },
+  // The server names no workspace, so neither does this.
+  'not-visible': {
+    title: "This workspace isn't visible yet",
+    message: "It's published, but a workspace above it in its space isn't. Ask the workspace owner, then try again.",
+    Icon: EyeSlash,
+    retryable: true,
+  },
   unexpected: {
     title: "We couldn't load this workspace",
     message: 'Try again. If the problem continues, return to your workspaces.',
@@ -44,6 +51,8 @@ export function classifyWorkspaceOpenFailure(error: unknown): WorkspaceOpenFailu
       return 'not-found'
     case OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled:
       return 'share-links-disabled'
+    case OPEN_GADGET_ERROR_CODES.workspaceNotVisible:
+      return 'not-visible'
     default:
       return 'unexpected'
   }
