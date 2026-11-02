@@ -28,7 +28,8 @@ person: **merging a pull request** and **an approving review**. An approval shar
 so enabling that kind does not cover it. A force push has its own kind (`github.forcePush`), so
 enabling ordinary pushes does not let history be rewritten. Excluded actions are still approved
 by hand as before. Each binding advertises through `getAutoApprovableActions()` only the eligible
-kinds its session can submit (an issue binding, for example, never lists pushes).
+kinds its session can submit: an issue binding never lists pushes, and a pull request binding lists
+pushes but not force pushes, since its push only fast-forwards.
 
 ## Setting Up GitHub OAuth Credentials
 

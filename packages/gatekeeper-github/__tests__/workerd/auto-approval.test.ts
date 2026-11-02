@@ -105,10 +105,10 @@ describe("auto-approval", () => {
   it("advertises, per binding, exactly the eligible kinds its actions can carry, and never a merge", async () => {
     const issue = ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"]
       .map(type => `github.${type}`);
-    const pull = [...issue, "github.postReview", "github.replyToDiffComment"];
+    const pull = [...issue, "github.postReview", "github.replyToDiffComment", "github.push"];
     expect(await gatekeeper("issue").advertised()).toEqual(issue);
     expect(await gatekeeper("pull").advertised()).toEqual(pull);
     expect(await gatekeeper("repo").advertised()).toEqual(
-      ["github.createIssue", "github.createPullRequest", ...pull, "github.push", "github.forcePush"]);
+      ["github.createIssue", "github.createPullRequest", ...pull, "github.forcePush"]);
   });
 });

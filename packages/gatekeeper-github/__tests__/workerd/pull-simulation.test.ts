@@ -4,7 +4,8 @@
 // agent sequence: push a branch (queued), immediately create a pull request against it (queued),
 // then keep reading the pull request -- details, diff, commit list -- which must reflect the
 // pushed state even though nothing has reached GitHub yet. Also covered: queue-time branch
-// validation, the out-of-order-approval guard, and the push-rejection cascade.
+// validation, the out-of-order-approval guard, the push-rejection cascade, and pushes made
+// through a pull request to its head branch.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -154,15 +155,14 @@ function commitResponse(commit: FakeCommit) {
 /** A branch's repository in a pull request's REST shape. */
 type RestRepo = { owner: { login: string }, name: string };
 
-/**
- * A pull request's REST shape. `repo` names a branch's repository as GitHub spells it; omitted,
- * it is the bound repo as the binding spells it.
- */
-function pullResponse(
-  number: number,
-  head: { ref: string, sha: string, repo?: RestRepo },
-  base: { ref: string, sha: string, repo?: RestRepo },
-) {
+/** A pull request branch's REST shape, its `repo` null once its fork is deleted. */
+type RestBranch = { ref: string, sha: string, repo?: RestRepo | null };
+
+/** The bound repository as the binding spells it: an omitted branch `repo`. */
+const BOUND_REPO: RestRepo = { owner: { login: OWNER }, name: REPO };
+
+/** A pull request's REST shape. */
+function pullResponse(number: number, head: RestBranch, base: RestBranch) {
   return {
     number,
     html_url: `https://github.com/${OWNER}/${REPO}/pull/${number}`,
@@ -184,8 +184,8 @@ function pullResponse(
     additions: 1,
     deletions: 0,
     changed_files: 1,
-    head: { ref: head.ref, sha: head.sha, repo: head.repo ?? null },
-    base: { ref: base.ref, sha: base.sha, repo: base.repo ?? null },
+    head: { repo: BOUND_REPO, ...head },
+    base: { repo: BOUND_REPO, ...base },
   };
 }
 
@@ -399,6 +399,8 @@ async function repoGatekeeper() {
   return {
     preparePush: (branch: string, commitId: string, cache: TestGitCache) =>
       unwrap(hooks.preparePush(scenario, props, branch, commitId, false, stubOf(cache))),
+    preparePullRequestPush: (pullId: string, commitId: string, cache: TestGitCache) =>
+      unwrap(hooks.preparePullRequestPush(scenario, props, pullId, commitId, stubOf(cache))),
     submitPush: (queue: TestApprovalQueue, action: PushActionData) =>
       unwrap(hooks.submitPush(scenario, props, stubOf(queue), action, {
         title: "push", description: "test push",
@@ -727,20 +729,20 @@ describe("push rejection cascade", () => {
   });
 });
 
+const FORK = { owner: { login: "contributor" }, name: REPO };
+
+/** `topic` at OLD with pull request #7 on it, plus the agent commit HEAD1 on top of OLD. */
+function topicScenario() {
+  const github = scenarioGitHub();
+  github.branches.set("topic", OLD);
+  github.pulls.set(7, pullResponse(7, { ref: "topic", sha: OLD }, { ref: "main", sha: BASE }));
+  const cache = scenarioCache()
+    .withObject(HEAD1, "commit", commitPayload(TREE_1, [OLD], "feat: add new.txt"))
+    .withAncestry(OLD, HEAD1);
+  return { github, cache, pull: github.pulls.get(7)! };
+}
+
 describe("merge head binding", () => {
-  const FORK = { owner: { login: "contributor" }, name: REPO };
-
-  /** `topic` at OLD with pull request #7 on it, plus the agent commit HEAD1 on top of OLD. */
-  function topicScenario() {
-    const github = scenarioGitHub();
-    github.branches.set("topic", OLD);
-    github.pulls.set(7, pullResponse(7, { ref: "topic", sha: OLD }, { ref: "main", sha: BASE }));
-    const cache = scenarioCache()
-      .withObject(HEAD1, "commit", commitPayload(TREE_1, [OLD], "feat: add new.txt"))
-      .withAncestry(OLD, HEAD1);
-    return { github, cache, pull: github.pulls.get(7)! };
-  }
-
   it("binds the head a queued push leaves, and merges only at it", async () => {
     const { github, cache, pull } = topicScenario();
     const gk = await repoGatekeeper();
@@ -821,6 +823,62 @@ describe("merge head binding", () => {
 
     const { action } = await queueMerge(gk, "7");
     expect(action).toMatchObject({ expectedHeadSha: HEAD1, headBranch: "topic" });
+  });
+});
+
+describe("pushing to a pull request", () => {
+  it("pushes to its head branch over the queued pushes, and only as a fast-forward", async () => {
+    const { cache } = topicScenario();
+    cache.withObject(HEAD2, "commit", commitPayload(TREE_2, [HEAD1], "fix: review feedback"))
+      .withAncestry(HEAD1, HEAD2);
+    const gk = await repoGatekeeper();
+    await queuePush(gk, cache, "topic", HEAD1);
+
+    expect(await gk.preparePullRequestPush("7", HEAD2, cache))
+      .toMatchObject({ branch: "topic", expectedOldSha: HEAD1, newSha: HEAD2, force: false });
+    await expect(gk.preparePullRequestPush("7", BASE, cache))
+      .rejects.toThrow(/pull request #7: .* not a fast-forward .* or merge it in\.$/);
+  });
+
+  it("pushes to a provisional pull request's head branch, until its create is discarded", async () => {
+    scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache()
+      .withObject(HEAD2, "commit", commitPayload(TREE_2, [HEAD1], "fix: review feedback"))
+      .withAncestry(HEAD1, HEAD2);
+    await queuePush(gk, cache, "feature", HEAD1);
+    const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+
+    expect(await gk.preparePullRequestPush(pr.provisionalId, HEAD2, cache))
+      .toMatchObject({ branch: "feature", expectedOldSha: HEAD1, newSha: HEAD2 });
+    await gk.rejectAction(pr.approvalId);
+    await expect(gk.preparePullRequestPush(pr.provisionalId, HEAD2, cache))
+      .rejects.toThrow(`Provisional pull request ${pr.provisionalId} is no longer available.`);
+  });
+
+  it("refuses a fork's or merged pull request, and one whose head branch is gone", async () => {
+    const { github, cache, pull } = topicScenario();
+    github.pulls.set(9, pullResponse(9, { ref: "topic", sha: HEAD2, repo: FORK }, { ref: "main", sha: BASE }));
+    github.pulls.set(8, { ...pull, number: 8, state: "closed", merged_at: "2026-01-02T00:00:00Z" });
+    const gk = await repoGatekeeper();
+    await expect(gk.preparePullRequestPush("9", HEAD1, cache))
+      .rejects.toThrow("its head branch is in the fork contributor/widgets");
+    // Its head branch is still there, so only the merge says the push would not reach it.
+    await expect(gk.preparePullRequestPush("8", HEAD1, cache)).rejects.toThrow("it has been merged");
+
+    github.branches.delete("topic");
+    await expect(gk.preparePullRequestPush("7", HEAD1, cache))
+      .rejects.toThrow(`its head branch "topic" no longer exists`);
+  });
+
+  it("refuses a deleted fork's pull request, though this repository has a branch of its name", async () => {
+    const { github, cache } = topicScenario();
+    // GitHub reports no owner for a deleted fork, so this holds for a fork in this repository's own
+    // account too. HEAD1 fast-forwards this repository's `topic`, which the push must not move.
+    github.pulls.set(9, pullResponse(9, { ref: "topic", sha: HEAD2, repo: null }, { ref: "main", sha: BASE }));
+    const gk = await repoGatekeeper();
+    await expect(gk.preparePullRequestPush("9", HEAD1, cache))
+      .rejects.toThrow("its head branch was in a fork since deleted");
   });
 });
 

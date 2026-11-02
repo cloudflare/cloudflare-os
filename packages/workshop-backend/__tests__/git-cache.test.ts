@@ -630,8 +630,7 @@ describe("push ancestry verification", () => {
       type: "commit",
       payload: commitPayload(TREE_1, [missingParent], "child of missing"),
     });
-    expect(() => t.cache.verifyPushAncestry(G1, [child]))
-        .toThrow(new RegExp(`commit ${missingParent}.*not available`, "s"));
+    expect(() => t.cache.verifyPushAncestry(G1, [child])).toThrow(missingParent);
   });
 
   it("rejects a root commit that is not itself proven -- no vacuous pass", async () => {

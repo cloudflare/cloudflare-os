@@ -169,6 +169,8 @@ type SeedFacet = { seed(entries: Record<string, unknown>): Promise<void> };
 type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
   preparePush(branch: string, commitId: string, force: boolean, cache: RpcStub<GitCache>)
     : Promise<PushActionData | null>;
+  preparePullRequestPush(pullId: string, commitId: string, cache: RpcStub<GitCache>)
+    : Promise<PushActionData | null>;
   prepareCreatePullRequest(options: GitHubCreatePullRequestOptions)
     : Promise<CreatePullRequestActionData>;
   prepareMergePullRequest(pullId: string, options?: GitHubPullRequestMergeOptions)
@@ -271,6 +273,14 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   ): Promise<Outcome<PushActionData | null>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).preparePush(branch, commitId, force, cache));
+  }
+
+  async preparePullRequestPush(
+    facetName: string, props: GatekeeperProps,
+    pullId: string, commitId: string, cache: RpcStub<GitCache>,
+  ): Promise<Outcome<PushActionData | null>> {
+    return await outcome(() =>
+      this.#gatekeeper(facetName, props).preparePullRequestPush(pullId, commitId, cache));
   }
 
   async submitPush(
