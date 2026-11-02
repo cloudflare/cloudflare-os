@@ -774,6 +774,11 @@ restrictions. Throw when access is indeterminate (expired credentials or a provi
 The helper stores no verifier or observer-ID verdict: each call uses the supplied verifier,
 since an observer may reconnect with another account.
 
+Size the oracle for up to **10,000 subresource IDs per verifier call**, not the legacy tracker's
+`maxTrackedCollections`. Split IDs to fit the provider's per-request caps while staying within the
+Worker's subrequest limit. A shared tracker oracle must also handle all persisted history: lowering
+`maxTrackedCollections` does not shrink previously recorded sets.
+
 An existing `ObservationGate` converts a read with
 `gate.authorize(description, { kind: "subresources", ids })`. This scope only reports the IDs:
 it prepares no legacy state, exclusions, or fences. New code needs no gate: its constructor demands
