@@ -80,11 +80,11 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, and GitLab shows such
   logs only to Developers and above
   ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed test's
-  recorded output comes from the job that ran it, so test reports count too. When the connected
-  account is a **Maintainer**, a test report it reads needs **Maintainer** instead: a job can
-  restrict its reports to Maintainers
+  recorded output comes from the job that ran it, so test reports count too. A test report needs
+  **Maintainer** instead unless the connected account is a project member below Maintainer and
+  not an instance administrator: a job can restrict its reports to Maintainers
   ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)), and GitLab includes
-  those for a Maintainer. Collaborators already observing are checked again at that role on each
+  those for a Maintainer and for an administrator, whatever its membership. Collaborators already observing are checked again at that role on each
   of those reads, and left out of them if they fall short. A connection made before this version
   did not record its collaborators, so
   those reads cannot leave out one admitted then: on it, job logs and test reports are refused
@@ -279,10 +279,11 @@ report, which raises the bar from Reporter to Developer (see [CI status](#ci-sta
 maintainer can grant the collaborator Developer; otherwise share a workspace that has not read
 CI job logs or test reports.
 
-### "This workspace has read CI test reports from this GitLab project through a Maintainer's connection …"
+### "This workspace has read CI test reports from this GitLab project through a connection that may have Maintainer access …"
 
-The connected account is a Maintainer, so the test reports it read may include ones a job keeps
-from anyone below Maintainer, and the collaborator is below Maintainer (see [CI status](#ci-status)).
+The connected account is a Maintainer, an instance administrator, or not a project member, so the
+test reports it read may include ones a job keeps from anyone below Maintainer, and the
+collaborator is below Maintainer (see [CI status](#ci-status)).
 A project owner can grant the collaborator Maintainer; otherwise share a workspace whose test
 reports were read through a Developer's connection, or none at all.
 

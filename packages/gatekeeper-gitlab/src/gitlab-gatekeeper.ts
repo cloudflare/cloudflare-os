@@ -1733,20 +1733,27 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * A test-report read, with the set it discloses. GitLab filters reports by what the reading
    * account may download, so through a Maintainer they can include one a job restricts to
    * Maintainers (`artifacts:access: maintainer`), and observers need Maintainer too. Only a
-   * confirmed membership below Maintainer has had those left out, so only then is Developer exact:
-   * an instance admin who is no member downloads everything, and an unconfirmed role (a reconnect
-   * mid-probe) is treated the same. The report beside the probe may have used the replaced token,
-   * so the pair is fenced to one connection and refused if it moved.
+   * confirmed membership below Maintainer, held by a user who is not an administrator, has had
+   * those left out, so only then is Developer exact: GitLab grants an administrator Maintainer
+   * access whatever its membership row says, and an unconfirmed role (a reconnect mid-probe) is
+   * treated as Maintainer. Admin status is read fresh, since a promotion needs no reconnect. The
+   * report beside the probes may have used the replaced token, so all three are fenced to one
+   * connection and refused if it moved.
    */
   async #readTestReport<T>(read: () => Promise<T>): Promise<{ set: CiDataSet; report: T }> {
     this.#requireObserverRoster();
     const account = this.#userAccount();
     const { generation } = await account.getUser();
-    const [level, report] = await Promise.all([projectMembershipLevel(this.env, account, this.#projectPath()), read()]);
+    const [level, user, report] = await Promise.all([
+      projectMembershipLevel(this.env, account, this.#projectPath()),
+      this.#readApi(api => api.getCurrentUser()),
+      read(),
+    ]);
     if ((await account.getUser()).generation !== generation) {
       throw new Error("The GitLab connection changed during this read; read again.");
     }
-    return { set: level !== null && level < MAINTAINER_ACCESS_LEVEL ? "ci-logs" : "ci-test-reports", report };
+    const belowMaintainer = level !== null && level < MAINTAINER_ACCESS_LEVEL && user.is_admin !== true;
+    return { set: belowMaintainer ? "ci-logs" : "ci-test-reports", report };
   }
 
   async pipelineTestReport(pipelineId: number): Promise<{ set: CiDataSet; report: GitLabTestReportSummary }> {
@@ -1909,7 +1916,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           ? verifier.hasProjectAccess(this.#projectPath(), CI_DATA_ACCESS_LEVELS[id as CiDataSet])
           : false)),
       denyMessage: setId => setId === "ci-test-reports"
-        ? "This workspace has read CI test reports from this GitLab project through a Maintainer's connection, " +
+        ? "This workspace has read CI test reports from this GitLab project through a connection that may have Maintainer access, " +
           "which can include reports GitLab shows only to members with the Maintainer role or above, so this " +
           "collaborator cannot be allowed to observe them."
         : "This workspace has read CI job logs or test reports from this GitLab project, which GitLab " +

@@ -75,6 +75,8 @@ class CiFake extends FakeGitLab {
   readonly members = new Map<string, number>();
   /** The connected account's access level on the project; `null` for no membership. */
   ownerAccess: number | null = 40;
+  /** Whether the connected account is an instance administrator, which GitLab tells only it. */
+  ownerIsAdmin = false;
   /** Shas at which `.gitlab-ci.yml` exists. */
   readonly ciConfigAt = new Set<string>();
   /** The project's pipelines, newest first; the listing filters them by `sha` as GitLab does. */
@@ -97,7 +99,7 @@ class CiFake extends FakeGitLab {
     }));
     this.on("GET", /^\/api\/v4\/user$/, request => {
       const name = request.headers.get("authorization")!.replace("Bearer ", "");
-      return name === "test-token" ? json(fx.currentUserResponse.data)
+      return name === "test-token" ? json({ ...fx.currentUserResponse.data, ...this.ownerIsAdmin ? { is_admin: true } : {} })
         : json({ id: userId(name), username: name, name, web_url: `https://gitlab.example.com/${name}` });
     });
     this.on("GET", new RegExp(`^/api/v4/projects/${P}/members/all\\?`), request => {
@@ -915,7 +917,7 @@ describe("observers once logs are read", () => {
     // Through a Maintainer, GitLab includes reports a job restricts to Maintainers.
     const { props, name } = await setup(gateFake(), { developer: 30, maintainer: 40 });
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
-    await expect(observer(name, props, "developer")).rejects.toThrow(/through a Maintainer's connection.*Maintainer role or above/);
+    await expect(observer(name, props, "developer")).rejects.toThrow(/may have Maintainer access.*Maintainer role or above/);
     await observer(name, props, "maintainer");
   });
 
@@ -932,11 +934,15 @@ describe("observers once logs are read", () => {
     await observer(name, props, "developer2");
   });
 
-  it("holds the Maintainer bar for a test report read by an account that is no member", async () => {
-    // An instance admin reads every project without a membership row, and downloads what a job
-    // restricts to Maintainers; "no row" is not "below Maintainer".
+  it.each([
+    ["no member", null, false],
+    ["an administrator holding a Developer membership", 30, true],
+  ] as const)("holds the Maintainer bar for a test report read by %s", async (_, access, admin) => {
+    // GitLab grants an administrator Maintainer access whatever its membership row says, so it
+    // downloads what a job restricts to Maintainers; "no row" is not "below Maintainer" either.
     const fake = gateFake();
-    fake.ownerAccess = null;
+    fake.ownerAccess = access;
+    fake.ownerIsAdmin = admin;
     const { props, name } = await setup(fake, { developer: 30, maintainer: 40 });
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
     await expect(observer(name, props, "developer")).rejects.toThrow(/Maintainer role or above/);

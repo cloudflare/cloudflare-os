@@ -32,6 +32,8 @@ export type GitLabUserResponse = {
   web_url: string;
   email?: string | null;
   confirmed_at?: string | null;
+  /** Sent to administrators only, as `true`; absent for everyone else. */
+  is_admin?: boolean;
 };
 
 /** A user as it appears nested in issuables and elsewhere. */
