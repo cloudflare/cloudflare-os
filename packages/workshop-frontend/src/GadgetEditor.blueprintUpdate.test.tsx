@@ -64,6 +64,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@tanstack/react-router', () => ({
   useParams: () => ({ id: 'workspace' }),
+  useMatch: () => ({ fullPath: '/workspace/$id', params: { id: 'workspace' } }),
   useNavigate: () => mocks.navigate,
   useSearch: () => mocks.search,
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -164,7 +165,7 @@ async function openEditor(screen: 'phone' | 'desktop') {
     configurable: true,
     value: (query: string) => ({ matches: screen === 'phone' && query === '(width < 48rem)' }),
   })
-  await act(async () => { root.render(<GadgetEditor />) })
+  await act(async () => { root.render(<GadgetEditor workspaceId="workspace" />) })
 }
 
 function button(name: string): HTMLButtonElement {

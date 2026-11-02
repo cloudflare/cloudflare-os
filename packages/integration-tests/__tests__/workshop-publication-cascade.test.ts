@@ -17,7 +17,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, slugify, type AuthenticatedApi, type Overseer,
+  getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, slugify, type AuthenticatedApi, type Overseer,
   type Space,
 } from "@gadgets/workshop-shared/api";
 import { type Harness, startTestGatekeeperHarness } from "../src/harness.js";
@@ -46,7 +46,7 @@ function requireHarness(): Harness {
   return harness;
 }
 
-const { workspaceAccessDenied, workspaceNotVisible } = OPEN_GADGET_ERROR_CODES;
+const { workspaceAccessDenied, workspaceNotVisible } = OPEN_WORKSPACE_ERROR_CODES;
 
 /** A new account `username`, signed up on a session of its own that `stack` owns. */
 async function account(stack: DisposableStack, username: string)
@@ -70,7 +70,7 @@ async function session(stack: DisposableStack, username: string)
 async function listedWorkspace(
     stack: DisposableStack, ownerName: string, key: string | undefined, space: RpcStub<Space>,
     title: string, parentId?: string) {
-  const workspace = stack.use(await (await session(stack, ownerName)).newGadget(key, parentId));
+  const workspace = stack.use(await (await session(stack, ownerName)).newWorkspace(key, parentId));
   const { id } = await workspace.getMetadata();
   await workspace.setTitle(title);
   await workspace.newChat("Seen activity, with no agent", null);
@@ -106,10 +106,10 @@ const settledOpen = (username: string, id: string) =>
   waitFor(`${username} to open workspace ${id} or be refused it`, async () => {
     using stack = new DisposableStack();
     try {
-      stack.use(await (await session(stack, username)).openGadget(id));
+      stack.use(await (await session(stack, username)).openWorkspace(id));
       return "opened";
     } catch (error) {
-      return getOpenGadgetErrorCode(error) ?? null;
+      return getOpenWorkspaceErrorCode(error) ?? null;
     }
   });
 
@@ -145,7 +145,7 @@ it.concurrent("a published workspace under an unpublished one admits nobody thro
   // that names neither the workspace that holds it back nor this one. Handbook he is refused
   // as any unpublished workspace is.
   expect(await settledOpen(bobName, child.id)).toBe(workspaceNotVisible);
-  const message = await refusal(bob.openGadget(child.id));
+  const message = await refusal(bob.openWorkspace(child.id));
   for (const named of [parent.id, child.id, "Handbook", "Holidays"]) {
     expect(message).not.toContain(named);
   }
@@ -170,9 +170,9 @@ it.concurrent("a published workspace under an unpublished one admits nobody thro
   // workspace's own restart and not Handbook's.
   await parent.workspace.setPublicAccess("use");
   expect(await entryOf(space, child.id)).not.toHaveProperty("hiddenBy");
-  using openedParent = await (await session(stack, bobName)).openGadget(parent.id);
+  using openedParent = await (await session(stack, bobName)).openWorkspace(parent.id);
   expect(await openedParent.getMetadata()).toMatchObject({ id: parent.id, role: "use" });
-  using openedChild = await (await session(stack, bobName)).openGadget(child.id);
+  using openedChild = await (await session(stack, bobName)).openWorkspace(child.id);
   expect(await openedChild.getMetadata()).toMatchObject({ id: child.id, role: "use" });
   expect((await visiting.listWorkspaces()).map(({ id }) => id))
       .toEqual([notice.id, parent.id, child.id]);
@@ -189,7 +189,7 @@ it.concurrent("a published workspace under an unpublished one admits nobody thro
   expect((await visiting.listWorkspaces()).map(({ id }) => id)).toEqual([notice.id]);
 
   // Holidays is still published: only the workspace above it changed.
-  using reopened = await (await session(stack, aliceName)).openGadget(child.id);
+  using reopened = await (await session(stack, aliceName)).openWorkspace(child.id);
   expect(await reopened.getMetadata()).toMatchObject({ publicAccess: "use" });
 });
 
@@ -217,7 +217,7 @@ it.concurrent("a member of the space opens a published workspace that one above 
       .toMatchObject({ published: "build", hiddenBy: parent.id });
   expect(await entryOf(space, child.id))
       .toMatchObject({ published: "build", hiddenBy: parent.id });
-  using opened = await (await session(stack, bobName)).openGadget(child.id);
+  using opened = await (await session(stack, bobName)).openWorkspace(child.id);
   expect(await opened.getMetadata()).toMatchObject({ id: child.id, role: "use" });
   // Carol, who is not a member, is refused it as published but not visible.
   expect(await settledOpen(carolName, child.id)).toBe(workspaceNotVisible);
@@ -225,7 +225,7 @@ it.concurrent("a member of the space opens a published workspace that one above 
   // Handbook published, the publication takes effect for both: Bob's next session builds, and
   // Carol opens.
   await parent.workspace.setPublicAccess("use");
-  using building = await (await session(stack, bobName)).openGadget(child.id);
+  using building = await (await session(stack, bobName)).openWorkspace(child.id);
   expect(await building.getMetadata()).toMatchObject({ id: child.id, role: "build" });
   expect(await settledOpen(carolName, child.id)).toBe("opened");
 });

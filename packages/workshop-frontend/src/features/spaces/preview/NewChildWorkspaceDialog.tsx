@@ -43,7 +43,7 @@ const blockerName = (title: string | undefined) =>
 
 /**
  * Creates a workspace in a space's tree from one of the deployment's output formats
- * (`AuthenticatedApi.newGadgetFromBlueprint`), under `parent` or at the top. A format that needs
+ * (`AuthenticatedApi.newWorkspaceFromBlueprint`), under `parent` or at the top. A format that needs
  * its connections set up first is shown but cannot be chosen here: it is created from its own
  * page. A format whose blueprint is published by default (`BlueprintMetadata.publication`)
  * offers 'Publish to everyone signed in', checked, and says what that means; unchecking it opts
@@ -124,7 +124,7 @@ export const NewChildWorkspaceDialog = ({ spaceKey, parent, listing, onClose, on
     setFailure(null)
     // Not awaited: the metadata read is pipelined on the creation, and disposing the promise
     // disposes the workspace it resolves to.
-    const overseer: RpcStub<Overseer> = authenticatedApi.newGadgetFromBlueprint(format.blueprintId, {}, {
+    const overseer: RpcStub<Overseer> = authenticatedApi.newWorkspaceFromBlueprint(format.blueprintId, {}, {
       ...(spaceKey !== undefined && { spaceKey }),
       ...(parent !== null && { parentId: parent.id }),
       // A format whose default could not be read publishes nothing the user was not told of.

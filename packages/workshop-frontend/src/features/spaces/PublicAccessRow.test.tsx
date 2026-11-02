@@ -7,7 +7,7 @@ import type { RpcStub } from 'capnweb'
 import type {
   AuthenticatedApi,
   CollaboratorRole,
-  GadgetMetadata,
+  WorkspaceMetadata,
   Overseer,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
@@ -65,7 +65,7 @@ const render = async (metadata: Metadata, { listing = HIDDEN, spacesFlag = true,
   const setPublicAccess = vi.fn<(role: CollaboratorRole | null) => Promise<void>>(async () => {})
   const overseer = {
     setPublicAccess,
-    getMetadata: async (): Promise<GadgetMetadata> => ({ id: 'w-checklist', title: 'Checklist' }),
+    getMetadata: async (): Promise<WorkspaceMetadata> => ({ id: 'w-checklist', title: 'Checklist' }),
   } as unknown as RpcStub<Overseer>
   const holder = metadata.listedIn === DESIGN.key ? DESIGN : PERSONAL
   const space = fakeSpace(holder, isMember ? [member(ME, holder.role)] : [member(ADA, 'admin')], listing)
@@ -73,14 +73,14 @@ const render = async (metadata: Metadata, { listing = HIDDEN, spacesFlag = true,
     ? space.stub
     : fakeSpace(teamSpace(key, key), [member(ME, 'admin')]).stub))
   const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => [PERSONAL, DESIGN])
-  const listGadgets = vi.fn<AuthenticatedApi['listGadgets']>(async () => [])
-  const api = fakeApi({ listSpaces, listGadgets, openSpace }, { spacesFlag })
+  const listWorkspaces = vi.fn<AuthenticatedApi['listWorkspaces']>(async () => [])
+  const api = fakeApi({ listSpaces, listWorkspaces, openSpace }, { spacesFlag })
   await mount(
     <PublicAccessRow overseer={overseer} authenticatedApi={api} metadata={{ id: 'w-checklist', ...metadata }} />,
     api,
   )
   await settle()
-  return { setPublicAccess, openSpace, listSpaces, listGadgets, space }
+  return { setPublicAccess, openSpace, listSpaces, listWorkspaces, space }
 }
 
 const text = () => document.body.textContent ?? ''
@@ -171,12 +171,12 @@ describe('PublicAccessRow', () => {
   })
 
   it('opens no space, and says nothing of it, while no space lists the workspace', async () => {
-    const { openSpace, listSpaces, listGadgets } = await render({ publicAccess: 'use' })
+    const { openSpace, listSpaces, listWorkspaces } = await render({ publicAccess: 'use' })
 
     expect(text()).toContain('Can open this workspace and use its gadgets without being invited.')
     expect(openSpace).not.toHaveBeenCalled()
     expect(listSpaces).not.toHaveBeenCalled()
-    expect(listGadgets).not.toHaveBeenCalled()
+    expect(listWorkspaces).not.toHaveBeenCalled()
     expect(text()).not.toContain('Not visible to others')
   })
 

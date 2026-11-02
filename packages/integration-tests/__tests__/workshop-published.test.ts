@@ -20,7 +20,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, slugify, type AuthenticatedApi, type Overseer,
+  getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, slugify, type AuthenticatedApi, type Overseer,
   type Space,
 } from "@gadgets/workshop-shared/api";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
@@ -91,7 +91,7 @@ async function team(stack: DisposableStack) {
  */
 async function listedWorkspace(
     stack: DisposableStack, ownerName: string, key: string, space: RpcStub<Space>, title: string) {
-  const workspace = stack.use(await (await session(stack, ownerName)).newGadget(key));
+  const workspace = stack.use(await (await session(stack, ownerName)).newWorkspace(key));
   const { id } = await workspace.getMetadata();
   await workspace.setTitle(title);
   await workspace.newChat("Seen activity, with no agent", null);
@@ -127,17 +127,17 @@ const refused = (username: string, id: string) =>
   waitFor(`${username} to open workspace ${id} or be refused it`, async () => {
     using stack = new DisposableStack();
     try {
-      stack.use(await (await session(stack, username)).openGadget(id));
+      stack.use(await (await session(stack, username)).openWorkspace(id));
       return false;
     } catch (error) {
-      return getOpenGadgetErrorCode(error) === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied
+      return getOpenWorkspaceErrorCode(error) === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied
           || null;
     }
   });
 
 /** The owner's own record of workspace `id`. */
 async function ownRecord(api: RpcStub<AuthenticatedApi>, id: string) {
-  const record = (await api.listGadgets()).find(gadget => gadget.id === id);
+  const record = (await api.listWorkspaces()).find(gadget => gadget.id === id);
   if (record === undefined) throw new Error(`Workspace ${id} is not in its owner's list`);
   return record;
 }
@@ -151,7 +151,7 @@ it.concurrent("anyone signed in opens a published workspace in its role, with no
 
   // Published at "use", Carol only uses, and may not publish.
   await workspace.setPublicAccess("use");
-  using viewing = await carol.openGadget(id);
+  using viewing = await carol.openWorkspace(id);
   expect(await viewing.getMetadata()).toMatchObject({ id, role: "use" });
   expect(await refusal(viewing.listChats())).toBe(USE_ONLY);
   expect(await refusal(viewing.setPublicAccess(null))).toBe(USE_ONLY);
@@ -165,7 +165,7 @@ it.concurrent("anyone signed in opens a published workspace in its role, with no
   expect(await ownRecord(alice, id)).toMatchObject({ publicAccess: "build" });
   expect((await space.listWorkspaces()).find(entry => entry.id === id))
       .toMatchObject({ published: "build" });
-  using building = await (await session(stack, carolName)).openGadget(id);
+  using building = await (await session(stack, carolName)).openWorkspace(id);
   expect(await building.getMetadata()).toMatchObject({ id, role: "build" });
   expect(await building.listChats()).toHaveLength(1);
   // What she may share is decided by the workspace's own sharing, which gives her nothing, and
@@ -176,18 +176,18 @@ it.concurrent("anyone signed in opens a published workspace in its role, with no
 
   // Bob, a "use" member, opens in the higher of his membership and the publication; as a
   // collaborator besides, he may share but still not publish.
-  using asMember = await bob.openGadget(id);
+  using asMember = await bob.openWorkspace(id);
   expect(await asMember.getMetadata()).toMatchObject({ role: "build" });
   expect(await refusal(asMember.setPublicAccess(null))).toMatch(OWNER_ONLY);
   await workspace.addCollaborator(bobName, "build");
-  using asCollaborator = await (await session(stack, bobName)).openGadget(id);
+  using asCollaborator = await (await session(stack, bobName)).openWorkspace(id);
   expect(await refusal(asCollaborator.setPublicAccess(null))).toMatch(OWNER_ONLY);
   expect(await workspace.getMetadata()).toMatchObject({ publicAccess: "build" });
 
   // Carol became no collaborator, and the workspace joined no list of hers.
   expect((await workspace.listCollaborators()).map(({ profile }) => profile.id))
       .toEqual([bobName]);
-  expect(await carol.listGadgets()).toEqual([]);
+  expect(await carol.listWorkspaces()).toEqual([]);
 });
 
 it.concurrent("lowering the publication, then withdrawing it, ends the session opened through it "
@@ -196,23 +196,23 @@ it.concurrent("lowering the publication, then withdrawing it, ends the session o
   const { aliceName, carolName, carol, key, space } = await team(stack);
   const { workspace, id } = await listedWorkspace(stack, aliceName, key, space, "Roadmap");
   await workspace.setPublicAccess("build");
-  using building = await carol.openGadget(id);
+  using building = await carol.openWorkspace(id);
   expect(await building.getMetadata()).toMatchObject({ role: "build" });
 
   // Lowered to "use", Carol loses the session she builds on, and the next one she opens only uses.
   await workspace.setPublicAccess("use");
   await severed(building);
-  using viewing = await (await session(stack, carolName)).openGadget(id);
+  using viewing = await (await session(stack, carolName)).openWorkspace(id);
   expect(await viewing.getMetadata()).toMatchObject({ role: "use" });
   expect(await refusal(viewing.listChats())).toBe(USE_ONLY);
 
   // Withdrawn, by the owner on a session of her own since the restart, she loses that one too,
   // and is refused from then on.
-  using reopened = await (await session(stack, aliceName)).openGadget(id);
+  using reopened = await (await session(stack, aliceName)).openWorkspace(id);
   await reopened.setPublicAccess(null);
   await severed(viewing);
   expect(await refused(carolName, id)).toBe(true);
-  using after = await (await session(stack, aliceName)).openGadget(id);
+  using after = await (await session(stack, aliceName)).openWorkspace(id);
   expect((await after.getMetadata()).publicAccess).toBeUndefined();
 });
 
@@ -236,7 +236,7 @@ it.concurrent.each([
   await workspace.setPublicAccess("use");
 
   // The connection is bound to no gadget, so Carol, who only uses, has nothing to verify.
-  using viewing = await carol.openGadget(id);
+  using viewing = await carol.openWorkspace(id);
   expect(await viewing.getMetadata()).toMatchObject({ role: "use" });
 
   // The observation withdraws the publication: it ends the session Carol holds, and from then
@@ -246,7 +246,7 @@ it.concurrent.each([
   expect(await refused(carolName, id)).toBe(true);
 
   // The workspace says so, and so does Alice's record once the workspace next reports to it.
-  using reopened = await (await session(stack, aliceName)).openGadget(id);
+  using reopened = await (await session(stack, aliceName)).openWorkspace(id);
   const metadata = await reopened.getMetadata();
   expect(metadata[flag]).toBe(true);
   expect(metadata.publicAccess).toBeUndefined();

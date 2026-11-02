@@ -403,7 +403,7 @@ const openWorkspaceErrors = codedErrorFamily<OpenWorkspaceErrorCode>({
   [OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled]:
       "Share links are disabled for this workspace because it contains sensitive data. " +
       "The owner must add each person directly.",
-  [OPEN_GADGET_ERROR_CODES.workspaceNotVisible]:
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible]:
       "This workspace is published, but not visible yet: its space does not list it yet, " +
       "or a workspace above it there is not published.",
 });
@@ -607,7 +607,7 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Re-sync the caller's workspace `workspaceId` from the source item it was synced from (see
-   * `GadgetMetadata.syncedFrom`): starts a space-sync job, through the account that synced it,
+   * `WorkspaceMetadata.syncedFrom`): starts a space-sync job, through the account that synced it,
    * into the space the workspace belongs to now, that syncs only that one item into that
    * workspace (`SpaceSyncRequest.scope` "item" in `@gadgets/workshop-shared/gatekeeper`). The
    * account replaces the workspace's content and all its comments with the source's, so whatever
@@ -845,7 +845,7 @@ export interface AuthenticatedApi extends RpcTarget {
    * personal space has no members besides its owner, so it opens the workspace to nobody else.
    *
    * A workspace that holds restricted data or is owner-invites-only
-   * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is listed by no space. For such
+   * (`WorkspaceMetadata.containsRestrictedData`, `ownerInvitesOnly`) is listed by no space. For such
    * a workspace `spaceKey` only records where its owner grouped it, and whether the owner may add
    * workspaces to that space is not checked once the workspace is one.
    */
@@ -1047,10 +1047,10 @@ export interface AuthenticatedApi extends RpcTarget {
    * The returned Overseer can be used immediately (pipelining-friendly).
    *
    * `options.spaceKey` and `options.parentId` place the new workspace exactly as `spaceKey` and
-   * `parentId` do for `newGadget()`: `spaceKey` must satisfy `isValidTeamSpaceKey()` or this
+   * `parentId` do for `newWorkspace()`: `spaceKey` must satisfy `isValidTeamSpaceKey()` or this
    * throws, and omitted means the caller's personal space. Whether the caller may add workspaces
    * to that space is checked when the space first lists the workspace, and a workspace that holds
-   * restricted data or is owner-invites-only is listed by no space, also as for `newGadget()`.
+   * restricted data or is owner-invites-only is listed by no space, also as for `newWorkspace()`.
    * A string in place of `options` is a `spaceKey`; it is accepted for one release, for clients
    * built before the object form.
    *
@@ -2470,7 +2470,7 @@ export type WorkspaceMetadata = {
    * ("use"). It does not say which of the three it came from, and only the first lets the user
    * share the workspace. Absent implies "build" for backwards compatibility.
    *
-   * On a record from `AuthenticatedApi.listGadgets` for a workspace shared with the user, this
+   * On a record from `AuthenticatedApi.listWorkspaces` for a workspace shared with the user, this
    * is the role the workspace's own sharing gave them at their last open, to which neither
    * membership of a space nor publication adds anything.
    */
@@ -2499,7 +2499,7 @@ export type WorkspaceMetadata = {
    * membership of a space gives no role on it (see `SpaceMemberRole`), and it is not published
    * to the deployment and cannot be (see `publicAccess`).
    *
-   * On a record from `AuthenticatedApi.listGadgets` for a workspace the caller owns, this is as
+   * On a record from `AuthenticatedApi.listWorkspaces` for a workspace the caller owns, this is as
    * the workspace last reported it, and may be absent for a workspace that has not reported yet,
    * exactly as for `containsRestrictedData`.
    */
@@ -2523,7 +2523,7 @@ export type WorkspaceMetadata = {
    * being published at that moment, for good.
    *
    * Carried by the metadata an `Overseer` reports to the owner and to anyone else who may build
-   * in the workspace, and by the owner's own record of it (what `AuthenticatedApi.listGadgets`
+   * in the workspace, and by the owner's own record of it (what `AuthenticatedApi.listWorkspaces`
    * returns for a workspace the caller owns), where it is as the workspace last reported it.
    * Anywhere else, as on a record of a workspace shared with the user (`owner` present) or on
    * the metadata of a session that may only use the workspace, its absence says nothing about
@@ -2534,7 +2534,7 @@ export type WorkspaceMetadata = {
   /**
    * The team space this workspace belongs to; absent means its owner's personal space. It is
    * only ever a team space key (see `isValidTeamSpaceKey`), never a personal one. Set by
-   * `AuthenticatedApi.newGadget` and `newGadgetFromBlueprint`, and changed by
+   * `AuthenticatedApi.newWorkspace` and `newWorkspaceFromBlueprint`, and changed by
    * `Overseer.moveToSpace`. The server changes it as well, with no call asking it to: when the
    * space it names refuses to list the workspace (see those methods for when that is decided),
    * the key is cleared, or set back to the team space that still lists the workspace. Until its
@@ -2545,7 +2545,7 @@ export type WorkspaceMetadata = {
    * it: no space lists such a workspace, the one the key names included.
    *
    * Set only on the owner's own record of the workspace, which is what
-   * `AuthenticatedApi.listGadgets` returns for a workspace the caller owns. A record of a
+   * `AuthenticatedApi.listWorkspaces` returns for a workspace the caller owns. A record of a
    * workspace shared with the user (`owner` present) and the metadata an `Overseer` reports never
    * carry it, so there its absence says nothing about where the workspace belongs. Which space
    * actually lists the workspace, for anyone who can open it, is `listedIn`.
@@ -2562,7 +2562,7 @@ export type WorkspaceMetadata = {
    * Absent while no space lists the workspace: before its space has acknowledged it, and while
    * it holds restricted data or is owner-invites-only (`containsRestrictedData`,
    * `ownerInvitesOnly`). Also absent when the workspace could not find out, so its absence does
-   * not prove the workspace is unlisted. Never on a record from `AuthenticatedApi.listGadgets`.
+   * not prove the workspace is unlisted. Never on a record from `AuthenticatedApi.listWorkspaces`.
    *
    * For presentation only, such as opening the right space's listing: it may lag the listing
    * (a change the server makes on its own, such as a team space refusing the workspace, may only
@@ -3016,7 +3016,7 @@ export interface Overseer extends RpcTarget {
    * throws, or null to return the workspace to its owner's personal space.
    *
    * After a move that succeeds the target space lists the workspace, the space it left no longer
-   * does, and `GadgetMetadata.spaceKey` on the owner's record follows. The workspace's address
+   * does, and `WorkspaceMetadata.spaceKey` on the owner's record follows. The workspace's address
    * does not move with it (see `SpaceWorkspaceInfo.slug`): the slugs it had in the space it left
    * stop resolving, and the target space gives it a new one as it does any workspace it comes to
    * list. When the owner may not add workspaces to the target space (see `SpaceKind` for who
@@ -3032,7 +3032,7 @@ export interface Overseer extends RpcTarget {
    * a move that is refused changes nothing.
    *
    * A move can also fail with no answer from a space, one that could not be reached for
-   * instance. This throws too, but `GadgetMetadata.spaceKey` may be left as the move would have
+   * instance. This throws too, but `WorkspaceMetadata.spaceKey` may be left as the move would have
    * set it, because the space may have carried out what it did not answer. A later sync of the
    * workspace with its space, which its next activity, change of title or move starts, then
    * either completes the move or returns the workspace to the space that still lists it. So
@@ -3040,10 +3040,10 @@ export interface Overseer extends RpcTarget {
    *
    * A workspace that has seen no activity yet is listed by no space, so for one the move is only
    * recorded: it is checked when the workspace first sees activity, with the outcome
-   * `AuthenticatedApi.newGadget` describes.
+   * `AuthenticatedApi.newWorkspace` describes.
    *
    * A workspace that holds restricted data or is owner-invites-only
-   * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is listed by no space either.
+   * (`WorkspaceMetadata.containsRestrictedData`, `ownerInvitesOnly`) is listed by no space either.
    * For such a workspace the move only records where its owner grouped it: the target does not
    * list it, and whether the owner may add workspaces to the target is not checked, so the move
    * does not throw for that.
@@ -3056,24 +3056,24 @@ export interface Overseer extends RpcTarget {
    * withdraw the publication. Owner only: anyone else is refused, whatever their role. Only a
    * single workspace is ever published, never a space.
    *
-   * `role` is a floor under every user's access (see `GadgetMetadata.publicAccess`): a user
+   * `role` is a floor under every user's access (see `WorkspaceMetadata.publicAccess`): a user
    * opens in the highest of it, their effective role as a collaborator and the role their
    * membership of the workspace's space gives them, and verifies the same connections before
-   * opening as a collaborator of that role (see `AuthenticatedApi.openGadget`). The publication
+   * opening as a collaborator of that role (see `AuthenticatedApi.openWorkspace`). The publication
    * is in effect only while the workspace is visible in its space: while its space lists it
    * (see `Space.listWorkspaces` for when a workspace is listed) and this entry and every entry
    * above it in the space's tree are published (see `SpaceWorkspaceInfo.parentId`,
    * `hiddenBy`). A published workspace that is not visible admits nobody through the
    * publication, and a user with no other role on it is refused, with the coded error
-   * `workspaceNotVisible` from `OPEN_GADGET_ERROR_CODES` once the space has answered that it is
-   * not visible (see `AuthenticatedApi.openGadget`). Collaborators and members of the
+   * `workspaceNotVisible` from `OPEN_WORKSPACE_ERROR_CODES` once the space has answered that it is
+   * not visible (see `AuthenticatedApi.openWorkspace`). Collaborators and members of the
    * space open in their own roles either way. It makes nobody a collaborator and confers no
    * power to share (see `CollaboratorRole`): someone who opens through it alone is not shown by
    * `listCollaborators`, can add no collaborator and create no share link, and the workspace
-   * does not join their own `AuthenticatedApi.listGadgets`.
+   * does not join their own `AuthenticatedApi.listWorkspaces`.
    *
    * Throws, whatever `role` is, while the workspace holds restricted data or is
-   * owner-invites-only (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a
+   * owner-invites-only (`WorkspaceMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a
    * workspace is not published and cannot be. A published workspace that becomes one of them
    * stops being published at that moment, as if its owner had withdrawn the publication.
    *
@@ -3086,7 +3086,7 @@ export interface Overseer extends RpcTarget {
    * `moveToSpace`). Raising the role disturbs nobody, and neither does the workspace becoming
    * visible: either applies from each user's next open.
    *
-   * When this returns, `GadgetMetadata.publicAccess` on the owner's record follows, and so does
+   * When this returns, `WorkspaceMetadata.publicAccess` on the owner's record follows, and so does
    * the workspace's entry in its space's listing (`SpaceWorkspaceInfo.published`), which is how
    * someone who is not a member of that space finds the workspace there (see `Space`). A
    * workspace that no space lists yet, one that has seen no activity for instance, has no entry
@@ -5853,7 +5853,7 @@ export type BlueprintMetadata = {
   /**
    * The role a workspace created from this blueprint is published with to everyone signed in
    * (see `Overseer.setPublicAccess`), unless its creator opts out
-   * (`AuthenticatedApi.newGadgetFromBlueprint`). Present only on blueprints the deployment ships,
+   * (`AuthenticatedApi.newWorkspaceFromBlueprint`). Present only on blueprints the deployment ships,
    * and honored only for those: it is never stored for an uploaded blueprint or one published
    * from a workspace.
    */
@@ -6372,18 +6372,18 @@ export function isValidSpaceKey(key: string): boolean {
  * In a workspace a member acts in the highest of the role their membership confers, their
  * effective role as a collaborator, if the workspace's own sharing gives them one, and the role
  * the workspace is published to the deployment with, if it is and that publication is in effect
- * (`GadgetMetadata.role`, `Overseer.setPublicAccess`), and
+ * (`WorkspaceMetadata.role`, `Overseer.setPublicAccess`), and
  * verifies the same connections before opening as a collaborator of that role (see
- * `AuthenticatedApi.openGadget`). Membership confers no power to share a
+ * `AuthenticatedApi.openWorkspace`). Membership confers no power to share a
  * workspace: what a user may grant is bounded by their effective role as a collaborator (see
  * `CollaboratorRole`), so a member who has none can add no collaborator and create no share
  * link. Nor does it make the member a collaborator: `Overseer.listCollaborators` does not show
  * them, and a workspace they open through the space alone does not join their own
- * `AuthenticatedApi.listGadgets`.
+ * `AuthenticatedApi.listWorkspaces`.
  *
  * The role reaches only a workspace that belongs to the space and that the space lists (see
  * `Space.listWorkspaces`). So it reaches none that holds restricted data or is owner-invites-only
- * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`), from the moment the workspace
+ * (`WorkspaceMetadata.containsRestrictedData`, `ownerInvitesOnly`), from the moment the workspace
  * becomes so and whether or not it has left the listing yet, and none its owner has not been
  * active in yet.
  *
@@ -6474,18 +6474,18 @@ export function slugify(title: string): string {
  * One workspace in a space's listing, as returned by `Space.listWorkspaces`. Its `slug`,
  * `parentId` and `position` are the space's own to give and change; the rest is what the space
  * recorded when the workspace last registered with it. Opening the workspace is
- * `AuthenticatedApi.openGadget(id)`, which a member of the space may do in the role their
+ * `AuthenticatedApi.openWorkspace(id)`, which a member of the space may do in the role their
  * membership gives them, if that role reaches the workspace (see `SpaceMemberRole`), and which
  * anyone signed in may do while the workspace is published and visible in the space (see
  * `published`, `hiddenBy`).
  *
  * No entry describes a workspace that holds restricted data or is owner-invites-only
- * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a workspace is never
+ * (`WorkspaceMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a workspace is never
  * listed, and one that becomes so is removed from the listing. A workspace is listed only once
  * the server knows it is neither.
  */
 export interface SpaceWorkspaceInfo {
-  /** The workspace's id, as in `GadgetMetadata.id`. */
+  /** The workspace's id, as in `WorkspaceMetadata.id`. */
   id: string;
 
   /** The workspace's title. A stored snapshot, which may trail a change of title. */
@@ -6503,7 +6503,7 @@ export interface SpaceWorkspaceInfo {
   /**
    * The workspace's current address within the space, unique within it. Absent until the
    * workspace has been given a title of its own: a placeholder title, the one
-   * `AuthenticatedApi.newGadget` creates a workspace with ("Untitled Workspace") or the
+   * `AuthenticatedApi.newWorkspace` creates a workspace with ("Untitled Workspace") or the
    * "Untitled Gadget" an older workspace may still carry, gives it none. The space derives the
    * slug from the first other title it records for the workspace, as `slugify()` of that title
    * or, when another workspace of the space uses or used to use that slug, ending in the first
@@ -6517,7 +6517,7 @@ export interface SpaceWorkspaceInfo {
   /**
    * The id of the entry of this same listing that the workspace sits under in the space's tree;
    * absent when it sits at the top. Set when the space first lists the workspace (see
-   * `AuthenticatedApi.newGadget`) and changed by `Space.moveWorkspace`. When the entry it sits
+   * `AuthenticatedApi.newWorkspace`) and changed by `Space.moveWorkspace`. When the entry it sits
    * under leaves the listing, the entries that sat directly under that one take its place: they
    * move under its own parent, in their order, where it stood among its siblings.
    */
@@ -6537,7 +6537,7 @@ export interface SpaceWorkspaceInfo {
    * entries someone who is not a member of the space sees are the ones that have this set and
    * that sit under no entry without it, however far up the tree (see `Space`).
    *
-   * A stored snapshot of `GadgetMetadata.publicAccess`, like `title`: `setPublicAccess` brings
+   * A stored snapshot of `WorkspaceMetadata.publicAccess`, like `title`: `setPublicAccess` brings
    * it up to date before it returns, and where that failed it follows at the workspace's next
    * activity, change of title or move. It decides what the space shows a visitor; whether a
    * user may open the workspace, and in what role, is decided by the workspace when it is
@@ -6551,7 +6551,7 @@ export interface SpaceWorkspaceInfo {
    * Set on a published entry (see `published`) that sits under an unpublished one, however far
    * up the tree: the id of the nearest unpublished entry above it. While this is set the
    * publication admits nobody, and someone with no other role on the workspace is refused with
-   * the coded error `workspaceNotVisible` from `OPEN_GADGET_ERROR_CODES`. Only members of the
+   * the coded error `workspaceNotVisible` from `OPEN_WORKSPACE_ERROR_CODES`. Only members of the
    * space see it, since a visitor is never shown such an entry. Absent on an unpublished entry
    * and on one whose every ancestor is published.
    */
@@ -6606,7 +6606,7 @@ export interface Space extends RpcTarget {
    * Available to every member, whatever their role, and to a visitor, who gets only the entries
    * of published workspaces (`SpaceWorkspaceInfo.published`) whose every ancestor in the tree is
    * published too: an unpublished entry hides everything under it. A workspace is listed once it
-   * has seen activity, so one that is still provisional (see `AuthenticatedApi.newGadget`) is
+   * has seen activity, so one that is still provisional (see `AuthenticatedApi.newWorkspace`) is
    * absent, and it stays listed after its owner stops being a member. An entry carries the
    * workspace's address within the space once it has one (`SpaceWorkspaceInfo.slug`); a
    * workspace that leaves the listing, for any of the reasons below or because it was moved or
@@ -6614,7 +6614,7 @@ export interface Space extends RpcTarget {
    * tree, in their order.
    *
    * A workspace that holds restricted data or is owner-invites-only
-   * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is never listed, because a
+   * (`WorkspaceMetadata.containsRestrictedData`, `ownerInvitesOnly`) is never listed, because a
    * title can derive from the data that made the workspace so, and one that becomes so is removed
    * from the listing for good. A workspace is listed only once the server knows it is neither;
    * until then it is absent, as if it were one of them.
@@ -6633,7 +6633,7 @@ export interface Space extends RpcTarget {
    * reaches a listing.
    *
    * A member may open each workspace listed that their role reaches (see `SpaceMemberRole`),
-   * with `AuthenticatedApi.openGadget`, in the role their membership gives them. Anyone signed
+   * with `AuthenticatedApi.openWorkspace`, in the role their membership gives them. Anyone signed
    * in may open a published one whose every ancestor in the tree is published too (one without
    * `SpaceWorkspaceInfo.hiddenBy`), in at least the role it is published with.
    */
@@ -6653,7 +6653,7 @@ export interface Space extends RpcTarget {
    * the workspace went.
    *
    * Resolving a slug grants nothing of its own. Opening the workspace is
-   * `AuthenticatedApi.openGadget(workspace.id)`, which the caller may do as a member of the
+   * `AuthenticatedApi.openWorkspace(workspace.id)`, which the caller may do as a member of the
    * space if their role reaches the workspace (see `SpaceMemberRole`), and as anyone signed in
    * if the workspace is published.
    */

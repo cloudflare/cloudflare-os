@@ -302,6 +302,7 @@ export const StartSpaceSyncDialog = ({
                 ? (selected) => setSelection({ key: shown.key, ready: selected })
                 : undefined}
               resourceUrlPattern={pattern ?? undefined}
+              acceptedResourceUrlPatterns={pattern ? [pattern] : []}
             />
             {shown?.status === 'failed' && (
               <WorkshopButton className="!h-8 w-fit" onClick={() => setAttempt(previous => previous + 1)}>

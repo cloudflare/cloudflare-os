@@ -14,7 +14,6 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import * as Y from "yjs";
 import {
   slugify, type AiChatAuthorInfo, type BlueprintMetadata, type SpaceMemberRole,
 } from "@gadgets/workshop-shared/api";
@@ -24,6 +23,8 @@ import {
   type SpaceSyncRequest,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { BundledBlueprint } from "../src/generated/bundled-blueprints.js";
+import { blueprintContentKey } from "../src/blueprint-archive.js";
+import { buildReleasePack, buildSnapshotRelease } from "../src/blueprint-release.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { SpaceSyncLoopback, type SpaceSyncLoopbackProps } from "../src/space-sync-loopback.js";
 import { SpaceDurableObject, teamSpaceClaim } from "../src/spaces.js";
@@ -156,9 +157,8 @@ async function listed(owner: Account, key: string): Promise<string> {
 // The admin config every user's object reads, reset before each test.
 let adminConfig: Partial<AdminConfig> = {};
 
-// The blueprint as the deployment installed it: its record, with no owner, and its gzip-compressed
-// code under `<id>/1`.
-let blueprintCode: Uint8Array;
+// The blueprint as the deployment installed it: its record, with no owner, and its snapshot
+// release in the content bucket, which the workspace's Overseer reads for itself.
 const blueprintRecord: BlueprintKvRecord = {
   metadata: {
     title: "Notes", description: "", author: { type: "user", id: "author", name: "Author" },
@@ -170,19 +170,14 @@ const store = {
     get: async (key: string) => key === ".adminConfig" ? JSON.stringify(adminConfig)
         : key === BLUEPRINT ? JSON.stringify(blueprintRecord) : null,
   },
-  BLUEPRINT_CONTENT: {
-    get: async (key: string) => key === `${BLUEPRINT}/1`
-        ? { body: new Response(blueprintCode as BufferSource).body } : null,
-  },
 };
 
 beforeEach(async () => {
   adminConfig = {};
-  let doc = new Y.Doc();
-  doc.getMap().set("server.js", new Y.Text(SERVER_JS));
-  let compressed = new Response(new Blob([Y.encodeStateAsUpdateV2(doc) as BufferSource]).stream()
-      .pipeThrough(new CompressionStream("gzip")));
-  blueprintCode = new Uint8Array(await compressed.arrayBuffer());
+  let { commitId, objects } = await buildSnapshotRelease(new Map([["server.js", SERVER_JS]]));
+  blueprintRecord.metadata.commitId = commitId;
+  await env.BLUEPRINT_CONTENT.put(blueprintContentKey(BLUEPRINT, blueprintRecord.metadata),
+      await buildReleasePack(oid => objects.get(oid), commitId));
   // A first open provisions the owner's singleton accounts, which needs bindings this suite
   // does not have; the owner has none.
   vi.spyOn(UserDurableObject.prototype, "listProvidedAccounts").mockResolvedValue([]);
@@ -341,9 +336,9 @@ describe("ensureWorkspace", () => {
       registered: { spaceKey: key, title: "Welcome", published: "build" },
     });
     // The owner is told which account synced it, but not the source item.
-    let [listedGadget] = (await bob.user.listGadgets()).filter(gadget => gadget.id === id);
+    let [listedGadget] = (await bob.user.listWorkspaces()).filter(gadget => gadget.id === id);
     expect(listedGadget!.syncedFrom).toEqual({ accountId: docs.accountId });
-    expect((await bob.user.getGadget(id))!.syncedFrom).toEqual({ accountId: docs.accountId });
+    expect((await bob.user.getWorkspace(id))!.syncedFrom).toEqual({ accountId: docs.accountId });
     // It is the gadget of the blueprint the account declared.
     expect(await contentOf(bob, id)).toBeNull();
   });
@@ -381,7 +376,7 @@ describe("ensureWorkspace", () => {
     expect(again).toBe(id);
     expect(other).not.toBe(id);
     expect((await entry(alice.personal, alice, id))?.title).toBe("Welcome");
-    let synced = (await alice.user.listGadgets()).filter(gadget => gadget.syncedFrom);
+    let synced = (await alice.user.listWorkspaces()).filter(gadget => gadget.syncedFrom);
     expect(synced.map(gadget => gadget.id).toSorted()).toEqual([id, other].toSorted());
   });
 
@@ -393,7 +388,7 @@ describe("ensureWorkspace", () => {
     let [first, second] = await Promise.all([ensure(target), ensure(target)]);
 
     expect(second).toBe(first);
-    expect((await alice.user.listGadgets()).filter(gadget => gadget.syncedFrom)).toHaveLength(1);
+    expect((await alice.user.listWorkspaces()).filter(gadget => gadget.syncedFrom)).toHaveLength(1);
     expect((await space(alice.personal).listWorkspaces(alice.profile.id))
         .filter(workspace => workspace.title === "Welcome")).toHaveLength(1);
   });
@@ -471,7 +466,7 @@ describe("ensureWorkspace", () => {
         });
 
     expect(await codeOf(ensure(target))).toBe("The space is out of reach.");
-    let [made] = (await alice.user.listGadgets()).filter(gadget => gadget.title === "Welcome");
+    let [made] = (await alice.user.listWorkspaces()).filter(gadget => gadget.title === "Welcome");
     expect(made).toBeDefined();
     unreachable = false;
 
@@ -489,7 +484,7 @@ describe("ensureWorkspace", () => {
     for (let sourceUrl of ["", `${ROOT}/${"x".repeat(MAX_SPACE_SYNC_SOURCE_URL_LENGTH)}`]) {
       expect(await codeOf(ensure(target, sourceUrl))).toBe(notAllowed);
     }
-    expect((await alice.user.listGadgets()).filter(gadget => gadget.syncedFrom)).toEqual([]);
+    expect((await alice.user.listWorkspaces()).filter(gadget => gadget.syncedFrom)).toEqual([]);
   });
 
   it("cuts a long title", async () => {
@@ -659,7 +654,7 @@ describe("a change to what the account declares", () => {
 // A workspace of `owner`'s in their personal space that no sync made, recorded as the API does.
 async function ownWorkspace(owner: Account): Promise<string> {
   let id = env.TEST_OVERSEER.newUniqueId().toString();
-  await owner.user.newGadget(id, "Mine");
+  await owner.user.newWorkspace(id, "Mine");
   return id;
 }
 
@@ -823,7 +818,7 @@ describe("resyncWorkspace", () => {
     let { target } = await start(alice, docs, alice.personal);
     let id = await ensure(target);
     await target.reportProgress({ state: "done", done: 1 });
-    await bob.user.recordSharedGadgetOpen(id, "Welcome", alice.profile, "build");
+    await bob.user.recordSharedWorkspaceOpen(id, "Welcome", alice.profile, "build");
 
     expect(await refusal(bob.user.resyncWorkspace(id)))
         .toBe("No such workspace belonging to user.");
@@ -852,7 +847,7 @@ describe("resyncWorkspace", () => {
         .toBe("This account cannot sync into a space.");
     expect(docs.started).toHaveLength(1);
     // The workspace still says which account synced it.
-    expect((await alice.user.getGadget(id))!.syncedFrom).toEqual({ accountId: docs.accountId });
+    expect((await alice.user.getWorkspace(id))!.syncedFrom).toEqual({ accountId: docs.accountId });
   });
 
   it("is refused while an ended sync is still creating a workspace for the same source",

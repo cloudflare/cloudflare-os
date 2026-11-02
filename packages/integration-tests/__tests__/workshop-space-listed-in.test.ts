@@ -1,4 +1,4 @@
-// Which space lists a workspace, as its metadata says (`GadgetMetadata.listedIn`), end to end over
+// Which space lists a workspace, as its metadata says (`WorkspaceMetadata.listedIn`), end to end over
 // the real RPC API: the owner, a direct collaborator in either role and a visitor who opens the
 // workspace through its publication are all told the same key, the owner's personal space's or
 // a team space's, including one none of them but the owner is a member of; and an open
@@ -15,7 +15,7 @@
 
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { AuthenticatedApi, GadgetMetadata, Overseer } from "@gadgets/workshop-shared/api";
+import type { AuthenticatedApi, WorkspaceMetadata, Overseer } from "@gadgets/workshop-shared/api";
 import { type Harness, startTestGatekeeperHarness } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import { connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
@@ -66,7 +66,7 @@ async function personalKeyOf(api: RpcStub<AuthenticatedApi>): Promise<string> {
  * its first activity: a chat that starts no agent is the cheapest thing that counts as that.
  */
 async function activeWorkspace(stack: DisposableStack, ownerName: string) {
-  const workspace = stack.use(await (await session(stack, ownerName)).newGadget());
+  const workspace = stack.use(await (await session(stack, ownerName)).newWorkspace());
   const { id, listedIn } = await workspace.getMetadata();
   // Not yet active, the workspace is in no space's listing, so its metadata names none.
   expect(listedIn).toBeUndefined();
@@ -89,7 +89,7 @@ const openedMetadata = (username: string, id: string) =>
   waitFor(`${username} to open workspace ${id}`, async () => {
     using stack = new DisposableStack();
     try {
-      const workspace = stack.use(await (await session(stack, username)).openGadget(id));
+      const workspace = stack.use(await (await session(stack, username)).openWorkspace(id));
       return await workspace.getMetadata();
     } catch {
       return null;
@@ -116,9 +116,9 @@ it.concurrent("the owner, a collaborator and a visitor of a published workspace 
 
   // Bob, through his own grant, and Carol, through the publication, are told it is Alice's
   // personal space, though neither is a member of it, in what each opens it with.
-  using asBob = await bob.openGadget(id);
+  using asBob = await bob.openWorkspace(id);
   expect(await asBob.getMetadata()).toMatchObject({ role: "use", listedIn: personal });
-  using asCarol = await carol.openGadget(id);
+  using asCarol = await carol.openWorkspace(id);
   expect(await asCarol.getMetadata()).toMatchObject({ role: "use", listedIn: personal });
 
   // Moved into the team space, of which Alice is the only member, every reader who opens it
@@ -147,9 +147,9 @@ it.concurrent("a collaborator's open subscription is told each space the workspa
   await listedIn(workspace, personal);
   await workspace.addCollaborator(bobName, "build");
   await workspace.addCollaborator(carolName, "use");
-  using asBob = await bob.openGadget(id);
-  using asCarol = await carol.openGadget(id);
-  const seenBy = { bob: [] as GadgetMetadata[], carol: [] as GadgetMetadata[] };
+  using asBob = await bob.openWorkspace(id);
+  using asCarol = await carol.openWorkspace(id);
+  const seenBy = { bob: [] as WorkspaceMetadata[], carol: [] as WorkspaceMetadata[] };
   using _bobSubscription = await asBob.subscribeToMetadata(metadata => {
     seenBy.bob.push(metadata);
   });

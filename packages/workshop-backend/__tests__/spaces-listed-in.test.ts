@@ -8,7 +8,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
-  AiChatAuthorInfo, CollaboratorRole, GadgetMetadata, Overseer,
+  AiChatAuthorInfo, CollaboratorRole, WorkspaceMetadata, Overseer,
 } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { SpaceDurableObject, teamSpaceClaim } from "../src/spaces.js";
@@ -16,6 +16,15 @@ import { makeUserStorage, type WorkspaceRestrictions } from "../src/storage-sche
 import { UserDurableObject } from "../src/user.js";
 // Load the whole backend up front, so that its slow load is not billed to the first test.
 import "./test-worker.js";
+
+// `impl` with connection 1, which the observations here are made through, on record: the ledger
+// refuses an observation through a connection the workspace does not hold.
+function connected(impl: any): any {
+  if (!impl.storage.gatekeepers.get(1)) {
+    impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Connection 1", class: {} });
+  }
+  return impl;
+}
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -58,7 +67,7 @@ async function teamSpace(admin: Account): Promise<string> {
 
 // Waits out every sync of `owner`'s workspaces asked for so far: deleting a workspace the owner
 // has no record of is queued behind them.
-const settled = (owner: Account) => owner.user.deleteGadget("ws-none", NEITHER);
+const settled = (owner: Account) => owner.user.deleteWorkspace("ws-none", NEITHER);
 
 // A real workspace of `owner`'s in team space `spaceKey`, or with none in their personal space,
 // which lists it unless it is left `provisional`. `run` acts inside its Overseer, on its
@@ -67,9 +76,9 @@ const settled = (owner: Account) => owner.user.deleteGadget("ws-none", NEITHER);
 async function workspace(owner: Account, spaceKey?: string, provisional = false) {
   let stub = env.TEST_OVERSEER.get(env.TEST_OVERSEER.newUniqueId());
   let id = stub.id.toString();
-  await owner.user.newGadget(id, "Untitled", spaceKey);
+  await owner.user.newWorkspace(id, "Untitled", spaceKey);
   if (!provisional) {
-    await owner.user.setGadgetLastActive(id, DAY, undefined, NEITHER);
+    await owner.user.setWorkspaceLastActive(id, DAY, undefined, NEITHER);
     await settled(owner);
   }
   let restarts: string[] = [];
@@ -99,9 +108,9 @@ const opening = (instance: OverseerDurableObject, as: Account) => open(instance,
 // Subscribes to the metadata served to `as`, and returns what each push of it carried, as `pick`
 // takes it, for as long as the test runs.
 async function watch<T>(instance: OverseerDurableObject, as: Account,
-    pick: (metadata: GadgetMetadata) => T = metadata => metadata.listedIn as T): Promise<T[]> {
+    pick: (metadata: WorkspaceMetadata) => T = metadata => metadata.listedIn as T): Promise<T[]> {
   let seen: T[] = [];
-  let callback = new NativeRpcStub((metadata: GadgetMetadata) => { seen.push(pick(metadata)); });
+  let callback = new NativeRpcStub((metadata: WorkspaceMetadata) => { seen.push(pick(metadata)); });
   await (await open(instance, as)).subscribeToMetadata(callback as any);
   await vi.waitFor(() => expect(seen).not.toHaveLength(0), WAIT);
   return seen;
@@ -116,7 +125,7 @@ function share(impl: any, owner: Account, to: Account, role: CollaboratorRole): 
 }
 
 // An observation that states `flag` of the workspace, under which no space lists it.
-const flagging = (impl: any, flag: string): Promise<void> => impl.authorizeObservation(
+const flagging = (impl: any, flag: string): Promise<void> => connected(impl).authorizeObservation(
     1, { title: "Read", description: "The test read a thing.", [flag]: true }, { from: "user" });
 
 // What `owner`'s User DO answers when asked which space lists workspace `id`, through a stub of
@@ -145,7 +154,7 @@ describe("the owner's User DO, asked which space lists a workspace", () => {
     expect(await alice.user.workspaceListedIn(personal.id)).toBe(alice.personal);
     expect(await alice.user.workspaceListedIn(team.id)).toBe(key);
 
-    await alice.user.setGadgetPublicAccess(
+    await alice.user.setWorkspacePublicAccess(
         flagged.id, { containsRestrictedData: false, ownerInvitesOnly: true });
     expect(await alice.user.workspaceListedIn(flagged.id)).toBeNull();
     expect(await alice.user.workspaceListedIn(provisional.id)).toBeNull();
@@ -256,10 +265,10 @@ describe("the space a workspace's metadata says lists it", () => {
     let alice = await signUp("alice");
     let key = await teamSpace(alice);
     let ws = await workspace(alice);
-    let setGadgetSpace = UserDurableObject.prototype.setGadgetSpace;
-    vi.spyOn(UserDurableObject.prototype, "setGadgetSpace").mockImplementationOnce(
+    let setWorkspaceSpace = UserDurableObject.prototype.setWorkspaceSpace;
+    vi.spyOn(UserDurableObject.prototype, "setWorkspaceSpace").mockImplementationOnce(
         async function (this: UserDurableObject, ...args) {
-          await setGadgetSpace.apply(this, args);
+          await setWorkspaceSpace.apply(this, args);
           throw new Error("answer lost");
         });
     await ws.run(async (_impl, instance) => {
@@ -282,10 +291,10 @@ describe("the space a workspace's metadata says lists it", () => {
           while (!gate.open) await scheduler.wait(10);
           return attachWorkspaces.apply(this, args);
         });
-    let setGadgetSpace = UserDurableObject.prototype.setGadgetSpace;
-    vi.spyOn(UserDurableObject.prototype, "setGadgetSpace").mockImplementationOnce(
+    let setWorkspaceSpace = UserDurableObject.prototype.setWorkspaceSpace;
+    vi.spyOn(UserDurableObject.prototype, "setWorkspaceSpace").mockImplementationOnce(
         async function (this: UserDurableObject, ...args) {
-          setGadgetSpace.apply(this, args).catch(() => {});
+          setWorkspaceSpace.apply(this, args).catch(() => {});
           throw new Error("answer lost");
         });
     await ws.run(async (_impl, instance) => {
@@ -312,7 +321,7 @@ describe("the space a workspace's metadata says lists it", () => {
       expect(await listedIn(instance, alice)).toBeUndefined();
     });
     // Listed by activity its Overseer did not report, the workspace is not asked about again.
-    await alice.user.setGadgetLastActive(ws.id, DAY, undefined, NEITHER);
+    await alice.user.setWorkspaceLastActive(ws.id, DAY, undefined, NEITHER);
     await settled(alice);
     expect(await alice.user.workspaceListedIn(ws.id)).toBe(alice.personal);
     asked.mockClear();
@@ -366,11 +375,11 @@ describe("the space a workspace's metadata says lists it", () => {
         while (!gate.open) await scheduler.wait(10);
         return key;
       });
-      let setGadgetLastActive = UserDurableObject.prototype.setGadgetLastActive;
-      vi.spyOn(UserDurableObject.prototype, "setGadgetLastActive").mockImplementationOnce(
+      let setWorkspaceLastActive = UserDurableObject.prototype.setWorkspaceLastActive;
+      vi.spyOn(UserDurableObject.prototype, "setWorkspaceLastActive").mockImplementationOnce(
           async function (this: UserDurableObject, ...args) {
             while (!gate.reported) await scheduler.wait(10);
-            return setGadgetLastActive.apply(this, args);
+            return setWorkspaceLastActive.apply(this, args);
           });
       await ws.run(async (impl, instance) => {
         let lookup = impl.knowListedIn();
@@ -393,7 +402,7 @@ describe("the space a workspace's metadata says lists it", () => {
     // The space cannot be reached when the workspace is first active, so nothing lists it yet.
     vi.spyOn(SpaceDurableObject.prototype, "attachWorkspaces")
         .mockRejectedValueOnce(new Error("space unavailable"));
-    await alice.user.setGadgetLastActive(ws.id, DAY, undefined, NEITHER);
+    await alice.user.setWorkspaceLastActive(ws.id, DAY, undefined, NEITHER);
     await settled(alice);
     await ws.run(async (_impl, instance) => {
       let seen = await watch(instance, alice,

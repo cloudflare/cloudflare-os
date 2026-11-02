@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind, getOpenGadgetErrorCode } from '@gadgets/workshop-shared/api';
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind, getOpenWorkspaceErrorCode } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema, requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -10123,7 +10123,7 @@ class OverseerImpl implements AgentHooks {
 
   // --- The space that lists the workspace ---
   //
-  // GadgetMetadata.listedIn: the space that the owner's User DO says has acknowledged listing the
+  // WorkspaceMetadata.listedIn: the space that the owner's User DO says has acknowledged listing the
   // workspace. It is asked at the first metadata served, and again after this object moves the
   // workspace or changes its publication, calls that return once the listing has followed. A
   // move whose answer was lost may still be under way, so what it is asked after one is taken
@@ -10364,7 +10364,7 @@ class OverseerImpl implements AgentHooks {
     }
     let role = higherRole(sharing.getEffectiveRole(profileId), spaceRole);
     if (!role && visible === false) {
-      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotVisible);
+      throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible);
     }
     if (!role || (opts.requireRole && roleRank(role) < roleRank(opts.requireRole))) return null;
     // Whoever the graph and the space together give less than `role` holds it through the
@@ -11172,7 +11172,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
             callerProfile.id, caller, {requireRole: "build"});
       } catch (err) {
         // A publication not yet in effect is a refusal, which opening the workspace cannot mend.
-        if (getOpenGadgetErrorCode(err) === OPEN_GADGET_ERROR_CODES.workspaceNotVisible) {
+        if (getOpenWorkspaceErrorCode(err) === OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible) {
           return { accepted: false, message: (err as Error).message };
         }
         return {
@@ -11940,7 +11940,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (spaceKey !== null) checkTeamSpaceKey(spaceKey);
     let moved: boolean | undefined;
     try {
-      moved = await this.#owner.setGadgetSpace(
+      moved = await this.#owner.setWorkspaceSpace(
           this.impl.ctx.id.toString(), spaceKey, this.impl.restrictions);
     } finally {
       if (moved !== false) this.impl.revokeVisibility();
@@ -11971,7 +11971,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           "to, cannot be published.");
     }
     let restart = this.impl.setPublicAccess(role ?? undefined);
-    let mirrored = this.#owner.setGadgetPublicAccess(
+    let mirrored = this.#owner.setWorkspacePublicAccess(
         this.impl.ctx.id.toString(), this.impl.restrictions);
     if (restart) {
       void Promise.race([mirrored.then(() => {}, () => {}),

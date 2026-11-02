@@ -5,16 +5,16 @@ import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import {
-  createOpenGadgetError,
-  OPEN_GADGET_ERROR_CODES,
-  type GadgetMetadata,
+  createOpenWorkspaceError,
+  OPEN_WORKSPACE_ERROR_CODES,
+  type WorkspaceMetadata,
   type ObserverBindingNeed,
   type ObserverConfigCallback,
 } from '@gadgets/workshop-shared/api'
 import { deferred, fakeApi, mount, settle, unmountAll } from '../spacesTestUtils'
 import { useWorkspacePreview, type WorkspacePreviewState } from './useWorkspacePreview'
 
-const metadata = (id: string, title: string): GadgetMetadata => ({ id, title, role: 'use' })
+const metadata = (id: string, title: string): WorkspaceMetadata => ({ id, title, role: 'use' })
 
 const NEED: ObserverBindingNeed = { gatekeeperId: 4, vendorId: 'google', resourceTitle: 'Calendar' }
 
@@ -28,7 +28,7 @@ type Opened = {
 // An open workspace whose metadata subscription is answered by `subscribe`, and which records
 // what was disposed.
 const fakeOverseer = (subscribe: (
-  callback: (metadata: GadgetMetadata) => void,
+  callback: (metadata: WorkspaceMetadata) => void,
   configureObservers: RpcStub<ObserverConfigCallback>,
 ) => Promise<Disposable>) => {
   const dispose = vi.fn<() => void>()
@@ -36,20 +36,20 @@ const fakeOverseer = (subscribe: (
   return { dispose, unsubscribe, subscribe }
 }
 
-// An api whose `openGadget` hands out an overseer made by `makeOverseer` for each open.
+// An api whose `openWorkspace` hands out an overseer made by `makeOverseer` for each open.
 const openingApi = (makeOverseer: (id: string) => ReturnType<typeof fakeOverseer>) => {
   const opened: Opened[] = []
-  type OpenGadget = (id: string, shareKey: string | undefined, configureObservers: RpcStub<ObserverConfigCallback>) => unknown
-  const openGadget = vi.fn<OpenGadget>((id, shareKey, configureObservers) => {
+  type OpenWorkspace = (id: string, shareKey: string | undefined, configureObservers: RpcStub<ObserverConfigCallback>) => unknown
+  const openWorkspace = vi.fn<OpenWorkspace>((id, shareKey, configureObservers) => {
     const overseer = makeOverseer(id)
     opened.push({ id, shareKey, configureObservers, overseer })
     return {
-      subscribeToMetadata: (callback: (metadata: GadgetMetadata) => void) =>
+      subscribeToMetadata: (callback: (metadata: WorkspaceMetadata) => void) =>
         overseer.subscribe(callback, configureObservers),
       [Symbol.dispose]: overseer.dispose,
     }
   })
-  return { api: fakeApi({ openGadget }), openGadget, opened }
+  return { api: fakeApi({ openWorkspace }), openWorkspace, opened }
 }
 
 // Answers at once with the workspace's metadata, as an open the viewer may make does.
@@ -100,7 +100,7 @@ describe('useWorkspacePreview', () => {
   })
 
   it('follows later changes to the metadata', async () => {
-    let push!: (metadata: GadgetMetadata) => void
+    let push!: (metadata: WorkspaceMetadata) => void
     const { api } = openingApi(() => {
       const overseer = fakeOverseer(async (callback) => {
         push = callback
@@ -177,11 +177,11 @@ describe('useWorkspacePreview', () => {
   })
 
   it.each([
-    [OPEN_GADGET_ERROR_CODES.workspaceNotVisible, 'not-visible'],
-    [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied, 'access-denied'],
-    [OPEN_GADGET_ERROR_CODES.workspaceNotFound, 'not-found'],
+    [OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible, 'not-visible'],
+    [OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied, 'access-denied'],
+    [OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound, 'not-found'],
   ] as const)('reports an open refused with %s as %s', async (code, failure) => {
-    const { api } = openingApi(() => fakeOverseer(async () => { throw createOpenGadgetError(code) }))
+    const { api } = openingApi(() => fakeOverseer(async () => { throw createOpenWorkspaceError(code) }))
     await mount(<Probe workspaceId="w1" />, api)
     await settle()
 
@@ -190,7 +190,7 @@ describe('useWorkspacePreview', () => {
 
   it('lets go of a failed open at once, and only once', async () => {
     const { api, opened } = openingApi(() => fakeOverseer(async () => {
-      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied)
+      throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied)
     }))
     await mount(<Probe workspaceId="w1" />, api)
     await settle()

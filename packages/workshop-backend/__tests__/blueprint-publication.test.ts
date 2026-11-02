@@ -7,7 +7,6 @@
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import * as Y from "yjs";
 import {
   slugify, type AiChatAuthorInfo, type BlueprintMetadata, type Overseer,
 } from "@gadgets/workshop-shared/api";
@@ -16,6 +15,8 @@ import {
   fromApiOptions, newWorkspaceFromBlueprint, type BlueprintInstantiationOptions,
 } from "../src/blueprint-instantiation.js";
 import type { BundledBlueprint } from "../src/generated/bundled-blueprints.js";
+import { blueprintContentKey } from "../src/blueprint-archive.js";
+import { buildReleasePack, buildSnapshotRelease } from "../src/blueprint-release.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { SpaceDurableObject, teamSpaceClaim } from "../src/spaces.js";
 import type { BlueprintKvRecord } from "../src/storage-schema/blueprints-kv.js";
@@ -69,36 +70,27 @@ async function signUp(name: string): Promise<Account> {
   return { profile, user, userId: user.id.toString(), personal: `~${id}` };
 }
 
-// The blueprint store the creation path reads, as KV and R2 hold it: a record under the
-// blueprint's id, and its gzip-compressed code under `<id>/<version>`.
+// The blueprint records the creation path reads from KV, by blueprint id. Each one's release is in
+// the content bucket, where the workspace's Overseer reads it for itself.
 const records = new Map<string, string>();
-const contents = new Map<string, Uint8Array>();
 const store = {
   BLUEPRINTS: { get: async (key: string) => records.get(key) ?? null },
-  BLUEPRINT_CONTENT: {
-    get: async (key: string) => {
-      let bytes = contents.get(key);
-      return bytes ? { body: new Response(bytes as BufferSource).body } : null;
-    },
-  },
 } as unknown as Cloudflare.Env;
 
 // Stores blueprint `id`: installed by the deployment unless given an owner, titled TITLE, with
 // whatever `metadata` adds.
 async function seed(id: string, ownerId?: string, metadata: Partial<BlueprintMetadata> = {}) {
-  let doc = new Y.Doc();
-  doc.getMap().set("index.js", new Y.Text("export {};"));
-  let compressed = new Response(new Blob([Y.encodeStateAsUpdateV2(doc) as BufferSource]).stream()
-      .pipeThrough(new CompressionStream("gzip")));
-  contents.set(`${id}/1`, new Uint8Array(await compressed.arrayBuffer()));
+  let { commitId, objects } = await buildSnapshotRelease(new Map([["index.js", "export {};"]]));
   let created = new Date("2026-01-01");
   let record: BlueprintKvRecord = {
     metadata: {
       title: TITLE, description: "", author: { type: "user", id: "author", name: "Author" },
-      created, version: 1, lastUpdated: created, bindings: {}, ...metadata,
+      created, version: 1, lastUpdated: created, commitId, bindings: {}, ...metadata,
     },
     ...(ownerId !== undefined && { ownerId }),
   };
+  await env.BLUEPRINT_CONTENT.put(blueprintContentKey(id, record.metadata),
+      await buildReleasePack(oid => objects.get(oid), commitId));
   records.set(id, JSON.stringify(record));
 }
 
@@ -115,7 +107,7 @@ async function create(owner: Account, id: string, options?: BlueprintInstantiati
   try {
     let { id: workspaceId, publicAccess } = await overseer.getMetadata();
     // Deleting a workspace the owner has no record of takes its turn after every sync before it.
-    await owner.user.deleteGadget("ws-none", NEITHER);
+    await owner.user.deleteWorkspace("ws-none", NEITHER);
     return { id: workspaceId, publicAccess };
   } finally {
     overseer[Symbol.dispose]();
@@ -135,7 +127,6 @@ const registrations = (id: string) => attach.mock.calls.flatMap(([, registered])
 
 beforeEach(() => {
   records.clear();
-  contents.clear();
   attach = vi.spyOn(SpaceDurableObject.prototype, "attachWorkspaces");
   // A first open provisions the owner's singleton accounts, which needs bindings this suite
   // does not have; the owner has none.
@@ -255,7 +246,7 @@ describe("a workspace created from any other blueprint", () => {
   });
 });
 
-describe("the options of AuthenticatedApi.newGadgetFromBlueprint", () => {
+describe("the options of AuthenticatedApi.newWorkspaceFromBlueprint", () => {
   it("read a string as a spaceKey, and publish: false as no publication", () => {
     expect(fromApiOptions(undefined)).toEqual({});
     expect(fromApiOptions("team")).toEqual({ spaceKey: "team" });

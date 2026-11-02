@@ -6,8 +6,8 @@ import { HierarchicalList, type HierarchicalListItem } from '@gadgets/ui/hierarc
 import type { RpcStub } from 'capnweb'
 import type {
   AuthenticatedApi,
-  GadgetMetadata,
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadata,
+  WorkspaceMetadataWithTimestamps,
   Overseer,
   SpaceInfo,
   SpaceMemberRole,
@@ -35,10 +35,10 @@ import { applyMove, childrenOf, type WorkspaceMove } from './workspaceTree'
  */
 export type UnlistedWorkspaces = {
   /**
-   * Whether the user's own record of a workspace (`AuthenticatedApi.listGadgets`) is one to show
+   * Whether the user's own record of a workspace (`AuthenticatedApi.listWorkspaces`) is one to show
    * apart; false while the listings that would tell have not been read.
    */
-  includes: (record: GadgetMetadataWithTimestamps) => boolean
+  includes: (record: WorkspaceMetadataWithTimestamps) => boolean
   /** What the group's note says those workspaces are. */
   description: string
 }
@@ -63,23 +63,23 @@ type OpenDialog =
   // up, and gives the focus back as it closes, if the records or accounts change meanwhile.
   | { kind: 'resync'; workspace: NamedWorkspace; sourceName: string }
 
-// The user's own records (`AuthenticatedApi.listGadgets`), read on mount and again by `reread`,
+// The user's own records (`AuthenticatedApi.listWorkspaces`), read on mount and again by `reread`,
 // which resolves once the read has settled either way.
 const useOwnRecords = (): {
-  records: readonly GadgetMetadataWithTimestamps[] | undefined
+  records: readonly WorkspaceMetadataWithTimestamps[] | undefined
   reread: () => Promise<void>
 } => {
   const { authenticatedApi } = useAuthenticatedApi()
   const [read, setRead] = useState<{
     api: RpcStub<AuthenticatedApi>
-    records: GadgetMetadataWithTimestamps[]
+    records: WorkspaceMetadataWithTimestamps[]
   } | null>(null)
   const latestRead = useRef(0)
 
   const reread = async () => {
     const request = ++latestRead.current
     try {
-      const records = await authenticatedApi.listGadgets()
+      const records = await authenticatedApi.listWorkspaces()
       if (request === latestRead.current) setRead({ api: authenticatedApi, records })
     } catch (err) {
       logRpcFailure('Failed to load workspaces:', err)
@@ -461,7 +461,7 @@ const EntryShareModal = ({ workspaceId, onClose, onPublicAccessChange }: {
   const { authenticatedApi, currentUser } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   // The stub is held inside the state object, never as the state itself: React would call it.
-  const [opened, setOpened] = useState<{ overseer: RpcStub<Overseer>; metadata: GadgetMetadata } | null>(null)
+  const [opened, setOpened] = useState<{ overseer: RpcStub<Overseer>; metadata: WorkspaceMetadata } | null>(null)
 
   const fail = useEffectEvent((err: unknown) => {
     logRpcFailure('Failed to open a workspace for sharing:', err)
@@ -473,7 +473,7 @@ const EntryShareModal = ({ workspaceId, onClose, onPublicAccessChange }: {
     let cancelled = false
     // Not awaited: the metadata read is pipelined on the open, and disposing the promise disposes
     // the workspace it resolves to.
-    const overseer: RpcStub<Overseer> = authenticatedApi.openGadget(workspaceId)
+    const overseer: RpcStub<Overseer> = authenticatedApi.openWorkspace(workspaceId)
     overseer.getMetadata().then(
       (metadata) => { if (!cancelled) setOpened({ overseer, metadata }) },
       (err: unknown) => { if (!cancelled) fail(err) },

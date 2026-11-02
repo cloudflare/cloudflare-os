@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useId, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useKumoToastManager } from '@cloudflare/kumo'
-import type { GadgetMetadataWithTimestamps, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import GadgetList, { type GadgetListRows } from '../../components/GadgetList'
 import { WorkshopButton } from '../../components/WorkshopControls'
@@ -162,7 +162,7 @@ export const SpacePage = ({ spaceKey, spaces }: {
 
   // The user's own workspaces grouped in this space that it does not list, once it has been read.
   // A record names only a team space; the user's own personal space is where it names none.
-  const isUnlistedHere = (record: GadgetMetadataWithTimestamps) =>
+  const isUnlistedHere = (record: WorkspaceMetadataWithTimestamps) =>
     memberListing.status === 'ready'
     && record.spaceKey === (info && isOwnPersonalSpace(info) ? undefined : spaceKey)
     && !memberListing.workspaces.some(entry => entry.id === record.id)

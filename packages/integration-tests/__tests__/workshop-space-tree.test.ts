@@ -75,7 +75,7 @@ async function team(stack: DisposableStack) {
 async function listedWorkspace(
     stack: DisposableStack, owner: RpcStub<AuthenticatedApi>, key: string, space: RpcStub<Space>,
     title: string, parentId?: string) {
-  const workspace = stack.use(await owner.newGadget(key, parentId));
+  const workspace = stack.use(await owner.newWorkspace(key, parentId));
   const { id } = await workspace.getMetadata();
   await workspace.setTitle(title);
   await workspace.newChat("Seen activity, with no agent", null);
@@ -140,7 +140,7 @@ it.concurrent("lists a workspace created under a parent there once it has seen a
 
   // A parent the space does not list when the workspace first registers places it at the top:
   // here one that has seen no activity yet, and an id that names no workspace at all.
-  using provisional = await bob.newGadget(key);
+  using provisional = await bob.newWorkspace(key);
   const { id: provisionalId } = await provisional.getMetadata();
   await listedWorkspace(stack, bob, key, listing, "Stray", provisionalId);
   await listedWorkspace(stack, alice, key, listing, "Orphan", "no-such-workspace");

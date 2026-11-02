@@ -20,7 +20,6 @@ import { PeopleComposer, usePeopleComposer, withPerson, type StagedPerson } from
 import { PublicAccessRow } from './features/spaces/PublicAccessRow'
 import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
-import { useServerConfig } from './ServerConfigContext'
 
 type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }

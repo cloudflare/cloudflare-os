@@ -1252,7 +1252,7 @@ export type BlueprintGadgetRecord = {
 
 /**
  * The title a workspace has until one is chosen for it: what its storage starts with, and what
- * `AuthenticatedApi.newGadget` records it under.
+ * `AuthenticatedApi.newWorkspace` records it under.
  */
 export const DEFAULT_WORKSPACE_TITLE = "Untitled Workspace";
 

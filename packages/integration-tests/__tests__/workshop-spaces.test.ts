@@ -125,7 +125,7 @@ const unlisted = (space: RpcStub<Space>, id: string) =>
 
 /** The caller's own record of workspace `id`, which never shows what a space acknowledged. */
 async function ownRecord(api: RpcStub<AuthenticatedApi>, id: string) {
-  const record = (await api.listGadgets()).find(gadget => gadget.id === id);
+  const record = (await api.listWorkspaces()).find(gadget => gadget.id === id);
   if (record === undefined) throw new Error(`Workspace ${id} is not in its owner's list`);
   expect(record).not.toHaveProperty("registered");
   return record;
@@ -334,9 +334,9 @@ it.concurrent("a team space lists a member's workspace once it has seen activity
   await space.setMemberRole(bobName, "use");
 
   // Bob creates two workspaces in the space, and only the second goes on to see activity.
-  using draft = await bob.newGadget(key);
+  using draft = await bob.newWorkspace(key);
   await draft.setTitle("Draft");
-  using workspace = await bob.newGadget(key);
+  using workspace = await bob.newWorkspace(key);
   const { id } = await workspace.getMetadata();
   await workspace.setTitle("Roadmap");
   expect(await space.listWorkspaces()).toEqual([]);
@@ -377,7 +377,7 @@ it.concurrent("a workspace that holds restricted data or is owner-invites-only l
   // A workspace of Alice's that the space lists, and a session to observe through on a fixture
   // connection of its own.
   const listedWorkspace = async (title: string) => {
-    const workspace = stack.use(await alice.newGadget(key));
+    const workspace = stack.use(await alice.newWorkspace(key));
     const { id } = await workspace.getMetadata();
     await workspace.setTitle(title);
     await workspace.newChat("Seen activity, with no agent", null);
@@ -423,7 +423,7 @@ it.concurrent("a workspace that holds restricted data or is owner-invites-only l
     containsRestrictedData: false, ownerInvitesOnly: true,
   });
   for (const { id } of [restricted, invitesOnly]) {
-    using reopened = await alice.openGadget(id);
+    using reopened = await alice.openWorkspace(id);
     expect(await reopened.getMetadata()).toMatchObject({ id });
   }
 });
@@ -443,7 +443,7 @@ it.concurrent("only its owner moves a workspace, and only where they may add; de
   using team = await bob.openSpace(key);
   using personal = await bob.openSpace((await personalSpaceOf(bob)).key);
 
-  using workspace = await bob.newGadget(key);
+  using workspace = await bob.newWorkspace(key);
   const { id } = await workspace.getMetadata();
   await workspace.setTitle("Tracker");
   await workspace.newChat("Seen activity, with no agent", null);
@@ -454,8 +454,8 @@ it.concurrent("only its owner moves a workspace, and only where they may add; de
   await workspace.addCollaborator(aliceName, "build");
   await workspace.addCollaborator(carolName, "build");
   {
-    using asAlice = await alice.openGadget(id);
-    using asCarol = await carol.openGadget(id);
+    using asAlice = await alice.openWorkspace(id);
+    using asCarol = await carol.openWorkspace(id);
     expect(await refusal(asAlice.moveToSpace(null))).toMatch(OWNER_ONLY);
     expect(await refusal(asCarol.moveToSpace(otherKey))).toMatch(OWNER_ONLY);
   }
@@ -500,7 +500,7 @@ it.concurrent("a titled workspace gets a slug that only setWorkspaceSlug moves, 
 
   // Listed under the title it was created with, a workspace has no slug, and nothing resolves
   // to it.
-  using workspace = await bob.newGadget(key);
+  using workspace = await bob.newWorkspace(key);
   const { id, title: placeholder } = await workspace.getMetadata();
   await workspace.newChat("Seen activity, with no agent", null);
   expect(await listedAs(asCarol, id, placeholder)).not.toHaveProperty("slug");
@@ -515,7 +515,7 @@ it.concurrent("a titled workspace gets a slug that only setWorkspaceSlug moves, 
   expect(await asCarol.resolveWorkspace(slug)).toEqual({ workspace: entry, canonical: true });
 
   // A second workspace under the same title gets the first free suffix.
-  using second = await bob.newGadget(key);
+  using second = await bob.newWorkspace(key);
   const { id: secondId } = await second.getMetadata();
   await second.setTitle(title);
   await second.newChat("Seen activity, with no agent", null);
@@ -574,13 +574,13 @@ it.concurrent("creates a workspace under a team key only, also from a blueprint"
   const personal = await personalSpaceOf(alice);
   const malformed = await refusal(alice.createSpace(personal.key, "Malformed"));
   for (const badKey of [personal.key, `${PERSONAL_SPACE_PREFIX}x`, "Bad Key", ""]) {
-    expect(await refusal(alice.newGadget(badKey)), badKey).toBe(malformed);
-    expect(await refusal(alice.newGadgetFromBlueprint(blueprintId, {}, badKey)), badKey)
+    expect(await refusal(alice.newWorkspace(badKey)), badKey).toBe(malformed);
+    expect(await refusal(alice.newWorkspaceFromBlueprint(blueprintId, {}, badKey)), badKey)
         .toBe(malformed);
   }
 
   // Instantiating a blueprint is the workspace's first activity, so it registers as it is made.
-  using workspace = await alice.newGadgetFromBlueprint(blueprintId, {}, key);
+  using workspace = await alice.newWorkspaceFromBlueprint(blueprintId, {}, key);
   const { id, title } = await workspace.getMetadata();
   await listedAs(space, id, title);
   expect((await ownRecord(alice, id)).spaceKey).toBe(key);

@@ -1,5 +1,5 @@
 import type {
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadataWithTimestamps,
   SpaceInfo,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
@@ -17,7 +17,7 @@ import type { WorkspaceRowListing } from './workspaceAddress'
  * - `listed`: a workspace known only from a space's listing, which is another member's.
  */
 export type WorkspaceRow =
-  | { kind: 'record'; id: string; gadget: GadgetMetadataWithTimestamps; entry?: SpaceWorkspaceInfo }
+  | { kind: 'record'; id: string; gadget: WorkspaceMetadataWithTimestamps; entry?: SpaceWorkspaceInfo }
   | { kind: 'listed'; id: string; workspace: SpaceWorkspaceInfo }
 
 /**
@@ -86,7 +86,7 @@ export const rowListing = ({ section, entry, userId, onAddressChange }: {
   }
 }
 
-const record = (gadget: GadgetMetadataWithTimestamps, entry?: SpaceWorkspaceInfo): WorkspaceRow =>
+const record = (gadget: WorkspaceMetadataWithTimestamps, entry?: SpaceWorkspaceInfo): WorkspaceRow =>
   ({ kind: 'record', id: gadget.id, gadget, entry })
 
 const rowTitle = (row: WorkspaceRow) => (row.kind === 'record' ? row.gadget.title : row.workspace.title)
@@ -100,7 +100,7 @@ export const matchingRows = (rows: WorkspaceRow[], search: string): WorkspaceRow
 /**
  * The rows of one space the user is a member of.
  *
- * A workspace the user owns is placed by its own record alone (`GadgetMetadata.spaceKey`, absent
+ * A workspace the user owns is placed by its own record alone (`WorkspaceMetadata.spaceKey`, absent
  * for their personal space), which is the authority on where it belongs; a listing can trail it,
  * so a listing's entry for one of the user's own workspaces places nothing and only gives the row
  * its `entry`. Every other entry of the listing is a row: with the user's own record of the
@@ -110,8 +110,8 @@ export const matchingRows = (rows: WorkspaceRow[], search: string): WorkspaceRow
  * the order of the listing.
  */
 export const spaceRows = ({ gadgets, space, workspaces, userId, shown = new Set() }: {
-  /** The user's list (`AuthenticatedApi.listGadgets`), in the order to show it in. */
-  gadgets: GadgetMetadataWithTimestamps[]
+  /** The user's list (`AuthenticatedApi.listWorkspaces`), in the order to show it in. */
+  gadgets: WorkspaceMetadataWithTimestamps[]
   space: SpaceInfo
   /** What the space lists (`Space.listWorkspaces`), or nothing while that has not been read. */
   workspaces: SpaceWorkspaceInfo[]
@@ -151,8 +151,8 @@ export const spaceRows = ({ gadgets, space, workspaces, userId, shown = new Set(
  * the first.
  */
 export const groupWorkspaces = ({ gadgets, spaces, listings, userId }: {
-  /** The user's list (`AuthenticatedApi.listGadgets`), in the order to show it in. */
-  gadgets: GadgetMetadataWithTimestamps[]
+  /** The user's list (`AuthenticatedApi.listWorkspaces`), in the order to show it in. */
+  gadgets: WorkspaceMetadataWithTimestamps[]
   /** The user's spaces (`AuthenticatedApi.listSpaces`). */
   spaces: SpaceInfo[]
   listings: SpaceListings

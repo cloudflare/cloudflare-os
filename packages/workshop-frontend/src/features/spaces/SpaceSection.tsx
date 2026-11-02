@@ -1,6 +1,6 @@
 import { useId, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { sectionTitle, type SpaceRowListing, type WorkspaceSection } from './groupWorkspaces'
 import { SpaceEntryPoints } from './SpaceEntryPoints'
 import { SpaceSectionRows } from './SpaceSectionRows'
@@ -13,7 +13,7 @@ import { SpaceSectionRows } from './SpaceSectionRows'
 export const SpaceSection = ({ section, renderRow, onListingReload }: {
   section: Exclude<WorkspaceSection, { kind: 'space' }>
   /** The list's own row for a workspace in the user's list, keyed. */
-  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: SpaceRowListing) => ReactNode
+  renderRow: (gadget: WorkspaceMetadataWithTimestamps, listing?: SpaceRowListing) => ReactNode
   /** Reads what the space lists again, resolving once the read has settled either way. */
   onListingReload: (spaceKey: string) => Promise<void>
 }) => {

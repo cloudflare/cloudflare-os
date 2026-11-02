@@ -10,8 +10,8 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  createOpenGadgetError, OPEN_GADGET_ERROR_CODES, type AiChatAuthorInfo, type CollaboratorRole,
-  type GadgetMetadata, type Overseer, type Space,
+  createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type AiChatAuthorInfo, type CollaboratorRole,
+  type WorkspaceMetadata, type Overseer, type Space,
 } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { SpaceDurableObject, teamSpaceClaim } from "../src/spaces.js";
@@ -22,6 +22,15 @@ import {
 import { UserDurableObject } from "../src/user.js";
 // Load the whole backend up front, so that its slow load is not billed to the first test.
 import "./test-worker.js";
+
+// `impl` with connection 1, which the observations here are made through, on record: the ledger
+// refuses an observation through a connection the workspace does not hold.
+function connected(impl: any): any {
+  if (!impl.storage.gatekeepers.get(1)) {
+    impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Connection 1", class: {} });
+  }
+  return impl;
+}
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -42,7 +51,7 @@ const NEITHER: WorkspaceRestrictions = { containsRestrictedData: false, ownerInv
 const statement = (publicAccess: CollaboratorRole | undefined, revision: number) =>
     ({ ...NEITHER, publicAccess, publicAccessRevision: revision });
 const DENIED = "You don't have access to this workspace.";
-const NOT_VISIBLE = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotVisible).message;
+const NOT_VISIBLE = createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible).message;
 const NO_SUCH_SPACE = "No such space, or you are not a member of it.";
 const NO_SHARING = "You do not have permission to share this workspace.";
 const OWNER_ONLY = "Only the workspace owner can publish it.";
@@ -88,11 +97,11 @@ async function workspace(
     owner: Account, spaceKey?: string, title = "Untitled", provisional = false) {
   let stub = env.TEST_OVERSEER.get(env.TEST_OVERSEER.newUniqueId());
   let id = stub.id.toString();
-  await owner.user.newGadget(id, title, spaceKey);
+  await owner.user.newWorkspace(id, title, spaceKey);
   if (!provisional) {
-    await owner.user.setGadgetLastActive(id, DAY, undefined, NEITHER);
+    await owner.user.setWorkspaceLastActive(id, DAY, undefined, NEITHER);
     // Deleting a workspace the owner has no record of waits out the sync that lists this one.
-    await owner.user.deleteGadget("ws-none", NEITHER);
+    await owner.user.deleteWorkspace("ws-none", NEITHER);
   }
   let restarts: string[] = [];
   let run = (act: (impl: any, instance: OverseerDurableObject) => unknown) =>
@@ -136,7 +145,7 @@ function share(impl: any, owner: Account, to: Account, role: CollaboratorRole): 
 }
 
 // An observation that states `flag` of the workspace, under which it is not published.
-const flagging = (impl: any, flag: string): Promise<void> => impl.authorizeObservation(
+const flagging = (impl: any, flag: string): Promise<void> => connected(impl).authorizeObservation(
     1, { title: "Read", description: "The test read a thing.", [flag]: true }, { from: "user" });
 
 afterEach(() => {
@@ -172,7 +181,7 @@ describe("a published workspace's Overseer", () => {
       let owner = await open(instance, alice);
       let seen: (CollaboratorRole | undefined)[] = [];
       using callback = new NativeRpcStub(
-          (metadata: GadgetMetadata) => { seen.push(metadata.publicAccess); });
+          (metadata: WorkspaceMetadata) => { seen.push(metadata.publicAccess); });
       using _subscription = await owner.subscribeToMetadata(callback as any);
       await owner.setPublicAccess("use");
       await owner.setPublicAccess("build");
@@ -296,9 +305,9 @@ describe("a published workspace's Overseer", () => {
       + "than a bound if that takes too long", async () => {
     let { alice, mallory, ws } = await published();
     let events: string[] = [];
-    let mirror = UserDurableObject.prototype.setGadgetPublicAccess;
+    let mirror = UserDurableObject.prototype.setWorkspacePublicAccess;
     let delay = 0;
-    vi.spyOn(UserDurableObject.prototype, "setGadgetPublicAccess").mockImplementation(
+    vi.spyOn(UserDurableObject.prototype, "setWorkspacePublicAccess").mockImplementation(
         async function (this: UserDurableObject, id, restrictions) {
           await scheduler.wait(delay);
           await mirror.call(this, id, restrictions);
@@ -331,7 +340,7 @@ describe("a published workspace's Overseer", () => {
         expect(await opening(instance, mallory)).toBe("use");
         // What the owner's subscription to the metadata is told: never the flag beside the role.
         let seen: unknown[] = [];
-        using callback = new NativeRpcStub((metadata: GadgetMetadata) => {
+        using callback = new NativeRpcStub((metadata: WorkspaceMetadata) => {
           seen.push([metadata.containsRestrictedData || metadata.ownerInvitesOnly,
                      metadata.publicAccess]);
         });
@@ -375,16 +384,16 @@ describe("a published workspace's Overseer", () => {
       share(impl, alice, carol, "use");
       expect(await opening(instance, carol)).toBe("build");
     });
-    await vi.waitFor(async () => expect(await carol.user.getGadget(ws.id))
+    await vi.waitFor(async () => expect(await carol.user.getWorkspace(ws.id))
         .toMatchObject({ owner: alice.profile, role: "use" }), WAIT);
-    expect(await mallory.user.getGadget(ws.id)).toBeNull();
+    expect(await mallory.user.getWorkspace(ws.id)).toBeNull();
   });
 
   it("takes the record of it as shared with someone to the role sharing gives them, when a "
       + "removal while it is published changes what sharing gives and nothing else", async () => {
     let { alice, carol, mallory, ws } = await published();
     let [bob, dave] = await Promise.all(["bob", "dave"].map(signUp));
-    let record = (of: Account) => of.user.getGadget(ws.id);
+    let record = (of: Account) => of.user.getWorkspace(ws.id);
     await ws.run(async (impl, instance) => {
       share(impl, alice, mallory, "build");
       share(impl, alice, bob, "build");
@@ -445,7 +454,7 @@ describe("a published workspace's Overseer", () => {
           removeObserver: async (removed: string) => { removals.push(`${id}:${removed}`); },
         });
         asked.mockClear();
-        outcome = await (impl.authorizeObservation(1, {
+        outcome = await (connected(impl).authorizeObservation(1, {
           title: "Observation", description: "One the gatekeeper keeps from its observers.",
           excludeObservers: ["obs"],
         }, { from: "agent", chatId: 1 }) as Promise<void>).then(
@@ -483,7 +492,7 @@ describe("a published workspace's Overseer", () => {
       impl.storage.observers.put(
           { profileId: mallory.profile.id, observerId: "obs", accountChoices: { 1: 10 } });
       impl.getGatekeeperFacet = () => ({ removeObserver: async () => {} });
-      let observe = (): Promise<void> => impl.authorizeObservation(1, {
+      let observe = (): Promise<void> => connected(impl).authorizeObservation(1, {
         title: "Observation", description: "One the gatekeeper keeps from its observers.",
         excludeObservers: ["obs"],
       }, { from: "agent", chatId: 1 });
@@ -503,8 +512,8 @@ describe("the mirror of a publication", () => {
       async () => {
     let { alice, key, ws } = await published();
     let mirrored = async (listedIn: string) => [
-      (await alice.user.getGadget(ws.id))?.publicAccess,
-      (await alice.user.listGadgets()).find(gadget => gadget.id === ws.id)?.publicAccess,
+      (await alice.user.getWorkspace(ws.id))?.publicAccess,
+      (await alice.user.listWorkspaces()).find(gadget => gadget.id === ws.id)?.publicAccess,
       (await stored(alice, ws.id))?.registered?.published,
       (await entry(listedIn, alice, ws.id))?.published,
     ];
@@ -528,7 +537,7 @@ describe("the mirror of a publication", () => {
     let { alice, mallory, key, ws } = await published();
     // First the owner's User DO cannot be reached, then the space cannot.
     let failures: [() => unknown, CollaboratorRole | null][] = [
-      [() => vi.spyOn(UserDurableObject.prototype, "setGadgetPublicAccess")
+      [() => vi.spyOn(UserDurableObject.prototype, "setWorkspacePublicAccess")
           .mockRejectedValueOnce(new Error("user object unavailable")), "use"],
       [() => vi.spyOn(SpaceDurableObject.prototype, "attachWorkspaces")
           .mockRejectedValueOnce(new Error("space unavailable")), null],
@@ -560,24 +569,24 @@ describe("the mirror of a publication", () => {
     let { alice, key, ws } = await published();
     // Deleting a workspace the owner has no record of waits out the syncs asked for before it.
     let mirrored = async () => {
-      await alice.user.deleteGadget("ws-none", NEITHER);
+      await alice.user.deleteWorkspace("ws-none", NEITHER);
       return [(await stored(alice, ws.id))?.publicAccess,
               (await entry(key, alice, ws.id))?.published];
     };
-    await alice.user.setGadgetPublicAccess(ws.id, statement("use", 1));
-    await alice.user.setGadgetPublicAccess(ws.id, statement(undefined, 2));
+    await alice.user.setWorkspacePublicAccess(ws.id, statement("use", 1));
+    await alice.user.setWorkspacePublicAccess(ws.id, statement(undefined, 2));
     // An activity report sent while the workspace was published arrives after it was withdrawn.
-    await alice.user.setGadgetLastActive(ws.id, DAY, undefined, statement("use", 1));
+    await alice.user.setWorkspaceLastActive(ws.id, DAY, undefined, statement("use", 1));
     expect(await mirrored()).toEqual([undefined, undefined]);
     // One sent after a later change, such as a change whose own statement was lost, says it.
     await alice.user.updateTitle(ws.id, "Renamed", statement("build", 3));
     expect(await mirrored()).toEqual(["build", "build"]);
-    expect(await alice.user.getGadget(ws.id)).not.toHaveProperty("publicAccessRevision");
+    expect(await alice.user.getWorkspace(ws.id)).not.toHaveProperty("publicAccessRevision");
 
     // Once a flag is recorded no statement of the role counts, as recent as it may be.
-    await alice.user.setGadgetLastActive(
+    await alice.user.setWorkspaceLastActive(
         ws.id, DAY, undefined, { ...statement(undefined, 3), containsRestrictedData: true });
-    await alice.user.setGadgetPublicAccess(ws.id, statement("build", 4));
+    await alice.user.setWorkspacePublicAccess(ws.id, statement("build", 4));
     expect(await mirrored()).toEqual([undefined, undefined]);
   });
 
@@ -593,7 +602,7 @@ describe("the mirror of a publication", () => {
     expect(await stored(alice, ws.id)).not.toHaveProperty("registered");
     expect(await space(alice.personal).open(mallory.profile.id)).toBeNull();
     // Its entry is marked when a space comes to list it: here at its first activity.
-    await alice.user.setGadgetLastActive(
+    await alice.user.setWorkspaceLastActive(
         ws.id, DAY, undefined, { ...NEITHER, publicAccess: "use" });
     await vi.waitFor(async () =>
         expect((await entry(alice.personal, alice, ws.id))?.published).toBe("use"), WAIT);
@@ -611,7 +620,7 @@ async function visited() {
   let { id: roadmap } = await workspace(alice, key, "Roadmap");
   let { id: notes } = await workspace(alice, key, "Notes");
   let state = (id: string, publicAccess?: CollaboratorRole) =>
-      alice.user.setGadgetPublicAccess(id, { ...NEITHER, publicAccess });
+      alice.user.setWorkspacePublicAccess(id, { ...NEITHER, publicAccess });
   return { alice, bob, mallory, key, roadmap, notes, state };
 }
 // The capability the space hands `as`, which a test asserts it does hand them.
@@ -695,13 +704,13 @@ describe("a space, to someone who is not a member of it", () => {
         .toEqual([roadmap, notes].toSorted());
     await state(roadmap);
     expect((await visitor.listWorkspaces()).map(listed => listed.id)).toEqual([notes]);
-    await alice.user.setGadgetSpace(notes, null, { ...NEITHER, publicAccess: "build" });
+    await alice.user.setWorkspaceSpace(notes, null, { ...NEITHER, publicAccess: "build" });
     expect(await refusals(visitor, roadmap)).toEqual(Array(8).fill(NO_SUCH_SPACE));
     expect(await space(key).open(mallory.profile.id)).toBeNull();
     // The workspace took its publication to the space it moved to, which is open for it now.
     using moved = await visit(alice.personal, mallory);
     expect(await moved.listWorkspaces()).toMatchObject([{ id: notes, published: "build" }]);
-    await alice.user.deleteGadget(notes, { ...NEITHER, publicAccess: "build" });
+    await alice.user.deleteWorkspace(notes, { ...NEITHER, publicAccess: "build" });
     expect(await space(alice.personal).open(mallory.profile.id)).toBeNull();
   });
 

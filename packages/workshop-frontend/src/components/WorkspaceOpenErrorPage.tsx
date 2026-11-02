@@ -51,7 +51,7 @@ export function classifyWorkspaceOpenFailure(error: unknown): WorkspaceOpenFailu
       return 'not-found'
     case OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled:
       return 'share-links-disabled'
-    case OPEN_GADGET_ERROR_CODES.workspaceNotVisible:
+    case OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible:
       return 'not-visible'
     default:
       return 'unexpected'

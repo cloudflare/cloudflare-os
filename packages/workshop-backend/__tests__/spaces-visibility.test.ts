@@ -9,7 +9,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
-  createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES,
+  createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES,
   type AiChatAuthorInfo, type CollaboratorRole, type Overseer, type SpaceWorkspaceInfo,
 } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject } from "../src/overseer.js";
@@ -24,6 +24,15 @@ import { UserDurableObject } from "../src/user.js";
 import { makeMockStorage } from "./mock-storage.js";
 // Load the whole backend up front, so that its slow load is not billed to the first test.
 import "./test-worker.js";
+
+// `impl` with connection 1, which the observations here are made through, on record: the ledger
+// refuses an observation through a connection the workspace does not hold.
+function connected(impl: any): any {
+  if (!impl.storage.gatekeepers.get(1)) {
+    impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Connection 1", class: {} });
+  }
+  return impl;
+}
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -40,7 +49,7 @@ type Account = {
 };
 
 const NEITHER: WorkspaceRestrictions = { containsRestrictedData: false, ownerInvitesOnly: false };
-const NOT_VISIBLE = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotVisible).message;
+const NOT_VISIBLE = createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible).message;
 const HIDDEN = "Gadget restarted because it is no longer visible to everyone signed in.";
 const REMOVED = "Gadget restarted to revoke access for a removed collaborator.";
 const NO_AGENT = "You do not have access to interact with this workspace through its agent.";
@@ -199,10 +208,10 @@ async function workspace(
     owner: Account, spaceKey: string | undefined, title: string, parentId?: string) {
   let stub = env.TEST_OVERSEER.get(env.TEST_OVERSEER.newUniqueId());
   let id = stub.id.toString();
-  await owner.user.newGadget(id, title, spaceKey, parentId);
-  await owner.user.setGadgetLastActive(id, DAY, undefined, NEITHER);
+  await owner.user.newWorkspace(id, title, spaceKey, parentId);
+  await owner.user.setWorkspaceLastActive(id, DAY, undefined, NEITHER);
   // Deleting a workspace the owner has no record of waits out the sync that lists this one.
-  await owner.user.deleteGadget("ws-none", NEITHER);
+  await owner.user.deleteWorkspace("ws-none", NEITHER);
   let restarts: string[] = [];
   let run = (act: (impl: any, instance: OverseerDurableObject) => unknown) =>
       runInDurableObject(stub, async (instance: OverseerDurableObject) => {
@@ -215,7 +224,7 @@ async function workspace(
         await act(impl, instance);
       });
   let state = (role?: CollaboratorRole) =>
-      owner.user.setGadgetPublicAccess(id, { ...NEITHER, publicAccess: role });
+      owner.user.setWorkspacePublicAccess(id, { ...NEITHER, publicAccess: role });
   await run(() => {});
   return { id, run, restarts, state };
 }
@@ -246,7 +255,7 @@ const opening = (instance: OverseerDurableObject, as: Account) => open(instance,
     .then(async session => (await session.getMetadata()).role, (error: Error) => error.message);
 // The code of the refusal opening the workspace as `as` comes to, if it is refused.
 const refusal = (instance: OverseerDurableObject, as: Account) => open(instance, as)
-    .then(() => undefined, (error: unknown) => getOpenGadgetErrorCode(error));
+    .then(() => undefined, (error: unknown) => getOpenWorkspaceErrorCode(error));
 // The owner publishes the workspace at `role`, or with null withdraws that.
 const publish = async (
     instance: OverseerDurableObject, owner: Account, role: CollaboratorRole | null) =>
@@ -280,7 +289,7 @@ function excluding(impl: any, ...observers: Account[]) {
         { profileId: profile.id, observerId: `obs-${profile.id}`, accountChoices: { 1: 10 } });
   }
   impl.getGatekeeperFacet = () => ({ removeObserver: async () => {} });
-  return (impl.authorizeObservation(1, {
+  return (connected(impl).authorizeObservation(1, {
     title: "Observation", description: "One the gatekeeper keeps from its observers.",
     excludeObservers: observers.map(({ profile }) => `obs-${profile.id}`),
   }, { from: "agent", chatId: 1 }) as Promise<void>)
@@ -306,8 +315,8 @@ describe("the owner's User DO, asked whether a workspace is visible", () => {
     // Provisional, under a flag, or not the user's own: no space lists it, and none is asked.
     asked.mockClear();
     let provisional = crypto.randomUUID();
-    await alice.user.newGadget(provisional, "Untitled", key);
-    await alice.user.setGadgetPublicAccess(personal.id,
+    await alice.user.newWorkspace(provisional, "Untitled", key);
+    await alice.user.setWorkspacePublicAccess(personal.id,
         { containsRestrictedData: true, ownerInvitesOnly: false, publicAccess: "use" });
     for (let [owner, id] of [[alice, provisional], [alice, personal.id], [bob, team.id]] as const) {
       expect(await owner.user.workspaceVisibility(id)).toBe(false);
@@ -321,7 +330,7 @@ describe("a published workspace's Overseer, as its space's tree has it", () => {
       + "reason that names none, and does once that one is published", async () => {
     let { alice, mallory, parent, child } = await hidden();
     await child.run(async (_impl, instance) => {
-      expect(await refusal(instance, mallory)).toBe(OPEN_GADGET_ERROR_CODES.workspaceNotVisible);
+      expect(await refusal(instance, mallory)).toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible);
       let reason = await opening(instance, mallory);
       expect(reason).toBe(NOT_VISIBLE);
       for (let named of ["Parent", parent.id]) expect(reason).not.toContain(named);
@@ -333,7 +342,7 @@ describe("a published workspace's Overseer, as its space's tree has it", () => {
     // Withdrawn, the workspace refuses her as one that was never published does.
     await child.run(async (_impl, instance) => {
       await publish(instance, alice, null);
-      expect(await refusal(instance, mallory)).toBe(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+      expect(await refusal(instance, mallory)).toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
     });
   });
 
@@ -381,7 +390,7 @@ describe("a published workspace's Overseer, as its space's tree has it", () => {
     lookups().mockRejectedValue(new Error("user object unavailable"));
     await child.run(async (_impl, instance) => {
       expect(await refusal(instance, mallory))
-          .toBe(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+          .toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
       expect(await opening(instance, bob)).toBe("use");
       expect(await opening(instance, carol)).toBe("build");
     });
@@ -553,7 +562,7 @@ describe("a published workspace's Overseer, as its space's tree has it", () => {
       await vi.waitFor(() => expect(asked).toHaveBeenCalledTimes(1), WAIT);
       await instance.revokeSpaceAccess(PUBLICATION_LEASE);
       release.held = false;
-      expect(await parked).toBe(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+      expect(await parked).toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
       expect(await asked.mock.results[0].value).toBe(true);
       // The next open asks again, and is answered afresh.
       expect(await opening(instance, mallory)).toBe("use");

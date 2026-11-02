@@ -20,7 +20,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, type AuthenticatedApi, type Overseer,
+  getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, type AuthenticatedApi, type Overseer,
   type Space, type SpaceMemberRole,
 } from "@gadgets/workshop-shared/api";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
@@ -93,7 +93,7 @@ async function addMember(space: RpcStub<Space>, username: string, role: SpaceMem
 
 /** A workspace of `ownerName`'s in team space `key`, held on a session of its own. */
 async function workspaceIn(stack: DisposableStack, ownerName: string, key: string) {
-  const workspace = stack.use(await (await session(stack, ownerName)).newGadget(key));
+  const workspace = stack.use(await (await session(stack, ownerName)).newWorkspace(key));
   return { workspace, id: (await workspace.getMetadata()).id };
 }
 
@@ -124,10 +124,10 @@ const refused = (username: string, id: string) =>
   waitFor(`${username} to open workspace ${id} or be refused it`, async () => {
     using stack = new DisposableStack();
     try {
-      stack.use(await (await session(stack, username)).openGadget(id));
+      stack.use(await (await session(stack, username)).openWorkspace(id));
       return false;
     } catch (error) {
-      return getOpenGadgetErrorCode(error) === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied
+      return getOpenWorkspaceErrorCode(error) === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied
           || null;
     }
   });
@@ -146,7 +146,7 @@ it.concurrent("a member opens a listed workspace in the role of their membership
   expect(await refused(carolName, id)).toBe(true);
 
   // Bob, a "build" member nobody shared the workspace with, builds.
-  using asBob = await bob.openGadget(id);
+  using asBob = await bob.openWorkspace(id);
   expect(await asBob.getMetadata()).toMatchObject({ id, role: "build" });
   expect(await asBob.listChats()).toHaveLength(1);
   // What he may share is decided by the workspace's own sharing, which gives him nothing.
@@ -155,13 +155,13 @@ it.concurrent("a member opens a listed workspace in the role of their membership
 
   // Carol, once a "use" member, only uses.
   await space.setMemberRole(carolName, "use");
-  using asCarol = await carol.openGadget(id);
+  using asCarol = await carol.openWorkspace(id);
   expect(await asCarol.getMetadata()).toMatchObject({ id, role: "use" });
   expect(await refusal(asCarol.listChats())).toBe(USE_ONLY);
 
   // Neither became a collaborator, and the workspace joined neither's own list.
   expect(await workspace.listCollaborators()).toEqual([]);
-  expect([...await bob.listGadgets(), ...await carol.listGadgets()]).toEqual([]);
+  expect([...await bob.listWorkspaces(), ...await carol.listWorkspaces()]).toEqual([]);
 });
 
 it.concurrent("lowering a member, then removing them, ends the session they hold each time",
@@ -171,13 +171,13 @@ it.concurrent("lowering a member, then removing them, ends the session they hold
   const bobId = await addMember(space, bobName, "build");
   const { workspace, id } = await workspaceIn(stack, aliceName, key);
   await activate(space, workspace, id);
-  using building = await bob.openGadget(id);
+  using building = await bob.openWorkspace(id);
   expect(await building.getMetadata()).toMatchObject({ role: "build" });
 
   // Lowered to "use", Bob loses the session he builds on, and the next one he opens only uses.
   await space.setMemberRole(bobName, "use");
   await severed(building);
-  using viewing = await (await session(stack, bobName)).openGadget(id);
+  using viewing = await (await session(stack, bobName)).openWorkspace(id);
   expect(await viewing.getMetadata()).toMatchObject({ role: "use" });
   expect(await refusal(viewing.listChats())).toBe(USE_ONLY);
 
@@ -194,7 +194,7 @@ it.concurrent("a workspace its owner moves out of the space is closed to the spa
   await space.setMemberRole(bobName, "build");
   const { workspace, id } = await workspaceIn(stack, aliceName, key);
   await activate(space, workspace, id);
-  using asBob = await bob.openGadget(id);
+  using asBob = await bob.openWorkspace(id);
   expect(await asBob.getMetadata()).toMatchObject({ role: "build" });
 
   // Back to Alice's personal space, which Bob is no member of.
@@ -224,7 +224,7 @@ it.concurrent.each([
   using thing = await connection.openSession() as RpcStub<TestSession>;
 
   // The connection is bound to no gadget, so Bob, who only uses, has nothing to verify.
-  using asBob = await bob.openGadget(id);
+  using asBob = await bob.openWorkspace(id);
   expect(await asBob.getMetadata()).toMatchObject({ role: "use" });
 
   // The observation ends the session Bob holds, and from then on the workspace refuses him, and
@@ -245,14 +245,14 @@ it.concurrent("a member who is also a collaborator opens in the higher role, sha
   expect(await workspace.addCollaborator(bobName, "use")).toMatchObject({ role: "use" });
 
   // The space gives the higher role, so Bob builds, but he grants no more than "use".
-  using building = await bob.openGadget(id);
+  using building = await bob.openWorkspace(id);
   expect(await building.getMetadata()).toMatchObject({ role: "build" });
   expect(await refusal(building.createShareLink("build"))).toBe(ABOVE_OWN_ROLE);
 
   // Out of the space, he is left with what the workspace's own sharing gives him.
   await space.removeMember(bobId);
   await severed(building);
-  using viewing = await (await session(stack, bobName)).openGadget(id);
+  using viewing = await (await session(stack, bobName)).openWorkspace(id);
   expect(await viewing.getMetadata()).toMatchObject({ role: "use" });
   expect(await refusal(viewing.listChats())).toBe(USE_ONLY);
 });

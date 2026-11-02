@@ -117,7 +117,7 @@ describe('WorkspaceOpenErrorPage', () => {
       createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled),
     )).toBe('share-links-disabled')
     expect(classifyWorkspaceOpenFailure(
-      createOpenGadgetError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible),
+      createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible),
     )).toBe('not-visible')
     expect(classifyWorkspaceOpenFailure(
       new Error(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied),

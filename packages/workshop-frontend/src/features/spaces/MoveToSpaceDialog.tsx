@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Dialog, Radio } from '@cloudflare/kumo'
 import {
   PERSONAL_SPACE_PREFIX,
-  type GadgetMetadata,
+  type WorkspaceMetadata,
   type SpaceInfo,
 } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
@@ -21,7 +21,7 @@ const isTeamSpace = (space: SpaceInfo) => space.kind === 'team'
  * `spaces`, or, for a workspace in a team space, the user's personal space.
  */
 export const hasMoveTarget = (
-  workspace: Pick<GadgetMetadata, 'spaceKey'>,
+  workspace: Pick<WorkspaceMetadata, 'spaceKey'>,
   spaces: SpaceInfo[],
 ): boolean => workspace.spaceKey !== undefined || spaces.some(isTeamSpace)
 
@@ -34,8 +34,8 @@ export const hasMoveTarget = (
  * the targets is not said to be missing from the user's spaces.
  */
 export const MoveToSpaceDialog = ({ workspace, spaces, onClose, onMoved, onMoveFailed }: {
-  /** A workspace the user owns, as `listGadgets()` reports it. */
-  workspace: Pick<GadgetMetadata, 'id' | 'title' | 'spaceKey'>
+  /** A workspace the user owns, as `listWorkspaces()` reports it. */
+  workspace: Pick<WorkspaceMetadata, 'id' | 'title' | 'spaceKey'>
   /**
    * The user's spaces (`useSpaces`). Only the team spaces among them are offered. Empty while the
    * list has not loaded, or could not be: once loaded it has the user's personal space at least.
@@ -77,7 +77,7 @@ export const MoveToSpaceDialog = ({ workspace, spaces, onClose, onMoved, onMoveF
     const spaceKey = target === PERSONAL_TARGET ? null : target
     // Not awaited: the move is pipelined on the open, and disposing the promise disposes the
     // workspace it resolves to.
-    const overseer = authenticatedApi.openGadget(workspace.id)
+    const overseer = authenticatedApi.openWorkspace(workspace.id)
     try {
       await overseer.moveToSpace(spaceKey)
       onMoved(spaceKey)

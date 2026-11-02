@@ -64,7 +64,7 @@ async function session(stack: DisposableStack, username: string)
 async function listedWorkspace(
     stack: DisposableStack, ownerName: string, key: string | undefined, space: RpcStub<Space>,
     title: string, parentId?: string) {
-  const workspace = stack.use(await (await session(stack, ownerName)).newGadget(key, parentId));
+  const workspace = stack.use(await (await session(stack, ownerName)).newWorkspace(key, parentId));
   const { id } = await workspace.getMetadata();
   await workspace.setTitle(title);
   await workspace.newChat("Seen activity, with no agent", null);

@@ -34,7 +34,7 @@ const render = async (
     moveToSpace: vi.fn<Overseer['moveToSpace']>(moveToSpace),
     [Symbol.dispose]: vi.fn<() => void>(),
   }
-  const openGadget = vi.fn<(id: string) => unknown>(() => overseer)
+  const openWorkspace = vi.fn<(id: string) => unknown>(() => overseer)
   const onMoved = vi.fn<(spaceKey: string | null) => void>()
   const onMoveFailed = vi.fn<() => Promise<void>>(async () => {})
   const dialog = (recordedIn: string | undefined) => (
@@ -46,10 +46,10 @@ const render = async (
       onMoveFailed={onMoveFailed}
     />
   )
-  const { rerender } = await mount(dialog(spaceKey), fakeApi({ openGadget }))
+  const { rerender } = await mount(dialog(spaceKey), fakeApi({ openWorkspace }))
   return {
     overseer,
-    openGadget,
+    openWorkspace,
     onMoved,
     onMoveFailed,
     // The dialog as its caller renders it once the workspace, read again, is recorded in a space.
@@ -119,13 +119,13 @@ describe('MoveToSpaceDialog', () => {
   })
 
   it('moves the workspace to the chosen team space and releases it', async () => {
-    const { overseer, openGadget, onMoved } = await render(undefined)
+    const { overseer, openWorkspace, onMoved } = await render(undefined)
     expect(targets()[0]).toEqual({ name: 'Personal (current)', checked: true })
 
     await choose('Platform')
     await click(button('Move'))
 
-    expect(openGadget).toHaveBeenCalledExactlyOnceWith('w1')
+    expect(openWorkspace).toHaveBeenCalledExactlyOnceWith('w1')
     expect(overseer.moveToSpace).toHaveBeenCalledExactlyOnceWith('platform')
     expect(overseer[Symbol.dispose]).toHaveBeenCalledOnce()
     expect(onMoved).toHaveBeenCalledExactlyOnceWith('platform')

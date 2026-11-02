@@ -28,7 +28,7 @@ const EXPECTED_MESSAGES: Record<OpenWorkspaceErrorCode, string> = {
   [OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled]:
       "Share links are disabled for this workspace because it contains sensitive data. " +
       "The owner must add each person directly.",
-  [OPEN_GADGET_ERROR_CODES.workspaceNotVisible]:
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible]:
       "This workspace is published, but not visible yet: its space does not list it yet, " +
       "or a workspace above it there is not published.",
 };

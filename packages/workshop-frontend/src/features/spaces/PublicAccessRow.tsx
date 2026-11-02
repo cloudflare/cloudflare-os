@@ -7,7 +7,7 @@ import type { RpcStub } from 'capnweb'
 import type {
   AuthenticatedApi,
   CollaboratorRole,
-  GadgetMetadata,
+  WorkspaceMetadata,
   Overseer,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
@@ -24,7 +24,7 @@ import { hiddenByTitle, pathTo } from './tree/workspaceTree'
 type PublicAccess = CollaboratorRole | null
 
 /** What decides whether, and how, the workspace is published. */
-type Publication = Pick<GadgetMetadata, 'publicAccess' | 'containsRestrictedData' | 'ownerInvitesOnly'>
+type Publication = Pick<WorkspaceMetadata, 'publicAccess' | 'containsRestrictedData' | 'ownerInvitesOnly'>
 
 const publicationOf = ({ publicAccess, containsRestrictedData, ownerInvitesOnly }: Publication): Publication =>
   ({ publicAccess, containsRestrictedData, ownerInvitesOnly })
@@ -62,7 +62,7 @@ const blockedByTitle = (listing: readonly SpaceWorkspaceInfo[], entry: SpaceWork
 }
 
 // What `blockedByTitle` says of the workspace, read from the listing of the space that lists it
-// (`GadgetMetadata.listedIn`) each time `active` becomes true: undefined while nothing above it is
+// (`WorkspaceMetadata.listedIn`) each time `active` becomes true: undefined while nothing above it is
 // unpublished, while no space lists it, or while that is not known yet. A visitor's listing has no
 // entry with an unpublished workspace above it, and a space that refuses the user lists nothing, so
 // only the owner and the space's members are told.
@@ -117,7 +117,7 @@ const usePublicationBlocker = (
 
 /**
  * The row of the Share dialog for publishing the workspace: what anyone signed in to the
- * deployment may open it with, without being invited (`GadgetMetadata.publicAccess`). Behind
+ * deployment may open it with, without being invited (`WorkspaceMetadata.publicAccess`). Behind
  * the `spaces` flag: with the flag off the row is absent.
  *
  * The owner gets the control. A change that takes access away (a lower role, or none) restarts
@@ -138,7 +138,7 @@ export const PublicAccessRow = ({ overseer, authenticatedApi, metadata, containe
   authenticatedApi: RpcStub<AuthenticatedApi>
   /** The workspace as the dialog has it. With no `owner`, the user is its owner. */
   metadata: Pick<
-    GadgetMetadata,
+    WorkspaceMetadata,
     'id' | 'owner' | 'publicAccess' | 'containsRestrictedData' | 'ownerInvitesOnly' | 'listedIn'
   >
   /** Where the control's options are rendered, so they sit above the dialog the row is in. */

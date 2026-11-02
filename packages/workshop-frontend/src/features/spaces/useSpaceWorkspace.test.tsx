@@ -41,6 +41,7 @@ vi.mock('../../components/AppShell/AppShell', () => ({
   default: ({ children }: { children: ReactNode }) => <div data-testid="app-shell">{children}</div>,
 }))
 vi.mock('../../components/billing/AccountSelectionModal', () => ({ default: () => null }))
+vi.mock('../notifications/NotificationBridge', () => ({ NotificationBridge: () => null }))
 
 // The session the app's own root route finds the user signed in under (see `pageInApp`).
 const signedIn = vi.hoisted(() => ({ api: null as unknown }))

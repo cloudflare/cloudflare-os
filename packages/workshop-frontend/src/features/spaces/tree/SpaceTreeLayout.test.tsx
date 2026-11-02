@@ -8,8 +8,8 @@ import type { RpcStub } from 'capnweb'
 import type {
   BlueprintPublicInfo,
   ConnectedAccountsSubscriber,
-  GadgetMetadata,
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadata,
+  WorkspaceMetadataWithTimestamps,
   OutputFormatOffer,
   PublicApi,
   SpaceMemberRole,
@@ -119,17 +119,17 @@ const render = async (
   role: SpaceMemberRole | undefined,
   {
     at = '/spaces/design',
-    records = [] as GadgetMetadataWithTimestamps[],
+    records = [] as WorkspaceMetadataWithTimestamps[],
     listing = LISTING,
   } = {},
 ) => {
   const space = fakeSpace(teamSpace('design', 'Design'), role ? [member(ME, role)] : [], listing)
   const overseerDispose = vi.fn<() => void>()
-  const openGadget = vi.fn<(id: string) => unknown>((id) => ({
-    getMetadata: async (): Promise<GadgetMetadata> => ({ id, title: 'Checklist', publicAccess: 'use' }),
+  const openWorkspace = vi.fn<(id: string) => unknown>((id) => ({
+    getMetadata: async (): Promise<WorkspaceMetadata> => ({ id, title: 'Checklist', publicAccess: 'use' }),
     [Symbol.dispose]: overseerDispose,
   }))
-  const newGadgetFromBlueprint = vi.fn<(id: string, bindings: object, options: object) => unknown>(() => ({
+  const newWorkspaceFromBlueprint = vi.fn<(id: string, bindings: object, options: object) => unknown>(() => ({
     getMetadata: async () => ({ id: 'w-new' }),
     [Symbol.dispose]: () => {},
   }))
@@ -154,16 +154,16 @@ const render = async (
   }
   const mounted = await mountRouted(fakeApi({
     openSpace: () => space.stub,
-    openGadget,
-    newGadgetFromBlueprint,
+    openWorkspace,
+    newWorkspaceFromBlueprint,
     listOutputFormats: async () => [NOTE],
-    listGadgets: async () => records,
+    listWorkspaces: async () => records,
   }), {
     at,
     pages: (root: AnyRoute) => [createRoute({ getParentRoute: () => root, path: '/spaces/$spaceKey', component: Page })],
   })
   await settle()
-  return { ...mounted, space, openGadget, overseerDispose, newGadgetFromBlueprint, reloads }
+  return { ...mounted, space, openWorkspace, overseerDispose, newWorkspaceFromBlueprint, reloads }
 }
 
 const rowElements = () => [...document.body.querySelectorAll<HTMLElement>('[data-hierarchical-list-row]')]
@@ -354,14 +354,14 @@ describe('SpaceTreeLayout', () => {
   })
 
   it('creates a child workspace under the entry, then reads the listing again and previews it', async () => {
-    const { newGadgetFromBlueprint, reloads, router } = await render('build')
+    const { newWorkspaceFromBlueprint, reloads, router } = await render('build')
 
     await select('w-onboarding')
     await chooseAction('w-onboarding', 'New child workspace')
     await click(button('Create'))
     await settle()
 
-    expect(newGadgetFromBlueprint).toHaveBeenCalledWith('bp-note', {}, {
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledWith('bp-note', {}, {
       spaceKey: 'design',
       parentId: 'w-onboarding',
       publish: true,
@@ -426,11 +426,11 @@ describe('SpaceTreeLayout', () => {
   })
 
   it('shares the user’s own entry from the tree’s menu', async () => {
-    const { openGadget, overseerDispose } = await render('build')
+    const { openWorkspace, overseerDispose } = await render('build')
 
     await chooseAction('w-checklist', 'Share')
 
-    expect(openGadget).toHaveBeenCalledWith('w-checklist')
+    expect(openWorkspace).toHaveBeenCalledWith('w-checklist')
     expect(seen.shareModal?.metadata.id).toBe('w-checklist')
 
     await act(async () => seen.shareModal!.onClose())
@@ -482,8 +482,8 @@ describe('SpaceTreeLayout', () => {
 const DAY = new Date('2026-09-01T00:00:00Z')
 const BUILDER: SpaceMemberRole = 'build'
 
-const record = (id: string, title: string, fields: Partial<GadgetMetadataWithTimestamps> = {}) =>
-  ({ id, title, created: DAY, lastActive: DAY, spaceKey: 'design', ...fields }) satisfies GadgetMetadataWithTimestamps
+const record = (id: string, title: string, fields: Partial<WorkspaceMetadataWithTimestamps> = {}) =>
+  ({ id, title, created: DAY, lastActive: DAY, spaceKey: 'design', ...fields }) satisfies WorkspaceMetadataWithTimestamps
 
 const syncJob = (jobId: string, status: SpaceSyncJobInfo['status']): SpaceSyncJobInfo => ({
   jobId,
@@ -529,18 +529,18 @@ const SyncingPage = ({ space }: { space: SyncedSpace }) => {
 // The space `synced` (Design unless given), for a builder whose records are `records`, with
 // `jobs` as their syncs into it.
 const renderSyncing = async (
-  records: GadgetMetadataWithTimestamps[],
+  records: WorkspaceMetadataWithTimestamps[],
   jobs: () => SpaceSyncJobInfo[] = () => [],
   synced: SyncedSpace = DESIGN,
 ) => {
   const info = synced.kind === 'team' ? teamSpace(synced.key, synced.label) : personalSpace(ME, 'admin')
   const space = fakeSpace(info, [member(ME, synced.kind === 'team' ? BUILDER : 'admin')], LISTING)
-  const listGadgets = vi.fn<() => Promise<GadgetMetadataWithTimestamps[]>>(async () => records)
+  const listWorkspaces = vi.fn<() => Promise<WorkspaceMetadataWithTimestamps[]>>(async () => records)
   const listSpaceSyncJobs = vi.fn<(spaceKey?: string) => Promise<SpaceSyncJobInfo[]>>(async () => jobs())
   const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>(async () => syncJob('j-resync', 'running'))
   await mountRouted(fakeApi({
     openSpace: () => space.stub,
-    listGadgets,
+    listWorkspaces,
     listSpaceSyncJobs,
     resyncWorkspace,
     subscribeConnectedAccounts,
@@ -553,7 +553,7 @@ const renderSyncing = async (
     })],
   })
   await settle()
-  return { listGadgets, listSpaceSyncJobs, resyncWorkspace }
+  return { listWorkspaces, listSpaceSyncJobs, resyncWorkspace }
 }
 
 const RESYNC = 'Re-sync from source'
@@ -640,8 +640,8 @@ describe('SpaceTreeLayout, for a space the user can sync into', () => {
     const ended = (jobId: string) => ({ ...syncJob(jobId, 'done'), finished: DAY })
     let jobs = [syncJob('j2', 'running'), syncJob('j1', 'running')]
     let records = [record('w-handbook', 'Handbook', { syncedFrom: { accountId: 7 } })]
-    const { listGadgets } = await renderSyncing([], () => jobs)
-    listGadgets.mockImplementation(async () => records)
+    const { listWorkspaces } = await renderSyncing([], () => jobs)
+    listWorkspaces.mockImplementation(async () => records)
     // The records are read again as each followed sync ends: the first read had nothing.
     jobs = [syncJob('j2', 'running'), ended('j1')]
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
@@ -654,7 +654,7 @@ describe('SpaceTreeLayout, for a space the user can sync into', () => {
     jobs = [ended('j2'), ended('j1')]
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
     await settle()
-    expect(listGadgets).toHaveBeenCalledTimes(3)
+    expect(listWorkspaces).toHaveBeenCalledTimes(3)
     expect(dialogTitle()).toBe('Re-sync “Handbook” from Docs Hub?')
 
     await click(button('Cancel'))
@@ -665,8 +665,8 @@ describe('SpaceTreeLayout, for a space the user can sync into', () => {
 
   it('reads the user’s records again once a sync it follows has ended', async () => {
     let jobs = [syncJob('j1', 'running')]
-    const { listGadgets } = await renderSyncing([], () => jobs)
-    expect(listGadgets).toHaveBeenCalledTimes(1)
+    const { listWorkspaces } = await renderSyncing([], () => jobs)
+    expect(listWorkspaces).toHaveBeenCalledTimes(1)
 
     // The running sync is read again when the page is shown again, and has ended by then.
     jobs = [{ ...syncJob('j1', 'done'), finished: DAY }]
@@ -674,6 +674,6 @@ describe('SpaceTreeLayout, for a space the user can sync into', () => {
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
     await settle()
 
-    expect(listGadgets).toHaveBeenCalledTimes(2)
+    expect(listWorkspaces).toHaveBeenCalledTimes(2)
   })
 })

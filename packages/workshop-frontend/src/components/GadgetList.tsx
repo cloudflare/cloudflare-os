@@ -221,7 +221,7 @@ function AppRow({
 /** What `GadgetList` hands the caller that lays its rows out under sections. */
 export type GadgetListRows = {
   /** Every workspace in the list, in list order: favorites first, then the most recently active. */
-  gadgets: GadgetMetadataWithTimestamps[]
+  gadgets: WorkspaceMetadataWithTimestamps[]
   /** What the search field holds; empty while the list is not being searched. */
   search: string
   /**
@@ -229,7 +229,7 @@ export type GadgetListRows = {
    * the entry a space lists the workspace under gives the row, for a caller that has that entry.
    * `describedBy` is the id of an element outside the row that describes it.
    */
-  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: SpaceRowListing, describedBy?: string) => ReactNode
+  renderRow: (gadget: WorkspaceMetadataWithTimestamps, listing?: SpaceRowListing, describedBy?: string) => ReactNode
 }
 
 export default function GadgetList({ showHeader = true, sections }: {
@@ -429,7 +429,7 @@ export default function GadgetList({ showHeader = true, sections }: {
   // loading the whole list again would blank it behind the open dialog.
   const handleMoveFailed = async (id: string) => {
     try {
-      const record = (await authenticatedApi.listGadgets()).find(g => g.id === id)
+      const record = (await authenticatedApi.listWorkspaces()).find(g => g.id === id)
       if (record) setSpaceKey(id, record.spaceKey)
     } catch (err) {
       logRpcFailure('Failed to read a workspace again after a failed move:', err)

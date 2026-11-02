@@ -7,7 +7,7 @@ import { RouterProvider } from '@tanstack/react-router'
 import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadataWithTimestamps,
   Overseer,
   SpaceInfo,
   SpaceWorkspaceInfo,
@@ -51,13 +51,13 @@ const PLATFORM = teamSpace('platform', 'Platform')
 
 const DAY = new Date('2026-09-01T00:00:00Z')
 
-const mine = (id: string, title: string, spaceKey?: string): GadgetMetadataWithTimestamps =>
+const mine = (id: string, title: string, spaceKey?: string): WorkspaceMetadataWithTimestamps =>
   ({ id, title, created: DAY, lastActive: DAY, spaceKey })
 
 const listedBy = (owner: AiChatAuthorInfo, id: string, title: string): SpaceWorkspaceInfo =>
   ({ id, title, owner, created: DAY })
 
-const GADGETS: GadgetMetadataWithTimestamps[] = [
+const GADGETS: WorkspaceMetadataWithTimestamps[] = [
   mine('w-solo', 'Solo notes'),
   mine('w-roadmap', 'Roadmap', 'platform'),
   { id: 'w-brief', title: 'Brief', created: DAY, lastActive: DAY, owner: ADA },
@@ -78,7 +78,7 @@ const LISTED: Record<string, SpaceWorkspaceInfo[]> = {
 const renderPage = async ({ at = '/workspaces', spacesFlag = true, gadgets = GADGETS, api = {}, chrome }: {
   at?: string
   spacesFlag?: boolean
-  gadgets?: GadgetMetadataWithTimestamps[]
+  gadgets?: WorkspaceMetadataWithTimestamps[]
   api?: Partial<{ [K in keyof AuthenticatedApi]: unknown }>
   chrome?: ReactNode
 } = {}) => {
@@ -94,7 +94,7 @@ const renderPage = async ({ at = '/workspaces', spacesFlag = true, gadgets = GAD
   })
   const mounted = await mountRouted(
     fakeApi({
-      listGadgets: async () => gadgets,
+      listWorkspaces: async () => gadgets,
       listFeaturedBlueprints: async () => [],
       listSpaces,
       openSpace,
@@ -207,7 +207,7 @@ const searchField = () => document.body.querySelector<HTMLInputElement>('input[p
 // does. The new session answers neither its flags nor its workspaces until `answer` is called.
 const replaceSession = async ({ router, rerender }: Awaited<ReturnType<typeof renderPage>>) => {
   const flags = deferred<{ spaces: boolean }>()
-  const gadgets = deferred<GadgetMetadataWithTimestamps[]>()
+  const gadgets = deferred<WorkspaceMetadataWithTimestamps[]>()
   const spaces = [PERSONAL, ATLAS, DESIGN, PLATFORM]
   const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => spaces)
   const openSpace = vi.fn<(key: string) => unknown>((key) => {
@@ -216,7 +216,7 @@ const replaceSession = async ({ router, rerender }: Awaited<ReturnType<typeof re
   })
   await rerender(<RouterProvider router={router} />, fakeApi({
     getUiFeatureFlags: () => flags.promise,
-    listGadgets: () => gadgets.promise,
+    listWorkspaces: () => gadgets.promise,
     listFeaturedBlueprints: async () => [],
     listSpaces,
     openSpace,
@@ -399,7 +399,7 @@ describe('the workspaces page', () => {
         setPublicAccess: vi.fn<Overseer['setPublicAccess']>(async () => {}),
         [Symbol.dispose]: vi.fn<() => void>(),
       }
-      await renderPage({ api: { openGadget: () => overseer } })
+      await renderPage({ api: { openWorkspace: () => overseer } })
       expect(publication('Solo notes')).toBeNull()
 
       await rowActions('Solo notes')
@@ -812,7 +812,7 @@ describe('the workspaces page', () => {
         moveToSpace: vi.fn<Overseer['moveToSpace']>(async () => {}),
         [Symbol.dispose]: vi.fn<() => void>(),
       }
-      await renderPage({ api: { openGadget: () => overseer } })
+      await renderPage({ api: { openWorkspace: () => overseer } })
 
       await click(rowOf('Solo notes').querySelector('button')!)
       await chooseMenuItem('Move to space')
@@ -830,7 +830,7 @@ describe('the workspaces page', () => {
     it('reads a workspace’s space again after a move that failed, and shows the workspace where it is recorded', async () => {
       vi.spyOn(console, 'debug').mockImplementation(() => {})
       let recorded = GADGETS
-      const listGadgets = vi.fn<AuthenticatedApi['listGadgets']>(async () => recorded)
+      const listWorkspaces = vi.fn<AuthenticatedApi['listWorkspaces']>(async () => recorded)
       const overseer = {
         // The record is pointed at the space, which then cannot be reached.
         moveToSpace: vi.fn<Overseer['moveToSpace']>(async (spaceKey) => {
@@ -840,7 +840,7 @@ describe('the workspaces page', () => {
         }),
         [Symbol.dispose]: vi.fn<() => void>(),
       }
-      await renderPage({ api: { listGadgets, openGadget: () => overseer } })
+      await renderPage({ api: { listWorkspaces, openWorkspace: () => overseer } })
 
       await click(rowOf('Solo notes').querySelector('button')!)
       await chooseMenuItem('Move to space')
@@ -849,7 +849,7 @@ describe('the workspaces page', () => {
       await settle()
 
       expect(alerts()).toEqual(['Couldn’t move the workspace. Try again.'])
-      expect(listGadgets).toHaveBeenCalledTimes(2)
+      expect(listWorkspaces).toHaveBeenCalledTimes(2)
       expect(sections()[0]).toEqual(['Personal', []])
       expect(cards()[1]).toEqual(['Design', 'Your role: Use · 1 workspace'])
       const targets = [...document.body.querySelectorAll('[role="dialog"] label')]

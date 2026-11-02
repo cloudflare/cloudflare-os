@@ -36,7 +36,7 @@ const renderSidebar = async (
   } = {},
 ) => {
   const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => spaces)
-  await mountRouted(fakeApi({ listGadgets: async () => [], listSpaces }, { spacesFlag }), {
+  await mountRouted(fakeApi({ listWorkspaces: async () => [], listSpaces }, { spacesFlag }), {
     at,
     chrome: (
       <SidebarWorkspacesProvider>

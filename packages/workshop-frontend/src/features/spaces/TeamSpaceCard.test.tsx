@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { WorkspaceRow, WorkspaceSection } from './groupWorkspaces'
 import {
   button,
@@ -31,7 +31,7 @@ const rows = (count: number): WorkspaceRow[] => Array.from({ length: count }, (_
 })
 
 const ownRow = (id: string): WorkspaceRow => {
-  const gadget: GadgetMetadataWithTimestamps = { id, title: id, created: DAY, lastActive: DAY, spaceKey: 'platform' }
+  const gadget: WorkspaceMetadataWithTimestamps = { id, title: id, created: DAY, lastActive: DAY, spaceKey: 'platform' }
   return { kind: 'record', id, gadget }
 }
 

@@ -1,5 +1,5 @@
 // Where a workspace created from a blueprint lands, end to end over the real RPC API: the space
-// and the parent `newGadgetFromBlueprint` is given, under the blueprint's title, and published
+// and the parent `newWorkspaceFromBlueprint` is given, under the blueprint's title, and published
 // only when the blueprint declares a default publication, which none of the blueprints this
 // harness installs does.
 //
@@ -85,7 +85,7 @@ const listedAs = (space: RpcStub<Space>, id: string, title: string) =>
 
 /** Workspace `id` as its owner's list of workspaces gives it. */
 async function ownRecord(api: RpcStub<AuthenticatedApi>, id: string) {
-  const record = (await api.listGadgets()).find(gadget => gadget.id === id);
+  const record = (await api.listWorkspaces()).find(gadget => gadget.id === id);
   if (record === undefined) throw new Error(`Workspace ${id} is not in its owner's list`);
   return record;
 }
@@ -104,7 +104,7 @@ it.concurrent("places a workspace in the team space a string third argument name
   // The bundled blueprints of this deployment declare no default publication.
   expect(blueprint.metadata).not.toHaveProperty("publication");
 
-  const workspace = stack.use(await alice.newGadgetFromBlueprint(blueprint.id, {}, key));
+  const workspace = stack.use(await alice.newWorkspaceFromBlueprint(blueprint.id, {}, key));
   const metadata = await workspace.getMetadata();
   expect(metadata.title).toBe(blueprint.metadata.title);
   expect(metadata.publicAccess).toBeUndefined();
@@ -126,19 +126,19 @@ it.concurrent("places a workspace in the space and under the parent the options 
   const { title } = blueprint.metadata;
 
   const parent =
-      stack.use(await alice.newGadgetFromBlueprint(blueprint.id, {}, { spaceKey: key }));
+      stack.use(await alice.newWorkspaceFromBlueprint(blueprint.id, {}, { spaceKey: key }));
   const { id: parentId } = await parent.getMetadata();
   expect(await listedAs(space, parentId, title)).not.toHaveProperty("parentId");
 
   const child = stack.use(
-      await alice.newGadgetFromBlueprint(blueprint.id, {}, { spaceKey: key, parentId }));
+      await alice.newWorkspaceFromBlueprint(blueprint.id, {}, { spaceKey: key, parentId }));
   const { id: childId } = await child.getMetadata();
   const entry = await listedAs(space, childId, title);
   expect(entry).toMatchObject({ parentId, position: 0 });
   expect(entry).not.toHaveProperty("published");
 
   // Asking for the blueprint's default publication publishes nothing when it declares none.
-  const asked = stack.use(await alice.newGadgetFromBlueprint(
+  const asked = stack.use(await alice.newWorkspaceFromBlueprint(
       blueprint.id, {}, { spaceKey: key, parentId, publish: true }));
   const askedMetadata = await asked.getMetadata();
   expect(askedMetadata.publicAccess).toBeUndefined();

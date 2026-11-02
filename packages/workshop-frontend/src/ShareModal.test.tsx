@@ -144,7 +144,7 @@ type OverseerOverrides = {
     note?: string,
   ) => Promise<CollaboratorInfo | null>
   setPublicAccess?: (role: CollaboratorRole | null) => Promise<void>
-  getMetadata?: () => Promise<GadgetMetadata>
+  getMetadata?: () => Promise<WorkspaceMetadata>
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
@@ -1390,9 +1390,9 @@ describe('ShareModal', () => {
     const SHARED_WITH_ME = {
       ...METADATA,
       owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
-    } as GadgetMetadata
+    } as WorkspaceMetadata
 
-    const publishedWith = (role: CollaboratorRole): GadgetMetadata => ({ ...METADATA, publicAccess: role })
+    const publishedWith = (role: CollaboratorRole): WorkspaceMetadata => ({ ...METADATA, publicAccess: role })
     const hasControl = (rendered: HTMLElement) =>
       rendered.querySelector(`button[aria-label="${CONTROL}"]`) !== null
 
@@ -1523,7 +1523,7 @@ describe('ShareModal', () => {
       expect(button(rendered, CONTROL).textContent).toBe('Can use')
     })
 
-    it.each<[string, Partial<GadgetMetadata>, string]>([
+    it.each<[string, Partial<WorkspaceMetadata>, string]>([
       ['holds restricted data', { containsRestrictedData: true },
         'Not available: this workspace has read sensitive data.'],
       ['is owner-invites-only', { containsRestrictedData: true, ownerInvitesOnly: true },

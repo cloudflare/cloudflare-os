@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import { Loader } from '@cloudflare/kumo'
 import { ArrowSquareOut } from '@phosphor-icons/react'
-import type { GadgetMetadata, Overseer, SpaceWorkspaceInfo, WorkpieceId } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadata, Overseer, SpaceWorkspaceInfo, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { WorkshopButton } from '../../../components/WorkshopControls'
 import GadgetUI from '../../../GadgetUI'
 import { PublishedIndicator, publicationHeldBack } from '../PublishedIndicator'
@@ -150,7 +150,7 @@ const WorkspacePreview = ({ workspace, place, syncEndedKey }: PaneProps) => {
 
 const PreviewGadgets = ({ overseer, metadata }: {
   overseer: RpcStub<Overseer>
-  metadata: GadgetMetadata
+  metadata: WorkspaceMetadata
 }) => {
   const [requestedId, setRequestedId] = useState<WorkpieceId | undefined>()
   const { gadgets, selectedId, gadget, ready } = useWorkspaceGadgets(overseer, metadata.defaultGadgetId, requestedId)

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import type {
-  GadgetMetadata,
+  WorkspaceMetadata,
   ObserverAccountChoice,
   ObserverConfigCallback,
   Overseer,
@@ -23,7 +23,7 @@ export type WorkspacePreviewFailure = WorkspaceOpenFailureKind | 'needs-setup'
 /** Where a preview of a workspace stands. */
 export type WorkspacePreviewState =
   | { state: 'loading' }
-  | { state: 'ready'; overseer: RpcStub<Overseer>; metadata: GadgetMetadata }
+  | { state: 'ready'; overseer: RpcStub<Overseer>; metadata: WorkspaceMetadata }
   | { state: 'failed'; failure: WorkspacePreviewFailure }
 
 // Declines every request to choose connected accounts. A preview is a glance from a list, not
@@ -60,7 +60,7 @@ export const useWorkspacePreview = (
     const configureObservers = new RpcStub(observerConfig)
     // Not awaited: the subscription is pipelined on the open, and disposing the promise disposes
     // the workspace it resolves to.
-    const overseer: RpcStub<Overseer> = authenticatedApi.openGadget(workspaceId, undefined, configureObservers)
+    const overseer: RpcStub<Overseer> = authenticatedApi.openWorkspace(workspaceId, undefined, configureObservers)
     let subscription: RpcStub<{}> | null = null
     let released = false
     const release = () => {
@@ -72,7 +72,7 @@ export const useWorkspacePreview = (
     }
     setPreview({ workspaceId, view: { state: 'loading' } })
 
-    overseer.subscribeToMetadata((metadata: GadgetMetadata) => {
+    overseer.subscribeToMetadata((metadata: WorkspaceMetadata) => {
       if (!cancelled) setPreview({ workspaceId, view: { state: 'ready', overseer, metadata } })
     })
       .then((resolved) => {

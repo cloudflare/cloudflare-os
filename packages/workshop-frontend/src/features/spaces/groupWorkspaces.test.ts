@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type {
   AiChatAuthorInfo,
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadataWithTimestamps,
   SpaceInfo,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
@@ -19,10 +19,10 @@ const SPACES = [PERSONAL, ATLAS, DESIGN, PLATFORM]
 
 const DAY = new Date('2026-09-01T00:00:00Z')
 
-const mine = (id: string, spaceKey?: string): GadgetMetadataWithTimestamps =>
+const mine = (id: string, spaceKey?: string): WorkspaceMetadataWithTimestamps =>
   ({ id, title: id, created: DAY, lastActive: DAY, spaceKey })
 
-const sharedWithMe = (id: string): GadgetMetadataWithTimestamps =>
+const sharedWithMe = (id: string): WorkspaceMetadataWithTimestamps =>
   ({ id, title: id, created: DAY, lastActive: DAY, owner: ADA })
 
 const listedBy = (owner: AiChatAuthorInfo, id: string): SpaceWorkspaceInfo =>
@@ -31,7 +31,7 @@ const listedBy = (owner: AiChatAuthorInfo, id: string): SpaceWorkspaceInfo =>
 // A listing read by a member of the space.
 const ready = (...workspaces: SpaceWorkspaceInfo[]) => ({ status: 'ready', workspaces, asMember: true }) as const
 
-const group = (gadgets: GadgetMetadataWithTimestamps[], listings: SpaceListings, spaces = SPACES) =>
+const group = (gadgets: WorkspaceMetadataWithTimestamps[], listings: SpaceListings, spaces = SPACES) =>
   groupWorkspaces({ gadgets, spaces: [...spaces], listings, userId: ME.id })
 
 // Each section as its name and its rows, a row as `kind:id`.

@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRoute, type AnyRoute } from '@tanstack/react-router'
 import type {
   ConnectedAccountsSubscriber,
-  GadgetMetadata,
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadata,
+  WorkspaceMetadataWithTimestamps,
   SpaceSyncJobInfo,
 } from '@gadgets/workshop-shared/api'
 import type ShareModalComponent from '../../../ShareModal'
@@ -76,8 +76,8 @@ const PERSONAL = personalSpace(ME, 'admin')
 const DESIGN = teamSpace('design', 'Design', 'build')
 const DAY = new Date('2026-09-01T00:00:00Z')
 
-const record = (id: string, title: string, fields: Partial<GadgetMetadataWithTimestamps> = {}) =>
-  ({ id, title, created: DAY, lastActive: DAY, ...fields }) satisfies GadgetMetadataWithTimestamps
+const record = (id: string, title: string, fields: Partial<WorkspaceMetadataWithTimestamps> = {}) =>
+  ({ id, title, created: DAY, lastActive: DAY, ...fields }) satisfies WorkspaceMetadataWithTimestamps
 
 // What the personal space lists: Plans, with Trip under it.
 const LISTING = [
@@ -141,16 +141,16 @@ const render = async ({
   jobs = () => [] as SpaceSyncJobInfo[],
   at = '/workspaces',
 } = {}) => {
-  const listGadgets = vi.fn<() => Promise<GadgetMetadataWithTimestamps[]>>(async () => RECORDS)
+  const listWorkspaces = vi.fn<() => Promise<WorkspaceMetadataWithTimestamps[]>>(async () => RECORDS)
   const listSpaceSyncJobs = vi.fn<(spaceKey?: string) => Promise<SpaceSyncJobInfo[]>>(async () => jobs())
   const personal = fakeSpace(PERSONAL, [member(ME, 'admin')], LISTING)
   await mountRouted(fakeApi({
     listSpaces: async () => [PERSONAL, DESIGN],
     openSpace: (key: string) => (key === 'design' ? fakeSpace(DESIGN, designMembers, designListing) : personal).stub,
-    listGadgets,
+    listWorkspaces,
     listSpaceSyncJobs,
-    openGadget: (id: string) => ({
-      getMetadata: async (): Promise<GadgetMetadata> => ({ id, title: '' }),
+    openWorkspace: (id: string) => ({
+      getMetadata: async (): Promise<WorkspaceMetadata> => ({ id, title: '' }),
       [Symbol.dispose]: () => {},
     }),
     subscribeConnectedAccounts: accountsSubscription({ syncs }),
@@ -159,7 +159,7 @@ const render = async ({
     pages: (root: AnyRoute) => [createRoute({ getParentRoute: () => root, path: '/workspaces', component: Page })],
   })
   await settle()
-  return { listGadgets, listSpaceSyncJobs, personal }
+  return { listWorkspaces, listSpaceSyncJobs, personal }
 }
 
 const rowIds = () => [...document.body.querySelectorAll<HTMLElement>(
@@ -215,12 +215,12 @@ describe('PersonalTree', () => {
   })
 
   it('reads the user’s records again with the listing', async () => {
-    const { listGadgets } = await render()
-    expect(listGadgets).toHaveBeenCalledTimes(1)
+    const { listWorkspaces } = await render()
+    expect(listWorkspaces).toHaveBeenCalledTimes(1)
 
     await changePublicationOf(0)
 
-    expect(listGadgets).toHaveBeenCalledTimes(2)
+    expect(listWorkspaces).toHaveBeenCalledTimes(2)
   })
 
   it('reads every one of the user’s spaces again with the listing', async () => {

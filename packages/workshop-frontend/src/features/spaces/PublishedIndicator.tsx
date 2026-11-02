@@ -38,7 +38,7 @@ const publishedIndicatorText = (access: CollaboratorRole, heldBack: PublicationH
 }
 
 type PublishedIndicatorProps = {
-  /** The role the workspace is published with (`GadgetMetadata.publicAccess`). */
+  /** The role the workspace is published with (`WorkspaceMetadata.publicAccess`). */
   access: CollaboratorRole
   /** Set while an unpublished workspace above this one holds the publication back. */
   heldBack?: PublicationHeldBack

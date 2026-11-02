@@ -8,7 +8,7 @@ import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
   ConnectedAccountsSubscriber,
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadataWithTimestamps,
   Overseer,
   SpaceSyncJobInfo,
   SpaceWorkspaceInfo,
@@ -76,7 +76,7 @@ const SPACES = [PERSONAL, DESIGN, PLATFORM]
 
 const DAY = new Date('2026-09-01T00:00:00Z')
 
-const mine = (id: string, title: string, spaceKey?: string): GadgetMetadataWithTimestamps =>
+const mine = (id: string, title: string, spaceKey?: string): WorkspaceMetadataWithTimestamps =>
   ({ id, title, created: DAY, lastActive: DAY, spaceKey })
 
 const listedBy = (owner: AiChatAuthorInfo, id: string, title: string, slug?: string): SpaceWorkspaceInfo =>
@@ -129,7 +129,7 @@ const renderAt = async (at: string, { spacesFlag = true, strangerTo, listed = LI
   const session = (methods: FakeApiMethods = {}) => fakeApi({
     subscribeConnectedAccounts: accountsSubscription(),
     listSpaceSyncJobs: async () => [],
-    listGadgets: async () => GADGETS,
+    listWorkspaces: async () => GADGETS,
     listFeaturedBlueprints: async () => [],
     listSpaces,
     openSpace,
@@ -245,7 +245,7 @@ describe('a space’s page', () => {
 
   it('shows apart, and says so, a workspace of the user’s own that the space does not list', async () => {
     await renderAt('/spaces/design', {
-      api: { listGadgets: async () => [...GADGETS, mine('w-private', 'Private notes', 'design')] },
+      api: { listWorkspaces: async () => [...GADGETS, mine('w-private', 'Private notes', 'design')] },
     })
 
     expect(rowTitles()).toEqual(['Notes', 'Brief', 'Private notes'])
@@ -372,7 +372,7 @@ describe('a space’s page', () => {
       moveToSpace: vi.fn<Overseer['moveToSpace']>(async () => {}),
       [Symbol.dispose]: vi.fn<() => void>(),
     }
-    await renderAt('/spaces/design', { api: { openGadget: () => overseer } })
+    await renderAt('/spaces/design', { api: { openWorkspace: () => overseer } })
 
     await chooseAction('Notes', 'Move to space')
     await click([...document.body.querySelectorAll('label')].find(label => label.textContent === 'Platform')!)
@@ -392,10 +392,10 @@ describe('a space’s page', () => {
 
     // The new session answers neither its flags nor its workspaces yet.
     const flags = deferred<{ spaces: boolean }>()
-    const gadgets = deferred<GadgetMetadataWithTimestamps[]>()
+    const gadgets = deferred<WorkspaceMetadataWithTimestamps[]>()
     await rerender(<RouterProvider router={router} />, session({
       getUiFeatureFlags: () => flags.promise,
-      listGadgets: () => gadgets.promise,
+      listWorkspaces: () => gadgets.promise,
     }))
     await settle()
     expect(heading()).toBe('Platform')
@@ -427,7 +427,7 @@ describe('a space’s page', () => {
           listedBy(ADA, 'w-draft', 'Draft', 'draft'),
         ],
       },
-      api: { listGadgets: async () => [{ ...mine('w-notes', 'Notes', 'design'), publicAccess: 'build' as const }] },
+      api: { listWorkspaces: async () => [{ ...mine('w-notes', 'Notes', 'design'), publicAccess: 'build' as const }] },
     })
 
     expect(publishedLabel(rowOf('Notes'))).toBe('Published to everyone signed in · can build')
@@ -598,7 +598,7 @@ describe('the List / Tree toggle', () => {
 
   it('shows apart, in a space’s tree, the user’s own workspaces grouped there that it does not list', async () => {
     await renderAt('/spaces/design', {
-      api: { listGadgets: async () => [...GADGETS, mine('w-payroll', 'Payroll notes', 'design')] },
+      api: { listWorkspaces: async () => [...GADGETS, mine('w-payroll', 'Payroll notes', 'design')] },
     })
     await click(tab('Tree')!)
     await settle()
@@ -694,7 +694,7 @@ const renderSyncing = async (at: string, { syncs = true, jobs = () => [] as Spac
   const subscribeConnectedAccounts = vi.fn<ReturnType<typeof accountsSubscription>>(accountsSubscription({ syncs }))
   const rendered = await renderAt(at, {
     ...options,
-    api: { listSpaceSyncJobs, subscribeConnectedAccounts, openGadget: pendingWorkspace, ...api },
+    api: { listSpaceSyncJobs, subscribeConnectedAccounts, openWorkspace: pendingWorkspace, ...api },
   })
   return { ...rendered, listSpaceSyncJobs, subscribeConnectedAccounts }
 }

@@ -21,6 +21,15 @@ import { makeMockStorage } from "./mock-storage.js";
 // Load the whole backend up front, so that its slow load is not billed to the first test.
 import "./test-worker.js";
 
+// `impl` with connection 1, which the observations here are made through, on record: the ledger
+// refuses an observation through a connection the workspace does not hold.
+function connected(impl: any): any {
+  if (!impl.storage.gatekeepers.get(1)) {
+    impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Connection 1", class: {} });
+  }
+  return impl;
+}
+
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -85,9 +94,9 @@ function plant(owner: Account, record: Partial<GadgetRecord> & { id: string }): 
 // with none their personal space, lists. Deleting a workspace the owner has no record of waits
 // out the sync that lists this one.
 async function listedWorkspace(owner: Account, spaceKey?: string, id = workspaceId()) {
-  await owner.user.newGadget(id, "Untitled", spaceKey);
-  await owner.user.setGadgetLastActive(id, DAY, undefined, NEITHER);
-  await owner.user.deleteGadget("ws-none", NEITHER);
+  await owner.user.newWorkspace(id, "Untitled", spaceKey);
+  await owner.user.setWorkspaceLastActive(id, DAY, undefined, NEITHER);
+  await owner.user.deleteWorkspace("ws-none", NEITHER);
   return id;
 }
 
@@ -154,7 +163,7 @@ const lookups = () => vi.spyOn(UserDurableObject.prototype, "workspaceRoleInSpac
 
 // An observation that states `flag` of the workspace, one of the two under which no space role
 // counts.
-const flagging = (impl: any, flag: string): Promise<void> => impl.authorizeObservation(
+const flagging = (impl: any, flag: string): Promise<void> => connected(impl).authorizeObservation(
     1, { title: "Read", description: "The test read a thing.", [flag]: true }, { from: "user" });
 
 // The same, with the space's answer to the nth lookup kept from the Overseer until
@@ -192,7 +201,7 @@ function excluding(impl: any, ...observers: Account[]) {
   impl.getGatekeeperFacet = (id: number) => ({
     removeObserver: async (removed: string) => { removals.push(`${id}:${removed}`); },
   });
-  let observe = (): Promise<void> => impl.authorizeObservation(1, {
+  let observe = (): Promise<void> => connected(impl).authorizeObservation(1, {
     title: "Observation", description: "One the gatekeeper keeps from its observers.",
     excludeObservers: observerIds,
   }, { from: "agent", chatId: 1 });
@@ -428,7 +437,7 @@ describe("the owner's User DO, asked which role a space gives on a workspace", (
     let key = await teamSpace(alice, [bob, "build"]);
     let [provisional, shared, unknown, restricted, invitesOnly] =
         Array.from({ length: 5 }, workspaceId);
-    await alice.user.newGadget(provisional, "Untitled", key);
+    await alice.user.newWorkspace(provisional, "Untitled", key);
     // Someone else's, with the flags that would let a space list it were it Alice's own.
     await plant(
         alice, { id: shared, owner: bob.profile, role: "build", spaceKey: key, ...NEITHER });
@@ -757,7 +766,7 @@ describe("a workspace's Overseer", () => {
     let { alice, bob, key } = await team();
     // What ends the role Bob opened the workspace with, and what opening it again comes to.
     let changes: [(id: string) => Promise<unknown>, string][] = [
-      [id => alice.user.setGadgetSpace(id, null, NEITHER), DENIED],
+      [id => alice.user.setWorkspaceSpace(id, null, NEITHER), DENIED],
       [() => space(key).setMemberRole(alice.profile.id, bob.profile.id, "use"), "use"],
       [() => space(key).removeMember(alice.profile.id, bob.profile.id), DENIED],
     ];
@@ -939,9 +948,9 @@ describe("a workspace's Overseer", () => {
       await open(instance, bob);
       await open(instance, carol);
     });
-    await vi.waitFor(async () => expect(await carol.user.getGadget(ws.id))
+    await vi.waitFor(async () => expect(await carol.user.getWorkspace(ws.id))
         .toMatchObject({ owner: alice.profile, role: "use" }), WAIT);
-    expect(await bob.user.getGadget(ws.id)).toBeNull();
+    expect(await bob.user.getWorkspace(ws.id)).toBeNull();
   });
 
   it("records the workspace in the role its sharing gives a collaborator, whatever they open it in",
@@ -951,7 +960,7 @@ describe("a workspace's Overseer", () => {
       share(impl, alice, bob, "use");
       expect(await opening(instance, bob)).toBe("build");
     });
-    await vi.waitFor(async () => expect(await bob.user.getGadget(ws.id))
+    await vi.waitFor(async () => expect(await bob.user.getWorkspace(ws.id))
         .toMatchObject({ owner: alice.profile, role: "use" }), WAIT);
   });
 });

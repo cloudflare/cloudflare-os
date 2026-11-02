@@ -132,7 +132,7 @@ export type GadgetRecord = WorkspaceMetadata & {
   // WorkspaceMetadata).
 
   // On the user's own workspaces, `containsRestrictedData` and `ownerInvitesOnly` (inherited from
-  // GadgetMetadata) are what the workspace's Overseer last reported (see WorkspaceRestrictions),
+  // WorkspaceMetadata) are what the workspace's Overseer last reported (see WorkspaceRestrictions),
   // and absent means it has never reported. A space lists a workspace only while both are false:
   // one that is set, or was never reported, keeps it out of every listing (see
   // UserDurableObject.#reconcileSpace()). A record of a workspace shared with the user has neither.
@@ -154,7 +154,7 @@ export type GadgetRecord = WorkspaceMetadata & {
    * works from. For a workspace a space may list, the marker being absent, or different from
    * what the record now says, means the listing has yet to catch up; for one no space may list,
    * the marker being there at all does. Without `title`, the space has acknowledged nothing: it
-   * was asked to list the workspace, or to drop it (see UserDurableObject.deleteGadget()), and
+   * was asked to list the workspace, or to drop it (see UserDurableObject.deleteWorkspace()), and
    * may or may not have. A marker is written before any space is asked to list the workspace,
    * so with no marker no space lists it, and with one the spaces that may are the one it names
    * and the one the record points at. Set on the user's own workspaces only, and never sent to
@@ -164,7 +164,7 @@ export type GadgetRecord = WorkspaceMetadata & {
 
   /**
    * Where the workspace asks to sit in its space's tree: at the end of the entries under
-   * `parentId` of that space's listing (see AuthenticatedApi.newGadget), or at the top of the
+   * `parentId` of that space's listing (see AuthenticatedApi.newWorkspace), or at the top of the
    * tree, which only a space listing it for the first time heeds. Set when the workspace is
    * created, and for the top of the tree whenever the record is pointed at a space, as a move
    * does; sent with every registration until a space acknowledges one, and dropped then, so that
@@ -181,7 +181,7 @@ export type GadgetRecord = WorkspaceMetadata & {
    * bundled blueprint it was created from, whose import methods alone a sync may call on it, and
    * the address of the source item it was synced from, which a re-sync syncs it from again
    * (UserDurableObject.resyncWorkspace()). A client is shown the account alone
-   * (GadgetMetadata.syncedFrom).
+   * (WorkspaceMetadata.syncedFrom).
    */
   syncedFrom?: { accountId: number; blueprintId: string; sourceUrl: string };
 };

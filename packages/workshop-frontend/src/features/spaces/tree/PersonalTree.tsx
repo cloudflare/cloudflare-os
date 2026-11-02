@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useState } from 'react'
-import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { SyncFromSourceButton } from '../SpaceEntryPoints'
 import { isOwnPersonalSpace, spaceLabel } from '../spaceKinds'
 import { SpaceSyncStatus } from '../sync/SpaceSyncStatus'
@@ -23,7 +23,7 @@ const UNLISTED_DESCRIPTION = 'Yours, and in no space you can see: holding restri
  * grouped in: one holding restricted data or that only its owner may share, which no space
  * lists; one whose registration its space has not seen yet; and one in a team space the user is
  * no longer a member of. Each of the user's spaces is read for this, and the user's own records
- * (`listGadgets`) say where each workspace is grouped.
+ * (`listWorkspaces`) say where each workspace is grouped.
  *
  * A user with a connected account that can sync a source into a space is offered a sync into
  * their personal space above the tree (`StartSpaceSyncDialog`), under the entry selected in it
@@ -54,7 +54,7 @@ export const PersonalTree = ({ spaces }: {
 
   // Only a listing that has been read can be said not to show a workspace, and only a list of
   // spaces that has been read can say the user is not in one.
-  const isUnlisted = (record: GadgetMetadataWithTimestamps) => {
+  const isUnlisted = (record: WorkspaceMetadataWithTimestamps) => {
     const spaceKey = record.spaceKey ?? personal?.key
     if (spaceKey === undefined) return false
     const grouped = listings[spaceKey]

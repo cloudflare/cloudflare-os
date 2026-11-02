@@ -365,18 +365,18 @@ async function createTeamSpace(admin: Account): Promise<string> {
   return key;
 }
 
-// A workspace as AuthenticatedApi.newGadget leaves it: provisional, belonging to team space
+// A workspace as AuthenticatedApi.newWorkspace leaves it: provisional, belonging to team space
 // `spaceKey` or with none to its owner's personal space, and placed under `parentId` if given.
 async function newWorkspace(owner: Account, spaceKey?: string, parentId?: string) {
   let id = `ws-${unique()}`;
-  await owner.user.newGadget(id, "Untitled", spaceKey, parentId);
+  await owner.user.newWorkspace(id, "Untitled", spaceKey, parentId);
   return id;
 }
 function touch(owner: Account, id: string, restrictions = UNRESTRICTED): Promise<void> {
-  return owner.user.setGadgetLastActive(id, new Date(), undefined, restrictions);
+  return owner.user.setWorkspaceLastActive(id, new Date(), undefined, restrictions);
 }
 function move(owner: Account, id: string, spaceKey: string | null): Promise<boolean> {
-  return owner.user.setGadgetSpace(id, spaceKey, UNRESTRICTED);
+  return owner.user.setWorkspaceSpace(id, spaceKey, UNRESTRICTED);
 }
 function stored(owner: Account, id: string): Promise<GadgetRecord | undefined> {
   return runInDurableObject(owner.user, (_instance, state) =>
@@ -418,7 +418,7 @@ describe("a workspace's place in its space's tree", () => {
     let parent = await listedWorkspace(alice);
     let id = await newWorkspace(alice, undefined, parent);
     expect(await stored(alice, id)).toMatchObject({ placement: { parentId: parent } });
-    expect(await alice.user.getGadget(id)).not.toHaveProperty("placement");
+    expect(await alice.user.getWorkspace(id)).not.toHaveProperty("placement");
 
     let attach = vi.spyOn(SpaceDurableObject.prototype, "attachWorkspaces")
         .mockRejectedValueOnce(new Error("space unavailable"));
@@ -429,7 +429,7 @@ describe("a workspace's place in its space's tree", () => {
       attach.mockRestore();
     }
     expect(await stored(alice, id)).toMatchObject({ placement: { parentId: parent } });
-    let gadget = (await alice.user.listGadgets()).find(listed => listed.id === id);
+    let gadget = (await alice.user.listWorkspaces()).find(listed => listed.id === id);
     expect(gadget).toBeDefined();
     expect(gadget).not.toHaveProperty("placement");
 
@@ -532,7 +532,7 @@ describe("a workspace's place in its space's tree", () => {
         .toEqual([first, parent, `${parent}/${one}`, `${parent}/${two}`, last]);
 
     if (leaving === "deleted") {
-      await alice.user.deleteGadget(parent, UNRESTRICTED);
+      await alice.user.deleteWorkspace(parent, UNRESTRICTED);
     } else if (leaving === "moved to another space") {
       await move(alice, parent, team);
       expect(await listing(team, alice)).toEqual([parent]);

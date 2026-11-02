@@ -74,7 +74,7 @@ const render = async (props: Props, {
   created = async (): Promise<{ id: string }> => ({ id: 'w-new' }),
 } = {}) => {
   const dispose = vi.fn<() => void>()
-  const newGadgetFromBlueprint = vi.fn<(id: string, bindings: object, options: object) => unknown>(() => ({
+  const newWorkspaceFromBlueprint = vi.fn<(id: string, bindings: object, options: object) => unknown>(() => ({
     getMetadata: created,
     [Symbol.dispose]: dispose,
   }))
@@ -91,12 +91,12 @@ const render = async (props: Props, {
       <NewChildWorkspaceDialog {...props} onClose={onClose} onCreated={onCreated} />
     </RpcContext.Provider>
   )
-  await mountRouted(fakeApi({ listOutputFormats, newGadgetFromBlueprint }), {
+  await mountRouted(fakeApi({ listOutputFormats, newWorkspaceFromBlueprint }), {
     at: '/workspaces',
     pages: (root: AnyRoute) => [createRoute({ getParentRoute: () => root, path: '/workspaces', component: Page })],
   })
   await settle()
-  return { newGadgetFromBlueprint, getBlueprint, dispose, onCreated, onClose }
+  return { newWorkspaceFromBlueprint, getBlueprint, dispose, onCreated, onClose }
 }
 
 const radios = () => [...document.body.querySelectorAll<HTMLElement>('[role="radio"]')]
@@ -181,7 +181,7 @@ describe('NewChildWorkspaceDialog', () => {
   })
 
   it('offers a format’s default publication checked, says what it means, and creates it published', async () => {
-    const { newGadgetFromBlueprint, dispose, onCreated } = await render(IN_DESIGN)
+    const { newWorkspaceFromBlueprint, dispose, onCreated } = await render(IN_DESIGN)
 
     expect(checkbox()?.getAttribute('aria-checked')).toBe('true')
     expect(dialogText()).toContain('Publish to everyone signed in')
@@ -189,7 +189,7 @@ describe('NewChildWorkspaceDialog', () => {
 
     await click(button('Create'))
     await settle()
-    expect(newGadgetFromBlueprint).toHaveBeenCalledWith('bp-note', {}, {
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledWith('bp-note', {}, {
       spaceKey: 'design',
       parentId: 'w-handbook',
       publish: true,
@@ -199,28 +199,28 @@ describe('NewChildWorkspaceDialog', () => {
   })
 
   it('opts out of the default publication when it is unchecked', async () => {
-    const { newGadgetFromBlueprint } = await render(IN_DESIGN)
+    const { newWorkspaceFromBlueprint } = await render(IN_DESIGN)
 
     await press(checkbox()!)
     expect(checkbox()?.getAttribute('aria-checked')).toBe('false')
     await click(button('Create'))
     await settle()
-    expect(newGadgetFromBlueprint).toHaveBeenCalledWith('bp-note', {}, expect.objectContaining({ publish: false }))
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledWith('bp-note', {}, expect.objectContaining({ publish: false }))
   })
 
   it('offers no publication for a format that declares none, and asks for none', async () => {
-    const { newGadgetFromBlueprint } = await render(IN_DESIGN)
+    const { newWorkspaceFromBlueprint } = await render(IN_DESIGN)
 
     await press(radio('Board'))
     expect(radio('Board').getAttribute('aria-checked')).toBe('true')
     expect(checkbox()).toBeNull()
     await click(button('Create'))
     await settle()
-    expect(newGadgetFromBlueprint).toHaveBeenCalledWith('bp-board', {}, { spaceKey: 'design', parentId: 'w-handbook' })
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledWith('bp-board', {}, { spaceKey: 'design', parentId: 'w-handbook' })
   })
 
   it('creates at the top of the personal space with no space or parent named', async () => {
-    const { newGadgetFromBlueprint } = await render(
+    const { newWorkspaceFromBlueprint } = await render(
       { spaceKey: undefined, parent: null, listing: LISTING },
       { declared: { 'bp-note': null, 'bp-board': null } },
     )
@@ -229,7 +229,7 @@ describe('NewChildWorkspaceDialog', () => {
     expect(dialogText()).toContain('At the top of the space.')
     await click(button('Create'))
     await settle()
-    expect(newGadgetFromBlueprint).toHaveBeenCalledWith('bp-note', {}, {})
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledWith('bp-note', {}, {})
   })
 
   it('says a publication under an unpublished workspace is not visible until that one is', async () => {
@@ -251,14 +251,14 @@ describe('NewChildWorkspaceDialog', () => {
 
   it('publishes nothing it could not tell the user about', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { newGadgetFromBlueprint } = await render(IN_DESIGN, {
+    const { newWorkspaceFromBlueprint } = await render(IN_DESIGN, {
       declared: { 'bp-note': new Error('Blueprint store unavailable'), 'bp-board': null },
     })
 
     expect(checkbox()).toBeNull()
     await click(button('Create'))
     await settle()
-    expect(newGadgetFromBlueprint).toHaveBeenCalledWith('bp-note', {}, expect.objectContaining({ publish: false }))
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledWith('bp-note', {}, expect.objectContaining({ publish: false }))
   })
 
   it('waits to create until it knows whether the format is published by default', async () => {
@@ -272,7 +272,7 @@ describe('NewChildWorkspaceDialog', () => {
     )
     await mountRouted(fakeApi({
       listOutputFormats: async () => [NOTE],
-      newGadgetFromBlueprint: () => ({ getMetadata: async () => ({ id: 'w-new' }), [Symbol.dispose]: dispose }),
+      newWorkspaceFromBlueprint: () => ({ getMetadata: async () => ({ id: 'w-new' }), [Symbol.dispose]: dispose }),
     }), {
       at: '/workspaces',
       pages: (root: AnyRoute) => [createRoute({ getParentRoute: () => root, path: '/workspaces', component: Page })],

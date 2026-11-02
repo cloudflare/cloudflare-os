@@ -6,8 +6,9 @@
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as Y from "yjs";
-import type { AiChatAuthorInfo, Overseer } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, BlueprintMetadata, Overseer } from "@gadgets/workshop-shared/api";
+import { blueprintContentKey } from "../src/blueprint-archive.js";
+import { buildReleasePack, buildSnapshotRelease } from "../src/blueprint-release.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { SpaceDurableObject, teamSpaceClaim } from "../src/spaces.js";
 import {
@@ -16,6 +17,15 @@ import {
 import { UserDurableObject } from "../src/user.js";
 // Load the whole backend up front, so that its slow load is not billed to the first test.
 import "./test-worker.js";
+
+// `impl` with connection 1, which the observations here are made through, on record: the ledger
+// refuses an observation through a connection the workspace does not hold.
+function connected(impl: any): any {
+  if (!impl.storage.gatekeepers.get(1)) {
+    impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Connection 1", class: {} });
+  }
+  return impl;
+}
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -64,18 +74,18 @@ async function teamSpace(admin: Account, ...members: Account[]): Promise<string>
 // A provisional workspace, of which no Overseer has reported anything.
 async function newWorkspace(owner: Account, spaceKey?: string): Promise<string> {
   let id = `ws-${unique()}`;
-  await owner.user.newGadget(id, "Untitled", spaceKey);
+  await owner.user.newWorkspace(id, "Untitled", spaceKey);
   return id;
 }
 
 // An activity report from a workspace's Overseer, stating `restrictions`. Its sync is detached.
 function report(owner: Account, id: string, restrictions = NEITHER): Promise<void> {
-  return owner.user.setGadgetLastActive(id, new Date(), undefined, restrictions);
+  return owner.user.setWorkspaceLastActive(id, new Date(), undefined, restrictions);
 }
 
 // Waits out every sync the owner's object has been asked for so far, detached ones included:
 // deleting a workspace it has no record of takes its turn after them and touches no space.
-const settled = (owner: Account) => owner.user.deleteGadget("ws-none", NEITHER);
+const settled = (owner: Account) => owner.user.deleteWorkspace("ws-none", NEITHER);
 
 // Reads, or with `legacy` first writes, the owner's stored record of a workspace. A legacy
 // record is one as it stood before Overseers stated their flags: active, neither flag known,
@@ -137,7 +147,7 @@ const workspaceId = (overseer: unknown) =>
 async function workspace({ user, userId, profile }: Account) {
   let stub = env.TEST_OVERSEER.get(env.TEST_OVERSEER.newUniqueId());
   let id = stub.id.toString();
-  await user.newGadget(id, "Untitled");
+  await user.newWorkspace(id, "Untitled");
   let run = (act: (impl: any, open: () => Promise<Overseer>) => unknown) =>
       runInDurableObject(stub, async (instance: OverseerDurableObject) => {
         let impl = (instance as unknown as { impl: any }).impl;
@@ -243,8 +253,8 @@ describe("a workspace that holds restricted data or is owner-invites-only", () =
     await settled(dana);
     expect(await listing(dana.personal, dana)).toEqual([paged]);
     for (let [owner, id] of [[alice, synced], [dana, paged]] as const) {
-      await owner.user.deleteGadget(id, RESTRICTED);
-      expect(await owner.user.getGadget(id)).toBeNull();
+      await owner.user.deleteWorkspace(id, RESTRICTED);
+      expect(await owner.user.getWorkspace(id)).toBeNull();
       expect(await listing(owner.personal, owner)).toEqual([]);
     }
   });
@@ -256,7 +266,7 @@ describe("a workspace that holds restricted data or is owner-invites-only", () =
     let { detach } = spaceCalls();
     let unavailable = new Error("space unavailable");
     detach.mockRejectedValueOnce(unavailable);
-    await expect(bob.user.setGadgetSpace(id, team, NEITHER).then(() => {}))
+    await expect(bob.user.setWorkspaceSpace(id, team, NEITHER).then(() => {}))
         .rejects.toThrow("space unavailable");
     expect(await listing(team, alice)).toEqual([id]);
     expect(await listing(bob.personal, bob)).toEqual([id]);
@@ -298,20 +308,20 @@ describe("a workspace that holds restricted data or is owner-invites-only", () =
     let shown = await listedWorkspace(bob);
     let { attach, detach } = spaceCalls();
 
-    await bob.user.setGadgetSpace(hidden, team, RESTRICTED);
+    await bob.user.setWorkspaceSpace(hidden, team, RESTRICTED);
     expect(await stored(bob, hidden)).toMatchObject({ spaceKey: team });
     expect(detach).not.toHaveBeenCalled();
 
     // A move to a key no space can have is refused whole. Recording the flag it states, with
     // no sync to follow, would leave a workspace known to be restricted on its listing.
-    await expect(bob.user.setGadgetSpace(shown, "Bad Key", RESTRICTED).then(() => {}))
+    await expect(bob.user.setWorkspaceSpace(shown, "Bad Key", RESTRICTED).then(() => {}))
         .rejects.toThrow("A space key is");
     expect(await stored(bob, shown)).toMatchObject(
         { ...NEITHER, registered: { spaceKey: bob.personal, title: "Untitled" } });
 
     // A move that is the first to state a flag takes the workspace off its listing, and that
     // is all a space hears of it.
-    await bob.user.setGadgetSpace(shown, team, INVITES_ONLY);
+    await bob.user.setWorkspaceSpace(shown, team, INVITES_ONLY);
     expect(await stored(bob, shown)).toMatchObject({ spaceKey: team, ...INVITES_ONLY });
     expect(await stored(bob, shown)).not.toHaveProperty("registered");
     expect(detach).toHaveBeenCalledTimes(1);
@@ -325,22 +335,22 @@ describe("a workspace that holds restricted data or is owner-invites-only", () =
     let hidden = await newWorkspace(alice);
     await report(alice, hidden, RESTRICTED);
     let { detach } = spaceCalls();
-    await alice.user.deleteGadget(hidden, RESTRICTED);
-    expect(await alice.user.getGadget(hidden)).toBeNull();
+    await alice.user.deleteWorkspace(hidden, RESTRICTED);
+    expect(await alice.user.getWorkspace(hidden)).toBeNull();
     expect(detach).not.toHaveBeenCalled();
 
     // A delete that could not reach the space keeps the record, and the space its entry.
     let id = await listedWorkspace(alice);
     detach.mockRejectedValueOnce(new Error("space unavailable"));
-    await expect(alice.user.deleteGadget(id, NEITHER).then(() => {}))
+    await expect(alice.user.deleteWorkspace(id, NEITHER).then(() => {}))
         .rejects.toThrow("space unavailable");
     expect(await listing(alice.personal, alice)).toEqual([id]);
 
     await report(alice, id, RESTRICTED);
     await settled(alice);
     expect(await listing(alice.personal, alice)).toEqual([]);
-    await alice.user.deleteGadget(id, RESTRICTED);
-    expect(await alice.user.listGadgets()).toEqual([]);
+    await alice.user.deleteWorkspace(id, RESTRICTED);
+    expect(await alice.user.listWorkspaces()).toEqual([]);
   });
 
   it("gives a space nothing from a delete that is the first to state a flag", async () => {
@@ -359,14 +369,14 @@ describe("a workspace that holds restricted data or is owner-invites-only", () =
 
     // With its space out of reach the delete fails, and the entry stays as it was.
     detach.mockRejectedValueOnce(unavailable);
-    await expect(alice.user.deleteGadget(renamed, RESTRICTED).then(() => {}))
+    await expect(alice.user.deleteWorkspace(renamed, RESTRICTED).then(() => {}))
         .rejects.toThrow("space unavailable");
     expect(await stored(alice, renamed)).toMatchObject(
         { ...RESTRICTED, registered: { spaceKey: alice.personal, title: "Untitled" } });
 
-    for (let id of [renamed, unheard]) await alice.user.deleteGadget(id, INVITES_ONLY);
+    for (let id of [renamed, unheard]) await alice.user.deleteWorkspace(id, INVITES_ONLY);
     expect(attach).not.toHaveBeenCalled();
-    expect(await alice.user.listGadgets()).toEqual([]);
+    expect(await alice.user.listWorkspaces()).toEqual([]);
     expect(await listing(alice.personal, alice)).toEqual([]);
   });
 
@@ -376,18 +386,18 @@ describe("a workspace that holds restricted data or is owner-invites-only", () =
     let hidden = await newWorkspace(alice);
     await report(alice, hidden, RESTRICTED);
     let record = { title: "Untitled", created: expect.any(Date), lastActive: expect.any(Date) };
-    let gadgets = await alice.user.listGadgets();
+    let gadgets = await alice.user.listWorkspaces();
     expect(Object.fromEntries(gadgets.map(gadget => [gadget.id, gadget]))).toEqual({
       [shown]: { id: shown, ...record, ...NEITHER },
       [hidden]: { id: hidden, ...record, ...RESTRICTED },
     });
 
     // A record of a workspace shared with a user mirrors no flag, whatever states one to it.
-    await bob.user.recordSharedGadgetOpen(hidden, "Untitled", alice.profile, "build");
+    await bob.user.recordSharedWorkspaceOpen(hidden, "Untitled", alice.profile, "build");
     await bob.user.updateTitle(hidden, "Untitled", RESTRICTED);
     await report(bob, hidden, RESTRICTED);
     expect(await stored(bob, hidden)).not.toHaveProperty("containsRestrictedData");
-    expect(await bob.user.listGadgets()).toEqual(
+    expect(await bob.user.listWorkspaces()).toEqual(
         [{ id: hidden, ...record, owner: alice.profile, role: "build" }]);
   });
 });
@@ -408,7 +418,7 @@ describe("the catch-up for workspaces whose flags no Overseer has reported", () 
     // Neither of these is asked, though each has an Overseer that would answer: one has seen
     // no activity, the other is not Dana's.
     await workspace(dana);
-    await dana.user.recordSharedGadgetOpen(
+    await dana.user.recordSharedWorkspaceOpen(
         (await workspace(eve)).id, "Theirs", eve.profile, "build");
 
     // Each Overseer takes long enough to answer that all those asked along with it are being
@@ -556,7 +566,7 @@ describe("a workspace's Overseer", () => {
       // The report just made holds the next activity report back for a minute, and this one
       // is not held back. Only the flag the observation carries is set.
       let { containsRestrictedData, ownerInvitesOnly } = restrictions;
-      await run(impl => impl.authorizeObservation(1, {
+      await run(impl => connected(impl).authorizeObservation(1, {
         title: "Read a thing", description: "The test read a thing.",
         ...(containsRestrictedData && { containsRestrictedData }),
         ...(ownerInvitesOnly && { ownerInvitesOnly }),
@@ -576,15 +586,15 @@ describe("a workspace's Overseer", () => {
     let alice = await signUp("alice");
     let { id, run } = await workspace(alice);
     // The owner's object takes the report only once the test lets it.
-    let { setGadgetLastActive } = UserDurableObject.prototype;
+    let { setWorkspaceLastActive } = UserDurableObject.prototype;
     let reports = { held: true };
-    vi.spyOn(UserDurableObject.prototype, "setGadgetLastActive").mockImplementation(
+    vi.spyOn(UserDurableObject.prototype, "setWorkspaceLastActive").mockImplementation(
         async function (this: UserDurableObject, ...reported) {
           while (reports.held) await scheduler.wait(10);
-          return setGadgetLastActive.apply(this, reported);
+          return setWorkspaceLastActive.apply(this, reported);
         });
     try {
-      let observed = run(impl => impl.authorizeObservation(1, {
+      let observed = run(impl => connected(impl).authorizeObservation(1, {
         title: "Read a thing", description: "The test read a thing.", containsRestrictedData: true,
       }, { from: "user" })).then(() => "observed");
       let waited = scheduler.wait(2_000).then(() => "still waiting");
@@ -607,7 +617,7 @@ describe("a workspace's Overseer", () => {
       await listed(alice, id);
     }
     let { attach } = spaceCalls();
-    let deleteGadget = vi.spyOn(UserDurableObject.prototype, "deleteGadget");
+    let deleteWorkspace = vi.spyOn(UserDurableObject.prototype, "deleteWorkspace");
 
     // A flag that no observation set, so that the call under test is the first to state it.
     await renamed.run(async (impl, open) => {
@@ -630,12 +640,18 @@ describe("a workspace's Overseer", () => {
     // Instantiating a blueprint ends with an activity report of its own, here the first that
     // the workspace makes.
     let instantiated = await workspace(alice);
-    let archive = new Y.Doc();
-    archive.getMap().set("index.js", new Y.Text("export {};"));
+    let { commitId, objects } = await buildSnapshotRelease(new Map([["index.js", "export {};"]]));
+    let made: BlueprintMetadata = {
+      title: "Made", description: "", author: alice.profile, created: new Date(), version: 1,
+      lastUpdated: new Date(), commitId, bindings: {},
+    };
+    let blueprintId = `bp-${crypto.randomUUID()}`;
+    await env.BLUEPRINT_CONTENT.put(blueprintContentKey(blueprintId, made),
+        await buildReleasePack(oid => objects.get(oid), commitId));
     await instantiated.run(impl => impl.storage.ownerInvitesOnly.put(true));
-    await instantiated.stub.initializeFromBlueprint(Y.encodeStateAsUpdateV2(archive), "Made");
-    expect(deleteGadget).toHaveBeenCalledWith(deleted.id, RESTRICTED);
-    expect(await alice.user.getGadget(deleted.id)).toBeNull();
+    await instantiated.stub.initializeFromBlueprint(blueprintId, made);
+    expect(deleteWorkspace).toHaveBeenCalledWith(deleted.id, RESTRICTED);
+    expect(await alice.user.getWorkspace(deleted.id)).toBeNull();
     await settled(alice);
     expect(await stored(alice, renamed.id))
         .toMatchObject({ title: "Quarterly numbers", ...RESTRICTED });

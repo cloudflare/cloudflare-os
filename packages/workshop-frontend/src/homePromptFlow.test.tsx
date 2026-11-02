@@ -176,7 +176,7 @@ describe("Home space selector", () => {
     testState.listSpaces.mockImplementation(async () => []);
   });
 
-  // The home page for a user with these spaces. `created` holds every workspace `newGadget`
+  // The home page for a user with these spaces. `created` holds every workspace `newWorkspace`
   // makes, in order.
   const renderHome = async (
     { spaces = [PERSONAL, DESIGN, PLATFORM], spacesFlag = true, space, prompt }: {
@@ -196,7 +196,7 @@ describe("Home space selector", () => {
       listSlashCommands: ReturnType<typeof vi.fn<() => Promise<never[]>>>;
       dispose: ReturnType<typeof vi.fn<() => void>>;
     }> = [];
-    testState.newGadget.mockImplementation(() => {
+    testState.newWorkspace.mockImplementation(() => {
       const dispose = vi.fn<() => void>();
       const id = `w${created.length}`;
       const workspace = {
@@ -223,7 +223,7 @@ describe("Home space selector", () => {
     expect(hasButton("Space")).toBe(false);
     expect(testState.listSpaces).not.toHaveBeenCalled();
     await reachForWorkspace();
-    expect(testState.newGadget.mock.calls).toEqual([[]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
   });
 
   it("is absent while the user has no team space", async () => {
@@ -231,7 +231,7 @@ describe("Home space selector", () => {
 
     expect(hasButton("Space")).toBe(false);
     await reachForWorkspace();
-    expect(testState.newGadget.mock.calls).toEqual([[]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
   });
 
   it("offers the personal space and each team space, starting on the personal one", async () => {
@@ -241,7 +241,7 @@ describe("Home space selector", () => {
     expect((await selectOptions("Space")).map((option) => option.textContent))
       .toEqual(["Personal", "Design", "Platform"]);
     await reachForWorkspace();
-    expect(testState.newGadget.mock.calls).toEqual([[]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
   });
 
   it("starts on the team space the space parameter names, and creates the workspace in it", async () => {
@@ -249,7 +249,7 @@ describe("Home space selector", () => {
 
     expect(button("Space").textContent).toBe("Platform");
     await reachForWorkspace();
-    expect(testState.newGadget.mock.calls).toEqual([["platform"]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([["platform"]]);
   });
 
   it("starts on the personal space when the parameter names a space the user is not in", async () => {
@@ -257,7 +257,7 @@ describe("Home space selector", () => {
 
     expect(button("Space").textContent).toBe("Personal");
     await reachForWorkspace();
-    expect(testState.newGadget.mock.calls).toEqual([[]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
   });
 
   it("keeps the space parameter when it clears the prompt from the route", async () => {
@@ -303,12 +303,12 @@ describe("Home space selector", () => {
     expect(testState.composer!.autoFocus).toBe(false);
 
     await reachForWorkspace();
-    expect(testState.newGadget.mock.calls).toEqual([[], ["design"]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[], ["design"]]);
 
     await chooseOption("Space", "Personal");
     await reachForWorkspace();
     expect(created[1].dispose).toHaveBeenCalledOnce();
-    expect(testState.newGadget.mock.calls).toEqual([[], ["design"], []]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[], ["design"], []]);
 
     await act(async () => root?.unmount());
     root = undefined;
@@ -330,7 +330,7 @@ describe("Home space selector", () => {
     expect(testState.composerMounts).toBe(2);
     expect(testState.composer!.autoFocus).toBe(true);
     await reachForWorkspace();
-    expect(testState.newGadget.mock.calls).toEqual([[], ["platform"]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[], ["platform"]]);
   });
 
   it("holds a send made before the list of spaces arrived, and creates the workspace in the space the parameter names", async () => {
@@ -339,13 +339,13 @@ describe("Home space selector", () => {
 
     let sent: Promise<void> | void;
     await act(async () => { sent = testState.composer!.onSend("Hello", null); });
-    expect(testState.newGadget).not.toHaveBeenCalled();
+    expect(testState.newWorkspace).not.toHaveBeenCalled();
 
     await act(async () => list.resolve([PERSONAL, DESIGN, PLATFORM]));
     await settle();
     await act(async () => { await sent; });
 
-    expect(testState.newGadget.mock.calls).toEqual([["platform"]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([["platform"]]);
     expect(testState.navigate).toHaveBeenCalledWith(
       { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
   });
@@ -356,14 +356,14 @@ describe("Home space selector", () => {
 
     let sent: Promise<void> | void;
     await act(async () => { sent = testState.composer!.onSend("Hello", null); });
-    expect(testState.newGadget).not.toHaveBeenCalled();
+    expect(testState.newWorkspace).not.toHaveBeenCalled();
 
     testState.flagsLoading = false;
     await act(async () => root!.render(<HomePageContent space="platform" />));
     await settle();
     await act(async () => { await sent; });
 
-    expect(testState.newGadget.mock.calls).toEqual([["platform"]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([["platform"]]);
     expect(testState.navigate).toHaveBeenCalledWith(
       { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
   });
@@ -375,7 +375,7 @@ describe("Home space selector", () => {
     await reachForWorkspace();
     await act(async () => { await testState.composer!.onSend("Hello", null); });
 
-    expect(testState.newGadget.mock.calls).toEqual([[]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
     expect(created[0].newChat).toHaveBeenCalledOnce();
     expect(testState.navigate).toHaveBeenCalledWith(
       { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
@@ -416,7 +416,7 @@ describe("Home space selector", () => {
       expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
         { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
       expect(created[0].dispose).toHaveBeenCalledOnce();
-      expect(testState.newGadget.mock.calls).toEqual([[]]);
+      expect(testState.newWorkspace.mock.calls).toEqual([[]]);
     });
 
     it("applies a space that changed meanwhile once the send has failed", async () => {
@@ -433,7 +433,7 @@ describe("Home space selector", () => {
       expect(created[0].dispose).toHaveBeenCalledOnce();
       expect(testState.composerMounts).toBe(2);
       await reachForWorkspace();
-      expect(testState.newGadget.mock.calls).toEqual([[], ["platform"]]);
+      expect(testState.newWorkspace.mock.calls).toEqual([[], ["platform"]]);
     });
   });
 
@@ -442,7 +442,7 @@ describe("Home space selector", () => {
 
     await chooseOption("Space", "Platform");
 
-    expect(testState.newGadget).not.toHaveBeenCalled();
+    expect(testState.newWorkspace).not.toHaveBeenCalled();
     expect(testState.composerMounts).toBe(1);
     expect(testState.composer!.autoFocus).toBe(true);
   });
@@ -496,7 +496,7 @@ describe("Home space selector", () => {
     await act(async () => root!.render(<HomePageContent />));
     await act(async () => { await testState.composer!.onSend("Hello", null); });
 
-    expect(testState.newGadget.mock.calls).toEqual([["platform"]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([["platform"]]);
   });
 
   it("reads the slash commands again from the workspace that replaces a disposed one", async () => {
@@ -528,7 +528,7 @@ describe("Home space selector", () => {
     expect(created[0].dispose).toHaveBeenCalledOnce();
 
     await act(async () => { await testState.composer!.onSend("Hello", null); });
-    expect(testState.newGadget.mock.calls).toEqual([["platform"], ["design"]]);
+    expect(testState.newWorkspace.mock.calls).toEqual([["platform"], ["design"]]);
     expect(testState.navigate).toHaveBeenCalledWith(
       { to: "/workspace/$id", params: { id: "w1" }, search: { chat: 1 } });
     expect(created[1].dispose).toHaveBeenCalledOnce();

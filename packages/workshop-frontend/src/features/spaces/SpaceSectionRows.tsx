@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import type { GadgetMetadataWithTimestamps, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { WorkshopButton } from '../../components/WorkshopControls'
 import { rowListing, type SpaceRowListing, type WorkspaceSection } from './groupWorkspaces'
@@ -25,7 +25,7 @@ export const SpaceSectionRows = ({ section, label, renderRow, onListingReload, o
   /** What the section is called, which names its 'Try again'. */
   label: string
   /** The list's own row for a workspace in the user's list, keyed. */
-  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: SpaceRowListing) => ReactNode
+  renderRow: (gadget: WorkspaceMetadataWithTimestamps, listing?: SpaceRowListing) => ReactNode
   /** Reads what the space lists again, resolving once the read has settled either way. */
   onListingReload: (spaceKey: string) => Promise<void>
   /**

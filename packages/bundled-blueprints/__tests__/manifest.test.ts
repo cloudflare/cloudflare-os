@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseArchive } from "../src/files.ts";
 import { generateBundledBlueprintsModule } from "../src/generate.ts";
 import { parseBundledBlueprintManifest, parseBundledBlueprintPresentation } from "../src/manifest.ts";
 
@@ -143,7 +142,5 @@ describe("generated bundled blueprints module", () => {
     let synced = byId.get("format.synced");
     expect(synced?.importMethods).toEqual(["importContent"]);
     expect(byId.get("format.plain")).not.toHaveProperty("importMethods");
-    let archive = parseArchive(Buffer.from(synced?.archive as string, "base64"), "synced");
-    expect(archive.metadata).not.toHaveProperty("importMethods");
   });
 });

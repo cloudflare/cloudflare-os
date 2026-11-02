@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode } from 'react'
-import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { WorkshopButton } from '../../components/WorkshopControls'
 import {
@@ -18,7 +18,7 @@ import { TeamSpaceCard } from './TeamSpaceCard'
 import { useSpaceListings } from './useSpaceListings'
 import type { Spaces } from './useSpaces'
 
-type RenderRow = (gadget: GadgetMetadataWithTimestamps, listing?: SpaceRowListing, describedBy?: string) => ReactNode
+type RenderRow = (gadget: WorkspaceMetadataWithTimestamps, listing?: SpaceRowListing, describedBy?: string) => ReactNode
 type SpaceOfList = Extract<WorkspaceSection, { kind: 'space' }>
 type ListSection = Exclude<WorkspaceSection, { kind: 'space' }>
 
@@ -141,8 +141,8 @@ const SearchResults = ({ sections, search, renderRow, onListingReload }: {
  * is counted on that space's card instead of being shown as shared.
  */
 export const SpaceSections = ({ gadgets, search, renderRow, spaces, onMembersOpen }: {
-  /** The user's list (`AuthenticatedApi.listGadgets`), in the order to show it in. */
-  gadgets: GadgetMetadataWithTimestamps[]
+  /** The user's list (`AuthenticatedApi.listWorkspaces`), in the order to show it in. */
+  gadgets: WorkspaceMetadataWithTimestamps[]
   /** The text workspaces are being searched for, or empty. */
   search: string
   /** The list's own row for one of `gadgets`, keyed. */

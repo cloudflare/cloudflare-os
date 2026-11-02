@@ -1,5 +1,5 @@
 // Creating a workspace from a blueprint for a user: the steps AuthenticatedApi
-// .newGadgetFromBlueprint() takes, as a function of what any caller acting for a user holds.
+// .newWorkspaceFromBlueprint() takes, as a function of what any caller acting for a user holds.
 
 import type { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import type {
@@ -28,7 +28,9 @@ export type BlueprintInstantiationOptions = {
    * the user's personal space.
    */
   spaceKey?: string;
-  /** The entry of its space's listing to place it under (see `UserDurableObject.newGadget()`). */
+  /**
+   * The entry of its space's listing to place it under (see `UserDurableObject.newWorkspace()`).
+   */
   parentId?: string;
   /**
    * The role the workspace is published with from the start. Omitted, the blueprint's default
@@ -38,13 +40,14 @@ export type BlueprintInstantiationOptions = {
 };
 
 /**
- * The options of `AuthenticatedApi.newGadgetFromBlueprint()` as `newWorkspaceFromBlueprint()`
- * takes them: a string is a `spaceKey`, and `publish: false` opts out of the blueprint's default
- * publication. Only the members that method declares are read, since capnweb-validate forwards
- * any others unvalidated.
+ * The options of `AuthenticatedApi.newWorkspaceFromBlueprint()` as this module's
+ * `newWorkspaceFromBlueprint()` takes them: a string is a `spaceKey`, and `publish: false` opts out
+ * of the blueprint's default publication. Only the members that method declares are read, since
+ * capnweb-validate forwards any others unvalidated.
  */
-export function fromApiOptions(options: Parameters<AuthenticatedApi["newGadgetFromBlueprint"]>[2])
-    : BlueprintInstantiationOptions {
+export function fromApiOptions(
+    options: Parameters<AuthenticatedApi["newWorkspaceFromBlueprint"]>[2],
+): BlueprintInstantiationOptions {
   let { spaceKey, parentId, publish } =
       typeof options === "string" ? { spaceKey: options } : options ?? {};
   return { spaceKey, parentId, ...(publish === false && { publicAccess: null }) };
@@ -74,7 +77,7 @@ export async function newWorkspaceFromBlueprint(
 
   // 2. Create new Overseer DO (same as newWorkspace()).
   let id = givenId ?? overseers.newUniqueId().toString();
-  await user.newGadget(id, title, spaceKey, parentId);
+  await user.newWorkspace(id, title, spaceKey, parentId);
   // Released if a later step throws; on return it passes to the caller.
   using owned = new DisposableStack();
   let overseerResult = owned.use(await open(id));

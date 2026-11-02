@@ -58,17 +58,17 @@ async function teamSpace(admin: Account, ...members: Account[]): Promise<string>
   return key;
 }
 
-// A workspace as AuthenticatedApi.newGadget leaves it: provisional, and belonging to team space
+// A workspace as AuthenticatedApi.newWorkspace leaves it: provisional, and belonging to team space
 // `spaceKey` or with none to its owner's personal space.
 async function newWorkspace(owner: Account, spaceKey?: string): Promise<string> {
   let id = `ws-${unique()}`;
-  await owner.user.newGadget(id, "Untitled", spaceKey);
+  await owner.user.newWorkspace(id, "Untitled", spaceKey);
   return id;
 }
 
 // What a workspace's Overseer reports when it sees activity. The sync this starts is detached.
 function touch(owner: Account, id: string): Promise<void> {
-  return owner.user.setGadgetLastActive(id, new Date(), undefined, UNRESTRICTED);
+  return owner.user.setWorkspaceLastActive(id, new Date(), undefined, UNRESTRICTED);
 }
 
 // What a workspace's Overseer asks for when its title changes, when its owner moves it to team
@@ -77,10 +77,10 @@ function rename(owner: Account, id: string, title: string): Promise<void> {
   return owner.user.updateTitle(id, title, UNRESTRICTED);
 }
 function move(owner: Account, id: string, spaceKey: string | null): Promise<boolean> {
-  return owner.user.setGadgetSpace(id, spaceKey, UNRESTRICTED);
+  return owner.user.setWorkspaceSpace(id, spaceKey, UNRESTRICTED);
 }
 function remove(owner: Account, id: string): Promise<void> {
-  return owner.user.deleteGadget(id, UNRESTRICTED);
+  return owner.user.deleteWorkspace(id, UNRESTRICTED);
 }
 
 // The owner's stored record of a workspace, with the marker that no caller is handed.
@@ -183,11 +183,11 @@ describe("a workspace's place in a space", () => {
   it("never hands the marker to a caller", async () => {
     let alice = await signUp("alice");
     let id = await listedWorkspace(alice);
-    expect(await alice.user.listGadgets()).toEqual([{
+    expect(await alice.user.listWorkspaces()).toEqual([{
       id, title: "Untitled", created: expect.any(Date), lastActive: expect.any(Date),
       ...UNRESTRICTED,
     }]);
-    expect(await alice.user.getGadget(id)).not.toHaveProperty("registered");
+    expect(await alice.user.getWorkspace(id)).not.toHaveProperty("registered");
   });
 
   it("registers with the team space it was created in, or falls back to the personal one",
@@ -198,7 +198,7 @@ describe("a workspace's place in a space", () => {
     let inTeam = await listedWorkspace(bob, team);
     expect(await listing(team, alice)).toEqual({ [inTeam]: "Untitled" });
     expect(await listing(bob.personal, bob)).toEqual({});
-    expect(await bob.user.listGadgets()).toMatchObject([{ id: inTeam, spaceKey: team }]);
+    expect(await bob.user.listWorkspaces()).toMatchObject([{ id: inTeam, spaceKey: team }]);
 
     // Carol is no member. Her workspace was created all the same, and is hers alone once active:
     // the team space refused it, so nothing is left that would have that space asked to drop it.
@@ -246,7 +246,7 @@ describe("a workspace's place in a space", () => {
     let [first, second] = await Promise.all([teamSpace(alice), teamSpace(alice)]);
     let id = await listedWorkspace(alice);
     await Promise.all([first, second, null, second, first, null, second].map(key =>
-        env.TEST_USER.getByName(alice.profile.id).setGadgetSpace(id, key, UNRESTRICTED)));
+        env.TEST_USER.getByName(alice.profile.id).setWorkspaceSpace(id, key, UNRESTRICTED)));
 
     let record = (await stored(alice, id))!;
     let home = record.spaceKey ?? alice.personal;
@@ -314,7 +314,7 @@ describe("a workspace's place in a space", () => {
     // A delete that fails keeps the record, and its marker without the title: the space may or
     // may not list the workspace still, so the next sync lists it anew.
     await whileDetachFails(() => remove(bob, id));
-    expect((await bob.user.listGadgets()).map(gadget => gadget.id)).toEqual([id]);
+    expect((await bob.user.listWorkspaces()).map(gadget => gadget.id)).toEqual([id]);
     expect((await stored(bob, id))?.registered).toEqual({ spaceKey: team });
     await touch(bob, id);
     await synced(bob, id, team);
@@ -322,7 +322,7 @@ describe("a workspace's place in a space", () => {
     // A move home that stopped half way, so that both spaces list it.
     await whileDetachFails(() => move(bob, id, null));
     await remove(bob, id);
-    expect(await bob.user.listGadgets()).toEqual([]);
+    expect(await bob.user.listWorkspaces()).toEqual([]);
     expect(await listing(team, alice)).toEqual({});
     expect(await listing(bob.personal, bob)).toEqual({});
   });
@@ -370,21 +370,21 @@ describe("a workspace's place in a space", () => {
       let deleted = remove(alice, id);
       // Given the time to get ahead of the sync, the delete has not.
       await scheduler.wait(100);
-      expect(await alice.user.getGadget(id)).not.toBeNull();
+      expect(await alice.user.getWorkspace(id)).not.toBeNull();
       registration.held = false;
       await deleted;
     } finally {
       registration.held = false;
       attach.mockRestore();
     }
-    expect(await alice.user.getGadget(id)).toBeNull();
+    expect(await alice.user.getWorkspace(id)).toBeNull();
     expect(await listing(alice.personal, alice)).toEqual({});
   });
 
   it("is never registered by a user it is shared with", async () => {
     let [alice, bob] = await Promise.all([signUp("alice"), signUp("bob")]);
     let id = await listedWorkspace(alice);
-    await bob.user.recordSharedGadgetOpen(id, "Untitled", alice.profile, "build");
+    await bob.user.recordSharedWorkspaceOpen(id, "Untitled", alice.profile, "build");
 
     // Everything that syncs a workspace of his own leaves this one alone.
     await rename(bob, id, "Mine now");
@@ -467,7 +467,7 @@ describe("the catch-up for workspaces no space has acknowledged", () => {
       await runInDurableObject(user, (_instance, state) => makeUserStorage(state.storage).gadgets
           .put({ id: "ws-late", title: "Late", ...active }));
       await user.listSpaces();
-      await user.setGadgetSpace(ids[0], null, UNRESTRICTED);
+      await user.setWorkspaceSpace(ids[0], null, UNRESTRICTED);
       expect(attach).toHaveBeenCalledTimes(sent.length);
     } finally {
       attach.mockRestore();

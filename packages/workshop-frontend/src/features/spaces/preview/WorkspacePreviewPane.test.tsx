@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoute, type AnyRoute } from '@tanstack/react-router'
 import type { RpcStub } from 'capnweb'
 import {
-  createOpenGadgetError,
-  OPEN_GADGET_ERROR_CODES,
+  createOpenWorkspaceError,
+  OPEN_WORKSPACE_ERROR_CODES,
   type GadgetClient,
-  type GadgetMetadata,
+  type WorkspaceMetadata,
   type ObserverConfigCallback,
   type SpaceWorkspaceInfo,
   type WorkpieceId,
@@ -78,7 +78,7 @@ const gadgetSummary = (id: number, title: string): WorkpieceSummary =>
   ({ id: id as WorkpieceId, type: 'gadget', title, commitId: 'a'.repeat(40) })
 
 type FakeWorkspace = {
-  metadata: GadgetMetadata
+  metadata: WorkspaceMetadata
   gadgets: WorkpieceSummary[]
   /** Thrown by the metadata subscription in place of answering. */
   refusal?: Error
@@ -97,13 +97,13 @@ type Open = {
 // Workspaces by id, each opened as the test describes it; every open is recorded.
 const fakeWorkspaces = (workspaces: Record<string, FakeWorkspace>) => {
   const opens: Open[] = []
-  type OpenGadget = (id: string, shareKey: undefined, configureObservers: RpcStub<ObserverConfigCallback>) => unknown
-  const openGadget = vi.fn<OpenGadget>((id, _shareKey, configureObservers) => {
+  type OpenWorkspace = (id: string, shareKey: undefined, configureObservers: RpcStub<ObserverConfigCallback>) => unknown
+  const openWorkspace = vi.fn<OpenWorkspace>((id, _shareKey, configureObservers) => {
     const workspace = workspaces[id]
     const open: Open = { id, dispose: vi.fn<() => void>(), gadgetStubs: new Map() }
     opens.push(open)
     return {
-      subscribeToMetadata: async (callback: (metadata: GadgetMetadata) => void) => {
+      subscribeToMetadata: async (callback: (metadata: WorkspaceMetadata) => void) => {
         if (workspace.asksForAccounts) {
           await Promise.resolve(configureObservers.configure([])).catch(() => {})
           throw new Error('To open this workspace you must connect an account for every service it uses.')
@@ -126,7 +126,7 @@ const fakeWorkspaces = (workspaces: Record<string, FakeWorkspace>) => {
       [Symbol.dispose]: open.dispose,
     }
   })
-  return { openGadget, opens }
+  return { openWorkspace, opens }
 }
 
 const WORKSPACES: Record<string, FakeWorkspace> = {
@@ -160,7 +160,7 @@ const render = async (
     useEffect(() => { show.set = setCurrent }, [])
     return <WorkspacePreviewPane {...current} />
   }
-  const mounted = await mountRouted(fakeApi({ openGadget: fake.openGadget, ...methods }), {
+  const mounted = await mountRouted(fakeApi({ openWorkspace: fake.openWorkspace, ...methods }), {
     at: '/workspaces',
     pages: (root: AnyRoute) => [createRoute({ getParentRoute: () => root, path: '/workspaces', component: Host })],
   })
@@ -306,7 +306,7 @@ describe('WorkspacePreviewPane', () => {
   })
 
   it('tells a visitor a workspace is not visible yet without naming the one that hides it', async () => {
-    const refusal = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotVisible)
+    const refusal = createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotVisible)
     await render(
       { workspace: CHECKLIST, place: { ...PLACE, listing: [CHECKLIST] } },
       { 'w-checklist': { ...WORKSPACES['w-checklist'], refusal } },
@@ -324,7 +324,7 @@ describe('WorkspacePreviewPane', () => {
     const workspaces: Record<string, FakeWorkspace> = {
       'w-checklist': {
         ...WORKSPACES['w-checklist'],
-        refusal: createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied),
+        refusal: createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied),
       },
     }
     const { opens } = await render(CHECKLIST_PROPS, workspaces)

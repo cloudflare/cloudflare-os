@@ -1065,7 +1065,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     mirrorRestrictions(record, restrictions);
     record.title = title;
     this.storage.gadgets.put(record);
-    this.#syncSpaceDetached(gadgetId);
+    this.#syncSpaceDetached(workspaceId);
   }
 
   async updatePinned(workspaceId: string, pinned: boolean) {
@@ -1297,7 +1297,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Records that this user is a member of a space, as `info` describes it for them. Pushed by the
    * space when their membership changes and whenever they open it. Presentation only, like
-   * recordSharedGadgetOpen(): the space's member list stays the authority.
+   * recordSharedWorkspaceOpen(): the space's member list stays the authority.
    */
   async recordSpaceMembership(info: SpaceInfo): Promise<void> {
     this.storage.spaces.put(info);
@@ -1305,7 +1305,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Drops a space from this user's listing: they were removed from it, or it refused to open for
-   * them. Like forgetSharedGadget(), it grants and revokes nothing.
+   * them. Like forgetSharedWorkspace(), it grants and revokes nothing.
    */
   async forgetSpace(key: string): Promise<void> {
     this.storage.spaces.delete(key);
@@ -1318,7 +1318,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // lists the workspace once it has seen activity, and that listing follows the record:
   // `registered` on the record is what the space last acknowledged, and #reconcileSpace() brings
   // the listing in line, so whatever stopped half way is finished by the next call. A listing
-  // and `registered` have two other writers: #backfillSpacesPage(), and deleteGadget() above.
+  // and `registered` have two other writers: #backfillSpacesPage(), and deleteWorkspace() above.
   //
   // No space lists a workspace that holds restricted data or is owner-invites-only, since what a
   // listing shows of it could derive from that data. Its Overseer states those two flags in every
@@ -1442,7 +1442,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * going by `restrictions`, which its Overseer states with the move: for one this only records
    * where its owner grouped it, and never asks the space whether they may add to it.
    */
-  async setGadgetSpace(id: string, spaceKey: string | null, restrictions: WorkspaceRestrictions)
+  async setWorkspaceSpace(id: string, spaceKey: string | null, restrictions: WorkspaceRestrictions)
       : Promise<boolean> {
     // Refused before the flags are recorded, since only the sync below acts on them.
     if (spaceKey !== null) checkTeamSpaceKey(spaceKey);
@@ -1465,7 +1465,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * its space's listing to follow. If the sync fails so does this, with the record written, and
    * the next sync of the workspace does what is left.
    */
-  async setGadgetPublicAccess(id: string, restrictions: WorkspaceRestrictions): Promise<void> {
+  async setWorkspacePublicAccess(id: string, restrictions: WorkspaceRestrictions): Promise<void> {
     this.#amendGadget(id, record => mirrorRestrictions(record, restrictions));
     await this.#inSpaceOrder(() => this.#syncSpace(id));
   }
@@ -1504,7 +1504,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * The key of the space that lists workspace `id`, personal or team, for that workspace's
-   * Overseer to show (GadgetMetadata.listedIn), or null if none is known to. Only a workspace of
+   * Overseer to show (WorkspaceMetadata.listedIn), or null if none is known to. Only a workspace of
    * the user's own that a space may list (see isListable()) can be listed, and then it is the
    * space that its marker says has acknowledged it. No space is asked, and nothing may be
    * authorized on the answer.

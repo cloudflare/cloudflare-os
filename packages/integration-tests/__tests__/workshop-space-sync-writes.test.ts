@@ -124,9 +124,9 @@ type SyncState =
 const syncState = (jobId: string) =>
   testControl<SyncState>(requireHarness(), "space-sync-state", { jobId });
 
-/** Workspace `id` as the caller's own `listGadgets` shows it. */
+/** Workspace `id` as the caller's own `listWorkspaces` shows it. */
 async function ownRecord(api: RpcStub<AuthenticatedApi>, id: string) {
-  const record = (await api.listGadgets()).find(gadget => gadget.id === id);
+  const record = (await api.listWorkspaces()).find(gadget => gadget.id === id);
   if (record === undefined) throw new Error(`Workspace ${id} is not in its owner's listing`);
   return record;
 }
@@ -134,16 +134,16 @@ async function ownRecord(api: RpcStub<AuthenticatedApi>, id: string) {
 /**
  * The id of a new workspace of `api`'s own, in their personal space, titled `title`, once it has
  * seen activity, which a chat that starts no agent is the cheapest thing to count as, and so
- * shows in `listGadgets`. `stack` owns the session on it.
+ * shows in `listWorkspaces`. `stack` owns the session on it.
  */
 async function activeWorkspace(stack: DisposableStack, api: RpcStub<AuthenticatedApi>,
     title: string): Promise<string> {
-  const workspace = stack.use(await api.newGadget());
+  const workspace = stack.use(await api.newWorkspace());
   const { id } = await workspace.getMetadata();
   await workspace.setTitle(title);
   await workspace.newChat("Seen activity, with no agent", null);
   await waitFor(`workspace "${title}" in its owner's listing`, async () =>
-    (await api.listGadgets()).find(gadget => gadget.id === id) ?? null);
+    (await api.listWorkspaces()).find(gadget => gadget.id === id) ?? null);
   return id;
 }
 
@@ -281,14 +281,14 @@ it.concurrent("the owner re-syncs a synced workspace from its source item, and n
   // even once it has been shared with them and they hold a record of it.
   expect(await refusal(bob.resyncWorkspace(id))).toMatch(/no such workspace/i);
   {
-    using workspace = await alice.openGadget(id);
+    using workspace = await alice.openWorkspace(id);
     expect(await workspace.addCollaborator(bobName, "build")).toBeTruthy();
   }
   // Alice's fixture account is ambient in the workspace, so Bob answers for his own on opening it.
   const bobAccount = await provisionedAccount(bob);
   using observers = stubFor(
       new ObserverConfigRecorder().alwaysChoose(bobAccount.id, MAX_OBSERVER_PROMPTS));
-  (await bob.openGadget(id, undefined, observers))[Symbol.dispose]();
+  (await bob.openWorkspace(id, undefined, observers))[Symbol.dispose]();
   expect(await ownRecord(bob, id)).toMatchObject({ owner: { id: aliceName } });
   expect(await ownRecord(bob, id)).not.toHaveProperty("syncedFrom");
   expect(await refusal(bob.resyncWorkspace(id))).toMatch(/no such workspace/i);
