@@ -445,13 +445,23 @@ function dependencyMap(text: string): Map<string, string> | undefined {
 /**
  * The class names in a Worker config's Durable Object deletion lists (`deleted_classes`), the
  * migrations that drop a class's data. `undefined` when any mention of the key is not followed by a
- * literal list, since its classes cannot be read.
+ * list of plain string literals (a spread, an identifier, a template), since its classes cannot be
+ * read.
  */
 function deletedClassNames(text: string): string[] | undefined {
   const mentions = text.match(/deleted_?[cC]lasses/g)?.length ?? 0;
   const lists = [...text.matchAll(/deleted_?[cC]lasses["']?\s*:\s*\[([^\]]*)\]/g)];
   if (lists.length !== mentions) return undefined;
-  return lists.flatMap((list) => [...(list[1] ?? "").matchAll(/["'`]([^"'`]+)["'`]/g)].map((name) => name[1] ?? ""));
+  const classes: string[] = [];
+  for (const [, body = ""] of lists) {
+    const items = body.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, "").split(",").map((item) => item.trim()).filter(Boolean);
+    for (const item of items) {
+      const name = /^(["'])([^"'\\]+)\1$/.exec(item)?.[2];
+      if (name === undefined) return undefined;
+      classes.push(name);
+    }
+  }
+  return classes;
 }
 
 /**

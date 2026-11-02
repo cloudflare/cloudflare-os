@@ -250,8 +250,10 @@ describe("addedClassDeletions", () => {
     assert.deepEqual(addedClassDeletions(base, `// Old was dropped in v2.\n${base}`), []);
   });
 
-  it("cannot read a deletion list that is not a literal", () => {
-    assert.equal(addedClassDeletions(base, base.replace("[\n    'Old',\n  ]", "DROPPED")), undefined);
+  it("cannot read a deletion list that is not a list of string literals", () => {
+    for (const list of ["DROPPED", "[...dropped]", "[CLASS_NAME]", "['Old', ...dropped]", "[`${prefix}Notes`]"]) {
+      assert.equal(addedClassDeletions(base, base.replace("[\n    'Old',\n  ]", list)), undefined, list);
+    }
   });
 });
 
