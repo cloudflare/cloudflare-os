@@ -28,6 +28,9 @@ import {
 import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
+import { SidebarSpaceLinks } from '../../features/spaces/SidebarSpaceLinks'
+import { isOwnPersonalSpace } from '../../features/spaces/spaceKinds'
+import { useSpaces } from '../../features/spaces/useSpaces'
 import SidebarGadgetRow from './SidebarGadgetRow'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
@@ -310,6 +313,10 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
 
   const [favOpen, setFavOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
+  const [spacesOpen, setSpacesOpen] = useState(true)
+  // Every space but the user's own personal one, whose workspaces the Workspaces page opens on.
+  // Empty while the `spaces` flag is off.
+  const otherSpaces = useSpaces().spaces.filter((space) => !isOwnPersonalSpace(space))
 
   if (collapsed) {
     const compact = [...favorites, ...recent].slice(0, 8)
@@ -327,6 +334,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             onDelete={onDelete}
           />
         ))}
+        <SidebarSpaceLinks spaces={otherSpaces} collapsed />
       </div>
     )
   }
@@ -406,6 +414,19 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
           </>
         )}
       </SidebarSection>
+
+      {/* Spaces — each links to its section of the workspaces page. */}
+      {otherSpaces.length > 0 && (
+        <SidebarSection
+          label="Spaces"
+          open={spacesOpen}
+          onToggle={() => setSpacesOpen((o) => !o)}
+        >
+          <div className="flex flex-col">
+            <SidebarSpaceLinks spaces={otherSpaces} collapsed={false} />
+          </div>
+        </SidebarSection>
+      )}
     </div>
   )
 }

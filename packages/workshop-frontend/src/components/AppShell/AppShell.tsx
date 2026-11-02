@@ -80,13 +80,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   // Close the mobile drawer on navigation. Links in the drawer (primary nav, Gatekeepers, the user
   // menu, workspace rows) otherwise navigate while leaving the drawer covering the page — so on a
-  // phone it looks like nothing happened. Watching the pathname catches every navigation source
-  // without prop-drilling a close callback through the whole rail. No-op on desktop, where the
-  // drawer is never open.
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  // phone it looks like nothing happened. Watching the location catches every navigation source
+  // without prop-drilling a close callback through the whole rail. Its search is part of what is
+  // watched: a link may lead to another part of the page it is on, naming that part there. No-op
+  // on desktop, where the drawer is never open.
+  const location = useRouterState({ select: (s) => s.location.href })
   useEffect(() => {
     setMobileOpen(false)
-  }, [pathname])
+  }, [location])
 
   // Global ⌘K / Ctrl+K opens the command palette; the rail's search button opens it via a custom
   // event so it doesn't have to prop-drill into the palette.
