@@ -14,7 +14,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
+import * as fc from "fast-check";
 import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, testControl, type Harness,
 } from "../src/harness.js";
@@ -365,6 +367,125 @@ describe("observer re-verification", () => {
       expect(error).not.toBeNull();
       expect(error!.message).toMatch(/could not confirm/i);
       expect(error!.message).toContain(DENIED_REASON);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// A collaborator's opens over time, while each connection's credential lapses or is repaired
+// between opens and during the one re-prompt. Checked against ensureObserver()'s documented rules:
+// a first open prompts for every binding; every pass verifies every binding; only failed bindings
+// are re-prompted, once, with their failure; a terminal error names exactly the bindings still
+// failing; a failed first-ever open removes everything it registered, under its own discarded
+// observer id; a returning observer's failed open removes nothing (0d7793c); and a successful open
+// persists the observer id every later open reuses.
+
+/** One open: per binding, whether its credential verifies on the first pass, then after a repair. */
+type ObserverOpen = { firstPass: boolean[]; afterReprompt: boolean[] };
+
+// Credentials mostly work, so a collaborator also gets to be a returning observer.
+const verifies = fc.oneof({ arbitrary: fc.constant(true), weight: 3 }, fc.constant(false));
+const observerOpens: fc.Arbitrary<ObserverOpen[]> = fc.integer({ min: 1, max: 3 })
+  .chain(bindings => fc.array(fc.record({
+    firstPass: fc.array(verifies, { minLength: bindings, maxLength: bindings }),
+    afterReprompt: fc.array(verifies, { minLength: bindings, maxLength: bindings }),
+  }), { minLength: 1, maxLength: 3 }));
+
+/** An event as the model predicts it; `observer` is the open that minted the observer id. */
+type ExpectedEvent = { type: "add" | "remove"; observer: number };
+
+describe("observer re-verification over a collaborator's opens", () => {
+  it.concurrent("registers, re-prompts, rolls back and reports exactly as the bindings verify",
+      async () => {
+    await fc.assert(fc.asyncProperty(observerOpens, async opens => withSession(async publicApi => {
+      const [prefix] = nextUsernames("obsprop");
+      const names = opens[0]!.firstPass.map((_, i) => `${prefix}-${i}`);
+      const urls = names.map(thingUrl);
+      const shared = await shareGadgetWithBob(publicApi, names);
+      const bob = shared.bobAccount.id;
+      const setOutcomes = (outcomes: boolean[]) => Promise.all(outcomes.map((allow, i) =>
+        setVerifyOutcome(shared.bobLabel,
+          allow ? { allow: true } : { allow: false, reason: EXPIRED_REASON }, urls[i])));
+
+      // The open whose observer id is persisted; undefined until one succeeds.
+      let persisted: number | undefined;
+      const expected: ExpectedEvent[][] = urls.map(() => []);
+
+      for (const [k, { firstPass, afterReprompt }] of opens.entries()) {
+        const returning = persisted !== undefined;
+        const observer = persisted ?? k;
+        await setOutcomes(firstPass);
+        const recorder = new ObserverConfigRecorder();
+        if (!returning) recorder.alwaysChoose(bob, 1);
+        recorder.respondWith(async needs => {
+          await setOutcomes(afterReprompt);
+          return needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: bob }));
+        });
+        const opened = await bobOpens(shared, recorder).then(
+          overseer => { overseer[Symbol.dispose](); return null; },
+          (error: unknown) => error as Error);
+
+        const passes = firstPass.every(Boolean) ? [firstPass] : [firstPass, afterReprompt];
+        for (const pass of passes) {
+          pass.forEach((ok, i) => { if (ok) expected[i]!.push({ type: "add", observer }); });
+        }
+        const failing = names.filter((_, i) => !passes.at(-1)![i]);
+
+        const prompts = recorder.calls.map(needs => needs
+          .filter(need => urls.includes(need.resourceUrl!))
+          .map(need => ({ name: names[urls.indexOf(need.resourceUrl!)], failure: need.failure })));
+        const expectedPrompts = [
+          ...returning ? [] : [names.map(name => ({ name, failure: undefined }))],
+          ...passes.length === 1 ? [] : [names.filter((_, i) => !firstPass[i]).map(name => ({
+            name,
+            failure: { accountId: bob, reason: expect.stringContaining(EXPIRED_REASON) },
+          }))],
+        ];
+        expect(prompts, `prompts of open ${k}`).toEqual(expectedPrompts);
+
+        if (failing.length === 0) {
+          expect(opened, `open ${k}`).toBeNull();
+          persisted = observer;
+        } else {
+          expect(opened?.message, `open ${k}`).toMatch(/could not confirm/i);
+          const named = opened!.message.split("\n")
+            .filter(line => line.includes(shared.bobLabel))
+            .map(line => /^Test Thing (\S+) \(/.exec(line)?.[1]);
+          expect(named.toSorted(), `bindings named by open ${k}`).toEqual(failing.toSorted());
+          if (!returning) {
+            for (const events of expected) events.push({ type: "remove", observer });
+          }
+        }
+      }
+
+      // Every event names an observer id: the same id for the same open's observer, and a
+      // different one for each other. A binding that registered on one pass and failed on the next
+      // is removed once for each (`newlyAdded` and `invalidated` both hold it); removal is
+      // idempotent, so a repeat is collapsed rather than pinned.
+      const idOf = new Map<number, string>();
+      for (const [i, url] of urls.entries()) {
+        const events = (await observerEvents(url)).filter((event, j, all) =>
+          event.type !== "remove" || all[j - 1]?.type !== "remove" || all[j - 1]?.id !== event.id);
+        expect(events.map(({ type }) => type), `events at ${names[i]}`)
+          .toEqual(expected[i]!.map(({ type }) => type));
+        for (const [j, { id }] of events.entries()) {
+          const { observer } = expected[i]![j]!;
+          expect(idOf.get(observer) ?? id, `observer id of open ${observer}`).toBe(id);
+          idOf.set(observer, id);
+        }
+      }
+      expect(new Set(idOf.values()).size, "distinct observer ids").toBe(idOf.size);
+    })), {
+      ...PROPERTY_RUN_OPTIONS,
+      numRuns: 8,
+      examples: [
+        // The 0d7793c reproduction: a lapses and is repaired as b lapses for good.
+        [[{ firstPass: [true, true], afterReprompt: [true, true] },
+          { firstPass: [false, true], afterReprompt: [true, false] }]],
+        // A first-ever open fails terminally and rolls back; a later one starts afresh.
+        [[{ firstPass: [false, true], afterReprompt: [false, true] },
+          { firstPass: [true, true], afterReprompt: [true, true] }]],
+      ],
     });
   });
 });
