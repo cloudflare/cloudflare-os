@@ -1,9 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
-import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
-  MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
-  requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind, getOpenGadgetErrorCode } from '@gadgets/workshop-shared/api';
+import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema, requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -29,6 +27,8 @@ import type {
 import {
   GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge, type MergeResult,
 } from "./git-store";
+import { PUBLICATION_LEASE } from "./storage-schema/space-storage";
+import { checkTeamSpaceKey, noSuchSpace } from "./spaces";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
@@ -5340,8 +5340,8 @@ class OverseerImpl implements AgentHooks {
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
     // v1 has no per-thread hiding, the only way to let such an observation proceed is if no named
     // observer could reach it -- either none of the sharing graph, the workspace's publication
-    // and its space gives them a role any longer, or this connection has left their role's
-    // verification scope. See #enforceExcludeObservers.
+    // while it counts and its space gives them a role any longer, or this connection has left
+    // their role's verification scope. See #enforceExcludeObservers.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
@@ -5823,10 +5823,10 @@ class OverseerImpl implements AgentHooks {
   // it. For each named opaque observerId:
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
   //     observer (e.g. already torn down), so it is ignored.
-  //   - If that profileId is still authorized, by the sharing graph, because the workspace is
-  //     published or as a member of its space (the highest of those roles, as at open()), or
-  //     may still hold a session a publication taken back admitted (see #publicationEnding),
-  //     *and* this gatekeeper is still in their role's verification scope, we cannot guarantee
+  //   - If that profileId is still authorized, by the sharing graph, by the workspace's
+  //     publication while it counts (see #visible) or as a member of its space (the highest of
+  //     those roles, as at open()), or may still hold a session that a publication taken back,
+  //     lowered or no longer visible admitted (see #publicationEnding), *and* this gatekeeper is still in their role's verification scope, we cannot guarantee
   //     they won't see the observation (v1 has no per-thread hiding), so we throw to block it.
   //   - If this gatekeeper has left their scope, they cannot reach the observation and must not
   //     block it. They stay a collaborator with an intact record, so only their registration on
@@ -10121,15 +10121,24 @@ class OverseerImpl implements AgentHooks {
   //
   // The owner may publish the workspace to the whole deployment (OverseerClientInterface
   // .setPublicAccess()): anyone signed in to it then holds the published role on the workspace,
-  // "build" or "use". It is a floor under the roles the sharing graph and the workspace's space
-  // give, held by nobody in particular, and SharingManager, which reads it as a hook (see
-  // getSharingManager()), reports it within the role it gives a profile. So it counts wherever
-  // that role does (authorizeCollaborator(), #enforceExcludeObservers()) and in the report of
-  // whom a removal affects, which tearDownLostObservers() goes by, and never toward what anyone
-  // may share. Published at "build", the workspace gives anyone signed in what a "build"
-  // collaborator has short of sharing it: the OverseerClientInterface such a collaborator holds,
-  // which shows its collaborators, share links and presence and lets them retitle it, and
+  // "build" or "use", while it is visible in its space (see below). It is a floor under the
+  // roles the sharing graph and the workspace's space give, held by nobody in particular, and
+  // SharingManager, which reads it as a hook (see getSharingManager()), reports it within the
+  // role it gives a profile. So it counts wherever that role does (authorizeCollaborator(),
+  // #enforceExcludeObservers()) and in the report of whom a removal affects, which
+  // tearDownLostObservers() goes by, and never toward what anyone may share. Published at
+  // "build", the workspace gives anyone signed in what a "build" collaborator has short of
+  // sharing it: the OverseerClientInterface such a collaborator holds, which shows its
+  // collaborators, share links and presence and lets them retitle it, and
   // receiveExternalMessage().
+  //
+  // The publication is in effect only while the workspace is visible in its space (see
+  // SpaceModel.workspaceVisible()). The space is asked, through the owner's User DO as for a
+  // space role, at authorizeCollaborator(), and the floor counts only while its answer that the
+  // workspace is visible stands (#visible, revokeVisibility()). Before that no session holds the
+  // floor but those a pending restart ends (#publicationEnding), so counting none is exact for
+  // the sessions there are, and errs toward ending the session of a collaborator whom a removal
+  // cuts off.
 
   // The role the workspace is published with, if it is. A workspace that holds restricted data
   // or is owner-invites-only has none, whatever is stored: under either flag only the graph
@@ -10145,17 +10154,58 @@ class OverseerImpl implements AgentHooks {
   // publication back goes by (as #spaceRoles is for a space role).
   #openedThroughPublication = false;
 
-  // The highest role a publication taken back or lowered gave, while the restart that ends the
-  // sessions it admitted is pending (see setPublicAccess()). Those sessions are live until then,
-  // so #enforceExcludeObservers() counts every observer as still holding it.
+  // The highest role a publication taken back, lowered or no longer visible gave, while the
+  // restart that ends the sessions it admitted is pending (see setPublicAccess(),
+  // revokeVisibility()). Those sessions are live until then, so #enforceExcludeObservers()
+  // counts every observer as still holding it.
   #publicationEnding: CollaboratorRole | undefined;
 
-  // A collaborator was removed or a share link revoked. While the workspace is published,
-  // whoever that would have cut off or lowered below the published role keeps their session and
-  // is not reported as affected (see SharingManager.#computeAffected), so nothing restarts for
-  // them now: they hold that session through the publication from here on.
+  // Whether the workspace's space has answered that the workspace is visible, since this object
+  // started, and not taken that back since.
+  #visible = false;
+
+  // How many times the space has taken back an answer that the workspace is visible. A lookup in
+  // flight across one may carry an answer given before it, so it is not trusted.
+  #visibilityTaken = 0;
+
+  // Asks whether the workspace is visible in its space, and remembers an answer that it is. A
+  // workspace with no owner, whose record is what places it in a space, is not. Throws if the
+  // lookup fails or if visibility was taken back while it was in flight: what no answer means is
+  // for the caller to say.
+  async #lookUpVisibility(): Promise<boolean> {
+    if (!this.ownerId) return false;
+    let taken = this.#visibilityTaken;
+    let id = this.ctx.id.toString();
+    let visible = await retryOnDoReset(
+        () => this.ownerUserDo().workspaceVisibility(id), this.logger);
+    if (taken !== this.#visibilityTaken) {
+      throw new Error("This workspace's visibility changed while it was being looked up.");
+    }
+    if (visible) this.#visible = true;
+    return visible;
+  }
+
+  // The space took back its answer that the workspace is visible (see OverseerDurableObject
+  // .revokeSpaceAccess()): the publication counts nowhere until the space is asked again, and a
+  // lookup in flight is not trusted. If anyone opened through the publication while it counted,
+  // the workspace restarts, as when the publication is taken back, and each client reopens and is
+  // authorized again. Becoming visible needs no such call: it applies at the next open.
+  revokeVisibility(): void {
+    this.#visibilityTaken++;
+    let published = this.#visible ? this.publicAccess : undefined;
+    this.#visible = false;
+    if (!published || !this.#openedThroughPublication) return;
+    this.#publicationEnding = higherRole(this.#publicationEnding, published);
+    this.scheduleAccessRestart(
+        "Gadget restarted because it is no longer visible to everyone signed in.");
+  }
+
+  // A collaborator was removed or a share link revoked. While the publication counts (see
+  // #visible), whoever that would have cut off or lowered below the published role keeps their
+  // session and is not reported as affected (see SharingManager.#computeAffected), so nothing
+  // restarts for them now: they hold that session through the publication from here on.
   sharingRevoked(): void {
-    if (this.publicAccess) this.#openedThroughPublication = true;
+    if (this.#visible && this.publicAccess) this.#openedThroughPublication = true;
   }
 
   // Stores the role the workspace is published with, or with undefined that it is not, and
@@ -10178,9 +10228,12 @@ class OverseerImpl implements AgentHooks {
 
   // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
   // pass through: resolve the caller's role, the highest of the one the sharing graph gives
-  // them, the one the workspace is published with and the one their membership of the
-  // workspace's space gives, then verify them as an observer of everything this workspace has
-  // read. Returns null for no access; verification failures throw.
+  // them, the one the workspace is published with, while it is visible in its space, and the
+  // one their membership of the workspace's space gives, then verify them as an observer of
+  // everything this workspace has read. Returns null for no access, but throws the coded
+  // `workspaceNotVisible` instead for a caller with no role at all whom the publication would
+  // have admitted had the space not answered that the workspace is not visible; verification
+  // failures throw.
   // A caller that requires at least `requireRole` (e.g. receiveExternalMessage needs "build")
   // passes it so an insufficient role is denied *before* verification runs -- otherwise the caller
   // would be verified (real addObserver calls, a persisted observer record) only to be turned
@@ -10207,10 +10260,30 @@ class OverseerImpl implements AgentHooks {
           });
           return undefined;
         });
+    // The space is asked whether the workspace is visible only while no answer that it is
+    // stands, and only for a caller to whom the publication would give more than the graph and
+    // the space do, and as much as the caller requires. A lookup that fails admits nobody
+    // through the publication, as an answer that the workspace is not visible does.
+    let floor = this.publicAccess;
+    let visible: boolean | undefined;
+    if (floor && !this.#visible && roleRank(floor) >= roleRank(opts.requireRole ?? floor)) {
+      let held = higherRole(sharing.getGraphRole(profileId), spaceRole);
+      if (higherRole(held, floor) !== held) {
+        visible = await this.#lookUpVisibility().catch((err: unknown) => {
+          this.logger.warn("failed to look up whether a workspace is visible; authorizing "
+              + "without its publication", { event: "space.visibility.lookup.failed", error: err });
+          return undefined;
+        });
+      }
+    }
     let role = higherRole(sharing.getEffectiveRole(profileId), spaceRole);
+    if (!role && visible === false) {
+      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotVisible);
+    }
     if (!role || (opts.requireRole && roleRank(role) < roleRank(opts.requireRole))) return null;
     // Whoever the graph and the space together give less than `role` holds it through the
-    // publication. With "build" published the space was not asked, so a member counts too.
+    // publication. With "build" published and known visible the space was not asked, so a
+    // member counts too.
     if (this.publicAccess && higherRole(sharing.getGraphRole(profileId), spaceRole) !== role) {
       this.#openedThroughPublication = true;
     }
@@ -10520,9 +10593,11 @@ class OverseerImpl implements AgentHooks {
   // Resolving the owner's profile ID may require an RPC on first use; thereafter it's cached.
   async getSharingManager(): Promise<SharingManager> {
     if (!this.#sharingManager) {
+      // The publication is a floor only while the space has answered that the workspace is
+      // visible (see revokeVisibility()).
       this.#sharingManager = new SharingManager(
           this.storage, await this.getOwnerProfileId(), () => this.storage.ownerInvitesOnly.get(),
-          () => this.publicAccess);
+          () => this.#visible ? this.publicAccess : undefined);
     }
     return this.#sharingManager;
   }
@@ -10719,12 +10794,16 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Tells this workspace that `profileId` no longer holds the role a space gave them on it: they
    * were removed from the space or lowered in it, or the space no longer lists the workspace.
-   * Called by that space, which keeps calling until this returns (`SpaceDurableObject.alarm`),
-   * and never by a client. It can only end sessions, by restarting the workspace: no role is
-   * taken from the sharing graph, and every open asks the space again.
+   * With `profileId` set to `PUBLICATION_LEASE` it tells the workspace instead that it may no
+   * longer be visible in the space, so that its publication may no longer be in effect (see
+   * OverseerImpl.revokeVisibility()). Called by that space, which keeps calling until this
+   * returns (`SpaceDurableObject.alarm`), and never by a client. It can only end sessions, by
+   * restarting the workspace: no role is taken from the sharing graph, and every open asks the
+   * space again.
    */
   async revokeSpaceAccess(profileId: string): Promise<void> {
-    this.impl.revokeSpaceRole(profileId);
+    if (profileId === PUBLICATION_LEASE) this.impl.revokeVisibility();
+    else this.impl.revokeSpaceRole(profileId);
   }
 
   /**
@@ -10951,6 +11030,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         role = await this.impl.authorizeCollaborator(
             callerProfile.id, caller, {requireRole: "build"});
       } catch (err) {
+        // A publication not yet in effect is a refusal, which opening the workspace cannot mend.
+        if (getOpenGadgetErrorCode(err) === OPEN_GADGET_ERROR_CODES.workspaceNotVisible) {
+          return { accepted: false, message: (err as Error).message };
+        }
         return {
           accepted: false,
           message: "Your access to the data this workspace has read could not be verified. Open " +
@@ -11681,13 +11764,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   // Which space a workspace belongs to is recorded by its owner's User DO, which asks the space
-  // whether the owner may add to it. This object stores nothing about spaces.
+  // whether the owner may add to it. This object stores nothing about spaces. A move that went
+  // through, or may have, leaves an answer that the workspace is visible standing for a space
+  // that may no longer be its own, and the space it joins holds no publication lease to take
+  // back, so the answer is dropped (see OverseerImpl.revokeVisibility()). A refused move leaves
+  // the workspace where it was, and the answer with it.
   async moveToSpace(spaceKey: string | null): Promise<void> {
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can move it to another space.");
     }
-    await this.#owner.setGadgetSpace(
-        this.impl.ctx.id.toString(), spaceKey, this.impl.restrictions);
+    if (spaceKey !== null) checkTeamSpaceKey(spaceKey);
+    let moved: boolean | undefined;
+    try {
+      moved = await this.#owner.setGadgetSpace(
+          this.impl.ctx.id.toString(), spaceKey, this.impl.restrictions);
+    } finally {
+      if (moved !== false) this.impl.revokeVisibility();
+    }
+    if (!moved) throw noSuchSpace();
   }
 
   // The change is made here first, so that access follows at once, and then stated to the

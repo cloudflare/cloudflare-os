@@ -28,7 +28,6 @@ type Account = {
   personal: string;
 };
 
-const NO_SUCH_SPACE = "No such space, or you are not a member of it.";
 // What the Overseer of a workspace that a space may list states with every call it makes here.
 // What becomes of one that states anything else is in spaces-restricted.test.ts.
 const UNRESTRICTED: WorkspaceRestrictions =
@@ -77,7 +76,7 @@ function touch(owner: Account, id: string): Promise<void> {
 function rename(owner: Account, id: string, title: string): Promise<void> {
   return owner.user.updateTitle(id, title, UNRESTRICTED);
 }
-function move(owner: Account, id: string, spaceKey: string | null): Promise<void> {
+function move(owner: Account, id: string, spaceKey: string | null): Promise<boolean> {
   return owner.user.setGadgetSpace(id, spaceKey, UNRESTRICTED);
 }
 function remove(owner: Account, id: string): Promise<void> {
@@ -219,7 +218,7 @@ describe("a workspace's place in a space", () => {
     let team = await teamSpace(alice);
     let id = await listedWorkspace(bob);
 
-    await expectRejection(move(bob, id, team), NO_SUCH_SPACE);
+    expect(await move(bob, id, team)).toBe(false);
     await expectRejection(move(bob, id, alice.personal), "A space key is 2 to 32");
     expect(await stored(bob, id)).not.toHaveProperty("spaceKey");
     expect(await listing(team, alice)).toEqual({});

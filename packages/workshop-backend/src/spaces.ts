@@ -35,6 +35,10 @@
 // unpublished entry above them, and nothing else of it. A visitor holds no role in the space,
 // so the space gives them none on a workspace and no lease.
 //
+// Those same entries are the visible ones, and a workspace's publication admits anyone only
+// while it is visible, which its Overseer asks through its owner's User DO and the space
+// remembers as a publication lease (see `SpaceModel.workspaceVisible`).
+//
 // Trust: every method `SpaceDurableObject` exposes takes the acting user as a plain parameter,
 // exactly like `OverseerDurableObject.open(userId, profileId, ...)`. Its only callers are
 // `AuthenticatedApiImpl` (server.ts) and `UserDurableObject` (user.ts) -- never a client, gadget,
@@ -54,8 +58,9 @@ import {
   type SpaceMemberRole, type SpaceWorkspaceInfo, type SpaceWorkspaceResolution,
 } from "@gadgets/workshop-shared/api";
 import {
-  makeSpaceStorage, migrateSpaceStorage, SPACE_STORAGE_VERSION, type SpaceLease,
-  type SpaceRecord, type SpaceRevocation, type SpaceStorage, type SpaceWorkspaceRecord,
+  makeSpaceStorage, migrateSpaceStorage, PUBLICATION_LEASE, SPACE_STORAGE_VERSION,
+  type SpaceLease, type SpaceRecord, type SpaceRevocation, type SpaceStorage,
+  type SpaceWorkspaceRecord,
 } from "./storage-schema/space-storage.js";
 import { PLACEHOLDER_TITLES } from "./storage-schema/overseer-storage.js";
 import { createWorkshopLogger } from "./observability";
@@ -286,15 +291,17 @@ export class SpaceModel {
 
   /**
    * Space.removeMember: an admin removes anyone, any other member only themself. Returns
-   * whether `profileId` was a member. Their leases are revoked.
+   * whether `profileId` was a member. Their leases are revoked: only a member's, so that no
+   * other id, `PUBLICATION_LEASE` among them, revokes anything.
    */
   removeMember(caller: string, profileId: string): boolean {
     if (this.#requireMember(caller) !== "admin" && caller !== profileId) {
       throw new Error("Only an admin of this space can remove other members.");
     }
     this.#keepAnAdmin(profileId);
+    if (!this.storage.members.delete(profileId)) return false;
     this.#revoke(this.storage.leases.byProfile.get(profileId));
-    return this.storage.members.delete(profileId);
+    return true;
   }
 
   /**
@@ -338,6 +345,10 @@ export class SpaceModel {
    * `parentId` that asks for if the space lists that one, and otherwise at the top of the tree,
    * at a position that counts its siblings there, which puts it after every one the space has
    * positioned (see `inOrder`).
+   *
+   * An entry that stops being published hides the entries under it, whose publication leases
+   * are revoked with its own (see `workspaceVisible`). One that is published in a lower role
+   * hides nothing: an entry is visible whatever role the entries above it are published with.
    */
   attachWorkspaces(owner: AiChatAuthorInfo, registrations: WorkspaceRegistration[]): boolean {
     let mayAdd = this.canAddWorkspaces(owner.id);
@@ -345,8 +356,10 @@ export class SpaceModel {
       let entry = this.storage.workspaces.get(id);
       if (entry ? entry.owner.id !== owner.id : !mayAdd) return false;
     }
+    let unpublished = false;
     for (let { id, title, created, published, placement } of registrations) {
       let existing = this.storage.workspaces.get(id);
+      unpublished ||= !!existing?.published && !published;
       let entry: SpaceWorkspaceRecord = { ...existing, id, title, owner, created, published };
       // A registration says whether the workspace is published, so one that does not ends it.
       if (!published) delete entry.published;
@@ -362,14 +375,16 @@ export class SpaceModel {
       }
       this.storage.workspaces.put(entry);
     }
+    if (unpublished) this.#revokeHidden();
     return true;
   }
 
   /**
    * Drop workspace `id` from the listing if `ownerId` is who it is listed under. Its slug and
-   * former slugs go with the entry, and are free again, and every lease on it is revoked. The
-   * entries directly under it take its place in the tree: they move under its parent, in their
-   * order, where it stood among its siblings.
+   * former slugs go with the entry, and are free again, and every lease on it is revoked, its
+   * publication lease among them. The entries directly under it take its place in the tree:
+   * they move under its parent, in their order, where it stood among its siblings, so none of
+   * them is hidden by the move.
    */
   detachWorkspace(id: string, ownerId: string): void {
     let entry = this.storage.workspaces.get(id);
@@ -402,6 +417,23 @@ export class SpaceModel {
     if (!role || this.storage.workspaces.get(id)?.owner.id !== ownerId) return undefined;
     this.storage.leases.put({ workspace: id, profile: profileId });
     return role;
+  }
+
+  /**
+   * Whether workspace `id` is visible: listed under owner `ownerId`, and published, as is every
+   * entry above it in the tree, which is what a visitor is shown (see `listWorkspaces`). Only
+   * while it is does its publication admit anyone.
+   *
+   * An answer that it is visible is remembered as a publication lease, which is taken back,
+   * like a member's, once the answer may no longer hold: when an entry on the workspace's chain
+   * stops being published or a move puts it under one that is not (`#revokeHidden`), and when
+   * it leaves the listing (`detachWorkspace`).
+   */
+  workspaceVisible(id: string, ownerId: string): boolean {
+    let entry = this.storage.workspaces.get(id);
+    if (entry?.owner.id !== ownerId || this.#unpublished(entry)) return false;
+    this.storage.leases.put({ workspace: id, profile: PUBLICATION_LEASE });
+    return true;
   }
 
   /**
@@ -442,7 +474,8 @@ export class SpaceModel {
    * Space.listWorkspaces: any member, and a visitor for the published entries with no
    * unpublished entry above them, each positioned among the siblings they are shown, so that no
    * gap tells of one hidden from them. In depth-first pre-order: each entry before the entries
-   * under it, and siblings in their order (see `inOrder`).
+   * under it, and siblings in their order (see `inOrder`). A published entry with an unpublished
+   * one above it, which only a member is shown, names the nearest such one as `hiddenBy`.
    */
   listWorkspaces(caller: string): SpaceWorkspaceInfo[] {
     let visiting = this.#visiting(caller);
@@ -466,28 +499,35 @@ export class SpaceModel {
       }
     }
     // Each entry is reached only through its one parent, so this ends, and leaves out an entry
-    // on a cycle, which corrupt storage alone could hold.
-    let pending = children.get(undefined)?.toReversed() ?? [];
+    // on a cycle, which corrupt storage alone could hold. Each is pending with the nearest
+    // unpublished entry above it, if there is one.
+    let under = (parentId: string | undefined, hiddenBy?: string) =>
+        (children.get(parentId) ?? []).map(entry => ({ entry, hiddenBy })).toReversed();
+    let pending = under(undefined);
     let listing: SpaceWorkspaceInfo[] = [];
     while (pending.length > 0) {
-      let entry = pending.pop()!;
-      listing.push(listed(entry));
-      pending.push(...(children.get(entry.id) ?? []).toReversed());
+      let { entry, hiddenBy } = pending.pop()!;
+      listing.push({ ...listed(entry), ...(entry.published && hiddenBy && { hiddenBy }) });
+      pending.push(...under(entry.id, entry.published ? hiddenBy : entry.id));
     }
     return listing;
   }
 
   /**
    * Space.resolveWorkspace: any member, and a visitor for the slugs of the entries the listing
-   * shows them, each as it shows it.
+   * shows them, each as the listing shows it.
    */
   resolveWorkspace(caller: string, slug: string): SpaceWorkspaceResolution | null {
     let visiting = this.#visiting(caller);
     let resolution = this.#resolve(slug);
-    if (!resolution || !visiting) return resolution ?? null;
-    let { id } = resolution.workspace;
-    let workspace = this.listWorkspaces(caller).find(shown => shown.id === id);
-    return workspace ? { ...resolution, workspace } : null;
+    if (!resolution) return null;
+    let { workspace } = resolution;
+    if (!visiting) {
+      let hiddenBy = workspace.published && this.#unpublished(workspace)?.id;
+      return hiddenBy ? { ...resolution, workspace: { ...workspace, hiddenBy } } : resolution;
+    }
+    let shown = this.listWorkspaces(caller).find(({ id }) => id === workspace.id);
+    return shown ? { ...resolution, workspace: shown } : null;
   }
 
   /**
@@ -525,7 +565,8 @@ export class SpaceModel {
    * Space.moveWorkspace: the same callers as `setWorkspaceSlug`. Puts the entry of workspace
    * `id`, and with it the entries under it, under `parentId`, or at the top of the tree when it
    * is null, immediately before its sibling `beforeId`, or after the last of its siblings when
-   * `beforeId` is not one of them.
+   * `beforeId` is not one of them. Under an entry that is not visible, none of those entries
+   * is, and their publication leases are revoked (see `workspaceVisible`).
    */
   moveWorkspace(caller: string, id: string, parentId: string | null, beforeId?: string): void {
     this.#move(this.#editable(caller, id, "move it"), parentId ?? undefined, beforeId);
@@ -548,7 +589,8 @@ export class SpaceModel {
   // the ones it joins.
   #move(entry: SpaceWorkspaceRecord, parentId: string | undefined, beforeId?: string): void {
     this.#checkParent(parentId, entry.id);
-    if (entry.parentId !== parentId) this.#renumber(this.#siblings(entry.parentId, entry.id));
+    let reparented = entry.parentId !== parentId;
+    if (reparented) this.#renumber(this.#siblings(entry.parentId, entry.id));
     let siblings = this.#siblings(parentId, entry.id);
     let before = siblings.findIndex(sibling => sibling.id === beforeId);
     siblings.splice(before < 0 ? siblings.length : before, 0, entry);
@@ -556,6 +598,7 @@ export class SpaceModel {
     // Written whether or not the renumbering writes it, which it does only for a new position.
     this.storage.workspaces.put(entry);
     this.#renumber(siblings);
+    if (reparented) this.#revokeHidden();
   }
 
   // Refuses `parentId` as the parent of entry `id`: an entry the listing does not hold, and `id`
@@ -585,6 +628,15 @@ export class SpaceModel {
       entry.position = position;
       this.storage.workspaces.put(entry);
     });
+  }
+
+  // The first entry from `entry` up the tree that is not published, if any: while there is one,
+  // `entry` is not visible (see `workspaceVisible`).
+  #unpublished(entry: SpaceWorkspaceInfo): SpaceWorkspaceInfo | undefined {
+    for (let ancestor of this.#ancestry(entry)) {
+      if (!ancestor.published) return ancestor;
+    }
+    return undefined;
   }
 
   // `entry`, then each entry above it in the tree, up to one at the top. A parent the listing
@@ -630,6 +682,16 @@ export class SpaceModel {
       this.storage.leases.deleteRecord(lease);
       this.#queue(lease);
     }
+  }
+
+  // Takes back every publication lease whose workspace is no longer visible (see
+  // `workspaceVisible`), after a change that may have hidden some.
+  #revokeHidden(): void {
+    let leases = [...this.storage.leases.byProfile.get(PUBLICATION_LEASE)];
+    this.#revoke(leases.filter(({ workspace }) => {
+      let entry = this.storage.workspaces.get(workspace);
+      return !entry || !!this.#unpublished(entry);
+    }));
   }
 
   // Queues a revocation of `lease`, due at once.
@@ -771,6 +833,7 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   async moveWorkspace(caller: string, id: string, parentId: string | null, beforeId?: string)
       : Promise<void> {
     this.#model.moveWorkspace(caller, id, parentId, beforeId);
+    await this.#deliverRevocations();
   }
 
   /**
@@ -779,7 +842,9 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async attachWorkspaces(owner: AiChatAuthorInfo, registrations: WorkspaceRegistration[])
       : Promise<boolean> {
-    return this.#model.attachWorkspaces(owner, registrations);
+    let attached = this.#model.attachWorkspaces(owner, registrations);
+    await this.#deliverRevocations();
+    return attached;
   }
 
   /** `SpaceModel.detachWorkspace`. Called only by the User DO of `ownerId`, as above. */
@@ -797,12 +862,18 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#model.workspaceRole(id, ownerId, profileId) ?? null;
   }
 
+  /** `SpaceModel.workspaceVisible`, called like `workspaceRole`. */
+  async workspaceVisible(id: string, ownerId: string): Promise<boolean> {
+    return this.#model.workspaceVisible(id, ownerId);
+  }
+
   /**
    * Delivers the queued revocations that are due, so many in a run: tells each one's workspace
-   * that the profile no longer holds a role through this space
-   * (`OverseerDurableObject.revokeSpaceAccess`), and takes it off the queue only once that call
-   * has returned. One whose call fails is kept for a later run (`SpaceModel.deferred`), which
-   * holds up no other. While any remain the alarm is set again, for when the next is due.
+   * that the profile no longer holds a role through this space, or for a publication lease that
+   * the workspace may no longer be visible (`OverseerDurableObject.revokeSpaceAccess`), and takes
+   * it off the queue only once that call has returned. One whose call fails is kept for a later
+   * run (`SpaceModel.deferred`), which holds up no other. While any remain the alarm is set
+   * again, for when the next is due.
    */
   async alarm(): Promise<void> {
     let overseers = this.ctx.exports.OverseerDurableObject;

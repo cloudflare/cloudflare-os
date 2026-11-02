@@ -1396,28 +1396,28 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Overseer.moveToSpace: places the user's own workspace `id` in team space `spaceKey`, or with
    * null back in their personal space. The workspace is first synced where it is, because once
    * its record points elsewhere nothing names the space an unfinished move was taking it to.
-   * Then the record is pointed at the space and reconciled; if the space refuses the workspace,
-   * the record is pointed back where it was and this throws. A call that fails without an answer
-   * may have reached the space, so then the record stays pointed at it for the next sync to
-   * finish the move, or to undo it. A provisional workspace is listed nowhere, so for one this
+   * Then the record is pointed at the space and reconciled, and this resolves to true; if the
+   * space refuses the workspace, the record is pointed back where it was and this resolves to
+   * false. A call that fails without an answer may have reached the space, so then the record
+   * stays pointed at it for the next sync to finish the move, or to undo it. A provisional workspace is listed nowhere, so for one this
    * only records where it will register (see #syncSpace()). Nor is one that no space may list,
    * going by `restrictions`, which its Overseer states with the move: for one this only records
    * where its owner grouped it, and never asks the space whether they may add to it.
    */
   async setGadgetSpace(id: string, spaceKey: string | null, restrictions: WorkspaceRestrictions)
-      : Promise<void> {
+      : Promise<boolean> {
     // Refused before the flags are recorded, since only the sync below acts on them.
     if (spaceKey !== null) checkTeamSpaceKey(spaceKey);
     this.#amendGadget(id, record => mirrorRestrictions(record, restrictions));
-    await this.#inSpaceOrder(async () => {
+    return this.#inSpaceOrder(async () => {
       await this.#syncSpace(id);
       let record = this.storage.gadgets.get(id);
       if (!record || record.owner) throw new Error("No such workspace belonging to user.");
       let previous = record.spaceKey;
       this.#pointGadget(id, spaceKey ?? undefined);
-      if (await this.#reconcileSpace(id)) return;
+      if (await this.#reconcileSpace(id)) return true;
       this.#pointGadget(id, previous);
-      throw noSuchSpace();
+      return false;
     });
   }
 
@@ -1447,6 +1447,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       return null;
     }
     return this.#space(record.spaceKey).workspaceRole(id, this.storage.profile.get().id, profileId);
+  }
+
+  /**
+   * Whether workspace `id` is visible in its space, for that workspace's Overseer: whether its
+   * publication is in effect (see Overseer.setPublicAccess). Only a workspace of the user's own
+   * that a space may list (see isListable()), and that the space its record points at has
+   * acknowledged, can be, and then it is for that space to say (`SpaceModel.workspaceVisible`),
+   * which answers only for a workspace it lists under this user. Any other is not visible.
+   */
+  async workspaceVisibility(id: string): Promise<boolean> {
+    let record = this.storage.gadgets.get(id);
+    if (!record || record.owner || !isFullyCreated(record) || !isListable(record)) return false;
+    let spaceKey = record.spaceKey ?? this.storage.personalSpaceKey.get();
+    if (!spaceKey || record.registered?.spaceKey !== spaceKey) return false;
+    return this.#space(spaceKey).workspaceVisible(id, this.storage.profile.get().id);
   }
 
   // Set once this object has started the catch-up below and cleared if that fails, so that

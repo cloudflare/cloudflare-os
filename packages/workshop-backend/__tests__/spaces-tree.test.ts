@@ -375,7 +375,7 @@ async function newWorkspace(owner: Account, spaceKey?: string, parentId?: string
 function touch(owner: Account, id: string, restrictions = UNRESTRICTED): Promise<void> {
   return owner.user.setGadgetLastActive(id, new Date(), undefined, restrictions);
 }
-function move(owner: Account, id: string, spaceKey: string | null): Promise<void> {
+function move(owner: Account, id: string, spaceKey: string | null): Promise<boolean> {
   return owner.user.setGadgetSpace(id, spaceKey, UNRESTRICTED);
 }
 function stored(owner: Account, id: string): Promise<GadgetRecord | undefined> {

@@ -2,14 +2,16 @@
 // its owner's record and its entry in its space's listing say so, and someone who is not a member
 // of that space sees the space's published entries and nothing else of it. Everything runs
 // against real Durable Objects: the workspace's Overseer, its owner's User DO and the space. What
-// SharingManager makes of the published role is in sharing.test.ts, and what a visitor sees of a
-// space's tree is in spaces-tree.test.ts.
+// SharingManager makes of the published role is in sharing.test.ts, what a visitor sees of a
+// space's tree is in spaces-tree.test.ts, and how the tree decides whether a publication is in
+// effect is in spaces-visibility.test.ts.
 
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  AiChatAuthorInfo, CollaboratorRole, GadgetMetadata, Overseer, Space,
+import {
+  createOpenGadgetError, OPEN_GADGET_ERROR_CODES, type AiChatAuthorInfo, type CollaboratorRole,
+  type GadgetMetadata, type Overseer, type Space,
 } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { SpaceDurableObject, teamSpaceClaim } from "../src/spaces.js";
@@ -40,6 +42,7 @@ const NEITHER: WorkspaceRestrictions = { containsRestrictedData: false, ownerInv
 const statement = (publicAccess: CollaboratorRole | undefined, revision: number) =>
     ({ ...NEITHER, publicAccess, publicAccessRevision: revision });
 const DENIED = "You don't have access to this workspace.";
+const NOT_VISIBLE = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotVisible).message;
 const NO_SUCH_SPACE = "No such space, or you are not a member of it.";
 const NO_SHARING = "You do not have permission to share this workspace.";
 const OWNER_ONLY = "Only the workspace owner can publish it.";
@@ -245,6 +248,7 @@ describe("a published workspace's Overseer", () => {
   it("restarts for nobody whom its sharing or its space gives the published role anyway",
       async () => {
     let { alice, carol, mallory, key } = await published();
+    let dave = await signUp("dave");
     let asked = vi.spyOn(UserDurableObject.prototype, "workspaceRoleInSpace");
     // Nobody opened it; a collaborator and a member of its space opened it in roles that are
     // theirs without the publication: withdrawing it ends no session.
@@ -262,22 +266,26 @@ describe("a published workspace's Overseer", () => {
 
       // Removed while it is published, a collaborator keeps the session they have, which the
       // publication entitles them to from then on: taking it back is what ends that session.
+      // That holds once the space has said the publication is in effect, which it was asked
+      // when Dave opened through it.
       let owner = await open(instance, alice);
       await owner.setPublicAccess("use");
+      expect(await opening(instance, dave)).toBe("use");
       expect(await owner.removeCollaborator(mallory.profile.id, [])).toEqual([]);
       expect(ws.restarts).toEqual([]);
       await owner.setPublicAccess(null);
       expect(ws.restarts).toEqual([WITHDRAWN]);
     });
 
-    // Published to build, the space is not asked what it gives Carol, so she counts as having
-    // opened through the publication.
-    asked.mockClear();
+    // Published to build, the space is asked what it gives Carol only until it has said the
+    // publication is in effect, and she counts as having opened through the publication.
     let built = await workspace(alice, key);
     await built.run(async (_impl, instance) => {
       await publish(instance, alice, "build");
+      asked.mockClear();
       expect(await opening(instance, carol)).toBe("build");
-      expect(asked).not.toHaveBeenCalled();
+      expect(await opening(instance, carol)).toBe("build");
+      expect(asked).toHaveBeenCalledTimes(1);
       await publish(instance, alice, null);
       expect(built.restarts).toEqual([WITHDRAWN]);
       expect(await opening(instance, carol)).toBe("use");
@@ -374,7 +382,7 @@ describe("a published workspace's Overseer", () => {
 
   it("takes the record of it as shared with someone to the role sharing gives them, when a "
       + "removal while it is published changes what sharing gives and nothing else", async () => {
-    let { alice, mallory, ws } = await published();
+    let { alice, carol, mallory, ws } = await published();
     let [bob, dave] = await Promise.all(["bob", "dave"].map(signUp));
     let record = (of: Account) => of.user.getGadget(ws.id);
     await ws.run(async (impl, instance) => {
@@ -395,6 +403,9 @@ describe("a published workspace's Overseer", () => {
     await ws.run(async (_impl, instance) => {
       let owner = await open(instance, alice);
       await owner.setPublicAccess("build");
+      // Carol, a "use" member of its space, builds through the publication, which the space has
+      // thereby said is in effect.
+      expect(await opening(instance, carol)).toBe("build");
       // Published at "build", neither removal changes what anyone can do.
       expect(await owner.removeCollaborator(mallory.profile.id, [])).toEqual([]);
       expect(await owner.removeCollaborator(bob.profile.id, [])).toEqual([]);
@@ -405,42 +416,55 @@ describe("a published workspace's Overseer", () => {
   });
 
   it("counts an excluded observer who reaches an observation through the publication", async () => {
-    let { alice, mallory, ws } = await published();
+    let { alice, mallory, key } = await published();
     let asked = vi.spyOn(UserDurableObject.prototype, "workspaceRoleInSpace");
-    await ws.run(async (impl, instance) => {
-      // Mallory is an observer of the workspace's one connection, which no gadget binds, so
-      // whoever builds reaches what it reads and whoever only uses does not.
+    // A workspace of Alice's published at `role`, or not at all, of whose one connection, which
+    // no gadget binds, Mallory is an observer: whoever builds reaches what the connection reads
+    // and whoever only uses does not. If she `opens` it, she does so through the publication
+    // before the connection is added, which is what has the space say the publication is in
+    // effect. A lowered or withdrawn publication restarts the workspace for whoever opened
+    // through it, so each role is a workspace of its own.
+    async function observed(role: CollaboratorRole | null, opens: boolean) {
       let removals: string[] = [];
-      impl.storage.gatekeepers.put({
-        id: 1, resourceTitle: "Connection", class: {},
-        creationSpec: {
-          type: "gatekeeper", vendorId: "testvendor", resourceUrl: "https://example.com/1",
-          typeUrlPattern: "https://*",
-        },
+      let outcome = "";
+      let observer: unknown;
+      let ws = await workspace(alice, key);
+      await ws.run(async (impl, instance) => {
+        if (role) await publish(instance, alice, role);
+        if (opens) expect(await opening(instance, mallory)).toBe(role);
+        impl.storage.gatekeepers.put({
+          id: 1, resourceTitle: "Connection", class: {},
+          creationSpec: {
+            type: "gatekeeper", vendorId: "testvendor", resourceUrl: "https://example.com/1",
+            typeUrlPattern: "https://*",
+          },
+        });
+        impl.storage.observers.put(
+            { profileId: mallory.profile.id, observerId: "obs", accountChoices: { 1: 10 } });
+        impl.getGatekeeperFacet = (id: number) => ({
+          removeObserver: async (removed: string) => { removals.push(`${id}:${removed}`); },
+        });
+        asked.mockClear();
+        outcome = await (impl.authorizeObservation(1, {
+          title: "Observation", description: "One the gatekeeper keeps from its observers.",
+          excludeObservers: ["obs"],
+        }, { from: "agent", chatId: 1 }) as Promise<void>).then(
+            () => "admitted", (error: Error) => error.message);
+        observer = impl.storage.observers.get(mallory.profile.id);
       });
-      impl.storage.observers.put(
-          { profileId: mallory.profile.id, observerId: "obs", accountChoices: { 1: 10 } });
-      impl.getGatekeeperFacet = (id: number) => ({
-        removeObserver: async (removed: string) => { removals.push(`${id}:${removed}`); },
-      });
-      let observe = (): Promise<void> => impl.authorizeObservation(1, {
-        title: "Observation", description: "One the gatekeeper keeps from its observers.",
-        excludeObservers: ["obs"],
-      }, { from: "agent", chatId: 1 });
+      return { outcome, observer, removals };
+    }
 
-      await publish(instance, alice, "build");
-      await expect(observe()).rejects.toThrow(/not permitted to see/);
-      expect([asked.mock.calls.length, removals]).toEqual([0, []]);
-      // Published to use she no longer reaches this connection, and stays an observer of the rest.
-      await publish(instance, alice, "use");
-      await observe();
-      expect(removals).toEqual(["1:obs"]);
-      expect(impl.storage.observers.get(mallory.profile.id)).toBeDefined();
-      // Withdrawn, nothing gives her a role: she is no longer set up to observe at all.
-      await publish(instance, alice, null);
-      await observe();
-      expect(impl.storage.observers.get(mallory.profile.id)).toBeUndefined();
-    });
+    let built = await observed("build", true);
+    expect(built.outcome).toMatch(/not permitted to see/);
+    expect([asked.mock.calls.length, built.removals]).toEqual([0, []]);
+    // Published to use she does not reach this connection, and stays an observer of the rest.
+    let used = await observed("use", true);
+    expect([used.outcome, used.removals]).toEqual(["admitted", ["1:obs"]]);
+    expect(used.observer).toBeDefined();
+    // Unpublished, nothing gives her a role: she is no longer set up to observe at all.
+    let unpublished = await observed(null, false);
+    expect([unpublished.outcome, unpublished.observer]).toEqual(["admitted", undefined]);
   });
 
   it("keeps counting an excluded observer whom a publication taken back admitted, until the "
@@ -515,7 +539,9 @@ describe("the mirror of a publication", () => {
         fail();
         await expect(owner.setPublicAccess(role)).rejects.toThrow(/unavailable/);
         expect(impl.storage.publicAccess.get()).toBe(role ?? undefined);
-        expect(await opening(instance, mallory)).toBe(role ?? DENIED);
+        // Published while its entry in the listing says it is not, it admits nobody through
+        // the publication until the entry follows.
+        expect(await opening(instance, mallory)).toBe(role ? NOT_VISIBLE : DENIED);
       });
       expect((await entry(key, alice, ws.id))?.published).toBe(role ? undefined : "use");
       // Any later call that states the workspace's flags states this too: here a new title.
@@ -524,6 +550,8 @@ describe("the mirror of a publication", () => {
       await vi.waitFor(async () => expect([
         (await stored(alice, ws.id))?.publicAccess, (await entry(key, alice, ws.id))?.published,
       ]).toEqual([role ?? undefined, role ?? undefined]), WAIT);
+      await ws.run(async (_impl, instance) =>
+          expect(await opening(instance, mallory)).toBe(role ?? DENIED));
     }
   });
 
@@ -553,13 +581,13 @@ describe("the mirror of a publication", () => {
     expect(await mirrored()).toEqual([undefined, undefined]);
   });
 
-  it("marks no entry for a workspace that no space lists, which is published all the same",
-      async () => {
+  it("marks no entry for a workspace that no space lists, which is published but admits nobody "
+      + "through it until a space lists it", async () => {
     let [alice, mallory] = await Promise.all(["alice", "mallory"].map(signUp));
     let ws = await workspace(alice, undefined, "Untitled", true);
     await ws.run(async (_impl, instance) => {
       await publish(instance, alice, "use");
-      expect(await opening(instance, mallory)).toBe("use");
+      expect(await opening(instance, mallory)).toBe(NOT_VISIBLE);
     });
     expect(await stored(alice, ws.id)).toMatchObject({ publicAccess: "use" });
     expect(await stored(alice, ws.id)).not.toHaveProperty("registered");
@@ -569,6 +597,8 @@ describe("the mirror of a publication", () => {
         ws.id, DAY, undefined, { ...NEITHER, publicAccess: "use" });
     await vi.waitFor(async () =>
         expect((await entry(alice.personal, alice, ws.id))?.published).toBe("use"), WAIT);
+    await ws.run(async (_impl, instance) =>
+        expect(await opening(instance, mallory)).toBe("use"));
   });
 });
 

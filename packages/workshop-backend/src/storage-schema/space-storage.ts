@@ -18,9 +18,19 @@ export type SpaceWorkspaceRecord = SpaceWorkspaceInfo & { formerSlugs?: string[]
 
 /**
  * A role the space gave out: it answered that member `profile` holds a role on workspace
- * `workspace`, whose Overseer may since have a session of theirs open through it.
+ * `workspace`, whose Overseer may since have a session of theirs open through it. With
+ * `profile` set to `PUBLICATION_LEASE` it is a publication lease instead: the space answered
+ * that the workspace is visible, so that its publication may since have admitted anyone signed
+ * in (see SpaceModel.workspaceVisible()).
  */
 export type SpaceLease = { workspace: string; profile: string };
+
+/**
+ * The `profile` of a publication lease (see `SpaceLease`): no profile id, since none is empty,
+ * so that a workspace's publication lease shares its key prefix with its members' leases and is
+ * revoked with them, and no member's leases include it.
+ */
+export const PUBLICATION_LEASE = "";
 
 /**
  * A lease the space took back, until the workspace's Overseer has been told. `seq` is the order
@@ -86,7 +96,8 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       // Every (workspace, member) the space has answered with a role and not taken back since
       // (see SpaceModel.workspaceRole()): the sessions that a change to its members or to its
       // listing may have to end. Keyed workspace first, an id with no ":" in it, so that one
-      // workspace's leases are a key prefix.
+      // workspace's leases are a key prefix. Beside them are the publication leases (see
+      // PUBLICATION_LEASE), all under that one key of `byProfile`.
       leases: collection<SpaceLease>()({
         primaryKey: lease => `${lease.workspace}:${lease.profile}`,
         nonUniqueIndexes: {
