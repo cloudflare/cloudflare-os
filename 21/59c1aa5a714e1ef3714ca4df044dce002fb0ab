@@ -1,0 +1,53 @@
+packages/gatekeeper-google/README.md
+  s_2f3309f49021fb::t_1af5c37bddaea3 268-321
+packages/gatekeeper-google/__tests__/types.test.ts
+  s_2f3309f49021fb::t_c9b5973632106c 9,122-125,163-182
+packages/gatekeeper-google/__tests__/workerd/calendar-hooks.test.ts
+  s_2f3309f49021fb::t_e9c78bce40e0ed 1-684
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_2f3309f49021fb::t_a01d338a93108b 25
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_2f3309f49021fb::t_b310f6a8a8b855 481,484,486-489,492
+packages/gatekeeper-google/__tests__/workerd/gmail-hooks.test.ts
+  s_2f3309f49021fb::t_2c6ed4bed3f95a 23
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_2f3309f49021fb::t_6519a3bdc8f5b5 5-15,34,37,60-67,315-344,349-350,358,393-400,667,669,713-769,793-795,1333-1354
+packages/gatekeeper-google/cloudflare.config.ts
+  s_2f3309f49021fb::t_36fe41bbac4557 30
+packages/gatekeeper-google/src/calendar-api.ts
+  s_2f3309f49021fb::t_b9c4f7c811ddf7 6,20-31,84,96,98-99,143-144,146,170-174,221-243,247-270,288,433,437-438,442,447,452-453,457,462-464,468-535
+packages/gatekeeper-google/src/calendar-hooks.ts
+  s_2f3309f49021fb::t_a58db34ea4581c 1-669
+packages/gatekeeper-google/src/calendar-types.d.ts
+  s_2f3309f49021fb::t_bfc9da7554c048 1-2,60-66,94-96,98-104,151-203,283-319
+packages/gatekeeper-google/src/google.ts
+  s_2f3309f49021fb::t_631f600dd54729 1,67-68,70-73,124,155,235,295-296,433-435,768-772,775,2470,2492-2493,2615,2629-2640,2647,2650-2656,2668-2669,2672,2687,2724,2730,2776,2784,2793,2802-2806,2963-2969
+packages/gatekeeper-google/src/hook-accounts.ts
+  s_2f3309f49021fb::t_b9800e69f37a6e 8,10
+packages/gatekeeper-google/src/type-bundle.ts
+  s_2f3309f49021fb::t_3390ca3aee05ae 12-16
+packages/gatekeeper-google/vitest.worker.config.ts
+  s_2f3309f49021fb::t_5637e707699206 8,18-19,25,29,40
+packages/gatekeeper-google/worker-configuration.d.ts
+  s_2f3309f49021fb::t_b629182bc039ee 2,10
+packages/gatekeeper-google/wrangler.jsonc
+  s_2f3309f49021fb::t_dfddf613315784 91-96
+scripts/release/testdata/golden-manifest.json
+  s_2f3309f49021fb::t_c42bd7e0512e76 498-503
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2159c1aa5a714e1ef3714ca4df044dce002fb0ab",
+  "prompts": {},
+  "sessions": {
+    "s_2f3309f49021fb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e7760ce87ffe3DoEQB51p0KwmA",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
