@@ -1,0 +1,31 @@
+packages/api-cli/src/api.ts
+  s_34892ac5042fc9::t_8d2275ca157af8 182-183
+  s_34892ac5042fc9::t_ef88c792d88321 184-185,264-265,267-269
+packages/api-cli/src/session.test.ts
+  s_34892ac5042fc9::t_22acae95bfb2f6 105-110
+  s_34892ac5042fc9::t_991afe30a6cfa5 93
+packages/api-cli/src/session.ts
+  s_34892ac5042fc9::t_ef88c792d88321 59,313-315,317,325-329,353-354,356,405-406,411,417
+packages/api-cli/src/api.test.ts
+  s_34892ac5042fc9::t_8d2275ca157af8 655-659
+  s_34892ac5042fc9::t_22acae95bfb2f6 2,13,40,42-43,69,71,553-561
+  s_34892ac5042fc9::t_e13cce6c9abb96 562-563
+packages/api-cli/src/create-account.ts
+  s_34892ac5042fc9::t_8d2275ca157af8 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "82eb3ad2137200bd1805fc821f30d0d8a06b5995",
+  "prompts": {},
+  "sessions": {
+    "s_34892ac5042fc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87e6e794-e4bb-43d9-ab51-1d4fa355eedb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

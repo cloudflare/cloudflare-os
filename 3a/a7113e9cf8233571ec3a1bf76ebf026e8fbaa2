@@ -1,0 +1,29 @@
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_31f56db54a50f3::t_0b8e05a19b224a 744-754
+packages/gatekeeper-google/src/calendar-types.d.ts
+  s_cc1330831b9216::t_752ee3aa370e72 286-293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3aa7113e9cf8233571ec3a1bf76ebf026e8fbaa2",
+  "prompts": {},
+  "sessions": {
+    "s_31f56db54a50f3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e76a5960dffeOZSXb0oSjaP0No",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_cc1330831b9216": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e76a5dde1ffe4an4319dGtBaGA",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
