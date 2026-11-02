@@ -5494,6 +5494,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       ciExpected: boolean;
     } | undefined;
     let after: string | null = null;
+    let dropped = false;
     for (;;) {
       const result: GitHubGraphqlResult<GqlRollupData> = await this.#readApi(api =>
         api.queryRepository<GqlRollupData>(owner, repo, ROLLUP_QUERY, {
@@ -5522,7 +5523,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         };
       }
       for (const node of rollup?.contexts.nodes ?? []) {
-        if (node !== null && entries.length < MAX_CHECK_ENTRIES) entries.push(rollupEntryOf(node));
+        if (node === null) continue;
+        if (entries.length < MAX_CHECK_ENTRIES) entries.push(rollupEntryOf(node));
+        else dropped = true;
       }
       const page = rollup?.contexts.pageInfo;
       if (!page?.hasNextPage || page.endCursor === null || entries.length >= MAX_CHECK_ENTRIES) {
@@ -5530,7 +5533,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           ...first,
           counts: first.counts ?? countStates(entries.map(entry => entry.state)),
           entries,
-          truncated: page?.hasNextPage === true,
+          truncated: dropped || page?.hasNextPage === true,
         };
       }
       after = page.endCursor;

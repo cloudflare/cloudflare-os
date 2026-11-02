@@ -45,6 +45,8 @@ type FakeRollup = {
   parentHasCi: boolean;
   /** Entries per GraphQL page; all on one page when omitted. */
   pageSize?: number;
+  /** Unresolvable (null) entries GitHub lists ahead of `nodes`. */
+  nullNodes?: number;
 };
 
 function checkRunNode(name: string, status: string, conclusion: string | null, extra: Record<string, unknown> = {}) {
@@ -302,16 +304,17 @@ class FakeGitHub {
       return { data: { node: run === undefined ? null : { pendingDeploymentRequest: deploymentRequest(1) } } };
     }
     const rollup = this.rollups.get(variables.oid as string);
-    const nodes = (rollup?.nodes ?? []).map(node => {
+    const listed = (rollup?.nodes ?? []).map(node => {
       if (variables.withPull) return node;
       const { isRequired: _isRequired, ...rest } = node;
       return rest;
     });
+    const nodes = [...Array<null>(rollup?.nullNodes ?? 0).fill(null), ...listed];
     const offset = variables.after === null ? 0 : Number(variables.after);
     const end = offset + (rollup?.pageSize ?? nodes.length);
     const countBy = (typename: string, stateOf: (node: Record<string, unknown>) => string) => {
       const counts = new Map<string, number>();
-      for (const node of nodes.filter(candidate => candidate.__typename === typename)) {
+      for (const node of nodes.filter(candidate => candidate?.__typename === typename) as Record<string, unknown>[]) {
         counts.set(stateOf(node), (counts.get(stateOf(node)) ?? 0) + 1);
       }
       return [...counts].map(([state, count]) => ({ state, count }));
@@ -670,6 +673,22 @@ describe("pull request CI", () => {
     expect(checks.checks).toHaveLength(1000);
     expect(checks.counts).toEqual({ success: 1001 });
     expect(checks).toMatchObject({ state: "success", phase: "done", missingRequired: [] });
+  });
+
+  it("judges a check dropped at the cap as unread when null entries shortened earlier pages", async () => {
+    const github = pullScenario();
+    github.rollups.set(HEAD, {
+      state: "PENDING", committedAt: Date.now(), workflows: true, parentHasCi: true, pageSize: 100, nullNodes: 10,
+      nodes: [
+        ...Array.from({ length: 1000 }, (_, index) => checkRunNode(`check-${index}`, "COMPLETED", "SUCCESS")),
+        checkRunNode("soak", "IN_PROGRESS", null),
+      ],
+    });
+    const gk = await gatekeeper(7);
+
+    const checks = await gk.read<GitHubPullRequestChecks>([{ method: "getChecks" }]);
+    expect(checks.checks).toHaveLength(1000);
+    expect(checks).toMatchObject({ state: "pending", phase: "active", missingRequired: [] });
   });
 
   it("takes what the base branch requires for a pull request GitHub has not created yet", async () => {
