@@ -1377,6 +1377,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     });
   }
 
+  /**
+   * The role that membership of its space gives `profileId` on workspace `id`, for that
+   * workspace's Overseer, or null if it gives none. Only a workspace of the user's own that a
+   * space may list (see isListable()) has one, and then it is for the space its record points
+   * at to say (`SpaceModel.workspaceRole`), which answers only for a workspace it lists under
+   * this user. With no `spaceKey` that is the personal space, which nothing here allocates: one
+   * never allocated lists nothing.
+   */
+  async workspaceRoleInSpace(id: string, profileId: string): Promise<CollaboratorRole | null> {
+    let record = this.storage.gadgets.get(id);
+    if (!record || record.owner || !isFullyCreated(record) || !isListable(record)) return null;
+    let spaceKey = record.spaceKey ?? this.storage.personalSpaceKey.get();
+    if (spaceKey === null) return null;
+    return this.#space(spaceKey).workspaceRole(id, this.storage.profile.get().id, profileId);
+  }
+
   // Set once this object has started the catch-up below and cleared if that fails, so that
   // listSpaces() starts it once, and again after a failure.
   #spacesBackfillStarted = false;

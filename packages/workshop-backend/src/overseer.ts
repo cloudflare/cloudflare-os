@@ -712,6 +712,12 @@ export function sanitizeMessageFormatRefs(
 // collaborator roles.
 type SessionKind = CollaboratorRole | "owner";
 
+// The higher of two roles, either of which a profile may lack.
+function higherRole(a: CollaboratorRole | undefined, b: CollaboratorRole | undefined)
+    : CollaboratorRole | undefined {
+  return a && b ? (roleRank(a) >= roleRank(b) ? a : b) : a || b;
+}
+
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
@@ -5329,9 +5335,9 @@ class OverseerImpl implements AgentHooks {
                              hookId?: number): Promise<void> {
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
     // v1 has no per-thread hiding, the only way to let such an observation proceed is if no named
-    // observer could reach it -- either they have lost access in the sharing graph, or this
-    // connection has left their role's verification scope. See
-    // observers-implementation-plan.md §5 Step 5.
+    // observer could reach it -- either neither the sharing graph nor the workspace's space gives
+    // them a role any longer, or this connection has left their role's verification scope. See
+    // #enforceExcludeObservers.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
@@ -5396,6 +5402,10 @@ class OverseerImpl implements AgentHooks {
         this.#lastActiveTimeKnownToUs = new Date();
         this.#bumpLastActiveImpl();
       }
+
+      // Under either flag only the sharing graph counts, so whatever the workspace's space gave
+      // anyone ends with the writes above, without waiting to hear from the space.
+      if (newlyRestricted) this.#endSpaceRoles();
 
       if (sharing && baseline) {
         let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
@@ -5805,9 +5815,10 @@ class OverseerImpl implements AgentHooks {
   // it. For each named opaque observerId:
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
   //     observer (e.g. already torn down), so it is ignored.
-  //   - If that profileId is still authorized in the sharing graph *and* this gatekeeper is still
-  //     in their role's verification scope, we cannot guarantee they won't see the observation (v1
-  //     has no per-thread hiding), so we throw to block it.
+  //   - If that profileId is still authorized, by the sharing graph or as a member of the
+  //     workspace's space (the higher of the two roles, as at open()), *and* this gatekeeper is
+  //     still in their role's verification scope, we cannot guarantee they won't see the
+  //     observation (v1 has no per-thread hiding), so we throw to block it.
   //   - If this gatekeeper has left their scope, they cannot reach the observation and must not
   //     block it. They stay a collaborator with an intact record, so only their registration on
   //     *this* gatekeeper is dropped -- which is what left them named here after the connection
@@ -5820,8 +5831,41 @@ class OverseerImpl implements AgentHooks {
   // If no named observer can reach the observation, it is allowed. Every id is classified before
   // anything is torn down, so a blocked observation leaves no teardown behind it; the removals are
   // then all issued together and awaited at once.
+  //
+  // The space role is asked for first, for every named observer who does not already have
+  // "build" from the graph or from a space role this object remembers (see #spaceRoles), so that
+  // the classification itself awaits nothing. A remembered "use" is asked for again: the space
+  // does not tell this object of a member it raised, and a "use" that is out of date would admit
+  // what a "build" blocks. The graph can change while the space is asked, so who is left to ask
+  // is worked out again after every wait: the classification starts only once each named
+  // observer has "build" or an answer from the space given during this call.
+  // Here a lookup that fails blocks the observation: it must never read as "cannot reach". So
+  // does one that roles were taken away under, which leaves no earlier answer of this call to
+  // be trusted either: every wait here is on a lookup, so none of them outlasts a role's end.
   async #enforceExcludeObservers(gatekeeperId: number, observerIds: string[]): Promise<void> {
     let sharing = await this.getSharingManager();
+
+    let asked = new Set<string>();
+    for (;;) {
+      let unresolved = observerIds.flatMap(observerId => {
+        let profileId = this.storage.observers.byObserverId.get(observerId)?.profileId;
+        return profileId === undefined || asked.has(profileId) || higherRole(
+            sharing.getEffectiveRole(profileId), this.#spaceRoles.get(profileId)) === "build"
+            ? [] : [profileId];
+      });
+      if (unresolved.length === 0) break;
+      await Promise.all(unresolved.map(profileId => {
+        asked.add(profileId);
+        return this.#lookUpSpaceRole(profileId);
+      })).catch((err: unknown) => {
+        this.logger.warn("blocked an observation whose excluded observers could not be resolved", {
+          event: "space.role.lookup.failed", gatekeeperId, error: err,
+        });
+        throw new Error(
+            "This observation was blocked because it could not be confirmed that everyone it " +
+            "must be kept from is unable to reach this workspace. Please retry.");
+      });
+    }
 
     let unauthorized: ObserverRecord[] = [];
     let outOfScope: string[] = [];
@@ -5832,7 +5876,8 @@ class OverseerImpl implements AgentHooks {
       // unknown and the observation is admitted. Fix: an in-memory pending-id map consulted
       // here, failing closed.
       if (!observer) continue;  // not an active observer -> ignore
-      let role = sharing.getEffectiveRole(observer.profileId);
+      let role = higherRole(
+          sharing.getEffectiveRole(observer.profileId), this.#spaceRoles.get(observer.profileId));
       if (!role) {
         unauthorized.push(observer);
       } else if (this.#inRoleVerificationScope(gatekeeperId, role)) {
@@ -9905,8 +9950,9 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Tear down observer records for collaborators who lost access as a result of a sharing change.
-  // For each affected collaborator who is now fully unauthorized (newRole === null) and has an
-  // observer record: best-effort removeObserver on all gatekeeper facets, then delete the record.
+  // For each affected collaborator who is now fully unauthorized (newRole === null, and no role
+  // as a member of the workspace's space either) and has an observer record: best-effort
+  // removeObserver on all gatekeeper facets, then delete the record.
   // All calls are best-effort -- an orphaned observer entry only causes superfluous future checks,
   // never a data leak: a registration is what admits an open, and every open re-runs addObserver,
   // so a stale one grants nothing on its own. See observers-implementation-plan.md §5 Step 6.
@@ -9914,6 +9960,17 @@ class OverseerImpl implements AgentHooks {
     let gatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
     for (let entry of affected) {
       if (entry.newRole !== null) continue;  // downgraded but still has access -> keep record
+      if (!this.storage.observers.get(entry.profile.id)) continue;
+      // Someone the space still gives a role can still open the workspace, and keeps the record
+      // with the account choices in it. So does someone whose space role cannot be learned: an
+      // orphaned record is harmless, and #enforceExcludeObservers tears it down when it matters.
+      let spaceRole = await this.#lookUpSpaceRole(entry.profile.id).catch((err: unknown) => {
+        this.logger.warn("failed to look up a space role; keeping an observer record", {
+          event: "space.role.lookup.failed", error: err,
+        });
+        return "unknown" as const;
+      });
+      if (spaceRole) continue;
       let observer = this.storage.observers.get(entry.profile.id);
       if (!observer) continue;
       this.storage.observers.delete(observer.profileId);
@@ -9949,9 +10006,96 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // --- Space roles ---
+  //
+  // A member of the space this workspace belongs to holds a role on it, "build" or "use", while
+  // that space lists it (see docs/spaces.md). It counts beside the role the sharing graph gives
+  // them: the higher of the two decides what they may open (authorizeCollaborator()) and whether
+  // they can reach what the workspace has read (#enforceExcludeObservers(),
+  // tearDownLostObservers()). It never counts toward what they may share, which SharingManager
+  // decides from the graph alone. A workspace that holds restricted data or is owner-invites-only
+  // gives no space role: under either flag only the graph counts.
+  //
+  // None of it is stored here. The owner's User DO is asked, which asks the one space its record
+  // of the workspace points at, and that space tells this object when a role it gave out no
+  // longer holds (revokeSpaceRole()).
+
+  // The highest space role each profile has been given since space roles were last taken from
+  // them. Whoever holds a session through a space role, or anything such a session handed out,
+  // has an entry, so taking an entry away is what restarts the workspace (revokeSpaceRole(),
+  // #endSpaceRoles()), and with no entry there is nothing to end. An entry of "build" is also
+  // taken to mean that its profile can still reach the workspace (#enforceExcludeObservers()),
+  // which errs toward blocking until the space says otherwise.
+  #spaceRoles = new Map<string, CollaboratorRole>();
+
+  // The lookups in flight, each with the profile it is for.
+  #spaceRoleLookups = new Set<{ profileId: string }>();
+
+  // How many times space roles have been taken away. A lookup in flight across one may carry an
+  // answer given before it, so it is not trusted.
+  #spaceRolesTaken = 0;
+
+  // Asks which role membership of the workspace's space gives `profileId`, and remembers one it
+  // is given. Either flag decides it here, with nobody asked, and so does having no owner, whose
+  // record is what places a workspace in a space. Throws if the lookup fails or if roles were
+  // taken away while it was in flight: what no answer means is for the caller to say. With
+  // `askAgain`, an answer overtaken that way is first asked for once more, from the top.
+  async #lookUpSpaceRole(profileId: string, askAgain = false)
+      : Promise<CollaboratorRole | undefined> {
+    let { containsRestrictedData, ownerInvitesOnly } = this.restrictions;
+    if (containsRestrictedData || ownerInvitesOnly || !this.ownerId) return undefined;
+    let taken = this.#spaceRolesTaken;
+    let id = this.ctx.id.toString();
+    let lookup = { profileId };
+    this.#spaceRoleLookups.add(lookup);
+    let role = await retryOnDoReset(
+        () => this.ownerUserDo().workspaceRoleInSpace(id, profileId), this.logger)
+        .finally(() => this.#spaceRoleLookups.delete(lookup));
+    if (taken !== this.#spaceRolesTaken) {
+      if (askAgain) return this.#lookUpSpaceRole(profileId);
+      throw new Error("This workspace's space roles changed while one was being looked up.");
+    }
+    if (!role) return undefined;
+    let known = this.#spaceRoles.get(profileId);
+    if (!known || roleRank(role) > roleRank(known)) this.#spaceRoles.set(profileId, role);
+    return role;
+  }
+
+  // The space took back the role it gave `profileId` (see OverseerDurableObject
+  // .revokeSpaceAccess()). Every open asks the space afresh, so all there is to end is what this
+  // object did with the role: a lookup of it in flight is not trusted, and if one was given, the
+  // workspace restarts, as when a collaborator is removed, and each client reopens and is
+  // authorized again. That does not go by which sessions are counted live: a client can keep
+  // what a session handed out after closing it. A revocation of a role this object neither
+  // remembers nor is asking for changes nothing: a space that stops listing the workspace sends
+  // one for every lease it holds on it, and those must neither restart the workspace nor
+  // overtake another's lookup.
+  revokeSpaceRole(profileId: string): void {
+    let given = this.#spaceRoles.delete(profileId);
+    let asking = [...this.#spaceRoleLookups].some(lookup => lookup.profileId === profileId);
+    if (!given && !asking) return;
+    this.#spaceRolesTaken++;
+    if (given) {
+      this.scheduleAccessRestart(
+          "Gadget restarted because a member's access through its space changed.");
+    }
+  }
+
+  // Every space role ends at once: the workspace has come under a flag (see authorizeObservation).
+  // Restarts as revokeSpaceRole() does, if any profile was given a space role: with none, nothing
+  // was opened through one, and the collaborators' sessions are left alone.
+  #endSpaceRoles(): void {
+    this.#spaceRolesTaken++;
+    if (this.#spaceRoles.size === 0) return;
+    this.#spaceRoles.clear();
+    this.scheduleAccessRestart(
+        "Gadget restarted because it is no longer open to the members of its space.");
+  }
+
   // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
-  // pass through: resolve the caller's effective role, then verify them as an observer of
-  // everything this workspace has read. Returns null for no access; verification failures throw.
+  // pass through: resolve the caller's role, the higher of the one the sharing graph gives them
+  // and the one their membership of the workspace's space does, then verify them as an observer
+  // of everything this workspace has read. Returns null for no access; verification failures throw.
   // A caller that requires at least `requireRole` (e.g. receiveExternalMessage needs "build")
   // passes it so an insufficient role is denied *before* verification runs -- otherwise the caller
   // would be verified (real addObserver calls, a persisted observer record) only to be turned
@@ -9966,7 +10110,19 @@ class OverseerImpl implements AgentHooks {
         requireRole?: CollaboratorRole;
       } = {}): Promise<CollaboratorRole | null> {
     let sharing = await this.getSharingManager();
-    let role = sharing.getEffectiveRole(profileId);
+    // The space is asked only when the graph does not already give "build", the most either can,
+    // and a second time if roles were taken away meanwhile: those are usually someone else's, and
+    // must not turn away a member who opens the workspace at that moment. A lookup that fails
+    // gives no space role and takes nothing from the graph's, which is read again once the
+    // lookup is back, since it may have changed meanwhile.
+    let spaceRole = sharing.getEffectiveRole(profileId) === "build" ? undefined
+        : await this.#lookUpSpaceRole(profileId, true).catch((err: unknown) => {
+          this.logger.warn("failed to look up a space role; authorizing on sharing alone", {
+            event: "space.role.lookup.failed", error: err,
+          });
+          return undefined;
+        });
+    let role = higherRole(sharing.getEffectiveRole(profileId), spaceRole);
     if (!role || (opts.requireRole && roleRank(role) < roleRank(opts.requireRole))) return null;
 
     // A session-to-be counts as a session for its role from the moment its role is resolved:
@@ -10469,6 +10625,17 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Tells this workspace that `profileId` no longer holds the role a space gave them on it: they
+   * were removed from the space or lowered in it, or the space no longer lists the workspace.
+   * Called by that space, which keeps calling until this returns (`SpaceDurableObject.alarm`),
+   * and never by a client. It can only end sessions, by restarting the workspace: no role is
+   * taken from the sharing graph, and every open asks the space again.
+   */
+  async revokeSpaceAccess(profileId: string): Promise<void> {
+    this.impl.revokeSpaceRole(profileId);
+  }
+
+  /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openWorkspaceInternal() to detect Durable Object disconnects.
    */
@@ -10556,13 +10723,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // the observer snapshot so every capability exposed to this collaborator has an observer.
       await ensureCapsules;
 
-      // Check authorization: compute the caller's effective role from the permission graph, then
-      // verify they may observe everything this Gadget has read through its in-scope gatekeepers,
-      // configuring their connected accounts if needed. Observer verification runs only after a
-      // valid role is confirmed, so it never reveals gatekeeper or resource metadata to an
-      // unauthorized user.
+      // Check authorization: resolve the caller's role, from the permission graph and from their
+      // membership of the workspace's space (see authorizeCollaborator), then verify they may
+      // observe everything this Gadget has read through its in-scope gatekeepers, configuring
+      // their connected accounts if needed. Observer verification runs only after a valid role is
+      // confirmed, so it never reveals gatekeeper or resource metadata to an unauthorized user.
       //
-      // An unauthorized caller (no effective role -- never had access, or was removed) gets a
+      // An unauthorized caller (no role from either -- never had access, or was removed) gets a
       // distinct denial without workspace metadata. A removed collaborator who reconnects after
       // their session is force-restarted lands here and sees the terminal access-denied page.
       let effectiveRole = await this.impl.authorizeCollaborator(
@@ -10573,13 +10740,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       role = effectiveRole;
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
-      // (or is refreshed on) their home page.
+      // (or is refreshed on) their home page, in the role the sharing graph gives them: that
+      // record is only ever brought up to date by a change to the graph, so a role held through
+      // the space would outlast the membership there. Someone who opens the gadget as a member
+      // of its space alone is no collaborator: they reach it through the space, which lists it
+      // for them.
       let title = this.impl.storage.title.get();
       let gadgetId = this.impl.ctx.id.toString();
-      void (async () => {
+      let graphRole = sharing.getEffectiveRole(profileId);
+      if (graphRole) void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          await clientUser.recordSharedWorkspaceOpen(gadgetId, title, ownerProfile, role);
+          await clientUser.recordSharedWorkspaceOpen(gadgetId, title, ownerProfile, graphRole);
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,

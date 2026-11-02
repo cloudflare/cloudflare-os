@@ -8,10 +8,19 @@
 //
 // The listing of workspaces runs the other way. Which space a workspace belongs to is recorded by
 // its owner's User DO, which registers the workspace here and keeps the entry current; the space
-// decides whether that owner may add to it. An entry of the listing settles one thing only, that
-// nobody but the owner it is listed under updates or drops it: nothing about a workspace, or
-// about who can open it, is decided from the listing. An entry's address within the space, its
+// decides whether that owner may add to it. An entry of the listing is held by the owner it is
+// listed under: nobody else updates or drops it. Where a workspace belongs is never decided from
+// the listing, which only follows its owner's record. An entry's address within the space, its
 // slug, is the space's alone: the space gives it, and no other object knows it.
+//
+// A member's role applies to the workspaces the space lists. The owner's User DO asks, for a
+// workspace whose record points here, which role a profile's membership gives them on it (see
+// `SpaceModel.workspaceRole`), and the space answers with one only for a workspace it lists
+// under that owner, so both sides have to agree. The workspace's Overseer combines the answer
+// with its own sharing. Each role given out is remembered as a lease. When a member is removed
+// or lowered, or a workspace leaves the listing, the leases that no longer hold are queued as
+// revocations, which the space's alarm delivers to each workspace's Overseer, so that no open
+// session outlives the membership or the listing it was opened through.
 //
 // Trust: every method `SpaceDurableObject` exposes takes the acting user as a plain parameter,
 // exactly like `OverseerDurableObject.open(userId, profileId, ...)`. Its only callers are
@@ -20,18 +29,20 @@
 // `SpaceClientInterface`, which closes over the caller fixed at open time.
 //
 // The rules live in `SpaceModel`, pure logic over typed storage so it is unit-testable; the
-// Durable Object is a thin shell adding the account lookup and the mirror pushes.
+// Durable Object is a thin shell adding the account lookup, the mirror pushes and the alarm that
+// delivers the revocations.
 
 import { DurableObject } from "cloudflare:workers";
 import { RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import {
   MAX_SLUG_LENGTH, PERSONAL_SPACE_PREFIX, isValidSpaceKey, isValidTeamSpaceKey, slugify,
-  type AiChatAuthorInfo, type Space, type SpaceInfo, type SpaceMemberInfo, type SpaceMemberRole,
-  type SpaceWorkspaceInfo, type SpaceWorkspaceResolution,
+  type AiChatAuthorInfo, type CollaboratorRole, type Space, type SpaceInfo, type SpaceMemberInfo,
+  type SpaceMemberRole, type SpaceWorkspaceInfo, type SpaceWorkspaceResolution,
 } from "@gadgets/workshop-shared/api";
 import {
-  makeSpaceStorage, type SpaceRecord, type SpaceStorage, type SpaceWorkspaceRecord,
+  makeSpaceStorage, type SpaceLease, type SpaceRecord, type SpaceRevocation, type SpaceStorage,
+  type SpaceWorkspaceRecord,
 } from "./storage-schema/space-storage.js";
 import { PLACEHOLDER_TITLES } from "./storage-schema/overseer-storage.js";
 import { createWorkshopLogger } from "./observability";
@@ -46,6 +57,11 @@ const MAX_SPACE_NAME_LENGTH = 100;
 // The former slugs an entry keeps; the oldest fall off. Bounds the record of a workspace whose
 // slug is changed over and over, at the cost of its oldest links.
 const MAX_FORMER_SLUGS = 32;
+
+// The revocations one run of the alarm attempts, and the bounds of the wait before a revocation
+// is attempted again, which doubles each time its attempt fails.
+const REVOCATION_BATCH = 16;
+const REVOCATION_RETRY_MS = { first: 1_000, longest: 5 * 60_000 };
 
 /**
  * The space a claim asks for. Whoever claims it becomes its first admin and, if it is personal,
@@ -111,6 +127,17 @@ export function noSuchSpace(): Error {
   return new Error("No such space, or you are not a member of it.");
 }
 
+// The role a member in `role` holds on each workspace the space lists. A role that is none of
+// the three gives none.
+function workspaceRoleOf(role: SpaceMemberRole): CollaboratorRole | undefined {
+  switch (role) {
+    case "admin":
+    case "build": return "build";
+    case "use": return "use";
+    default: return undefined;
+  }
+}
+
 // An entry of the listing as a member is shown it: without the slugs it used to have.
 function listed({ formerSlugs: _formerSlugs, ...workspace }: SpaceWorkspaceRecord)
     : SpaceWorkspaceInfo {
@@ -119,7 +146,8 @@ function listed({ formerSlugs: _formerSlugs, ...workspace }: SpaceWorkspaceRecor
 
 /**
  * The rules of one space, over its typed storage: who its members are, which workspaces it
- * lists, and the slug each is addressed by. No RPC and no knowledge of other Durable Objects.
+ * lists, the slug each is addressed by, and the role each member holds on them. No RPC and no
+ * knowledge of other Durable Objects.
  * Every method that acts for a user takes who they are as a parameter and looks their membership
  * up at that moment, so nothing here trusts an earlier answer.
  */
@@ -188,7 +216,8 @@ export class SpaceModel {
 
   /**
    * Space.setMemberRole, once the username has been resolved to the existing account `profile`:
-   * makes them a member in exactly `role`, whether that adds, raises or lowers them.
+   * makes them a member in exactly `role`, whether that adds, raises or lowers them. Lowering
+   * them to a role that gives less on the space's workspaces revokes their leases.
    */
   setMemberRole(caller: string, profile: AiChatAuthorInfo, role: SpaceMemberRole): SpaceMemberInfo {
     this.requireAdmin(caller);
@@ -198,21 +227,25 @@ export class SpaceModel {
     } else if (info.kind === "personal" && info.owner?.id !== profile.id) {
       throw new Error("The owner of a personal space is its only admin.");
     }
-    let added = this.storage.members.get(profile.id)?.added ?? new Date();
-    let member: SpaceMemberInfo = { profile, role, added };
+    let existing = this.storage.members.get(profile.id);
+    let member: SpaceMemberInfo = { profile, role, added: existing?.added ?? new Date() };
     this.storage.members.put(member);
+    if (existing && workspaceRoleOf(existing.role) === "build" && workspaceRoleOf(role) === "use") {
+      this.#revoke(this.storage.leases.byProfile.get(profile.id));
+    }
     return member;
   }
 
   /**
    * Space.removeMember: an admin removes anyone, any other member only themself. Returns
-   * whether `profileId` was a member.
+   * whether `profileId` was a member. Their leases are revoked.
    */
   removeMember(caller: string, profileId: string): boolean {
     if (this.#requireMember(caller) !== "admin" && caller !== profileId) {
       throw new Error("Only an admin of this space can remove other members.");
     }
     this.#keepAnAdmin(profileId);
+    this.#revoke(this.storage.leases.byProfile.get(profileId));
     return this.storage.members.delete(profileId);
   }
 
@@ -258,10 +291,63 @@ export class SpaceModel {
 
   /**
    * Drop workspace `id` from the listing if `ownerId` is who it is listed under. Its slug and
-   * former slugs go with the entry, and are free again.
+   * former slugs go with the entry, and are free again, and every lease on it is revoked.
    */
   detachWorkspace(id: string, ownerId: string): void {
-    if (this.storage.workspaces.get(id)?.owner.id === ownerId) this.storage.workspaces.delete(id);
+    if (this.storage.workspaces.get(id)?.owner.id !== ownerId) return;
+    this.storage.workspaces.delete(id);
+    this.#revoke(this.storage.leases.list({ prefix: `${id}:` }));
+  }
+
+  /**
+   * The role `profileId` holds on workspace `id` as a member of the space, if the space lists
+   * that workspace under owner `ownerId`: "build" for an admin or a "build" member, "use" for a
+   * "use" member. Undefined for anyone who is not a member, and for a workspace the space does
+   * not list or lists under another owner.
+   *
+   * An answer with a role is remembered as a lease, so that the workspace is told when it no
+   * longer holds (see `#revoke`).
+   */
+  workspaceRole(id: string, ownerId: string, profileId: string): CollaboratorRole | undefined {
+    let member = this.roleOf(profileId);
+    let role = member && workspaceRoleOf(member);
+    if (!role || this.storage.workspaces.get(id)?.owner.id !== ownerId) return undefined;
+    this.storage.leases.put({ workspace: id, profile: profileId });
+    return role;
+  }
+
+  /**
+   * Up to `limit` of the queued revocations that are due at `now`, the longest due first: so
+   * one never attempted comes before every one that has failed.
+   */
+  dueRevocations(now: number, limit: number): SpaceRevocation[] {
+    let due: SpaceRevocation[] = [];
+    // The index counts its `limit` in due times, and revocations queued together share one.
+    for (let revocation of this.storage.revocations.byDue.list({ end: now + 1, limit })) {
+      if (due.push(revocation) === limit) break;
+    }
+    return due;
+  }
+
+  /** When the queued revocation to attempt next is due, or undefined if none is queued. */
+  nextRevocationDue(): number | undefined {
+    let [next] = this.storage.revocations.byDue.list({ limit: 1 });
+    return next?.due;
+  }
+
+  /** Takes `revocation` off the queue, once its workspace's Overseer has answered it. */
+  delivered(revocation: SpaceRevocation): void {
+    this.storage.revocations.delete(revocation.seq);
+  }
+
+  /**
+   * Keeps `revocation`, whose attempt at `now` its workspace's Overseer did not answer, for
+   * another after a wait twice as long as its last, within `REVOCATION_RETRY_MS`.
+   */
+  deferred(revocation: SpaceRevocation, now: number): void {
+    let { first, longest } = REVOCATION_RETRY_MS;
+    let retryMs = Math.min(longest, revocation.retryMs * 2 || first);
+    this.storage.revocations.put({ ...revocation, due: now + retryMs, retryMs });
   }
 
   /** Space.listWorkspaces: any member, newest first. */
@@ -335,6 +421,25 @@ export class SpaceModel {
     return former && { workspace: listed(former), canonical: false };
   }
 
+  // Takes `leases` back: each leaves the leases and joins the queue of revocations, for its
+  // workspace's Overseer to end whatever session it gave the role to. A lease given out again
+  // before that is delivered is a new lease, and the revocation still goes out.
+  #revoke(leases: Iterable<SpaceLease>): void {
+    // Collected before any write, which would end a live listing.
+    let revoked = [...leases];
+    for (let lease of revoked) {
+      this.storage.leases.deleteRecord(lease);
+      this.#queue(lease);
+    }
+  }
+
+  // Queues a revocation of `lease`, due at once.
+  #queue({ workspace, profile }: SpaceLease): void {
+    let seq = this.storage.nextRevocation.get();
+    this.storage.nextRevocation.put(seq + 1);
+    this.storage.revocations.put({ seq, workspace, profile, due: 0, retryMs: 0 });
+  }
+
   #requireMember(caller: string): SpaceMemberRole {
     let role = this.roleOf(caller);
     if (!role) throw noSuchSpace();
@@ -401,13 +506,16 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
     let profile = await this.ctx.exports.UserDurableObject.getByName(username).whoamiIfExists();
     if (!profile) return null;
     let member = this.#model.setMemberRole(caller, profile, role);
+    await this.#deliverRevocations();
     await this.#mirror(profile.id);
     return member;
   }
 
   /** Space.removeMember, as `caller`. */
   async removeMember(caller: string, profileId: string): Promise<void> {
-    if (this.#model.removeMember(caller, profileId)) await this.#mirror(profileId);
+    let removed = this.#model.removeMember(caller, profileId);
+    await this.#deliverRevocations();
+    if (removed) await this.#mirror(profileId);
   }
 
   /** Space.listWorkspaces, as `caller`. */
@@ -437,6 +545,50 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   /** `SpaceModel.detachWorkspace`. Called only by the User DO of `ownerId`, as above. */
   async detachWorkspace(id: string, ownerId: string): Promise<void> {
     this.#model.detachWorkspace(id, ownerId);
+    await this.#deliverRevocations();
+  }
+
+  /**
+   * `SpaceModel.workspaceRole`. Called only by the User DO of `ownerId`, as above, for a
+   * workspace its record points at this space, on behalf of that workspace's Overseer.
+   */
+  async workspaceRole(id: string, ownerId: string, profileId: string)
+      : Promise<CollaboratorRole | null> {
+    return this.#model.workspaceRole(id, ownerId, profileId) ?? null;
+  }
+
+  /**
+   * Delivers the queued revocations that are due, so many in a run: tells each one's workspace
+   * that the profile no longer holds a role through this space
+   * (`OverseerDurableObject.revokeSpaceAccess`), and takes it off the queue only once that call
+   * has returned. One whose call fails is kept for a later run (`SpaceModel.deferred`), which
+   * holds up no other. While any remain the alarm is set again, for when the next is due.
+   */
+  async alarm(): Promise<void> {
+    let overseers = this.ctx.exports.OverseerDurableObject;
+    let due = this.#model.dueRevocations(Date.now(), REVOCATION_BATCH);
+    await Promise.all(due.map(async revocation => {
+      try {
+        await overseers.get(overseers.idFromString(revocation.workspace))
+            .revokeSpaceAccess(revocation.profile);
+        this.#model.delivered(revocation);
+      } catch (error) {
+        this.#model.deferred(revocation, Date.now());
+        logger.warn("failed to deliver a space revocation to its workspace", {
+          event: "space.revocation.deliver.failed", gadgetId: revocation.workspace,
+          durableObjectId: this.ctx.id.toString(), error,
+        });
+      }
+    }));
+    await this.#deliverRevocations();
+  }
+
+  // Sets the alarm for when the next queued revocation is due, which for one just queued is
+  // now. Called in the same turn as the change that may have queued one, so that the two are
+  // stored together.
+  async #deliverRevocations(): Promise<void> {
+    let due = this.#model.nextRevocationDue();
+    if (due !== undefined) await this.ctx.storage.setAlarm(Math.max(due, Date.now()));
   }
 
   // Bring `profileId`'s mirror of this space in line with their membership as it stands now.
