@@ -2452,14 +2452,13 @@ export function computeChatEpochChanges(
   return { epochChange: composeEpochChanges(batches, seed), rowsThrough };
 }
 
-// The agent that last spoke in the chat: the author of the most recent agent message, or agent
-// error or stop. A steer was addressed to a running agent, so it never means the chat went on
-// without one.
+// The agent that last spoke in the chat: the author of the most recent agent message or agent error.
+// A steer was addressed to a running agent, so it never means the chat went on without one.
 function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
 
-    if (msg.type === "error" || msg.type === "agentStopped") {
+    if (msg.type === "error") {
       if (msg.author.type === "agent") {
         return msg.author;
       }
@@ -3654,9 +3653,9 @@ function ChatInterface({
       }
 
       // The turn-flush "changes" message covers every row a successful edit appended, and an
-      // error or stop ends the step -- either way this step's previews are over (ordinarily
+      // error message ends the step -- either way this step's previews are over (ordinarily
       // each previewed edit's own row already resolved it; see WorkpieceCodeInterface).
-      if (msg.type === "changes" || msg.type === "error" || msg.type === "agentStopped") {
+      if (msg.type === "changes" || msg.type === "error") {
         resetEditPreviews(msg.chatId);
       }
 
@@ -3666,7 +3665,7 @@ function ChatInterface({
           clearProvisionalTextState(provisional);
         } else if (msg.type === "changes") {
           clearProvisionalCodeState(provisional);
-        } else if (msg.type === "error" || msg.type === "agentStopped") {
+        } else if (msg.type === "error") {
           clearProvisionalTextState(provisional);
           clearProvisionalCodeState(provisional);
         }
@@ -4647,7 +4646,7 @@ function ChatInterface({
     });
   };
 
-  // Handle retrying the agent after an error or stop
+  // Handle retrying the agent after an error
   const handleRetry = async () => {
     if (
       selectedChatId === null ||
@@ -4667,21 +4666,6 @@ function ChatInterface({
       });
     }
   };
-
-  // Ends the chat's last error or stop row.
-  const retryButton = (
-    <Tooltip content="Retry the last action." asChild>
-      <button
-        type="button"
-        onClick={() => handleRetry()}
-        disabled={selectedModel === null}
-        className="flex flex-shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 text-[13px] leading-4 font-medium text-kumo-default transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default-hover focus-visible:text-kumo-default-hover focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        <ArrowsClockwise size={12} weight="bold" />
-        Retry
-      </button>
-    </Tooltip>
-  );
 
   const handleCopyMessage = useCallback(async (message: string) => {
     const ok = await copyToClipboard(message);
@@ -6265,31 +6249,42 @@ function ChatInterface({
                             return (
                               <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
                                 <div className="flex w-full items-center gap-2 px-1.5 py-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleErrorExpansion(key)}
-                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
-                                    aria-expanded={expanded}
-                                  >
+                                  {msg.code === "stopped" ? (
                                     <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
                                       <span className="flex min-w-0 flex-1 items-center gap-2">
-                                        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-danger" aria-hidden="true">
-                                          <WarningCircle size={16} weight="fill" />
+                                        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-inactive" aria-hidden="true">
+                                          <StopCircle size={16} weight="fill" />
                                         </span>
-                                        <span className="flex min-w-0 flex-1 items-center gap-1">
-                                          <span className="min-w-0 truncate">
-                                            <span className="font-medium text-kumo-danger">Error: </span>
-                                            <span className="text-kumo-subtle">{msg.message}</span>
-                                          </span>
-                                          <CaretRight
-                                            size={13}
-                                            weight="bold"
-                                            className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${expanded ? "rotate-90" : ""}`}
-                                          />
-                                        </span>
+                                        <span className="min-w-0 truncate">Stopped</span>
                                       </span>
                                     </Tooltip>
-                                  </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleErrorExpansion(key)}
+                                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
+                                      aria-expanded={expanded}
+                                    >
+                                      <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
+                                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                                          <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-danger" aria-hidden="true">
+                                            <WarningCircle size={16} weight="fill" />
+                                          </span>
+                                          <span className="flex min-w-0 flex-1 items-center gap-1">
+                                            <span className="min-w-0 truncate">
+                                              <span className="font-medium text-kumo-danger">Error: </span>
+                                              <span className="text-kumo-subtle">{msg.message}</span>
+                                            </span>
+                                            <CaretRight
+                                              size={13}
+                                              weight="bold"
+                                              className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${expanded ? "rotate-90" : ""}`}
+                                            />
+                                          </span>
+                                        </span>
+                                      </Tooltip>
+                                    </button>
+                                  )}
                                   {isLast && msg.code === "usage_limit" && (
                                     <Tooltip content="Add credits to continue." asChild>
                                       <button
@@ -6302,7 +6297,19 @@ function ChatInterface({
                                       </button>
                                     </Tooltip>
                                   )}
-                                  {isLast && msg.code !== "usage_limit" && retryButton}
+                                  {isLast && msg.code !== "usage_limit" && (
+                                    <Tooltip content="Retry the last action." asChild>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRetry()}
+                                        disabled={selectedModel === null}
+                                        className="flex flex-shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 text-[13px] leading-4 font-medium text-kumo-default transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default-hover focus-visible:text-kumo-default-hover focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                                      >
+                                        <ArrowsClockwise size={12} weight="bold" />
+                                        Retry
+                                      </button>
+                                    </Tooltip>
+                                  )}
                                 </div>
                                 {expanded && (
                                   <div className="ml-8 mt-1">
@@ -6314,22 +6321,6 @@ function ChatInterface({
                               </div>
                             );
                           })()}
-
-                        {msg.type === "agentStopped" && (
-                          <div className="max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-                            <div className="flex w-full items-center gap-2 px-1.5 py-1">
-                              <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
-                                <span className="flex min-w-0 flex-1 items-center gap-2">
-                                  <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-inactive" aria-hidden="true">
-                                    <StopCircle size={16} weight="fill" />
-                                  </span>
-                                  <span className="min-w-0 truncate">Stopped</span>
-                                </span>
-                              </Tooltip>
-                              {msg.sequence === lastMessageSequence && !isAgentActive && retryButton}
-                            </div>
-                          </div>
-                        )}
 
                         {msg.type === "agentCallback" && (
                           <div className="max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">

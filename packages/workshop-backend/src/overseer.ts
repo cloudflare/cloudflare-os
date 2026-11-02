@@ -6887,12 +6887,8 @@ class OverseerImpl implements AgentHooks {
     let messagesInSameTurn = nextUserMessageIndex === -1
       ? messagesAfterPrompt
       : messagesAfterPrompt.slice(0, nextUserMessageIndex);
-    // Answer with the turn's last agent message, agent error, or stop.
+    // Prefer the final agent message or terminal agent error in this turn.
     for (let message of messagesInSameTurn.toReversed()) {
-      if (message.type === "agentStopped") {
-        this.deliverExternalMessageResponse(response, "The user stopped the agent.");
-        return;
-      }
       if (
         (message.type === "error" ||
           (message.type === "message" && message.author.type === "agent")) &&
@@ -7299,8 +7295,6 @@ class OverseerImpl implements AgentHooks {
     let finished = false;
     // Why the turn ended early, posted in the `finally`.
     let failure: {message: string, code?: string} | undefined;
-    // Whether the user stopped the turn, which the `finally` marks in the chat.
-    let stopped = false;
     // The turn's last model request, kept warm while the chat is viewed (see ChatCacheWarmer).
     let lastRequest: CachedRequest | undefined;
     let startedAt = Date.now();
@@ -7385,13 +7379,13 @@ class OverseerImpl implements AgentHooks {
     } catch (err: unknown) {
       if (!owns()) return;
       // The user stopped the turn (see cancelAgent): it ended as asked, so it is not reported or
-      // logged as a failure.
+      // logged as a failure, and the chat marks it as stopped rather than failed.
       if (liveChat.cancelController.signal.aborted) {
         turnLogger.debug("agent run finished", {
           event: "agent.run.finished", outcome: "stopped",
           durationMs: Date.now() - startedAt,
         });
-        stopped = true;
+        failure = {message: "The user stopped the agent.", code: "stopped"};
         return;
       }
       // A failed model request surfaces as AgentTurnError (pi reports provider failures as data;
@@ -7444,11 +7438,9 @@ class OverseerImpl implements AgentHooks {
         await this.reconcilePendingGadgets(chatId);
         if (owns()) {
           // Posted past the turn's last await, so a steer sent as the turn winds down still lands
-          // before the error or stop, which must stay last for Retry to show.
+          // before the error, which must stay last for Retry to show.
           if (failure) {
             this.postAgentErrorMessage(chatId, aiModel.profile, failure.message, failure.code);
-          } else if (stopped) {
-            this.addChatMessages(chatId, aiModel.profile, [{type: "agentStopped"}]);
           }
 
           // Note: We no longer emit a stream "clear" event here. The client performs a full clear of

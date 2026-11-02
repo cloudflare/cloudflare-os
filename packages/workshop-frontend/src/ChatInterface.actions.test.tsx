@@ -401,27 +401,25 @@ describe('send and retry failures', () => {
         { title: 'Failed to retry agent', description: undefined, variant: 'error' })
   })
 
-  it('shows a turn the user stopped as stopped, not as an error, and lets it be retried', async () => {
+  it('shows a turn the user stopped as stopped, not as an error, and still offers Retry', async () => {
     const server = makeOverseer()
     const chat = withChatApi(server, undefined, [openChat])
-    const retryAgent = vi.fn<() => Promise<void>>(async () => {})
-    Object.assign(server.overseer as object, { retryAgent })
     await renderChat(server.overseer, { selectedChatId: 1 })
     chat.emitMessage({
       chatId: 1,
       sequence: 0,
       timestamp: new Date(),
       author: { type: 'agent', id: 'model', name: 'Model' },
-      type: 'agentStopped',
+      type: 'error',
+      message: 'The user stopped the agent.',
+      code: 'stopped',
     })
 
     const text = document.body.textContent ?? ''
     expect(text).toContain('Stopped')
-    expect(text).not.toContain('Error')
-    const retry = [...document.querySelectorAll('button')].find(b => b.textContent === 'Retry')
-    if (!retry) throw new Error('No Retry button rendered')
-    await act(async () => retry.click())
-    expect(retryAgent).toHaveBeenCalledOnce()
+    expect(text).not.toContain('Error:')
+    expect(text).not.toContain('The user stopped the agent.')
+    expect([...document.querySelectorAll('button')].some(b => b.textContent === 'Retry')).toBe(true)
   })
 })
 

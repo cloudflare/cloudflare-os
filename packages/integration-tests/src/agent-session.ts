@@ -127,8 +127,8 @@ type EndedOutcome = Extract<AgentTurnOutcome, { status: "error" | "cancelled" }>
 
 // How a turn that ended on `message` came out, if it ended on an error or a stop.
 const endedOutcome = (message: AiChatMessage): EndedOutcome | undefined =>
-  message.type === "agentStopped" ? { status: "cancelled", message: "The agent was stopped" }
-  : message.type !== "error" ? undefined
+  message.type !== "error" ? undefined
+  : message.code === "stopped" ? { status: "cancelled", message: "The agent was stopped" }
   : message.code === undefined ? { status: "error", message: message.message }
   : { status: "error", message: message.message, code: message.code };
 

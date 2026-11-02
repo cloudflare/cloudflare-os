@@ -2852,7 +2852,6 @@ async function runAgentPass(
       case "action":
       case "useGadget":
       case "error":
-      case "agentStopped":
         // No need to tell the agent about this.
         break;
 

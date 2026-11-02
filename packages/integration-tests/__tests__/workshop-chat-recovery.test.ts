@@ -179,9 +179,8 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
   await waitForIdleChat(ws, chatId);
 
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
-  // Stopping is not a failure: the turn ends on a stop, not an error.
-  expect(history.filter(message => message.type === "error")).toEqual([]);
-  expect(history.at(-1)?.type).toBe("agentStopped");
+  // Stopping is not a failure, so the turn ends marked as stopped.
+  expect(history.at(-1)).toMatchObject({ type: "error", code: "stopped" });
   const gadgetId = history.flatMap(message =>
     message.type === "changes" ? message.createdGadgets ?? [] : [])[0]?.gadgetId;
   if (gadgetId === undefined) throw new Error("The stopped turn recorded no created gadget");
