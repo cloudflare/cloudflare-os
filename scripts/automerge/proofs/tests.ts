@@ -185,9 +185,9 @@ export function runBounded(
 }
 
 /** Where the Stryker workspace is installed, inside the package under test. */
-const RUNNER_DIR = ".automerge-stryker";
+export const RUNNER_DIR = ".automerge-stryker";
 
-interface Runner {
+export interface Runner {
   stryker: string;
   plugin: string;
 }
@@ -196,7 +196,7 @@ interface Runner {
  * Installs ./stryker inside `packageDir`, so that the vitest runner's `vitest` import resolves
  * upward to the package's own vitest.
  */
-async function installRunner(packageDir: string, deadline: number): Promise<Runner> {
+export async function installRunner(packageDir: string, deadline: number): Promise<Runner> {
   const dir = join(packageDir, RUNNER_DIR);
   rmSync(dir, { recursive: true, force: true });
   cpSync(join(dirname(fileURLToPath(import.meta.url)), "stryker"), dir, { recursive: true });
