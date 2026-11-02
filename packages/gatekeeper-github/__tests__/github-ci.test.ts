@@ -90,12 +90,10 @@ describe("commit statuses and the rollup", () => {
   });
 
   it("is active if any entry is, else blocked if any is, else done; undefined with no entries", () => {
-    expect(rollupPhaseOf("failure", ["done", "blocked", "active"])).toBe("active");
-    expect(rollupPhaseOf("pending", ["done", "blocked"])).toBe("blocked");
-    expect(rollupPhaseOf("success", ["done"])).toBe("done");
-    expect(rollupPhaseOf("none", [])).toBeUndefined();
-    // A required status that has not reported yet keeps the commit active.
-    expect(rollupPhaseOf("expected", ["done"])).toBe("active");
+    expect(rollupPhaseOf(["done", "blocked", "active"])).toBe("active");
+    expect(rollupPhaseOf(["done", "blocked"])).toBe("blocked");
+    expect(rollupPhaseOf(["done"])).toBe("done");
+    expect(rollupPhaseOf([])).toBeUndefined();
   });
 
   it("counts every entry by state from GitHub's totals", () => {

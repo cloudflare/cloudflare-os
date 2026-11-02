@@ -150,12 +150,12 @@ export function leftOutPhases(
 
 /**
  * A commit's phase from its entries' phases, or undefined when nothing has reported (the
- * absence policy decides then). An `expected` rollup waits on a required status: `active`.
+ * absence policy decides then). An `expected` rollup whose entries are all done still waits on a
+ * required status; the caller decides from the time since the commit became a head whether that
+ * is `active` or `blocked`.
  */
-export function rollupPhaseOf(
-  state: GitHubCommitChecks["state"], phases: readonly GitHubCiPhase[],
-): GitHubCiRollupPhase | undefined {
-  if (state === "expected" || phases.includes("active")) return "active";
+export function rollupPhaseOf(phases: readonly GitHubCiPhase[]): GitHubCiRollupPhase | undefined {
+  if (phases.includes("active")) return "active";
   if (phases.includes("blocked")) return "blocked";
   return phases.length > 0 ? "done" : undefined;
 }

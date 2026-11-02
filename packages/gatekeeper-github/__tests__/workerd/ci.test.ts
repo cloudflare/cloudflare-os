@@ -678,6 +678,28 @@ describe("pull request CI", () => {
     expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ phase: "active" });
   });
 
+  it("bounds GitHub's own expected verdict the same way, on a pull request and on the repository", async () => {
+    // GitHub reads a required status that has not reported as EXPECTED, including one whose
+    // requirement this account cannot see (so nothing is named missing).
+    const github = pullScenario();
+    github.requiredByRules = ["build"];
+    github.requiredByProtection = [];
+    Object.assign(github.rollups.get(HEAD)!, { state: "EXPECTED", committedAt: Date.now() - 60 * MINUTE });
+    const pull = await gatekeeper(7);
+    const repo = await gatekeeper();
+
+    expect(await pull.read([{ method: "getChecks" }]))
+      .toMatchObject({ state: "expected", phase: "blocked", missingRequired: [] });
+    expect(await repo.read([{ method: "getChecks", args: [HEAD] }])).toMatchObject({ state: "expected", phase: "blocked" });
+    github.pushes = [{ after: HEAD, timestamp: new Date(Date.now() - 2 * MINUTE).toISOString() }];
+    expect(await pull.read([{ method: "getChecks" }])).toMatchObject({ state: "expected", phase: "active" });
+    expect(await repo.read([{ method: "getChecks", args: ["main"] }])).toMatchObject({ state: "expected", phase: "active" });
+    github.pushes = [];
+    github.rollups.get(HEAD)!.nodes.push(checkRunNode("e2e", "IN_PROGRESS", null));
+    expect(await pull.read([{ method: "getChecks" }])).toMatchObject({ phase: "active" });
+    expect(await repo.read([{ method: "getChecks", args: [HEAD] }])).toMatchObject({ phase: "active" });
+  });
+
   it("reads every page of the rollup", async () => {
     const github = pullScenario();
     github.rollups.get(HEAD)!.pageSize = 1;

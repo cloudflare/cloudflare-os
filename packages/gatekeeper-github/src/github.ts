@@ -5526,10 +5526,23 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   /**
+   * The phase of a commit whose only unfinished CI is a required check that has not reported:
+   * `active` within CI's start window of the commit becoming a head, then `blocked`, since by then
+   * it is not coming without someone acting (a path-filtered workflow, an app not installed).
+   */
+  async #awaitingRequiredPhase(sha: GitOid, branch: string | undefined, committedAt: number | undefined)
+      : Promise<"active" | "blocked"> {
+    const now = Date.now();
+    const since = await this.#becameHeadAt(sha, branch, committedAt, now);
+    return since !== undefined && now - since < CI_START_WINDOW_MS ? "active" : "blocked";
+  }
+
+  /**
    * CI on a commit (`ci`): the rollup and its phase, or for a commit nothing has reported on, the
-   * absence policy's. `branch` is a branch the commit is or was the head of, whose push record
-   * GitHub may have. `truncated` says whether entries were left out of `ci.checks`; `committedAt`
-   * is the commit's committer date. Undefined when GitHub does not have the commit.
+   * absence policy's; GitHub's `expected` verdict with nothing else unfinished is bounded by
+   * `#awaitingRequiredPhase`. `branch` is a branch the commit is or was the head of, whose push
+   * record GitHub may have. `truncated` says whether entries were left out of `ci.checks`;
+   * `committedAt` is the commit's committer date. Undefined when GitHub does not have the commit.
    */
   async #commitChecks(sha: GitOid, options: { branch?: string; pullNumber?: number }): Promise<{
     ci: Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[] };
@@ -5540,7 +5553,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     if (rollup === undefined) return undefined;
     const phases = rollup.entries.map(entry => entry.phase);
     if (rollup.truncated) phases.push(...leftOutPhases(rollup.state, rollup.counted ? rollup.counts : undefined));
-    let phase = rollupPhaseOf(rollup.state, phases);
+    let phase = rollupPhaseOf(phases);
     if (phase === undefined) {
       const now = Date.now();
       const pushQueued = this.isCommitPendingPush(sha);
@@ -5551,6 +5564,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           ? undefined : await this.#becameHeadAt(sha, options.branch, rollup.committedAt, now),
         now,
       });
+    }
+    if (rollup.state === "expected" && phase === "done") {
+      phase = await this.#awaitingRequiredPhase(sha, options.branch, rollup.committedAt);
     }
     return {
       ci: { commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries },
@@ -5673,17 +5689,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     // can be named missing.
     const missingRequired = truncated ? [] : required.filter(name => !reported.has(name));
     // A required check that has not reported is still expected, as GitHub's own rollup says of a
-    // required commit status, so it keeps the commit active; a failure stays a failure. Once the
-    // rest is done and CI's start window has passed since the commit became a head, it is not
-    // coming without someone acting (a path-filtered workflow, an app not installed), so polling
-    // stops: `blocked`.
+    // required commit status, with the same bound on how long that keeps the commit active; a
+    // failure stays a failure.
     const expected = missingRequired.length > 0 && ci.state !== "failure";
-    let phase = ci.phase;
-    if (expected && phase === "done") {
-      const now = Date.now();
-      const since = await this.#becameHeadAt(sha, branch, read.committedAt, now);
-      phase = since !== undefined && now - since < CI_START_WINDOW_MS ? "active" : "blocked";
-    }
+    const phase = expected && ci.phase === "done"
+      ? await this.#awaitingRequiredPhase(sha, branch, read.committedAt) : ci.phase;
     return {
       ...ci,
       state: expected ? "expected" : ci.state,

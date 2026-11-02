@@ -49,9 +49,10 @@ for approval, and every read is logged as an observation.
   committer date. A pull request read also marks which entries the base branch requires
   (`required`) and names required checks that have not reported (`missingRequired`, best-effort
   from the branch's rulesets and classic protection); while any is missing, the state reads
-  `expected` (unless something failed) and a `done` phase reads `active` for those same 10
-  minutes, then `blocked`, since a required check that has not reported by then needs someone to
-  act (a path-filtered workflow, or an app that is not installed).
+  `expected` (unless something failed). An `expected` state, GitHub's own or from
+  `missingRequired`, with nothing else unfinished reads `active` for those same 10 minutes, then
+  `blocked`, since a required check that has not reported by then needs someone to act (a
+  path-filtered workflow, or an app that is not installed).
 - **Pull request scope.** A pull request binding reads CI only on the pull request's head (counting
   queued pushes) and the first 250 commits its listing shows; check runs and workflow runs on any
   other commit are refused. `GitHubPullRequestDetails.mergeState` carries GitHub's

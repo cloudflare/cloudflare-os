@@ -457,7 +457,9 @@ export type GitHubCommitChecks = {
   commitId: string;
   /**
    * GitHub's combined verdict: `pending` while anything is unfinished, `expected` while a
-   * required status has not reported, `none` when nothing has reported.
+   * required status has not reported, `none` when nothing has reported. With nothing else
+   * unfinished, `expected` reads `phase: "active"` for 10 minutes after the commit became a head,
+   * then `"blocked"`: a required status that has not reported by then needs someone to act.
    */
   state: "success" | "failure" | "pending" | "expected" | "none";
   phase: GitHubCiRollupPhase;
