@@ -1,4 +1,6 @@
-// fast-check options shared by the property-based suites.
+// fast-check options shared by the property-based suites: integration-tests' under Node, and
+// workshop-backend's inside workerd, whose vitest config forwards `FAST_CHECK_SEED` as a binding
+// that `nodejs_compat` copies into `process.env`.
 
 /**
  * `FAST_CHECK_SEED` pins every property's seed, so a run generates the same cases each time; CI
@@ -15,11 +17,12 @@ function seedFromEnv(): { seed?: number } {
 }
 
 /**
- * Options for every `fc.assert()` over the Workshop.
+ * Options for every property's `fc.assert()`.
  *
- * Each run is real RPC, and so is every shrink attempt. The time limit keeps a failing property's
- * shrink inside the test timeout; it reports the smallest counterexample found by then. An
- * interrupt before any failure still fails, rather than silently passing on fewer runs.
+ * A run over real RPC costs hundreds of milliseconds, and so does every shrink attempt. The time
+ * limit keeps such a property's shrink inside its test timeout; it reports the smallest
+ * counterexample found by then. An interrupt before any failure still fails, rather than silently
+ * passing on fewer runs.
  */
 export const PROPERTY_RUN_OPTIONS = {
   interruptAfterTimeLimit: 90_000,
