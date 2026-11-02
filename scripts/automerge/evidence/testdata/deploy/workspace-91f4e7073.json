@@ -1,0 +1,400 @@
+[
+ {
+  "dir": "bundled-blueprints",
+  "name": "@gadgets/bundled-blueprints",
+  "workspaceDeps": [
+   "@gadgets/scripts"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "configurator-ui",
+  "name": "@gadgets/configurator-ui",
+  "workspaceDeps": [
+   "@gadgets/error-reporting",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "error-reporting",
+  "name": "@gadgets/error-reporting",
+  "workspaceDeps": [
+   "@gadgets/scripts"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-cloudflare",
+  "name": "@gadgets/cloudflare-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-confluence",
+  "name": "@gadgets/confluence-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-context",
+  "name": "@gadgets/gatekeeper-context",
+  "workspaceDeps": [
+   "@gadgets/error-reporting",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/typed-storage",
+   "@gadgets/ui",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-email",
+  "name": "@gadgets/email-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-github",
+  "name": "@gadgets/github-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-gitlab",
+  "name": "@gadgets/gitlab-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-google",
+  "name": "@gadgets/google-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-homeassistant",
+  "name": "@gadgets/homeassistant-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-kit",
+  "name": "@gadgets/gatekeeper-kit",
+  "workspaceDeps": [
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-linear",
+  "name": "@gadgets/linear-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-mcp",
+  "name": "@gadgets/mcp-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/mcp-shared",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-mcp-portal",
+  "name": "@gadgets/mcp-portal-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/mcp-shared",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-microsoft",
+  "name": "@gadgets/microsoft-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-notion",
+  "name": "@gadgets/notion-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-scheduler",
+  "name": "@gadgets/gatekeeper-scheduler",
+  "workspaceDeps": [
+   "@gadgets/error-reporting",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-slack",
+  "name": "@gadgets/slack-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-spotify",
+  "name": "@gadgets/spotify-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-supabase",
+  "name": "@gadgets/supabase-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-websearch",
+  "name": "@gadgets/gatekeeper-websearch",
+  "workspaceDeps": [
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-x",
+  "name": "@gadgets/x-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "gatekeeper-zoominfo",
+  "name": "@gadgets/zoominfo-gatekeeper",
+  "workspaceDeps": [
+   "@gadgets/configurator-ui",
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "integration-tests",
+  "name": "@gadgets/integration-tests",
+  "workspaceDeps": [
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "mcp-shared",
+  "name": "@gadgets/mcp-shared",
+  "workspaceDeps": [
+   "@gadgets/gatekeeper-kit",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "observability",
+  "name": "@gadgets/observability",
+  "workspaceDeps": [
+   "@gadgets/error-reporting",
+   "@gadgets/scripts"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "router",
+  "name": "@gadgets/router",
+  "workspaceDeps": [
+   "@gadgets/scripts"
+  ],
+  "deployable": true,
+  "assetPackages": [
+   "workshop-frontend"
+  ]
+ },
+ {
+  "dir": "typed-storage",
+  "name": "@gadgets/typed-storage",
+  "workspaceDeps": [
+   "@gadgets/scripts"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "ui",
+  "name": "@gadgets/ui",
+  "workspaceDeps": [
+   "@gadgets/scripts"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "workshop-backend",
+  "name": "@gadgets/workshop-backend",
+  "workspaceDeps": [
+   "@gadgets/bundled-blueprints",
+   "@gadgets/error-reporting",
+   "@gadgets/observability",
+   "@gadgets/scripts",
+   "@gadgets/typed-storage",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": true,
+  "assetPackages": []
+ },
+ {
+  "dir": "workshop-evals",
+  "name": "@gadgets/workshop-evals",
+  "workspaceDeps": [
+   "@gadgets/integration-tests",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "workshop-frontend",
+  "name": "@gadgets/workshop-frontend",
+  "workspaceDeps": [
+   "@gadgets/error-reporting",
+   "@gadgets/scripts",
+   "@gadgets/workshop-shared"
+  ],
+  "deployable": false,
+  "assetPackages": []
+ },
+ {
+  "dir": "workshop-shared",
+  "name": "@gadgets/workshop-shared",
+  "workspaceDeps": [],
+  "deployable": false,
+  "assetPackages": []
+ }
+]

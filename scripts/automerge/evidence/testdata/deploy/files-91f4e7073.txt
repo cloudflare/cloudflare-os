@@ -1,0 +1,10 @@
+docs/google-chat-capabilities.md
+packages/gatekeeper-google/__tests__/chat-api.test.ts
+packages/gatekeeper-google/__tests__/chat-state.test.ts
+packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+packages/gatekeeper-google/src/chat-api.ts
+packages/gatekeeper-google/src/chat-cards.ts
+packages/gatekeeper-google/src/chat-state.ts
+packages/gatekeeper-google/src/chat-types.d.ts
+packages/gatekeeper-google/src/chat.ts

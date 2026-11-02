@@ -1,0 +1,5 @@
+packages/workshop-backend/__tests__/agent-compaction.test.ts
+packages/workshop-backend/__tests__/ai-models.test.ts
+packages/workshop-backend/package.json
+packages/workshop-shared/src/api.ts
+pnpm-lock.yaml
