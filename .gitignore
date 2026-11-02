@@ -45,6 +45,7 @@ stryker.automerge.json
 vitest.automerge.config.ts
 .stryker-tmp/
 reports/automerge-mutation.json
+.automerge-stryker/
 
 # macOS
 .DS_Store
