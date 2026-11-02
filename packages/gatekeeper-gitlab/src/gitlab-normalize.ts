@@ -11,6 +11,7 @@ import type {
   GitLabBranchRef,
   GitLabBranchSummary,
   GitLabCiPhase,
+  GitLabCommitCi,
   GitLabCommitDetails,
   GitLabCommitIdentity,
   GitLabCommitSummary,
@@ -519,7 +520,9 @@ export function normalizePipelineDetails(instanceUrl: string, response: GitLabPi
  * A job or trigger job as a `listJobs()` row. A trigger job's downstream pipeline is openable only
  * when it ran in the bound project (`boundProjectId`): a child pipeline, not a multi-project one.
  */
-export function normalizeJobSummary(response: GitLabJobResponse, kind: "job" | "trigger", boundProjectId: number): GitLabJobSummary {
+export function normalizeJobSummary(
+  response: GitLabJobResponse, ...[kind, boundProjectId]: ["job"] | ["trigger", number]
+): GitLabJobSummary {
   const status = ciStatus(response.status);
   const downstream = kind === "trigger" ? response.downstream_pipeline : null;
   return {
@@ -543,9 +546,9 @@ export function normalizeJobSummary(response: GitLabJobResponse, kind: "job" | "
   };
 }
 
-export function normalizeJobDetails(response: GitLabJobResponse, boundProjectId: number): GitLabJobDetails {
+export function normalizeJobDetails(response: GitLabJobResponse): GitLabJobDetails {
   return {
-    ...normalizeJobSummary(response, "job", boundProjectId),
+    ...normalizeJobSummary(response, "job"),
     pipelineId: String(response.pipeline.id),
     commitId: response.commit?.id ?? response.pipeline.sha,
     ref: response.ref,
@@ -595,8 +598,10 @@ export async function pipelineIsForHead(
   return (await parentsOf(pipeline.sha))?.includes(headSha) ?? false;
 }
 
-/** How long after a commit became a head CI is still expected to report on it. */
-export const CI_START_WINDOW_MS = 10 * 60 * 1000;
+/** CI on a commit no pipeline can exist for yet, such as one only a queued push will deliver. */
+export function queuedCommitCi(commitId: string): GitLabCommitCi {
+  return { commitId, phase: "notStarted", pipeline: null };
+}
 
 /**
  * Where a project's CI configuration is, from `ci_config_path`: a file in the repository (empty
@@ -666,7 +671,7 @@ const LOG_SECTION = /section_(start|end):\d+:([A-Za-z0-9_.-]+)(?:\[[^\]\r]*\])?\
 export function normalizeGitLabLogLine(line: string): string | null {
   // Section markers precede their heading's `\r`, so they are read before overwriting.
   const text = stripAnsi(line);
-  const markers = [...text.matchAll(LOG_SECTION)];
+  const markers = text.includes("section_") ? [...text.matchAll(LOG_SECTION)] : [];
   if (markers.length === 0) return applyCarriageReturns(text);
   const start = markers.findLast(marker => marker[1] === "start");
   if (start === undefined) {

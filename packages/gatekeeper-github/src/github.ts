@@ -61,7 +61,6 @@ import {
 import { getBasePath, getBaseUrl, webhookOrigin, type Env } from "./github-env";
 import {
   ACTIONS_APP_SLUG,
-  CI_START_WINDOW_MS,
   MAX_CHECK_ENTRIES,
   MAX_PULL_COMMITS,
   PENDING_DEPLOYMENT_QUERY,
@@ -106,7 +105,10 @@ import {
   parseUnifiedPatch,
   type TreeDiffSource,
 } from "@gadgets/gatekeeper-kit/git-diff";
-import { CiLogCache, CiLogTooLargeError, pageCiLog, readCiLog, type CiLog } from "@gadgets/gatekeeper-kit/ci-log";
+import {
+  CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog, validateCiLogOptions,
+} from "@gadgets/gatekeeper-kit/ci-log";
+import { AppliedPushLog, CI_START_WINDOW_MS } from "@gadgets/gatekeeper-kit/ci-start";
 import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import {
   commitIdsOfSummary,
@@ -633,13 +635,6 @@ const MAX_REPLY_TARGET_HOPS = 50;
 // Cap on the queued-but-not-yet-pushed commits walked when simulating a branch's history
 // (mirrors GitHub's own 250-commit cap on compare listings).
 const MAX_PENDING_CHAIN_COMMITS = 250;
-// When this gatekeeper applied a push of each commit (`ciPushApplied:<sha>` -> epoch ms): the CI
-// absence policy's best "became the head" time. Only CI_START_WINDOW_MS of history matters, so
-// older records are pruned, and the family is capped.
-const APPLIED_PUSH_PREFIX = "ciPushApplied:";
-const MAX_APPLIED_PUSHES = 100;
-/** The log of a job that has not finished: read as no lines yet. */
-const EMPTY_CI_LOG: CiLog = { lines: [], firstLine: 1, totalLines: 0 };
 
 const GITHUB_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GITHUB_LOGO_SVG)}`;
 
@@ -4264,7 +4259,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             api.getBranchHead(action.owner, action.repo, action.branch));
           if (head !== action.newSha) throw this.#pushRefusal(action, head, error);
         }
-        this.#recordAppliedPush(action.newSha);
+        this.#appliedPushLog().record(action.newSha);
         this.#markActionApproved(action);
         this.#clearCaches();
         return;
@@ -5417,29 +5412,16 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   // CI only on the pull request's own commits (#assertPullCommitOf).
 
   #ciLogs?: CiLogCache;
+  #appliedPushes?: AppliedPushLog;
 
   /** Finished job logs, so following up on one (another page, a search) does not refetch it. */
   #ciLogCache(): CiLogCache {
-    return this.#ciLogs ??= new CiLogCache(this.ctx.storage.kv, { prefix: "ciLog:" });
+    return this.#ciLogs ??= new CiLogCache(this.ctx.storage.kv);
   }
 
-  /**
-   * Records when this gatekeeper made `sha` a branch head (see APPLIED_PUSH_PREFIX), pruning
-   * records past the window and capping the family. A retried apply keeps the first record.
-   */
-  #recordAppliedPush(sha: GitOid): void {
-    const kv = this.ctx.storage.kv;
-    const now = Date.now();
-    const key = `${APPLIED_PUSH_PREFIX}${sha}`;
-    const live: [string, number][] = [];
-    for (const [stored, at] of kv.list<number>({ prefix: APPLIED_PUSH_PREFIX })) {
-      if (now - at >= CI_START_WINDOW_MS) kv.delete(stored);
-      else live.push([stored, at]);
-    }
-    if (live.some(([stored]) => stored === key)) return;
-    const excess = Math.max(0, live.length - MAX_APPLIED_PUSHES + 1);
-    for (const [stale] of live.toSorted((a, b) => a[1] - b[1]).slice(0, excess)) kv.delete(stale);
-    kv.put(key, now);
+  /** When this gatekeeper's pushes made each commit a head: the absence policy's best source. */
+  #appliedPushLog(): AppliedPushLog {
+    return this.#appliedPushes ??= new AppliedPushLog(this.ctx.storage.kv);
   }
 
   /**
@@ -5451,7 +5433,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   async #becameHeadAt(
     sha: GitOid, branch: string | undefined, committedAt: number | undefined, now: number,
   ): Promise<number | undefined> {
-    const applied = this.ctx.storage.kv.get<number>(`${APPLIED_PUSH_PREFIX}${sha}`);
+    const applied = this.#appliedPushLog().get(sha);
     if (applied !== undefined) return applied;
     if (branch !== undefined && (committedAt === undefined || now - committedAt >= CI_START_WINDOW_MS)) {
       try {
@@ -5480,7 +5462,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     state: GitHubCommitChecks["state"];
     entries: RollupEntry[];
     counts: Partial<Record<GitHubCheckState, number>>;
-    /** Whether entries past MAX_CHECK_ENTRIES were left unread. */
+    /**
+     * Whether GitHub reported entries `entries` leaves out: past MAX_CHECK_ENTRIES, or ones it
+     * counts but returned as null.
+     */
     truncated: boolean;
     committedAt: number | undefined;
     ciExpected: boolean;
@@ -5529,11 +5514,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       }
       const page = rollup?.contexts.pageInfo;
       if (!page?.hasNextPage || page.endCursor === null || entries.length >= MAX_CHECK_ENTRIES) {
+        const counted = Object.values(first.counts ?? {}).reduce((sum, count) => sum + (count ?? 0), 0);
         return {
           ...first,
           counts: first.counts ?? countStates(entries.map(entry => entry.state)),
           entries,
-          truncated: dropped || page?.hasNextPage === true,
+          truncated: dropped || page?.hasNextPage === true || counted > entries.length,
         };
       }
       after = page.endCursor;
@@ -5543,14 +5529,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * CI on a commit: the rollup and its phase, or for a commit nothing has reported on, the absence
    * policy's. `branch` is a branch the commit is or was the head of, whose push record GitHub may
-   * have. Undefined when GitHub does not have the commit.
+   * have. `truncated` says whether GitHub reported entries `checks` leaves out. Undefined when
+   * GitHub does not have the commit.
    */
   async #commitChecks(sha: GitOid, options: { branch?: string; pullNumber?: number })
-      : Promise<(Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[] }) | undefined> {
+      : Promise<(Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[]; truncated: boolean }) | undefined> {
     const rollup = await this.#fetchRollup(sha, options.pullNumber);
     if (rollup === undefined) return undefined;
-    // Past the entry cap, the unread entries' phases are judged from the counts alone, where a
-    // `waiting` one reads as blocked.
+    // The phases of entries left out are judged from the counts alone, where a `waiting` one reads
+    // as blocked.
     const phases = rollup.entries.map(entry => entry.phase);
     if (rollup.truncated) {
       phases.push(...(Object.keys(rollup.counts) as GitHubCheckState[]).map(state => phaseOf(state)));
@@ -5567,7 +5554,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         now,
       });
     }
-    return { commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries };
+    return {
+      commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries, truncated: rollup.truncated,
+    };
   }
 
   /**
@@ -5582,7 +5571,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const checks = await this.#commitChecks(id,
       { branch: isCommitOid(ref) ? undefined : ref.replace(/^refs\/heads\//, "") });
     if (checks === undefined) throw new Error(`Commit ${id} was not found in ${this.#repoFullName()}.`);
-    return checks;
+    const { truncated: _truncated, ...rest } = checks;
+    return rest;
   }
 
   /**
@@ -5671,18 +5661,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     // Only a commit a queued push will deliver is known not to be on GitHub; any other commit
     // simulation served (an intermediate one of a stacked chain) is asked for, and reads as queued
     // if GitHub does not have it yet.
-    const checks = this.isCommitPendingPush(sha) ? undefined : await this.#commitChecks(sha, {
-      branch: isOwnHead(details) ? details.head.ref : undefined, pullNumber: number,
-    });
-    if (checks === undefined) return { ...queuedCommitChecks(sha), checks: [], missingRequired: [] };
-    const required = await this.#requiredContexts(details.base.ref);
+    const [read, required] = this.isCommitPendingPush(sha) ? [undefined, []] : await Promise.all([
+      this.#commitChecks(sha, { branch: isOwnHead(details) ? details.head.ref : undefined, pullNumber: number }),
+      this.#requiredContexts(details.base.ref),
+    ]);
+    if (read === undefined) return { ...queuedCommitChecks(sha), checks: [], missingRequired: [] };
+    const { truncated, ...checks } = read;
     const requiredNames = new Set(required);
     const reported = new Set(checks.checks.map(entryName));
-    // Past the entry cap a required check may have reported among the unread entries, so none can
-    // be named missing.
-    const reportedCount = Object.values(checks.counts).reduce((sum, count) => sum + (count ?? 0), 0);
-    const allRead = reportedCount <= checks.checks.length;
-    const missingRequired = allRead ? required.filter(name => !reported.has(name)) : [];
+    // A required check may have reported among entries GitHub counted but did not list, so with
+    // any left out none can be named missing.
+    const missingRequired = truncated ? [] : required.filter(name => !reported.has(name));
     // A required check that has not reported is still expected, as GitHub's own rollup says of a
     // required commit status, so it keeps the commit active; a failure stays a failure.
     const expected = missingRequired.length > 0 && checks.state !== "failure";
@@ -5729,14 +5718,16 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   async checkRunDetails(checkRunId: number): Promise<GitHubCheckRunDetails> {
     const { owner, repo } = this.ctx.props;
     const run = await this.#withApi(api => api.getCheckRun(owner, repo, checkRunId));
-    const job = run.app?.slug === ACTIONS_APP_SLUG
-      ? await this.#withApi(api => api.getWorkflowJob(owner, repo, actionsJobIdOf(run)))
-      : undefined;
-    // A waiting job is held by a deployment environment, which only GraphQL describes.
-    const pending = run.status === "waiting"
-      ? (await this.#readApi(api => api.graphql<{ node: { pendingDeploymentRequest?: GqlDeploymentRequest | null } | null }>(
-        PENDING_DEPLOYMENT_QUERY, { id: run.node_id }))).data.node?.pendingDeploymentRequest
-      : undefined;
+    const [job, pending] = await Promise.all([
+      run.app?.slug === ACTIONS_APP_SLUG
+        ? this.#withApi(api => api.getWorkflowJob(owner, repo, actionsJobIdOf(run)))
+        : undefined,
+      // A waiting job is held by a deployment environment, which only GraphQL describes.
+      run.status === "waiting"
+        ? this.#readApi(api => api.graphql<{ node: { pendingDeploymentRequest?: GqlDeploymentRequest | null } | null }>(
+          PENDING_DEPLOYMENT_QUERY, { id: run.node_id })).then(result => result.data.node?.pendingDeploymentRequest)
+        : undefined,
+    ]);
     return checkRunDetailsOf(run, job, pendingDeploymentOf(pending));
   }
 
@@ -5762,8 +5753,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    */
   async readCheckRunLog(checkRunId: number, options: GitHubLogOptions | undefined)
       : Promise<{ name: string; page: GitHubLogPage }> {
-    // Validates the options before anything is fetched.
-    const unfinished = pageCiLog(EMPTY_CI_LOG, options, false);
+    validateCiLogOptions(options);
     const { owner, repo } = this.ctx.props;
     const run = await this.#withApi(api => api.getCheckRun(owner, repo, checkRunId));
     if (run.app?.slug !== ACTIONS_APP_SLUG) {
@@ -5771,15 +5761,13 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       throw new Error("This check run was not reported by GitHub Actions, so it has no log here; " +
         "getDetails() returns its output and detailsUrl.");
     }
-    if (run.status !== "completed") return { name: run.name, page: unfinished };
+    if (run.status !== "completed") return { name: run.name, page: pageCiLog(EMPTY_CI_LOG, options, false) };
     const jobId = actionsJobIdOf(run);
     const cache = this.#ciLogCache();
     const cacheKey = String(jobId);
     const location = await this.#withApi(api => api.getWorkflowJobLogLocation(owner, repo, jobId));
     if (location === null) {
-      const wasCached = cache.get(cacheKey) !== undefined;
-      cache.delete(cacheKey);
-      throw new Error(wasCached
+      throw new Error(cache.delete(cacheKey)
         ? `GitHub has deleted the log of job ${jobId}.`
         : `GitHub has no log for job ${jobId}: it has been deleted, or is not available yet.`);
     }

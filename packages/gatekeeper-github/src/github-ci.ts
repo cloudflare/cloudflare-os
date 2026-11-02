@@ -2,6 +2,7 @@
 // statuses, Actions jobs, workflow runs and job logs to the agent-facing shapes in types.d.ts.
 
 import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci-log";
+import { CI_START_WINDOW_MS } from "@gadgets/gatekeeper-kit/ci-start";
 import type {
   GitHubAnnotation,
   GitHubCheckEntry,
@@ -27,9 +28,6 @@ import { actorFromUser } from "./git-commits";
 import { obsContext } from "./observability.js";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.github.ci", vendorId: "github" });
-
-/** How long after a commit becomes a head CI is still expected to start reporting. */
-export const CI_START_WINDOW_MS = 10 * 60 * 1000;
 
 /** Most rollup entries one `getChecks()` returns; the counts still cover every entry. */
 export const MAX_CHECK_ENTRIES = 1000;

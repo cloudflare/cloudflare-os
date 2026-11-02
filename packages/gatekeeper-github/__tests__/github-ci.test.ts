@@ -3,9 +3,9 @@
 // adapters.
 
 import { readCiLog } from "@gadgets/gatekeeper-kit/ci-log";
+import { CI_START_WINDOW_MS } from "@gadgets/gatekeeper-kit/ci-start";
 import { describe, expect, it } from "vitest";
 import {
-  CI_START_WINDOW_MS,
   absencePhaseOf,
   actionsJobIdOf,
   annotationOf,

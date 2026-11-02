@@ -50,7 +50,6 @@ import {
 import {
   AUTH_SCOPES,
   OAUTH_SCOPES,
-  REPORTER_ACCESS_LEVEL,
   VENDOR_ID,
   getBasePath,
   getBaseUrl,
@@ -730,7 +729,7 @@ export interface GitLabVerifierApi extends GatekeeperUserVerifier {
 @validateRpc()
 export class GitLabVerifier extends WorkerEntrypoint<Env, GitLabVerifierProps>
     implements GitLabVerifierApi {
-  async hasProjectAccess(projectPath: string, minAccessLevel = REPORTER_ACCESS_LEVEL): Promise<boolean> {
+  async hasProjectAccess(projectPath: string, minAccessLevel?: number): Promise<boolean> {
     const { userObjectId } = this.ctx.props;
     // Fails closed on a reconnect mid-probe; the overseer re-runs it on the next open.
     return await hasProjectMembership(this.env,

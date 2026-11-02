@@ -42,12 +42,15 @@ export type CiLogOptions = {
 /** Normalised log: kept lines are the last ones; numbering is over normalised lines, 1-based. */
 export type CiLog = {
   /** Text of lines `firstLine` through `totalLines`. */
-  lines: string[];
+  lines: readonly string[];
   /** Number of `lines[0]`; `totalLines + 1` when no line is kept. */
   firstLine: number;
   /** Lines in the whole normalised log. */
   totalLines: number;
 };
+
+/** A log with no lines, such as that of a job that has not written one yet. Frozen: it is shared. */
+export const EMPTY_CI_LOG: CiLog = Object.freeze({ lines: Object.freeze([]), firstLine: 1, totalLines: 0 });
 
 /** Normalised lines longer than this many characters are cut, keeping their start. */
 const MAX_LINE_LENGTH = 8192;
@@ -181,6 +184,15 @@ export function pageCiLog(
   return { lines, totalLines: log.totalLines, firstAvailableLine: first, complete };
 }
 
+/**
+ * Validates page options as `pageCiLog` does, for a caller that refuses bad ones before fetching
+ * the log.
+ * @param options Caller-supplied page options.
+ */
+export function validateCiLogOptions(options: CiLogOptions | undefined): void {
+  parseLogOptions(options);
+}
+
 /** The Durable Object KV surface used by `CiLogCache`. */
 export type CiLogCacheKv = KvScannable;
 
@@ -230,7 +242,7 @@ const EVICTION_BATCH = 64;
  *
  * @example
  * ```ts
- * #logs = new CiLogCache(this.ctx.storage.kv, { prefix: "ciLog:" });
+ * #logs = new CiLogCache(this.ctx.storage.kv);
  *
  * async #readLog(jobId: string): Promise<CiLog> {
  *   const cached = this.#logs.get(jobId);
@@ -324,11 +336,14 @@ export class CiLogCache {
   /**
    * Removes a cached log, if present.
    * @param key Caller-chosen log key.
+   * @returns Whether an unexpired entry of this version was removed, without reading its chunks.
    */
-  delete(key: string): void {
+  delete(key: string): boolean {
     const id = encodeURIComponent(key);
     const meta = this.#kv.get<CiLogMeta>(this.#metaKey(id));
-    if (meta !== undefined) this.#remove(id, meta);
+    if (meta === undefined) return false;
+    this.#remove(id, meta);
+    return meta.version === META_VERSION && !this.#expired(meta, this.#now());
   }
 
   #evict(incoming: number, now: number): void {
@@ -452,6 +467,7 @@ export function stripAnsi(text: string): string {
  * @returns The text a terminal would show last.
  */
 export function applyCarriageReturns(text: string): string {
+  if (!text.includes("\r")) return text;
   const trimmed = text.replace(/\r+$/, "");
   return trimmed.slice(trimmed.lastIndexOf("\r") + 1);
 }

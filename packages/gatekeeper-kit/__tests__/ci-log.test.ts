@@ -255,6 +255,16 @@ describe("CiLogCache", () => {
     expect(kv.keys()).toEqual(["ciLog:totalBytes"]);
   });
 
+  it("reports whether delete removed a live entry", () => {
+    const { cache, advance } = makeCache({ ttlMs: 60_000 });
+    cache.put("live", logOf(["a"]));
+    cache.put("stale", logOf(["b"]));
+    expect(cache.delete("live")).toBe(true);
+    expect(cache.delete("live")).toBe(false);
+    advance(60_000);
+    expect(cache.delete("stale")).toBe(false);
+  });
+
   it("keeps keys that share a prefix apart", () => {
     const { cache } = makeCache();
     cache.put("a", logOf(["one"]));

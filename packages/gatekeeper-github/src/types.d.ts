@@ -480,7 +480,8 @@ export type GitHubPullRequestChecks = Omit<GitHubCommitChecks, "checks"> & {
    * Names of checks the base branch requires that have not reported on this commit; the pull
    * request cannot merge until they do, and while any is named the commit's `state` is
    * `expected` (or `failure`). Empty when the requirements are not visible to you, and when
-   * more than 1000 checks reported (a required one may be among those not listed).
+   * some reported checks are not listed -- past 1000, or ones GitHub would not return -- since a
+   * required one may be among them.
    */
   missingRequired: string[];
 };

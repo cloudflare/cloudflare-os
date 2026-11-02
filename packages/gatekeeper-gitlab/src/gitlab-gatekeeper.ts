@@ -23,7 +23,10 @@ import {
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { CiLogCache, CiLogTooLargeError, pageCiLog, readCiLog, type CiLog } from "@gadgets/gatekeeper-kit/ci-log";
+import {
+  CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog, validateCiLogOptions,
+} from "@gadgets/gatekeeper-kit/ci-log";
+import { AppliedPushLog, CI_START_WINDOW_MS } from "@gadgets/gatekeeper-kit/ci-start";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import { ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
@@ -102,7 +105,6 @@ import {
   type GitLabGatekeeperImplProps,
 } from "./gitlab-env";
 import {
-  CI_START_WINDOW_MS,
   actorFromUser,
   actorFromUsername,
   branchNameMatchesSearch,
@@ -145,6 +147,7 @@ import {
   parseChangesCount,
   pipelineIsForHead,
   projectRef,
+  queuedCommitCi,
   revisionFromDiffRefs,
   stableKey,
   summarizeIssueDetails,
@@ -220,10 +223,6 @@ const MAX_PENDING_CHAIN_COMMITS = 250;
 const MAX_REPLY_TARGET_HOPS = 50;
 /** Most rows a CI listing reads before paging: a merge request's pipelines, a pipeline's jobs. */
 const MAX_CI_ROWS = 1000;
-/** When this gatekeeper applied a push, by its new head: the absence policy's first "became the head" source. */
-const APPLIED_PUSH_PREFIX = "ciPushApplied:";
-/** Most push-apply records kept at once; each lives `CI_START_WINDOW_MS` at most. */
-const MAX_APPLIED_PUSHES = 100;
 /**
  * How many of the project's latest push events are searched for one that left a ref at a commit:
  * one page, GitLab's most. A push older than that many others is outside the window anyway on all
@@ -244,8 +243,6 @@ const DEVELOPER_ACCESS_LEVEL = 30;
  */
 const OBSERVER_ROSTER_KEY = "observerRoster";
 type ObserverRoster = "complete" | "legacy";
-/** A log with no lines: a job that has not written one yet. */
-const EMPTY_CI_LOG: CiLog = { lines: [], firstLine: 1, totalLines: 0 };
 /** The connected account: its user id, which tells its approvals and notes from others', and its actor. */
 type StoredViewer = { id: number; actor: GitLabActor };
 
@@ -421,14 +418,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     this.ctx.storage.kv.put<Cached<T>>(key, { fetchedAt: Date.now(), value, generation });
   }
 
-  /** TTL cache: GitLab's REST API does not reliably answer conditional requests, so there is no ETag path. */
+  /**
+   * TTL cache: GitLab's REST API does not reliably answer conditional requests, so there is no ETag
+   * path. A `ttlMs` of 0 always loads, for a read that must be current; later cached reads get its value.
+   */
   async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
     const cached = this.#loadCached<T>(key, ttlMs);
-    return cached !== undefined ? cached : await this.#refreshCached(key, loader);
-  }
-
-  /** `#cached`'s loader run whatever is cached, for a read that must be current; later cached reads get its value. */
-  async #refreshCached<T>(key: string, loader: () => Promise<T>): Promise<T> {
+    if (cached !== undefined) return cached;
     const generation = this.#cacheGeneration();
     const value = await loader();
     this.#storeCached(key, value, generation);
@@ -439,13 +435,22 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     this.ctx.storage.kv.put("cacheGeneration", this.#cacheGeneration() + 1);
   }
 
-  /** Every row of a listing, page after page for as long as GitLab says there is a next one. */
-  async #fetchAllPages<T>(loader: (page: number, perPage: number) => Promise<GitLabPage<T>>): Promise<T[]> {
-    const results: T[] = [];
+  /**
+   * Every row of a listing, page after page for as long as GitLab says there is a next one, or
+   * until `max` rows are in; `truncated` says whether rows were left out.
+   */
+  async #fetchAllPages<T>(loader: (page: number, perPage: number) => Promise<GitLabPage<T>>, max = Infinity):
+      Promise<T[] & { truncated?: true }> {
+    const results: T[] & { truncated?: true } = [];
     for (let page: number | null = 1; page !== null;) {
       const batch = await loader(page, 100);
       results.push(...batch.items);
       page = batch.nextPage;
+      if (results.length >= max) {
+        if (results.length > max || page !== null) results.truncated = true;
+        results.length = max;
+        break;
+      }
     }
     return results;
   }
@@ -628,7 +633,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       return mr;
     };
     const key = this.#cacheKey("mr-raw", realId);
-    return fresh ? await this.#refreshCached(key, load) : await this.#cached(key, ENTITY_CACHE_TTL_MS, load);
+    return await this.#cached(key, fresh ? 0 : ENTITY_CACHE_TTL_MS, load);
   }
 
   /**
@@ -1323,38 +1328,22 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   #ciLogs: CiLogCache | undefined;
+  #appliedPushes: AppliedPushLog | undefined;
 
   /** Finished job logs, so following up on one (another page, a search) does not refetch it. */
   #ciLogCache(): CiLogCache {
-    return this.#ciLogs ??= new CiLogCache(this.ctx.storage.kv, { prefix: "ciLog:" });
+    return this.#ciLogs ??= new CiLogCache(this.ctx.storage.kv);
+  }
+
+  /** When this gatekeeper's pushes made each commit a head: the absence policy's best source. */
+  #appliedPushLog(): AppliedPushLog {
+    return this.#appliedPushes ??= new AppliedPushLog(this.ctx.storage.kv);
   }
 
   /** A pipeline as a summary, naming the project it ran in when that is not this one. */
   async #pipelineSummary(pipeline: GitLabPipelineBasicResponse, boundProjectId: number): Promise<GitLabPipelineSummary> {
     return normalizePipelineSummary(pipeline,
       pipeline.project_id === boundProjectId ? undefined : await this.#projectRefById(pipeline.project_id));
-  }
-
-  /**
-   * Records when this gatekeeper made `sha` a branch head: the absence policy's best "became the
-   * head" time. Only `CI_START_WINDOW_MS` matters, so records older than that are pruned here (a
-   * pruned sha falls back to the other sources), and the family is capped. A retried apply keeps
-   * the first record.
-   */
-  #recordAppliedPush(sha: GitOid): void {
-    const kv = this.ctx.storage.kv;
-    const now = Date.now();
-    const live: [string, number][] = [];
-    for (const [key, at] of kv.list<number>({ prefix: APPLIED_PUSH_PREFIX })) {
-      if (now - at >= CI_START_WINDOW_MS) kv.delete(key);
-      else live.push([key, at]);
-    }
-    const key = `${APPLIED_PUSH_PREFIX}${sha}`;
-    if (kv.get<number>(key) !== undefined) return;
-    for (const [stale] of live.toSorted((a, b) => a[1] - b[1]).slice(0, Math.max(0, live.length - MAX_APPLIED_PUSHES + 1))) {
-      kv.delete(stale);
-    }
-    kv.put(key, now);
   }
 
   /**
@@ -1379,7 +1368,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * Undefined when neither does, a versions read GitLab failed included.
    */
   async #knownBecameHeadAt(sha: GitOid, mergeRequestIid: string | undefined): Promise<number | undefined> {
-    const applied = this.ctx.storage.kv.get<number>(`${APPLIED_PUSH_PREFIX}${sha}`);
+    const applied = this.#appliedPushLog().get(sha);
     if (applied !== undefined || mergeRequestIid === undefined) return applied;
     const versions = await this.#bestEffort("ci.versions.read.failed", () => this.#withApi(api =>
       api.listMergeRequestVersions(this.#projectPath(), Number(mergeRequestIid), 1, 20)));
@@ -1418,9 +1407,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * pushing an old commit.
    */
   async #ciWithoutPipeline(sha: GitOid, mergeRequestIid?: string, commit?: GitLabCommitResponse): Promise<GitLabCommitCi> {
-    if (this.#pendingPushActions().some(action => action.newSha === sha)) {
-      return { commitId: sha, phase: "notStarted", pipeline: null };
-    }
+    if (this.#pendingPushActions().some(action => action.newSha === sha)) return queuedCommitCi(sha);
     const read = commit ?? await this.#getRawCommit(sha);
     const firstParent = read?.parent_ids?.[0];
     const now = Date.now();
@@ -1467,13 +1454,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       Promise<GitLabCommitCi | undefined> {
     const headSha = details.source.sha;
     if (headSha === null) return undefined;
-    const queued = { commitId: headSha, phase: "notStarted" as const, pipeline: null };
-    if (mr === undefined) return queued;
+    if (mr === undefined) return queuedCommitCi(headSha);
     // GitLab leaves the key out for an account that may not read the project's pipelines.
     if (!("head_pipeline" in mr)) return undefined;
     if (details.source.project.path === this.#projectPath() &&
         this.#pendingPushActions(details.source.branch).some(action => action.newSha === headSha)) {
-      return queued;
+      return queuedCommitCi(headSha);
     }
     const realId = String(mr.iid);
     const head = mr.head_pipeline ?? null;
@@ -1497,7 +1483,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async #getRawPipeline(pipelineId: number, fresh = false): Promise<GitLabPipelineResponse> {
     const load = async () => await this.#withApi(api => api.getPipeline(this.#projectPath(), pipelineId));
     const key = this.#cacheKey("pipeline", String(pipelineId));
-    const pipeline = fresh ? await this.#refreshCached(key, load) : await this.#cached(key, ENTITY_CACHE_TTL_MS, load);
+    const pipeline = await this.#cached(key, fresh ? 0 : ENTITY_CACHE_TTL_MS, load);
     if (pipeline === null) throw new Error(`No pipeline ${pipelineId} exists in the GitLab project ${this.#projectPath()}.`);
     return pipeline;
   }
@@ -1509,7 +1495,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async #getRawJob(jobId: number, fresh = false): Promise<GitLabJobResponse> {
     const load = async () => await this.#withApi(api => api.getJob(this.#projectPath(), jobId));
     const key = this.#cacheKey("job", String(jobId));
-    const job = fresh ? await this.#refreshCached(key, load) : await this.#cached(key, ENTITY_CACHE_TTL_MS, load);
+    const job = await this.#cached(key, fresh ? 0 : ENTITY_CACHE_TTL_MS, load);
     if (job === null) throw this.#noSuchJob(jobId);
     return job;
   }
@@ -1526,46 +1512,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * again with `fresh`, which skips the cache, before it is refused.
    */
   async #mergeRequestPipelineRows(realId: string, fresh = false): Promise<GitLabPipelineBasicResponse[]> {
-    const load = async () => await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
-      this.#withApi(api => api.listMergeRequestPipelines(this.#projectPath(), Number(realId), page, perPage)));
-    const key = this.#cacheKey("mr-pipelines", realId);
-    return fresh ? await this.#refreshCached(key, load) : await this.#cached(key, LIST_CACHE_TTL_MS, load);
-  }
-
-  /** `#fetchAllPages`, stopping once `max` rows are in; `truncated` says whether rows were left out. */
-  async #fetchPagesUpTo<T>(max: number, loader: (page: number, perPage: number) => Promise<GitLabPage<T>>):
-      Promise<T[] & { truncated?: true }> {
-    const results: T[] & { truncated?: true } = [];
-    for (let page: number | null = 1; page !== null;) {
-      const batch = await loader(page, 100);
-      results.push(...batch.items);
-      page = batch.nextPage;
-      if (results.length >= max) {
-        if (results.length > max || page !== null) results.truncated = true;
-        results.length = Math.min(results.length, max);
-        break;
-      }
-    }
-    return results;
-  }
-
-  /** The pipeline a trigger job of `parentId` started in this project, or an error saying why `childId` is not one. */
-  async #requireSameProjectDownstream(parentId: number, childId: number): Promise<void> {
-    const boundProjectId = await this.#boundProjectId();
-    const triggers = await this.#listTriggerJobs(parentId);
-    const trigger = triggers.find(job => job.downstream_pipeline?.id === childId);
-    if (trigger === undefined) {
-      throw new Error(`Pipeline ${childId} was not started by a trigger job of pipeline ${parentId}.`);
-    }
-    if (trigger.downstream_pipeline!.project_id !== boundProjectId) {
-      throw new Error(`Pipeline ${childId} ran in another project, so it cannot be opened from this one.`);
-    }
+    const load = async () => await this.#fetchAllPages((page, perPage) =>
+      this.#withApi(api => api.listMergeRequestPipelines(this.#projectPath(), Number(realId), page, perPage)), MAX_CI_ROWS);
+    return await this.#cached(this.#cacheKey("mr-pipelines", realId), fresh ? 0 : LIST_CACHE_TTL_MS, load);
   }
 
   async #listTriggerJobs(pipelineId: number): Promise<GitLabJobResponse[] & { truncated?: true }> {
     const route = supportsTriggerJobsRoute(await this.#getVersion()) ? "trigger_jobs" : "bridges";
-    return await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) => this.#withApi(api =>
-      api.listPipelineTriggerJobs(this.#projectPath(), pipelineId, { route, page, perPage })));
+    return await this.#fetchAllPages((page, perPage) => this.#withApi(api =>
+      api.listPipelineTriggerJobs(this.#projectPath(), pipelineId, { route, page, perPage })), MAX_CI_ROWS);
   }
 
   /**
@@ -1709,11 +1664,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const pipeline = await this.#getRawPipeline(pipelineId);
     const boundProjectId = await this.#boundProjectId();
     const projectPath = this.#projectPath();
-    const listedFirst = await this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
-      this.#withApi(api => api.listCommitStatuses(projectPath, pipeline.sha, { pipelineId, page, perPage })));
+    const listedFirst = await this.#fetchAllPages((page, perPage) =>
+      this.#withApi(api => api.listCommitStatuses(projectPath, pipeline.sha, { pipelineId, page, perPage })), MAX_CI_ROWS);
     const [builds, triggers] = await Promise.all([
-      this.#fetchPagesUpTo(MAX_CI_ROWS, (page, perPage) =>
-        this.#withApi(api => api.listPipelineJobs(projectPath, pipelineId, page, perPage))),
+      this.#fetchAllPages((page, perPage) =>
+        this.#withApi(api => api.listPipelineJobs(projectPath, pipelineId, page, perPage)), MAX_CI_ROWS),
       this.#listTriggerJobs(pipelineId),
     ]);
     const jobs = [...builds, ...triggers];
@@ -1725,7 +1680,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         .filter(row => row.pipeline_id === pipelineId && !ids.has(row.id) && !names.has(row.name))
         .map(row => normalizeCommitStatus(row, pipeline.web_url));
     const rows = [
-      ...builds.map(job => normalizeJobSummary(job, "job", boundProjectId)),
+      ...builds.map(job => normalizeJobSummary(job, "job")),
       ...triggers.map(job => normalizeJobSummary(job, "trigger", boundProjectId)),
       ...external,
     ]
@@ -1737,7 +1692,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   async openDownstreamPipeline(pipelineId: number, id: string): Promise<number> {
     const childId = this.#parseCiId(id, "Pipeline");
-    await this.#requireSameProjectDownstream(pipelineId, childId);
+    const boundProjectId = await this.#boundProjectId();
+    const downstream = (await this.#listTriggerJobs(pipelineId))
+      .find(job => job.downstream_pipeline?.id === childId)?.downstream_pipeline;
+    if (!downstream) throw new Error(`Pipeline ${childId} was not started by a trigger job of pipeline ${pipelineId}.`);
+    if (downstream.project_id !== boundProjectId) {
+      throw new Error(`Pipeline ${childId} ran in another project, so it cannot be opened from this one.`);
+    }
     return childId;
   }
 
@@ -1776,7 +1737,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async jobDetails(jobId: number): Promise<GitLabJobDetails> {
-    return normalizeJobDetails(await this.#getRawJob(jobId, true), await this.#boundProjectId());
+    return normalizeJobDetails(await this.#getRawJob(jobId, true));
   }
 
   /**
@@ -1788,15 +1749,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   async readJobLog(jobId: number, options: GitLabLogOptions | undefined): Promise<{ jobName: string; page: GitLabLogPage }> {
     this.#requireObserverRoster();
-    // Validates the options before anything is fetched.
-    pageCiLog(EMPTY_CI_LOG, options, false);
+    validateCiLogOptions(options);
     const cache = this.#ciLogCache();
     const cacheKey = String(jobId);
     const job = await this.#withApi(api => api.getJob(this.#projectPath(), jobId));
     if (job === null || job.erased_at) {
-      const hadLog = cache.get(cacheKey) !== undefined;
-      cache.delete(cacheKey);
-      if (job === null && !hadLog) throw this.#noSuchJob(jobId);
+      if (!cache.delete(cacheKey) && job === null) throw this.#noSuchJob(jobId);
       throw new Error(`The log of job ${jobId} has been erased.`);
     }
     const complete = ciPhase(ciStatus(job.status)) === "done";
@@ -2133,7 +2091,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async getCommit(refOrDefault: string | undefined, gitCache?: RpcStub<GitCache>):
       Promise<{ details: GitLabCommitDetails; fromCache: boolean }> {
     const queued = (details: GitLabCommitDetails) => ({
-      details: { ...details, ci: { commitId: details.id, phase: "notStarted" as const, pipeline: null } },
+      details: { ...details, ci: queuedCommitCi(details.id) },
       fromCache: true,
     });
     const ref = refOrDefault ?? (await this.#getProjectMetadata()).defaultBranch;
@@ -2835,7 +2793,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
               { cause: error });
           }
         }
-        this.#recordAppliedPush(action.newSha);
+        this.#appliedPushLog().record(action.newSha);
         break;
       }
       default:
