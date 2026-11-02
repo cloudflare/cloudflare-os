@@ -164,7 +164,7 @@ export async function withAccountApi<T>(
  * The lowest role that sees everything a binding can disclose: the repository, confidential
  * issues, and internal notes.
  */
-export const REPORTER_ACCESS_LEVEL = 20;
+const REPORTER_ACCESS_LEVEL = 20;
 
 /** An account as the membership probe reaches it: its token, and the GitLab user behind it. */
 export type MemberAccount = AccountCredentials & {
@@ -216,10 +216,9 @@ export async function projectMembershipLevel(
  */
 function effectiveAccessLevel(
   member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
-  now: Date = new Date(),
 ): number | null {
   if (member === null || member.membership_state === "awaiting") return null;
-  if (member.expires_at != null && !(Date.parse(member.expires_at) > now.getTime())) return null;
+  if (member.expires_at != null && !(Date.parse(member.expires_at) > Date.now())) return null;
   return member.access_level;
 }
 

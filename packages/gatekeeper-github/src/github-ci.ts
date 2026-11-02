@@ -1,7 +1,7 @@
 // GitHub CI: the GraphQL rollup query, and the pure mappings from GitHub's check runs, commit
 // statuses, Actions jobs, workflow runs and job logs to the agent-facing shapes in types.d.ts.
 
-import { applyCarriageReturns, CI_START_WINDOW_MS, stripAnsi } from "@gadgets/gatekeeper-kit/ci";
+import { applyCarriageReturns, stripAnsi, withinCiStartWindow } from "@gadgets/gatekeeper-kit/ci";
 import type {
   GitHubAnnotation,
   GitHubCheckEntry,
@@ -23,7 +23,7 @@ import type {
   GitHubWorkflowJobResponse,
   GitHubWorkflowRunResponse,
 } from "./github-api";
-import { actorFromUser } from "./git-commits";
+import { actorFromUser, parseDate } from "./git-commits";
 import { obsContext } from "./observability.js";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.github.ci", vendorId: "github" });
@@ -168,10 +168,8 @@ export function rollupPhaseOf(phases: readonly GitHubCiPhase[]): GitHubCiRollupP
 export function absencePhaseOf(options: {
   pushQueued: boolean; ciExpected: boolean; becameHeadAt: number | undefined; now: number;
 }): "notStarted" | "done" {
-  if (options.pushQueued) return "notStarted";
-  const { ciExpected, becameHeadAt, now } = options;
-  return ciExpected && becameHeadAt !== undefined && now - becameHeadAt < CI_START_WINDOW_MS
-    ? "notStarted" : "done";
+  const { pushQueued, ciExpected, becameHeadAt, now } = options;
+  return pushQueued || (ciExpected && withinCiStartWindow(becameHeadAt, now)) ? "notStarted" : "done";
 }
 
 /** CI on a commit only a queued push will deliver to GitHub: nothing has reported on it yet. */
@@ -371,8 +369,8 @@ export function rollupEntryOf(node: GqlCheckRun | GqlStatusContext): RollupEntry
     app: node.checkSuite?.app?.name ?? "",
     workflowRun: workflowRun?.databaseId == null
       ? undefined : { id: String(workflowRun.databaseId), name: workflowRun.workflow.name },
-    startedAt: node.startedAt ? new Date(node.startedAt) : undefined,
-    completedAt: node.completedAt ? new Date(node.completedAt) : undefined,
+    startedAt: parseDate(node.startedAt),
+    completedAt: parseDate(node.completedAt),
     url: node.url,
     detailsUrl: node.detailsUrl ?? undefined,
   };
@@ -417,8 +415,8 @@ export function checkRunSummaryOf(
     phase: phaseOf(state, waitingNeedsPerson),
     app: run.app?.name ?? "",
     workflowRun: job === undefined ? undefined : { id: String(job.run_id), name: job.workflow_name ?? "" },
-    startedAt: run.started_at ? new Date(run.started_at) : undefined,
-    completedAt: run.completed_at ? new Date(run.completed_at) : undefined,
+    startedAt: parseDate(run.started_at),
+    completedAt: parseDate(run.completed_at),
     url: run.html_url ?? "",
     detailsUrl: run.details_url ?? undefined,
   };
@@ -454,8 +452,8 @@ export function jobSummaryOf(job: GitHubWorkflowJobResponse): GitHubCheckRunSumm
     phase: phaseOf(state),
     app: "GitHub Actions",
     workflowRun: { id: String(job.run_id), name: job.workflow_name ?? "" },
-    startedAt: job.started_at ? new Date(job.started_at) : undefined,
-    completedAt: job.completed_at ? new Date(job.completed_at) : undefined,
+    startedAt: parseDate(job.started_at),
+    completedAt: parseDate(job.completed_at),
     url: job.html_url ?? "",
     detailsUrl: job.html_url ?? undefined,
   };
@@ -481,7 +479,7 @@ export function workflowRunSummaryOf(run: GitHubWorkflowRunResponse): GitHubWork
 export function workflowRunDetailsOf(run: GitHubWorkflowRunResponse): GitHubWorkflowRunDetails {
   return {
     ...workflowRunSummaryOf(run),
-    startedAt: run.run_started_at ? new Date(run.run_started_at) : undefined,
+    startedAt: parseDate(run.run_started_at),
     actor: actorFromUser(run.actor),
   };
 }

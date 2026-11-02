@@ -33,7 +33,7 @@ import {
   clearCredentialExpiryLatch, notifyCredentialsExpiredOnce,
 } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
-import { CredentialCoordinator, isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
+import { CredentialCoordinator, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
 import {
   CREDENTIALS_EXPIRED_MESSAGE,
   GitHubApi,
@@ -41,6 +41,7 @@ import {
   exchangeAuthCode,
   refreshGitHubGrant,
   revokeOAuthToken,
+  isConnectionExpired,
   withAccountApi,
   type GitHubOAuthGrant,
   type ConditionalRequestResult,
@@ -106,8 +107,8 @@ import {
   type TreeDiffSource,
 } from "@gadgets/gatekeeper-kit/git-diff";
 import {
-  AppliedPushLog, CI_START_WINDOW_MS, CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog,
-  validateCiLogOptions,
+  AppliedPushLog, CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog,
+  validateCiLogOptions, withinCiStartWindow,
 } from "@gadgets/gatekeeper-kit/ci";
 import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import {
@@ -132,6 +133,7 @@ import {
   normalizeCommitDetails,
   normalizeCommitSummary,
   normalizeTagSummary,
+  parseDate,
 } from "./git-commits";
 import GITHUB_LOGO_SVG from "./github-logo.svg";
 import type {
@@ -815,10 +817,6 @@ function textSnippet(markdown?: string, fallback = ""): string {
   return text.length > 140 ? `${text.slice(0, 137)}...` : text;
 }
 
-function parseDate(value?: string | null): Date | undefined {
-  return value ? new Date(value) : undefined;
-}
-
 function normalizeStateReason(reason?: string | null): "completed" | "notPlanned" | undefined {
   switch (reason) {
     case "completed":
@@ -906,7 +904,7 @@ function isOwnHead(pull: Pick<GitHubPullRequestSummary, "head" | "base">): boole
  * by then it is not coming without someone acting (a path-filtered workflow, an app not installed).
  */
 function awaitingRequiredPhase(since: number | undefined, now: number): "active" | "blocked" {
-  return since !== undefined && now - since < CI_START_WINDOW_MS ? "active" : "blocked";
+  return withinCiStartWindow(since, now) ? "active" : "blocked";
 }
 
 function normalizePullSummary(
@@ -4269,7 +4267,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             api.getBranchHead(action.owner, action.repo, action.branch));
           if (head !== action.newSha) throw this.#pushRefusal(action, head, error);
         }
-        this.#appliedPushLog().record(action.newSha);
+        this.#appliedPushes.record(action.newSha);
         this.#markActionApproved(action);
         this.#clearCaches();
         return;
@@ -5418,21 +5416,13 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   // -- CI ---------------------------------------------------------------------------------------
   //
   // Status reads are never cached: CI moves on its own, and a poll must see it move. Finished job
-  // logs are (#ciLogCache), revalidated against GitHub before each use. A pull request binding sees
+  // logs are (#ciLogs), revalidated against GitHub before each use. A pull request binding sees
   // CI only on the pull request's own commits (#assertPullCommitOf).
 
-  #ciLogs?: CiLogCache;
-  #appliedPushes?: AppliedPushLog;
-
   /** Finished job logs, so following up on one (another page, a search) does not refetch it. */
-  #ciLogCache(): CiLogCache {
-    return this.#ciLogs ??= new CiLogCache(this.ctx.storage.kv);
-  }
-
+  readonly #ciLogs = new CiLogCache(this.ctx.storage.kv);
   /** When this gatekeeper's pushes made each commit a head: the absence policy's best source. */
-  #appliedPushLog(): AppliedPushLog {
-    return this.#appliedPushes ??= new AppliedPushLog(this.ctx.storage.kv);
-  }
+  readonly #appliedPushes = new AppliedPushLog(this.ctx.storage.kv);
 
   /**
    * When `sha` became a head, for the absence policy: this gatekeeper's record of pushing it, else
@@ -5443,9 +5433,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   async #becameHeadAt(
     sha: GitOid, branch: string | undefined, committedAt: number | undefined, now: number,
   ): Promise<number | undefined> {
-    const applied = this.#appliedPushLog().get(sha);
+    const applied = this.#appliedPushes.get(sha);
     if (applied !== undefined) return applied;
-    if (branch !== undefined && (committedAt === undefined || now - committedAt >= CI_START_WINDOW_MS)) {
+    if (branch !== undefined && !withinCiStartWindow(committedAt, now)) {
       try {
         const updates = await this.#withApi(api =>
           api.listBranchActivity(this.ctx.props.owner, this.ctx.props.repo, branch));
@@ -5456,7 +5446,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         // date rather than failing a read whose rollup is already in hand. Only an expired
         // connection, which withAccountApi() wraps around the marked error, still fails it: the
         // owner has to reconnect.
-        if (isCredentialsExpired((error as { cause?: unknown } | undefined)?.cause)) throw error;
+        if (isConnectionExpired(error)) throw error;
         logger.warn("failed to read a branch's pushes", { event: "ci.pushes.read.failed", error });
       }
     }
@@ -5472,11 +5462,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   async #fetchRollup(sha: GitOid, pullNumber: number | undefined): Promise<{
     state: GitHubCommitChecks["state"];
     entries: RollupEntry[];
-    counts: Partial<Record<GitHubCheckState, number>>;
+    /** GitHub's counts over every entry; undefined when it gave none, and `entries` must be tallied. */
+    counts: Partial<Record<GitHubCheckState, number>> | undefined;
     /** Whether entries were left out: past MAX_CHECK_ENTRIES, or ones GitHub returned as null. */
     truncated: boolean;
-    /** Whether `counts` are GitHub's over every entry, rather than tallied from `entries`. */
-    counted: boolean;
     committedAt: number | undefined;
     ciExpected: boolean;
   } | undefined> {
@@ -5534,8 +5523,6 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       if (!page?.hasNextPage || page.endCursor === null || entries.length >= MAX_CHECK_ENTRIES) {
         return {
           ...first,
-          counts: first.counts ?? countStates(entries.map(entry => entry.state)),
-          counted: first.counts !== undefined,
           entries,
           truncated: dropped || page?.hasNextPage === true,
         };
@@ -5546,18 +5533,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   /**
    * CI on a commit (`ci`): the rollup and its phase, or for a commit nothing has reported on, the
-   * absence policy's; GitHub's `expected` verdict with nothing else unfinished is bounded by
-   * `awaitingRequiredPhase`. `branch` is a branch the commit is or was the head of, whose push
-   * record GitHub may have; `openedAt`, when the pull request it heads was opened, which starts CI
-   * without a push. `truncated` says whether entries were left out of `ci.checks`; `becameHeadAt`
-   * is when CI could have started on it, read at most once. Undefined when GitHub does not have
-   * the commit.
+   * absence policy's. `required` names the checks a pull request's base branch requires; those
+   * that have not reported (`missingRequired`; none when entries were left out, since a required
+   * one may be among them) keep the commit `expected`, as GitHub's own rollup does for a required
+   * commit status, and a failure stays a failure. An `expected` commit with nothing else
+   * unfinished is bounded by `awaitingRequiredPhase`. `branch` is a branch the commit is or was the
+   * head of, whose push record GitHub may have; `openedAt`, when the pull request it heads was
+   * opened, which starts CI without a push. Undefined when GitHub does not have the commit.
    */
-  async #commitChecks(sha: GitOid, options: { branch?: string; pullNumber?: number; openedAt?: number }): Promise<{
-    ci: Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[] };
-    truncated: boolean;
-    becameHeadAt: () => Promise<number | undefined>;
-  } | undefined> {
+  async #commitChecks(sha: GitOid, options: {
+    branch?: string; pullNumber?: number; openedAt?: number; required?: Promise<string[]>;
+  }): Promise<{ ci: Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[] }; missingRequired: string[] } | undefined> {
     const rollup = await this.#fetchRollup(sha, options.pullNumber);
     if (rollup === undefined) return undefined;
     const now = Date.now();
@@ -5565,7 +5551,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const becameHeadAt = () => since ??= this.#becameHeadAt(sha, options.branch, rollup.committedAt, now)
       .then(at => at === undefined ? options.openedAt : Math.max(at, options.openedAt ?? at));
     const phases = rollup.entries.map(entry => entry.phase);
-    if (rollup.truncated) phases.push(...leftOutPhases(rollup.state, rollup.counted ? rollup.counts : undefined));
+    if (rollup.truncated) phases.push(...leftOutPhases(rollup.state, rollup.counts));
     let phase = rollupPhaseOf(phases);
     if (phase === undefined) {
       const pushQueued = this.isCommitPendingPush(sha);
@@ -5576,12 +5562,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         now,
       });
     }
-    if (rollup.state === "expected" && phase === "done") phase = awaitingRequiredPhase(await becameHeadAt(), now);
-    return {
-      ci: { commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries },
-      truncated: rollup.truncated,
-      becameHeadAt,
-    };
+    const reported = new Set(rollup.entries.map(entryName));
+    const missingRequired = rollup.truncated ? [] : (await options.required ?? []).filter(name => !reported.has(name));
+    const state = missingRequired.length > 0 && rollup.state !== "failure" ? "expected" : rollup.state;
+    if (state === "expected" && phase === "done") phase = awaitingRequiredPhase(await becameHeadAt(), now);
+    const counts = rollup.counts ?? countStates(rollup.entries.map(entry => entry.state));
+    return { ci: { commitId: sha, state, phase, counts, checks: rollup.entries }, missingRequired };
   }
 
   /**
@@ -5606,11 +5592,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * number on GitHub once it has one. Revalidated on every read (a 304 is free): a push someone
    * else made must not leave CI reading the previous head as current.
    */
-  async #pullForCi(logicalId: string, gitCache: RpcStub<GitCache>)
-      : Promise<{ details: GitHubPullRequestDetails; number: number | undefined }> {
-    const details = await this.#getPullRequestDetails(logicalId, gitCache, 0);
-    const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId) : logicalId;
-    return { details, number: realId === undefined ? undefined : Number(realId) };
+  async #pullForCi(logicalId: string, gitCache: RpcStub<GitCache>): Promise<GitHubPullRequestDetails> {
+    return await this.#getPullRequestDetails(logicalId, gitCache, 0);
   }
 
   /**
@@ -5637,7 +5620,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   /** `#assertPullCommitOf`, for a session holding a check run's or workflow run's commit. */
   async assertPullCommit(logicalId: string, sha: string, gitCache: RpcStub<GitCache>, subject: string): Promise<void> {
-    const { details } = await this.#pullForCi(logicalId, gitCache);
+    const details = await this.#pullForCi(logicalId, gitCache);
     await this.#assertPullCommitOf(logicalId, details, sha, gitCache, subject);
   }
 
@@ -5681,7 +5664,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     if (commitId !== undefined && !isCommitOid(commitId)) {
       throw new Error(`getChecks() takes a full 40-character commit id; got ${JSON.stringify(commitId)}.`);
     }
-    const { details, number } = await this.#pullForCi(logicalId, gitCache);
+    const details = await this.#pullForCi(logicalId, gitCache);
+    const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId) : logicalId;
     const sha = commitId ?? details.head.sha;
     if (!isCommitOid(sha)) throw new Error(`Pull request #${logicalId} has no head commit yet.`);
     await this.#assertPullCommitOf(logicalId, details, sha, gitCache);
@@ -5690,27 +5674,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const branch = isOwnHead(details) ? details.head.ref : undefined;
     // Opening the pull request starts CI on the head it opened with, however old its push.
     const openedAt = sha === details.head.sha ? details.createdAt.getTime() : undefined;
+    const pullNumber = realId === undefined ? undefined : Number(realId);
+    const requiredRead = this.#requiredContexts(details.base.ref);
     const [read, required] = await Promise.all([
-      this.#commitChecks(sha, { branch, pullNumber: number, openedAt }),
-      this.#requiredContexts(details.base.ref),
+      this.#commitChecks(sha, { branch, pullNumber, openedAt, required: requiredRead }),
+      requiredRead,
     ]);
     if (read === undefined) return { ...queuedCommitChecks(sha), checks: [], missingRequired: [] };
-    const { ci, truncated } = read;
+    const { ci, missingRequired } = read;
     const requiredNames = new Set(required);
-    const reported = new Set(ci.checks.map(entryName));
-    // A required check may have reported among the entries left out, so with any left out none
-    // can be named missing.
-    const missingRequired = truncated ? [] : required.filter(name => !reported.has(name));
-    // A required check that has not reported is still expected, as GitHub's own rollup says of a
-    // required commit status, with the same bound on how long that keeps the commit active; a
-    // failure stays a failure.
-    const expected = missingRequired.length > 0 && ci.state !== "failure";
-    const phase = expected && ci.phase === "done"
-      ? awaitingRequiredPhase(await read.becameHeadAt(), Date.now()) : ci.phase;
     return {
       ...ci,
-      state: expected ? "expected" : ci.state,
-      phase,
       checks: ci.checks.map(entry => {
         const { isRequired, ...rest } = entry;
         // A pull request not yet created on GitHub has no number to ask GitHub with; the base
@@ -5795,7 +5769,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
     if (run.status !== "completed") return { name: run.name, page: pageCiLog(EMPTY_CI_LOG, options, false) };
     const jobId = actionsJobIdOf(run);
-    const cache = this.#ciLogCache();
+    const cache = this.#ciLogs;
     const cacheKey = String(jobId);
     const location = await this.#withApi(api => api.getWorkflowJobLogLocation(owner, repo, jobId));
     if (location === null) {
@@ -5843,7 +5817,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /** The workflow runs of a pull request's head commit; none yet for one GitHub does not have. */
   async pullWorkflowRuns(logicalId: string, pageSize: number, gitCache: RpcStub<GitCache>)
       : Promise<Cursor<GitHubWorkflowRunSummary>> {
-    const { details } = await this.#pullForCi(logicalId, gitCache);
+    const details = await this.#pullForCi(logicalId, gitCache);
     const sha = details.head.sha;
     if (!isCommitOid(sha)) return new ArrayCursor([], pageSize);
     return await this.listWorkflowRuns({ commitId: sha }, pageSize);

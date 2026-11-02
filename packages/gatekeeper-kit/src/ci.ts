@@ -491,7 +491,6 @@ function overwritePoint(text: string): number {
 class LineSplitter {
   readonly #emit: (line: string, truncated: boolean) => void;
   #pending = "";
-  #open = false;
   #overflow = false;
   /**
    * While overflowing: whether the text so far ends in `\r`, which a following character would make
@@ -514,19 +513,18 @@ class LineSplitter {
   }
 
   end(): void {
-    if (this.#open) this.#flush();
+    // Only a newline leaves nothing pending, and it flushes at once.
+    if (this.#pending !== "") this.#flush();
   }
 
   #flush(): void {
     this.#emit(this.#pending, this.#overflow);
     this.#pending = "";
-    this.#open = false;
     this.#overflow = false;
     this.#carriageReturn = false;
   }
 
   #append(text: string): void {
-    this.#open = true;
     if (text === "") return;
     if (this.#overflow) {
       const combined = this.#carriageReturn ? `\r${text}` : text;
@@ -601,6 +599,16 @@ function lineCost(text: string): number {
 
 /** How long after a commit became a head CI is still expected to report on it. */
 export const CI_START_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * Whether `at` is less than `CI_START_WINDOW_MS` before `now`, so CI may yet report on a commit
+ * that became a head then.
+ * @param at When the commit became a head, in epoch milliseconds; `undefined` when unknown.
+ * @param now The current time, in epoch milliseconds.
+ */
+export function withinCiStartWindow(at: number | undefined, now: number): boolean {
+  return at !== undefined && now - at < CI_START_WINDOW_MS;
+}
 
 /** The Durable Object KV surface used by `AppliedPushLog`. */
 export type AppliedPushLogKv = KvScannable;

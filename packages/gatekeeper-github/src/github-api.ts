@@ -1840,6 +1840,11 @@ export class GitHubApi {
   }
 }
 
+/** Whether `error` is `withAccountApi`'s report of a confirmed expiry: the owner has to reconnect. */
+export function isConnectionExpired(error: unknown): boolean {
+  return isCredentialsExpired((error as { cause?: unknown } | undefined)?.cause);
+}
+
 export const CREDENTIALS_EXPIRED_MESSAGE =
   "GitHub credentials have expired or been revoked. Please reconnect the account.";
 

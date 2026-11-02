@@ -24,8 +24,8 @@ import {
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  AppliedPushLog, CI_START_WINDOW_MS, CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog,
-  validateCiLogOptions,
+  AppliedPushLog, CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog,
+  validateCiLogOptions, withinCiStartWindow,
 } from "@gadgets/gatekeeper-kit/ci";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
@@ -433,7 +433,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * path. A `ttlMs` of 0 always loads, for a read that must be current; later cached reads get its value.
    */
   async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
-    const cached = ttlMs > 0 ? this.#loadCached<T>(key, ttlMs) : undefined;
+    const cached = this.#loadCached<T>(key, ttlMs);
     if (cached !== undefined) return cached;
     const generation = this.#cacheGeneration();
     const value = await loader();
@@ -1330,25 +1330,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   //
   // Only pipelines and jobs of the bound project open: one carrying another `project_id` (a fork
   // merge request's pipeline, a multi-project downstream) is data only. A merge request binding
-  // narrows that further to the merge request's own pipelines (see `#mergeRequestPipelineRows`).
+  // narrows that further to the merge request's own pipelines (see `#findInMergeRequestPipelines`).
 
   /** The bound project's numeric id, which pipelines and jobs that ran here carry as `project_id`. */
   async #boundProjectId(): Promise<number> {
     return (await this.#getProjectResponse()).id;
   }
 
-  #ciLogs: CiLogCache | undefined;
-  #appliedPushes: AppliedPushLog | undefined;
-
   /** Finished job logs, so following up on one (another page, a search) does not refetch it. */
-  #ciLogCache(): CiLogCache {
-    return this.#ciLogs ??= new CiLogCache(this.ctx.storage.kv);
-  }
-
+  readonly #ciLogs = new CiLogCache(this.ctx.storage.kv);
   /** When this gatekeeper's pushes made each commit a head: the absence policy's best source. */
-  #appliedPushLog(): AppliedPushLog {
-    return this.#appliedPushes ??= new AppliedPushLog(this.ctx.storage.kv);
-  }
+  readonly #appliedPushes = new AppliedPushLog(this.ctx.storage.kv);
 
   /** A pipeline as a summary, naming the project it ran in when that is not this one. */
   async #pipelineSummary(pipeline: GitLabPipelineBasicResponse, boundProjectId: number): Promise<GitLabPipelineSummary> {
@@ -1378,7 +1370,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * Undefined when neither does, a versions read GitLab failed included.
    */
   async #knownBecameHeadAt(sha: GitOid, mergeRequestIid: string | undefined): Promise<number | undefined> {
-    const applied = this.#appliedPushLog().get(sha);
+    const applied = this.#appliedPushes.get(sha);
     if (applied !== undefined || mergeRequestIid === undefined) return applied;
     const versions = await this.#bestEffort("ci.versions.read.failed", () => this.#withApi(api =>
       api.listMergeRequestVersions(this.#projectPath(), Number(mergeRequestIid), 1, 20)));
@@ -1417,16 +1409,16 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * pushing an old commit.
    */
   async #ciWithoutPipeline(sha: GitOid, mergeRequestIid?: string, commit?: GitLabCommitResponse): Promise<GitLabCommitCi> {
-    if (this.#pendingPushActions().some(action => action.newSha === sha)) return queuedCommitCi(sha);
+    if (this.isCommitPendingPush(sha)) return queuedCommitCi(sha);
     const read = commit ?? await this.#getRawCommit(sha);
     const firstParent = read?.parent_ids?.[0];
     const now = Date.now();
-    const recent = (at: number | undefined) => at !== undefined && now - at < CI_START_WINDOW_MS;
     const known = await this.#knownBecameHeadAt(sha, mergeRequestIid);
     const waiting = known !== undefined
-      ? recent(known) && await this.#ciExpected(sha, firstParent)
+      ? withinCiStartWindow(known, now) && await this.#ciExpected(sha, firstParent)
       : await this.#ciExpected(sha, firstParent) &&
-        (recent(Date.parse(read?.committed_date ?? "")) || recent(await this.#pushedAt(sha)));
+        (withinCiStartWindow(Date.parse(read?.committed_date ?? ""), now) ||
+          withinCiStartWindow(await this.#pushedAt(sha), now));
     return { commitId: sha, phase: waiting ? "notStarted" : "done", pipeline: null };
   }
 
@@ -1517,14 +1509,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * A merge request's pipelines (id, project, commit), newest first, at most `MAX_CI_ROWS`.
-   * Cached briefly for the opens' checks, so a pipeline newer than the cached copy is looked for
-   * again with `fresh`, which skips the cache, before it is refused.
+   * `find`'s answer over a merge request's pipelines (id, project, commit), newest first, at most
+   * `MAX_CI_ROWS`. The listing is cached briefly for the opens' checks, so when `find` comes up
+   * empty on the cached copy it is asked again over a fresh one: a newer pipeline is not refused.
    */
-  async #mergeRequestPipelineRows(realId: string, fresh = false): Promise<GitLabPipelineBasicResponse[]> {
-    const load = async () => await this.#fetchAllPages((page, perPage) =>
-      this.#withApi(api => api.listMergeRequestPipelines(this.#projectPath(), Number(realId), page, perPage)), MAX_CI_ROWS);
-    return await this.#cached(this.#cacheKey("mr-pipelines", realId), fresh ? 0 : LIST_CACHE_TTL_MS, load);
+  async #findInMergeRequestPipelines<T>(
+    realId: string, find: (rows: GitLabPipelineBasicResponse[]) => T | Promise<T>,
+  ): Promise<T> {
+    const rows = async (ttlMs: number) => await this.#cached(this.#cacheKey("mr-pipelines", realId), ttlMs,
+      async () => await this.#fetchAllPages((page, perPage) =>
+        this.#withApi(api => api.listMergeRequestPipelines(this.#projectPath(), Number(realId), page, perPage)), MAX_CI_ROWS));
+    return await find(await rows(LIST_CACHE_TTL_MS)) || await find(await rows(0));
   }
 
   async #listTriggerJobs(pipelineId: number): Promise<GitLabJobResponse[] & { truncated?: true }> {
@@ -1536,8 +1531,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * Whether `pipeline` is one of the merge request's pipelines or a same-project child of one
    * (children run on their parent's commit, so only parents on that commit are searched, two
-   * levels deep as GitLab nests them). A pipeline newer than the cached listing is looked for
-   * again in a fresh one.
+   * levels deep as GitLab nests them).
    */
   async #isMergeRequestPipeline(realId: string, pipeline: { id: number; sha: string }): Promise<boolean> {
     const boundProjectId = await this.#boundProjectId();
@@ -1559,8 +1553,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       return false;
     };
-    return await among(await this.#mergeRequestPipelineRows(realId)) ||
-      await among(await this.#mergeRequestPipelineRows(realId, true));
+    return await this.#findInMergeRequestPipelines(realId, among);
   }
 
   // Session-facing CI reads. Each returns data for its session to record as an observation;
@@ -1634,9 +1627,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
     const pipelineId = this.#parseCiId(id, "Pipeline");
     const realId = this.#requireRealId(logicalId, "Merge request");
-    const listed = (rows: GitLabPipelineBasicResponse[]) => rows.find(pipeline => pipeline.id === pipelineId);
-    // The listing is cached briefly; a pipeline newer than that copy is looked for in a fresh one.
-    const row = listed(await this.#mergeRequestPipelineRows(realId)) ?? listed(await this.#mergeRequestPipelineRows(realId, true));
+    const row = await this.#findInMergeRequestPipelines(realId, rows => rows.find(pipeline => pipeline.id === pipelineId));
     if (row === undefined) throw new Error(`Pipeline ${pipelineId} is not one of merge request !${logicalId}'s pipelines.`);
     if (row.project_id !== boundProjectId) {
       throw new Error(`Pipeline ${pipelineId} ran in another project (the merge request's source project), so it cannot be opened.`);
@@ -1789,7 +1780,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async readJobLog(jobId: number, options: GitLabLogOptions | undefined): Promise<{ jobName: string; page: GitLabLogPage }> {
     this.#requireObserverRoster();
     validateCiLogOptions(options);
-    const cache = this.#ciLogCache();
+    const cache = this.#ciLogs;
     const cacheKey = String(jobId);
     const job = await this.#withApi(api => api.getJob(this.#projectPath(), jobId));
     if (job === null || job.erased_at) {
@@ -1797,11 +1788,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       throw new Error(`The log of job ${jobId} has been erased.`);
     }
     const complete = ciPhase(ciStatus(job.status)) === "done";
-    let log = complete ? cache.get(cacheKey) : undefined;
-    if (log !== undefined &&
-        !(await hasProjectMembership(this.env, this.#userAccount(), this.#projectPath(), DEVELOPER_ACCESS_LEVEL))) {
-      log = undefined;
-    }
+    const cached = complete ? cache.get(cacheKey) : undefined;
+    let log = cached !== undefined &&
+        await hasProjectMembership(this.env, this.#userAccount(), this.#projectPath(), DEVELOPER_ACCESS_LEVEL)
+      ? cached : undefined;
     if (log === undefined) {
       const body = await this.#withApi(api => api.getJobTrace(this.#projectPath(), jobId));
       try {
@@ -1811,7 +1801,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         if (!(error instanceof CiLogTooLargeError)) throw error;
         throw new Error(`The log of job ${jobId} is too large to read here; open it on GitLab: ${job.web_url}`, { cause: error });
       }
-      if (complete && body !== null) cache.put(cacheKey, log);
+      // An entry this account could not be served from is already stored.
+      if (complete && body !== null && cached === undefined) cache.put(cacheKey, log);
     }
     return { jobName: job.name, page: pageCiLog(log, options, complete) };
   }
@@ -2838,7 +2829,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
               { cause: error });
           }
         }
-        this.#appliedPushLog().record(action.newSha);
+        this.#appliedPushes.record(action.newSha);
         break;
       }
       default:
