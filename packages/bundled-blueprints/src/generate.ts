@@ -182,7 +182,7 @@ export async function generateBundledBlueprintsModule(
 // archives are unpacked. Built from ${builtFrom}.
 
 import type {
-  AiChatAuthorInfo, BlueprintBinding, BlueprintOutput,
+  AiChatAuthorInfo, BlueprintBinding, BlueprintOutput, CollaboratorRole,
 } from "@gadgets/workshop-shared/api";
 
 // One bundled blueprint: how to present it, and the files and metadata that say what it does.
@@ -197,6 +197,10 @@ export type BundledBlueprint = {
   // Bumped when the blueprint changes, to trigger a reinstall on deployments already holding an
   // older copy. Everything else here is covered by the install fingerprint.
   revision: number;
+
+  // Present when a workspace created from this blueprint is published to everyone signed in by
+  // default, at this role.
+  publication?: CollaboratorRole;
 
   // What BlueprintMetadata holds under the same names, from the workspace the blueprint was
   // exported from. The dates are ISO strings.

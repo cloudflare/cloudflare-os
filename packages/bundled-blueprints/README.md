@@ -29,7 +29,9 @@ __tests__/             the build's own tests
 ```
 
 `files/` is the gadget's code. `blueprint.json` contains its install ID, presentation, provenance,
-bindings, blueprint `version`, and bundled `revision`. The build embeds the manifest and the files,
+bindings, blueprint `version`, bundled `revision`, and optionally a default `publication` (`"use"`
+or `"build"`): the role a workspace created from it is published with to everyone signed in, unless
+its creator opts out. Only a bundled blueprint can declare one (see docs/blueprints.md). The build embeds the manifest and the files,
 as built, in the generated Worker module. No binary archive is committed, and none is built.
 
 Installing a blueprint makes a git commit of its files, as publishing one from a Workshop does, and
@@ -166,8 +168,8 @@ automatically. `revision` remains an explicit reinstall trigger and is bumped by
 
 ## Editing presentation
 
-Edit `blueprint.json` and rebuild. Changes to title, description, output, or author are included in
-the install fingerprint and do not need a `revision` bump.
+Edit `blueprint.json` and rebuild. Changes to title, description, output, author, or publication
+are included in the install fingerprint and do not need a `revision` bump.
 
 ## Updating code
 
