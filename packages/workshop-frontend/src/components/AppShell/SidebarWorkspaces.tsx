@@ -314,8 +314,8 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
   const [favOpen, setFavOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
   const [spacesOpen, setSpacesOpen] = useState(true)
-  // Every space but the user's own personal one, whose workspaces the Workspaces page opens on.
-  // Empty while the `spaces` flag is off.
+  // Every space but the user's own personal one, whose workspaces head the Workspaces page that
+  // the rail already links to. Empty while the `spaces` flag is off.
   const otherSpaces = useSpaces().spaces.filter((space) => !isOwnPersonalSpace(space))
 
   if (collapsed) {
@@ -415,7 +415,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
         )}
       </SidebarSection>
 
-      {/* Spaces — each links to its section of the workspaces page. */}
+      {/* Spaces — each links to the space's own page. */}
       {otherSpaces.length > 0 && (
         <SidebarSection
           label="Spaces"

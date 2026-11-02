@@ -9,6 +9,7 @@ import { useAuth, CF_ACCESS_MODE } from '../useAuth'
 import { AuthProvider } from '../AuthContext'
 import { HANDOFF_PATH } from '../connectHandoff'
 import { FeatureFlagsProvider } from '../FeatureFlagsContext'
+import { isWorkspaceAddressPath } from '../features/spaces/workspaceAddress'
 import Header from '../components/Header'
 import AppShell from '../components/AppShell/AppShell'
 import LoginPage from '../LoginPage'
@@ -48,6 +49,10 @@ function RootComponent() {
   // The workspace editor renders fullscreen (no app chrome). /gadget/ is the legacy URL, kept
   // here so the chrome doesn't flash in during the redirect to /workspace/.
   const isWorkspaceEditor = pathname.startsWith('/workspace/') || pathname.startsWith('/gadget/')
+  // A workspace's address within a space leads to the editor or to nothing, and only its route
+  // comes to know which, so that route frames what it shows. A space's own page, /spaces/<key>,
+  // is an ordinary page inside the chrome.
+  const isWorkspaceAddress = isWorkspaceAddressPath(pathname)
 
   const handleLoginSuccess = () => {
     const token = localStorage.getItem('authToken')
@@ -135,6 +140,7 @@ function RootComponent() {
             <AuthenticatedShell
               authenticatedApi={authenticatedApi}
               isWorkspaceEditor={isWorkspaceEditor}
+              isWorkspaceAddress={isWorkspaceAddress}
             />
           </Toasty>
         </TooltipProvider>
@@ -151,9 +157,11 @@ function RootComponent() {
 function AuthenticatedShell({
   authenticatedApi,
   isWorkspaceEditor,
+  isWorkspaceAddress,
 }: {
   authenticatedApi: RpcStub<AuthenticatedApi>
   isWorkspaceEditor: boolean
+  isWorkspaceAddress: boolean
 }) {
   // null = still checking, true = needs onboarding, false = onboarding done
   const [onboardingNeeded, setOnboardingNeeded] = useState<boolean | null>(null)
@@ -185,13 +193,16 @@ function AuthenticatedShell({
   }
 
   // Normal app shell. The workspace editor is rendered fullscreen (no chrome); everything else
-  // gets the persistent left-rail AppShell. Connection loss is surfaced by a chip in whichever of
-  // those two top bars is showing, never by a banner that reflows the page (see ReconnectingChip).
+  // gets the persistent left-rail AppShell, but for the route of a workspace's address, which
+  // renders one or the other itself. Connection loss is surfaced by a chip in whichever of those
+  // two top bars is showing, never by a banner that reflows the page (see ReconnectingChip).
   const fullscreen = isWorkspaceEditor
   return (
     <>
       <AccountSelectionModal />
-      {fullscreen ? (
+      {isWorkspaceAddress ? (
+        <Outlet />
+      ) : fullscreen ? (
         <main className="h-full min-h-0">
           <Outlet />
         </main>

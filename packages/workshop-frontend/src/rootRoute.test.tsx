@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ComponentType } from 'react'
+import { act, type ComponentType, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -10,9 +10,9 @@ import type { PublicApi } from '@gadgets/workshop-shared/api'
 const testState = vi.hoisted(() => ({
   pathname: '/',
   isLoading: false,
-  // A signed-in tab's stub: the shell would call this first, so a popup routed into the shell by
-  // mistake shows up as a call here.
-  authenticatedApi: null as { isOnboardingCompleted: () => Promise<boolean> } | null,
+  // A signed-in tab's stub: the shell would call `isOnboardingCompleted` first, so a popup routed
+  // into the shell by mistake shows up as a call here.
+  authenticatedApi: null as Record<string, () => Promise<unknown>> | null,
 }))
 
 // The root decides standalone-vs-shell from the pathname and the auth state alone; both are faked
@@ -38,6 +38,11 @@ vi.mock('./useAuth', () => ({
 
 vi.mock('./components/Header', () => ({ default: () => <header data-testid="header">Header</header> }))
 vi.mock('./LoginPage', () => ({ default: () => <div data-testid="login">Login</div> }))
+// The app chrome is a marker around the routed page, so a test can tell whether a page got it.
+vi.mock('./components/AppShell/AppShell', () => ({
+  default: ({ children }: { children: ReactNode }) => <div data-testid="app-shell">{children}</div>,
+}))
+vi.mock('./components/billing/AccountSelectionModal', () => ({ default: () => null }))
 
 import { Route } from './routes/__root'
 import { RpcContext } from './RpcContext'
@@ -119,5 +124,28 @@ describe('root route standalone rendering', () => {
 
     expect(page.querySelector('[data-testid="login"]')).not.toBeNull()
     expect(page.querySelector('[data-testid="outlet"]')).toBeNull()
+  })
+
+  it.each([
+    ['a workspace at its id', '/workspace/w1', 'fullscreen'],
+    // Its route frames what it shows: the editor fullscreen, nothing being there in the chrome.
+    ['a workspace’s address in a space', '/spaces/design/roadmap', 'unframed'],
+    ['a space’s own page', '/spaces/design', 'in the app chrome'],
+    ['the workspaces page', '/workspaces', 'in the app chrome'],
+  ])('renders %s (%s) for a signed-in user %s', async (_page, pathname, frame) => {
+    testState.authenticatedApi = {
+      isOnboardingCompleted: async () => true,
+      whoami: async () => ({ type: 'user', id: 'me@example.com', name: 'Me' }),
+      amIAdmin: async () => false,
+      getUiFeatureFlags: async () => ({}),
+    }
+    const page = await renderAt(pathname)
+    // The shell renders once it knows the user needs no onboarding.
+    await act(async () => {})
+
+    const outlet = page.querySelector('[data-testid="outlet"]')!
+    expect(outlet).not.toBeNull()
+    expect(outlet.closest('[data-testid="app-shell"]') ? 'in the app chrome'
+      : outlet.closest('main') ? 'fullscreen' : 'unframed').toBe(frame)
   })
 })

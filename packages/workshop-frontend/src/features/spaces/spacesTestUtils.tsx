@@ -73,12 +73,15 @@ export function fakeApi(methods: FakeApi = {}, { spacesFlag = true } = {}): RpcS
 }
 
 /**
- * A `Space` as `ME` holds it, over a member list the test can read back. `setMemberRole` and
- * `removeMember` apply the change and enforce no rule: a test that needs a refusal replaces the
- * method (`space.setMemberRole.mockRejectedValueOnce(...)`).
+ * A `Space` as `ME` holds it, over a member list the test can read back and a listing.
+ * `setMemberRole`, `removeMember` and `setWorkspaceSlug` apply the change and enforce no rule: a
+ * test that needs a refusal replaces the method (`space.setMemberRole.mockRejectedValueOnce(...)`).
+ * A slug resolves to the entry that has it, as its current one; a test that needs a former slug
+ * replaces `resolveWorkspace`.
  */
 export function fakeSpace(info: SpaceInfo, members: SpaceMemberInfo[], workspaces: SpaceWorkspaceInfo[] = []) {
   let current = [...members]
+  let listed = [...workspaces]
   const roleOf = (id: string) => current.find(entry => entry.profile.id === id)?.role
   const space = {
     getInfo: vi.fn<Space['getInfo']>(async () => {
@@ -92,7 +95,17 @@ export function fakeSpace(info: SpaceInfo, members: SpaceMemberInfo[], workspace
     }),
     listWorkspaces: vi.fn<Space['listWorkspaces']>(async () => {
       if (!roleOf(ME.id)) throw notAMember()
-      return workspaces
+      return listed
+    }),
+    resolveWorkspace: vi.fn<Space['resolveWorkspace']>(async (slug) => {
+      if (!roleOf(ME.id)) throw notAMember()
+      const workspace = listed.find(entry => entry.slug === slug)
+      return workspace ? { workspace, canonical: true } : null
+    }),
+    setWorkspaceSlug: vi.fn<Space['setWorkspaceSlug']>(async (id, slug) => {
+      const updated = { ...listed.find(entry => entry.id === id)!, slug }
+      listed = listed.map(entry => (entry.id === id ? updated : entry))
+      return updated
     }),
     setMemberRole: vi.fn<Space['setMemberRole']>(async (username, role) => {
       const existing = current.find(entry => entry.profile.id === username)
@@ -141,18 +154,16 @@ export async function mount(ui: ReactNode, api: RpcStub<AuthenticatedApi>) {
 /**
  * Renders a router that starts at `at`, for the signed-in user of `api`, inside what the app's
  * shell supplies (toasts, tooltips). `pages` are the routes under test, given the root to hang
- * from. The home page and a workspace are stand-ins that render nothing, there for links to
- * lead to. `chrome` is rendered beside the page, as the sidebar is.
+ * from. The app's other pages that links here lead to are stand-ins that render nothing.
+ * `chrome` is rendered beside the page, as the sidebar is.
  */
 export async function mountRouted(api: RpcStub<AuthenticatedApi>, { at, pages = () => [], chrome }: {
   at: string
   pages?: (root: AnyRoute) => AnyRoute[]
   chrome?: ReactNode
 }) {
-  // jsdom implements neither: the router restores scroll on load, and a section asked for by the
-  // `space` parameter scrolls itself into view.
+  // jsdom does not implement it, and the router scrolls the window to the top on a navigation.
   window.scrollTo = () => {}
-  Element.prototype.scrollIntoView = vi.fn<Element['scrollIntoView']>()
 
   const root = createRootRoute({
     component: () => (
@@ -169,12 +180,10 @@ export async function mountRouted(api: RpcStub<AuthenticatedApi>, { at, pages = 
   const taken = new Set(under.map(route => (route.options as { path?: string }).path))
   const router = createRouter({
     history: createMemoryHistory({ initialEntries: [at] }),
-    // As the app's router is set (`src/router.tsx`): it puts a scrolled element back where a
-    // navigation found it, which a page that scrolls on arrival has to survive.
-    scrollRestoration: true,
     routeTree: root.addChildren([
       ...under,
-      ...['/', '/workspaces', '/workspace/$id'].filter(path => !taken.has(path)).map(standIn),
+      ...['/', '/workspaces', '/workspace/$id', '/spaces/$spaceKey', '/spaces/$spaceKey/$slug']
+        .filter(path => !taken.has(path)).map(standIn),
     ]),
   })
   await router.load()

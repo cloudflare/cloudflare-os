@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight, ArrowBendUpRight } from '@phosphor-icons/react';
+import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight, ArrowBendUpRight, LinkSimple } from '@phosphor-icons/react';
 import { useState, useEffect, useRef, type ReactNode, type Ref } from 'react';
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
@@ -10,6 +10,8 @@ import { describeMute } from '../features/notifications/notificationMute';
 import ShareModal from '../ShareModal'
 import { hasMoveTarget, MoveToSpaceDialog } from '../features/spaces/MoveToSpaceDialog'
 import { isOwnPersonalSpace } from '../features/spaces/spaceKinds'
+import type { WorkspaceRowListing } from '../features/spaces/workspaceAddress'
+import { WorkspaceLink } from '../features/spaces/WorkspaceLink'
 import { BindingBadge, getGradient as getBlueprintGradient, uniqueBindingBadges } from './BlueprintCard'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
 import { BlueprintPreviewImage } from './BlueprintPreviewImage'
@@ -47,7 +49,7 @@ function AppRow({
   onInfo,
   onTogglePin,
   onRename,
-  onNotificationMuteChange, onMove, menuButtonRef,
+  onNotificationMuteChange, onMove, menuButtonRef, listing,
 }: {
   gadget: WorkspaceMetadataWithTimestamps
   onDelete: (gadget: WorkspaceMetadataWithTimestamps) => void
@@ -61,6 +63,8 @@ function AppRow({
    * space to move this one to.
    */
   onMove?: (gadget: WorkspaceMetadataWithTimestamps) => void
+  /** What the entry a space lists the workspace under gives the row, where the caller has one. */
+  listing?: WorkspaceRowListing
   menuButtonRef?: Ref<HTMLButtonElement>
 }) {
   const [isRenaming, setIsRenaming] = useState(false)
@@ -87,9 +91,9 @@ function AppRow({
   const muteDescription = describeMute(gadget.notificationMute)
 
   return (
-    <Link
-      to="/workspace/$id"
-      params={{ id: gadget.id }}
+    <WorkspaceLink
+      id={gadget.id}
+      address={listing?.address}
       className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
       onClick={(e) => {
         // Prevent navigation when renaming or clicking the menu
@@ -182,6 +186,12 @@ function AppRow({
               Move to space
             </DropdownMenu.Item>
           )}
+          {listing?.onAddressChange && (
+            <DropdownMenu.Item onClick={listing.onAddressChange} className={MENU_ITEM}>
+              <LinkSimple size={13} className="mr-2" />
+              Change address
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Separator />
           <DropdownMenu.Item
             variant="danger"
@@ -194,7 +204,7 @@ function AppRow({
         </DropdownMenu.Content>
       </DropdownMenu>
       </div>
-    </Link>
+    </WorkspaceLink>
   )
 }
 
@@ -204,16 +214,19 @@ export type GadgetListRows = {
   gadgets: GadgetMetadataWithTimestamps[]
   /** What the search field holds; empty while the list is not being searched. */
   search: string
-  /** The list's row for one of `gadgets`, keyed by its id, with all its actions. */
-  renderRow: (gadget: GadgetMetadataWithTimestamps) => ReactNode
+  /**
+   * The list's row for one of `gadgets`, keyed by its id, with all its actions. `listing` is what
+   * the entry a space lists the workspace under gives the row, for a caller that has that entry.
+   */
+  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: WorkspaceRowListing) => ReactNode
 }
 
 export default function GadgetList({ showHeader = true, sections }: {
   showHeader?: boolean
   /**
-   * Lays the list out under the user's spaces instead of flat, and adds 'Move to space' to the
-   * rows of the user's own workspaces. `spaces` is what that action offers; `render` returns the
-   * sections, and decides which rows a search leaves.
+   * Lays the list out by space instead of flat, and adds 'Move to space' to the rows of the
+   * user's own workspaces. `spaces` is what that action offers; `render` returns what is shown,
+   * every space's section or one space's rows, and decides which rows a search leaves.
    */
   sections?: { spaces: SpaceInfo[]; render: (rows: GadgetListRows) => ReactNode }
 } = {}) {
@@ -246,10 +259,13 @@ export default function GadgetList({ showHeader = true, sections }: {
 
   // A row whose workspace changed space while the dialog was open has mounted again under its
   // new section, so the menu button the dialog would hand focus back to is gone, and the row's
-  // new one takes it. Queued, so that it follows the dialog's own attempt rather than being
-  // undone by it.
+  // new one takes it. Where the row has left what is shown, as it does on the page of the space
+  // it left, the search field does. Queued, so that it follows the dialog's own attempt rather
+  // than being undone by it.
+  const searchRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
-    if (moveClosed) queueMicrotask(() => menuButtons.current.get(moveClosed.id)?.focus())
+    if (!moveClosed) return
+    queueMicrotask(() => (menuButtons.current.get(moveClosed.id) ?? searchRef.current)?.focus())
   }, [moveClosed])
 
   useEffect(() => {
@@ -409,10 +425,11 @@ export default function GadgetList({ showHeader = true, sections }: {
     }
   }
 
-  const renderRow = (gadget: WorkspaceMetadataWithTimestamps) => (
+  const renderRow = (gadget: WorkspaceMetadataWithTimestamps, listing?: WorkspaceRowListing) => (
     <AppRow
       key={gadget.id}
       gadget={gadget}
+      listing={listing}
       onDelete={handleDelete}
       onShare={handleShare}
       onInfo={setInfoTarget}
@@ -464,6 +481,7 @@ export default function GadgetList({ showHeader = true, sections }: {
               className="absolute left-3 top-1/2 -translate-y-1/2 text-kumo-inactive"
             />
             <input
+              ref={searchRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -503,7 +521,7 @@ export default function GadgetList({ showHeader = true, sections }: {
             <FeaturedBlueprintsGallery />
           )
         ) : (
-          filtered.map(renderRow)
+          filtered.map(gadget => renderRow(gadget))
         )}
       </div>
 

@@ -25,11 +25,8 @@ export const suggestSpaceKey = (name: string): string => {
 }
 
 /**
- * The space key a route's `space` search parameter carries, or undefined when it holds anything
- * `accepts` refuses, so a malformed link names no space. `accepts` is `isValidTeamSpaceKey` where
- * only a team space will do, `isValidSpaceKey` where a personal one will too.
+ * The team space key the Home page's `space` search parameter carries, or undefined when it holds
+ * anything else, so a malformed link names no space.
  */
-export const spaceKeyFromSearch = (
-  value: unknown,
-  accepts: (key: string) => boolean,
-): string | undefined => (typeof value === 'string' && accepts(value) ? value : undefined)
+export const spaceKeyFromSearch = (value: unknown): string | undefined =>
+  typeof value === 'string' && isValidTeamSpaceKey(value) ? value : undefined

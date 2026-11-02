@@ -1,20 +1,15 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { Plus } from '@phosphor-icons/react'
-import { isValidSpaceKey } from '@gadgets/workshop-shared/api'
 import GadgetList from '../components/GadgetList'
+import { takeLostFocus } from '../features/spaces/lostFocus'
 import { NewSpaceButton } from '../features/spaces/NewSpaceButton'
 import { SpaceMembersDialog } from '../features/spaces/SpaceMembersDialog'
 import { SpaceSections } from '../features/spaces/SpaceSections'
-import { spaceKeyFromSearch } from '../features/spaces/spaceKey'
 import { spaceLabel } from '../features/spaces/spaceKinds'
 import { useSpaces } from '../features/spaces/useSpaces'
 import { useDocumentTitle } from '../useDocumentTitle'
-
-// `space` asks for the section of the space it names: the page scrolls to that section, focuses
-// it and drops the parameter. It is read only while the `spaces` flag is on.
-type WorkspacesSearch = { space?: string }
 
 /**
  * Full workspace listing. The sidebar surfaces Favorites + a handful of Recent workspaces; this is
@@ -22,14 +17,10 @@ type WorkspacesSearch = { space?: string }
  */
 export const Route = createFileRoute('/workspaces')({
   component: WorkspacesPage,
-  validateSearch: (search: Record<string, unknown>): WorkspacesSearch => ({
-    space: spaceKeyFromSearch(search.space, isValidSpaceKey),
-  }),
 })
 
 function WorkspacesPage() {
   useDocumentTitle('Workspaces')
-  const { space } = Route.useSearch()
   const navigate = useNavigate()
   const toasts = useKumoToastManager()
   const spaces = useSpaces()
@@ -38,13 +29,10 @@ function WorkspacesPage() {
   const [membersOf, setMembersOf] = useState<string | null>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
 
-  // The parameter is a request, answered once. Left in the URL, it would be answered again each
-  // time the list loaded again and its sections mounted, and following the same link a second
-  // time would change nothing and so ask for nothing. The router puts a scrolled list back where
-  // a navigation found it once the navigation has rendered, which here is after the section was
-  // scrolled to; `resetScroll: false` has it leave the list where the section put it.
-  const withdrawSpace = () =>
-    void navigate({ to: '/workspaces', search: {}, replace: true, resetScroll: false })
+  // A user who arrives with focus nowhere starts at the heading: one who left a space from that
+  // space's own page does, the button they confirmed it with having gone with that page. The
+  // heading can take focus only with the spaces flag on.
+  useEffect(() => takeLostFocus(headingRef.current), [])
 
   // The dialog may have changed the user's role in the space.
   const closeMembers = () => {
@@ -61,17 +49,14 @@ function WorkspacesPage() {
     setMembersOf(null)
     if (left) toasts.add({ title: `You left ${spaceLabel(left)}`, variant: 'success' })
     await spaces.refresh()
-    const focused = document.activeElement
-    if (!focused || focused === document.body || !focused.isConnected) headingRef.current?.focus()
+    takeLostFocus(headingRef.current)
   }
 
-  // The new space's section is asked for before the list is read again, and answers when the list
-  // brings it. Asked for after the read, the request could find the user on another page and
-  // bring them back. It takes this page's place in the history, as a sidebar link followed here
-  // does.
+  // A new space is shown on its own page. The list of spaces is read again for the sidebar,
+  // which that page does not wait for: it opens the space by its key.
   const handleSpaceCreated = (key: string) => {
-    void navigate({ to: '/workspaces', search: { space: key }, replace: true })
     void spaces.refresh()
+    void navigate({ to: '/spaces/$spaceKey', params: { spaceKey: key } })
   }
 
   const createWorkspaceLink = (
@@ -116,13 +101,7 @@ function WorkspacesPage() {
           sections={spaces.enabled ? {
             spaces: spaces.spaces,
             render: (rows) => (
-              <SpaceSections
-                {...rows}
-                spaces={spaces}
-                focusedSpaceKey={space}
-                onSpaceFocused={withdrawSpace}
-                onMembersOpen={setMembersOf}
-              />
+              <SpaceSections {...rows} spaces={spaces} onMembersOpen={setMembersOf} />
             ),
           } : undefined}
         />

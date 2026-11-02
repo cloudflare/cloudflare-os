@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isValidSpaceKey, isValidTeamSpaceKey } from '@gadgets/workshop-shared/api'
+import { isValidTeamSpaceKey } from '@gadgets/workshop-shared/api'
 import { spaceKeyFromSearch, suggestSpaceKey } from './spaceKey'
 
 describe('suggestSpaceKey', () => {
@@ -25,14 +25,13 @@ describe('suggestSpaceKey', () => {
 })
 
 describe('spaceKeyFromSearch', () => {
-  it('takes a key of the kind the route accepts, and nothing else', () => {
-    expect(spaceKeyFromSearch('platform', isValidTeamSpaceKey)).toBe('platform')
-    expect(spaceKeyFromSearch('~ada', isValidSpaceKey)).toBe('~ada')
+  it('takes a team space key, and nothing else', () => {
+    expect(spaceKeyFromSearch('platform')).toBe('platform')
 
-    // A personal key where only a team space will do, a malformed key, and not a string at all.
-    expect(spaceKeyFromSearch('~ada', isValidTeamSpaceKey)).toBeUndefined()
-    expect(spaceKeyFromSearch('Not A Key', isValidSpaceKey)).toBeUndefined()
-    expect(spaceKeyFromSearch(['platform'], isValidSpaceKey)).toBeUndefined()
-    expect(spaceKeyFromSearch(undefined, isValidSpaceKey)).toBeUndefined()
+    // A personal key, a malformed key, and not a string at all.
+    expect(spaceKeyFromSearch('~ada')).toBeUndefined()
+    expect(spaceKeyFromSearch('Not A Key')).toBeUndefined()
+    expect(spaceKeyFromSearch(['platform'])).toBeUndefined()
+    expect(spaceKeyFromSearch(undefined)).toBeUndefined()
   })
 })

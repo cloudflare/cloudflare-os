@@ -39,6 +39,20 @@ const layout = (sections: WorkspaceSection[]) => Object.fromEntries(sections.map
 ]))
 
 describe('groupWorkspaces', () => {
+  it('gives a row from the user’s list the entry its own section’s space lists it under', () => {
+    const roadmap = { ...listedBy(ME, 'roadmap'), slug: 'roadmap' }
+    const brief = { ...listedBy(ADA, 'brief'), slug: 'brief' }
+    const sections = group(
+      [mine('solo'), mine('roadmap', 'platform'), sharedWithMe('brief')],
+      // `solo` is still listed by a space it has left, which is not where its row is.
+      { design: ready(listedBy(ME, 'solo')), platform: ready(roadmap, brief) },
+    )
+
+    const entries = sections.flatMap(section => section.rows)
+      .map(row => [row.id, row.kind === 'record' ? row.entry : row.workspace])
+    expect(entries).toEqual([['solo', undefined], ['roadmap', roadmap], ['brief', brief]])
+  })
+
   it('places the user’s own workspaces by their own record, whatever the listings say', () => {
     const sections = group(
       [mine('solo'), mine('roadmap', 'platform')],

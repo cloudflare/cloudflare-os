@@ -53,8 +53,8 @@ describe('AppShell', () => {
 
   it.each([
     ['to another page', '/workspaces', '/blueprints'],
-    // As a link to a part of the page the user is already on.
-    ['that changes only the search', '/workspaces', '/workspaces?space=design'],
+    // As the Home link does on Home, when the address there names a space.
+    ['that changes only the search', '/?space=design', '/'],
   ])('closes the mobile drawer on a navigation %s', (_kind, from, to) => {
     goTo(from)
     container = document.createElement('div')

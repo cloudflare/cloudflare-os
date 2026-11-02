@@ -2,16 +2,16 @@ import { useState, type ReactNode } from 'react'
 import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { WorkshopButton } from '../../components/WorkshopControls'
-import { groupWorkspaces, type WorkspaceRow, type WorkspaceSection } from './groupWorkspaces'
-import { SECTION_ACTION_CLASS_NAME, SpaceSection } from './SpaceSection'
+import { groupWorkspaces, matchingRows, type WorkspaceSection } from './groupWorkspaces'
+import { SPACE_ACTION_CLASS_NAME } from './SpaceEntryPoints'
+import { SpaceSection } from './SpaceSection'
 import { isOwnPersonalSpace } from './spaceKinds'
 import { useSpaceListings } from './useSpaceListings'
 import type { Spaces } from './useSpaces'
+import type { WorkspaceRowListing } from './workspaceAddress'
 
 const sectionKey = (section: WorkspaceSection) =>
   section.kind === 'space' ? `space:${section.space.key}` : section.kind
-
-const rowTitle = (row: WorkspaceRow) => (row.kind === 'record' ? row.gadget.title : row.workspace.title)
 
 /**
  * The user's workspaces laid out under their spaces: their personal space, each other space they
@@ -22,30 +22,15 @@ const rowTitle = (row: WorkspaceRow) => (row.kind === 'record' ? row.gadget.titl
  * While a search is on, only the rows whose title matches are shown, and only the sections that
  * still have one.
  */
-export const SpaceSections = ({
-  gadgets,
-  search,
-  renderRow,
-  spaces,
-  focusedSpaceKey,
-  onSpaceFocused,
-  onMembersOpen,
-}: {
+export const SpaceSections = ({ gadgets, search, renderRow, spaces, onMembersOpen }: {
   /** The user's list (`AuthenticatedApi.listGadgets`), in the order to show it in. */
   gadgets: GadgetMetadataWithTimestamps[]
   /** The text workspaces are being searched for, or empty. */
   search: string
   /** The list's own row for one of `gadgets`, keyed. */
-  renderRow: (gadget: GadgetMetadataWithTimestamps) => ReactNode
+  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: WorkspaceRowListing) => ReactNode
   /** The user's spaces (`useSpaces`), with the `spaces` flag on. */
   spaces: Spaces
-  /** The space whose section the page is being asked for, if any. */
-  focusedSpaceKey: string | undefined
-  /**
-   * That section has been scrolled to and focused. The caller now withdraws the request, so that
-   * it is not answered again when the sections next mount.
-   */
-  onSpaceFocused: () => void
   /** The user asked for the members of the space with this key. */
   onMembersOpen: (spaceKey: string) => void
 }) => {
@@ -80,16 +65,11 @@ export const SpaceSections = ({
     listings,
     userId: currentUser?.id,
   })
-  const needle = search.toLowerCase()
-  const matching = needle === ''
+  const shown = search === ''
     ? sections
-    : sections.map(section => ({
-        ...section,
-        rows: section.rows.filter(row => rowTitle(row).toLowerCase().includes(needle)),
-      }))
-  const hidden = (section: WorkspaceSection) => needle !== '' && section.rows.length === 0
-  const listingsSettled = sections.every(section =>
-    section.kind !== 'space' || section.listing !== 'loading')
+    : sections
+        .map(section => ({ ...section, rows: matchingRows(section.rows, search) }))
+        .filter(section => section.rows.length > 0)
 
   return (
     <>
@@ -97,7 +77,7 @@ export const SpaceSections = ({
         <div role="alert" className="flex shrink-0 items-center gap-3 px-3 pb-3">
           <p className="text-[13px] leading-[18px] text-kumo-danger">Couldn’t load your spaces.</p>
           <WorkshopButton
-            className={SECTION_ACTION_CLASS_NAME}
+            className={SPACE_ACTION_CLASS_NAME}
             loading={reloadingSpaces}
             onClick={() => void reloadSpaces()}
           >
@@ -105,21 +85,13 @@ export const SpaceSections = ({
           </WorkshopButton>
         </div>
       )}
-      {matching.every(hidden) && (
+      {shown.length === 0 && (
         <div className="py-12 text-center text-sm text-kumo-inactive">No workspaces found</div>
       )}
-      {matching.map(section => (
+      {shown.map(section => (
         <SpaceSection
           key={sectionKey(section)}
           section={section}
-          hidden={hidden(section)}
-          focused={
-            focusedSpaceKey !== undefined
-            && (section.kind === 'personal' || section.kind === 'space')
-            && section.space?.key === focusedSpaceKey
-          }
-          onFocused={onSpaceFocused}
-          listingsSettled={listingsSettled}
           renderRow={renderRow}
           onMembersOpen={onMembersOpen}
           onListingReload={reload}

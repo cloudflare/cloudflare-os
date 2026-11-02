@@ -92,7 +92,7 @@ const storeFor = (api: RpcStub<AuthenticatedApi>): SpacesStore => {
 }
 
 /** `value` while it is `known`, and what it last was while it is not. */
-const useLastKnown = <T,>(value: T, known: boolean): T => {
+export const useLastKnown = <T,>(value: T, known: boolean): T => {
   const [last, setLast] = useState(value)
   if (known && !Object.is(last, value)) setLast(value)
   return known ? value : last

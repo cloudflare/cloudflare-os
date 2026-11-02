@@ -82,8 +82,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // menu, workspace rows) otherwise navigate while leaving the drawer covering the page — so on a
   // phone it looks like nothing happened. Watching the location catches every navigation source
   // without prop-drilling a close callback through the whole rail. Its search is part of what is
-  // watched: a link may lead to another part of the page it is on, naming that part there. No-op
-  // on desktop, where the drawer is never open.
+  // watched: the Home link changes nothing else when Home is open with the space a new workspace
+  // goes in named there (`/?space=<key>`). No-op on desktop, where the drawer is never open.
   const location = useRouterState({ select: (s) => s.location.href })
   useEffect(() => {
     setMobileOpen(false)

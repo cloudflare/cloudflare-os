@@ -48,7 +48,7 @@ const renderSidebar = async (
   return { listSpaces }
 }
 
-const spaceLinks = () => [...document.body.querySelectorAll<HTMLAnchorElement>('a[href^="/workspaces?"]')]
+const spaceLinks = () => [...document.body.querySelectorAll<HTMLAnchorElement>('a[href^="/spaces/"]')]
 
 describe('the sidebar’s Spaces section', () => {
   afterEach(() => {
@@ -56,15 +56,31 @@ describe('the sidebar’s Spaces section', () => {
     vi.restoreAllMocks()
   })
 
-  it('links each of the user’s spaces but their own personal one to its section of the page', async () => {
+  it('links each of the user’s spaces but their own personal one to the space’s page', async () => {
     await renderSidebar()
 
     expect(hasButton('Spaces')).toBe(true)
     expect(spaceLinks().map(link => [link.textContent, link.getAttribute('href')])).toEqual([
-      ['AAda’s personal space', '/workspaces?space=%7Eada'],
-      ['DDesign', '/workspaces?space=design'],
-      ['PPlatform', '/workspaces?space=platform'],
+      ['AAda’s personal space', '/spaces/~ada'],
+      ['DDesign', '/spaces/design'],
+      ['PPlatform', '/spaces/platform'],
     ])
+  })
+
+  it('marks the row of the space whose page is open, and no row at a workspace’s address', async () => {
+    // Styled as the sidebar's other rows style the page that is open.
+    const marked = () => spaceLinks()
+      .filter(link => link.classList.contains('bg-kumo-fill'))
+      .map(link => [link.getAttribute('href'), link.getAttribute('aria-current')])
+
+    await renderSidebar({ at: '/spaces/design' })
+    expect(marked()).toEqual([['/spaces/design', 'page']])
+
+    unmountAll()
+    await renderSidebar({ at: '/spaces/design/roadmap' })
+    expect(spaceLinks()).toHaveLength(3)
+    expect(marked()).toEqual([])
+    expect(spaceLinks().some(link => link.hasAttribute('aria-current'))).toBe(false)
   })
 
   it('collapses with its sibling sections', async () => {

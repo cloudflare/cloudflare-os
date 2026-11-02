@@ -123,7 +123,7 @@ const sectionNamed = (name: string) => {
 }
 
 // Each section on show, as its name and the titles of its rows.
-const sections = () => [...document.body.querySelectorAll('section:not([hidden])')].map(section => [
+const sections = () => [...document.body.querySelectorAll('section')].map(section => [
   document.getElementById(section.getAttribute('aria-labelledby') ?? '')?.textContent,
   [...section.querySelectorAll('h3')].map(title => title.textContent),
 ])
@@ -144,8 +144,10 @@ const rowActions = async (title: string) => {
   return [...document.body.querySelectorAll('[role="menuitem"]')].map(item => item.textContent?.trim())
 }
 
+// The sidebar's link to a space's page: the one that is not the name of the space's section.
 const sidebarLinkTo = (spaceKey: string) =>
-  document.body.querySelector<HTMLAnchorElement>(`a[href="/workspaces?space=${spaceKey}"]`)
+  [...document.body.querySelectorAll<HTMLAnchorElement>(`a[href="/spaces/${spaceKey}"]`)]
+    .find(anchor => !anchor.closest('section')) ?? null
 
 const SIDEBAR = (
   <SidebarWorkspacesProvider>
@@ -162,23 +164,6 @@ const chooseTarget = (name: string) =>
   click([...document.body.querySelectorAll('label')].find(label => label.textContent === name)!)
 
 const searchField = () => document.body.querySelector<HTMLInputElement>('input[placeholder^="Search"]')
-
-// The page with Platform's listing still to arrive: the section above Design's that grows.
-const renderWithPlatformPending = async () => {
-  const platform = deferred<SpaceWorkspaceInfo[]>()
-  const openSpace = vi.fn<(key: string) => unknown>((key) => {
-    const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
-    const space = fakeSpace(info, [member(ME, info.role)], LISTED[key])
-    if (key === 'platform') space.listWorkspaces.mockImplementation(() => platform.promise)
-    return space
-  })
-  await renderPage({ at: '/workspaces?space=design', api: { openSpace } })
-  const arrive = async () => {
-    await act(async () => platform.resolve(LISTED.platform))
-    await settle()
-  }
-  return { arrive, scrolls: vi.mocked(Element.prototype.scrollIntoView).mock.contexts }
-}
 
 // The page again under a session that replaces the one it was rendered for, as a reconnect
 // does. The new session answers neither its flags nor its workspaces until `answer` is called.
@@ -220,7 +205,7 @@ describe('the workspaces page', () => {
 
   describe('with the spaces flag off', () => {
     it('is the flat list, with no section, no spaces entry point and no spaces call', async () => {
-      const { listSpaces, openSpace } = await renderPage({ spacesFlag: false, at: '/workspaces?space=platform' })
+      const { listSpaces, openSpace } = await renderPage({ spacesFlag: false })
 
       expect(document.body.querySelectorAll('section')).toHaveLength(0)
       expect([...document.body.querySelectorAll('h3')].map(title => title.textContent))
@@ -254,6 +239,39 @@ describe('the workspaces page', () => {
       expect(sectionNamed('Platform').textContent).toContain('Your role: Admin')
       // The user's own personal space is not opened: its section is their own records.
       expect(openSpace.mock.calls.map(([key]) => key)).toEqual([ADAS.key, 'design', 'platform'])
+    })
+
+    it('links a row to its address in the space once the space’s listing gives it one', async () => {
+      await renderPage({
+        api: {
+          openSpace: (key: string) => {
+            const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+            return fakeSpace(info, [member(ME, info.role)], key === 'platform'
+              ? [
+                  { ...listedBy(ME, 'w-roadmap', 'Roadmap'), slug: 'roadmap' },
+                  { ...listedBy(ADA, 'w-plan', 'Ada’s plan'), slug: 'adas-plan' },
+                  listedBy(ADA, 'w-draft', 'Untitled Workspace'),
+                ]
+              : LISTED[key])
+          },
+        },
+      })
+
+      expect(rowOf('Roadmap').getAttribute('href')).toBe('/spaces/platform/roadmap')
+      expect(rowOf('Ada’s plan').getAttribute('href')).toBe('/spaces/platform/adas-plan')
+      // An entry with no slug, and a row no listing was read for, keep the workspace's own URL.
+      expect(rowOf('Untitled Workspace').getAttribute('href')).toBe('/workspace/w-draft')
+      expect(rowOf('Solo notes').getAttribute('href')).toBe('/workspace/w-solo')
+      // The address is changed from the space's own page.
+      expect(await rowActions('Roadmap')).not.toContain('Change address')
+    })
+
+    it('links the name of a space’s section to the space’s page', async () => {
+      await renderPage()
+
+      expect(link('Platform').getAttribute('href')).toBe('/spaces/platform')
+      expect(link('Ada’s personal space').getAttribute('href')).toBe('/spaces/~ada')
+      expect(link('Personal').getAttribute('href')).toBe('/spaces/~me')
     })
 
     it('shows another member’s workspace as a plain row that links to it', async () => {
@@ -380,8 +398,8 @@ describe('the workspaces page', () => {
       expect(sectionNamed('Ada’s personal space').querySelector('a[aria-label^="New workspace"]')).toBeNull()
     })
 
-    it('creates a space from the page header, then shows and focuses its section', async () => {
-      const { createSpace, router } = await renderPage()
+    it('creates a space from the page header, then lands on the space’s page', async () => {
+      const { createSpace, listSpaces, router } = await renderPage()
 
       await click(button('New space'))
       await type(labeledInput('Name'), 'Field notes')
@@ -389,29 +407,10 @@ describe('the workspaces page', () => {
       await settle()
 
       expect(createSpace).toHaveBeenCalledWith('field-notes', 'Field notes')
-      expect(document.activeElement).toBe(sectionNamed('Field notes'))
-      expect(router.state.location.search).toEqual({})
-      // Back still leaves the page in one press.
-      expect(router.history.length).toBe(1)
-    })
-
-    it('leaves the user on the page they have gone to by the time a new space is in the list', async () => {
-      const readAgain = deferred<SpaceInfo[]>()
-      const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>()
-        .mockResolvedValueOnce([PERSONAL, ADAS, DESIGN, PLATFORM])
-        .mockImplementation(() => readAgain.promise)
-      const { router } = await renderPage({ api: { listSpaces } })
-
-      await click(button('New space'))
-      await type(labeledInput('Name'), 'Field notes')
-      await click(button('Create'))
-      await settle()
-      await act(() => router.navigate({ to: '/' }))
-      await act(async () => readAgain.resolve(
-        [PERSONAL, ADAS, DESIGN, PLATFORM, teamSpace('field-notes', 'Field notes')]))
-      await settle()
-
-      expect(router.state.location.pathname).toBe('/')
+      expect(router.state.location.pathname).toBe('/spaces/field-notes')
+      // Back returns to the list, and the list of spaces is read again for the sidebar.
+      expect(router.history.length).toBe(2)
+      expect(listSpaces).toHaveBeenCalledTimes(2)
     })
 
     it('hands focus back to the page header’s button when the new space is not created', async () => {
@@ -426,117 +425,6 @@ describe('the workspaces page', () => {
 
       expect(document.body.querySelector('[role="dialog"]')).toBeNull()
       expect(document.activeElement).toBe(newSpace)
-    })
-
-    it.each([
-      ['a team space', '/workspaces?space=design', 'Design'],
-      // As the sidebar links another person's personal space.
-      ['a personal space', '/workspaces?space=%7Eada', 'Ada’s personal space'],
-    ])('scrolls to and focuses the section of %s the space parameter names', async (_kind, at, name) => {
-      await renderPage({ at })
-
-      const section = sectionNamed(name)
-      expect(document.activeElement).toBe(section)
-      expect(new Set(vi.mocked(Element.prototype.scrollIntoView).mock.contexts)).toEqual(new Set([section]))
-    })
-
-    it('drops the space parameter once its section has been shown', async () => {
-      const { router } = await renderPage({ at: '/workspaces?space=platform' })
-
-      expect(document.activeElement).toBe(sectionNamed('Platform'))
-      expect(router.state.location.search).toEqual({})
-    })
-
-    it('leaves focus and the scroll position alone when the sections mount again', async () => {
-      const page = await renderPage({ at: '/workspaces?space=platform' })
-      await click(button('Members of Platform'))
-      await settle()
-      const close = button('Close')
-      close.focus()
-      const scrolls = vi.mocked(Element.prototype.scrollIntoView).mock.calls.length
-
-      // The list loads again under a session that replaces this one, and its sections with it.
-      const { answer } = await replaceSession(page)
-      await answer()
-
-      expect(sectionNamed('Platform')).toBeDefined()
-      // Focus is still in the open dialog, not on a section behind it.
-      expect(document.activeElement).toBe(close)
-      expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(scrolls)
-    })
-
-    it('shows a space’s section each time its sidebar link is followed', async () => {
-      await renderPage({ chrome: SIDEBAR })
-
-      await click(sidebarLinkTo('design')!)
-      await settle()
-      expect(document.activeElement).toBe(sectionNamed('Design'))
-
-      searchField()!.focus()
-      await click(sidebarLinkTo('design')!)
-      await settle()
-      expect(document.activeElement).toBe(sectionNamed('Design'))
-    })
-
-    it('adds the page to the history once, however many sidebar links are followed on it', async () => {
-      const { router } = await renderPage({ at: '/', chrome: SIDEBAR })
-
-      // From another page a link leads here, which is one press of Back away again.
-      await click(sidebarLinkTo('design')!)
-      await settle()
-      expect(document.activeElement).toBe(sectionNamed('Design'))
-      expect(router.history.length).toBe(2)
-
-      await click(sidebarLinkTo('platform')!)
-      await settle()
-      expect(document.activeElement).toBe(sectionNamed('Platform'))
-      expect(router.history.length).toBe(2)
-    })
-
-    it('keeps the list at each section its sidebar link scrolled it to', async () => {
-      await renderPage({ chrome: SIDEBAR })
-      const list = sectionNamed('Design').parentElement!
-      const offsets = new Map([[sectionNamed('Design'), 900], [sectionNamed('Platform'), 1500]])
-      vi.mocked(Element.prototype.scrollIntoView).mockImplementation(function (this: Element) {
-        list.scrollTop = offsets.get(this as HTMLElement)!
-      })
-      // As a browser scrolls: the list says that it has moved on the frame after it did.
-      const follow = async (spaceKey: string) => {
-        await click(sidebarLinkTo(spaceKey)!)
-        await settle()
-        await act(async () => { list.dispatchEvent(new Event('scroll')) })
-      }
-
-      await follow('design')
-      expect(list.scrollTop).toBe(900)
-
-      // The router has now seen the list scrolled, and restores the scroll of such a list to
-      // where a navigation found it.
-      await follow('platform')
-      expect(list.scrollTop).toBe(1500)
-      expect(document.activeElement).toBe(sectionNamed('Platform'))
-    })
-
-    it('scrolls to the section again once every space’s listing has arrived', async () => {
-      const { arrive, scrolls } = await renderWithPlatformPending()
-      const section = sectionNamed('Design')
-      expect(scrolls).toEqual([section])
-
-      await arrive()
-
-      expect(scrolls).toEqual([section, section])
-      expect(document.activeElement).toBe(section)
-    })
-
-    it('leaves the page where it is when focus has moved on before the listings arrived', async () => {
-      const { arrive, scrolls } = await renderWithPlatformPending()
-      const search = searchField()!
-      search.focus()
-
-      await arrive()
-
-      expect(scrolls).toHaveLength(1)
-      expect(document.activeElement).toBe(search)
     })
 
     it('keeps the rest of the page when one space’s listing fails, and reads it again on request', async () => {
@@ -683,34 +571,6 @@ describe('the workspaces page', () => {
 
       expect(sections()).toEqual([['Personal', []]])
       expect(searchField()).toBeNull()
-    })
-
-    it('leaves focus in the search field when the section the page was asked for comes back', async () => {
-      await renderPage({ at: '/workspaces?space=design' })
-      const search = document.body.querySelector<HTMLInputElement>('input[placeholder^="Search"]')!
-      search.focus()
-
-      await type(search, 'plan')
-      await type(search, '')
-
-      expect(sections().map(([name]) => name)).toContain('Design')
-      expect(document.activeElement).toBe(search)
-    })
-
-    it('spends a request for a section a search has hidden, and leaves focus in the search field', async () => {
-      const { router } = await renderPage({ chrome: SIDEBAR })
-      const search = searchField()!
-      search.focus()
-      await type(search, 'plan')
-
-      await click(sidebarLinkTo('design')!)
-      await settle()
-      expect(router.state.location.search).toEqual({})
-      expect(document.activeElement).toBe(search)
-
-      await type(search, '')
-      expect(sections().map(([name]) => name)).toContain('Design')
-      expect(document.activeElement).toBe(search)
     })
 
     it('moves one of the user’s workspaces to the space chosen for it', async () => {

@@ -16,7 +16,6 @@ import {
   ChatAttachmentHandle,
   MessageFormatRef,
   SlashCommandRequest,
-  isValidTeamSpaceKey,
 } from "@gadgets/workshop-shared/api";
 import {
   getStoredSelectedModel,
@@ -47,7 +46,7 @@ export const Route = createFileRoute("/")({
       ? search.cfos_native_state : undefined,
     cfos_native_key: typeof search.cfos_native_key === "string"
       ? search.cfos_native_key : undefined,
-    space: spaceKeyFromSearch(search.space, isValidTeamSpaceKey),
+    space: spaceKeyFromSearch(search.space),
   }),
 });
 
