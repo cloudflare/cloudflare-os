@@ -1,0 +1,24 @@
+docs/space-sync.md
+  s_dd2417a6d5bd82::t_e4850f3ca1fe02 3,7,12,19-21,32,38,46,58,75,78-132,134,136,140-143,147-152
+docs/blueprints.md
+  s_dd2417a6d5bd82::t_93f061df96de1c 233
+  s_dd2417a6d5bd82::t_e4850f3ca1fe02 240
+docs/spaces.md
+  s_dd2417a6d5bd82::t_e4850f3ca1fe02 236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0011211abef471af3287e13e9a665a598c425617",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
