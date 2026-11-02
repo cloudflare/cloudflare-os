@@ -13,7 +13,7 @@ catalog:
   # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-kit's git-diff (the
   # simulated PR/MR diff's hunks, used by the git-host gatekeepers). One catalog entry so the two
   # can't drift apart.
-  diff: ^8.0.4
+  diff: ^9.0.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
   # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.

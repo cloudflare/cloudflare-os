@@ -22,8 +22,8 @@ catalogs:
       specifier: 0.3.0
       version: 0.3.0
     diff:
-      specifier: ^8.0.4
-      version: 8.0.4
+      specifier: ^9.0.0
+      version: 9.0.0
     miniflare:
       specifier: 5.20261001.0-alpha
       version: 5.20261001.0-alpha
@@ -615,7 +615,7 @@ importers:
         version: link:../workshop-shared
       diff:
         specifier: 'catalog:'
-        version: 8.0.4
+        version: 9.0.0
       jose:
         specifier: ^6.2.13
         version: 6.2.13
@@ -1292,7 +1292,7 @@ importers:
         version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
       diff:
         specifier: 'catalog:'
-        version: 8.0.4
+        version: 9.0.0
       diff3:
         specifier: 0.0.3
         version: 0.0.3
@@ -4102,10 +4102,6 @@ packages:
 
   diff3@0.0.3:
     resolution: {integrity: sha512-iSq8ngPOt0K53A6eVr4d5Kn6GNrM2nQZtC740pzIriHtn4pOQ2lyzEXQMBeVcWERN0ye7fhBsk9PbLLQOnUx/g==}
-
-  diff@8.0.4:
-    resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
-    engines: {node: '>=0.3.1'}
 
   diff@9.0.0:
     resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
@@ -8305,8 +8301,6 @@ snapshots:
   devtools-protocol@0.0.1299070: {}
 
   diff3@0.0.3: {}
-
-  diff@8.0.4: {}
 
   diff@9.0.0: {}
 
