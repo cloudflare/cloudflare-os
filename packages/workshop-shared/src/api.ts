@@ -508,7 +508,8 @@ export interface AuthenticatedApi extends RpcTarget {
   // --- Spaces ---
   //
   // A space is a key, a display name, a member list and a listing of the workspaces that belong
-  // to it; see the "Spaces" section below.
+  // to it, which leaves out any that holds restricted data or is owner-invites-only; see the
+  // "Spaces" section below.
 
   /**
    * List the spaces the caller is a member of: their personal space first, then the others by
@@ -738,6 +739,11 @@ export interface AuthenticatedApi extends RpcTarget {
    * space (`Space.listWorkspaces`) only once it has seen activity, and whether the caller may add
    * workspaces to that space is checked then: a workspace whose owner may not ends up in their
    * personal space instead, with no error.
+   *
+   * A workspace that holds restricted data or is owner-invites-only
+   * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is listed by no space. For such
+   * a workspace `spaceKey` only records where its owner grouped it, and whether the owner may add
+   * workspaces to that space is not checked once the workspace is one.
    */
   newWorkspace(spaceKey?: string): Promise<RpcStub<Overseer>>;
 
@@ -937,7 +943,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * must satisfy `isValidTeamSpaceKey()` or this throws, and omitted means the caller's personal
    * space. The workspace is listed by its space only once it has seen activity; whether the
    * caller may add workspaces to that space is checked then, and a workspace whose owner may not
-   * ends up in their personal space instead, with no error.
+   * ends up in their personal space instead, with no error. A workspace that holds restricted
+   * data or is owner-invites-only is listed by no space, and for such a workspace `spaceKey` only
+   * records where its owner grouped it, also as for `newGadget()`.
    */
   newWorkspaceFromBlueprint(
     blueprintId: string,
@@ -2350,7 +2358,12 @@ export type WorkspaceMetadata = {
    * `ObservationDescription`). It can still be shared, with collaborators verified per
    * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
    * fetches reach only the hosts the deployment admin trusts (none by default), and every action
-   * requires manual approval.
+   * requires manual approval. A workspace with this set is not shown in any space's listing (see
+   * `Space.listWorkspaces`).
+   *
+   * On a record from `AuthenticatedApi.listWorkspaces` for a workspace the caller owns, this is as
+   * the workspace last reported it, and may be absent for a workspace that has not reported yet:
+   * absent there says the answer is not known, not that it is false.
    */
   containsRestrictedData?: boolean;
 
@@ -2358,6 +2371,11 @@ export type WorkspaceMetadata = {
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
+   * A workspace with this set is not shown in any space's listing (see `Space.listWorkspaces`).
+   *
+   * On a record from `AuthenticatedApi.listGadgets` for a workspace the caller owns, this is as
+   * the workspace last reported it, and may be absent for a workspace that has not reported yet,
+   * exactly as for `containsRestrictedData`.
    */
   ownerInvitesOnly?: boolean;
 
@@ -2369,6 +2387,10 @@ export type WorkspaceMetadata = {
    * space it names refuses to list the workspace (see those methods for when that is decided),
    * the key is cleared, or set back to the team space that still lists the workspace. Until its
    * space has listed the workspace, the key says only where the workspace was asked to go.
+   *
+   * For a workspace that holds restricted data or is owner-invites-only
+   * (`containsRestrictedData`, `ownerInvitesOnly`) the key only records where its owner grouped
+   * it: no space lists such a workspace, the one the key names included.
    *
    * Set only on the owner's own record of the workspace, which is what
    * `AuthenticatedApi.listGadgets` returns for a workspace the caller owns. A record of a
@@ -2824,6 +2846,12 @@ export interface Overseer extends RpcTarget {
    * A workspace that has seen no activity yet is listed by no space, so for one the move is only
    * recorded: it is checked when the workspace first sees activity, with the outcome
    * `AuthenticatedApi.newGadget` describes.
+   *
+   * A workspace that holds restricted data or is owner-invites-only
+   * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is listed by no space either.
+   * For such a workspace the move only records where its owner grouped it: the target does not
+   * list it, and whether the owner may add workspaces to the target is not checked, so the move
+   * does not throw for that.
    */
   moveToSpace(spaceKey: string | null): Promise<void>;
 
@@ -5975,9 +6003,10 @@ export type ShareLinkInfo = {
 // Spaces
 //
 // A space is a named set of users and a grouping of workspaces: a key, a display name, a member
-// list and a listing of the workspaces that belong to it. Every user has one personal space and
-// may create team spaces. Every workspace belongs to exactly one space: its owner's personal
-// space, unless the owner placed it in a team space.
+// list and a listing of the workspaces that belong to it, which leaves out any that holds
+// restricted data or is owner-invites-only (see `Space.listWorkspaces`). Every user has one
+// personal space and may create team spaces. Every workspace belongs to exactly one space: its
+// owner's personal space, unless the owner placed it in a team space.
 //
 // The space's member list is the only authority on who belongs to it and in what role. Being a
 // member lets a user see the space's listing of workspaces. The listing describes those
@@ -6089,6 +6118,11 @@ export interface SpaceMemberInfo {
  * recorded when the workspace last registered with it, so it describes the workspace without
  * granting anything on it: opening the workspace is `AuthenticatedApi.openGadget(id)`, which
  * decides access from the workspace's own sharing.
+ *
+ * No entry describes a workspace that holds restricted data or is owner-invites-only
+ * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a workspace is never
+ * listed, and one that becomes so is removed from the listing. A workspace is listed only once
+ * the server knows it is neither.
  */
 export interface SpaceWorkspaceInfo {
   /** The workspace's id, as in `GadgetMetadata.id`. */
@@ -6129,11 +6163,24 @@ export interface Space extends RpcTarget {
    * still provisional (see `AuthenticatedApi.newGadget`) is absent, and it stays listed after
    * its owner stops being a member.
    *
+   * A workspace that holds restricted data or is owner-invites-only
+   * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is never listed, because a
+   * title can derive from the data that made the workspace so, and one that becomes so is removed
+   * from the listing for good. A workspace is listed only once the server knows it is neither;
+   * until then it is absent, as if it were one of them.
+   *
    * The listing trails the workspaces it describes. A workspace registers with its space in the
    * background once it has seen activity, not within the call that caused the activity, so it
    * appears a moment later. One that has seen activity and that no space lists yet, because it
    * is older than the listing or its registration failed, appears at its next activity or change
    * of title, or once a catch-up that its owner's `AuthenticatedApi.listSpaces` starts reaches it.
+   * One the catch-up could not learn to be neither stays absent until a later catch-up does, or
+   * until its next activity, change of title or move.
+   *
+   * A workspace that comes to hold restricted data or becomes owner-invites-only leaves the
+   * listing in the background too: a moment after or, if that removal failed, at its next
+   * activity, change of title or move. No title the workspace is given after it became so
+   * reaches a listing.
    *
    * Seeing a workspace listed is all that membership gives a user here: it does not let them open
    * the workspace.
