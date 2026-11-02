@@ -1,19 +1,25 @@
 // Spaces end to end over the real RPC API: a user's personal space, team spaces and their keys,
-// and the member list as the one authority on who may open a space and change it.
+// the member list as the one authority on who may open a space and change it, and the workspaces
+// a space lists.
 //
 // A user's listing of their spaces is a record their own account keeps, which each space writes
 // before the call that changed a membership returns. So these tests read it back directly, with
 // no polling.
+//
+// A space's listing of workspaces is read back directly too after a move or a deletion, which
+// are finished when their call returns. A workspace's first activity and a change of its title
+// reach the listing through a sync its owner's account runs apart from the call that caused it,
+// so there, and only there, the tests poll with a bounded wait (`listedAs`).
 
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   isValidSpaceKey, PERSONAL_SPACE_PREFIX,
-  type AuthenticatedApi, type SpaceInfo, type SpaceMemberInfo,
+  type AuthenticatedApi, type Space, type SpaceInfo, type SpaceMemberInfo,
 } from "@gadgets/workshop-shared/api";
 import { type Harness, startHarness } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, logIn, nextUsernames, signUp } from "../src/rpc-client.js";
+import { connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
 
 let harness: Harness | undefined;
 const network = new NetworkInterceptor();
@@ -88,7 +94,28 @@ const roles = (members: SpaceMemberInfo[]) =>
 const KEY_TAKEN = /already exists/i;
 const NOT_ADMIN = /only an admin/i;
 const KEEPS_AN_ADMIN = /at least one admin/i;
+const NOT_A_MEMBER = /not a member/i;
 const OWNER_IS_ONLY_ADMIN = /only admin/i;
+const OWNER_ONLY = /only the workspace owner/i;
+
+/** The ids of the workspaces `space` lists, in its order. */
+const workspaceIds = async (space: RpcStub<Space>) =>
+  (await space.listWorkspaces()).map(({ id }) => id);
+
+/** Polls, for a bounded time, until `space` lists workspace `id` under `title`. */
+const listedAs = (space: RpcStub<Space>, id: string, title: string) =>
+  waitFor(`workspace "${title}" in the space's listing`, async () => {
+    const entry = (await space.listWorkspaces()).find(workspace => workspace.id === id);
+    return entry?.title === title ? entry : null;
+  });
+
+/** The caller's own record of workspace `id`, which never shows what a space acknowledged. */
+async function ownRecord(api: RpcStub<AuthenticatedApi>, id: string) {
+  const record = (await api.listGadgets()).find(gadget => gadget.id === id);
+  if (record === undefined) throw new Error(`Workspace ${id} is not in its owner's list`);
+  expect(record).not.toHaveProperty("registered");
+  return record;
+}
 
 it.concurrent("lists the caller's personal space first, under one key from every session",
     async () => {
@@ -239,10 +266,10 @@ it.concurrent("a member's role and removal reach their listing and their open st
   expect(roles(await bobSpace.listMembers())).toEqual(withBobAs("build"));
 
   // A member who is not an admin changes nobody, and the only admin does not step down.
-  await expect(bobSpace.setMemberRole(bobName, "admin")).rejects.toThrow(NOT_ADMIN);
-  await expect(bobSpace.removeMember(aliceName)).rejects.toThrow(NOT_ADMIN);
-  await expect(space.setMemberRole(aliceName, "build")).rejects.toThrow(KEEPS_AN_ADMIN);
-  await expect(space.removeMember(aliceName)).rejects.toThrow(KEEPS_AN_ADMIN);
+  expect(await refusal(bobSpace.setMemberRole(bobName, "admin"))).toMatch(NOT_ADMIN);
+  expect(await refusal(bobSpace.removeMember(aliceName))).toMatch(NOT_ADMIN);
+  expect(await refusal(space.setMemberRole(aliceName, "build"))).toMatch(KEEPS_AN_ADMIN);
+  expect(await refusal(space.removeMember(aliceName))).toMatch(KEEPS_AN_ADMIN);
   expect(roles(await space.listMembers())).toEqual(withBobAs("build"));
 
   // Lowering a role replaces it and keeps the date the member joined.
@@ -266,11 +293,11 @@ it.concurrent("a personal space takes members but keeps its owner as its only ad
   const personal = await personalSpaceOf(alice);
   using space = await alice.openSpace(personal.key);
 
-  await expect(space.setMemberRole(bobName, "admin")).rejects.toThrow(OWNER_IS_ONLY_ADMIN);
+  expect(await refusal(space.setMemberRole(bobName, "admin"))).toMatch(OWNER_IS_ONLY_ADMIN);
   expect(await space.setMemberRole(bobName, "build")).toMatchObject({ role: "build" });
   // The owner is neither demoted nor removed, not even by herself.
-  await expect(space.setMemberRole(aliceName, "build")).rejects.toThrow(KEEPS_AN_ADMIN);
-  await expect(space.removeMember(aliceName)).rejects.toThrow(KEEPS_AN_ADMIN);
+  expect(await refusal(space.setMemberRole(aliceName, "build"))).toMatch(KEEPS_AN_ADMIN);
+  expect(await refusal(space.removeMember(aliceName))).toMatch(KEEPS_AN_ADMIN);
   expect(roles(await space.listMembers())).toEqual(sorted(
       { id: aliceName, role: "admin" }, { id: bobName, role: "build" }));
 
@@ -279,4 +306,120 @@ it.concurrent("a personal space takes members but keeps its owner as its only ad
   expect(bobSpaces).toHaveLength(2);
   expect(bobSpaces[0]).toMatchObject({ kind: "personal", owner: { id: bobName }, role: "admin" });
   expect(bobSpaces[1]).toEqual({ ...personal, role: "build" });
+});
+
+it.concurrent("a team space lists a member's workspace once it has seen activity, under its title",
+    async () => {
+  const [aliceName, bobName] = usernames("alice", "bob");
+  const [key] = teamKeys("crew");
+  using stack = new DisposableStack();
+  const alice = await newAccount(stack, aliceName);
+  const bob = await newAccount(stack, bobName, "Bob Example");
+  using space = await alice.createSpace(key, "Crew");
+  await space.setMemberRole(bobName, "use");
+
+  // Bob creates two workspaces in the space, and only the second goes on to see activity.
+  using draft = await bob.newGadget(key);
+  await draft.setTitle("Draft");
+  using workspace = await bob.newGadget(key);
+  const { id } = await workspace.getMetadata();
+  await workspace.setTitle("Roadmap");
+  expect(await space.listWorkspaces()).toEqual([]);
+
+  // A chat that starts no agent is the cheapest thing that counts as activity.
+  await workspace.newChat("Seen activity, with no agent", null);
+  const entry = await listedAs(space, id, "Roadmap");
+  const record = await ownRecord(bob, id);
+  expect(record.spaceKey).toBe(key);
+  expect(entry).toEqual({
+    id, title: "Roadmap", created: record.created,
+    owner: expect.objectContaining({ type: "user", id: bobName, name: "Bob Example" }),
+  });
+  // Bob's account syncs his workspaces one at a time, so by now it is past the draft's change of
+  // title, which registered nothing.
+  expect(await space.listWorkspaces()).toEqual([entry]);
+
+  await workspace.setTitle("Revised");
+  expect(await listedAs(space, id, "Revised")).toEqual({ ...entry, title: "Revised" });
+});
+
+it.concurrent("only its owner moves a workspace, and only where they may add; deleting unlists it",
+    async () => {
+  const [aliceName, bobName, carolName] = usernames("alice", "bob", "carol");
+  const [key, otherKey, unclaimedKey] = teamKeys("crew", "other", "unclaimed");
+  using stack = new DisposableStack();
+  const alice = await newAccount(stack, aliceName);
+  const bob = await newAccount(stack, bobName);
+  const carol = await newAccount(stack, carolName);
+  using aliceSpace = await alice.createSpace(key, "Crew");
+  await aliceSpace.setMemberRole(bobName, "use");
+  using other = await carol.createSpace(otherKey, "Other");
+  // Bob's two spaces are read as Bob: his is the session his deleting the workspace leaves alone.
+  using team = await bob.openSpace(key);
+  using personal = await bob.openSpace((await personalSpaceOf(bob)).key);
+
+  using workspace = await bob.newGadget(key);
+  const { id } = await workspace.getMetadata();
+  await workspace.setTitle("Tracker");
+  await workspace.newChat("Seen activity, with no agent", null);
+  await listedAs(team, id, "Tracker");
+
+  // Alice administers the space and builds on the workspace; Carol, outside the space, builds on
+  // it too and names a space of her own. Neither is the owner.
+  await workspace.addCollaborator(aliceName, "build");
+  await workspace.addCollaborator(carolName, "build");
+  {
+    using asAlice = await alice.openGadget(id);
+    using asCarol = await carol.openGadget(id);
+    expect(await refusal(asAlice.moveToSpace(null))).toMatch(OWNER_ONLY);
+    expect(await refusal(asCarol.moveToSpace(otherKey))).toMatch(OWNER_ONLY);
+  }
+
+  // The owner is refused a space he is not in, and a key nobody claimed, alike, and nothing moves.
+  const notAMember = await refusal(workspace.moveToSpace(otherKey));
+  expect(notAMember).toMatch(NOT_A_MEMBER);
+  expect(await refusal(workspace.moveToSpace(unclaimedKey))).toBe(notAMember);
+  expect((await ownRecord(bob, id)).spaceKey).toBe(key);
+  expect(await workspaceIds(team)).toEqual([id]);
+  expect(await workspaceIds(other)).toEqual([]);
+  expect(await workspaceIds(personal)).toEqual([]);
+
+  // Out to his personal space, and back.
+  await workspace.moveToSpace(null);
+  expect(await ownRecord(bob, id)).not.toHaveProperty("spaceKey");
+  expect(await workspaceIds(team)).toEqual([]);
+  expect(await workspaceIds(personal)).toEqual([id]);
+  await workspace.moveToSpace(key);
+  expect((await ownRecord(bob, id)).spaceKey).toBe(key);
+  expect(await workspaceIds(team)).toEqual([id]);
+  expect(await workspaceIds(personal)).toEqual([]);
+
+  await workspace.deleteSelf();
+  expect(await workspaceIds(team)).toEqual([]);
+});
+
+it.concurrent("creates a workspace under a team key only, also from a blueprint", async () => {
+  const [aliceName] = usernames("alice");
+  const [key] = teamKeys("crew");
+  using stack = new DisposableStack();
+  const alice = await newAccount(stack, aliceName);
+  using space = await alice.createSpace(key, "Crew");
+  const { blueprintId } = await waitFor("the bundled document format to install", async () =>
+    (await alice.listOutputFormats()).find(format => format.output.id === "document") ?? null);
+
+  // Only a team key places a workspace: not a personal key, the caller's own included, and
+  // nothing malformed. The refusal is the one creating a space under such a key gets.
+  const personal = await personalSpaceOf(alice);
+  const malformed = await refusal(alice.createSpace(personal.key, "Malformed"));
+  for (const badKey of [personal.key, `${PERSONAL_SPACE_PREFIX}x`, "Bad Key", ""]) {
+    expect(await refusal(alice.newGadget(badKey)), badKey).toBe(malformed);
+    expect(await refusal(alice.newGadgetFromBlueprint(blueprintId, {}, badKey)), badKey)
+        .toBe(malformed);
+  }
+
+  // Instantiating a blueprint is the workspace's first activity, so it registers as it is made.
+  using workspace = await alice.newGadgetFromBlueprint(blueprintId, {}, key);
+  const { id, title } = await workspace.getMetadata();
+  await listedAs(space, id, title);
+  expect((await ownRecord(alice, id)).spaceKey).toBe(key);
 });
