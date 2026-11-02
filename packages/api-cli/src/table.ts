@@ -17,8 +17,8 @@ export type { ApiShape, ApiShapeParam };
 /**
  * How the runtime turns argv tokens into one parameter's value.
  *
- * - `string`: the token, the text of `@<file>` or `-` (stdin), or, for a token that is a JSON
- *   string, the string it quotes; one with {@link ApiArg.choices}, the token itself.
+ * - `string`: the token, as typed (an `@`, a `-` or quotes in it are its own characters); one with
+ *   {@link ApiArg.choices}, the token, which must be one of them.
  * - `number`, `boolean` (`true`/`false`), `bigint` (decimal), `date` (ISO 8601): the token,
  *   converted.
  * - `bytes`: `@<file>`, `-` for stdin, or JSON `{"base64": "..."}`.

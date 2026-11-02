@@ -40,7 +40,7 @@ export function typesHelp(): string {
     "agent declarations (packages/api-schema/generated/workshop-api.agent.d.ts and its fragments),",
     "copied beside the command table by `pnpm api-schema:generate`, for writing code against the API;",
     "the commands are their methods in kebab-case. With a gatekeeper's vendor id, the declarations of",
-    "its app UI, `get-gatekeeper-app <vendor> ui`: the interface its package.json names",
+    "its app UI, `get-gatekeeper-app <vendor> ui`: the interface its src/app-api.ts exports as AppApi",
     "(packages/api-schema/generated/gatekeeper-apps/<vendor>.d.ts). It connects to nothing.",
     "",
     `Services: ${Object.keys(fragments).join(", ")}.`,

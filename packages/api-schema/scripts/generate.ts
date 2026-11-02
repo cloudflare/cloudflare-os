@@ -204,7 +204,13 @@ function generatorModules(): string[] {
 export function staleness(): string | undefined {
   const record = join(ROOT, INPUTS_PATH);
   if (!existsSync(record)) return "it has not run in this checkout";
-  const { inputs, outputs } = JSON.parse(readFileSync(record, "utf8")) as Inputs;
+  let inputs: Inputs["inputs"], outputs: Inputs["outputs"];
+  try {
+    ({ inputs, outputs } = JSON.parse(readFileSync(record, "utf8")) as Inputs);
+  } catch {
+    // A record cut short (the generator killed as it wrote it) is regenerated, not fatal.
+    return `${INPUTS_PATH} cannot be read`;
+  }
   for (const [path, hash] of Object.entries(outputs)) {
     if (hashFile(path) !== hash) return `${path} is gone or was changed`;
   }

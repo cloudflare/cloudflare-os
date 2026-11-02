@@ -932,7 +932,7 @@ export function renderAgentTypes(agent: AgentTypes): string {
     ...record(agent.fragments),
     "};",
     "",
-    "/** Each gatekeeper app UI's declarations, by vendor id: the interface its package.json names, and what it reaches. */",
+    "/** Each gatekeeper app UI's declarations, by vendor id: the interface its src/app-api.ts exports as AppApi, and what it reaches. */",
     "export const apps: Record<string, string> = {",
     ...record(agent.apps ?? {}),
     "};",
