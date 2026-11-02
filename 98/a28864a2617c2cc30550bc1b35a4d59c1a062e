@@ -1,0 +1,63 @@
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 2-3,7-9,11-12,18,50,59-62,64,150,179-184,201-219,239-254,391-411,413-420,422-431,437-441,458-459,492-496,506,582-593
+  s_dd2417a6d5bd82::t_7924a40f47dc87 412,421
+  s_dd2417a6d5bd82::t_8c5beb6d201610 63
+  s_dd2417a6d5bd82::t_a5b278c5a9772f 594-595
+packages/workshop-frontend/src/features/spaces/NewWorkspaceSpaceSelect.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-44
+packages/workshop-frontend/src/features/spaces/SidebarSpaceLinks.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-48
+packages/workshop-frontend/src/features/spaces/NewSpaceButton.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-38
+packages/workshop-frontend/src/features/spaces/SidebarSpaceLinks.test.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-110
+packages/workshop-frontend/src/features/spaces/SpaceSection.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-218
+packages/workshop-frontend/src/features/spaces/SpaceSections.test.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-859
+packages/workshop-frontend/src/features/spaces/SpaceSections.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-130
+packages/workshop-frontend/src/features/spaces/groupWorkspaces.test.ts
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-157
+packages/workshop-frontend/src/homePromptFlow.test.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 7,11-12,15,18,23-37,46-47,58-62,65-81,88-102,116-117,136-536
+packages/workshop-frontend/src/components/AppShell/AppShell.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 83-87,90
+packages/workshop-frontend/src/features/spaces/useSpaceListings.ts
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-96
+packages/workshop-frontend/src/features/spaces/useNewWorkspaceSpace.ts
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-54
+packages/workshop-frontend/src/features/spaces/useSpaceListings.test.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-190
+packages/workshop-frontend/src/routes/index.tsx
+  s_dd2417a6d5bd82::t_7924a40f47dc87 33-34,39
+  s_dd2417a6d5bd82::t_53591cb966cf2d 10,19,28-31,50,58-59,62,74-79,81,83-84,112-132,139-141,146-158,161-162,164-166,168,179-182,210-211,214,257,267-269,278-289
+  s_dd2417a6d5bd82::t_a9f5cbc7b28d1c 290
+packages/workshop-frontend/src/features/spaces/spaceKinds.ts
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-17
+packages/workshop-frontend/src/components/AppShell/AppShell.test.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 8-16,33-38,42,48,53-73
+  s_dd2417a6d5bd82::t_a357a9353f9f41 74
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 31-33,316-319,337,417-429
+packages/workshop-frontend/src/routes/workspaces.tsx
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-3,5,7-12,15-18,25-27,32-87,92-98,103-111,114-128,130-136
+packages/workshop-frontend/src/features/spaces/groupWorkspaces.ts
+  s_dd2417a6d5bd82::t_53591cb966cf2d 1-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "98a28864a2617c2cc30550bc1b35a4d59c1a062e",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
