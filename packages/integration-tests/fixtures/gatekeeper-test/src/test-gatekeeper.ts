@@ -30,7 +30,8 @@ import {
   type GatekeeperConnectCallback, type GatekeeperUser, type GatekeeperUserVerifier,
   type HookController, type HookInitiator, type HookTargetMetadata, type ResourceDescription,
   type ResourceConfiguratorFrame, type SpaceSyncProgress, type SpaceSyncRequest,
-  type SpaceSyncTarget, type SupportedResource, type VendorDescription,
+  type SpaceSyncTarget, type SupportedResource, type VendorDescription, type SpaceSyncItem,
+  type SpaceSyncWrite,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
@@ -101,6 +102,8 @@ type TestActionState = {
 type SpaceSyncJob = {
   label: string;
   resourceUrl: string;
+  /** The request's scope, kept only when it gave one, as a re-sync does. */
+  scope?: SpaceSyncRequest["scope"];
   target: Fetcher<SpaceSyncTarget>;
   cancelCount: number;
   /** How the "done" report made from the last cancelSpaceSync() went: its refusal code, or "ok". */
@@ -359,10 +362,10 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
    * Keeps the target, which its doc allows storing for the job's lifetime, so later reports go
    * through the very stub the Workshop handed over, as a connector's background work would.
    */
-  async startSpaceSync(label: string, { jobId, resourceUrl }: SpaceSyncRequest,
+  async startSpaceSync(label: string, { jobId, resourceUrl, scope }: SpaceSyncRequest,
       target: Fetcher<SpaceSyncTarget>): Promise<void> {
-    this.ctx.storage.kv.put<SpaceSyncJob>(
-        `space-sync:${jobId}`, { label, resourceUrl, target, cancelCount: 0 });
+    this.ctx.storage.kv.put<SpaceSyncJob>(`space-sync:${jobId}`,
+        { label, resourceUrl, ...(scope && { scope }), target, cancelCount: 0 });
     await target.reportProgress(SPACE_SYNC_FIRST_REPORT);
   }
 
@@ -381,26 +384,65 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
       cancelReport =
           getSpaceSyncErrorCode(err) ?? (err instanceof Error ? err.message : String(err));
     }
-    const { label, resourceUrl, target, cancelCount } = job;
-    this.ctx.storage.kv.put<SpaceSyncJob>(`space-sync:${jobId}`,
-        { label, resourceUrl, target, cancelCount: cancelCount + 1, cancelReport });
+    const { label, resourceUrl, scope, target, cancelCount } = job;
+    this.ctx.storage.kv.put<SpaceSyncJob>(`space-sync:${jobId}`, {
+      label, resourceUrl, ...(scope && { scope }), target, cancelCount: cancelCount + 1,
+      cancelReport,
+    });
   }
 
   getSpaceSyncState(jobId: string) {
     using job = this.#spaceSyncJob(jobId);
     if (job === undefined) return { started: false };
-    const { label, resourceUrl, cancelCount, cancelReport } = job;
-    return { started: true, label, resourceUrl, cancelCount, cancelReport };
+    const { label, resourceUrl, scope, cancelCount, cancelReport } = job;
+    return { started: true, label, resourceUrl, scope, cancelCount, cancelReport };
   }
 
-  /** Returns rather than throws, so the refusal and its code reach the test as data. */
-  async reportSpaceSyncProgress(jobId: string, progress: SpaceSyncProgress)
-      : Promise<{ reported: true } | { error: string; code: string | null }> {
+  reportSpaceSyncProgress(jobId: string, progress: SpaceSyncProgress) {
+    return this.#throughSpaceSyncTarget(jobId, async target => {
+      await target.reportProgress(progress);
+      return { reported: true as const };
+    });
+  }
+
+  ensureSpaceSyncWorkspace(jobId: string, item: SpaceSyncItem) {
+    return this.#throughSpaceSyncTarget(jobId, target => target.ensureWorkspace(item));
+  }
+
+  /**
+   * ensureSpaceSyncWorkspace() twice for one item, the second asked before the first is
+   * answered, so both calls are under way in the Workshop at once.
+   */
+  ensureSpaceSyncWorkspaceTwice(jobId: string, item: SpaceSyncItem) {
+    return Promise.all(
+        [this.ensureSpaceSyncWorkspace(jobId, item), this.ensureSpaceSyncWorkspace(jobId, item)]);
+  }
+
+  writeSpaceSyncWorkspace(jobId: string, workspaceId: string, write: SpaceSyncWrite) {
+    return this.#throughSpaceSyncTarget(jobId, async target => {
+      await target.writeWorkspace(workspaceId, write);
+      return { written: true as const };
+    });
+  }
+
+  setSpaceSyncWorkspaceTitle(jobId: string, workspaceId: string, title: string) {
+    return this.#throughSpaceSyncTarget(jobId, async target => {
+      await target.setWorkspaceTitle(workspaceId, title);
+      return { retitled: true as const };
+    });
+  }
+
+  /**
+   * What `call` makes of the target job `jobId` stored, or how that was refused. Returns rather
+   * than throws, so a refusal and its code reach the test as data.
+   */
+  async #throughSpaceSyncTarget<T>(jobId: string,
+      call: (target: Fetcher<SpaceSyncTarget>) => Promise<T>)
+      : Promise<T | { error: string; code: string | null }> {
     using job = this.#spaceSyncJob(jobId);
     if (!job) return { error: "the test gatekeeper never started this space sync", code: null };
     try {
-      await job.target.reportProgress(progress);
-      return { reported: true };
+      return await call(job.target);
     } catch (err) {
       return {
         error: err instanceof Error ? err.message : String(err),
@@ -1258,11 +1300,56 @@ export default {
 
     // Body: {"jobId": "..."}
     // -> {"started": false}
-    //    | {"started": true, "label", "resourceUrl", "cancelCount": number, "cancelReport"?: string}
+    //    | {"started": true, "label", "resourceUrl", "scope"?: "tree" | "item",
+    //       "cancelCount": number, "cancelReport"?: string}
     if (url.pathname === "/control/space-sync-state" && req.method === "POST") {
       const { jobId } = body as Record<string, unknown>;
       if (!isNonEmptyString(jobId)) return badRequest("`jobId` must be a non-empty string");
       return Response.json(await control(ctx.exports).getSpaceSyncState(jobId));
+    }
+
+    // Ask, through job `jobId`'s stored target, for the workspace of a source item; with
+    // `-twice`, twice at once, answered with both replies in a list.
+    // Body: {"jobId": "...", "sourceUrl": "...", "title": "...", "parentId"?: "..."}
+    // -> {"workspaceId": string} | {"error": string, "code": string | null}
+    const twice = url.pathname === "/control/space-sync-ensure-twice";
+    if ((twice || url.pathname === "/control/space-sync-ensure") && req.method === "POST") {
+      const { jobId, sourceUrl, title, parentId } = body as Record<string, unknown>;
+      if (!isNonEmptyString(jobId)) return badRequest("`jobId` must be a non-empty string");
+      // Left unchecked beyond their types: what the Workshop accepts is what tests ask.
+      if (typeof sourceUrl !== "string") return badRequest("`sourceUrl` must be a string");
+      if (typeof title !== "string") return badRequest("`title` must be a string");
+      if (parentId !== undefined && typeof parentId !== "string") {
+        return badRequest("`parentId` must be a string when given");
+      }
+      const item = { sourceUrl, title, ...(parentId !== undefined && { parentId }) };
+      const stub = control(ctx.exports);
+      return Response.json(twice ? await stub.ensureSpaceSyncWorkspaceTwice(jobId, item)
+          : await stub.ensureSpaceSyncWorkspace(jobId, item));
+    }
+
+    // Call a gadget method on a workspace through job `jobId`'s stored target.
+    // Body: {"jobId": "...", "workspaceId": "...", "method": "...", "args": any}
+    // -> {"written": true} | {"error": string, "code": string | null}
+    if (url.pathname === "/control/space-sync-write" && req.method === "POST") {
+      const { jobId, workspaceId, method, args } = body as Record<string, unknown>;
+      if (!isNonEmptyString(jobId)) return badRequest("`jobId` must be a non-empty string");
+      if (typeof workspaceId !== "string") return badRequest("`workspaceId` must be a string");
+      if (typeof method !== "string") return badRequest("`method` must be a string");
+      return Response.json(await control(ctx.exports).writeSpaceSyncWorkspace(
+          jobId, workspaceId, { method, args }));
+    }
+
+    // Retitle a workspace through job `jobId`'s stored target.
+    // Body: {"jobId": "...", "workspaceId": "...", "title": "..."}
+    // -> {"retitled": true} | {"error": string, "code": string | null}
+    if (url.pathname === "/control/space-sync-title" && req.method === "POST") {
+      const { jobId, workspaceId, title } = body as Record<string, unknown>;
+      if (!isNonEmptyString(jobId)) return badRequest("`jobId` must be a non-empty string");
+      if (typeof workspaceId !== "string") return badRequest("`workspaceId` must be a string");
+      if (typeof title !== "string") return badRequest("`title` must be a string");
+      return Response.json(await control(ctx.exports).setSpaceSyncWorkspaceTitle(
+          jobId, workspaceId, title));
     }
 
     // Map an external gadgetKey to the Overseer id the gateway targets -- the DO named
