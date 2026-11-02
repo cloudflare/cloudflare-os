@@ -1,0 +1,24 @@
+packages/workshop-frontend/src/components/PeopleComposer.tsx
+  s_dd2417a6d5bd82::t_520677c3e85d55 2-4,6-8,10-29,31-151,156-170,173-512
+  s_dd2417a6d5bd82::t_1a5de899319495 1,5,9,30,152-155,171-172
+packages/workshop-frontend/src/ShareModal.tsx
+  s_dd2417a6d5bd82::t_520677c3e85d55 1,19,29-32,34,312-314,323-324,328,331-342,347-348,473,620-621,623,631,888,902-903,907
+packages/workshop-frontend/src/components/PeopleComposer.test.tsx
+  s_dd2417a6d5bd82::t_520677c3e85d55 1-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "04e69abee5c9f7837eea3af7b52eb3da9493a04e",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
