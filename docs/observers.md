@@ -851,7 +851,7 @@ its resource types.
 | **confluence** | Space | **C** | Verify space access; track observed pages and blog posts because content restrictions may be narrower. |
 | **confluence** | Page / Blog Post | **C** | Verify bound-content access; track observed child pages because they may have stricter restrictions than their parent. |
 | **zoominfo** | Account | **A** | Always throw. The whole-account binding exposes licensed, entitlement-dependent and account-specific intelligence, and ZoomInfo provides no ACL oracle proving another account can read every historical result. |
-| **context** | Context Library singleton | **C** | Track collections whose contents a read revealed (search results, a collection's listing, a document); verify each is in the observer's sharing domain and is public, is everyone-viewable, or grants the observer's Context account a viewer, editor, or owner role. Uses the kit's default observer cap to bound per-read verifier fanout. The top-level collection listing tracks nothing: its titles, descriptions and counts are discovery metadata the agent catalog already advertises unobserved. The denial never names the collection, which the refused collaborator cannot read. |
+| **context** | Context Library singleton | **C**, kernel-checked (§10) | Every read reports the collections whose contents it revealed (search results, a collection's listing, a document) as `subresources`, one collection ID each; `verifyObserverAccess` (the kit's `observerAccessVerifier`) allows an observer only if their Context account can read every one now, in the binding's sharing domain: public, everyone-viewable, or granted to it as viewer, editor, or owner. The top-level collection listing reports `[]`: its titles, descriptions and counts are discovery metadata the agent catalog already advertises unobserved. `addObserver` keeps the kit tracker, which reads no longer feed, so it enforces only the collections reads revealed before they reported them, with the same oracle. Neither denial names the collection, which the refused collaborator cannot read. |
 | **x** | Account | **C** | Admit any observer with a working X connection: public posts, profiles, public Lists and follow graphs need only an X account. Reads private to the account -- bookmarks, likes, mute state, private Lists, and any page holding a protected account's post -- authorize against one synthetic `owner` collection, which admits only an observer connected as the same X user. |
 | **x** | Post / List | **C** | As Account, plus a check on every open that the observer's own X account can see the bound post or List (`canViewPost` / `canViewList`). Each check is a read billed to the observer's connection, so a passed check is trusted for an hour; a failed one never is. |
 | **microsoft** | SharePoint (all, site, library, folder, file, list, page) | **C** | Track every object a read revealed as a unit (`sharepoint-observers.ts`), since SharePoint breaks inheritance at any level and one container's ACL never vouches for its contents; verify each by probing it with the observer's own token, twenty to a `$batch`, where 403 and 404 both mean no access. A file's content and its version history are their own units, since someone may see a file they can't open; a draft the owner read pins its version, and the probe passes only if the observer is shown the same one. |
@@ -908,9 +908,10 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
 - **`[]`:** an explicit "nothing restricts this read": no check, and no requirement recorded.
 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
-runs first). No shipping gatekeeper reports subresources yet. The gatekeeper's side of the
-contract (ID rules and limits, `verifyObserverAccess()` answers, what `addObserver()` must still
-enforce) is documented on those members in `workshop-shared/src/gatekeeper.ts`, and
+runs first). The Context Library is the first shipping gatekeeper to report subresources (§9.2).
+The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAccess()` answers, what
+`addObserver()` must still enforce) is documented on those members in
+`workshop-shared/src/gatekeeper.ts`, and
 `plans/kernel-observer-tracking.md` records why it is shaped this way.
 
 - **Validation.** At most 10,000 IDs per observation, totalling at most 500,000 UTF-16 code
