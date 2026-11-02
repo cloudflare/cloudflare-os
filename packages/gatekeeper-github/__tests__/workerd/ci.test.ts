@@ -51,6 +51,8 @@ type FakeRollup = {
   countsMissing?: boolean;
   /** The page (0-based) whose rollup GitHub nulls with an error, as a timeout on it does. */
   failedPage?: number;
+  /** Whether GitHub answers the entry list as null, which its schema allows without an error. */
+  nodesMissing?: boolean;
 };
 
 function checkRunNode(name: string, status: string, conclusion: string | null, extra: Record<string, unknown> = {}) {
@@ -344,7 +346,7 @@ class FakeGitHub {
                 pageInfo: { hasNextPage: end < nodes.length, endCursor: end < nodes.length ? String(end) : null },
                 checkRunCountsByState: rollup.countsMissing ? null : countBy("CheckRun", node => String(node.conclusion ?? node.status)),
                 statusContextCountsByState: rollup.countsMissing ? null : countBy("StatusContext", node => String(node.state)),
-                nodes: nodes.slice(offset, end),
+                nodes: rollup.nodesMissing ? null : nodes.slice(offset, end),
               },
             },
           },
@@ -754,6 +756,19 @@ describe("pull request CI", () => {
     const gk = await gatekeeper(7);
 
     await expect(gk.read([{ method: "getChecks" }])).rejects.toThrow(/could not read this commit's CI just now/);
+  });
+
+  it.each([false, true])("keeps polling a pending rollup whose entry list GitHub left null (counts missing: %s)", async countsMissing => {
+    // No error comes with it, so only the null list says entries were left out; read as none, an
+    // old commit would be done while its CI runs.
+    const github = pullScenario();
+    Object.assign(github.rollups.get(HEAD)!, {
+      state: "PENDING", nodes: [checkRunNode("build", "IN_PROGRESS", null)], nodesMissing: true, countsMissing,
+      committedAt: Date.now() - 60 * MINUTE,
+    });
+    const gk = await gatekeeper(7);
+
+    expect(await gk.read([{ method: "getChecks" }])).toMatchObject({ state: "pending", phase: "active", checks: [] });
   });
 
   it("counts every check past the 1000 it lists, and names none missing then", async () => {

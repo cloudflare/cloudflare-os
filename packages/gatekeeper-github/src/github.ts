@@ -5515,6 +5515,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             commit.parents?.nodes?.[0]?.statusCheckRollup != null,
         };
       }
+      // GitHub's schema lets the list be null without an error: entries were left out, not absent.
+      if (rollup !== null && !rollup.contexts.nodes) dropped = true;
       for (const node of rollup?.contexts.nodes ?? []) {
         if (node === null || entries.length >= MAX_CHECK_ENTRIES) dropped = true;
         else entries.push(rollupEntryOf(node));
