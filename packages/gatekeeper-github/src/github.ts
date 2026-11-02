@@ -75,11 +75,11 @@ import {
   entryName,
   hasWorkflowFiles,
   jobSummaryOf,
+  leftOutPhases,
   mergeStateOf,
   normalizeGitHubLogLine,
   parseCiId,
   pendingDeploymentOf,
-  phaseOf,
   queuedCommitChecks,
   rollupEntryOf,
   rollupPhaseOf,
@@ -5464,6 +5464,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     counts: Partial<Record<GitHubCheckState, number>>;
     /** Whether entries were left out: past MAX_CHECK_ENTRIES, or ones GitHub returned as null. */
     truncated: boolean;
+    /** Whether `counts` are GitHub's over every entry, rather than tallied from `entries`. */
+    counted: boolean;
     committedAt: number | undefined;
     ciExpected: boolean;
   } | undefined> {
@@ -5513,6 +5515,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         return {
           ...first,
           counts: first.counts ?? countStates(entries.map(entry => entry.state)),
+          counted: first.counts !== undefined,
           entries,
           truncated: dropped || page?.hasNextPage === true,
         };
@@ -5533,12 +5536,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   } | undefined> {
     const rollup = await this.#fetchRollup(sha, options.pullNumber);
     if (rollup === undefined) return undefined;
-    // The phases of entries left out are judged from the counts alone, where a `waiting` one reads
-    // as blocked.
     const phases = rollup.entries.map(entry => entry.phase);
-    if (rollup.truncated) {
-      phases.push(...(Object.keys(rollup.counts) as GitHubCheckState[]).map(state => phaseOf(state)));
-    }
+    if (rollup.truncated) phases.push(...leftOutPhases(rollup.state, rollup.counted ? rollup.counts : undefined));
     let phase = rollupPhaseOf(rollup.state, phases);
     if (phase === undefined) {
       const now = Date.now();

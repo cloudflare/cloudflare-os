@@ -138,6 +138,18 @@ export function rollupStateOf(state: string | null | undefined): GitHubCommitChe
 }
 
 /**
+ * The phases of rollup entries left out of a listing: from GitHub's counts by state (`counts`),
+ * where a `waiting` one reads as blocked; without them, from its verdict alone, which says only
+ * whether anything is unfinished.
+ */
+export function leftOutPhases(
+  state: GitHubCommitChecks["state"], counts: Partial<Record<GitHubCheckState, number>> | undefined,
+): GitHubCiPhase[] {
+  if (counts !== undefined) return (Object.keys(counts) as GitHubCheckState[]).map(entryState => phaseOf(entryState));
+  return [state === "pending" || state === "expected" ? "active" : "done"];
+}
+
+/**
  * A commit's phase from its entries' phases, or undefined when nothing has reported (the
  * absence policy decides then). An `expected` rollup waits on a required status: `active`.
  */

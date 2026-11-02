@@ -460,7 +460,10 @@ export type GitHubCommitChecks = {
    */
   state: "success" | "failure" | "pending" | "expected" | "none";
   phase: GitHubCiRollupPhase;
-  /** How many entries are in each state. Counts every entry, even past the first 1000. */
+  /**
+   * How many entries are in each state. Counts every entry, even past the first 1000; only the
+   * listed ones when GitHub could not count them.
+   */
   counts: Partial<Record<GitHubCheckState, number>>;
   /** The check runs and commit statuses, at most 1000 of them. */
   checks: GitHubCheckEntry[];

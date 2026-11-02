@@ -708,6 +708,18 @@ describe("pull request CI", () => {
     expect(checks).toMatchObject({ state: "success", phase: "done", missingRequired: [] });
   });
 
+  it("keeps polling on a pending rollup whose unfinished check GitHub returned as null, uncounted", async () => {
+    const github = pullScenario();
+    github.requiredByRules = ["build"];
+    Object.assign(github.rollups.get(HEAD)!, {
+      state: "PENDING", countsMissing: true, hiddenNodes: [checkRunNode("lint", "IN_PROGRESS", null, { isRequired: true })],
+    });
+    const gk = await gatekeeper(7);
+
+    expect(await gk.read([{ method: "getChecks" }]))
+      .toMatchObject({ state: "pending", phase: "active", missingRequired: [] });
+  });
+
   it("takes what the base branch requires for a pull request GitHub has not created yet", async () => {
     const github = pullScenario();
     github.branches.set("fix", C1);
