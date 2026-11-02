@@ -567,6 +567,75 @@ describe('GatewayModelRow', () => {
         { allowedModels: ['anthropic/*', 'openai/gpt-6-luna', 'openai/*'] })
     })
 
+    it('highlights no suggestion until the arrow keys pick one, which Enter then adds', async () => {
+      const { onSettingsChange } = await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
+      await act(async () => { field().focus() })
+      expect(options()).toHaveLength(3)
+      // Enter in an empty field is left to submit the form.
+      expect(field().getAttribute('aria-activedescendant')).toBeNull()
+
+      await press('ArrowDown')
+      await press('ArrowDown')
+      expect(document.getElementById(field().getAttribute('aria-activedescendant')!)?.textContent)
+        .toBe('openai/*Every OpenAI model')
+      await press('Enter')
+      expect(chips()).toEqual(['openai/*'])
+      expect(field().getAttribute('aria-activedescendant')).toBeNull()
+
+      // ArrowUp from none picks the last.
+      await press('ArrowUp')
+      expect(document.getElementById(field().getAttribute('aria-activedescendant')!)?.textContent)
+        .toBe('openai/gpt-6-lunaGPT-6 Luna')
+      expect(onSettingsChange).not.toHaveBeenCalled()
+    })
+
+    it('keeps what follows a refused entry of a pasted list, so correcting it loses nothing',
+      async () => {
+        const { onSettingsChange } = await render({ model: AUTO })
+        await type(field(), 'openai/*, bad name, anthropic/*')
+        expect(chips()).toEqual(['openai/*'])
+        expect(field().value).toBe('bad name, anthropic/*')
+        expect(field().getAttribute('aria-invalid')).toBe('true')
+
+        // Saving stages what is valid and still refuses the rest.
+        await click(save())
+        expect(onSettingsChange).not.toHaveBeenCalled()
+        expect(chips()).toEqual(['openai/*', 'anthropic/*'])
+        expect(field().value).toBe('bad name')
+
+        await type(field(), 'workers-ai/good-name')
+        await click(save())
+        expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+          { allowedModels: ['openai/*', 'anthropic/*', 'workers-ai/good-name'] })
+      })
+
+    it('keeps the list open until a press that takes focus ends, so the press lands where it began',
+      async () => {
+        await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
+        const listShown = () => field().getAttribute('aria-expanded') === 'true'
+        await act(async () => { field().focus() })
+        expect(listShown()).toBe(true)
+
+        // Pressing Save takes focus before its click, which would miss Save if the list above it
+        // closed under the pointer.
+        await act(async () => {
+          save().dispatchEvent(new Event('pointerdown', { bubbles: true }))
+          field().blur()
+        })
+        expect(listShown()).toBe(true)
+        await act(async () => {
+          save().dispatchEvent(new Event('pointerup', { bubbles: true }))
+          await new Promise((resolve) => setTimeout(resolve))
+        })
+        expect(listShown()).toBe(false)
+
+        // Leaving by keyboard closes it at once.
+        await act(async () => { field().focus() })
+        expect(listShown()).toBe(true)
+        await act(async () => { field().blur() })
+        expect(listShown()).toBe(false)
+      })
+
     it('refuses a name that is no gateway model name without sending it, and points at the field',
       async () => {
         const { onSettingsChange } = await render({ model: AUTO })

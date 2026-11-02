@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Button } from '@cloudflare/kumo'
 import { Cpu, Plus } from '@phosphor-icons/react'
 import type { AiModelProvider } from '@gadgets/workshop-shared/api'
@@ -7,7 +7,6 @@ import { isImeComposing } from '../../keyboardEvent'
 import {
   PROVIDER_LABELS,
   isAllowedModelName,
-  parseAllowedModels,
   type AllowedModelSuggestion,
 } from './modelForm'
 import { useFieldErrorAlert } from './useFieldErrorAlert'
@@ -45,8 +44,12 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
   // The typed text that was refused, which the field reports until the text changes.
   const [refused, setRefused] = useState<string | null>(null)
   const [listDismissed, setListDismissed] = useState(true)
-  const [activeIndex, setActiveIndex] = useState(0)
+  // The highlighted option, or -1 for none: with nothing typed, none is until the arrow keys pick
+  // one, so that Enter in an empty field saves the list.
+  const [activeIndex, setActiveIndex] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
+  // Whether a pointer is pressed anywhere on the page while the list is open.
+  const pressing = useRef(false)
   const inputId = useId()
   const facts = useId()
   const listboxId = useId()
@@ -65,6 +68,21 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
   ]
   const open = !listDismissed && !busy && options.length > 0
   const active = Math.min(activeIndex, options.length - 1)
+
+  useEffect(() => {
+    if (!open) return
+    const press = () => { pressing.current = true }
+    const release = () => { pressing.current = false }
+    window.addEventListener('pointerdown', press, true)
+    window.addEventListener('pointerup', release, true)
+    window.addEventListener('pointercancel', release, true)
+    return () => {
+      window.removeEventListener('pointerdown', press, true)
+      window.removeEventListener('pointerup', release, true)
+      window.removeEventListener('pointercancel', release, true)
+      pressing.current = false
+    }
+  }, [open])
   const error = refused !== null ? malformedError(refused) : undefined
   const optionId = (index: number) => `${listboxId}-option-${index}`
 
@@ -76,28 +94,49 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
   const editQuery = (text: string) => {
     setQuery(text)
     setRefused(null)
-    setActiveIndex(0)
+    setActiveIndex(text.trim() ? 0 : -1)
     setListDismissed(false)
     alert.clear()
   }
 
-  // Stage `text`, one name or a comma-separated list, and keep in the field what is no name, so
-  // that it can be corrected. Returns the names staged with it, or null when some of it was refused.
-  const add = (text: string): string[] | null => {
+  // Stage the names in `text`, one or a comma-separated list, and leave in the field the entries
+  // that are no name followed by `rest`, the text after the last comma, so that a refused entry
+  // can be corrected without losing anything else typed or pasted. Returns the names staged with
+  // it, or null when some of it was refused.
+  const add = (text: string, rest = ''): string[] | null => {
     const entries = text.split(',').map((entry) => entry.trim()).filter(Boolean)
-    const bad = entries.find((entry) => !isAllowedModelName(entry))
-    const parsed = parseAllowedModels(entries.filter((entry) => entry !== bad).join(','))
+    const bad = entries.filter((entry) => !isAllowedModelName(entry))
     const next = [...names]
-    for (const name of 'names' in parsed ? parsed.names : []) {
-      if (!next.includes(name)) next.push(name)
+    for (const entry of entries) {
+      if (isAllowedModelName(entry) && !next.includes(entry)) next.push(entry)
     }
     if (next.length !== names.length) stage(next)
-    setQuery(bad ?? '')
-    setRefused(bad ?? null)
-    setActiveIndex(0)
-    if (bad === undefined) return next
-    alert.pointAt(inputRef.current, malformedError(bad))
+    setQuery([...bad, rest.trimStart()].filter(Boolean).join(', '))
+    setRefused(bad[0] ?? null)
+    setActiveIndex(-1)
+    if (bad.length === 0) return next
+    alert.pointAt(inputRef.current, malformedError(bad[0]))
     return null
+  }
+
+  // Close the list once focus leaves the field. A press elsewhere takes focus before its click
+  // lands, and the list sits in the page's flow, so closing it at once would move what is under
+  // the pointer, such as Save, and the click would miss; the list waits for the press to end.
+  const dismissOnBlur = () => {
+    if (!pressing.current) {
+      setListDismissed(true)
+      return
+    }
+    const done = () => {
+      window.removeEventListener('pointerup', done, true)
+      window.removeEventListener('pointercancel', done, true)
+      // After the click the release dispatches, unless that click brought focus back.
+      setTimeout(() => {
+        if (document.activeElement !== inputRef.current) setListDismissed(true)
+      })
+    }
+    window.addEventListener('pointerup', done, true)
+    window.addEventListener('pointercancel', done, true)
   }
 
   const remove = (name: string) => {
@@ -128,10 +167,10 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (busy || isImeComposing(event)) return
-    if (event.key === 'Enter' && typed) {
-      // Enter with nothing typed saves the list, as the form's submit.
+    const option = open && active >= 0 ? options[active] : undefined
+    if (event.key === 'Enter' && (option || typed)) {
+      // Enter with nothing typed or highlighted saves the list, as the form's submit.
       event.preventDefault()
-      const option = open ? options[active] : undefined
       add(option?.name ?? typed)
     } else if (event.key === 'Escape' && open) {
       event.preventDefault()
@@ -144,7 +183,8 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
         return
       }
       const step = event.key === 'ArrowDown' ? 1 : -1
-      setActiveIndex((active + step + options.length) % options.length)
+      const from = active >= 0 ? active : step > 0 ? -1 : 0
+      setActiveIndex((from + step + options.length) % options.length)
     } else if (event.key === 'Backspace' && query === '' && names.length > 0) {
       stage(names.slice(0, -1))
     }
@@ -185,7 +225,7 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
               aria-autocomplete="list"
               aria-expanded={open}
               aria-controls={open ? listboxId : undefined}
-              aria-activedescendant={open ? optionId(active) : undefined}
+              aria-activedescendant={open && active >= 0 ? optionId(active) : undefined}
               aria-invalid={error !== undefined}
               aria-describedby={facts}
               value={query}
@@ -196,13 +236,13 @@ export const AllowedModelsField = ({ modelName, allowedModels, providers, sugges
                 if (text.includes(',')) {
                   setListDismissed(false)
                   const cut = text.lastIndexOf(',')
-                  if (add(text.slice(0, cut)) !== null) setQuery(text.slice(cut + 1).trimStart())
+                  add(text.slice(0, cut), text.slice(cut + 1))
                 } else {
                   editQuery(text)
                 }
               }}
               onFocus={() => setListDismissed(false)}
-              onBlur={() => setListDismissed(true)}
+              onBlur={dismissOnBlur}
               onKeyDown={handleKeyDown}
               autoComplete="off"
               autoCorrect="off"

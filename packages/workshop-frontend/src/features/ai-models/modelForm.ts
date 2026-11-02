@@ -87,18 +87,3 @@ export const allowedModelSuggestions = (
   }
   return suggestions.filter(({ name }) => isAllowedModelName(name))
 }
-
-/**
- * Parse the allowed-models field, a comma-separated list of gateway model names: the names,
- * trimmed and once each (none when blank), or else the first entry that is no such name.
- */
-export const parseAllowedModels = (text: string): { names: string[] } | { malformed: string } => {
-  const names: string[] = []
-  for (const entry of text.split(',')) {
-    const name = entry.trim()
-    if (!name) continue
-    if (!ALLOWED_MODEL_NAME.test(name)) return { malformed: name }
-    if (!names.includes(name)) names.push(name)
-  }
-  return { names }
-}
