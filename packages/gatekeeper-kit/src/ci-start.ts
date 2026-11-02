@@ -77,12 +77,13 @@ export class AppliedPushLog {
   }
 
   /**
-   * When this gatekeeper recorded making `commitId` a head. A record past the window lingers until
-   * the next `record` prunes it, so callers still compare the time against their window.
+   * When this gatekeeper made `commitId` a head, if that was within the window; an older record
+   * says nothing the caller's other sources would not.
    * @param commitId A commit id.
    * @returns Epoch milliseconds, or `undefined`.
    */
   get(commitId: string): number | undefined {
-    return this.#kv.get<number>(`${this.#prefix}${commitId}`);
+    const at = this.#kv.get<number>(`${this.#prefix}${commitId}`);
+    return at !== undefined && this.#now() - at < this.#windowMs ? at : undefined;
   }
 }

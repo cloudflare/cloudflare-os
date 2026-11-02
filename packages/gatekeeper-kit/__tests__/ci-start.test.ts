@@ -23,6 +23,16 @@ describe("AppliedPushLog", () => {
     expect(kv.keys()).toEqual(["ciPushApplied:new"]);
   });
 
+  it("reads no record once it is past the window, before any prune", () => {
+    let now = 0;
+    const log = new AppliedPushLog(fakeKv(), { now: () => now });
+    log.record("a");
+    now = CI_START_WINDOW_MS - 1;
+    expect(log.get("a")).toBe(0);
+    now = CI_START_WINDOW_MS;
+    expect(log.get("a")).toBeUndefined();
+  });
+
   it("drops the oldest records past the cap", () => {
     let now = 0;
     const kv = fakeKv();

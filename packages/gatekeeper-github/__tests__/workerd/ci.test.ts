@@ -47,6 +47,8 @@ type FakeRollup = {
   pageSize?: number;
   /** Entries GitHub counts but returns as null, listed ahead of `nodes`. */
   hiddenNodes?: Record<string, unknown>[];
+  /** Whether GitHub left out the counts by state, as a partial error can. */
+  countsMissing?: boolean;
 };
 
 function checkRunNode(name: string, status: string, conclusion: string | null, extra: Record<string, unknown> = {}) {
@@ -331,8 +333,8 @@ class FakeGitHub {
               state: rollup.state,
               contexts: {
                 pageInfo: { hasNextPage: end < nodes.length, endCursor: end < nodes.length ? String(end) : null },
-                checkRunCountsByState: countBy("CheckRun", node => String(node.conclusion ?? node.status)),
-                statusContextCountsByState: countBy("StatusContext", node => String(node.state)),
+                checkRunCountsByState: rollup.countsMissing ? null : countBy("CheckRun", node => String(node.conclusion ?? node.status)),
+                statusContextCountsByState: rollup.countsMissing ? null : countBy("StatusContext", node => String(node.state)),
                 nodes: nodes.slice(offset, end),
               },
             },
@@ -693,10 +695,12 @@ describe("pull request CI", () => {
     expect(checks).toMatchObject({ state: "pending", phase: "active", missingRequired: [] });
   });
 
-  it("names no required check missing when GitHub counts one it returns as null", async () => {
+  it.each([false, true])("names no required check missing when GitHub returns one as null (counts missing: %s)", async countsMissing => {
     const github = pullScenario();
     github.requiredByRules = ["build"];
-    github.rollups.get(HEAD)!.hiddenNodes = [checkRunNode("lint", "COMPLETED", "SUCCESS", { isRequired: true })];
+    Object.assign(github.rollups.get(HEAD)!, {
+      countsMissing, hiddenNodes: [checkRunNode("lint", "COMPLETED", "SUCCESS", { isRequired: true })],
+    });
     const gk = await gatekeeper(7);
 
     const checks = await gk.read<GitHubPullRequestChecks>([{ method: "getChecks" }]);

@@ -5462,10 +5462,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     state: GitHubCommitChecks["state"];
     entries: RollupEntry[];
     counts: Partial<Record<GitHubCheckState, number>>;
-    /**
-     * Whether GitHub reported entries `entries` leaves out: past MAX_CHECK_ENTRIES, or ones it
-     * counts but returned as null.
-     */
+    /** Whether entries were left out: past MAX_CHECK_ENTRIES, or ones GitHub returned as null. */
     truncated: boolean;
     committedAt: number | undefined;
     ciExpected: boolean;
@@ -5508,18 +5505,16 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         };
       }
       for (const node of rollup?.contexts.nodes ?? []) {
-        if (node === null) continue;
-        if (entries.length < MAX_CHECK_ENTRIES) entries.push(rollupEntryOf(node));
-        else dropped = true;
+        if (node === null || entries.length >= MAX_CHECK_ENTRIES) dropped = true;
+        else entries.push(rollupEntryOf(node));
       }
       const page = rollup?.contexts.pageInfo;
       if (!page?.hasNextPage || page.endCursor === null || entries.length >= MAX_CHECK_ENTRIES) {
-        const counted = Object.values(first.counts ?? {}).reduce((sum, count) => sum + (count ?? 0), 0);
         return {
           ...first,
           counts: first.counts ?? countStates(entries.map(entry => entry.state)),
           entries,
-          truncated: dropped || page?.hasNextPage === true || counted > entries.length,
+          truncated: dropped || page?.hasNextPage === true,
         };
       }
       after = page.endCursor;
@@ -5527,13 +5522,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   /**
-   * CI on a commit: the rollup and its phase, or for a commit nothing has reported on, the absence
-   * policy's. `branch` is a branch the commit is or was the head of, whose push record GitHub may
-   * have. `truncated` says whether GitHub reported entries `checks` leaves out. Undefined when
-   * GitHub does not have the commit.
+   * CI on a commit (`ci`): the rollup and its phase, or for a commit nothing has reported on, the
+   * absence policy's. `branch` is a branch the commit is or was the head of, whose push record
+   * GitHub may have. `truncated` says whether entries were left out of `ci.checks`. Undefined
+   * when GitHub does not have the commit.
    */
-  async #commitChecks(sha: GitOid, options: { branch?: string; pullNumber?: number })
-      : Promise<(Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[]; truncated: boolean }) | undefined> {
+  async #commitChecks(sha: GitOid, options: { branch?: string; pullNumber?: number }): Promise<{
+    ci: Omit<GitHubCommitChecks, "checks"> & { checks: RollupEntry[] };
+    truncated: boolean;
+  } | undefined> {
     const rollup = await this.#fetchRollup(sha, options.pullNumber);
     if (rollup === undefined) return undefined;
     // The phases of entries left out are judged from the counts alone, where a `waiting` one reads
@@ -5555,7 +5552,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       });
     }
     return {
-      commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries, truncated: rollup.truncated,
+      ci: { commitId: sha, state: rollup.state, phase, counts: rollup.counts, checks: rollup.entries },
+      truncated: rollup.truncated,
     };
   }
 
@@ -5568,11 +5566,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const ref = refOrDefault ?? (await this.#getRepoMetadata()).defaultBranch;
     const { id, fromCache } = await this.resolveRef(ref, gitCache);
     if (fromCache) return queuedCommitChecks(id);
-    const checks = await this.#commitChecks(id,
+    const read = await this.#commitChecks(id,
       { branch: isCommitOid(ref) ? undefined : ref.replace(/^refs\/heads\//, "") });
-    if (checks === undefined) throw new Error(`Commit ${id} was not found in ${this.#repoFullName()}.`);
-    const { truncated: _truncated, ...rest } = checks;
-    return rest;
+    if (read === undefined) throw new Error(`Commit ${id} was not found in ${this.#repoFullName()}.`);
+    return read.ci;
   }
 
   /**
@@ -5666,20 +5663,20 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       this.#requiredContexts(details.base.ref),
     ]);
     if (read === undefined) return { ...queuedCommitChecks(sha), checks: [], missingRequired: [] };
-    const { truncated, ...checks } = read;
+    const { ci, truncated } = read;
     const requiredNames = new Set(required);
-    const reported = new Set(checks.checks.map(entryName));
-    // A required check may have reported among entries GitHub counted but did not list, so with
-    // any left out none can be named missing.
+    const reported = new Set(ci.checks.map(entryName));
+    // A required check may have reported among the entries left out, so with any left out none
+    // can be named missing.
     const missingRequired = truncated ? [] : required.filter(name => !reported.has(name));
     // A required check that has not reported is still expected, as GitHub's own rollup says of a
     // required commit status, so it keeps the commit active; a failure stays a failure.
-    const expected = missingRequired.length > 0 && checks.state !== "failure";
+    const expected = missingRequired.length > 0 && ci.state !== "failure";
     return {
-      ...checks,
-      state: expected ? "expected" : checks.state,
-      phase: expected && checks.phase === "done" ? "active" : checks.phase,
-      checks: checks.checks.map(entry => {
+      ...ci,
+      state: expected ? "expected" : ci.state,
+      phase: expected && ci.phase === "done" ? "active" : ci.phase,
+      checks: ci.checks.map(entry => {
         const { isRequired, ...rest } = entry;
         // A pull request not yet created on GitHub has no number to ask GitHub with; the base
         // branch's rules answer instead.

@@ -423,7 +423,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * path. A `ttlMs` of 0 always loads, for a read that must be current; later cached reads get its value.
    */
   async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
-    const cached = this.#loadCached<T>(key, ttlMs);
+    const cached = ttlMs > 0 ? this.#loadCached<T>(key, ttlMs) : undefined;
     if (cached !== undefined) return cached;
     const generation = this.#cacheGeneration();
     const value = await loader();
