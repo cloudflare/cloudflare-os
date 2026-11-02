@@ -1,0 +1,31 @@
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_dd2417a6d5bd82::t_be895e05ddbe7e 90-99,119-121
+  s_1da8b1c2e6d0c9::t_82092e42422d12 90-99,119,121
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_dd2417a6d5bd82::t_37d1f25c3c28cf 1,10,31-37,54-55
+  s_1da8b1c2e6d0c9::t_a32603cb139136 1,10,31-37,54-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eabb0b5cdf22bd0223f956fbc79ec4c1ddbe0a8a",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
