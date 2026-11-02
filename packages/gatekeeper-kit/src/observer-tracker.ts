@@ -74,7 +74,8 @@ const DEFAULT_MAX_TRACKED_COLLECTIONS = 1000;
 // Keep verifier fan-out below the Workers subrequest ceiling.
 const DEFAULT_MAX_OBSERVERS = 10;
 
-const DEFAULT_CONCURRENCY = 6;
+/** Internal: default concurrent verifier round trips, for the tracker and `observerAccessVerifier`. */
+export const DEFAULT_CONCURRENCY = 6;
 
 // What the reads disclosing one collection marker still owe it. A marker may be reclaimed only once every
 // claimant settled and all of them settled as proven refusals -- one unknown outcome fences it for
@@ -131,8 +132,14 @@ function settleSets(
   return reclaimable;
 }
 
-// Map with bounded concurrency while preserving result order.
-async function mapLimit<In, Out>(
+/**
+ * Internal: maps with bounded concurrency, preserving result order.
+ * @param items Inputs.
+ * @param limit Most calls in flight at once.
+ * @param fn Per-item work.
+ * @returns One result per input, in input order.
+ */
+export async function mapLimit<In, Out>(
   items: readonly In[],
   limit: number,
   fn: (item: In) => Promise<Out>,

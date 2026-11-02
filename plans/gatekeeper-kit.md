@@ -772,8 +772,11 @@ export function escapeObservationValue(value: string): string;
 export type ObservationScope =
   | { kind: "baseline" }                        // admission already covers this disclosure
   | { kind: "collections"; ids: readonly string[] }    // per-set verification; an empty array is refused
-  | { kind: "withholdFromObservers" };          // withhold from every admitted observer
-export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
+  | { kind: "withholdFromObservers" }           // withhold from every admitted observer
+  | { kind: "subresources"; ids: readonly string[] };  // the Workshop checks these; `[]` is accepted
+export type ObservationInput = Omit<ObservationDescription, "excludeObservers" | "subresources">;
+export function observerAccessVerifier<V>(opts: Pick<ObserverTrackerOptions<V>,
+  "hasCollectionAccess" | "concurrency">): VerifyObserverAccess;   // Gatekeeper.verifyObserverAccess
 export class ObservationGate {
   constructor(queue: RpcStub<ApprovalQueue>, strategy: ObserverStrategy);
   authorize(input: ObservationInput, scope: ObservationScope): Promise<void>;
@@ -808,6 +811,20 @@ observer sees everything read here — a truthful owner-only read under them mea
 belongs on C, and a read the premise covers should say `baseline`. Because the gate is the only
 source of that field, there is no set-union merge left to do. Sessions call the gate for every read
 instead of the raw queue.
+
+**`subresources` bypasses the strategy.** When an observation reports `subresources`, the Workshop
+attributes the read to its chat or gadget, checks that context's audience through
+`verifyObserverAccess()`, and rechecks the recorded ids at admission (`docs/observers.md` §10). A
+gatekeeper that also ran `prepare` for such a read would keep growing the binding-wide history
+whose admission refusals the per-context check exists to replace, so the arm calls no strategy
+method, and the gate owns `subresources` as it owns `excludeObservers`. The kernel decides per
+observation, so this is a scope rather than a strategy or gate mode: a binding converts read by
+read, and the strategy keeps `addObserver()` enforcing its baseline, the history recorded before
+conversion and every read not yet converted. `observerAccessVerifier` reuses the tracker's oracle
+shape but not its error policy: the tracker excludes an observer whose stored verifier throws, so
+one dead stub cannot fail every read, while the Workshop asks with fresh verifiers and expects a
+throw when access cannot be determined, so the throw propagates. It stores nothing, since the same
+observer id may arrive with another account's verifier.
 
 **A proven refusal reclaims only this read's reservations.** For withheld reads, `discard()` deletes
 the read's `observer-withhold:` marker. For set-scoped reads it releases the check's per-storage
