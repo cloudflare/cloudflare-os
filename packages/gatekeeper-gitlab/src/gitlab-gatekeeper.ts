@@ -1889,7 +1889,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * read that first marks its set excludes stored observers below its role
    * (`CI_DATA_ACCESS_LEVELS`), and admission needs every marked set's role: `ci-logs` (Developer)
    * for job logs and test reports read below Maintainer, `ci-test-reports` (Maintainer) for test
-   * reports read as one (`#testReportSet`). Observers are stored for that reason alone.
+   * reports read as one (`#readTestReport`). Observers are stored for that reason alone.
    */
   #observerStrategy: ObserverStrategy | undefined;
 
