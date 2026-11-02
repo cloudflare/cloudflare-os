@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import * as fc from "fast-check";
 import { deflate } from "pako";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import { MAX_FILE_PATH_LENGTH } from "@gadgets/workshop-shared/code-change";
 import {
   MAX_RELEASE_COMMITS,
@@ -377,6 +379,98 @@ describe("release packs", () => {
     let release = await repo.release(await repo.tree(files));
     let objects = await readReleasePack(await buildReleasePack(repo.lookup, release), release);
     expect(listReleaseFiles(objects, release)).toStrictEqual(files);
+  });
+});
+
+// Property: publishing a gadget's files and installing them elsewhere. fast-check generates the
+// small file trees real gadgets have -- source under nested directories, a directory beside a
+// file of the same stem (`utils/` and `utils.ts`, which git sorts unlike a plain string compare),
+// identical and empty files, unicode and CRLF text -- and checks, for each, that:
+// - the snapshot release's tree is the one GitStore writes for the same files, so a workspace's
+//   own commit and the release agree on every tree id;
+// - building its pack, reading it back and listing it gives exactly those files;
+// - its commit id is a function of the files alone: the same in whatever order they are given,
+//   and different once any one file's text changes.
+// Malformed packs are the examples' business ("release pack validation"), not this property's.
+describe("release round trip, for generated gadget trees", () => {
+  type Entry = [path: string, text: string];
+
+  // Directory names and file stems overlap, as `utils/` and `utils.ts` do in real projects.
+  const directory = fc.constantFrom(
+      "src", "lib", "public", "components", "utils", "api", "assets", "styles", "server",
+      "docs", "na\u00efve");
+  const fileName = fc.oneof(
+      fc.tuple(
+          fc.constantFrom(
+              "index", "app", "main", "utils", "api", "api-client", "server", "lib", "components",
+              "styles", "README", "caf\u00e9"),
+          fc.constantFrom(".ts", ".tsx", ".js", ".html", ".css", ".json", ".md", ""))
+          .map(([stem, extension]) => stem + extension),
+      fc.constantFrom(".gitignore", ".env.example", "LICENSE"));
+  const path = fc.tuple(fc.array(directory, { maxLength: 3 }), fileName)
+      .map(([directories, name]) => [...directories, name].join("/"));
+  // Lines of printable text in either line ending, or one of a few texts that real gadgets
+  // repeat across files, so that one blob can sit under several paths.
+  const text = fc.oneof(
+      fc.tuple(
+          fc.array(fc.string({ unit: "grapheme", maxLength: 40 }), { maxLength: 8 }),
+          fc.constantFrom("\n", "\r\n"), fc.boolean())
+          .map(([lines, ending, final]) => lines.join(ending) + (final ? ending : "")),
+      fc.constantFrom("", "export {};\n", "MIT License\n"));
+  // A path cannot be both a file and a directory; a gadget holds whichever came deeper.
+  const files = fc.uniqueArray(fc.tuple(path, text), {
+    minLength: 1, maxLength: 15, selector: ([filePath]) => filePath,
+  }).map(entries => entries.filter(([filePath]) =>
+      !entries.some(([other]) => other.startsWith(`${filePath}/`))));
+  const scenario = files.chain(entries => fc.record({
+    entries: fc.constant(entries),
+    reordered: fc.shuffledSubarray(entries, {
+      minLength: entries.length, maxLength: entries.length,
+    }),
+    edit: fc.record({ index: fc.nat({ max: entries.length - 1 }), text })
+        .filter(edit => edit.text !== entries[edit.index][1]),
+  }));
+  type Scenario = { entries: Entry[], reordered: Entry[], edit: { index: number, text: string } };
+
+  // Each sort trap at once, beneath a nested directory, with shared and empty files: what a
+  // random seed reaches only now and then.
+  const sortTraps: Entry[] = [
+    ["src/utils.ts", "export * from \"./utils/format\";\n"],
+    ["src/utils/format.ts", "export const format = (s: string) => s.trim();\n"],
+    ["src/utils-v2.ts", "export {};\n"],
+    ["src/utils0.ts", "export {};\n"],
+    ["src/components/na\u00efve/caf\u00e9.tsx", "\ufeffexport default \"\u2615\";\r\n"],
+    ["public/index.html", "<!doctype html>\n<title>\u{1F600}</title>\n"],
+    [".gitignore", ""],
+  ];
+  const examples: [Scenario][] = [[{
+    entries: sortTraps,
+    reordered: sortTraps.toReversed(),
+    edit: { index: 1, text: "export const format = (s: string) => s;\n" },
+  }]];
+
+  it("installs exactly the published files, under an id they alone determine", async () => {
+    await fc.assert(fc.asyncProperty(scenario, async ({ entries, reordered, edit }) => {
+      let published = new Map(entries);
+      let { commitId, objects } = await buildSnapshotRelease(published);
+
+      let store = new GitStore(makeOverseerStorage(makeMockStorage()).gitObjects);
+      let viaStore = await store.writeFilesAsCommit(
+          published, { parents: [], author: ALICE, message: "files", timestamp: new Date(0) });
+      expect(parseGitCommitRefs(objects.get(commitId)!.payload).tree,
+          "the release's tree is the one GitStore writes").toBe(await store.commitTree(viaStore));
+
+      let pack = await buildReleasePack(oid => objects.get(oid), commitId);
+      let installed = listReleaseFiles(await readReleasePack(pack, commitId), commitId);
+      expect(installed, "the installed files are the published ones").toStrictEqual(published);
+
+      expect((await buildSnapshotRelease(new Map(reordered))).commitId,
+          "the same files in another order make the same release").toBe(commitId);
+
+      let edited = new Map(published).set(entries[edit.index][0], edit.text);
+      expect((await buildSnapshotRelease(edited)).commitId,
+          `editing ${entries[edit.index][0]} makes another release`).not.toBe(commitId);
+    }), { ...PROPERTY_RUN_OPTIONS, numRuns: 100, examples });
   });
 });
 

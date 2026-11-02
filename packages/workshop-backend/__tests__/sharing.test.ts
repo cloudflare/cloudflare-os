@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
+import * as fc from "fast-check";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { SharingManager, SharingStorage } from "../src/sharing.js";
 import type { CollaboratorRecord, ShareKeyRecord } from "../src/storage-schema/overseer-storage.js";
 import {
-  AiChatAuthorInfo, PermissionEdge, CollaboratorRole, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES,
+  AffectedCollaborator, AiChatAuthorInfo, PermissionEdge, CollaboratorRole, getOpenWorkspaceErrorCode,
+  OPEN_WORKSPACE_ERROR_CODES,
 } from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage.js";
 
@@ -824,5 +827,314 @@ describe("ownerInvitesOnly", () => {
 
     mgr.addCollaborator({ caller: owner, profile: profile("b"), role: "use" });
     expect(mgr.getEffectiveRole("b")).toBe("use");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Property: the sharing graph under the actions the Share dialog offers. fast-check generates a
+// sequence of steps by the owner and four other people -- invite someone by name, create a share
+// link, copy it, open a link, revoke a link, remove someone -- and replays it against a
+// SharingManager. Removal and revocation go through the dialog's flow: preview, then confirm with
+// some of the previewed people kept. After every step each person's access is checked against a
+// model.
+//
+// The model keeps only the grants: who invited whom at which role (a repeat invite from the same
+// person keeps the higher role), which links each person opened, and which links are revoked.
+// Access is reachability from the owner, the rule the module documents: "build" if some path from
+// the owner grants "build" on every edge, "use" if any path reaches the person, otherwise nothing.
+// A link's edges start at its creator. Removal and revocation never touch other people's grants;
+// downstream people just stop being reachable, and come back when a path does. Keeping someone
+// gives them a fresh grant from the actor at the role they had.
+//
+// Steps only take actions the Workshop offers the acting person: only someone with "build" can
+// share (a "use" session is refused every sharing call), so someone who lost access cannot act at
+// all; a collaborator removes only people they invited and revokes or copies only links they
+// created; and the dialog lists only people who currently have access and live links. Anyone may
+// open any link they were sent, live or revoked, with or without access.
+// Scenarios a seed might miss are pinned as `examples`.
+
+const PEOPLE = [OWNER, "ana", "ben", "cy", "dot"];
+
+// `person` and `target` are indices into PEOPLE (0 is the owner). Every other number picks, modulo
+// the count, from what is on offer when the step runs: `actor` among the people who can share
+// (the owner, then the rest in PEOPLE order); `choice` among the dialog's (actor, link) or (actor,
+// person) pairs, by actor and then by link creation or PEOPLE order; `link` and `key` among every
+// link created so far and that link's keys. `keep` is a bitmask over PEOPLE indices choosing which
+// previewed people to keep.
+type Step =
+  | { kind: "invite"; actor: number; target: number; role: CollaboratorRole }
+  | { kind: "createLink"; actor: number; role: CollaboratorRole }
+  | { kind: "copyLink"; choice: number }
+  | { kind: "open"; person: number; link: number; key: number }
+  | { kind: "revoke"; choice: number; keep: number }
+  | { kind: "remove"; choice: number; keep: number };
+
+type ModelLink = { id: string; creator: string; role: CollaboratorRole; revoked: boolean; keys: string[] };
+
+class SharingModel {
+  /** target -> inviter -> the highest role that inviter granted them. */
+  invites = new Map<string, Map<string, CollaboratorRole>>();
+  /** person -> ids of the links they opened. */
+  opened = new Map<string, Set<string>>();
+  links: ModelLink[] = [];
+
+  invite(target: string, inviter: string, role: CollaboratorRole) {
+    let inviters = this.invites.get(target) ?? new Map<string, CollaboratorRole>();
+    inviters.set(inviter, inviters.get(inviter) === "build" ? "build" : role);
+    this.invites.set(target, inviters);
+  }
+
+  open(person: string, linkId: string) {
+    this.opened.set(person, (this.opened.get(person) ?? new Set()).add(linkId));
+  }
+
+  /** Everyone but the owner who has access, with their role. */
+  roles(): Map<string, CollaboratorRole> {
+    let edges: { from: string; to: string; role: CollaboratorRole }[] = [];
+    for (let [to, inviters] of this.invites) {
+      for (let [from, role] of inviters) edges.push({ from, to, role });
+    }
+    for (let [to, linkIds] of this.opened) {
+      for (let shareLink of this.links) {
+        if (linkIds.has(shareLink.id) && !shareLink.revoked) {
+          edges.push({ from: shareLink.creator, to, role: shareLink.role });
+        }
+      }
+    }
+    let reachable = (usable: (role: CollaboratorRole) => boolean) => {
+      let seen = new Set([OWNER]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (let edge of edges) {
+          if (usable(edge.role) && seen.has(edge.from) && !seen.has(edge.to)) {
+            seen.add(edge.to);
+            grew = true;
+          }
+        }
+      }
+      seen.delete(OWNER);
+      return seen;
+    };
+    let viaBuild = reachable(role => role === "build");
+    let roles = new Map<string, CollaboratorRole>();
+    for (let id of reachable(() => true)) roles.set(id, viaBuild.has(id) ? "build" : "use");
+    return roles;
+  }
+
+  role(id: string): CollaboratorRole | undefined {
+    return id === OWNER ? "build" : this.roles().get(id);
+  }
+}
+
+type Change = { id: string; oldRole: CollaboratorRole; newRole: CollaboratorRole | null };
+
+// The people who lost access or dropped to "use" going from `before` to `after`. (None of these
+// steps raises anyone.)
+function changes(before: Map<string, CollaboratorRole>, after: Map<string, CollaboratorRole>): Change[] {
+  let result: Change[] = [];
+  for (let [id, oldRole] of before) {
+    let newRole = after.get(id) ?? null;
+    if (newRole !== oldRole) result.push({ id, oldRole, newRole });
+  }
+  return result.toSorted((a, b) => a.id.localeCompare(b.id));
+}
+
+function reported(list: AffectedCollaborator[]): Change[] {
+  return list.map(x => ({ id: x.profile.id, oldRole: x.oldRole, newRole: x.newRole }))
+      .toSorted((a, b) => a.id.localeCompare(b.id));
+}
+
+function caller(id: string) {
+  return { profileId: id, isOwner: id === OWNER };
+}
+
+function pick<T>(list: T[], index: number): T | undefined {
+  return list.length === 0 ? undefined : list[index % list.length];
+}
+
+async function replaySharing(steps: Step[]) {
+  let { mgr } = makeManager();
+  let model = new SharingModel();
+  let sharers = () => PEOPLE.filter(id => model.role(id) === "build");
+  // The live links each sharer may revoke or copy: any, for the owner; their own, for anyone else.
+  let linkActions = () => sharers().flatMap(actor => model.links
+      .filter(shareLink => !shareLink.revoked && (actor === OWNER || shareLink.creator === actor))
+      .map(shareLink => ({ actor, shareLink })));
+  // The people each sharer may remove: anyone with access, for the owner; people they invited who
+  // still have access, for anyone else.
+  let removals = () => {
+    let roles = model.roles();
+    return sharers().flatMap(actor => PEOPLE
+        .filter(target => roles.has(target) && target !== actor
+            && (actor === OWNER || model.invites.get(target)?.has(actor)))
+        .map(target => ({ actor, target })));
+  };
+
+  // Confirm a previewed removal or revocation, keeping the previewed people `keep` selects (never
+  // the person being removed, whom the dialog does not offer). The preview must name exactly who
+  // the model says loses or drops; the confirmation, the same minus whoever the kept people's fresh
+  // grants restore.
+  let confirm = (opts: {
+    label: string; actor: string; keep: number; before: Map<string, CollaboratorRole>;
+    preview: Change[]; target?: string; commit: (keepUsers: string[]) => Change[];
+  }) => {
+    expect(opts.preview, `${opts.label}: preview`).toEqual(changes(opts.before, model.roles()));
+    let keepUsers = opts.preview.map(x => x.id)
+        .filter(id => id !== opts.target && (opts.keep & (1 << PEOPLE.indexOf(id))) !== 0);
+    let actual = opts.commit(keepUsers);
+    for (let id of keepUsers) model.invite(id, opts.actor, opts.before.get(id)!);
+    expect(actual, `${opts.label} keeping [${keepUsers.join(", ")}]: people reported as losing access`)
+        .toEqual(changes(opts.before, model.roles()));
+  };
+
+  for (let [index, step] of steps.entries()) {
+    let label = `step ${index}`;
+    switch (step.kind) {
+      case "invite": {
+        let actor = pick(sharers(), step.actor)!, target = PEOPLE[step.target];
+        if (actor === target) break;
+        label += `: ${actor} invites ${target} as ${step.role}`;
+        let info = mgr.addCollaborator({ caller: caller(actor), profile: profile(target), role: step.role });
+        model.invite(target, actor, step.role);
+        expect(info.role, `${label}: role reported for ${target}`).toBe(model.role(target));
+        break;
+      }
+      case "createLink": {
+        let actor = pick(sharers(), step.actor)!;
+        label += `: ${actor} creates link ${model.links.length} for ${step.role}`;
+        let { key, linkId } = await mgr.createShareLink({ caller: caller(actor), role: step.role });
+        model.links.push({ id: linkId, creator: actor, role: step.role, revoked: false, keys: [key] });
+        break;
+      }
+      case "copyLink": {
+        let chosen = pick(linkActions(), step.choice);
+        if (!chosen) break;
+        let { actor, shareLink } = chosen;
+        label += `: ${actor} copies link ${model.links.indexOf(shareLink)}`;
+        let { key } = await mgr.newShareLinkKey({ caller: caller(actor), linkId: shareLink.id });
+        shareLink.keys.push(key);
+        break;
+      }
+      case "open": {
+        let person = PEOPLE[step.person], shareLink = pick(model.links, step.link);
+        if (!shareLink) break;
+        let keyIndex = step.key % shareLink.keys.length;
+        label += `: ${person} opens link ${model.links.indexOf(shareLink)} with key ${keyIndex}`;
+        await mgr.redeemShareKey({
+          rawKey: shareLink.keys[keyIndex],
+          profileId: person,
+          fetchProfile: async () => profile(person),
+        });
+        if (!shareLink.revoked) model.open(person, shareLink.id);
+        break;
+      }
+      case "revoke": {
+        let chosen = pick(linkActions(), step.choice);
+        if (!chosen) break;
+        let { actor, shareLink } = chosen;
+        label += `: ${actor} revokes link ${model.links.indexOf(shareLink)}`;
+        let before = model.roles();
+        let preview = reported(mgr.previewRevokeShareLink(caller(actor), shareLink.id));
+        shareLink.revoked = true;
+        confirm({
+          label, actor, keep: step.keep, before, preview,
+          commit: keepUsers => reported(mgr.revokeShareLink(caller(actor), shareLink.id, keepUsers)),
+        });
+        break;
+      }
+      case "remove": {
+        let chosen = pick(removals(), step.choice);
+        if (!chosen) break;
+        let { actor, target } = chosen;
+        label += `: ${actor} removes ${target}`;
+        let before = model.roles();
+        let preview = reported(mgr.previewRemoveCollaborator(caller(actor), target));
+        // The owner cuts every grant the target holds; anyone else, only their own invite.
+        if (actor === OWNER) {
+          model.invites.delete(target);
+          model.opened.delete(target);
+        } else {
+          model.invites.get(target)!.delete(actor);
+        }
+        confirm({
+          label, actor, keep: step.keep, before, preview, target,
+          commit: keepUsers => reported(mgr.removeCollaborator(caller(actor), target, keepUsers)),
+        });
+        break;
+      }
+    }
+
+    let expected = model.roles();
+    for (let id of PEOPLE.slice(1)) {
+      expect(mgr.getEffectiveRole(id), `${label}: ${id}'s access`).toBe(expected.get(id));
+    }
+    expect(Object.fromEntries(mgr.listCollaborators().map(c => [c.profile.id, c.role])),
+        `${label}: people with access`).toEqual(Object.fromEntries(expected));
+    expect(mgr.listShareLinkRecords().map(l => l.id).toSorted(), `${label}: live links`)
+        .toEqual(model.links.filter(l => !l.revoked).map(l => l.id).toSorted());
+  }
+}
+
+describe("sharing graph property", () => {
+  const role = fc.constantFrom<CollaboratorRole>("build", "use");
+  const person = fc.integer({ min: 1, max: 4 });
+  const choice = fc.nat({ max: 15 });
+  const keep = fc.nat({ max: (1 << PEOPLE.length) - 1 });
+  // Grants outweigh removals, so people often hold several paths when one is cut.
+  const step: fc.Arbitrary<Step> = fc.oneof(
+    { arbitrary: fc.record({ kind: fc.constant("invite" as const), actor: choice, target: person, role }), weight: 4 },
+    { arbitrary: fc.record({ kind: fc.constant("createLink" as const), actor: choice, role }), weight: 2 },
+    { arbitrary: fc.record({ kind: fc.constant("copyLink" as const), choice }), weight: 1 },
+    { arbitrary: fc.record({ kind: fc.constant("open" as const), person, link: choice, key: choice }), weight: 4 },
+    { arbitrary: fc.record({ kind: fc.constant("revoke" as const), choice, keep }), weight: 1 },
+    { arbitrary: fc.record({ kind: fc.constant("remove" as const), choice, keep }), weight: 1 },
+  );
+
+  // Indices into PEOPLE. The comments resolve each pick.
+  const [ANA, BEN, CY] = [1, 2, 3];
+  const examples: [Step[]][] = [
+    // Removing a link's creator cuts off whoever joined through it; re-adding them at "use" brings
+    // those people back at "use", and at "build" restores "build".
+    [[
+      { kind: "invite", actor: 0, target: ANA, role: "build" },  // owner
+      { kind: "createLink", actor: 1, role: "build" },  // ana
+      { kind: "open", person: BEN, link: 0, key: 0 },
+      { kind: "remove", choice: 0, keep: 0 },  // owner removes ana
+      { kind: "invite", actor: 0, target: ANA, role: "use" },
+      { kind: "invite", actor: 0, target: ANA, role: "build" },
+    ]],
+    // A collaborator withdraws their own invite: ana keeps the owner's "use" invite, and cy, who
+    // joined through ana's link, drops to "use" with her.
+    [[
+      { kind: "invite", actor: 0, target: ANA, role: "use" },
+      { kind: "invite", actor: 0, target: BEN, role: "build" },
+      { kind: "invite", actor: 1, target: ANA, role: "build" },  // ben
+      { kind: "createLink", actor: 1, role: "build" },  // ana
+      { kind: "open", person: CY, link: 0, key: 0 },
+      { kind: "remove", choice: 3, keep: 0 },  // ben removes ana
+    ]],
+    // Revoking a link while keeping ben, who joined through it, also keeps cy, whom ben invited.
+    [[
+      { kind: "invite", actor: 0, target: ANA, role: "build" },
+      { kind: "createLink", actor: 1, role: "build" },  // ana
+      { kind: "open", person: BEN, link: 0, key: 0 },
+      { kind: "invite", actor: 2, target: CY, role: "use" },  // ben
+      { kind: "revoke", choice: 0, keep: 1 << BEN },  // owner revokes link 0
+    ]],
+    // Neither a copied key nor the original lets anyone in once the link is revoked.
+    [[
+      { kind: "createLink", actor: 0, role: "use" },
+      { kind: "copyLink", choice: 0 },
+      { kind: "open", person: ANA, link: 0, key: 1 },
+      { kind: "revoke", choice: 0, keep: 0 },
+      { kind: "open", person: BEN, link: 0, key: 1 },
+      { kind: "open", person: ANA, link: 0, key: 0 },
+    ]],
+  ];
+
+  it("gives each person the access the grants still reachable from the owner allow", async () => {
+    await fc.assert(
+        fc.asyncProperty(fc.array(step, { minLength: 1, maxLength: 30, size: "medium" }), replaySharing),
+        { ...PROPERTY_RUN_OPTIONS, numRuns: 200, examples });
   });
 });

@@ -131,10 +131,13 @@ jobs:
       # having run nothing. `--fail-if-no-match` makes that an error.
       # Sets `VITEST_MAX_WORKERS` only when the leg asks: an empty value would count as explicit
       # and leave every suite at vitest's own default.
+      # `FAST_CHECK_SEED` pins the property suites' generated cases, so a PR's result depends only on
+      # its code.
       - name: Test
         env:
           FILTERS: ${{ matrix.filters }}
           VITEST_WORKERS: ${{ matrix.vitest-workers }}
+          FAST_CHECK_SEED: "1"
         run: |
           [ -z "$VITEST_WORKERS" ] || export VITEST_MAX_WORKERS="$VITEST_WORKERS"
           node scripts/vp/run.ts --cache --fail-if-no-match $FILTERS test
