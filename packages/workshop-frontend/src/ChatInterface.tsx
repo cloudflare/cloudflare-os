@@ -5337,11 +5337,11 @@ function ChatInterface({
                   onClick={() => setChatListScope(scope.value)}
                   className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                 >
-                  <span className="mr-2 inline-flex h-3 w-3 items-center justify-center text-kumo-default">
+                  <span className="inline-flex h-3 w-3 items-center justify-center text-kumo-default">
                     {active ? <Check size={11} weight="bold" /> : null}
                   </span>
                   <span className="flex-1">{CHAT_LIST_SCOPE_LABELS[scope.value]}</span>
-                  <span className="ml-3 font-mono text-[11px] text-kumo-inactive">
+                  <span className="ml-1 font-mono text-[11px] text-kumo-inactive">
                     {scope.count}
                   </span>
                 </DropdownMenu.Item>
@@ -5491,14 +5491,14 @@ function ChatInterface({
                           className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
                         >
                           <DropdownMenu.Item
-                            icon={<Pencil size={12} className="mr-2" />}
+                            icon={<Pencil className="size-3" />}
                             onClick={() => startListRename(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                           >
                             Rename
                           </DropdownMenu.Item>
                           <DropdownMenu.Item
-                            icon={<Trash size={12} className="mr-2" />}
+                            icon={<Trash className="size-3" />}
                             variant="danger"
                             onClick={() => handleDeleteChat(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] transition-colors data-highlighted:bg-kumo-danger-tint"

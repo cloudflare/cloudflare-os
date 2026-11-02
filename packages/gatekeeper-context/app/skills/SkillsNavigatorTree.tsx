@@ -439,7 +439,7 @@ export const SkillsNavigatorTree = ({
       return (
         <>
           <DropdownMenu.Item
-            icon={<FolderOpen size={13} className="mr-2" />}
+            icon={<FolderOpen className="size-3.25" />}
             onClick={() => onOpenCollection(collectionId)}
           >
             Open collection
@@ -448,7 +448,7 @@ export const SkillsNavigatorTree = ({
           {writable && (
             <>
               <DropdownMenu.Item
-                icon={<PlusIcon size={13} className="mr-2" />}
+                icon={<PlusIcon className="size-3.25" />}
                 onClick={() => onAddSkill({
                   collectionId,
                   directoryPath: "",
@@ -458,7 +458,7 @@ export const SkillsNavigatorTree = ({
                 Add skill
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<UploadSimple size={13} className="mr-2" />}
+                icon={<UploadSimple className="size-3.25" />}
                 onClick={() => onUploadSkills({
                   collectionId,
                   directoryPath: "",
@@ -471,7 +471,7 @@ export const SkillsNavigatorTree = ({
           )}
           {refreshable && (
             <DropdownMenu.Item
-              icon={<ArrowClockwise size={13} className="mr-2" />}
+              icon={<ArrowClockwise className="size-3.25" />}
               disabled={refreshingCollectionId !== null}
               onClick={() => void handleRefresh(collectionId)}
             >
@@ -481,7 +481,7 @@ export const SkillsNavigatorTree = ({
           {(editableMetadata || sharable || deletable || leavable) && <DropdownMenu.Separator />}
           {editableMetadata && (
             <DropdownMenu.Item
-              icon={<PencilSimple size={13} className="mr-2" />}
+              icon={<PencilSimple className="size-3.25" />}
               onClick={() => onEditCollection(editableMetadata)}
             >
               Edit
@@ -489,7 +489,7 @@ export const SkillsNavigatorTree = ({
           )}
           {sharable && (
             <DropdownMenu.Item
-              icon={<ShareNetwork size={13} className="mr-2" />}
+              icon={<ShareNetwork className="size-3.25" />}
               onClick={() => onShareCollection({ id: collectionId, title: collection.title })}
             >
               Share
@@ -497,7 +497,7 @@ export const SkillsNavigatorTree = ({
           )}
           {leavable && (
             <DropdownMenu.Item
-              icon={<SignOut size={13} className="mr-2" />}
+              icon={<SignOut className="size-3.25" />}
               variant="danger"
               onClick={() => onLeaveCollection({ id: collectionId, title: collection.title })}
             >
@@ -506,7 +506,7 @@ export const SkillsNavigatorTree = ({
           )}
           {deletable && (
             <DropdownMenu.Item
-              icon={<TrashIcon size={13} className="mr-2" />}
+              icon={<TrashIcon className="size-3.25" />}
               variant="danger"
               onClick={() => onDelete({
                 type: "collection",
@@ -531,7 +531,7 @@ export const SkillsNavigatorTree = ({
           {!skill.invalid && (
             <>
               <DropdownMenu.Item
-                icon={<PencilSimple size={13} className="mr-2" />}
+                icon={<PencilSimple className="size-3.25" />}
                 onClick={() => setPendingRename({
                   collectionId,
                   path: skill.manifestPath,
@@ -544,7 +544,7 @@ export const SkillsNavigatorTree = ({
             </>
           )}
           <DropdownMenu.Item
-            icon={<TrashIcon size={13} className="mr-2" />}
+            icon={<TrashIcon className="size-3.25" />}
             variant="danger"
             onClick={() => onDelete({
               type: "skill",
@@ -564,7 +564,7 @@ export const SkillsNavigatorTree = ({
       return (
         <>
           <DropdownMenu.Item
-            icon={<PlusIcon size={13} className="mr-2" />}
+            icon={<PlusIcon className="size-3.25" />}
             onClick={() => onAddSkill({
               collectionId,
               directoryPath: directory.path,
@@ -574,7 +574,7 @@ export const SkillsNavigatorTree = ({
             Add skill
           </DropdownMenu.Item>
           <DropdownMenu.Item
-            icon={<UploadSimple size={13} className="mr-2" />}
+            icon={<UploadSimple className="size-3.25" />}
             onClick={() => onUploadSkills({
               collectionId,
               directoryPath: directory.path,
@@ -585,7 +585,7 @@ export const SkillsNavigatorTree = ({
           </DropdownMenu.Item>
           <DropdownMenu.Separator />
           <DropdownMenu.Item
-            icon={<TrashIcon size={13} className="mr-2" />}
+            icon={<TrashIcon className="size-3.25" />}
             variant="danger"
             onClick={() => onDelete({
               type: "directory",

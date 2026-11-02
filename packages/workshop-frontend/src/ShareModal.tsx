@@ -131,7 +131,7 @@ function RoleMenu({
                 {ROLE_DESCRIPTIONS[role]}
               </span>
             </span>
-            <span className="ml-2 flex h-4 w-4 shrink-0 items-center justify-center">
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
               {value === role && <Check size={13} weight="bold" className="text-kumo-brand" />}
             </span>
           </DropdownMenu.Item>

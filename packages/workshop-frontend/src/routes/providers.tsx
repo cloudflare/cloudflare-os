@@ -106,25 +106,25 @@ function ModelRow({
           <DropdownMenu.Content className={MENU_CONTENT}>
             {onSetQuick && (
               <DropdownMenu.Item onClick={onSetQuick} className={MENU_ITEM}>
-                <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
+                <Lightning size={13} weight={isQuick ? 'fill' : 'regular'} />
                 {isQuick ? 'Clear quick model' : 'Set as quick model'}
               </DropdownMenu.Item>
             )}
             {!isBuiltIn && canEdit && (
               <>
                 <DropdownMenu.Item onClick={onEdit} className={MENU_ITEM}>
-                  <PencilSimple size={13} className="mr-2" />
+                  <PencilSimple size={13} />
                   Edit provider
                 </DropdownMenu.Item>
                 <DropdownMenu.Item onClick={onClone} className={MENU_ITEM}>
-                  <Copy size={13} className="mr-2" />
+                  <Copy size={13} />
                   Clone provider
                 </DropdownMenu.Item>
               </>
             )}
             {!isBuiltIn && (
               <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
-                <Trash size={13} className="mr-2" />
+                <Trash size={13} />
                 Delete provider
               </DropdownMenu.Item>
             )}
