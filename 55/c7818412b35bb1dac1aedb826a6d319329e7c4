@@ -13,9 +13,11 @@ packages/workshop-backend/src/user.ts
   s_dd2417a6d5bd82::t_a41a20931e2e38 1138
   s_dd2417a6d5bd82::t_825cad0b18ec7d 33,1104-1109,1111,1121,1130,1132-1137,1140-1157
   s_dd2417a6d5bd82::t_ca20da0298ab61 1112-1114,1139,1158
+  s_dd2417a6d5bd82::t_e05cd46457cf82 2,22-25
 packages/workshop-backend/src/storage-schema/user-storage.ts
   s_dd2417a6d5bd82::t_c1207a990c087c 200-205
   s_dd2417a6d5bd82::t_21ca0495c4908d 255-259
+  s_dd2417a6d5bd82::t_7d68a3ac0ae45c 9-10
 scripts/release/testdata/golden-manifest.json
   s_dd2417a6d5bd82::t_b530edb9423c03 1446-1451
 packages/workshop-backend/vitest.config.ts
@@ -28,6 +30,7 @@ packages/workshop-backend/src/server.ts
   s_dd2417a6d5bd82::t_72b6134fe91ca3 26,72-74,180-185,187,189-201
   s_dd2417a6d5bd82::t_40d18d786943d6 186
   s_dd2417a6d5bd82::t_42233c3c2b4950 188
+  s_dd2417a6d5bd82::t_e05cd46457cf82 4
 packages/workshop-backend/src/spaces.ts
   s_dd2417a6d5bd82::t_082564520b1edf 174
   s_dd2417a6d5bd82::t_b0c31f84d890d6 207-210
