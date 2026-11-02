@@ -722,6 +722,38 @@ describe("listJobs", () => {
     const { props, name } = await setup(fake);
     expect(await session<GitLabJobSummary[]>(name, props, ...listJobs({ status: ["running"] }))).toEqual([]);
   });
+
+  describe("past 1000 rows", () => {
+    /** Serves `rows` in pages as GitLab does, reversed when asked for `sort=desc`. */
+    const paged = (rows: unknown[]) => (request: { url: URL }) => {
+      const ordered = request.url.searchParams.get("sort") === "desc" ? rows.toReversed() : rows;
+      const page = Number(request.url.searchParams.get("page")), perPage = Number(request.url.searchParams.get("per_page"));
+      const more = page * perPage < ordered.length;
+      return json(ordered.slice((page - 1) * perPage, page * perPage), { headers: { "x-next-page": more ? String(page + 1) : "" } });
+    };
+    const ids = (rows: GitLabJobSummary[]) => [rows.length, rows[0].id, rows.at(-1)!.id];
+
+    it("keeps the newest jobs, the latest trigger job among them", async () => {
+      const fake = jobsFake();
+      // GitLab lists jobs newest first.
+      fake.on("GET", JOBS_ROUTE, paged(Array.from({ length: 1001 }, (_, i) => job(2000 - i))));
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), () =>
+        json([trigger(2001, { id: 5, project_id: PROJECT_ID })]));
+      const { props, name } = await setup(fake);
+      expect(ids(await session<GitLabJobSummary[]>(name, props, ...listJobs()))).toEqual([1000, "1002", "2001"]);
+    });
+
+    it("asks for the newest external statuses first and keeps them", async () => {
+      const fake = jobsFake();
+      fake.on("GET", JOBS_ROUTE, () => json([]));
+      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), () => json([]));
+      // Oldest first unless asked otherwise, as GitLab documents.
+      fake.on("GET", STATUSES_ROUTE, paged(Array.from({ length: 1001 }, (_, i) =>
+        ({ id: i + 1, name: `ext-${i + 1}`, status: "success", allow_failure: false, created_at: minutesAgo(5), pipeline_id: 6 }))));
+      const { props, name } = await setup(fake);
+      expect(ids(await session<GitLabJobSummary[]>(name, props, ...listJobs()))).toEqual([1000, "2", "1001"]);
+    });
+  });
 });
 
 describe("test reports", () => {

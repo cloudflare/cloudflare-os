@@ -1384,15 +1384,15 @@ export class GitLabApi {
   }
 
   /**
-   * One page of a commit's latest statuses in one pipeline. `pipeline_id` (GitLab 17.9) narrows the
-   * listing to that pipeline; an older instance ignores it, so callers also check each row's own
-   * `pipeline_id`.
+   * One page of a commit's latest statuses in one pipeline, newest first where the instance
+   * honours `sort`. `pipeline_id` (GitLab 17.9) narrows the listing to that pipeline; an older
+   * instance ignores it, so callers also check each row's own `pipeline_id`.
    */
   async listCommitStatuses(projectPath: string, sha: string, options: { pipelineId: number; page: number; perPage: number }):
       Promise<GitLabPage<GitLabCommitStatusResponse>> {
     return await this.#getPage<GitLabCommitStatusResponse>(
       `/projects/${encodeProjectPath(projectPath)}/repository/commits/${encodeURIComponent(sha)}/statuses`,
-      { pipeline_id: options.pipelineId }, options.page, options.perPage);
+      { pipeline_id: options.pipelineId, order_by: "id", sort: "desc" }, options.page, options.perPage);
   }
 
   /**

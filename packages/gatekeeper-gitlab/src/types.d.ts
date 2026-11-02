@@ -339,9 +339,9 @@ export interface GitLabPipeline {
    * Lists the pipeline's jobs in creation order (roughly stage order): jobs run by a runner
    * (`kind: "job"`), trigger jobs that start a downstream pipeline (`kind: "trigger"`), and
    * statuses that external systems reported for the pipeline (`kind: "status"`). Only the latest
-   * attempt of a retried job is listed, and at most 1000 rows: a larger pipeline has some left out
-   * without notice, failed ones included even under a `status` filter, while the pipeline's own
-   * `status` still counts them. Only `kind: "job"` rows can be
+   * attempt of a retried job is listed, and at most 1000 rows, favouring the most recent: a larger
+   * pipeline has some left out without notice, even under a `status` filter, while the pipeline's
+   * own `status` still counts them. Only `kind: "job"` rows can be
    * opened, with `getJob()`; a trigger job's downstream pipeline in this project opens with
    * `getDownstreamPipeline()`.
    *

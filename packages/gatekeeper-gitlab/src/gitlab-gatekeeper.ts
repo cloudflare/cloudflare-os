@@ -1700,7 +1700,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     ]
       .filter(row => statuses === undefined || statuses.has(row.status))
       .toSorted((a, b) => Number(a.id) - Number(b.id))
-      .slice(0, MAX_CI_ROWS);
+      // Each listing above keeps its newest rows; so does the merge, a retried job's latest attempt among them.
+      .slice(-MAX_CI_ROWS);
     return new ArrayCursor(rows, pageSize);
   }
 
