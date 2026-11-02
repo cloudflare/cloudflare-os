@@ -45,7 +45,7 @@ beforeEach(() => {
   mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markManyRead,
     markWorkspaceRead: vi.fn<Unread["markWorkspaceRead"]>().mockResolvedValue(undefined),
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
-    markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(undefined) };
+    markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(true) };
   container = document.body.appendChild(document.createElement("div"));
   root = createRoot(container);
 });

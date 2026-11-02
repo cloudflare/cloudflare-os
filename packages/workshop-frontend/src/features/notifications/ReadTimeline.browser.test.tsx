@@ -87,6 +87,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
         chats: [{ ...state.chats[0], readThroughSequence: from - 1, unreadMessageCount: 1, }],
       };
       if (!ackFirst) await subscriber!.updated(state);
+      return true;
     },
   );
   const api = {
