@@ -64,6 +64,10 @@ Data boundaries:
 - A browser's Web Push endpoint and keys pass through the User DO to the service with that DO's
   opaque subject; the installation stores only the subscription id the service returns for them.
 
+Each User DO accepts at most 20 `registerNotificationDevice` calls a minute, native and browser
+alike, and refuses the rest before signing anything: every registration reads and writes records
+at the central service that the whole installation shares, so one user's loop would make them hot.
+
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting
 `window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a

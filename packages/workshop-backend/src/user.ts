@@ -34,6 +34,9 @@ const logger = createWorkshopLogger("workshop.user");
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
 
+// How many registerNotificationDevice() calls one user may make per minute.
+const NOTIFICATION_REGISTRATIONS_PER_MINUTE = 20;
+
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
 export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
 
@@ -206,6 +209,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
+  // The current minute of notification registrations: when it began, and the calls made in it.
+  #registrationWindowStart = -Infinity;
+  #registrationsInWindow = 0;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -479,9 +485,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Exchange a native app's one-time device registration, or a browser's Web Push subscription,
-   * for that device's push subscription.
+   * for that device's push subscription. Throws, contacting nothing, past 20 calls in a minute.
    */
   async registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
+    // Each call sends a signed request that reads and writes this installation's records at the
+    // central notification service, which all its users share, so one user's loop would make them
+    // hot for the whole installation. Refuse the excess before signing anything. Kept in memory:
+    // the DO is single-threaded, and a reset forgets at most a minute of calls.
+    let now = Date.now();
+    if (now - this.#registrationWindowStart >= 60_000) {
+      this.#registrationWindowStart = now;
+      this.#registrationsInWindow = 0;
+    }
+    if (++this.#registrationsInWindow > NOTIFICATION_REGISTRATIONS_PER_MINUTE) {
+      throw new Error("Too many notification registrations. Try again in a minute.");
+    }
     this.#storeNotificationSubscription(
         await registerDevice(this.env, registration, this.#notificationSubject));
   }

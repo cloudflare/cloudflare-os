@@ -18,8 +18,9 @@ const encoder = new TextEncoder();
 const SUBSCRIPTION_ID = "b".repeat(64);
 const SUBJECT = "a".repeat(64);
 const AUTHORIZATION = "c".repeat(64);
-// Ids the stub service mints, in order.
-const [ONE, TWO, THREE] = ["1", "2", "3"].map(digit => digit.repeat(64));
+// The id the stub service mints for its `n`th registration.
+const mintedId = (n: number) => n.toString(16).padStart(64, "0");
+const [ONE, TWO, THREE] = [1, 2, 3].map(mintedId);
 const NOTIFICATION: UserNotification = {
   id: "11111111-1111-4111-8111-111111111111",
   kind: "taskCompleted",
@@ -59,7 +60,7 @@ function stubService(refuse?: { subscriptionId: string; status: string; code: nu
     if (path === "/v1/subscriptions" || path === "/v2/subscriptions") {
       return Response.json({
         deviceKey: (body.deviceRegistrationId ?? body.webPush.endpoint.at(-1))[0].repeat(64),
-        subscriptionId: String(++minted).repeat(64),
+        subscriptionId: mintedId(++minted),
       }, { status: 201 });
     }
     return body.subscriptionId === refuse?.subscriptionId
@@ -358,5 +359,31 @@ describe("UserDurableObject notifications", () => {
     });
     expect({ failed, first, next: pushed(fetcher) })
         .toEqual({ failed: fails, first: [ONE, TWO], next });
+  });
+
+  // One user's registration loop would otherwise heat the installation's shared central records.
+  it("refuses a 21st registration within a minute without contacting the service", async () => {
+    vi.useFakeTimers();
+    let fetcher = stubService();
+    await inUser(async user => {
+      for (let i = 0; i < 20; i++) await user.registerNotificationDevice("a".repeat(64));
+      fetcher.mockClear();
+      await expect(user.registerNotificationDevice("b".repeat(64))).rejects.toThrow();
+      expect(fetcher).not.toHaveBeenCalled();
+      await user.publishNotification(NOTIFICATION);
+    });
+    expect(pushed(fetcher)).toEqual([mintedId(20)]);
+  });
+
+  it("accepts registrations again once the minute has passed", async () => {
+    vi.useFakeTimers();
+    let fetcher = stubService();
+    await inUser(async user => {
+      for (let i = 0; i < 20; i++) await user.registerNotificationDevice("a".repeat(64));
+      await expect(user.registerNotificationDevice("a".repeat(64))).rejects.toThrow();
+      vi.advanceTimersByTime(60_000);
+      await user.registerNotificationDevice("b".repeat(64));
+    });
+    expect(bodies(fetcher, "/v1/subscriptions")).toHaveLength(21);
   });
 });
