@@ -1502,6 +1502,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#space(spaceKey).workspaceVisible(id, this.storage.profile.get().id);
   }
 
+  /**
+   * The key of the space that lists workspace `id`, personal or team, for that workspace's
+   * Overseer to show (GadgetMetadata.listedIn), or null if none is known to. Only a workspace of
+   * the user's own that a space may list (see isListable()) can be listed, and then it is the
+   * space that its marker says has acknowledged it. No space is asked, and nothing may be
+   * authorized on the answer.
+   */
+  async workspaceListedIn(id: string): Promise<string | null> {
+    let record = this.storage.gadgets.get(id);
+    if (!record || record.owner || !isFullyCreated(record) || !isListable(record)) return null;
+    let { registered } = record;
+    return registered?.title === undefined ? null : registered.spaceKey;
+  }
+
   // Set once this object has started the catch-up below and cleared if that fails, so that
   // listSpaces() starts it once, and again after a failure.
   #spacesBackfillStarted = false;

@@ -5409,10 +5409,12 @@ class OverseerImpl implements AgentHooks {
 
       // Under either flag only the sharing graph counts, so whatever the workspace's space gave
       // anyone ends with the writes above, without waiting to hear from the space, and so does
-      // its publication, which from those writes on gave nobody a role (see `publicAccess`).
+      // its publication, which from those writes on gave nobody a role (see `publicAccess`). No
+      // space lists it from then on either (see `listedIn`).
       if (newlyRestricted) {
         this.#endSpaceRoles();
         this.setPublicAccess(undefined)?.();
+        this.#setListedIn(undefined);
       }
 
       if (sharing && baseline) {
@@ -6197,6 +6199,7 @@ class OverseerImpl implements AgentHooks {
       this.#lastActiveTimeKnownToUserDo = this.#lastActiveTimeKnownToUs!;
       await owner.setWorkspaceLastActive(this.ctx.id.toString(), this.#lastActiveTimeKnownToUs!,
                                       this.storage.totalCost.get(), this.restrictions);
+      this.#activityReported();
     } catch (err) {
       this.logger.warn("failed to bump gadget last-active on user DO", {
         event: "gadget.last.active.bump.failed",
@@ -10118,6 +10121,88 @@ class OverseerImpl implements AgentHooks {
         "Gadget restarted because it is no longer open to the members of its space.");
   }
 
+  // --- The space that lists the workspace ---
+  //
+  // GadgetMetadata.listedIn: the space that the owner's User DO says has acknowledged listing the
+  // workspace. It is asked at the first metadata served, and again after this object moves the
+  // workspace or changes its publication, calls that return once the listing has followed. A
+  // move whose answer was lost may still be under way, so what it is asked after one is taken
+  // until the next metadata served, which asks again. Any other answer, naming a space or none,
+  // is kept in memory for the life of this object, except that after an activity report made
+  // while none was known, which the User DO may follow by listing the workspace in the
+  // background, each metadata served asks again until an answer names a space. A lookup that
+  // fails is not kept either. So a change the User DO makes on its own, such as falling back
+  // from a team space that refuses the workspace, shows at the next of those lookups, at the
+  // latest once this object restarts. None under either flag, and nobody is asked. It is
+  // presentation alone: nothing is authorized on it.
+
+  #listedIn: string | undefined;
+
+  // The latest lookup, while it is in flight and once its answer is kept.
+  #listedInLookup: Promise<void> | undefined;
+
+  // Set by an activity report made while no space was known to list the workspace, and cleared
+  // once an answer names one.
+  #listedInAwaited = false;
+
+  // Told whenever `listedIn` changes.
+  listedInSubscribers = new Set<(listedIn: string | undefined) => void>();
+
+  get listedIn(): string | undefined {
+    return this.#listedIn;
+  }
+
+  // Resolves once `listedIn` is known as well as it can be: at once if an answer is kept,
+  // otherwise once the lookup in flight, or else a new one, answers. Never rejects.
+  knowListedIn(): Promise<void> {
+    return this.#listedInLookup ?? this.refreshListedIn();
+  }
+
+  // Asks the owner's User DO afresh, unless the workspace has no owner or either flag says that
+  // no space lists it. Only the latest lookup's answer is taken, and one that fails names none.
+  // One that fails, is not `settled`, or names none while a space is awaited is asked again at
+  // the next knowListedIn(). Never rejects.
+  refreshListedIn(settled = true): Promise<void> {
+    let { containsRestrictedData, ownerInvitesOnly } = this.storage;
+    if (!this.ownerId || containsRestrictedData.get() || ownerInvitesOnly.get()) {
+      return Promise.resolve();
+    }
+    let id = this.ctx.id.toString();
+    let lookup: Promise<void> = retryOnDoReset(
+        () => this.ownerUserDo().workspaceListedIn(id), this.logger)
+        .then(key => ({ key }), (err: unknown) => {
+          this.logger.warn("failed to look up which space lists a workspace", {
+            event: "space.listed.in.lookup.failed", error: err,
+          });
+          return null;
+        })
+        .then(answer => {
+          if (lookup !== this.#listedInLookup) return;
+          if (answer && answer.key !== null) this.#listedInAwaited = false;
+          if (!answer || !settled || this.#listedInAwaited) this.#listedInLookup = undefined;
+          this.#setListedIn(answer?.key ?? undefined);
+        });
+    return this.#listedInLookup = lookup;
+  }
+
+  // The owner's User DO has been told of activity, which can list a workspace that no space was
+  // known to list, so such an answer is no longer kept.
+  #activityReported(): void {
+    if (this.#listedIn !== undefined) return;
+    this.#listedInAwaited = true;
+    this.#listedInLookup = undefined;
+  }
+
+  // Sets `listedIn` to `key`, or to none under either flag, and tells the subscribers if that
+  // changes it.
+  #setListedIn(key: string | undefined): void {
+    let { containsRestrictedData, ownerInvitesOnly } = this.storage;
+    if (containsRestrictedData.get() || ownerInvitesOnly.get()) key = undefined;
+    if (key === this.#listedIn) return;
+    this.#listedIn = key;
+    for (let subscriber of this.listedInSubscribers) subscriber(key);
+  }
+
   // --- Publication ---
   //
   // The owner may publish the workspace to the whole deployment (OverseerClientInterface
@@ -11720,6 +11805,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async getMetadata(): Promise<WorkspaceMetadata> {
+    await this.impl.knowListedIn();
     let result: WorkspaceMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
@@ -11727,6 +11813,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       publicAccess: this.impl.publicAccess,
+      listedIn: this.impl.listedIn,
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -11741,8 +11828,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
-    // For collaborators, fetch owner info first: storage is read and subscribed below with no
-    // await in between, so an update can't land after the snapshot but before the subscription.
+    // Learn which space lists the workspace, and for collaborators fetch owner info, first: what
+    // is read below is subscribed to with no await in between, so an update can't land after the
+    // snapshot but before the subscription.
+    await this.impl.knowListedIn();
     let owner = this.isOwner
         ? undefined : await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
 
@@ -11753,6 +11842,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       publicAccess: this.impl.publicAccess,
+      listedIn: this.impl.listedIn,
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -11770,18 +11860,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
-    // Under either flag the workspace is not published (see OverseerImpl.publicAccess).
+    // Under either flag the workspace is neither published nor listed (see
+    // OverseerImpl.publicAccess, OverseerImpl.listedIn).
     let restrictedDataSubscriber = {
       update(value: boolean | undefined) {
         metadata.containsRestrictedData = value;
-        if (value) metadata.publicAccess = undefined;
+        if (value) metadata.publicAccess = metadata.listedIn = undefined;
         callback(metadata).catch(unsubscribe);
       }
     };
     let ownerInvitesOnlySubscriber = {
       update(value: boolean | undefined) {
         metadata.ownerInvitesOnly = value;
-        if (value) metadata.publicAccess = undefined;
+        if (value) metadata.publicAccess = metadata.listedIn = undefined;
         callback(metadata).catch(unsubscribe);
       }
     };
@@ -11791,6 +11882,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let listedInSubscriber = (value: string | undefined) => {
+      if (metadata.listedIn === value) return;
+      metadata.listedIn = value;
+      callback(metadata).catch(unsubscribe);
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
@@ -11798,6 +11894,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
       this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
       this.impl.storage.publicAccess.unsubscribe(publicAccessSubscriber);
+      this.impl.listedInSubscribers.delete(listedInSubscriber);
       callback[Symbol.dispose]();
     };
 
@@ -11806,6 +11903,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
     this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
     this.impl.storage.publicAccess.subscribe(publicAccessSubscriber);
+    this.impl.listedInSubscribers.add(listedInSubscriber);
 
     callback(metadata).catch(unsubscribe);
 
@@ -11832,7 +11930,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // through, or may have, leaves an answer that the workspace is visible standing for a space
   // that may no longer be its own, and the space it joins holds no publication lease to take
   // back, so the answer is dropped (see OverseerImpl.revokeVisibility()). A refused move leaves
-  // the workspace where it was, and the answer with it.
+  // the workspace where it was, and that answer with it. Which space lists the workspace is
+  // asked again whatever the outcome (OverseerImpl.listedIn), since even a refused move first
+  // finishes whatever an earlier one left half done.
   async moveToSpace(spaceKey: string | null): Promise<void> {
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can move it to another space.");
@@ -11844,6 +11944,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           this.impl.ctx.id.toString(), spaceKey, this.impl.restrictions);
     } finally {
       if (moved !== false) this.impl.revokeVisibility();
+      // A move whose answer was lost may still be under way, so what is said of it then is
+      // provisional.
+      void this.impl.refreshListedIn(moved !== undefined);
     }
     if (!moved) throw noSuchSpace();
   }
@@ -11875,6 +11978,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
                          scheduler.wait(PUBLICATION_RESTART_WAIT_MS)]).then(restart);
     }
     await mirrored;
+    // The listing has caught up, so which space holds it is asked again (OverseerImpl.listedIn).
+    void this.impl.refreshListedIn();
   }
 
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
@@ -13200,7 +13305,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
 // Restricted capability handed to "use"-role collaborators. It implements the full `Overseer`
 // interface but permits only the handful of methods needed to render and interact with the
-// gadgets' deployed UIs: getMetadata() (restricted to id/title/owner), a restricted
+// gadgets' deployed UIs: getMetadata() (restricted to id/title/owner/listedIn), a restricted
 // subscribeToMetadata(), subscribeToPresence(), subscribeToWorkpieces(), and getGadget()
 // (returning a restricted, mainline-only UseGadgetClientInterface). Presence includes active
 // viewers' names, profile IDs, and roles. Every other
@@ -13276,10 +13381,12 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // --- Allowed methods ---
 
   async getMetadata(): Promise<WorkspaceMetadata> {
+    await this.impl.knowListedIn();
     return {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       owner: await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger),
+      listedIn: this.impl.listedIn,
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -13290,13 +13397,16 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
-    // Fetch owner info first so the title read and subscription below have no await in between.
+    // Learn which space lists the workspace and fetch owner info first, so the reads and
+    // subscriptions below have no await in between.
+    await this.impl.knowListedIn();
     let owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
 
     let metadata: WorkspaceMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       owner,
+      listedIn: this.impl.listedIn,
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -13307,13 +13417,19 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let listedInSubscriber = (value: string | undefined) => {
+      metadata.listedIn = value;
+      callback(metadata).catch(unsubscribe);
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
+      this.impl.listedInSubscribers.delete(listedInSubscriber);
       callback[Symbol.dispose]();
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
+    this.impl.listedInSubscribers.add(listedInSubscriber);
 
     callback(metadata).catch(unsubscribe);
 
