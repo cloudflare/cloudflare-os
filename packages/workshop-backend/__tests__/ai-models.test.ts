@@ -204,6 +204,19 @@ describe("getModel AI Gateway routing", () => {
     });
   }, 15000);
 
+  it("sends a dynamic route to the gateway's /compat route, not workers-ai", async () => {
+    const handle = getModel(env(), { ...WORKERS_AI_CONFIG, model: "dynamic/my-route" }, INITIATOR, {
+      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+    });
+
+    expect(handle.model.api).toBe("openai-completions");
+    expect(handle.model.baseUrl).toBe(
+        "https://gateway.ai.cloudflare.com/v1/user-account-id/default/compat");
+    const request = await captureRequest(handle);
+    expect(request.url).toBe(
+        "https://gateway.ai.cloudflare.com/v1/user-account-id/default/compat/chat/completions");
+  }, 15000);
+
   it("speaks the provider's native API on a connected user's Gateway", async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
       userGateway: { accountId: "user-account-id", apiKey: "user-token" },

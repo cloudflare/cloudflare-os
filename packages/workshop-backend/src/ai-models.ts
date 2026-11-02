@@ -307,7 +307,7 @@ function workersAiCompat(catalog: CatalogEntry | undefined): OpenAICompletionsCo
 // over the AI binding (https://workers-binding.ai/ai-gateway/gateways/{gateway}); each
 // provider's native API is exposed under the same per-provider path on either. AI Gateway also
 // offers a unified OpenAI-compat translation layer (/compat), which only the Auto Router model
-// speaks, because the router exists nowhere else: for every other model we speak the provider's
+// and dynamic/ routes speak, because they exist nowhere else: all others use the provider's
 // native API, since the translation drops provider features pi relies on (extended thinking,
 // Anthropic cache_control prompt caching, the OpenAI Responses API). Billing -- including unified
 // billing on a user's own gateway -- is orthogonal to which API a request speaks. Returns
@@ -368,13 +368,16 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
     case "cloudflare":
       // Workers AI's own OpenAI-compatible endpoint, exposed through the gateway's workers-ai
       // route. This is Workers AI's native chat API (the same surface as its direct
-      // /accounts/{id}/ai/v1 REST endpoint), not the gateway's cross-provider /compat layer.
+      // /accounts/{id}/ai/v1 REST endpoint), not the gateway's cross-provider /compat layer. A
+      // dynamic route ("dynamic/<name>") exists only on /compat: the workers-ai route does not
+      // evaluate its conditions, so it would always take the default branch.
       return {
         id: config.model,
         name: catalog?.name ?? config.model,
         api: "openai-completions",
         provider: "cloudflare-workers-ai",
-        baseUrl: `${gatewayUrl}/workers-ai/v1`,
+        baseUrl: config.model.startsWith("dynamic/")
+            ? `${gatewayUrl}/compat` : `${gatewayUrl}/workers-ai/v1`,
         reasoning: catalog?.reasoning ?? false,
         input: catalog?.input ?? ["text"],
         cost: catalog?.cost ?? ZERO_COST,
