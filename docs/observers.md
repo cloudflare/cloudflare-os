@@ -90,10 +90,12 @@ The check works as follows:
   *selection*, not verification: when the collaborator already has the matching provided singleton
   account, the overseer uses it automatically and still runs the gatekeeper's normal `addObserver`
   check.
-- **Authorization is keyed on the sharing table, not on live sessions.** Because a Gadget may
+- **Authorization is keyed on who holds a role, not on live sessions.** Because a Gadget may
   *store* observed data and re-display it later (even to a `use` observer who opens much later),
-  every exclusion/enforcement decision keys off whether a user is still *authorized* in the
-  sharing graph (`computeEffectiveRoles`), never off whether they currently have the Gadget open.
+  every exclusion/enforcement decision keys off whether a user is still *authorized* -- by the
+  higher of the role the sharing graph gives them (`computeEffectiveRoles`) and the role their
+  membership of the workspace's space gives (see `sharing.md`, "Space roles") -- never off
+  whether they currently have the Gadget open.
 
 ---
 
@@ -128,7 +130,9 @@ The check works as follows:
 - **Observer record (new):** overseer storage describing a user who has **configured their
   gatekeeper accounts and passed all `addObserver` checks** — i.e. is actually set up to observe.
   This is distinct from the sharing table: intent vs. configured-and-verified. Opening requires
-  **both** (reachable in the sharing graph AND a valid, complete observer record).
+  **both** (a role -- the higher of the one the sharing graph gives and the one membership of
+  the workspace's space gives, see `sharing.md`, "Space roles" -- AND a valid, complete observer
+  record).
 - **Observer ID:** a **random, opaque** string the overseer generates when it first creates an
   observer record, and stores in that record. It is passed to gatekeepers as the stable handle
   for this observer. We deliberately do **not** use `profile.id` (usually an email), to avoid
@@ -138,10 +142,10 @@ The check works as follows:
 - **Verifier:** `Fetcher<GatekeeperUserVerifier>` minted by the *observer's own*
   `GatekeeperUser` (a specific connected account they chose). A persistent service stub — no
   disposal required.
-- **Invariant maintained:** for every user authorized in the sharing graph and every gatekeeper
-  in scope for their role, the gatekeeper has confirmed (at the user's last open) that the user
-  may observe everything read so far, AND no later observation has been allowed that the user may
-  not see.
+- **Invariant maintained:** for every user the sharing graph or the workspace's space gives a
+  role (the higher of the two is their role) and every gatekeeper in scope for that role, the
+  gatekeeper has confirmed (at the user's last open) that the user may observe everything read
+  so far, AND no later observation has been allowed that the user may not see.
 
 ---
 
@@ -540,8 +544,9 @@ you're allowed to see the data it uses."
 
 Extend `authorizeObservation()` (in `overseer.ts`) to honor `description.excludeObservers`.
 Because v1 has no per-thread hiding, an excluded-but-named observation can only proceed when the
-named observer cannot reach it at all: either they have *already lost access* in the sharing graph,
-or the connection that produced it has left their role's verification scope.
+named observer cannot reach it at all: either they have *already lost access* (neither the
+sharing graph nor membership of the workspace's space gives them a role any longer), or the
+connection that produced it has left their role's verification scope.
 
 For each id in `description.excludeObservers`:
 
@@ -553,8 +558,10 @@ For each id in `description.excludeObservers`:
    park on the config modal — reads as unknown here and the observation is admitted to the very
    collaborator it names. The required fix is an in-memory map of pending ids consulted here,
    failing closed; it lands with `observer-verification-fixes`.
-2. Check sharing-graph reachability for that `profileId`
-   (`SharingManager.getEffectiveRole` / `computeEffectiveRoles`).
+2. Check whether that `profileId` still holds a role: the higher of the one the sharing graph
+   gives (`SharingManager.getEffectiveRole` / `computeEffectiveRoles`) and the one their
+   membership of the workspace's space gives. See `sharing.md`, "Space roles", for how the
+   second is learned here and why an observation is blocked when it cannot be.
    - **Still authorized, and the producing gatekeeper is still in that role's scope → throw**,
      blocking the observation (degrade to per-observation lockdown). Use a clear message, e.g.:
      `"This observation was blocked because it contains data that a current collaborator is not permitted to see."`
@@ -623,8 +630,10 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
   stale cached workspace listing just yields a denied open).
 
 - After a mutation, use the returned `AffectedCollaborator[]` to find users who **lost access**.
-  For each who is now unreachable, if they have an observer record: delete the observer record,
-  then best-effort `removeObserver(record.observerId)` on **all** gatekeeper facets.
+  For each who is now unreachable in the graph and holds no role as a member of the workspace's
+  space either (see `sharing.md`, "Space roles"), if they have an observer record: delete the
+  observer record, then best-effort `removeObserver(record.observerId)` on **all** gatekeeper
+  facets.
 - For a **`build` → `use` downgrade**, optionally `removeObserver` (and drop the corresponding
   `accountChoices` entries) for the now-out-of-scope bindings (those without a `bindingName`).
   Safe to defer — an over-broad observer set only ever errs toward stricter future checks — but
@@ -632,13 +641,15 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
 - All these calls are best-effort: log and continue on error. An orphaned observer entry only
   causes superfluous future checks, never a data leak: a registration is what *admits* an open,
   and every open re-runs `addObserver`, so a stale one grants nothing on its own — while
-  `authorizeObservation`'s exclusion gate re-checks the live sharing graph for any id a gatekeeper
-  still names. A record is only ever persisted for a party who passed full verification.
+  `authorizeObservation`'s exclusion gate re-checks, in the live sharing graph and with the
+  workspace's space, the role of any id a gatekeeper still names. A record is only ever
+  persisted for a party who passed full verification.
 
 > Multi-gatekeeper sequencing/atomicity is an overseer implementation detail, not part of the
 > shared interface. Because `addObserver` is re-run every open and `removeObserver` is idempotent,
 > a failure mid-teardown self-heals: the next open re-verifies, and `authorizeObservation`'s
-> sharing-graph check is always authoritative regardless of stale gatekeeper memory.
+> own check of who still holds a role, in the sharing graph or through the space, is always
+> authoritative regardless of stale gatekeeper memory.
 
 ### Step 7 — Gatekeeper interface contract (hand-off note)
 
