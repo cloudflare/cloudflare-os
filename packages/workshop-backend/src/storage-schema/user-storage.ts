@@ -118,6 +118,14 @@ export type GadgetRecord = WorkspaceMetadata & {
   lastActive?: Date;  // if missing, gadget is provisional
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
+
+  /**
+   * What a space last acknowledged for this workspace: the key of the space listing it, personal
+   * or team, and the title listed there. It is the marker UserDurableObject.#reconcileSpace()
+   * works from: absent, or different from what the record now says, means the listing has yet
+   * to catch up. Set on the user's own workspaces only, and never sent to a client.
+   */
+  registered?: { spaceKey: string; title: string };
 };
 
 /**
@@ -254,8 +262,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       directoryRev: -1,
 
       // The key of this user's personal space, once one has been claimed for them (see
-      // #ensurePersonalSpace()). It says which of `spaces` to list first and nothing more: like
-      // that mirror it authorizes nothing, since the space itself records its owner.
+      // #ensurePersonalSpace()). It says which of `spaces` to list first, and which space the
+      // user's own workspaces with no `spaceKey` register with. Like that mirror it authorizes
+      // nothing, since the space itself records its owner.
       personalSpaceKey: <string | null>null,
     }
   });

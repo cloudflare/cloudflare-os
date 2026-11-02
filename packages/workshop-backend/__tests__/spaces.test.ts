@@ -1,5 +1,6 @@
-// Spaces: the key grammar and SpaceModel's membership rules over a Map-backed storage, then the
-// real Durable Objects -- a space, and the users whose memberships it mirrors.
+// Spaces: the key grammar and SpaceModel's membership and listing rules over a Map-backed
+// storage, then the real Durable Objects -- a space, and the users whose memberships it mirrors.
+// The users' side of the listing is spaces-workspaces.test.ts.
 
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
@@ -240,6 +241,75 @@ describe("SpaceModel membership", () => {
   });
 });
 
+// A registration of workspace `id`, and what a space lists as "owner: title" by workspace id.
+const ws = (id: string, title = id, created = new Date("2026-01-01")) => ({ id, title, created });
+const titles = (model: SpaceModel) =>
+    Object.fromEntries(model.listWorkspaces(ALICE.id).map(w => [w.id, `${w.owner.id}: ${w.title}`]));
+
+describe("SpaceModel workspaces", () => {
+  it("takes workspaces from any member of a team space and only the owner of a personal one", () => {
+    let team = teamSpace();
+    team.setMemberRole(ALICE.id, BOB, "use");
+    expect(team.attachWorkspaces(BOB, [ws("b1")])).toBe(true);
+    expect(team.canAddWorkspaces(CAROL.id)).toBe(false);
+    expect(team.attachWorkspaces(CAROL, [ws("c1")])).toBe(false);
+    expect(titles(team)).toEqual({ b1: "bob: b1" });
+
+    let personal = personalSpace();
+    personal.setMemberRole(ALICE.id, BOB, "build");
+    expect(personal.attachWorkspaces(ALICE, [ws("a1")])).toBe(true);
+    expect(personal.attachWorkspaces(BOB, [ws("b1")])).toBe(false);
+    expect(titles(personal)).toEqual({ a1: "alice: a1" });
+
+    // A key nobody has claimed lists nothing for anyone.
+    let unclaimed = new SpaceModel(makeSpaceStorage(makeMockStorage()));
+    expect(unclaimed.attachWorkspaces(ALICE, [ws("a1")])).toBe(false);
+  });
+
+  it("refuses a whole call, changing nothing, over one workspace listed under someone else", () => {
+    let model = teamSpace();
+    model.setMemberRole(ALICE.id, BOB, "build");
+    expect(model.attachWorkspaces(ALICE, [ws("a1", "Alice's")])).toBe(true);
+    expect(model.attachWorkspaces(BOB, [ws("b1"), ws("a1", "Taken over")])).toBe(false);
+    expect(titles(model)).toEqual({ a1: "alice: Alice's" });
+  });
+
+  it("keeps updating a workspace for an owner who has left, and takes nothing new from them", () => {
+    let model = teamSpace();
+    model.setMemberRole(ALICE.id, BOB, "build");
+    expect(model.attachWorkspaces(BOB, [ws("b1", "Before")])).toBe(true);
+    model.removeMember(ALICE.id, BOB.id);
+
+    expect(model.attachWorkspaces(BOB, [ws("b1", "After")])).toBe(true);
+    expect(model.attachWorkspaces(BOB, [ws("b1", "Smuggled"), ws("b2")])).toBe(false);
+    expect(titles(model)).toEqual({ b1: "bob: After" });
+  });
+
+  it("detaches a workspace only for the owner it is listed under", () => {
+    let model = teamSpace();
+    model.setMemberRole(ALICE.id, BOB, "build");
+    model.attachWorkspaces(BOB, [ws("b1")]);
+    model.detachWorkspace("b1", ALICE.id);
+    model.detachWorkspace("never-listed", BOB.id);
+    expect(titles(model)).toEqual({ b1: "bob: b1" });
+    model.detachWorkspace("b1", BOB.id);
+    expect(titles(model)).toEqual({});
+  });
+
+  it("lists workspaces newest first, to members only", () => {
+    let model = teamSpace();
+    model.setMemberRole(ALICE.id, BOB, "use");
+    model.attachWorkspaces(ALICE, [
+      ws("mid", "Mid", new Date("2026-02-01")), ws("new", "New", new Date("2026-03-01")),
+      ws("old", "Old", new Date("2026-01-01")),
+    ]);
+    expect(model.listWorkspaces(BOB.id)[0])
+        .toEqual({ id: "new", title: "New", owner: ALICE, created: new Date("2026-03-01") });
+    expect(model.listWorkspaces(BOB.id).map(w => w.id)).toEqual(["new", "mid", "old"]);
+    expect(() => model.listWorkspaces(CAROL.id)).toThrow(NO_SUCH_SPACE);
+  });
+});
+
 // =======================================================================================
 // The real Durable Objects
 
@@ -324,6 +394,7 @@ describe("SpaceDurableObject", () => {
     for (let space of [key, `team-${unique()}`].map(k => env.TEST_SPACE.getByName(k))) {
       await expectRejection(space.getInfo(bob.id), NO_SUCH_SPACE);
       await expectRejection(space.listMembers(bob.id), NO_SUCH_SPACE);
+      await expectRejection(space.listWorkspaces(bob.id), NO_SUCH_SPACE);
       await expectRejection(space.setMemberRole(bob.id, bob.id, "admin"), NO_SUCH_SPACE);
       await expectRejection(space.removeMember(bob.id, bob.id), NO_SUCH_SPACE);
     }
@@ -367,6 +438,7 @@ describe("SpaceDurableObject", () => {
     await asAlice.removeMember(carol.id);
     await expectRejection(asCarol.getInfo(), NO_SUCH_SPACE);
     await expectRejection(asCarol.listMembers(), NO_SUCH_SPACE);
+    await expectRejection(asCarol.listWorkspaces(), NO_SUCH_SPACE);
     await expectRejection(asCarol.setMemberRole(carol.id, "use"), NO_SUCH_SPACE);
     await expectRejection(asCarol.removeMember(carol.id), NO_SUCH_SPACE);
     expect(await env.TEST_SPACE.getByName(key).open(carol.id)).toBeNull();

@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, SpaceInfo } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, SpaceInfo, isValidTeamSpaceKey } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -30,7 +30,9 @@ import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
-import { personalSpaceClaim } from "./spaces.js";
+import {
+  personalSpaceClaim, checkTeamSpaceKey, noSuchSpace, type WorkspaceRegistration,
+} from "./spaces.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -46,6 +48,9 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
  * redeemable.
  */
 export const GATEKEEPER_USER_SELECTION_LIFETIME_MS = 30 * 60 * 1000;
+
+// How many workspaces #backfillSpaces() registers with a space in one call.
+const SPACES_BACKFILL_PAGE = 128;
 
 /**
  * Metadata about an auto-provisioned account that provides an agent singleton and/or a management UI.
@@ -136,8 +141,18 @@ export type UserChatContext = {
   quickModel?: AiModelConfig;
 }
 
-function isFullyCreated(g: GadgetRecord): g is WorkspaceMetadataWithTimestamps {
+function isFullyCreated(g: GadgetRecord): g is GadgetRecord & WorkspaceMetadataWithTimestamps {
   return g.lastActive !== undefined;
+}
+
+// Whether space `spaceKey` has acknowledged `record` as it is now (see GadgetRecord.registered).
+function isRegistered(record: GadgetRecord, spaceKey: string): boolean {
+  return record.registered?.spaceKey === spaceKey && record.registered.title === record.title;
+}
+
+// A gadget record as it leaves this object: without `registered`, which is its own bookkeeping.
+function withoutRegistered<T extends GadgetRecord>({ registered: _registered, ...gadget }: T) {
+  return gadget;
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -946,7 +961,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let result: WorkspaceMetadataWithTimestamps[] = [];
     for (let workspace of this.storage.gadgets.list()) {
       if (isFullyCreated(workspace)) {
-        result.push(workspace);
+        result.push(withoutRegistered(workspace));
       }
     }
     return result;
@@ -959,6 +974,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     record.title = title;
     this.storage.gadgets.put(record);
+    this.#syncSpaceDetached(gadgetId);
   }
 
   async updatePinned(workspaceId: string, pinned: boolean) {
@@ -971,12 +987,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async getWorkspace(id: string): Promise<WorkspaceMetadata | null> {
-    return this.storage.gadgets.get(id) || null;
+    let record = this.storage.gadgets.get(id);
+    return record ? withoutRegistered(record) : null;
   }
 
-  async newWorkspace(id: string, title: string): Promise<void> {
+  /**
+   * Records a new, provisional workspace of the user's. `spaceKey` is the team space it belongs
+   * to, which the caller has checked is a team space key and nothing more; omitted, it belongs
+   * to the personal space. No space hears of it until it sees activity (see #syncSpace()).
+   */
+  async newWorkspace(id: string, title: string, spaceKey?: string): Promise<void> {
     let created = new Date();
-    this.storage.gadgets.put({id, title, created});
+    this.storage.gadgets.put({id, title, created, ...(spaceKey !== undefined && {spaceKey})});
   }
 
   async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {
@@ -992,12 +1014,30 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         workspace.totalCost = totalCost;
       }
       this.storage.gadgets.put(workspace);
+      this.#syncSpaceDetached(id);
     }
   }
 
+  /**
+   * Forgets a workspace. One of the user's own that has seen activity is first synced, which
+   * leaves the space its marker names as the only one listing it, and then dropped from that
+   * space. If either fails so does this, with the record kept: once it is gone nothing would
+   * ever remove the listing. The record gives up its marker before the space is asked, so that
+   * a record which outlives this call is listed again by its next sync. Syncing first is what
+   * keeps a marker from ever naming a space that has dropped the workspace, which #syncSpace()
+   * relies on when it falls back.
+   */
   async deleteWorkspace(id: string): Promise<void> {
-    this.storage.gadgets.delete(id);
-    this.storage.outputs.byWorkspace.delete(id);
+    await this.#inSpaceOrder(async () => {
+      await this.#syncSpace(id);
+      let listedIn = this.storage.gadgets.get(id)?.registered?.spaceKey;
+      if (listedIn) {
+        this.#amendGadget(id, gadget => { delete gadget.registered; });
+        await this.#space(listedIn).detachWorkspace(id, this.storage.profile.get().id);
+      }
+      this.storage.gadgets.delete(id);
+      this.storage.outputs.byWorkspace.delete(id);
+    });
   }
 
   /**
@@ -1131,9 +1171,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /** AuthenticatedApi.listSpaces: the user's own personal space first, then the rest by name. */
+  /**
+   * AuthenticatedApi.listSpaces: the user's own personal space first, then the rest by name.
+   * Also what starts #backfillSpaces(), without waiting for it.
+   */
   async listSpaces(): Promise<SpaceInfo[]> {
     let personalKey = await this.#ensurePersonalSpace();
+    if (!this.#spacesBackfillStarted) {
+      this.#spacesBackfillStarted = true;
+      this.#backfillSpaces().catch((error: unknown) => {
+        this.#spacesBackfillStarted = false;
+        logger.warn("failed to register workspaces with their spaces", {
+          event: "space.workspace.backfill.failed", error,
+        });
+      });
+    }
     let rank = (space: SpaceInfo) => space.key === personalKey ? 0 : 1;
     return [...this.storage.spaces.list()].toSorted((a, b) =>
         rank(a) - rank(b) || a.name.localeCompare(b.name) || (a.key < b.key ? -1 : 1));
@@ -1154,6 +1206,169 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async forgetSpace(key: string): Promise<void> {
     this.storage.spaces.delete(key);
+  }
+
+  // --- Workspaces in spaces ---
+  //
+  // Each of the user's own workspaces belongs to one space: the team space its record's
+  // `spaceKey` names, or with none the personal space. The record is the authority. The space
+  // lists the workspace once it has seen activity, and that listing follows the record:
+  // `registered` on the record is what the space last acknowledged, and #reconcileSpace() brings
+  // the listing in line, so whatever stopped half way is finished by the next call. A listing
+  // and `registered` have two other writers: #backfillSpacesPage(), and deleteGadget() above.
+
+  // The tail of the chain everything below runs on. Reconciling calls other objects, and this
+  // one takes further requests meanwhile, so two reconciliations of one workspace could
+  // otherwise interleave and leave it listed twice, or nowhere.
+  #spaceWork: Promise<unknown> = Promise.resolve();
+
+  // Runs `work` once everything asked for before it has finished, whether or not that failed.
+  #inSpaceOrder<T>(work: () => Promise<T>): Promise<T> {
+    let done = this.#spaceWork.then(work);
+    this.#spaceWork = done.catch(() => {});
+    return done;
+  }
+
+  #space(key: string) {
+    return this.ctx.exports.SpaceDurableObject.getByName(key);
+  }
+
+  // Rewrites the record of workspace `id` as it stands now, not as it was read before a call to
+  // another object, during which it may have been written.
+  #amendGadget(id: string, amend: (record: GadgetRecord) => void): void {
+    let record = this.storage.gadgets.get(id);
+    if (!record) return;
+    amend(record);
+    this.storage.gadgets.put(record);
+  }
+
+  // Points the record of workspace `id` at team space `spaceKey`, or with none at the personal
+  // space. Only ever called within #inSpaceOrder(), so a reconciliation never sees the record
+  // repointed under it.
+  #pointGadget(id: string, spaceKey: string | undefined): void {
+    this.#amendGadget(id, record => {
+      if (spaceKey === undefined) delete record.spaceKey; else record.spaceKey = spaceKey;
+    });
+  }
+
+  // Brings the listing of workspace `id` in line with its record: lists it in the space it
+  // belongs to, then drops it from the space that listed it before, and only then records what
+  // was acknowledged. A failure at any point leaves `registered` as it was, so the next call
+  // does what is left. There is nothing to do for a workspace that is provisional, shared with
+  // this user, or listed as it should be. Returns false, having changed nothing, if the space
+  // refused the workspace. Callers run it within #inSpaceOrder().
+  async #reconcileSpace(id: string): Promise<boolean> {
+    let record = this.storage.gadgets.get(id);
+    if (!record || record.owner || !isFullyCreated(record)) return true;
+    let spaceKey = record.spaceKey ?? await this.#ensurePersonalSpace();
+    if (isRegistered(record, spaceKey)) return true;
+
+    let { title, created, registered } = record;
+    let owner = this.storage.profile.get();
+    if (!await this.#space(spaceKey).attachWorkspaces(owner, [{ id, title, created }])) return false;
+    if (registered && registered.spaceKey !== spaceKey) {
+      await this.#space(registered.spaceKey).detachWorkspace(id, owner.id);
+    }
+    this.#amendGadget(id, gadget => { gadget.registered = { spaceKey, title }; });
+    return true;
+  }
+
+  // Reconciles workspace `id` with its space. While its owner may not add to the team space its
+  // record names, the record falls back: to the space that lists the workspace, when a move which
+  // got no answer turns out to be refused, and otherwise to their personal space, since
+  // membership is not checked when a workspace is created in a team space. Callers run it within
+  // #inSpaceOrder().
+  async #syncSpace(id: string): Promise<void> {
+    while (!await this.#reconcileSpace(id)) {
+      let { spaceKey, registered } = this.storage.gadgets.get(id)!;
+      if (!spaceKey) throw new Error("A personal space refused a workspace of its owner's.");
+      logger.info("workspace fell back from a space its owner may not add to", {
+        event: "space.workspace.fallback", gadgetId: id,
+      });
+      let listedIn = registered?.spaceKey;
+      let back = listedIn !== spaceKey && listedIn && isValidTeamSpaceKey(listedIn);
+      this.#pointGadget(id, back ? listedIn : undefined);
+    }
+  }
+
+  // #syncSpace() for a caller it must neither slow nor fail. What it could not do is left to the
+  // next sync of the workspace, or to #backfillSpaces().
+  #syncSpaceDetached(id: string): void {
+    this.#inSpaceOrder(() => this.#syncSpace(id)).catch((error: unknown) => {
+      logger.warn("failed to sync a workspace with its space", {
+        event: "space.workspace.sync.failed", gadgetId: id, error,
+      });
+    });
+  }
+
+  /**
+   * Overseer.moveToSpace: places the user's own workspace `id` in team space `spaceKey`, or with
+   * null back in their personal space. The workspace is first synced where it is, because once
+   * its record points elsewhere nothing names the space an unfinished move was taking it to.
+   * Then the record is pointed at the space and reconciled; if the space refuses the workspace,
+   * the record is pointed back where it was and this throws. A call that fails without an answer
+   * may have reached the space, so then the record stays pointed at it for the next sync to
+   * finish the move, or to undo it. A provisional workspace is listed nowhere, so for one this
+   * only records where it will register (see #syncSpace()).
+   */
+  async setGadgetSpace(id: string, spaceKey: string | null): Promise<void> {
+    if (spaceKey !== null) checkTeamSpaceKey(spaceKey);
+    await this.#inSpaceOrder(async () => {
+      await this.#syncSpace(id);
+      let record = this.storage.gadgets.get(id);
+      if (!record || record.owner) throw new Error("No such workspace belonging to user.");
+      let previous = record.spaceKey;
+      this.#pointGadget(id, spaceKey ?? undefined);
+      if (await this.#reconcileSpace(id)) return;
+      this.#pointGadget(id, previous);
+      throw noSuchSpace();
+    });
+  }
+
+  // Set once this object has started the catch-up below and cleared if that fails, so that
+  // listSpaces() starts it once, and again after a failure.
+  #spacesBackfillStarted = false;
+
+  // Registers every workspace of the user's own that has seen activity and that its space has
+  // yet to acknowledge as it is now: those created before workspaces registered with a space,
+  // which all belong in the personal space, and any whose reconciliation failed earlier. It reads
+  // this object's records only, so no Overseer is woken.
+  //
+  // The former go a page per call, and each page is marked as it is acknowledged, so a catch-up
+  // that stops is resumed by the next one with what is left. The latter may have a space to
+  // leave or to fall back from, and go through #syncSpace(), all of them asked for before any
+  // is awaited so that one whose space is out of reach does not keep the rest from theirs.
+  async #backfillSpaces(): Promise<void> {
+    let personalKey = await this.#ensurePersonalSpace();
+    let cursor: string | undefined;
+    do {
+      cursor = await this.#inSpaceOrder(() => this.#backfillSpacesPage(personalKey, cursor));
+    } while (cursor !== undefined);
+    let stale = [...this.storage.gadgets.list()].filter(record => !record.owner
+        && isFullyCreated(record) && !isRegistered(record, record.spaceKey ?? personalKey));
+    await Promise.all(stale.map(({ id }) => this.#inSpaceOrder(() => this.#syncSpace(id))));
+  }
+
+  // One page of #backfillSpaces(): registers with the personal space, `spaceKey`, the first
+  // SPACES_BACKFILL_PAGE never-registered workspaces after `startAfter` that belong in it.
+  // Returns the id it stopped at, or undefined if it reached the last record.
+  async #backfillSpacesPage(spaceKey: string, startAfter: string | undefined)
+      : Promise<string | undefined> {
+    let page: WorkspaceRegistration[] = [];
+    for (let record of this.storage.gadgets.list({ startAfter })) {
+      if (record.owner || !isFullyCreated(record) || record.registered || record.spaceKey) continue;
+      let { id, title, created } = record;
+      page.push({ id, title, created });
+      if (page.length === SPACES_BACKFILL_PAGE) break;
+    }
+    if (page.length === 0) return undefined;
+    if (!await this.#space(spaceKey).attachWorkspaces(this.storage.profile.get(), page)) {
+      throw new Error("A personal space refused workspaces of its owner's.");
+    }
+    for (let { id, title } of page) {
+      this.#amendGadget(id, record => { record.registered = { spaceKey, title }; });
+    }
+    return page.length === SPACES_BACKFILL_PAGE ? page.at(-1)!.id : undefined;
   }
 
   // --- Blueprint methods (called by Overseer during propagation) ---

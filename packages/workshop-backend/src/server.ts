@@ -23,7 +23,7 @@ import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord 
 import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
-import { SpaceDurableObject, checkSpaceKey, noSuchSpace, teamSpaceClaim } from "./spaces.js";
+import { SpaceDurableObject, checkSpaceKey, checkTeamSpaceKey, noSuchSpace, teamSpaceClaim } from "./spaces.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
@@ -380,9 +380,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#openWorkspaceInternal(id, shareKey, configureObservers);
   }
 
-  async newWorkspace(): Promise<RpcStub<Overseer>> {
+  async newWorkspace(spaceKey?: string): Promise<RpcStub<Overseer>> {
+    if (spaceKey !== undefined) checkTeamSpaceKey(spaceKey);
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newWorkspace(id, "Untitled Workspace");
+    await this.#user.newWorkspace(id, "Untitled Workspace", spaceKey);
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
       user_id: this.#userId.toString(),
@@ -545,15 +546,18 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async newWorkspaceFromBlueprint(
     blueprintId: string,
-    bindings: Record<string, BlueprintBindingAssignment>
+    bindings: Record<string, BlueprintBindingAssignment>,
+    spaceKey?: string
   ): Promise<RpcStub<Overseer>> {
+    if (spaceKey !== undefined) checkTeamSpaceKey(spaceKey);
+
     // 1. Read blueprint from KV.
     let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
     if (!kvRecord) throw new Error("Blueprint not found.");
 
     // 2. Create new Overseer DO (same as newWorkspace()).
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newWorkspace(id, kvRecord.metadata.title);
+    await this.#user.newWorkspace(id, kvRecord.metadata.title, spaceKey);
     let overseerResult = await this.#openWorkspaceInternal(id);
 
     // 3. Initialize from the blueprint's code. The Overseer reads it for itself, as the version

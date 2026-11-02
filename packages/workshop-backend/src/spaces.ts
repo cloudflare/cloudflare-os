@@ -1,9 +1,16 @@
-// Spaces: a space is a key, a display name and a member list (see docs/spaces.md).
+// Spaces: a space is a key, a display name, a member list and a listing of the workspaces that
+// belong to it (see docs/spaces.md).
 //
 // Each space is one Durable Object (`SpaceDurableObject`), addressed by the space's key. There is
 // no directory of spaces: a key is taken once the object under it has been claimed, and that
 // object's member list is the only authority on who belongs to the space. Every member's User DO
 // keeps a presentation-only mirror of their memberships, which the space pushes to.
+//
+// The listing of workspaces runs the other way. Which space a workspace belongs to is recorded by
+// its owner's User DO, which registers the workspace here and keeps the entry current; the space
+// decides whether that owner may add to it. An entry of the listing settles one thing only, that
+// nobody but the owner it is listed under updates or drops it: nothing about a workspace, or
+// about who can open it, is decided from the listing.
 //
 // Trust: every method `SpaceDurableObject` exposes takes the acting user as a plain parameter,
 // exactly like `OverseerDurableObject.open(userId, profileId, ...)`. Its only callers are
@@ -20,6 +27,7 @@ import { validateRpc } from "capnweb-validate";
 import {
   PERSONAL_SPACE_PREFIX, isValidSpaceKey, isValidTeamSpaceKey,
   type AiChatAuthorInfo, type Space, type SpaceInfo, type SpaceMemberInfo, type SpaceMemberRole,
+  type SpaceWorkspaceInfo,
 } from "@gadgets/workshop-shared/api";
 import { makeSpaceStorage, type SpaceRecord, type SpaceStorage } from "./storage-schema/space-storage.js";
 import { createWorkshopLogger } from "./observability";
@@ -37,17 +45,31 @@ const MAX_SPACE_NAME_LENGTH = 100;
  */
 export type SpaceClaim = Pick<SpaceRecord, "key" | "name" | "kind">;
 
+/**
+ * What the owner of a workspace registers with a space: the workspace's entry in the listing,
+ * less the owner, whom the registering User DO states once for all of them.
+ */
+export type WorkspaceRegistration = Omit<SpaceWorkspaceInfo, "owner">;
+
 /** Refuses a key that cannot name a space, before a Durable Object is addressed by it. */
 export function checkSpaceKey(key: string): void {
   if (!isValidSpaceKey(key)) throw new Error("Invalid space key.");
 }
 
-/** The claim `AuthenticatedApi.createSpace(key, name)` makes; refuses a malformed key or name. */
-export function teamSpaceClaim(key: string, name: string): SpaceClaim {
+/**
+ * Refuses a key that cannot name a team space: the only kind a user creates, and the only kind
+ * a workspace is placed in by key.
+ */
+export function checkTeamSpaceKey(key: string): void {
   if (!isValidTeamSpaceKey(key)) {
     throw new Error(
         "A space key is 2 to 32 lowercase letters, digits and dashes, and cannot start with a dash.");
   }
+}
+
+/** The claim `AuthenticatedApi.createSpace(key, name)` makes; refuses a malformed key or name. */
+export function teamSpaceClaim(key: string, name: string): SpaceClaim {
+  checkTeamSpaceKey(key);
   name = name.trim();
   if (name === "" || name.length > MAX_SPACE_NAME_LENGTH) {
     throw new Error(`A space name is 1 to ${MAX_SPACE_NAME_LENGTH} characters.`);
@@ -81,9 +103,10 @@ export function noSuchSpace(): Error {
 }
 
 /**
- * The membership rules of one space, over its typed storage. No RPC and no knowledge of other
- * Durable Objects. Every method that acts for a user takes their profile id as `caller` and
- * looks their membership up at that moment, so nothing here trusts an earlier answer.
+ * The rules of one space, over its typed storage: who its members are, and which workspaces it
+ * lists. No RPC and no knowledge of other Durable Objects. Every method that acts for a user
+ * takes who they are as a parameter and looks their membership up at that moment, so nothing
+ * here trusts an earlier answer.
  */
 export class SpaceModel {
   constructor(private storage: SpaceStorage) {}
@@ -178,6 +201,49 @@ export class SpaceModel {
     return this.storage.members.delete(profileId);
   }
 
+  /**
+   * Whether `profileId` may add workspaces they own to the space: only its owner if it is
+   * personal, any member whatever their role if it is a team space.
+   */
+  canAddWorkspaces(profileId: string): boolean {
+    let info = this.info;
+    return info?.kind === "personal" ? info.owner?.id === profileId : !!this.roleOf(profileId);
+  }
+
+  /**
+   * List `owner`'s workspaces in the space, or bring the entries it already holds for them up to
+   * date. Returns false, having changed nothing, if any of them is refused, so that a caller
+   * handles a refusal without matching an error's text.
+   *
+   * A workspace the space does not list yet needs `canAddWorkspaces(owner.id)`. One it lists
+   * under this owner is updated whether or not they may still add, which is what lets a
+   * workspace keep its place after its owner leaves the space. One it lists under someone else
+   * is refused.
+   */
+  attachWorkspaces(owner: AiChatAuthorInfo, registrations: WorkspaceRegistration[]): boolean {
+    let mayAdd = this.canAddWorkspaces(owner.id);
+    for (let { id } of registrations) {
+      let listed = this.storage.workspaces.get(id);
+      if (listed ? listed.owner.id !== owner.id : !mayAdd) return false;
+    }
+    for (let { id, title, created } of registrations) {
+      this.storage.workspaces.put({ id, title, owner, created });
+    }
+    return true;
+  }
+
+  /** Drop workspace `id` from the listing if `ownerId` is who it is listed under. */
+  detachWorkspace(id: string, ownerId: string): void {
+    if (this.storage.workspaces.get(id)?.owner.id === ownerId) this.storage.workspaces.delete(id);
+  }
+
+  /** Space.listWorkspaces: any member, newest first. */
+  listWorkspaces(caller: string): SpaceWorkspaceInfo[] {
+    this.#requireMember(caller);
+    return [...this.storage.workspaces.list()]
+        .toSorted((a, b) => b.created.getTime() - a.created.getTime());
+  }
+
   #requireMember(caller: string): SpaceMemberRole {
     let role = this.roleOf(caller);
     if (!role) throw noSuchSpace();
@@ -253,6 +319,25 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
     if (this.#model.removeMember(caller, profileId)) await this.#mirror(profileId);
   }
 
+  /** Space.listWorkspaces, as `caller`. */
+  async listWorkspaces(caller: string): Promise<SpaceWorkspaceInfo[]> {
+    return this.#model.listWorkspaces(caller);
+  }
+
+  /**
+   * `SpaceModel.attachWorkspaces`. Called only by the User DO of `owner`, which states its own
+   * user's profile, so every workspace it registers is one that user owns.
+   */
+  async attachWorkspaces(owner: AiChatAuthorInfo, registrations: WorkspaceRegistration[])
+      : Promise<boolean> {
+    return this.#model.attachWorkspaces(owner, registrations);
+  }
+
+  /** `SpaceModel.detachWorkspace`. Called only by the User DO of `ownerId`, as above. */
+  async detachWorkspace(id: string, ownerId: string): Promise<void> {
+    this.#model.detachWorkspace(id, ownerId);
+  }
+
   // Bring `profileId`'s mirror of this space in line with their membership as it stands now.
   // Best-effort: the member list is already written and is the authority, and a mirror this
   // fails to reach is corrected the next time its user opens the space.
@@ -290,6 +375,10 @@ class SpaceClientInterface extends RpcTarget implements Space {
 
   listMembers(): Promise<SpaceMemberInfo[]> {
     return this.space.listMembers(this.caller);
+  }
+
+  listWorkspaces(): Promise<SpaceWorkspaceInfo[]> {
+    return this.space.listWorkspaces(this.caller);
   }
 
   setMemberRole(username: string, role: SpaceMemberRole): Promise<SpaceMemberInfo | null> {

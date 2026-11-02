@@ -4,7 +4,7 @@
 // of a space shows up as a change here. See overseer-storage.ts for the conventions.
 
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
-import type { SpaceInfo, SpaceMemberInfo } from "@gadgets/workshop-shared/api";
+import type { SpaceInfo, SpaceMemberInfo, SpaceWorkspaceInfo } from "@gadgets/workshop-shared/api";
 
 /** A space as stored: its `SpaceInfo` without `role`, which is derived per caller on read. */
 export type SpaceRecord = Omit<SpaceInfo, "role">;
@@ -20,6 +20,13 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       // stored here too, as its only admin.
       members: collection<SpaceMemberInfo>()({
         primaryKey: record => record.profile.id,
+      }),
+      // The workspaces registered with the space, each by the User DO of its owner once it has
+      // seen activity (see SpaceModel.attachWorkspaces()). A listing only: the owner's record of
+      // a workspace says which space it belongs to, and all an entry decides is that only the
+      // owner it is listed under updates or drops it.
+      workspaces: collection<SpaceWorkspaceInfo>()({
+        primaryKey: "id",
       }),
     },
   });
