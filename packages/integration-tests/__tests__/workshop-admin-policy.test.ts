@@ -52,7 +52,7 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
   const account = (await listConnectedAccounts(bob))
       .find(candidate => candidate.vendorId === TEST_VENDOR_ID);
   if (account === undefined) throw new Error("Bob's test account was not provisioned");
-  using workspace = await bob.newGadget();
+  using workspace = await bob.newWorkspace();
   using bound = await workspace.newGatekeeper(
       account.id, "https://gadgets-test.example/things/bound");
   if (bound === null) throw new Error("The existing test connection was not created");

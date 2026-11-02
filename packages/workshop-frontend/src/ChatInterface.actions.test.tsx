@@ -77,6 +77,7 @@ function withChatApi(
       subscriber = next
       return { [Symbol.dispose]: () => {} }
     },
+    viewChat: () => ({ [Symbol.dispose]: () => {} }),
   })
   return {
     getChatMessage,

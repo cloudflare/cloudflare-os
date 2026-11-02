@@ -1065,15 +1065,21 @@ describe("defineActions", () => {
     expect(outcomes).toEqual(["reverted"]);
   });
 
-  it("reports a failed rejection for invalidation, keeping the record", async () => {
-    const { actions, journal, outcomes } = bind({
-      reject: async () => { throw new Error("cascade failed"); },
-    });
-    const id = journal.allocate({ kind: "execute", payload: { sql: "one" } });
+  it("withdraws the action even when its reject hook throws", async () => {
+    const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { actions, journal, outcomes } = bind({
+        reject: async () => { throw new Error("cleanup failed"); },
+      });
+      const id = journal.allocate({ kind: "execute", payload: { sql: "one" } });
 
-    await expect(actions.reject(id)).rejects.toThrow("cascade failed");
-    expect(outcomes).toEqual(["failed"]);
-    expect(journal.get(id)).toBeDefined();
+      await expect(actions.reject(id)).resolves.toBeUndefined();
+      expect(outcomes).toEqual(["rejected"]);
+      expect(journal.get(id)).toBeUndefined();
+      expect(logged).toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("publishes the retention flag the facet's assert reads", () => {
@@ -1279,7 +1285,7 @@ describe("defineActions", () => {
     expect(outcomes).toEqual(["failed", "rejected"]);
   });
 
-  it("reports an unknown outcome for a claim whose activation died mid-dispatch", async () => {
+  it("reports an unknown outcome for a claim whose activation died mid-dispatch, and lets reject clear it", async () => {
     const entered = Promise.withResolvers<void>();
     // The first bind parks inside the provider call and never returns -- the activation is gone.
     const dead = bind({
@@ -1298,13 +1304,13 @@ describe("defineActions", () => {
     const revived = bind({ journal: dead.journal, claimBeforeApply: true });
 
     // Neither verb may run a handler over it: the call went out and nothing here can say whether
-    // the provider ran it, so the user is told exactly that.
+    // the provider ran it. Apply tells the user exactly that; reject withdraws it on the first try.
     await expect(revived.actions.apply(applyId)).rejects.toThrow(APPLY_OUTCOME_UNKNOWN_MESSAGE);
-    await expect(revived.actions.reject(rejectId)).rejects.toThrow(APPLY_OUTCOME_UNKNOWN_MESSAGE);
+    await expect(revived.actions.reject(rejectId)).resolves.toBeUndefined();
     expect(revived.host.ran).toEqual([]);
     expect(revived.journal.get(applyId)?.error).toBe(APPLY_OUTCOME_UNKNOWN_MESSAGE);
-    expect(revived.journal.get(rejectId)?.state).toBe("failed");
-    expect(revived.outcomes).toEqual(["failed", "failed"]);
+    expect(revived.journal.get(rejectId)).toBeUndefined();
+    expect(revived.outcomes).toEqual(["failed", "rejected"]);
   });
 
   it("never rolls a claim back once the provider effect has landed", async () => {
@@ -1883,6 +1889,50 @@ describe("dependent actions", () => {
     await actions.reject(create);
     expect(host.ran).toEqual([]);
     expect(journal.get(create)).toBeUndefined();
+  });
+
+  it("retires the dependents of an unknown outcome once it is rejected", async () => {
+    const { actions, journal } = bind({
+      apply: async () => { throw new ActionOutcomeUnknownError("the request timed out"); },
+    });
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+    await expect(actions.apply(create)).rejects.toThrow("the request timed out");
+
+    // Withdrawn, nothing can bind ~1 any more, so the dependent could never apply.
+    await actions.reject(create);
+    expect(journal.get(edit)?.state).toBe("failed");
+    expect(journal.get(edit)?.error)
+      .toBe(`This action needed action ${create}, which did not complete.`);
+  });
+
+  it("retires the dependents of an orphaned claim on its first rejection", async () => {
+    const { actions, journal, host } = bind();
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+    const unrelated = queued(journal, { kind: "edit", payload: { target: "~9" } });
+    // Claimed by an activation that died holding the dispatch.
+    journal.markClaimed(create);
+
+    await actions.reject(create);
+    expect(journal.get(create)).toBeUndefined();
+    expect(journal.get(edit)?.state).toBe("failed");
+    expect(journal.listPending().map(({ id }) => id)).toEqual([unrelated]);
+    // The claim reached its handler, so its own cleanup is not re-run.
+    expect(host.ran).toEqual([]);
+  });
+
+  it("keeps the dependents of a withdrawn unknown outcome whose reference was bound", async () => {
+    const { actions, journal } = bind({
+      isResolvedReference: (_, ref) => ref === "~1",
+      apply: async () => { throw new ActionOutcomeUnknownError("the request timed out"); },
+    });
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+    await expect(actions.apply(create)).rejects.toThrow("the request timed out");
+
+    await actions.reject(create);
+    expect(journal.get(edit)?.state).toBe("pending");
   });
 
   it("leaves dependents alone while the creation can still be retried", async () => {

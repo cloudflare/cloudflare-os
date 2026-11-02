@@ -349,6 +349,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                   key={model.id}
                   model={model}
                   defaultReasoning={defaultReasoning}
+                  poolProviders={gatewayModels.providers}
                   busy={busy}
                   test={modelTests.tests.get(model.id)}
                   onModeChange={(mode) => requestMode(model, mode)}

@@ -108,6 +108,9 @@ describe('AddModelModal', () => {
     const options = Array.from(document.body.querySelectorAll('[role="option"]'), option => option.textContent)
     expect(options).toContain('GLM 5.2 (Workers AI)')
     expect(options.includes('Clef (Workers AI)')).toBe(!chatModelsOnly)
+    // Auto Router runs only through a gateway, so it is never offered here.
+    expect(options).not.toContain('Auto')
+    expect(options).not.toContain('Other AI Gateway Auto Router...')
   })
 
   it.each([false, true])('adds a decision model typed as a custom model only without chatModelsOnly (chatModelsOnly: %s)', async (chatModelsOnly) => {

@@ -131,6 +131,33 @@ export type ChatAttachmentInfo = {
   readable: boolean;
 };
 
+/** A link a Chat app's card opens, from a button, chip, image, or clickable text. */
+export type ChatCardLink = {
+  /** The button's or item's label, when it has one. */
+  label?: string;
+  /** The `http` or `https` URL it opens. */
+  url: string;
+};
+
+/**
+ * What a card a Chat app attached to its message shows. Card content is written by the app, so
+ * treat its text and links as untrusted.
+ */
+export type ChatCard = {
+  /** The card header's title, when it has one. */
+  title?: string;
+  /** The card header's subtitle, when it has one. */
+  subtitle?: string;
+  /**
+   * The card's text in display order, one line per section header, label, or text item. Text is
+   * kept as the app wrote it, which may be Chat's card HTML (`<b>`, `<br>`, `<a href="...">`) or
+   * Markdown. Form inputs and other interactive controls are left out.
+   */
+  text: string;
+  /** Links the card opens, in display order. Other card actions are left out. */
+  links: ChatCardLink[];
+};
+
 /** How many people reacted to a message with one emoji. */
 export type ChatReactionSummary = {
   /** Unicode emoji, or `:name:` for a custom emoji. */
@@ -167,7 +194,8 @@ export type ChatMessageInfo = {
    * Message body as plain text, as Google Chat displays it: a link reads as its label, with its
    * URL dropped, and a committed mention as `@Name`, with `mentions` listing who it refers to. A
    * pending message keeps the text you posted. Empty when the message has no text, such as an
-   * attachment-only message. Use `formattedText` for link URLs and formatting.
+   * attachment-only or card-only message. Use `formattedText` for link URLs and formatting, and
+   * `cards` for what a Chat app's cards show.
    */
   text: string;
   /**
@@ -187,6 +215,11 @@ export type ChatMessageInfo = {
   isReply: boolean;
   /** Files attached to the message. */
   attachments: ChatAttachmentInfo[];
+  /**
+   * Cards a Chat app attached to the message, such as an alert's details and its buttons. Their
+   * content appears only here, never in `text` or `formattedText`. Empty for most messages.
+   */
+  cards: ChatCard[];
   /** Reaction counts, grouped by emoji. */
   reactions: ChatReactionSummary[];
   /**
@@ -465,9 +498,10 @@ export interface ChatSpace extends RpcTarget {
 
   /**
    * Have `hook.receiveMessage()` called with each new message anyone else posts in this
-   * conversation, including thread replies; the connected account's own posts are never
-   * delivered. The hook starts disabled, and nothing is delivered until the user enables it.
-   * Every call creates a distinct hook, so subscribe once per conversation or thread to watch.
+   * conversation, including thread replies. Set `options.includeOwnMessages` to also receive the
+   * messages the connected user writes in Google Chat. The hook starts disabled, and nothing is
+   * delivered until the user enables it. Every call creates a distinct hook, so subscribe once per
+   * conversation or thread to watch.
    *
    * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
    * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's
@@ -519,7 +553,7 @@ export interface ChatSpace extends RpcTarget {
    * await env.OPS_CHAT.subscribeNewMessages(opsHook);
    * await env.OPS_CHAT.subscribeNewMessages(reportHook);
    */
-  subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
+  subscribeNewMessages(hook: RpcStub<ChatMessageHook>, options?: ChatSubscribeOptions): Promise<void>;
 }
 
 /**
@@ -552,7 +586,7 @@ export interface ChatThread extends RpcTarget {
    * As `ChatSpace.subscribeNewMessages()`, for replies in this thread only. Throws while the
    * thread's first message is still pending.
    */
-  subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
+  subscribeNewMessages(hook: RpcStub<ChatMessageHook>, options?: ChatSubscribeOptions): Promise<void>;
 }
 
 /**
@@ -561,8 +595,8 @@ export interface ChatThread extends RpcTarget {
  */
 export interface ChatMessage extends RpcTarget {
   /**
-   * Return the message's current sender, text, mentions, timestamps, attachments, and reaction
-   * counts. Throws if it has been deleted.
+   * Return the message's current sender, text, mentions, timestamps, attachments, cards, and
+   * reaction counts. Throws if it has been deleted.
    */
   getMetadata(): Promise<ChatMessageInfo>;
 
@@ -620,6 +654,17 @@ export interface ChatAttachment extends RpcTarget {
    */
   getContent(): Promise<ArrayBuffer>;
 }
+
+/** What `subscribeNewMessages()` delivers. */
+export type ChatSubscribeOptions = {
+  /**
+   * Also deliver each message the connected user writes in Google Chat, whose sender is the user
+   * `getCurrentUser()` returns, so that they can address the Gadget there. Off by default. Messages
+   * sent as the connected account through this API, by you or any Gadget, are never delivered, so a
+   * hook never receives its own replies.
+   */
+  includeOwnMessages?: boolean;
+};
 
 /** A new message delivered to a `ChatMessageHook`, with what the hook watches. */
 export type ChatNewMessageEntry = ChatMessageEntry & {

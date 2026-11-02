@@ -1,6 +1,6 @@
 // The hierarchy picker in Chromium, on preact/compat: real pointer and keyboard input and focus.
 // Covers what the user's choices select, that a choice lasts only while it is in view,
-// pre-fill, paging, search, and what it does with a misbehaving source.
+// pre-fill, paging, search, tabs, and what it does with a misbehaving source.
 
 import { FileIcon, FolderIcon } from "@phosphor-icons/react";
 import { act } from "preact/test-utils";
@@ -104,6 +104,28 @@ const option = (name: string) => page.getByRole("option", { name, exact: false }
 const crumb = (name: string) => page.getByRole("navigation", { name: "Location" }).getByRole("button", { name, exact: false });
 const crumbs = () => page.getByRole("navigation", { name: "Location" });
 const allOf = (title = "My Drive") => page.getByRole("button", { name: `All of ${title}`, exact: false });
+const tab = (name: string) => page.getByRole("tab", { name });
+const file = (index: number) => page.getByRole("option", { name: `File ${index}`, exact: true });
+
+const FILES = Array.from({ length: 60 }, (_, index): Item => ({ id: `file-${index}`, title: `File ${index}`, kind: "leaf" }));
+
+/** Gives the list's box the fixed height it has in the frame, whose stylesheet the suite runs without. */
+const boxHeight = (height: number) => {
+  const box = list().element().parentElement!;
+  Object.assign(box.style, { height: `${height}px`, overflowX: "hidden", overflowY: "auto" });
+  return box;
+};
+
+/** Sixty files over two pages. */
+const twoPages: LoadItems = async ({ cursor }) =>
+  cursor ? { items: FILES.slice(30) } : { items: FILES.slice(0, 30), nextCursor: "page-2" };
+
+/** The first thirty files on one page. */
+const thirtyFiles: LoadItems = async () => ({ items: FILES.slice(0, 30) });
+
+/** A keydown on the focused element with what userEvent cannot press: AltGr, or an input method's. */
+const keydown = (key: string, init: KeyboardEventInit) => document.activeElement!.dispatchEvent(
+  new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
 
 afterEach(() => {
   act(() => root?.unmount());
@@ -175,6 +197,29 @@ describe("selection", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
+  it("says why a node cannot be chosen, in place of a leaf's subtitle and of an open container's own row", async () => {
+    const pages: Item = {
+      id: "pages", title: "Site Pages", kind: "container", subtitle: "Open to choose a page",
+      selectable: false, unselectableReason: "Choose one page, or the whole site.",
+    };
+    const draft: Item = {
+      id: "draft", title: "Draft.docx", kind: "leaf", subtitle: "Owned by Kim",
+      selectable: false, unselectableReason: "Only its owner can share it.\u202E",
+    };
+    await render({ loadItems: async ({ parentId }) => ({ items: parentId === "pages" ? [q1] : [pages, draft] }) });
+
+    await expect.element(option("Draft.docx")).toMatchTextContent("Only its owner can share it.");
+    expect(option("Draft.docx").element().textContent).not.toContain("Owned by Kim");
+    expect(container!.textContent).not.toContain("\u202E");
+    // A container's row opens it, so it says what is inside; why it cannot be chosen waits until then.
+    await expect.element(option("Site Pages")).toMatchTextContent("Open to choose a page");
+
+    await userEvent.click(option("Site Pages"));
+    await expect.element(page.getByText("Choose one page, or the whole site.", { exact: true })).toBeVisible();
+    await expect.element(page.getByRole("status")).toHaveTextContent("1 item. Choose one page, or the whole site.");
+    expect(option("Everything in Site Pages").elements()).toHaveLength(0);
+  });
+
   it("shows one selected row when a listing names the open container among its own nodes", async () => {
     const loadItems = vi.fn<LoadItems>(async ({ parentId }) =>
       ({ items: parentId === "reports" ? [{ ...reports, title: "Reports again" }, q1] : TREE[parentId] ?? [] }));
@@ -222,6 +267,49 @@ describe("selection", () => {
     expect(crumb("Archive").elements()).toHaveLength(0);
     expect(loadItems).toHaveBeenLastCalledWith({ parentId: "reports", query: "", cursor: null });
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("folds the middle of a deep breadcrumb behind a button that shows it, until the user moves", async () => {
+    const path = ["Alpha", "Beta", "Gamma", "Delta"].map(title => ({ id: title.toLowerCase(), title }));
+    const loadItem = async (): Promise<Item | null> => ({ id: "epsilon", title: "Epsilon", kind: "container", path });
+    await render({ loadItems: source(), loadItem, initial: "epsilon" });
+
+    await expect.element(crumbs()).toMatchTextContent(/^My Drive\s*Delta\s*Epsilon$/);
+    await userEvent.click(page.getByRole("button", { name: "Show 3 more levels" }));
+    await expect.element(crumb("Alpha")).toHaveFocus();
+    await expect.element(crumbs()).toMatchTextContent(/^My Drive\s*Alpha\s*Beta\s*Gamma\s*Delta\s*Epsilon$/);
+
+    await userEvent.click(crumb("Delta"));
+    await expect.element(crumbs()).toMatchTextContent(/^My Drive\s*Gamma\s*Delta$/);
+    await expect.element(page.getByRole("button", { name: "Show 2 more levels" })).toBeVisible();
+  });
+
+  it("goes up one level from its back button, which keeps focus up to the top and leads nowhere there", async () => {
+    const onChange = await render({ loadItems: source() });
+    const up = page.getByRole("button", { name: "Up one level" });
+    await expect.element(up).toHaveAttribute("aria-disabled", "true");
+
+    await userEvent.click(option("Reports"));
+    await userEvent.click(option("Archive"));
+    await userEvent.click(up);
+    await expect.element(list()).toHaveAccessibleName("Reports");
+    await userEvent.click(up);
+    await expect.element(list()).toHaveAccessibleName("My Drive");
+    await expect.element(up).toHaveFocus();
+    await expect.element(up).toHaveAttribute("aria-disabled", "true");
+
+    await forceClick(up);
+    await expect.element(option("Reports")).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("counts what the open location lists beside the breadcrumb, apart from its own row", async () => {
+    await render({ loadItems: source() });
+    const bar = crumbs().element().parentElement!;
+
+    await expect.poll(() => bar.textContent).toBe("My Drive4 items");
+    await userEvent.click(option("Reports"));
+    await expect.poll(() => bar.textContent).toBe("My DriveReports2 items");
   });
 
   it("keeps a choice when the user opens the location it is already in", async () => {
@@ -580,6 +668,65 @@ describe("loading", () => {
     await expect.element(option("Budget.xlsx")).toBeVisible();
   });
 
+  it("shows a page's notice above its rows, or in place of saying the listing is empty, and says it", async () => {
+    const partial = "Search is down, so only recent files are listed.";
+    const loadItems = vi.fn<LoadItems>(async ({ parentId }) => parentId === "reports"
+      ? { items: [], notice: "Nothing has been shared here yet." }
+      : { items: [reports, budget], notice: `${partial}\u202E` });
+    await render({ loadItems });
+    const status = page.getByRole("status");
+
+    await expect.element(page.getByText(partial, { exact: true })).toBeVisible();
+    await expect.element(status).toHaveTextContent(`2 items. ${partial}`);
+    expect(container!.textContent).not.toContain("\u202E");
+
+    await userEvent.click(option("Reports"));
+    await expect.element(status).toHaveTextContent("Nothing has been shared here yet.");
+    await expect.element(page.getByText("Nothing has been shared here yet.").first()).toBeVisible();
+    expect(status.element().textContent).not.toContain("Nothing here.");
+  });
+
+  it("keeps a page's notice while later pages that have none load", async () => {
+    const partial = "Search is down, so only recent files are listed.";
+    await render({ loadItems: async ({ cursor }) => cursor
+      ? { items: [q1] }
+      : { items: [budget], nextCursor: "page-2", notice: partial } });
+
+    await userEvent.click(page.getByRole("button", { name: "Load more" }));
+    await expect.element(option("Q1.pdf")).toBeVisible();
+    await expect.element(page.getByText(partial, { exact: true })).toBeVisible();
+    await expect.element(page.getByRole("status")).toHaveTextContent(`2 items. ${partial}`);
+  });
+
+  it("loads the next page once the user scrolls near the end, but never on its own", async () => {
+    const loadItems = vi.fn(twoPages);
+    await render({ loadItems });
+    await expect.element(file(0)).toBeVisible();
+    const box = boxHeight(320);
+    await effectsFlushed();
+    expect(loadItems).toHaveBeenCalledTimes(1);
+
+    box.scrollTop = box.scrollHeight;
+    await expect.element(file(59)).toBeInTheDocument();
+    expect(loadItems).toHaveBeenLastCalledWith({ parentId: "drive", query: "", cursor: "page-2" });
+  });
+
+  it("lets Tab pass Load more, though focusing it scrolls the list to its end", async () => {
+    const loadItems = vi.fn(twoPages);
+    await render({ loadItems });
+    await expect.element(file(0)).toBeVisible();
+    boxHeight(320);
+    await userEvent.click(file(0));
+
+    await userEvent.tab();
+    const loadMore = page.getByRole("button", { name: "Load more" });
+    await expect.element(loadMore).toHaveFocus();
+    await effectsFlushed();
+    await effectsFlushed();
+    expect(loadItems).toHaveBeenCalledTimes(1);
+    await expect.element(loadMore).toHaveFocus();
+  });
+
   it("moves focus from Retry or Load more to the first row it brings", async () => {
     const loadItems = vi.fn<LoadItems>(async ({ cursor }) => {
       if (cursor === "page-2") return { items: [q1], nextCursor: "page-3" };
@@ -634,6 +781,15 @@ describe("loading", () => {
     expect(page.getByRole("option").elements()).toHaveLength(1);
     expect(list().element().textContent).not.toContain("\u202E");
   });
+
+  it("shows a node's badge after its title and its meta after its subtitle, stripped of formatting characters", async () => {
+    const loadItems = vi.fn<LoadItems>(async () => ({
+      items: [{ ...budget, badge: "Confidential", meta: "2 days ago\u202E" }],
+    }));
+    await render({ loadItems });
+
+    await expect.element(option("Budget.xlsx")).toHaveAccessibleName(/^Budget\.xlsx\s*Confidential\s*2 days ago$/);
+  });
 });
 
 describe("search", () => {
@@ -676,6 +832,16 @@ describe("search", () => {
     await userEvent.click(option("Loose"));
     await expect.element(crumbs()).toMatchTextContent("My Drive…Loose");
     await expect.element(list()).toHaveAccessibleName("Loose");
+  });
+
+  it("lists the open container when a search finds it, as a pasted link to it would", async () => {
+    await render({ loadItems: source({ reports: [reports] }), searchPlaceholder: "Search Drive" });
+    await userEvent.click(option("Reports"));
+    await expect.element(option("Everything in Reports")).toBeVisible();
+
+    await userEvent.fill(page.getByRole("searchbox", { name: "Search Drive" }), "reports");
+    await expect.element(list()).toHaveAccessibleName("Search results");
+    expect(page.getByRole("option").elements().map(row => row.textContent)).toEqual(["Reports"]);
   });
 
   it("tells same-named results apart by where they live and what they say of themselves", async () => {
@@ -751,15 +917,37 @@ describe("search", () => {
     await expect.element(crumb("Reports")).toHaveFocus();
   });
 
-  it("clears the search with Escape and says when nothing matched", async () => {
+  it("clears the search with Escape, unless an input method takes it, and says when nothing matched", async () => {
     await render({ loadItems: source(), searchPlaceholder: "Search Drive" });
     const search = page.getByRole("searchbox", { name: "Search Drive" });
 
     await userEvent.fill(search, "nothing");
     await expect.element(page.getByText('No results for "nothing".')).toBeVisible();
+    keydown("Escape", { isComposing: true });
+    await expect.element(search).toHaveValue("nothing");
     await userEvent.keyboard("{Escape}");
     await expect.element(search).toHaveValue("");
     await expect.element(option("Reports")).toBeVisible();
+  });
+
+  it("jumps to the search box with / from anywhere in the picker, selecting what it holds, but types / in it", async () => {
+    await render({ loadItems: source({ q: [q1] }), searchPlaceholder: "Search Drive" });
+    const search = page.getByRole("searchbox", { name: "Search Drive" });
+    await userEvent.fill(search, "q");
+    await expect.element(option("Q1.pdf")).toBeVisible();
+
+    await userEvent.click(option("Q1.pdf"));
+    await userEvent.keyboard("/");
+    await expect.element(search).toHaveFocus();
+    await userEvent.keyboard("a/b");
+    await expect.element(search).toHaveValue("a/b");
+
+    await userEvent.click(allOf());
+    await userEvent.keyboard("/");
+    await expect.element(search).toHaveFocus();
+    await expect.element(search).toHaveValue("a/b");
+    const input = search.element() as HTMLInputElement;
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 3]);
   });
 });
 
@@ -804,6 +992,136 @@ describe("keyboard", () => {
     await expect.element(list()).toHaveAccessibleName("My Drive");
     await expect.element(option("Reports")).toHaveFocus();
     expect(onChange).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["b", "Beta.pdf"],
+    ["bbb", "Bravo"],
+    ["bbbb", "Beta.pdf"],
+    ["bu", "Budget.xlsx"],
+    ["x", "Alpha"],
+  ])("moves from the first row with %s to %s by type-ahead", async (keys, target) => {
+    const titles = ["Alpha", "Beta.pdf", "Budget.xlsx", "Bravo"];
+    const onChange = await render({
+      loadItems: async () => ({ items: titles.map(title => ({ id: title, title, kind: "leaf" as const })) }),
+    });
+    await userEvent.click(option("Alpha"));
+    onChange.mockClear();
+
+    await userEvent.keyboard(keys);
+    await expect.element(page.getByRole("option", { name: target })).toHaveFocus();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("types ahead with a letter typed with AltGr, but not with a shortcut", async () => {
+    const titles = ["Alpha", "Łódź.pdf", "Zeta"];
+    await render({ loadItems: async () => ({ items: titles.map(title => ({ id: title, title, kind: "leaf" as const })) }) });
+    await userEvent.click(option("Alpha"));
+
+    keydown("z", { ctrlKey: true, altKey: true });
+    await expect.element(option("Alpha")).toHaveFocus();
+    keydown("ł", { ctrlKey: true, altKey: true, modifierAltGraph: true });
+    await expect.element(option("Łódź.pdf")).toHaveFocus();
+  });
+
+  it("pages to the last row in view, then a box's height on, and stops at the ends", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 12) }) });
+    await expect.element(file(0)).toBeVisible();
+    boxHeight((file(0).element() as HTMLElement).offsetHeight * 5);
+    await userEvent.click(file(0));
+
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(file(4)).toHaveFocus();
+    await userEvent.keyboard("{PageDown}{PageDown}");
+    await expect.element(file(11)).toHaveFocus();
+    await userEvent.keyboard("{PageUp}");
+    await expect.element(file(7)).toHaveFocus();
+    await userEvent.keyboard("{PageUp}{PageUp}");
+    await expect.element(file(0)).toHaveFocus();
+  });
+
+  it("pages from the rows in view once the focused row is scrolled away, leaving the list where it is", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 30) }) });
+    await expect.element(file(0)).toBeVisible();
+    const rowHeight = (file(0).element() as HTMLElement).offsetHeight;
+    const box = boxHeight(rowHeight * 5);
+    await userEvent.click(file(0));
+    box.scrollTop = rowHeight * 20;
+
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(file(24)).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 20);
+    await userEvent.keyboard("{PageUp}");
+    await expect.element(file(20)).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 20);
+  });
+
+  it("pages on from a focused row cut off at the edge it pages past, as a click leaves one", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 30) }) });
+    await expect.element(file(0)).toBeVisible();
+    const rowHeight = (file(0).element() as HTMLElement).offsetHeight;
+    const box = boxHeight(rowHeight * 5);
+    // Rows 1 to 4 in full view; 0 cut off at the top and 5 at the bottom.
+    box.scrollTop = rowHeight / 2;
+    (file(5).element() as HTMLElement).focus({ preventScroll: true });
+
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(file(9)).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 5);
+
+    box.scrollTop = rowHeight * 4.5;
+    (file(4).element() as HTMLElement).focus({ preventScroll: true });
+    await userEvent.keyboard("{PageUp}");
+    await expect.element(file(0)).toHaveFocus();
+    expect(box.scrollTop).toBe(0);
+  });
+
+  it("scrolls the list a page from the search box, unless an input method takes the key, and from the page, where / goes to the search box", async () => {
+    await render({ loadItems: async () => ({ items: FILES.slice(0, 30) }), searchPlaceholder: "Search Drive" });
+    await expect.element(file(0)).toBeVisible();
+    const rowHeight = (file(0).element() as HTMLElement).offsetHeight;
+    const box = boxHeight(rowHeight * 5);
+    const search = page.getByRole("searchbox", { name: "Search Drive" });
+
+    await userEvent.click(search);
+    keydown("PageDown", { isComposing: true });
+    expect(box.scrollTop).toBe(0);
+    await userEvent.keyboard("{PageDown}");
+    await expect.element(search).toHaveFocus();
+    expect(box.scrollTop).toBe(rowHeight * 4);
+    await userEvent.keyboard("{PageUp}");
+    expect(box.scrollTop).toBe(0);
+
+    // Where a click on a label or on the blank part of the list leaves focus.
+    (document.activeElement as HTMLElement).blur();
+    await userEvent.keyboard("{PageDown}");
+    expect(box.scrollTop).toBe(rowHeight * 4);
+    await userEvent.keyboard("/");
+    await expect.element(search).toHaveFocus();
+  });
+
+  it("gives keys pressed with nothing focused to the first picker that is not disabled", async () => {
+    container = document.body.appendChild(document.createElement("div"));
+    root = createRoot(container);
+    await act(() => root!.render(<>
+      <Harness onChange={vi.fn()} loadItems={thirtyFiles} searchPlaceholder="Search first" disabled />
+      <Harness onChange={vi.fn()} loadItems={thirtyFiles} searchPlaceholder="Search second" />
+    </>));
+    const [first, second] = [list().nth(0), list().nth(1)];
+    const row = second.getByRole("option", { name: "File 0", exact: true });
+    await expect.element(row).toBeVisible();
+    const rowHeight = (row.element() as HTMLElement).offsetHeight;
+    const [firstBox, secondBox] = [first, second].map(listbox => {
+      const box = listbox.element().parentElement!;
+      Object.assign(box.style, { height: `${rowHeight * 5}px`, overflowX: "hidden", overflowY: "auto" });
+      return box;
+    });
+
+    await userEvent.keyboard("{PageDown}");
+    expect(secondBox.scrollTop).toBe(rowHeight * 4);
+    expect(firstBox.scrollTop).toBe(0);
+    await userEvent.keyboard("/");
+    await expect.element(page.getByRole("searchbox", { name: "Search second" })).toHaveFocus();
   });
 
   it("moves focus into a container opened by a click or a quick run of keys", async () => {
@@ -885,5 +1203,173 @@ describe("icons", () => {
 
     expect(slot("Notes").innerHTML).toBe(drawn(<FileIcon size={20} />));
     expect(slot("Folder").innerHTML).toBe(drawn(<FolderIcon size={20} />));
+  });
+});
+
+describe("tabs", () => {
+  const TABS = [{ id: "sites", title: "Sites" }, { id: "files", title: "Files" }];
+  const marketing: Item = { id: "marketing", title: "Marketing", kind: "container" };
+  const plan: Item = { id: "plan", title: "Plan.docx", kind: "leaf" };
+  const notes: Item = { id: "notes", title: "Notes.txt", kind: "leaf" };
+  const TABBED: Record<string, Item[]> = { sites: [marketing], marketing: [plan], files: [notes] };
+
+  /** A source answering from {@link TABBED}, and from `results` for a search. */
+  const tabbed = (results: Record<string, Item[]> = {}) => vi.fn<LoadItems>(async ({ parentId, query }) => ({
+    items: query ? results[query] ?? [] : TABBED[parentId] ?? [],
+  }));
+
+  it("lists the first tab below the root's choice, its breadcrumb starting at the tab, and another when chosen", async () => {
+    const loadItems = tabbed();
+    const onChange = await render({ loadItems, tabs: TABS });
+
+    await expect.element(option("Marketing")).toBeVisible();
+    await expect.element(tab("Sites")).toHaveAttribute("aria-selected", "true");
+    await expect.element(list()).toHaveAccessibleName("Sites");
+    await expect.element(crumbs()).toMatchTextContent(/^Sites$/);
+    await expect.element(allOf()).toBeVisible();
+    // A tab is offered as a choice only when it says so.
+    expect(option("Everything in").elements()).toHaveLength(0);
+
+    await userEvent.click(option("Marketing"));
+    await expect.element(crumbs()).toMatchTextContent(/^SitesMarketing$/);
+    await userEvent.click(option("Plan.docx"));
+    expect(onChange).toHaveBeenLastCalledWith("plan", expect.objectContaining({ id: "plan" }));
+
+    await userEvent.click(tab("Files"));
+    await expect.element(option("Notes.txt")).toBeVisible();
+    await expect.element(list()).toHaveAccessibleName("Files");
+    await expect.element(crumbs()).toMatchTextContent(/^Files$/);
+    expect(onChange).toHaveBeenLastCalledWith(null, null);
+    // The root is never listed: only its tabs are.
+    expect(loadItems.mock.calls.map(([request]) => request.parentId)).toEqual(["sites", "marketing", "files"]);
+  });
+
+  it("opens a container a view tab lists where its path says it lives, so its breadcrumb leads up", async () => {
+    const recent = { id: "recent", title: "Recent" };
+    const loadItems = vi.fn<LoadItems>(async ({ parentId }) => ({
+      items: parentId === "recent" ? [{ ...marketing, path: [{ id: "sites", title: "Sites" }] }] : TABBED[parentId] ?? [],
+    }));
+    await render({ loadItems, tabs: [recent, ...TABS] });
+
+    await userEvent.click(option("Marketing"));
+    await expect.element(crumbs()).toMatchTextContent(/^SitesMarketing$/);
+    await expect.element(tab("Sites")).toHaveAttribute("aria-selected", "true");
+    await expect.element(option("Plan.docx")).toBeVisible();
+  });
+
+  it("offers a tab that says it can be chosen, and keeps the whole hierarchy's choice across tabs", async () => {
+    const choice = { title: "Every site" };
+    const onChange = await render({ loadItems: tabbed(), tabs: [{ ...TABS[0]!, selectable: true, choice }, TABS[1]!] });
+
+    await userEvent.click(option("Every site"));
+    expect(onChange).toHaveBeenLastCalledWith("sites",
+      { id: "sites", title: "Sites", kind: "container", selectable: true, choice });
+    await userEvent.click(allOf());
+    await userEvent.click(tab("Files"));
+    await expect.element(option("Notes.txt")).toBeVisible();
+    await expect.element(allOf()).toHaveAttribute("aria-pressed", "true");
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("strips formatting characters from what a tab shows, and drops a tab it cannot show", async () => {
+    const choice = { title: "Every site\u202E", subtitle: "Across the tenant\u202E" };
+    await render({ loadItems: tabbed(), tabs: [
+      { ...TABS[0]!, title: "Sites\u202E", selectable: true, choice },
+      { ...TABS[1]!, unselectableReason: "Choose a file inside.\u202E" },
+      null as never,
+    ] });
+
+    expect(page.getByRole("tab").elements()).toHaveLength(2);
+
+    await expect.element(option("Every site")).toBeVisible();
+    expect(container!.textContent).not.toContain("\u202E");
+    await userEvent.click(tab("Files"));
+    await expect.element(page.getByText("Choose a file inside.")).toBeVisible();
+    expect(container!.textContent).not.toContain("\u202E");
+  });
+
+  it("opens a pre-filled node in the tab its path starts with", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => ({ ...notes, path: [{ id: "files", title: "Files" }] }));
+    const onChange = await render({ loadItems: tabbed(), loadItem, tabs: TABS, initial: "notes" });
+
+    await expect.element(option("Notes.txt")).toHaveAttribute("aria-selected", "true");
+    await expect.element(tab("Files")).toHaveAttribute("aria-selected", "true");
+    await expect.element(crumbs()).toMatchTextContent(/^Files$/);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("opens a pre-filled node whose path names no tab in the open tab, apart from its top", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> =>
+      ({ ...plan, path: [{ id: "marketing", title: "Marketing" }] }));
+    await render({ loadItems: tabbed(), loadItem, tabs: TABS, initial: "plan" });
+
+    await expect.element(option("Plan.docx")).toHaveAttribute("aria-selected", "true");
+    await expect.element(crumbs()).toMatchTextContent(/^Sites…Marketing$/);
+  });
+
+  it("pins a pre-filled leaf without a path atop the open tab, whose folders open with no gap", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => notes);
+    await render({ loadItems: tabbed(), loadItem, tabs: TABS, initial: "notes" });
+
+    await expect.element(option("Notes.txt")).toHaveAttribute("aria-selected", "true");
+    await expect.element(list()).toHaveAccessibleName("Sites");
+    await expect.element(crumbs()).toMatchTextContent(/^Sites$/);
+    // What the tab lists is its own, so a folder opened from it is known to sit right under it.
+    await userEvent.click(option("Marketing"));
+    await expect.element(list()).toHaveAccessibleName("Marketing");
+    await expect.element(crumbs()).toMatchTextContent(/^SitesMarketing$/);
+  });
+
+  it("shows a pre-filled tab on its own row without looking it up", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => null);
+    const onChange = await render({
+      loadItems: tabbed(), loadItem, tabs: [TABS[0]!, { ...TABS[1]!, selectable: true }], initial: "files",
+    });
+
+    await expect.element(option("Everything in Files")).toHaveAttribute("aria-selected", "true");
+    await expect.element(tab("Files")).toHaveAttribute("aria-selected", "true");
+    expect(loadItem).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("lets go of a pre-filled tab not offered as a choice, without looking it up", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => null);
+    const onChange = await render({ loadItems: tabbed(), loadItem, tabs: TABS, initial: "files" });
+
+    await expect.poll(() => onChange.mock.calls).toEqual([[null, null]]);
+    await expect.element(tab("Sites")).toHaveAttribute("aria-selected", "true");
+    expect(loadItem).not.toHaveBeenCalled();
+  });
+
+  it("opens a search result in the tab its path names, and drops the search when the user switches tabs", async () => {
+    const old: Item = { id: "old", title: "Old", kind: "container", path: [{ id: "files", title: "Files" }] };
+    const loadItems = tabbed({ old: [old], notes: [notes] });
+    await render({ loadItems, tabs: TABS, searchPlaceholder: "Search everything" });
+    const search = page.getByRole("searchbox", { name: "Search everything" });
+    await expect.element(search).toHaveAttribute("placeholder", "Search everything");
+
+    await userEvent.fill(search, "old");
+    await expect.element(option("Old")).toBeVisible();
+    expect(crumbs().elements()).toHaveLength(0);
+    expect(loadItems).toHaveBeenLastCalledWith({ parentId: "sites", query: "old", cursor: null });
+    await userEvent.click(option("Old"));
+    await expect.element(tab("Files")).toHaveAttribute("aria-selected", "true");
+    await expect.element(crumbs()).toMatchTextContent(/^FilesOld$/);
+    await expect.element(search).toHaveValue("");
+
+    await userEvent.fill(search, "notes");
+    await expect.element(option("Notes.txt")).toBeVisible();
+    await userEvent.click(tab("Sites"));
+    await expect.element(search).toHaveValue("");
+    await expect.element(option("Marketing")).toBeVisible();
+  });
+
+  it("never switches tabs while disabled", async () => {
+    await render({ loadItems: tabbed(), tabs: TABS, disabled: true });
+
+    await expect.element(option("Marketing")).toBeVisible();
+    await forceClick(tab("Files"));
+    await expect.element(tab("Sites")).toHaveAttribute("aria-selected", "true");
+    await expect.element(list()).toHaveAccessibleName("Sites");
   });
 });

@@ -33,13 +33,20 @@ export const GMAIL_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** A single Google Doc. */
+/** The whole-Drive type's pattern, which names the card Docs, Sheets and Slides appear on too. */
+const DRIVE_CARD = "https://drive.google.com/drive/my-drive";
+
+/**
+ * A single Google Doc. On the Drive card, whose picker binds a native file as its editable type;
+ * Workshop asks for the card's types together, though their scopes differ.
+ */
 export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/document/d/:docId/*",
   title: "Google Doc",
   description: "Read and edit documents you choose.",
   grantable: true,
   creatable: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /**
@@ -54,6 +61,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
     "rows, columns, and formatting, with your approval.",
   grantable: true,
   creatable: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /** A single Google Slides presentation. */
@@ -66,6 +74,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
     "backgrounds and theme colours.",
   grantable: true,
   creatable: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /** A single Google Calendar. */
@@ -133,20 +142,19 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Files, folders, and read-only native Google Docs, Sheets and Slides available to the connected
- * account.
+ * Files, folders, read-only native Google Docs, Sheets and Slides, and PDF text available to the
+ * connected account.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
  */
 export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
-  urlPattern: "https://drive.google.com/drive/my-drive",
+  urlPattern: DRIVE_CARD,
   title: "Google Drive",
   description:
-      "Find files and folders anywhere this Google account can read in Drive, including shared " +
-      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
-      "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
-      "read-only.",
+      "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
+      "Slides and PDFs. Connect all of Drive, or just one shared drive, folder or file; a Doc, " +
+      "spreadsheet or presentation connected on its own can also be edited, with your approval.",
   grantable: true,
 };
 
@@ -156,20 +164,20 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   title: "Google Drive Folder",
   description:
       "Browse a selected folder or shared drive, search its direct children, and read native " +
-      "Google Docs, Sheets and Slides.",
+      "Google Docs, Sheets and Slides, and PDFs as text.",
   grantable: true,
-  groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
+  groupedWith: DRIVE_CARD,
 };
 
-/** Metadata and, when native, read-only content for one immutable Drive file ID. */
+/** Metadata and, when native or a PDF, read-only content for one immutable Drive file ID. */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
   description:
       "Read metadata and, for a native Google Doc, Sheet or Slides presentation, content from one " +
-      "Drive file.",
+      "Drive file, or its text when it is a PDF.",
   grantable: true,
-  groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
+  groupedWith: DRIVE_CARD,
 };
 
 /**
@@ -204,6 +212,19 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
 ];
 
 /**
+ * Scopes that still prove a scope-only account chose a resource whose requirements have since grown.
+ *
+ * Only scopes no other resource has ever requested belong here, so holding them cannot be a side
+ * effect of some other grant. Calendar's are its scopes from before it needed free/busy.
+ */
+const SCOPE_DERIVED_INTENT_SCOPES: Partial<Record<string, readonly string[]>> = {
+  [GOOGLE_CALENDAR_RESOURCE.urlPattern]: [
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+  ],
+};
+
+/**
  * The user scopes the Chat resources need.
  *
  * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
@@ -232,7 +253,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     resource: GOOGLE_DOC_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/documents",
-      // Read-only Drive file metadata, used to power the doc picker when connecting a Google Doc.
+      // Read-only Drive file metadata, so the Drive picker can browse to the document.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },
@@ -240,7 +261,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     resource: GOOGLE_SHEETS_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/spreadsheets",
-      // Read-only Drive file metadata, used to power the spreadsheet picker.
+      // Read-only Drive file metadata, so the Drive picker can browse to the spreadsheet.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },
@@ -248,7 +269,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     resource: GOOGLE_SLIDES_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/presentations",
-      // Read-only Drive file metadata, used to power the presentation picker.
+      // Read-only Drive file metadata, so the Drive picker can browse to the presentation.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },
@@ -258,12 +279,16 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       // Read-only calendar list, used to power the calendar picker when connecting a calendar.
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
       "https://www.googleapis.com/auth/calendar.events",
+      // Free/busy, which `calendar.events` does not cover: Google refuses `freeBusy.query` without
+      // this, `calendar.freebusy` (the account's own calendars only), or a whole-calendar scope.
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
     ],
   },
   {
     resource: GOOGLE_DRIVE_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -272,7 +297,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -281,7 +307,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -320,9 +347,9 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
 ];
 
 /**
- * Wider Drive grants. `drive.readonly` is requested only by {@link OFFICE_IMPORT_GRANT} and
- * {@link SHARED_DRIVES_GRANT}; full `drive` never is, and appears only in {@link SCOPE_COVERED_BY},
- * where it truthfully subsumes the narrow requirements.
+ * Wider Drive grants. `drive.readonly` is requested by the Drive resources, by
+ * {@link OFFICE_IMPORT_GRANT} and by {@link SHARED_DRIVES_GRANT}; full `drive` never is, and
+ * appears only in {@link SCOPE_COVERED_BY}, where it truthfully subsumes the narrow requirements.
  */
 const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
@@ -341,7 +368,7 @@ export const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
 
 /**
  * The grant that lets the Drive picker list the shared drives this account belongs to:
- * `drives.list` accepts only `drive.readonly` or `drive`, which no Drive resource requests.
+ * `drives.list` accepts only `drive.readonly` or `drive`.
  *
  * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the picker's Allow access
  * button, so an account that never opens Shared drives is never asked for it. The picker uses it
@@ -437,6 +464,9 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   "https://www.googleapis.com/auth/spreadsheets": [DRIVE_READWRITE_SCOPE],
   [DRIVE_READONLY_SCOPE]: [DRIVE_READWRITE_SCOPE],
   [DRIVE_FILE_SCOPE]: [DRIVE_READWRITE_SCOPE],
+  "https://www.googleapis.com/auth/calendar.events.freebusy": [
+    "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/calendar.readonly",
+  ],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
     "https://www.googleapis.com/auth/chat.spaces",
   ],
@@ -499,8 +529,9 @@ export type RecordedResourceGrant = {
  * scope-only generation is filtered by its own scopes, because there the list is an *inference* and
  * not a statement of intent: unfiltered, a Gmail-only account reconnecting would be asked to grant
  * writable Docs, writable Calendar, Sheets and BigQuery, and would have them recorded once it
- * accepted. That generation cannot express an outgrown grant either — a resource whose scopes it no
- * longer covers is indistinguishable from one it never held — so there is nothing to keep.
+ * accepted. That generation can express an outgrown grant only through
+ * {@link SCOPE_DERIVED_INTENT_SCOPES}; otherwise a resource whose scopes it no longer covers is
+ * indistinguishable from one it never held, so there is nothing to keep.
  *
  * A `urlPattern` a later deploy renamed is read under its new name. One it retired is dropped: it
  * maps to no scopes, so requesting it would throw and take the reconnect that repairs the account
@@ -513,7 +544,11 @@ export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): strin
         .filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
   }
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
-  return resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes);
+  let granted = new Set(grant.oauthScopes);
+  let covered = new Set(
+    resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes));
+  return SCOPE_DERIVED_RESOURCE_URL_PATTERNS.filter(pattern => covered.has(pattern) ||
+    (SCOPE_DERIVED_INTENT_SCOPES[pattern]?.every(scope => granted.has(scope)) ?? false));
 }
 
 /**

@@ -1,0 +1,1754 @@
+{
+ "deck": {
+  "themeVersion": "workspace.1",
+  "slides": [
+   {
+    "id": "a8dd8e44",
+    "background": {
+     "color": "#F6821F",
+     "inset": false,
+     "coverOrange": true
+    },
+    "blocks": [
+     {
+      "id": "7d2196db",
+      "type": "logo",
+      "x": 36,
+      "y": 56,
+      "w": 267,
+      "props": {}
+     },
+     {
+      "id": "44e96d7c",
+      "type": "title",
+      "x": 33,
+      "y": 197,
+      "w": 687,
+      "props": {
+       "text": "Typed in the old UI\n",
+       "fontSize": 58,
+       "weight": 700,
+       "color": "#FFFFFF",
+       "letterSpacing": "-0.03em",
+       "lineHeight": 1.1,
+       "highlight": ""
+      }
+     },
+     {
+      "id": "2b69cd51",
+      "type": "subtitle",
+      "x": 36,
+      "y": 533,
+      "w": 553,
+      "props": {
+       "text": "Press E to edit. Add slides, drop in components, drag to move, then F to present.\n",
+       "fontSize": 17,
+       "weight": 600,
+       "color": "#FFFFFF",
+       "lineHeight": 1.5
+      }
+     }
+    ]
+   },
+   {
+    "background": {
+     "color": "#F6821F",
+     "inset": false,
+     "coverOrange": true
+    },
+    "blocks": [
+     {
+      "type": "logo",
+      "x": 36,
+      "y": 56,
+      "w": 267,
+      "props": {
+       "variant": "light",
+       "scale": 1,
+       "text": "Acme Corp",
+       "accentDot": true
+      },
+      "id": "c7a3d106"
+     },
+     {
+      "type": "title",
+      "x": 33,
+      "y": 197,
+      "w": 687,
+      "props": {
+       "text": "Cover of mine",
+       "fontSize": 58,
+       "weight": 700,
+       "color": "#FFFFFF",
+       "letterSpacing": "-0.03em",
+       "lineHeight": 1.1,
+       "highlight": ""
+      },
+      "id": "88c7861c"
+     },
+     {
+      "type": "subtitle",
+      "x": 36,
+      "y": 533,
+      "w": 553,
+      "props": {
+       "text": "Q3 review",
+       "fontSize": 17,
+       "weight": 600,
+       "color": "#FFFFFF",
+       "lineHeight": 1.5
+      },
+      "id": "bc44a049"
+     }
+    ],
+    "id": "746a0b06"
+   },
+   {
+    "id": "935d6824",
+    "background": {
+     "color": "#FFFFFF",
+     "inset": false,
+     "dotGrid": 0
+    },
+    "blocks": [
+     {
+      "id": "a10324fe",
+      "type": "sectionLabel",
+      "x": 36,
+      "y": 35,
+      "props": {
+       "text": "SLIDE BUILDER"
+      }
+     },
+     {
+      "id": "6457b707",
+      "type": "title",
+      "x": 35,
+      "y": 76,
+      "w": 984,
+      "props": {
+       "text": "One canvas gives you everything you need to build and refine a deck",
+       "fontSize": 28,
+       "weight": 600,
+       "color": "#000000",
+       "letterSpacing": "-0.03em",
+       "lineHeight": 1.2,
+       "highlight": ""
+      }
+     },
+     {
+      "id": "7221dd20",
+      "type": "logo",
+      "x": 1013,
+      "y": 40,
+      "props": {
+       "variant": "dark",
+       "scale": 0.62,
+       "text": "Workspace",
+       "accentDot": true
+      }
+     },
+     {
+      "id": "7a5a9052",
+      "type": "shape",
+      "x": 0,
+      "y": 663,
+      "w": 1200,
+      "h": 12,
+      "props": {
+       "kind": "rect",
+       "fill": "#F6821F",
+       "stroke": "",
+       "strokeWidth": 0,
+       "radius": 0,
+       "opacity": 1
+      }
+     },
+     {
+      "id": "ac789ac0",
+      "type": "text",
+      "x": 36,
+      "y": 184,
+      "w": 55,
+      "props": {
+       "text": "01",
+       "fontSize": 16,
+       "color": "#FF6633",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "9ab784eb",
+      "type": "divider",
+      "x": 36,
+      "y": 218,
+      "w": 36,
+      "h": 3,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "c42d52f0",
+      "type": "text",
+      "x": 36,
+      "y": 242,
+      "w": 330,
+      "props": {
+       "text": "Templates",
+       "fontSize": 18,
+       "color": "#000000",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "b83685ca",
+      "type": "text",
+      "x": 36,
+      "y": 276,
+      "w": 320,
+      "props": {
+       "text": "Start with title, narrative, two-column, or four-column layouts.",
+       "fontSize": 15,
+       "color": "#747474",
+       "weight": 400,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.5
+      }
+     },
+     {
+      "id": "557dd2fd",
+      "type": "text",
+      "x": 425,
+      "y": 184,
+      "w": 55,
+      "props": {
+       "text": "02",
+       "fontSize": 16,
+       "color": "#FF6633",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "bc20fe5a",
+      "type": "divider",
+      "x": 425,
+      "y": 218,
+      "w": 36,
+      "h": 3,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "fd610310",
+      "type": "text",
+      "x": 425,
+      "y": 242,
+      "w": 330,
+      "props": {
+       "text": "Components",
+       "fontSize": 18,
+       "color": "#000000",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "aa3db0c3",
+      "type": "text",
+      "x": 425,
+      "y": 276,
+      "w": 320,
+      "props": {
+       "text": "Add text, cards, media, shapes, and diagrams from one library.",
+       "fontSize": 15,
+       "color": "#747474",
+       "weight": 400,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.5
+      }
+     },
+     {
+      "id": "57cf5870",
+      "type": "text",
+      "x": 814,
+      "y": 184,
+      "w": 55,
+      "props": {
+       "text": "03",
+       "fontSize": 16,
+       "color": "#FF6633",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "b64e4086",
+      "type": "divider",
+      "x": 814,
+      "y": 218,
+      "w": 36,
+      "h": 3,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "7c2fb36f",
+      "type": "text",
+      "x": 814,
+      "y": 242,
+      "w": 330,
+      "props": {
+       "text": "Direct editing",
+       "fontSize": 18,
+       "color": "#000000",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "30668753",
+      "type": "text",
+      "x": 814,
+      "y": 276,
+      "w": 320,
+      "props": {
+       "text": "Edit copy inline and tune every block in the inspector.",
+       "fontSize": 15,
+       "color": "#747474",
+       "weight": 400,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.5
+      }
+     },
+     {
+      "id": "4813a65d",
+      "type": "text",
+      "x": 36,
+      "y": 408,
+      "w": 55,
+      "props": {
+       "text": "04",
+       "fontSize": 16,
+       "color": "#FF6633",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "e434b278",
+      "type": "divider",
+      "x": 36,
+      "y": 442,
+      "w": 36,
+      "h": 3,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "630ea5b1",
+      "type": "text",
+      "x": 36,
+      "y": 466,
+      "w": 330,
+      "props": {
+       "text": "Layout controls",
+       "fontSize": 18,
+       "color": "#000000",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "fab3ac08",
+      "type": "text",
+      "x": 36,
+      "y": 500,
+      "w": 320,
+      "props": {
+       "text": "Drag, resize, reorder, and snap blocks to precise guides.",
+       "fontSize": 15,
+       "color": "#747474",
+       "weight": 400,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.5
+      }
+     },
+     {
+      "id": "56ff718c",
+      "type": "text",
+      "x": 425,
+      "y": 408,
+      "w": 55,
+      "props": {
+       "text": "05",
+       "fontSize": 16,
+       "color": "#FF6633",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "b52192c2",
+      "type": "divider",
+      "x": 425,
+      "y": 442,
+      "w": 36,
+      "h": 3,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "545fab77",
+      "type": "text",
+      "x": 425,
+      "y": 466,
+      "w": 330,
+      "props": {
+       "text": "Live collaboration",
+       "fontSize": 18,
+       "color": "#000000",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "c940701b",
+      "type": "text",
+      "x": 425,
+      "y": 500,
+      "w": 320,
+      "props": {
+       "text": "Keep connected editors in sync with shared undo and redo.",
+       "fontSize": 15,
+       "color": "#747474",
+       "weight": 400,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.5
+      }
+     },
+     {
+      "id": "6700f2e6",
+      "type": "text",
+      "x": 814,
+      "y": 408,
+      "w": 55,
+      "props": {
+       "text": "06",
+       "fontSize": 16,
+       "color": "#FF6633",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "fb4710ef",
+      "type": "divider",
+      "x": 814,
+      "y": 442,
+      "w": 36,
+      "h": 3,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "b903c07f",
+      "type": "text",
+      "x": 814,
+      "y": 466,
+      "w": 330,
+      "props": {
+       "text": "Present anywhere",
+       "fontSize": 18,
+       "color": "#000000",
+       "weight": 600,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "8f8a19cf",
+      "type": "text",
+      "x": 814,
+      "y": 500,
+      "w": 320,
+      "props": {
+       "text": "Go full screen, jump between slides, and navigate by keyboard.",
+       "fontSize": 15,
+       "color": "#747474",
+       "weight": 400,
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.5
+      }
+     }
+    ]
+   },
+   {
+    "id": "6a7e5ae2",
+    "background": {
+     "color": "#FFFFFF",
+     "inset": false,
+     "dotGrid": 0
+    },
+    "blocks": [
+     {
+      "id": "e6fd515b",
+      "type": "sectionLabel",
+      "x": 36,
+      "y": 35,
+      "props": {
+       "text": "CONNECTED CHARTS"
+      }
+     },
+     {
+      "id": "67fefcc4",
+      "type": "title",
+      "x": 35,
+      "y": 76,
+      "w": 950,
+      "props": {
+       "text": "Turn internal data into presentation-ready charts",
+       "fontSize": 32,
+       "weight": 600,
+       "color": "#000000",
+       "letterSpacing": "-0.03em",
+       "lineHeight": 1.2,
+       "highlight": ""
+      }
+     },
+     {
+      "id": "16c8d805",
+      "type": "logo",
+      "x": 1013,
+      "y": 40,
+      "props": {
+       "variant": "dark",
+       "scale": 0.62
+      }
+     },
+     {
+      "id": "2b48e66e",
+      "type": "text",
+      "x": 36,
+      "y": 187,
+      "w": 730,
+      "h": 24,
+      "props": {
+       "text": "Quarterly adoption",
+       "fontSize": 16,
+       "weight": 600,
+       "color": "#000000",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-subtitle",
+      "type": "text",
+      "x": 36,
+      "y": 215,
+      "w": 730,
+      "h": 18,
+      "props": {
+       "text": "Illustrative data • refreshed from your system of record",
+       "fontSize": 12,
+       "color": "#747474",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-grid-1",
+      "type": "divider",
+      "x": 36,
+      "y": 323,
+      "w": 730,
+      "h": 1,
+      "props": {
+       "color": "#EEEEEE",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "adoption-grid-2",
+      "type": "divider",
+      "x": 36,
+      "y": 393,
+      "w": 730,
+      "h": 1,
+      "props": {
+       "color": "#EEEEEE",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "adoption-grid-3",
+      "type": "divider",
+      "x": 36,
+      "y": 463,
+      "w": 730,
+      "h": 1,
+      "props": {
+       "color": "#EEEEEE",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "adoption-baseline",
+      "type": "divider",
+      "x": 36,
+      "y": 533,
+      "w": 730,
+      "h": 1,
+      "props": {
+       "color": "#D9D9D9",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "adoption-q1-bar",
+      "type": "shape",
+      "x": 94,
+      "y": 426,
+      "w": 92,
+      "h": 107,
+      "props": {
+       "kind": "rect",
+       "fill": "#FF6633",
+       "strokeWidth": 0,
+       "radius": 2
+      }
+     },
+     {
+      "id": "adoption-q2-bar",
+      "type": "shape",
+      "x": 258,
+      "y": 372,
+      "w": 92,
+      "h": 161,
+      "props": {
+       "kind": "rect",
+       "fill": "#F6821F",
+       "strokeWidth": 0,
+       "radius": 2
+      }
+     },
+     {
+      "id": "adoption-q3-bar",
+      "type": "shape",
+      "x": 422,
+      "y": 328,
+      "w": 92,
+      "h": 205,
+      "props": {
+       "kind": "rect",
+       "fill": "#FBAD41",
+       "strokeWidth": 0,
+       "radius": 2
+      }
+     },
+     {
+      "id": "adoption-q4-bar",
+      "type": "shape",
+      "x": 586,
+      "y": 279,
+      "w": 92,
+      "h": 254,
+      "props": {
+       "kind": "rect",
+       "fill": "#F6821F",
+       "strokeWidth": 0,
+       "radius": 2
+      }
+     },
+     {
+      "id": "adoption-q1-label",
+      "type": "text",
+      "x": 94,
+      "y": 547,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "Q1",
+       "fontSize": 13,
+       "color": "#747474",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-q2-label",
+      "type": "text",
+      "x": 258,
+      "y": 547,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "Q2",
+       "fontSize": 13,
+       "color": "#747474",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-q3-label",
+      "type": "text",
+      "x": 422,
+      "y": 547,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "Q3",
+       "fontSize": 13,
+       "color": "#747474",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-q4-label",
+      "type": "text",
+      "x": 586,
+      "y": 547,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "Q4",
+       "fontSize": 13,
+       "color": "#747474",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-q1-value",
+      "type": "text",
+      "x": 94,
+      "y": 401,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "38",
+       "fontSize": 14,
+       "weight": 600,
+       "color": "#000000",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-q2-value",
+      "type": "text",
+      "x": 258,
+      "y": 347,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "57",
+       "fontSize": 14,
+       "weight": 600,
+       "color": "#000000",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-q3-value",
+      "type": "text",
+      "x": 422,
+      "y": 303,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "73",
+       "fontSize": 14,
+       "weight": 600,
+       "color": "#000000",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-q4-value",
+      "type": "text",
+      "x": 586,
+      "y": 254,
+      "w": 92,
+      "h": 20,
+      "props": {
+       "text": "91",
+       "fontSize": 14,
+       "weight": 600,
+       "color": "#000000",
+       "align": "center",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-source-panel",
+      "type": "shape",
+      "x": 831,
+      "y": 270,
+      "w": 333,
+      "h": 245,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFF8F2",
+       "stroke": "#F3D8C5",
+       "strokeWidth": 1,
+       "radius": 2
+      }
+     },
+     {
+      "id": "adoption-source-heading",
+      "type": "text",
+      "x": 855,
+      "y": 297,
+      "w": 285,
+      "h": 18,
+      "props": {
+       "text": "LIVE DATA, READY TO PRESENT",
+       "fontSize": 11,
+       "weight": 600,
+       "letterSpacing": "1px",
+       "color": "#FF6633",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "adoption-source-title",
+      "type": "text",
+      "x": 855,
+      "y": 328,
+      "w": 285,
+      "h": 54,
+      "props": {
+       "text": "Ask the agent to add chart\nfrom internal data source.",
+       "fontSize": 20,
+       "weight": 600,
+       "color": "#000000",
+       "lineHeight": 1.3
+      }
+     },
+     {
+      "id": "adoption-source-copy",
+      "type": "text",
+      "x": 855,
+      "y": 401,
+      "w": 285,
+      "h": 66,
+      "props": {
+       "text": "Or connect an approved internal\nsystem of record so an agent can\npull, shape, and refresh the data.",
+       "fontSize": 14,
+       "color": "#747474",
+       "lineHeight": 1.57
+      }
+     },
+     {
+      "id": "adoption-source-status-dot",
+      "type": "shape",
+      "x": 854,
+      "y": 484,
+      "w": 8,
+      "h": 8,
+      "props": {
+       "kind": "ellipse",
+       "fill": "#26A641",
+       "strokeWidth": 0
+      }
+     },
+     {
+      "id": "adoption-source-status",
+      "type": "text",
+      "x": 872,
+      "y": 481,
+      "w": 268,
+      "h": 18,
+      "props": {
+       "text": "Connected source",
+       "fontSize": 12,
+       "weight": 600,
+       "color": "#000000",
+       "lineHeight": 1.2
+      }
+     },
+     {
+      "id": "39af0189",
+      "type": "shape",
+      "x": 0,
+      "y": 663,
+      "w": 1200,
+      "h": 12,
+      "props": {
+       "kind": "rect",
+       "fill": "#F6821F",
+       "stroke": "",
+       "strokeWidth": 0,
+       "radius": 0,
+       "opacity": 1
+      }
+     }
+    ]
+   },
+   {
+    "id": "4f8c2d91",
+    "background": {
+     "color": "#FFFFFF",
+     "inset": false,
+     "dotGrid": 0
+    },
+    "blocks": [
+     {
+      "id": "b8216c3a",
+      "type": "sectionLabel",
+      "x": 36,
+      "y": 35,
+      "props": {
+       "text": "GET STARTED"
+      }
+     },
+     {
+      "id": "b63fe9a1",
+      "type": "title",
+      "x": 35,
+      "y": 76,
+      "w": 950,
+      "props": {
+       "text": "Two ways to get started",
+       "fontSize": 32,
+       "weight": 600,
+       "color": "#000000",
+       "letterSpacing": "-0.03em",
+       "lineHeight": 1.2,
+       "highlight": ""
+      }
+     },
+     {
+      "id": "165a8f0c",
+      "type": "logo",
+      "x": 1013,
+      "y": 40,
+      "props": {
+       "variant": "dark",
+       "scale": 0.62
+      }
+     },
+     {
+      "id": "a1725e4f",
+      "type": "shape",
+      "x": 51,
+      "y": 199,
+      "w": 52,
+      "h": 52,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFF8F2",
+       "stroke": "#F3D8C5",
+       "strokeWidth": 1,
+       "radius": 2
+      }
+     },
+     {
+      "id": "edit-input-frame",
+      "type": "shape",
+      "x": 63,
+      "y": 213,
+      "w": 28,
+      "h": 22,
+      "props": {
+       "kind": "rect",
+       "fill": "",
+       "stroke": "#F6821F",
+       "strokeWidth": 2,
+       "radius": 2
+      }
+     },
+     {
+      "id": "edit-input-line",
+      "type": "divider",
+      "x": 68,
+      "y": 224,
+      "w": 12,
+      "h": 2,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "edit-input-caret",
+      "type": "divider",
+      "x": 83,
+      "y": 219,
+      "w": 2,
+      "h": 10,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "edit-input-baseline",
+      "type": "divider",
+      "x": 70,
+      "y": 239,
+      "w": 14,
+      "h": 2,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "db375e12",
+      "type": "text",
+      "x": 50,
+      "y": 282,
+      "w": 500,
+      "props": {
+       "text": "Click Edit",
+       "fontSize": 22,
+       "weight": 600,
+       "color": "#000000",
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.3
+      }
+     },
+     {
+      "id": "d0c451ab",
+      "type": "text",
+      "x": 50,
+      "y": 330,
+      "w": 500,
+      "props": {
+       "text": "Click the pencil icon to add slides, insert components, edit content, and adjust the layout.",
+       "fontSize": 18,
+       "weight": 400,
+       "color": "#747474",
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.55
+      }
+     },
+     {
+      "id": "8cf12ea4",
+      "type": "divider",
+      "x": 594,
+      "y": 198,
+      "w": 1,
+      "h": 260,
+      "props": {
+       "color": "#E5E5E5",
+       "opacity": 1
+      }
+     },
+     {
+      "id": "02d7fc35",
+      "type": "shape",
+      "x": 647,
+      "y": 199,
+      "w": 52,
+      "h": 52,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFF8F2",
+       "stroke": "#F3D8C5",
+       "strokeWidth": 1,
+       "radius": 2
+      }
+     },
+     {
+      "id": "agent-chat-frame",
+      "type": "shape",
+      "x": 659,
+      "y": 212,
+      "w": 28,
+      "h": 22,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFF8F2",
+       "stroke": "#F6821F",
+       "strokeWidth": 2,
+       "radius": 4
+      }
+     },
+     {
+      "id": "agent-chat-tail",
+      "type": "shape",
+      "x": 663,
+      "y": 231,
+      "w": 7,
+      "h": 8,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFF8F2",
+       "stroke": "#F6821F",
+       "strokeWidth": 2,
+       "radius": 1
+      }
+     },
+     {
+      "id": "agent-chat-tail-join",
+      "type": "shape",
+      "x": 665,
+      "y": 230,
+      "w": 3,
+      "h": 4,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFF8F2",
+       "strokeWidth": 0
+      }
+     },
+     {
+      "id": "agent-chat-dot-1",
+      "type": "shape",
+      "x": 665,
+      "y": 221,
+      "w": 3,
+      "h": 3,
+      "props": {
+       "kind": "ellipse",
+       "fill": "#F6821F",
+       "strokeWidth": 0
+      }
+     },
+     {
+      "id": "agent-chat-dot-2",
+      "type": "shape",
+      "x": 672,
+      "y": 221,
+      "w": 3,
+      "h": 3,
+      "props": {
+       "kind": "ellipse",
+       "fill": "#F6821F",
+       "strokeWidth": 0
+      }
+     },
+     {
+      "id": "agent-chat-dot-3",
+      "type": "shape",
+      "x": 679,
+      "y": 221,
+      "w": 3,
+      "h": 3,
+      "props": {
+       "kind": "ellipse",
+       "fill": "#F6821F",
+       "strokeWidth": 0
+      }
+     },
+     {
+      "id": "47a8d50c",
+      "type": "text",
+      "x": 646,
+      "y": 282,
+      "w": 500,
+      "props": {
+       "text": "Ask the agent",
+       "fontSize": 22,
+       "weight": 600,
+       "color": "#000000",
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.3
+      }
+     },
+     {
+      "id": "d941a7b6",
+      "type": "text",
+      "x": 646,
+      "y": 330,
+      "w": 500,
+      "props": {
+       "text": "Ask the agent to create slides, add charts, connect approved internal data, or build your own components for a fully customized deck.",
+       "fontSize": 18,
+       "weight": 400,
+       "color": "#747474",
+       "family": "sans",
+       "align": "left",
+       "lineHeight": 1.55
+      }
+     },
+     {
+      "id": "4aa013dc",
+      "type": "text",
+      "x": 36,
+      "y": 562,
+      "w": 1128,
+      "props": {
+       "text": "Use either approach, or switch between them at any time.",
+       "fontSize": 18,
+       "weight": 600,
+       "color": "#000000",
+       "family": "sans",
+       "align": "center",
+       "lineHeight": 1.4
+      }
+     },
+     {
+      "id": "50db219e",
+      "type": "shape",
+      "x": 0,
+      "y": 663,
+      "w": 1200,
+      "h": 12,
+      "props": {
+       "kind": "rect",
+       "fill": "#F6821F",
+       "stroke": "",
+       "strokeWidth": 0,
+       "radius": 0,
+       "opacity": 1
+      }
+     }
+    ]
+   },
+   {
+    "background": {
+     "color": "#FFFFFF",
+     "inset": true,
+     "dotGrid": 24
+    },
+    "blocks": [
+     {
+      "type": "title",
+      "x": 33,
+      "y": 80,
+      "w": 900,
+      "props": {
+       "text": "Old deck title with highlight",
+       "fontSize": 44,
+       "weight": 700,
+       "color": "#000000",
+       "letterSpacing": "-0.03em",
+       "lineHeight": 1.1,
+       "highlight": "highlight"
+      },
+      "id": "931f5141"
+     },
+     {
+      "type": "subtitle",
+      "x": 36,
+      "y": 200,
+      "w": 553,
+      "props": {
+       "text": "An old subtitle\nsecond line",
+       "fontSize": 17,
+       "color": "#333333",
+       "lineHeight": 1.5,
+       "weight": 600
+      },
+      "id": "9a1348ba"
+     },
+     {
+      "type": "text",
+      "x": 120,
+      "y": 300,
+      "w": 400,
+      "props": {
+       "text": "Plain old text, centred (edited)",
+       "fontSize": 19,
+       "color": "#000000",
+       "weight": 400,
+       "family": "sans",
+       "align": "center",
+       "lineHeight": 1.6
+      },
+      "id": "cab0ef4b"
+     },
+     {
+      "type": "bulletList",
+      "x": 36,
+      "y": 400,
+      "w": 850,
+      "props": {
+       "text": "First bullet.\nSecond bullet.\nThird bullet.",
+       "treatment": "compact"
+      },
+      "id": "c178d2df"
+     },
+     {
+      "type": "tonePill",
+      "x": 700,
+      "y": 300,
+      "props": {
+       "tone": "ruby",
+       "text": "PILL"
+      },
+      "id": "43f9eb46"
+     },
+     {
+      "type": "sectionLabel",
+      "x": 48,
+      "y": 38,
+      "props": {
+       "text": "OLD SECTION"
+      },
+      "id": "ad952290"
+     }
+    ],
+    "id": "46b032e8"
+   },
+   {
+    "background": {
+     "color": "#F5F5F5",
+     "inset": false,
+     "dotGrid": 16
+    },
+    "blocks": [
+     {
+      "type": "card",
+      "x": 60,
+      "y": 120,
+      "w": 280,
+      "h": 260,
+      "props": {
+       "tone": "tangerine",
+       "topStripe": true,
+       "eyebrow": "EYEBROW",
+       "title": "Card A",
+       "body": "Card body copy."
+      },
+      "id": "be708084"
+     },
+     {
+      "type": "card",
+      "x": 380,
+      "y": 120,
+      "w": 280,
+      "h": 260,
+      "props": {
+       "tone": "neutral",
+       "topStripe": false,
+       "eyebrow": "TWO",
+       "title": "Card B",
+       "body": "More body."
+      },
+      "id": "0755b8ea"
+     },
+     {
+      "type": "box",
+      "x": 720,
+      "y": 120,
+      "w": 220,
+      "h": 110,
+      "props": {
+       "tone": "ruby",
+       "title": "Dashed box",
+       "body": "Box body",
+       "dashed": true
+      },
+      "id": "68a65746"
+     },
+     {
+      "type": "shape",
+      "x": 720,
+      "y": 280,
+      "w": 120,
+      "h": 120,
+      "props": {
+       "kind": "ellipse",
+       "fill": "#F6821F",
+       "stroke": "#000000",
+       "strokeWidth": 3,
+       "radius": 0,
+       "opacity": 0.8
+      },
+      "id": "8481031d"
+     },
+     {
+      "type": "shape",
+      "x": 880,
+      "y": 280,
+      "w": 160,
+      "h": 100,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFFFFF",
+       "stroke": "#E5E5E5",
+       "strokeWidth": 1,
+       "radius": 12,
+       "opacity": 1
+      },
+      "id": "691df49b"
+     },
+     {
+      "type": "divider",
+      "x": 60,
+      "y": 420,
+      "w": 900,
+      "h": 2,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 0.6
+      },
+      "id": "ac54f5a6"
+     },
+     {
+      "type": "arrow",
+      "x": 0,
+      "y": 0,
+      "props": {
+       "x1": 340,
+       "y1": 250,
+       "x2": 380,
+       "y2": 250,
+       "color": "tangerine",
+       "label": "flows",
+       "dashed": true,
+       "width": 3
+      },
+      "id": "94cf0efc"
+     },
+     {
+      "type": "arrow",
+      "x": 0,
+      "y": 0,
+      "props": {
+       "x1": 200,
+       "y1": 500,
+       "x2": 700,
+       "y2": 560,
+       "color": "ruby",
+       "label": "",
+       "dashed": false,
+       "width": 2
+      },
+      "id": "e25cbfd5"
+     },
+     {
+      "type": "gadgetsMark",
+      "x": 60,
+      "y": 520,
+      "props": {
+       "size": "small"
+      },
+      "id": "03c29a5a"
+     }
+    ],
+    "id": "e282ccdb"
+   },
+   {
+    "background": {
+     "color": "#F5F5F5",
+     "inset": false,
+     "dotGrid": 16
+    },
+    "blocks": [
+     {
+      "type": "card",
+      "x": 60,
+      "y": 120,
+      "w": 280,
+      "h": 260,
+      "props": {
+       "tone": "tangerine",
+       "topStripe": true,
+       "eyebrow": "EYEBROW",
+       "title": "Card A",
+       "body": "Card body copy."
+      },
+      "id": "daad3780"
+     },
+     {
+      "type": "card",
+      "x": 380,
+      "y": 120,
+      "w": 280,
+      "h": 260,
+      "props": {
+       "tone": "neutral",
+       "topStripe": false,
+       "eyebrow": "TWO",
+       "title": "Card B",
+       "body": "More body."
+      },
+      "id": "81fe9443"
+     },
+     {
+      "type": "box",
+      "x": 720,
+      "y": 120,
+      "w": 220,
+      "h": 110,
+      "props": {
+       "tone": "ruby",
+       "title": "Dashed box",
+       "body": "Box body",
+       "dashed": true
+      },
+      "id": "a4d088a0"
+     },
+     {
+      "type": "shape",
+      "x": 720,
+      "y": 280,
+      "w": 120,
+      "h": 120,
+      "props": {
+       "kind": "ellipse",
+       "fill": "#F6821F",
+       "stroke": "#000000",
+       "strokeWidth": 3,
+       "radius": 0,
+       "opacity": 0.8
+      },
+      "id": "0d4e5f1e"
+     },
+     {
+      "type": "shape",
+      "x": 880,
+      "y": 280,
+      "w": 160,
+      "h": 100,
+      "props": {
+       "kind": "rect",
+       "fill": "#FFFFFF",
+       "stroke": "#E5E5E5",
+       "strokeWidth": 1,
+       "radius": 12,
+       "opacity": 1
+      },
+      "id": "15e7c83f"
+     },
+     {
+      "type": "divider",
+      "x": 60,
+      "y": 420,
+      "w": 900,
+      "h": 2,
+      "props": {
+       "color": "#F6821F",
+       "opacity": 0.6
+      },
+      "id": "dde08f48"
+     },
+     {
+      "type": "arrow",
+      "x": 0,
+      "y": 0,
+      "props": {
+       "x1": 340,
+       "y1": 250,
+       "x2": 380,
+       "y2": 250,
+       "color": "tangerine",
+       "label": "flows",
+       "dashed": true,
+       "width": 3
+      },
+      "id": "f4ae236e"
+     },
+     {
+      "type": "arrow",
+      "x": 0,
+      "y": 0,
+      "props": {
+       "x1": 200,
+       "y1": 500,
+       "x2": 700,
+       "y2": 560,
+       "color": "ruby",
+       "label": "",
+       "dashed": false,
+       "width": 2
+      },
+      "id": "c9ef1817"
+     },
+     {
+      "type": "gadgetsMark",
+      "x": 60,
+      "y": 520,
+      "props": {
+       "size": "small"
+      },
+      "id": "2224e11a"
+     }
+    ],
+    "id": "10f1a63b"
+   },
+   {
+    "background": {
+     "color": "#FFFFFF"
+    },
+    "blocks": [
+     {
+      "type": "image",
+      "x": 600,
+      "y": 0,
+      "w": 600,
+      "h": 675,
+      "props": {
+       "src": "data:image/png;base64,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",
+       "fit": "cover",
+       "radius": 0,
+       "alt": "Big old image"
+      },
+      "id": "5ca853ae"
+     },
+     {
+      "type": "image",
+      "x": 40,
+      "y": 40,
+      "w": 80,
+      "h": 80,
+      "props": {
+       "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAiUlEQVR4AXSOwQ1AQBBFZa9GIwpw14CzBiQSBxwkDqIADahAAyrQgAo04Gr3ijHsINlkTz+b+f/tE2vr49IEONchTlWEYxnjkCfYZwV2aYNCneDI3XXUQXlQGm+hj95f2kGXeSRsS8kkJgAR4FluvFScVgfJTkTQS+0CRCLR+0iEu/Q5vH+aThcAAAD//6SQjHcAAAAGSURBVAMAxrKC3zxHxUYAAAAASUVORK5CYII=",
+       "fit": "contain",
+       "radius": 8,
+       "alt": "Tiny"
+      },
+      "id": "d149fb4b"
+     },
+     {
+      "type": "svg",
+      "x": 40,
+      "y": 200,
+      "w": 400,
+      "h": 200,
+      "props": {
+       "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\" viewBox=\"0 0 200 100\"><rect x=\"5\" y=\"5\" width=\"190\" height=\"90\" rx=\"12\" fill=\"#1d4ed8\"/><text x=\"100\" y=\"60\" font-size=\"28\" text-anchor=\"middle\" fill=\"#fff\">SVG</text></svg>",
+       "fit": "contain",
+       "background": "#FFF7ED"
+      },
+      "id": "ae807168"
+     },
+     {
+      "type": "svg",
+      "x": 40,
+      "y": 430,
+      "w": 400,
+      "h": 200,
+      "props": {
+       "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\" viewBox=\"0 0 200 100\"><rect x=\"5\" y=\"5\" width=\"190\" height=\"90\" rx=\"12\" fill=\"#1d4ed8\"/><text x=\"100\" y=\"60\" font-size=\"28\" text-anchor=\"middle\" fill=\"#fff\">SVG</text><circle cx=\"10\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"13\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"16\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"19\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"22\" cy=\"50\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"25\" cy=\"60\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"28\" cy=\"70\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"31\" cy=\"80\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"34\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"37\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"40\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"43\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"46\" cy=\"50\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"49\" cy=\"60\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"52\" cy=\"70\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"55\" cy=\"80\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"58\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"61\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"64\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"67\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"70\" cy=\"50\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"73\" cy=\"60\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"76\" cy=\"70\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"79\" cy=\"80\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"82\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"85\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"88\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"91\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"94\" cy=\"50\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"97\" cy=\"60\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"100\" cy=\"70\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"103\" cy=\"80\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"106\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"109\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"112\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"115\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"118\" cy=\"50\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"121\" cy=\"60\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"124\" cy=\"70\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"127\" cy=\"80\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"130\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"133\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"136\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"139\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"142\" cy=\"50\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"145\" cy=\"60\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"148\" cy=\"70\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"151\" cy=\"80\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"154\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"157\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"160\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"163\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"166\" cy=\"50\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"169\" cy=\"60\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"172\" cy=\"70\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"175\" cy=\"80\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"178\" cy=\"10\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"181\" cy=\"20\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"184\" cy=\"30\" r=\"2\" fill=\"#F6821F\"/><circle cx=\"187\" cy=\"40\" r=\"2\" fill=\"#F6821F\"/></svg>",
+       "fit": "stretch",
+       "background": ""
+      },
+      "id": "f323213d"
+     },
+     {
+      "type": "logo",
+      "x": 1013,
+      "y": 40,
+      "props": {
+       "variant": "dark",
+       "scale": 0.62,
+       "accentDot": true
+      },
+      "id": "52d3e2a3"
+     }
+    ],
+    "id": "4b337ec4"
+   },
+   {
+    "background": {
+     "color": "#FFF7ED"
+    },
+    "blocks": [
+     {
+      "type": "title",
+      "x": 40,
+      "y": 60,
+      "w": 900,
+      "props": {
+       "text": "Extra slide 1",
+       "fontSize": 32,
+       "weight": 600,
+       "color": "#000000"
+      },
+      "id": "6d9d2073"
+     },
+     {
+      "type": "text",
+      "x": 40,
+      "y": 160,
+      "w": 800,
+      "props": {
+       "text": "Body 1 — “quotes” & <tags> 🚀",
+       "fontSize": 19
+      },
+      "id": "18a4657e"
+     }
+    ],
+    "id": "b4914d97"
+   },
+   {
+    "background": {
+     "color": "#FFFFFF"
+    },
+    "blocks": [
+     {
+      "type": "title",
+      "x": 40,
+      "y": 60,
+      "w": 900,
+      "props": {
+       "text": "Extra slide 2",
+       "fontSize": 32,
+       "weight": 600,
+       "color": "#000000"
+      },
+      "id": "478d7e94"
+     },
+     {
+      "type": "text",
+      "x": 40,
+      "y": 160,
+      "w": 800,
+      "props": {
+       "text": "Body 2 — “quotes” & <tags> 🚀",
+       "fontSize": 19
+      },
+      "id": "98a31f20"
+     }
+    ],
+    "id": "afc261db"
+   }
+  ]
+ }
+}

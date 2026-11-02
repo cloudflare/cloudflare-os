@@ -14,6 +14,7 @@ import {
   User,
   Users,
   UploadSimple,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import {
   HierarchicalList,
@@ -40,12 +41,13 @@ import {
 import { renamedSkillManifestPath, renameSkillNavigatorNode } from "./renameSkillNavigatorNode";
 import {
   countSkills,
+  skillDisplayName,
   type SkillNavigatorCollection,
   type SkillNavigatorDirectory,
   type SkillNavigatorNode,
   type SkillNavigatorSkill,
 } from "./skillNavigatorModel";
-import { humanizeSkillName, isValidSkillName } from "./skillName";
+import { isValidSkillName } from "./skillName";
 import { formatSkillUpdatedAt, skillUpdatedAtLabel } from "./skillUpdatedAt";
 import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
@@ -74,6 +76,9 @@ type SkillsNavigatorTreeProps = {
 type PendingRename = { collectionId: string; path: string; name: string };
 
 const skillCountLabel = (count: number) => `${count} ${count === 1 ? "skill" : "skills"}`;
+
+const skillLessCollectionLabel = (documentCount: number) =>
+  `${documentCount} ${documentCount === 1 ? "file" : "files"}, no skills. Open collection`;
 
 // Ownership comes from the viewer's live role, not from which index lists the collection.
 const collectionAccess = ({ source, membership }: EnabledCollectionInfo) => {
@@ -119,8 +124,11 @@ const toListItem = (
     const name = renamed ? renamedSkill.name : node.name;
     const manifestPath = renamed ? renamedSkillManifestPath(node.manifestPath, renamedSkill.name) : node.manifestPath;
     const directoryPath = renamed ? manifestPath.slice(0, manifestPath.lastIndexOf("/")) : node.directoryPath;
-    skillsById.set(id, renamed ? { ...node, name, manifestPath, directoryPath } : node);
-    if (writable) {
+    const skill = renamed ? { ...node, name, manifestPath, directoryPath } : node;
+    skillsById.set(id, skill);
+    // moveContextSkill, like rename, validates the manifest first, so an invalid one cannot move.
+    const movable = writable && !node.invalid;
+    if (movable) {
       moveSourcesById.set(id, {
         collectionId,
         manifestPath,
@@ -129,9 +137,11 @@ const toListItem = (
     }
     return {
       id,
-      name: humanizeSkillName(name),
-      icon: <ScrollIcon aria-hidden size={17} className="text-kumo-subtle" />,
-      description: node.description,
+      name: skillDisplayName(skill),
+      icon: node.invalid
+        ? <WarningCircle aria-hidden size={17} className="text-kumo-danger" />
+        : <ScrollIcon aria-hidden size={17} className="text-kumo-subtle" />,
+      description: node.invalid ?? node.description,
       metadata: (
         <span
           className="flex items-center gap-1"
@@ -142,7 +152,7 @@ const toListItem = (
           <span aria-hidden>{relativeUpdatedAt(node.lastUpdated, now)}</span>
         </span>
       ),
-      draggable: writable,
+      draggable: movable,
     };
   }
 
@@ -211,6 +221,7 @@ export const SkillsNavigatorTree = ({
   const moveTargetsById = new Map<string, SkillNavigatorMoveTarget>();
   const collectionIdsByItemId = new Map<string, string>();
   const failedCollectionIdsByItemId = new Map<string, string>();
+  const skillLessCollectionIdsByItemId = new Map<string, string>();
   const items: HierarchicalListItem[] = navigator.map(({ collection, children }) => {
     const id = `${collection.id}:collection`;
     const writable = writableCollectionIds.has(collection.id) && !moving;
@@ -229,6 +240,16 @@ export const SkillsNavigatorTree = ({
       listChildren = [{
         id: failureId,
         name: "Couldn't load contents, click to try again",
+        appearance: "message",
+        interactive: true,
+      }];
+    } else if (children.length === 0 && metadata && metadata.documentCount > 0) {
+      // The navigator lists only skills, so this is the way into a collection of plain documents.
+      const skillLessId = `${collection.id}:no-skills`;
+      skillLessCollectionIdsByItemId.set(skillLessId, collection.id);
+      listChildren = [{
+        id: skillLessId,
+        name: skillLessCollectionLabel(metadata.documentCount),
         appearance: "message",
         interactive: true,
       }];
@@ -506,17 +527,22 @@ export const SkillsNavigatorTree = ({
     if (skill) {
       return (
         <>
-          <DropdownMenu.Item
-            icon={<PencilSimple size={13} className="mr-2" />}
-            onClick={() => setPendingRename({
-              collectionId,
-              path: skill.manifestPath,
-              name: skill.name,
-            })}
-          >
-            Rename
-          </DropdownMenu.Item>
-          <DropdownMenu.Separator />
+          {/* Renaming rewrites the manifest's name, which needs frontmatter that parses. */}
+          {!skill.invalid && (
+            <>
+              <DropdownMenu.Item
+                icon={<PencilSimple size={13} className="mr-2" />}
+                onClick={() => setPendingRename({
+                  collectionId,
+                  path: skill.manifestPath,
+                  name: skill.name,
+                })}
+              >
+                Rename
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator />
+            </>
+          )}
           <DropdownMenu.Item
             icon={<TrashIcon size={13} className="mr-2" />}
             variant="danger"
@@ -598,6 +624,11 @@ export const SkillsNavigatorTree = ({
       onItemClick={(item) => {
         if (failedCollectionIdsByItemId.has(item.id)) {
           void handleRetry(failedCollectionIdsByItemId.get(item.id)!);
+          return;
+        }
+        const skillLessCollectionId = skillLessCollectionIdsByItemId.get(item.id);
+        if (skillLessCollectionId) {
+          onOpenCollection(skillLessCollectionId);
           return;
         }
         const skill = skillsById.get(item.id);

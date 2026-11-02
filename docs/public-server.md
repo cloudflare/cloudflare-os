@@ -62,11 +62,7 @@ execute models and report their costs (over HTTPS the Gateway may live in the Wo
 account or a different one). The token stays required for the `google` provider regardless of the
 binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
 it, so the platform server itself still needs the token). Every provider, Workers AI included,
-routes through the same Gateway. Decision models (Clef) need the binding transport: over HTTPS
-the Gateway supplies Workers AI's credential only for chat, and a decision model request that sends
-the Gateway token in its place is refused with "Authentication error". Without the binding
-transport, set Clef and Clef Flash to **Disabled** on the Models tab (below), so gadgets that call
-them get a clear refusal.
+routes through the same Gateway.
 
 Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
 environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can
@@ -76,6 +72,25 @@ chats, gadget model bindings and scheduled tasks). The tab also sets reasoning l
 compaction budgets, adds models the catalog doesn't list, and tests a provider or a model with
 one real request. A decision model (Clef) has only a mode there: the settings and the test
 apply to language models.
+
+The **AI Gateway Auto Router** provider (`cloudflare-auto-router`) adds one model, **Auto**,
+which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
+pick the model behind each request by its difficulty and each candidate's cost. While the
+provider is on and the model enabled, Auto leads the model pickers and is the default for a new
+user or chat. It picks among the models of the other providers that are on, from
+[the Gateway's pool](https://developers.cloudflare.com/ai-gateway/features/auto-router/#models),
+which can include models this catalog doesn't list. The model's settings can instead list the
+models it may pick, as the Gateway names them (`anthropic/claude-sonnet-5.5`, `anthropic/*`,
+`openai/gpt-6-luna`, `@cf/*/*` for Workers AI); only models of providers that are on are
+accepted, and a listed model drops out of the pool if its provider is turned off. Disabling one
+model doesn't take it out of Auto's pool; list the models Auto may pick to leave it out. A name the
+Gateway doesn't know fails every request, so press Test after saving a list; a pass names the
+model that answered. Within a chat turn Auto keeps the model its first request got, so the
+prompt cache holds. It takes no reasoning level, and each chat is priced by the Gateway's log of
+the model that answered. A provider that is on but has no key in the Gateway runs on the
+account's Cloudflare credits (Unified Billing) unless the Gateway requires provider credentials.
+Auto Router routes to Anthropic, OpenAI and Workers AI models; while none of those providers is
+on, Auto is not offered.
 
 Disabling a model or turning a provider off is not a spend control while **Users may add their
 own models** is on: a user can still add a model under any provider that is on, and it runs

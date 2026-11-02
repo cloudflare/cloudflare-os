@@ -69,10 +69,10 @@ vi.mock("./errorReporting", () => ({
 
 const WORKSPACE_ID = "a".repeat(64);
 
-const listGadgets = vi.fn<() => Promise<{ id: string; title: string }[]>>(async () => [
+const listWorkspaces = vi.fn<() => Promise<{ id: string; title: string }[]>>(async () => [
   { id: WORKSPACE_ID, title: "Daily Brief" },
 ]);
-const authenticatedApi = { listGadgets };
+const authenticatedApi = { listWorkspaces };
 
 vi.mock("./AuthContext", () => ({
   useAuthenticatedApi: () => ({ authenticatedApi }),
@@ -131,7 +131,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
   let host: RpcStub<TestHost> | undefined;
 
   beforeEach(() => {
-    listGadgets.mockClear();
+    listWorkspaces.mockClear();
   });
 
   afterEach(async () => {
@@ -395,7 +395,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     // Live titles come from the user's own gadget list, never from the app's snapshot. Concurrent
     // and repeated frame requests share a bounded-lifetime host-side index.
     const now = vi.spyOn(Date, "now").mockReturnValue(0);
-    listGadgets
+    listWorkspaces
       .mockResolvedValueOnce([{ id: WORKSPACE_ID, title: "Daily Brief" }])
       .mockResolvedValueOnce([{ id: WORKSPACE_ID, title: "Renamed Brief" }]);
     await expect(
@@ -405,11 +405,11 @@ describe("SandboxedGatekeeperApp navigation", () => {
       ]),
     ).resolves.toEqual([["Daily Brief", null], ["Daily Brief"]]);
     await expect(host!.resolveWorkspaceTitles([WORKSPACE_ID])).resolves.toEqual(["Daily Brief"]);
-    expect(listGadgets).toHaveBeenCalledTimes(1);
+    expect(listWorkspaces).toHaveBeenCalledTimes(1);
 
     now.mockReturnValue(30_000);
     await expect(host!.resolveWorkspaceTitles([WORKSPACE_ID])).resolves.toEqual(["Renamed Brief"]);
-    expect(listGadgets).toHaveBeenCalledTimes(2);
+    expect(listWorkspaces).toHaveBeenCalledTimes(2);
 
     await expect(host!.openWorkspace("../evil")).rejects.toThrow(
       "Invalid gatekeeper app workspace target",

@@ -115,11 +115,12 @@ the X Developer Console.
 X limits each endpoint per account per 15 minutes; the message names when the window resets. The
 gatekeeper never retries on its own.
 
-### "X never confirmed whether this post was published, so it may already be on X and can't be rejected."
+### "X did not confirm whether this post was published."
 
 An approval sent the post, and X's answer was lost. Approve it again: the gatekeeper first checks the
 account's recent posts and records the post if it landed, so it is never posted twice. Revert it
-afterwards if it shouldn't stay.
+afterwards if it shouldn't stay. Rejecting it instead withdraws the request, but a post X already
+made stays on the account.
 
 ### The callback URI does not match
 

@@ -7,14 +7,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const testState = vi.hoisted(() => {
   const listModels = vi.fn<() => Promise<never[]>>(async () => []);
-  const newGadget = vi.fn<() => never>();
+  const newWorkspace = vi.fn<() => never>();
   return {
     addToast: vi.fn<(toast: unknown) => void>(),
-    authenticatedApi: { listModels, newGadget },
+    authenticatedApi: { listModels, newWorkspace },
     currentUser: { id: "user-a", name: "User A" },
     listModels,
     navigate: vi.fn<(options: unknown) => void>(),
-    newGadget,
+    newWorkspace,
     seeds: [] as Array<{ text?: string; nonce?: number }>,
     draftStorageKeys: [] as Array<string | undefined>,
   };
@@ -81,7 +81,7 @@ describe("Home prompt route flow", () => {
     );
     expect(Math.max(...testState.seeds.map(({ nonce }) => nonce ?? 0))).toBe(1);
     expect(testState.navigate).toHaveBeenCalledWith({ to: "/", search: {}, replace: true });
-    expect(testState.newGadget).not.toHaveBeenCalled();
+    expect(testState.newWorkspace).not.toHaveBeenCalled();
     expect(testState.draftStorageKeys).toContain("gadgets:composer-draft:v1:user-a:home");
   });
 });

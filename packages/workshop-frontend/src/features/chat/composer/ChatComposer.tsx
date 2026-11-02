@@ -764,7 +764,7 @@ export const ChatComposer = ({
           onRemove={removeAttachment}
         />
         {/* Textarea */}
-        <div className="relative px-4 pb-1 pt-3">
+        <div className="relative px-4 pb-2.5 pt-3">
           {slashCommandPicker.popup}
           {/* The resolved command is marked by color alone, so announce it for screen readers. */}
           <div className="sr-only" aria-live="polite">

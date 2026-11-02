@@ -35,6 +35,9 @@ const CHAT_MESSAGE_CREATED = "google.workspace.chat.message.v1.created";
  */
 function configure(config: WorkerConfig): void {
   delete config.build;
+  // Workers AI has no local simulator, so wrangler would open a remote session that needs Cloudflare
+  // credentials; run-dev-server.ts drops it the same way, and nothing here reads a PDF.
+  delete config.ai;
   config.vars = {
     ...config.vars, BASE_URL: GOOGLE_BASE_URL, CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret",
     PUBSUB_TOPIC, PUBSUB_CHAT_TOPIC: PUBSUB_TOPIC, PUBSUB_GMAIL_TOPIC: PUBSUB_TOPIC,

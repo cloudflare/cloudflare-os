@@ -282,13 +282,13 @@ describe("CheckboxList", () => {
 });
 
 describe("RadioCards", () => {
-  it("names the group after its field and each card after its own title", async () => {
+  it.each([false, true])("names the group after its field and each option after its own title, and chooses by click and arrow key (compact: %s)", async compact => {
     await mount({
       initial: { mode: "all" },
       resourceUrl: () => "https://example.com/",
       render: ({ values, setValues }) => (
         <Field label="Tools">
-          <RadioCards value={values.mode} onChange={mode => setValues({ mode })} options={[
+          <RadioCards compact={compact} value={values.mode} onChange={mode => setValues({ mode })} options={[
             { value: "all", title: "All tools", description: "Every tool." },
             { value: "choose", title: "Choose tools", description: "Only the ones ticked." },
           ]} />
@@ -299,6 +299,9 @@ describe("RadioCards", () => {
     await expect.element(page.getByRole("radio", { name: /^All tools/ })).toBeChecked();
     await userEvent.click(page.getByText("Choose tools"));
     await expect.element(page.getByRole("radio", { name: /^Choose tools/ })).toBeChecked();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(page.getByRole("radio", { name: /^All tools/ })).toBeChecked();
+    await expect.element(page.getByRole("radio", { name: /^All tools/ })).toHaveFocus();
   });
 });
 
@@ -636,5 +639,38 @@ describe("Notice", () => {
     } finally {
       observer.disconnect();
     }
+  });
+
+  it("carries one action, which disabled keeps focus and ignores clicks, and announces only the message", async () => {
+    const onClick = vi.fn();
+    const { session } = await mount({
+      initial: { busy: null, failure: null },
+      resourceUrl: () => "https://example.com/",
+      render: ({ values }) => (
+        <div>
+          <Notice action={{ label: "Allow access", onClick, disabled: values.busy === "yes" }}>
+            Listing needs one more permission.
+          </Notice>
+          {values.failure ? <Notice tone="error" action={{ label: "Try again", onClick }}>{values.failure}</Notice> : null}
+        </div>
+      ),
+    });
+    const allow = page.getByRole("button", { name: "Allow access" });
+
+    await userEvent.click(allow);
+    expect(onClick).toHaveBeenCalledOnce();
+    await act(() => session.store.setValues({ busy: "yes" }));
+    await expect.element(allow).toHaveAttribute("aria-disabled", "true");
+    await expect.element(allow).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(onClick).toHaveBeenCalledOnce();
+    await expect.element(page.getByRole("status")).toHaveTextContent("Listing needs one more permission.");
+    expect(page.getByRole("status").element().textContent).not.toContain("Allow access");
+
+    await act(() => session.store.setValues({ failure: "The pop-up was blocked." }));
+    await expect.element(page.getByRole("alert")).toHaveTextContent("The pop-up was blocked.");
+    expect(page.getByRole("alert").element().textContent).not.toContain("Try again");
+    await userEvent.click(page.getByRole("button", { name: "Try again" }));
+    expect(onClick).toHaveBeenCalledTimes(2);
   });
 });

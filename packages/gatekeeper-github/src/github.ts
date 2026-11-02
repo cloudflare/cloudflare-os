@@ -2456,19 +2456,24 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * branch, if that branch no longer exists without it -- on the remote or as the outcome of the
    * remaining queued pushes -- and everything queued against the doomed pull request. A push no
    * create depends on is discarded without reading GitHub, so a dead connection cannot block it.
-   * Otherwise the branch is read before anything is marked, so a failed read leaves the push
-   * pending and a retried discard still cascades; everything after the read runs without
-   * yielding, so a pull request queued during it is cascaded too, and a push applied during it
-   * is refused rather than overwritten as discarded. Returns whether anything was cascaded.
+   * Otherwise the branch is read before anything is marked, and everything after the read runs
+   * without yielding, so a pull request queued during it is cascaded too, and a push applied during
+   * it is refused rather than overwritten as discarded. A failed read still discards the push but
+   * cascades nothing, leaving its creates for the user to discard. Returns whether anything was
+   * cascaded.
    */
   async #rejectPush(push: PushAction): Promise<boolean> {
     const dependsOnBranch = (action: GitHubAction): action is CreatePullRequestAction =>
       action.type === "createPullRequest" &&
       (action.options.head === push.branch || action.options.base === push.branch);
     // `undefined`: not read, since nothing depended on the branch (and without an await, nothing
-    // can be queued before the mark); `null`: the branch does not exist on GitHub.
+    // can be queued before the mark), or the read failed; `null`: the branch does not exist on GitHub.
     const realHead = this.#listPendingActions().some(dependsOnBranch)
       ? await this.#withApi(api => api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, push.branch))
+        .catch(error => {
+          logger.warn("failed to read the branch a rejected push targeted", { event: "push.reject.branch.read.failed", error });
+          return undefined;
+        })
       : undefined;
     // The read yields, so a concurrent apply or discard may have settled the push meanwhile.
     const { state } = this.#requireActionRecord(push.approvalId);

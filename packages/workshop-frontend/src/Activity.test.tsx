@@ -140,6 +140,26 @@ describe('Activity creation approval', () => {
 
     expect(approveAction).toHaveBeenCalledWith(1, { accountId: 2 })
   })
+
+  it("tells the approver why an approval failed, since the gatekeeper's message says what to do",
+      async () => {
+    const message = 'The previous Gmail send outcome is still unknown. Deny this request to clear it.'
+    const server = makeOverseer()
+    Object.assign(server.overseer, {
+      approveAction: vi.fn<Overseer['approveAction']>(async () => { throw new Error(message) }),
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await view.render(<Activity overseer={server.overseer} view="review" onViewChange={() => {}} />)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1)] })
+    flushFrames()
+
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
+
+    expect(addToast).toHaveBeenCalledWith(
+      { title: 'Failed to approve action', description: message, variant: 'error' })
+  })
 })
 
 describe('Activity hook toggles', () => {

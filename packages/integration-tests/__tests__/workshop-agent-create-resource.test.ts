@@ -100,7 +100,7 @@ it.concurrent("a created resource is made in the approver's account, and edits a
     await ws.addCollaborator(approver, "build");
     return (await ws.getMetadata()).id;
   });
-  using ws = await api.openGadget(workspaceId);
+  using ws = await api.openWorkspace(workspaceId);
   await expect(ws.approveAction(write.id)).rejects.toThrow("Approve its creation first.");
   await expect(ws.approveAction(creation.id)).rejects.toThrow("Choose one of your accounts");
 

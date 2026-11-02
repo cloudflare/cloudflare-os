@@ -41,15 +41,15 @@ Share key security: the server generates a random 128-bit key and stores only it
 
 Storage shape: a link is its first key. The `shareKeys` table holds one row per key: the row for the first key carries the link's metadata and is keyed by that key's hash, which serves as the link id. Each later copy stores only an `alias` pointing back at that id.
 
-Share key redemption and gadget opening happen atomically in a single RPC call (`openGadget(id, shareKey)`), which allows subsequent calls to be pipelined on the returned `Overseer` stub without waiting for a separate redemption step.
+Share key redemption and workspace opening happen atomically in a single RPC call (`openWorkspace(id, shareKey)`), which allows subsequent calls to be pipelined on the returned `Overseer` stub without waiting for a separate redemption step.
 
 Redemption is **one-step**: redeeming a key writes the recipient's `shareKey` edge immediately, making them a collaborator like any other before the redeeming open()'s observer verification runs. A recipient whose verification then fails keeps the edge -- see Known limitations.
 
 ### Home page behavior
 
-A shared gadget does not appear on a collaborator's home page until they first open it. At that point, a record is created in the collaborator's user account (via `UserDurableObject.recordSharedGadgetOpen()`), storing a cached copy of the gadget's title and the owner's profile. The `lastActive` timestamp is updated each time they open the gadget.
+A shared workspace does not appear on a collaborator's home page until they first open it. At that point, a record is created in the collaborator's user account (via `UserDurableObject.recordSharedWorkspaceOpen()`), storing a cached copy of the workspace's title and the owner's profile. The `lastActive` timestamp is updated each time they open the workspace.
 
-Shared gadgets appear in the same list as owned gadgets on the home page, distinguished by showing the owner's name in the "Owner" column. Collaborators can dismiss a shared gadget from their home page (removing the record from their user account), but this does not revoke their access -- if they open the gadget again via its URL, it reappears.
+Shared workspaces appear in the same list as owned workspaces on the home page, distinguished by showing the owner's name in the "Owner" column. Collaborators can dismiss a shared workspace from their home page (removing the record from their user account), but this does not revoke their access -- if they open the workspace again via its URL, it reappears.
 
 When a collaborator's access is revoked, the stale record remains on their home page (we don't proactively reach into their account to remove it). The next time they try to open it, `open()` returns a workspace access-denied error and the client tells them they no longer have access without showing the workspace name or other metadata. They can dismiss the dead entry manually.
 
@@ -163,10 +163,10 @@ A gatekeeper whose data source requires each recipient to be granted access indi
 - **The owner can re-add them directly.** Adding someone by username creates an owner edge, and they open after passing verification like anyone else.
 - **Re-adding an intermediary restores nobody else.** If Alice added Bob, Bob added Carol, and Alice removed Bob, re-adding Bob after the flag is set brings back only Bob; Carol needs her own grant from Alice. The lazy undo (see Restoring access) applies only while the flag is unset.
 - **No new links.** `createShareLink` and `newShareLinkKey` throw "Share links are disabled…".
-- **No redemption for people without owner grants.** Redeeming a still-active link throws the same message, coded `OPEN_GADGET_ERROR_CODES.shareLinksDisabled`, for anyone the owner has not added directly, including people who joined through a link before the flag was set. The error page lets them retry once the owner adds them. A direct collaborator reopening an old link is let through, but no edge is added.
+- **No redemption for people without owner grants.** Redeeming a still-active link throws the same message, coded `OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled`, for anyone the owner has not added directly, including people who joined through a link before the flag was set. The error page lets them retry once the owner adds them. A direct collaborator reopening an old link is let through, but no edge is added.
 - **Owner-only direct adds.** `addCollaborator` throws for non-owners, whose grants would count for nothing.
 
-The owner can still list, rename, and revoke links (which no longer grant anything) and remove collaborators. `GadgetMetadata.ownerInvitesOnly` reports the flag, and the Share modal hides link controls (and, for non-owners, the invite box).
+The owner can still list, rename, and revoke links (which no longer grant anything) and remove collaborators. `WorkspaceMetadata.ownerInvitesOnly` reports the flag, and the Share modal hides link controls (and, for non-owners, the invite box).
 
 The policy lives in the Overseer, which passes it into `SharingManager` as a hook. Each grant checks it after its last await, right before the storage write, so an observation that sets the flag mid-call cannot slip a grant through.
 

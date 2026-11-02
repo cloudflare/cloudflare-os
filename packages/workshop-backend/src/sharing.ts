@@ -23,7 +23,7 @@
 // follows and must be checked synchronously with each grant's storage write.
 
 import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator,
-    createOpenGadgetError, OPEN_GADGET_ERROR_CODES } from "@gadgets/workshop-shared/api";
+    createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES } from "@gadgets/workshop-shared/api";
 import { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 import type { CollaboratorRecord, ShareKeyRecord, ShareLinkRecord }
     from "./storage-schema/overseer-storage";
@@ -118,11 +118,11 @@ export class SharingManager {
       private ownerInvitesOnly: () => boolean) {}
 
   // Throw if share links are disabled by `ownerInvitesOnly`. Redemption refusals surface
-  // from open(), so they carry the `shareLinksDisabled` open-gadget code; link management throws
+  // from open(), so they carry the `shareLinksDisabled` open-workspace code; link management throws
   // the same message uncoded.
   #requireShareLinksAllowed(opts?: { redeeming: boolean }): void {
     if (this.ownerInvitesOnly()) {
-      let error = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.shareLinksDisabled);
+      let error = createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled);
       throw opts?.redeeming ? error : new Error(error.message);
     }
   }

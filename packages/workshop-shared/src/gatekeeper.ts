@@ -374,7 +374,7 @@ export type SupportedResource = {
    *
    * Each type is still granted separately: holding a grant for one does not cover the others. The
    * configurator offers only the types the account has granted, and the Workshop asks for the rest
-   * in a single consent request, so group only types that need the same authorization.
+   * in a single consent request, so a user connecting any type on the card is asked for all of them.
    */
   groupedWith?: string;
 }
@@ -722,8 +722,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 /**
  * The version tag of the running version of a Worker, read from the `CF_VERSION_METADATA`
  * version-metadata binding in its `env`, or undefined when it has no such binding or the tag is
- * empty. Never throws. Takes `env` as a plain object because no public Worker config declares the
- * binding: the service that installs a deployment adds it.
+ * empty. Never throws. Takes `env` as a plain object because no public gatekeeper config declares
+ * the binding: the service that installs a deployment adds it.
  */
 export function workerVersionTag(env: object): string | undefined {
   try {
@@ -1156,6 +1156,10 @@ export interface Gatekeeper<Session> extends DurableObject {
    * Indicates that an action was rejected by the user. The gatekeeper should clean up any
    * associated storage.
    *
+   * Rejecting withdraws the action and must succeed even when the provider outcome of an earlier
+   * `applyAction()` is uncertain: refusing would leave the user no way to clear it. The gatekeeper
+   * stops tracking the action; an effect that already landed at the provider stays.
+   *
    * If the returned `restart` flag is true, rejecting this action requires restarting the Gadget.
    * This is sometimes needed by gatekeepers that simulate actions as if they had been approved --
    * the session may be in a state that is difficult to roll back without confusing the Gadget.
@@ -1445,7 +1449,8 @@ export type ObservationDescription = {
    * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
    *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
    *   once it has made one of these observations.
-   * - Once observed, the gadget enters a restricted mode: no public-web fetches, and every action
+   * - Once observed, the gadget enters a restricted mode: web fetches reach only the hosts the
+   *   deployment admin trusts with such data (none by default), and every action
    *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
    *   action's full `description` and is responsible for checking it contains none of the
    *   restricted data. An action whose description is not complete

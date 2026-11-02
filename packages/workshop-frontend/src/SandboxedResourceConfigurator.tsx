@@ -6,10 +6,14 @@ import { createRateLimitedCapability } from './rateLimitedCapability'
 import { useTheme } from './ThemeContext'
 import { forwardTrustedFrameError } from './errorReporting'
 
-// Upper bound on iframe height. Sized to leave room for a typical configurator form plus an open
-// autocomplete popup, while staying within a reasonable viewport even on short screens.
-const MAX_CONFIGURATOR_HEIGHT = 720
+// Upper bound on the height a frame may claim. A taller form than the window shows is scrolled with
+// the modal, the iframe clipped to its scroll area or the window; the bound only stops a broken
+// frame from claiming an absurd height.
+const MAX_CONFIGURATOR_HEIGHT = 4000
 const MIN_CONFIGURATOR_HEIGHT = 80
+// How far past its layout an open popup may paint unclipped: the runtime's popups are at most 240px
+// tall and sit just below their field. Anything taller is the form itself, which stays clipped.
+const MAX_POPUP_OVERFLOW = 320
 // Cap on each scroll delta forwarded from the iframe, so a misbehaving iframe can't post
 // extreme values to scroll-jack the host modal.
 const SCROLL_FORWARD_MAX_DELTA = 1000
@@ -198,29 +202,31 @@ export default function SandboxedResourceConfigurator({
       // Clip the iframe to the nearest scrollable ancestor (typically the modal's scroll area).
       // In normal viewports the modal grows tall enough that no clipping is needed, but when the
       // viewport is too short for the modal to fully expand, the inner scroll-area takes over and
-      // this clip prevents the iframe from rendering over the modal's footer.
-      const ancestor = findScrollAncestor()
-      let nextClip: { top: number, right: number, bottom: number, left: number } | null = null
-      if (ancestor) {
-        const ancestorRect = ancestor.getBoundingClientRect()
-        // When popup is open (iframe taller than layout), allow bottom overflow so dropdowns can
-        // extend past the modal like native autocomplete behavior.
-        const popupOpen = heightRef.current > layoutHeightRef.current + 8
-        nextClip = {
-          top: Math.max(0, ancestorRect.top - visualTop),
-          right: Math.max(0, (rect.left + rect.width) - ancestorRect.right),
-          bottom: popupOpen ? 0 : Math.max(0, (visualTop + heightRef.current) - ancestorRect.bottom),
-          left: Math.max(0, ancestorRect.left - rect.left),
-        }
+      // this clip prevents the iframe from rendering over the modal's footer. With no such ancestor
+      // the window bounds it, so a frame's claimed height can never cover the page.
+      const bounds = findScrollAncestor()?.getBoundingClientRect()
+        ?? { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 }
+      // A popup reaching past the frame's layout (the iframe is taller than it) may extend past the
+      // modal, as a native dropdown does, but only while the layout's end is in view, only by a
+      // popup's worth, and never past the window: otherwise what lies past the scroll area is the
+      // rest of the form, which stays clipped.
+      const layoutEnd = visualTop + layoutHeightRef.current
+      const popupOpen = heightRef.current > layoutHeightRef.current + 8 && layoutEnd <= bounds.bottom + 1
+      const visibleEnd = popupOpen
+        ? Math.min(layoutEnd + MAX_POPUP_OVERFLOW, bounds.bottom + MAX_POPUP_OVERFLOW, window.innerHeight)
+        : bounds.bottom
+      const nextClip = {
+        top: Math.max(0, bounds.top - visualTop),
+        right: Math.max(0, (rect.left + rect.width) - bounds.right),
+        bottom: Math.max(0, (visualTop + heightRef.current) - visibleEnd),
+        left: Math.max(0, bounds.left - rect.left),
       }
       const prevClip = lastClipRef.current
-      const clipChanged = !prevClip !== !nextClip
-        || (prevClip && nextClip && (
-          prevClip.top !== nextClip.top
-          || prevClip.right !== nextClip.right
-          || prevClip.bottom !== nextClip.bottom
-          || prevClip.left !== nextClip.left
-        ))
+      const clipChanged = !prevClip
+        || prevClip.top !== nextClip.top
+        || prevClip.right !== nextClip.right
+        || prevClip.bottom !== nextClip.bottom
+        || prevClip.left !== nextClip.left
       if (clipChanged) {
         lastClipRef.current = nextClip
         setClipInsets(nextClip)
@@ -248,10 +254,9 @@ export default function SandboxedResourceConfigurator({
       configuratorRef.current,
       (nextHeight, nextLayoutHeight) => {
         if (!Number.isFinite(nextHeight)) return
-        const maxHeight = Math.max(MIN_CONFIGURATOR_HEIGHT, Math.min(MAX_CONFIGURATOR_HEIGHT, window.innerHeight - 120))
-        setHeight(clamp(Math.ceil(nextHeight), MIN_CONFIGURATOR_HEIGHT, maxHeight))
+        setHeight(clamp(Math.ceil(nextHeight), MIN_CONFIGURATOR_HEIGHT, MAX_CONFIGURATOR_HEIGHT))
         const layoutHeight = Number.isFinite(nextLayoutHeight) ? nextLayoutHeight : nextHeight
-        setLayoutHeight(clamp(Math.ceil(layoutHeight), MIN_CONFIGURATOR_HEIGHT, maxHeight))
+        setLayoutHeight(clamp(Math.ceil(layoutHeight), MIN_CONFIGURATOR_HEIGHT, MAX_CONFIGURATOR_HEIGHT))
       },
       ready => onSelectionReadyChange?.(Boolean(ready)),
       (deltaX, deltaY) => applyForwardedScroll(

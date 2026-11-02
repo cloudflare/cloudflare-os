@@ -42,6 +42,9 @@ declare global {
       CFOS_INSTALL_ID?: string;           // this installation's central identity
       CFOS_INSTALL_KEY_ID?: string;       // active signing-key generation
       CFOS_INSTALL_PRIVATE_KEY?: string;  // secret: base64 PKCS#8 P-256 key that signs requests
+      // Browser push alone needs this VAPID key, which browsers subscribe with; without it the
+      // profile page offers no browser notifications, and native push is unaffected.
+      NOTIFICATION_WEB_PUSH_PUBLIC_KEY?: string;
 
       // Optional product analytics stream. Deployments can bind this to a
       // structured Cloudflare Pipelines stream; local/dev configs omit it and analytics no-op.
@@ -89,10 +92,6 @@ declare global {
       // JSON binding of the release, its version tag and its update links. Typed `unknown` because
       // deployServiceInstall() (deployment-updates.ts) is its only reader, and shape-checks it.
       CLOUDFLARE_OS_DEPLOYMENT?: unknown;
-
-      // This Worker version's metadata. The service that installed the deployment adds the binding
-      // to every Worker it uploads, so it is declared here rather than in cloudflare.config.ts.
-      CF_VERSION_METADATA?: WorkerVersionMetadata;
 
       // Daily free-tier LLM-call limit (per user). Defaults to DEFAULT_DAILY_LLM_CALL_LIMIT.
       DAILY_LLM_CALL_LIMIT?: string;

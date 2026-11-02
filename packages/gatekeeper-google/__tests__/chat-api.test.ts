@@ -226,6 +226,188 @@ describe("Chat response mapping", () => {
     expect(chatMessageInfoFromRaw(message).formattedText).toBe("");
   });
 
+  // Alert and bot messages put their details and links in cards, which neither text form carries.
+  it("maps a Chat app's cardsV2 next to its unchanged text", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      sender: { name: "users/app", displayName: "Alerts", type: "BOT" },
+      createTime: "2024-01-02T03:04:05Z",
+      text: "*firing*: example-service error rate",
+      formattedText: "*firing*: example-service error rate",
+      cardsV2: [{
+        cardId: "alert",
+        card: {
+          header: { title: "example-service-errors is firing", subtitle: "severity: warning" },
+          sections: [{
+            header: "Details",
+            widgets: [
+              { decoratedText: { topLabel: "Started", text: "<b>Start:</b> 2024-01-02 03:00:00Z" } },
+              {
+                textParagraph: {
+                  text: "**cluster:** `test-cluster`<br>**Description:** 4 errors/sec",
+                  textSyntax: "MARKDOWN",
+                },
+              },
+              {
+                buttonList: {
+                  buttons: [
+                    { text: "Runbook", onClick: { openLink: { url: "https://example.com/runbook" } } },
+                    { text: "Silence", onClick: { action: { function: "silence" } } },
+                    {
+                      text: "More",
+                      onClick: {
+                        overflowMenu: {
+                          items: [{ text: "Dashboard", onClick: { openLink: { url: "https://example.com/dash" } } }],
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }],
+          fixedFooter: { primaryButton: { text: "Open", onClick: { openLink: { url: "https://example.com/open" } } } },
+        },
+      }],
+    });
+    expect(info.text).toBe("*firing*: example-service error rate");
+    expect(info.formattedText).toBe("*firing*: example-service error rate");
+    expect(info.cards).toEqual([{
+      title: "example-service-errors is firing",
+      subtitle: "severity: warning",
+      text: [
+        "Details",
+        "Started",
+        "<b>Start:</b> 2024-01-02 03:00:00Z",
+        "**cluster:** `test-cluster`<br>**Description:** 4 errors/sec",
+      ].join("\n"),
+      links: [
+        { label: "Runbook", url: "https://example.com/runbook" },
+        { label: "Dashboard", url: "https://example.com/dash" },
+        { label: "Open", url: "https://example.com/open" },
+      ],
+    }]);
+  });
+
+  it("maps a card-only message, legacy cards included", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      createTime: "2024-01-02T03:04:05Z",
+      cardsV2: [{ card: { sections: [{ widgets: [{ textParagraph: { text: "Build passed" } }] }] } }],
+      cards: [{
+        header: { title: "Legacy" },
+        sections: [{
+          widgets: [
+            { keyValue: { topLabel: "Job", content: "deploy", onClick: { openLink: { url: "https://example.com/job" } } } },
+            { buttons: [
+              { textButton: { text: "Logs", onClick: { openLink: { url: "https://example.com/logs" } } } },
+              { imageButton: { name: "Help", onClick: { openLink: { url: "https://example.com/help" } } } },
+            ] },
+          ],
+        }],
+        cardActions: [{ actionLabel: "Settings", onClick: { openLink: { url: "https://example.com/settings" } } }],
+      }],
+    });
+    expect(info).toMatchObject({ text: "", formattedText: "" });
+    expect(info.cards).toEqual([
+      { text: "Build passed", links: [] },
+      {
+        title: "Legacy",
+        text: "Job\ndeploy",
+        links: [
+          { label: "deploy", url: "https://example.com/job" },
+          { label: "Logs", url: "https://example.com/logs" },
+          { label: "Help", url: "https://example.com/help" },
+          { label: "Settings", url: "https://example.com/settings" },
+        ],
+      },
+    ]);
+  });
+
+  it("gives an ordinary message no cards", () => {
+    expect(chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z", text: "hello",
+    }).cards).toEqual([]);
+  });
+
+  // Card payloads are app-authored: unknown widgets, inputs, malformed fields and non-web links
+  // must be skipped without failing the read or leaking anything that could act on a click.
+  it("skips unsupported, malformed, and non-web card content", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      createTime: "2024-01-02T03:04:05Z",
+      cardsV2: [
+        { card: { sections: [{ widgets: [{ textInput: { label: "Reason", name: "reason" } }, { divider: {} }] }] } },
+        { card: "not a card" },
+        {},
+        {
+          card: {
+            header: { title: 42 },
+            sections: [
+              "bad section",
+              {
+                widgets: [
+                  null,
+                  { futureWidget: { text: "unknown" } },
+                  { selectionInput: { label: "Pick", items: [{ text: "a", value: "a" }] } },
+                  { textParagraph: { text: { nested: true } } },
+                  { textParagraph: { text: "kept" } },
+                  { buttonList: { buttons: [
+                    { text: "Script", onClick: { openLink: { url: "javascript:alert(1)" } } },
+                    { text: "Relative", onClick: { openLink: { url: "/runbook" } } },
+                    { text: "Mail", onClick: { openLink: { url: "mailto:a@example.com" } } },
+                    { text: "Bad", onClick: { openLink: { url: 7 } } },
+                    { onClick: { openLink: { url: "http://example.com/unlabeled" } } },
+                  ] } },
+                  { image: { imageUrl: "https://example.com/i.png", altText: "Graph" } },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      cards: "not a list" as unknown as unknown[],
+    });
+    expect(info.cards).toEqual([{
+      text: "kept",
+      links: [{ url: "http://example.com/unlabeled" }],
+    }]);
+  });
+
+  it("reads grid, chip, column, and carousel content one level deep", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      createTime: "2024-01-02T03:04:05Z",
+      cardsV2: [{
+        card: {
+          sections: [{
+            widgets: [
+              { grid: { title: "Hosts", items: [{ title: "host-1", subtitle: "up" }] } },
+              { chipList: { chips: [{ label: "Docs", onClick: { openLink: { url: "https://example.com/docs" } } }] } },
+              { columns: { columnItems: [{ widgets: [
+                { textParagraph: { text: "left" } },
+                { columns: { columnItems: [{ widgets: [{ textParagraph: { text: "too deep" } }] }] } },
+              ] }] } },
+              { carousel: { carouselCards: [{
+                widgets: [{ textParagraph: { text: "slide" } }],
+                footerWidgets: [{ buttonList: { buttons: [
+                  { text: "Next", onClick: { openLink: { url: "https://example.com/next" } } },
+                ] } }],
+              }] } },
+            ],
+          }],
+        },
+      }],
+    });
+    expect(info.cards).toEqual([{
+      text: "Hosts\nhost-1\nup\nleft\nslide",
+      links: [
+        { label: "Docs", url: "https://example.com/docs" },
+        { label: "Next", url: "https://example.com/next" },
+      ],
+    }]);
+  });
+
   it.each([
     ["SPACE", "THREADED_MESSAGES", true],
     ["SPACE", "GROUPED_MESSAGES", true],

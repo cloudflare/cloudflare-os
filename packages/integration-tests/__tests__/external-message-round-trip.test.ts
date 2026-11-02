@@ -156,7 +156,7 @@ it.concurrent("deleting the chat while a reply is pending sends the terminal tex
   if (!Number.isInteger(chatId)) throw new Error(`Invalid external chat path: ${result.chatPath}`);
   using freshPublicApi = connect(harness.url);
   using freshApi = await logIn(freshPublicApi, owner);
-  using ws = await freshApi.openGadget(gadgetId);
+  using ws = await freshApi.openWorkspace(gadgetId);
   await ws.deleteChat(chatId);
 
   expect(await awaitReplies(messageKey))

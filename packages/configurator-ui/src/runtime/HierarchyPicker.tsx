@@ -1,31 +1,25 @@
 import { Button } from "@cloudflare/kumo/components/button";
 import { Loader } from "@cloudflare/kumo/components/loader";
+import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { cn } from "@cloudflare/kumo/utils";
-import { CaretRightIcon, FileIcon, FolderIcon } from "@phosphor-icons/react";
-import { isValidElement, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type {
-  ConfiguratorUIHierarchyAncestor,
-  ConfiguratorUIHierarchyChoice,
-  ConfiguratorUIHierarchyItem,
-  ConfiguratorUIHierarchyRequest,
-  HierarchyPickerProps,
-} from "../index.ts";
+import { FileIcon, FolderIcon, InfoIcon } from "@phosphor-icons/react";
+import {
+  isValidElement, useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode,
+} from "react";
+import type { ConfiguratorUIHierarchyAncestor, ConfiguratorUIHierarchyItem, HierarchyPickerProps } from "../index.ts";
 import { FilterInput } from "./FilterInput.tsx";
-import { displayText, failureMessage, identifier, MAX_OPTIONS, SEARCH_DEBOUNCE_MS } from "./options.ts";
+import { Breadcrumb } from "./HierarchyBreadcrumb.tsx";
+import {
+  appendUnique, asContainer, locationIdOf, locationOf, reportLoadFailure, requestPage, rowSubtitle, sanitizeItem, sanitizeTab,
+  type Location, type Page,
+} from "./hierarchyNodes.ts";
+import { ChoiceBody, PlaceholderRows, Row } from "./HierarchyRow.tsx";
+import { failureMessage, SEARCH_DEBOUNCE_MS } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 import { useCollectionHold } from "./storeContext.ts";
 
 type Item = ConfiguratorUIHierarchyItem;
 type Ancestor = ConfiguratorUIHierarchyAncestor;
-
-/**
- * The open location: the containers opened below the root, outermost first, or none for the root.
- * `detached` when the first of them is not known to be a direct child of the root -- a search result
- * without a `path` -- so the breadcrumb shows a gap rather than claim it is one.
- */
-type Location = { trail: Ancestor[]; detached: boolean };
-
-type Page = { items: Item[]; nextCursor: string | null };
 
 /** What `loadItems` returned for one location and query, page after page. */
 type Listing = Page & {
@@ -37,169 +31,70 @@ type Listing = Page & {
   moreMessage?: string;
 };
 
-const AT_ROOT: Location = { trail: [], detached: false };
-
-const sanitizeChoice = (value: unknown): ConfiguratorUIHierarchyChoice | undefined => {
-  if (!value || typeof value !== "object") return undefined;
-  const { title, subtitle } = value as Record<string, unknown>;
-  return { title: displayText(title), subtitle: displayText(subtitle) };
-};
-
-/** A path whose every ancestor is valid, or none: a partial path would misstate where a node is. */
-const sanitizePath = (value: unknown): Ancestor[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  const path: Ancestor[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") return undefined;
-    const raw = entry as Record<string, unknown>;
-    const id = identifier(raw.id);
-    const title = displayText(raw.title);
-    if (!id || !title) return undefined;
-    path.push({
-      id,
-      title,
-      selectable: typeof raw.selectable === "boolean" ? raw.selectable : undefined,
-      icon: typeof raw.icon === "string" ? raw.icon : undefined,
-      choice: sanitizeChoice(raw.choice),
-    });
-  }
-  return path;
-};
-
-const sanitizeItem = (value: unknown): Item | undefined => {
-  if (!value || typeof value !== "object") return undefined;
-  const raw = value as Record<string, unknown>;
-  const id = identifier(raw.id);
-  const title = displayText(raw.title);
-  if (!id || !title || (raw.kind !== "container" && raw.kind !== "leaf")) return undefined;
-  return {
-    id,
-    title,
-    kind: raw.kind,
-    icon: typeof raw.icon === "string" ? raw.icon : undefined,
-    subtitle: displayText(raw.subtitle),
-    selectable: raw.selectable !== false,
-    choice: sanitizeChoice(raw.choice),
-    path: sanitizePath(raw.path),
-  };
-};
-
-/** A page saying its location cannot be listed yet: shown as a failed load is, but expected. */
-class Unavailable extends Error {}
-
-/** One page, refused whole rather than truncated when it is too long to show. */
-const sanitizePage = (page: unknown): Page => {
-  const { items, nextCursor, unavailable } =
-    (page && typeof page === "object" ? page : {}) as Record<string, unknown>;
-  const reason = displayText(unavailable);
-  if (reason) throw new Unavailable(reason);
-  const listed: unknown[] = Array.isArray(items) ? items : [];
-  if (listed.length > MAX_OPTIONS) {
-    throw new Error(`The list returned more than ${MAX_OPTIONS} items in one page.`);
-  }
-  return { items: listed.flatMap(item => sanitizeItem(item) ?? []), nextCursor: identifier(nextCursor) ?? null };
-};
-
-const requestPage = (
-  loadItems: HierarchyPickerProps["loadItems"],
-  request: ConfiguratorUIHierarchyRequest,
-): Promise<Page> => Promise.resolve().then(() => loadItems(request)).then(sanitizePage);
-
-const reportLoadFailure = (error: unknown) => {
-  if (!(error instanceof Unavailable)) reportFrontendIssue("configurator.hierarchy-load", error);
-};
-
-/** `incoming` after `existing`, skipping ids already listed, which would collide as row keys. */
-const appendUnique = (existing: readonly Item[], incoming: readonly Item[]): Item[] => {
-  const seen = new Set(existing.map(item => item.id));
-  return [...existing, ...incoming.filter(item => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  })];
-};
-
-const asContainer = ({ id, title, icon, choice }: Ancestor): Item =>
-  ({ id, title, icon, choice, kind: "container", selectable: true });
-
-const asAncestor = ({ id, title, selectable, icon, choice }: Item): Ancestor => ({ id, title, selectable, icon, choice });
-
-/** A search result's line: where it lives, then its own, so results of one name can be told apart. */
-const searchSubtitle = ({ path, subtitle }: Item): string | undefined =>
-  [path?.map(ancestor => ancestor.title).join(" / "), subtitle].filter(Boolean).join(" · ") || undefined;
-
-/** Where a node found without browsing to it (a search result, a pre-filled value) lives. */
-const locationOf = (item: Item): Location => item.kind === "container"
-  ? { trail: [...item.path ?? [], asAncestor(item)], detached: !item.path }
-  : { trail: item.path ?? [], detached: false };
-
-type ChoiceBodyProps = { mark: "checked" | "unchecked" | "none"; icon: ReactNode; title: string; subtitle?: string };
+/** How long a pause in typing starts a new type-ahead. */
+const TYPEAHEAD_MS = 700;
 
 /**
- * What the root's card and every row show: a radio's look (or room for one, so icons line up), an
- * icon and two lines. The look is only a cue; `aria-selected` or `aria-pressed` says it.
+ * The row type-ahead moves to from `from`: the next one starting with a letter pressed again and
+ * again, else the first from `from` on starting with what was typed. Wraps around.
  */
-const ChoiceBody = ({ mark, icon, title, subtitle }: ChoiceBodyProps) => (
-  <>
-    <span
-      className={cn("flex size-4 shrink-0 items-center justify-center rounded-full",
-        mark === "checked" && "bg-kumo-brand ring ring-kumo-brand",
-        mark === "unchecked" && "bg-kumo-base ring ring-kumo-line")}
-    >
-      {mark === "checked" && <span className="size-2 rounded-full bg-kumo-base" />}
-    </span>
-    <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center overflow-hidden text-kumo-subtle [&>svg]:size-5">
-      {icon}
-    </span>
-    <span className="flex min-w-0 flex-1 flex-col">
-      <span className="truncate">{title}</span>
-      {subtitle && <span className="truncate text-xs text-kumo-subtle">{subtitle}</span>}
-    </span>
-  </>
-);
-
-type RowProps = Omit<ChoiceBodyProps, "mark"> & {
-  /** What activating the row does; `none` for a node that can be neither chosen nor opened. */
-  action: "choose" | "open" | "none";
-  selected: boolean;
-  disabled: boolean;
-  /** Whether the list's single tab stop is on this row. */
-  tabbable: boolean;
-  onFocus(): void;
-  onActivate(): void;
+const typeAheadMatch = (titles: readonly string[], from: number, typed: string): number | undefined => {
+  const [first = ""] = typed;
+  const repeated = [...typed].every(letter => letter === first);
+  const needle = repeated ? first : typed;
+  const start = repeated ? from + 1 : Math.max(0, from);
+  return Array.from(titles, (_, step) => (start + step) % titles.length)
+    .find(at => titles[at]?.toLocaleLowerCase().startsWith(needle));
 };
 
-/** One option of the list. Moving between rows is the list's job; activating one is the row's. */
-const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate, ...body }: RowProps) => {
-  const inert = disabled || action === "none";
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const activates = event.key === "Enter" || event.key === " " || (event.key === "ArrowRight" && action === "open");
-    if (inert || !activates) return;
-    event.preventDefault();
-    onActivate();
-  };
-  return (
-    <div
-      role="option"
-      aria-selected={selected}
-      aria-disabled={inert || undefined}
-      tabIndex={!disabled && tabbable ? 0 : -1}
-      onFocus={onFocus}
-      onClick={inert ? undefined : onActivate}
-      onKeyDown={onKeyDown}
-      className={cn(
-        "flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm outline-none",
-        "focus-visible:ring-2 focus-visible:ring-kumo-focus",
-        inert ? "cursor-default" : "cursor-pointer hover:bg-kumo-tint",
-        action === "none" && "text-kumo-inactive",
-        selected && "bg-kumo-tint text-kumo-strong",
-      )}
-    >
-      <ChoiceBody {...body} mark={selected ? "checked" : action === "choose" ? "unchecked" : "none"} />
-      {action === "open" && <CaretRightIcon aria-hidden="true" size={16} className="shrink-0 text-kumo-subtle" />}
-    </div>
-  );
+/** Whether a key is pressed as part of a shortcut such as Ctrl+/ or copy, not to type with AltGr. */
+const hasModifier = (event: Pick<globalThis.KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "getModifierState">) =>
+  event.metaKey || ((event.altKey || event.ctrlKey) && !event.getModifierState("AltGraph"));
+
+/** Whether `target` takes typed text itself, so "/" and the paging keys are its own. */
+const takesText = (target: EventTarget | null) =>
+  target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ||
+  (target instanceof HTMLElement && target.isContentEditable);
+
+/**
+ * The picker that keys pressed with focus on the page go to: the frame's first enabled one holding
+ * a match for `selector`. A click on a label, or on the blank part of a list, leaves focus there.
+ */
+const pickerForPage = (selector: string) =>
+  [...document.querySelectorAll('[data-hierarchy-picker]:not([aria-disabled="true"])')]
+    .find(picker => picker.querySelector(selector));
+
+/** A page of the list's box: what it shows, less a row, so the row at its edge stays in view. */
+const pageHeight = (box: HTMLElement) =>
+  Math.max(1, box.clientHeight - (box.querySelector<HTMLElement>('[role="option"]')?.offsetHeight ?? 40));
+
+/**
+ * The row PageDown (or PageUp) moves to from `from`, as in a file browser: the last row in full view
+ * (the first, going up), or from that row or one beyond it still partly in view, the last a page
+ * further brings into view. With the focused row scrolled wholly out of view, the last (or first)
+ * in view, so the list stays where it was scrolled to rather than going back to where focus was left.
+ */
+const pageTarget = (rows: readonly HTMLElement[], from: number, down: boolean, box: HTMLElement): number => {
+  const view = box.getBoundingClientRect();
+  const rects = rows.map(row => row.getBoundingClientRect());
+  const inView = (rect: DOMRect) => rect.top >= view.top - 1 && rect.bottom <= view.bottom + 1;
+  const partlyInView = (rect: DOMRect) => rect.bottom > view.top + 1 && rect.top < view.bottom - 1;
+  const shown = rects.flatMap((rect, index) => inView(rect) ? [index] : []);
+  if (shown.length === 0) return from;
+  const edge = down ? shown[shown.length - 1] : shown[0];
+  const current = rects[from];
+  if (!current || !partlyInView(current) || (down ? edge > from : edge < from)) return edge;
+  let target = down ? from + 1 : from - 1;
+  if (down) {
+    while (target + 1 < rects.length && rects[target + 1].bottom <= current.top + box.clientHeight + 1) target++;
+  } else {
+    while (target > 0 && rects[target - 1].top >= current.bottom - box.clientHeight - 1) target--;
+  }
+  return target;
 };
+
+// Shared, so a row drawing a default keeps its props from one render to the next.
+const DEFAULT_ICONS = { container: <FolderIcon size={20} />, leaf: <FileIcon size={20} /> };
 
 /**
  * Drill-down navigator choosing one node of a hierarchy: the root, a container or a leaf. Renders
@@ -208,16 +103,18 @@ const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate, ...bod
  * dialog, a choice lasts while it is in view: moving elsewhere or searching lets go of it, except
  * the root's, whose card is always in view.
  *
- * Where it has navigated describes one root, so a new root starts it afresh. A value nothing on
- * screen shows as chosen, pre-filled or set by the module later, is looked up and opened where it
- * lives. Any other change leaves the picker where the user took it: a pick the module takes at once
- * or after awaiting something, one it declines, or a choice it lets go of.
+ * Where it has navigated describes one root and its tabs, so a new root or set of tabs starts it
+ * afresh. A value nothing on screen shows as chosen, pre-filled or set by the module later, is
+ * looked up and opened where it lives. Any other change leaves the picker where the user took it: a
+ * pick the module takes at once or after awaiting something, one it declines, or a choice it lets
+ * go of.
  */
 export const HierarchyPicker = (props: HierarchyPickerProps) =>
-  <Navigator key={`${props.name}\n${props.root.id}`} {...props} />;
+  <Navigator key={[props.name, props.root.id, ...props.tabs?.map(tab => tab?.id) ?? []].join("\n")} {...props} />;
 
 const Navigator = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
+  const tabs = props.tabs?.flatMap(tab => sanitizeTab(tab) ?? []) ?? [];
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
   // restart a load.
@@ -229,7 +126,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   // value is a change like any other.
   const [seenValue, setSeenValue] = useState<string | null>(null);
   const [pendingPrefill, setPendingPrefill] = useState<string | null>(null);
-  const [location, setLocation] = useState<Location>(AT_ROOT);
+  const [location, setLocation] = useState<Location>(() => ({ tab: tabs[0]?.id ?? null, trail: [], detached: false }));
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [listing, setListing] = useState<Listing | null>(null);
@@ -238,9 +135,14 @@ const Navigator = (props: HierarchyPickerProps) => {
   // A pre-filled leaf, which its parent's listing may not show: on a later page, or with no path.
   const [prefilledLeaf, setPrefilledLeaf] = useState<Item | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
   const crumbsRef = useRef<HTMLElement>(null);
+  // Rows are memoized, so the handler they share keeps its identity and acts on the latest render.
+  const activate = useRef((_id: string) => {});
+  const activateRow = useCallback((id: string) => activate.current(id), []);
   // Where focus goes once that location's listing is shown (the row named, or else the first),
   // after the control that had it went away with what it did.
   const focusTarget = useRef<{ location: string; row: string | null } | null>(null);
@@ -248,6 +150,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   const focusCrumb = useRef(false);
   // Bumped whenever the listing a response would update is replaced, so a late page is dropped.
   const generation = useRef(0);
+  const typeAhead = useRef({ typed: "", at: 0 });
 
   const forgetPrefill = () => {
     setPendingPrefill(null);
@@ -259,8 +162,9 @@ const Navigator = (props: HierarchyPickerProps) => {
   };
 
   const prefilling = pendingPrefill !== null;
-  const current = location.trail.at(-1);
-  const locationId = current?.id ?? root.id;
+  const openTab = tabs.find(({ id }) => id === location.tab);
+  const current: Ancestor | undefined = location.trail.at(-1) ?? openTab;
+  const locationId = locationIdOf(location, root.id);
   const locationTitle = current?.title ?? root.title;
 
   useEffect(() => {
@@ -268,14 +172,16 @@ const Navigator = (props: HierarchyPickerProps) => {
     /** Shows `item` where it lives, or, with none to show as that choice, leaves nothing chosen. */
     const settle = (item?: Item) => {
       if (item) {
-        setLocation(locationOf(item));
+        setLocation(open => locationOf(item, tabs, open.tab));
         if (item.kind === "leaf") setPrefilledLeaf(item);
       } else dropPrefill();
       setPendingPrefill(null);
     };
-    // An unselectable root is no choice the picker can show, and no node `loadItem` knows.
-    if (pendingPrefill === root.id) {
-      settle();
+    // The root and the tabs are known without a lookup. An unselectable root is no choice the picker
+    // can show; a tab is shown on the row its listing starts with, when it is offered as a choice.
+    const tab = tabs.find(({ id }) => id === pendingPrefill);
+    if (pendingPrefill === root.id || tab) {
+      settle(tab?.selectable ? asContainer(tab) : undefined);
       return;
     }
     let cancelled = false;
@@ -299,8 +205,8 @@ const Navigator = (props: HierarchyPickerProps) => {
     const token = generation.current;
     requestPage(loadItems, { parentId: locationId, query, cursor: null }).then(page => {
       if (generation.current !== token) return;
-      setListing({ parentId: locationId, query, items: appendUnique([], page.items),
-        nextCursor: page.nextCursor, status: "ready", loadingMore: false });
+      setListing({ ...page, parentId: locationId, query, items: appendUnique([], page.items), status: "ready",
+        loadingMore: false });
     }, error => {
       if (generation.current !== token) return;
       reportLoadFailure(error);
@@ -323,19 +229,31 @@ const Navigator = (props: HierarchyPickerProps) => {
     ? listing : null;
   const status = fresh?.status ?? "loading";
   // A listing naming the open container or the root among its own nodes would show one choice twice.
-  const shows = (item: Item) => item.id !== locationId && item.id !== root.id;
+  // A search may find the open container, whose own row it does not show.
+  const shows = (item: Item) => (query !== "" || item.id !== locationId) && item.id !== root.id;
   const items = (fresh?.items ?? []).filter(shows);
   // The open container, offered as a choice of its own. Not under a search, whose results are not
   // its contents.
   const scope = current && current.selectable !== false && !query ? asContainer(current) : null;
+  // Shown above the list: why the open container is not offered there, and what the source notes.
+  const notes = [...new Set([!query && current?.selectable === false && current.unselectableReason, fresh?.notice]
+    .flatMap(note => note || []))];
   // A pre-filled leaf its folder's listing does not show (on a later page, or found without a path)
   // comes first until the listing does, so the choice is in view, and stays while the user is here.
   const pinned = status === "ready" && !query && prefilledLeaf
     && !items.some(item => item.id === prefilledLeaf.id) ? prefilledLeaf : null;
   const rows = pinned ? [pinned, ...items] : items;
-  const rowIds = [...scope ? [scope.id] : [], ...rows.map(row => row.id)];
-  // Compact beside the breadcrumb until used; then it takes the breadcrumb's place, since what it
-  // finds is not in the open location.
+  // The list's options in order: the open container's own row, then what it holds.
+  const options = scope ? [scope, ...rows] : rows;
+  const rowIds = options.map(({ id }) => id);
+  const titleOf = (item: Item) => item === scope ? item.choice?.title ?? `Everything in ${item.title}` : item.title;
+  // The open container's own row chooses it; a container's row in a listing opens it.
+  const actionOf = (item: Item) =>
+    item.kind === "container" && item !== scope ? "open" : item.selectable ? "choose" : "none";
+  const hasTabs = tabs.length > 0;
+  // Without tabs, the search box sits compact beside the breadcrumb until used, then takes its place;
+  // beside tabs, it has room of its own. Either way the breadcrumb gives way to what a search finds,
+  // which is not in the open location.
   const searchOpen = searchFocused || text !== "";
   const focusId = activeId !== null && rowIds.includes(activeId) ? activeId : rowIds[0];
   const rootChosen = root.selectable === true && value === root.id;
@@ -385,11 +303,44 @@ const Navigator = (props: HierarchyPickerProps) => {
   });
 
   useEffect(() => {
+    if (!focusCrumb.current) return;
     const crumb = crumbsRef.current?.querySelector<HTMLElement>('[aria-current="location"]');
-    if (!focusCrumb.current || !crumb) return;
+    if (!crumb) return;
     focusCrumb.current = false;
     crumb.focus();
   });
+
+  // "/" goes to the search box, selecting what it holds, and PageUp/PageDown scroll the list a page,
+  // from anywhere in the picker but a text field (the search box takes the paging keys too, unless an
+  // input method is paging its candidates with them), and with focus on the page, which a click on a
+  // label or on the blank part of the list leaves it on.
+  // Rows page by their own handler, and the browser scrolls the box for anything else inside it.
+  // Listened for on the document, since focus on the page is outside the picker.
+  const onDocumentKeyDown = useEffectEvent((event: globalThis.KeyboardEvent) => {
+    const picker = pickerRef.current;
+    const box = boxRef.current;
+    const { target } = event;
+    if (!picker || !box || disabled || event.defaultPrevented || event.isComposing || hasModifier(event)) return;
+    const onPage = target === document.body;
+    if (!onPage && !(target instanceof Node && picker.contains(target))) return;
+    const input = picker.querySelector<HTMLInputElement>('input[type="search"]');
+    if (event.key === "/") {
+      if (!input || takesText(target) || (onPage && pickerForPage('input[type="search"]') !== picker)) return;
+      event.preventDefault();
+      input.focus();
+      input.select();
+    } else if (event.key === "PageDown" || event.key === "PageUp") {
+      if (box.contains(target as Node) || (takesText(target) && target !== input)) return;
+      if (onPage && pickerForPage('[role="listbox"]') !== picker) return;
+      event.preventDefault();
+      box.scrollBy({ top: (event.key === "PageDown" ? 1 : -1) * pageHeight(box) });
+    }
+  });
+  useEffect(() => {
+    const listener = (event: globalThis.KeyboardEvent) => onDocumentKeyDown(event);
+    document.addEventListener("keydown", listener);
+    return () => document.removeEventListener("keydown", listener);
+  }, []);
 
   /** As in a file dialog, a choice lasts while it is in view, and only the root's card always is. */
   const leaveView = () => {
@@ -406,23 +357,29 @@ const Navigator = (props: HierarchyPickerProps) => {
     if (disabled) return;
     leaveView();
     forgetPrefill();
+    typeAhead.current = { typed: "", at: 0 };
     setLocation(next);
     clearSearch();
     // The row that started it goes with the listing it was in.
-    focusTarget.current = fromList ? { location: next.trail.at(-1)?.id ?? root.id, row: null } : null;
+    focusTarget.current = fromList ? { location: locationIdOf(next, root.id), row: null } : null;
   };
 
-  /** Opens the root (depth 0) or the trail's container at that depth; the open one stays as it is. */
+  /** Opens the tab or root (depth 0) or the trail's container at that depth; the open one stays as it is. */
   const goTo = (depth: number, fromList: boolean) => {
     if (depth === location.trail.length) return;
-    navigate({ trail: location.trail.slice(0, depth), detached: depth > 0 && location.detached }, fromList);
+    navigate({ ...location, trail: location.trail.slice(0, depth), detached: depth > 0 && location.detached }, fromList);
   };
 
-  const openContainer = (item: Item) => navigate(
-    query
-      ? locationOf(item)
-      : { trail: [...location.trail, asAncestor(item)], detached: location.detached },
-    true);
+  /** A search result, or a row a view tab (such as recent) lists away from its home, opens where it lives. */
+  const openContainer = (item: Item) => {
+    const home = locationOf(item, tabs, location.tab);
+    navigate(query || home.tab !== location.tab ? home : { ...location, trail: [...location.trail, item] }, true);
+  };
+  activate.current = id => {
+    const item = options.find(option => option.id === id);
+    if (item && actionOf(item) === "open") openContainer(item);
+    else if (item) select(item);
+  };
 
   const retry = () => {
     focusTarget.current = { location: locationId, row: null };
@@ -445,7 +402,7 @@ const Navigator = (props: HierarchyPickerProps) => {
         focusTarget.current = { location: parentId, row: added?.id ?? rowIds.at(-1) ?? null };
       }
       setListing(shown => shown && { ...shown, items: appendUnique(shown.items, page.items),
-        nextCursor: page.nextCursor, loadingMore: false });
+        nextCursor: page.nextCursor, notice: page.notice ?? shown.notice, loadingMore: false });
     }, error => {
       if (generation.current !== token) return;
       reportLoadFailure(error);
@@ -456,9 +413,10 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
-    const rows = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
-    const index = rows.indexOf(event.target as HTMLElement);
-    const focusRow = (target: number) => rows[Math.max(0, Math.min(target, rows.length - 1))]?.focus();
+    const elements = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
+    const index = elements.indexOf(event.target as HTMLElement);
+    const rowAt = (target: number) => elements[Math.max(0, Math.min(target, elements.length - 1))];
+    const focusRow = (target: number) => rowAt(target)?.focus();
     switch (event.key) {
       case "ArrowDown":
         focusRow(index + 1);
@@ -466,19 +424,41 @@ const Navigator = (props: HierarchyPickerProps) => {
       case "ArrowUp":
         focusRow(index - 1);
         break;
+      case "PageDown":
+      case "PageUp": {
+        const box = boxRef.current;
+        const row = box && rowAt(pageTarget(elements, index, event.key === "PageDown", box));
+        if (!row) break;
+        // Shown at the edge it was paged to, as a file browser does, rather than in the middle,
+        // where focusing would scroll it, so the next page goes as far.
+        row.focus({ preventScroll: true });
+        const view = box.getBoundingClientRect();
+        const rect = row.getBoundingClientRect();
+        if (rect.bottom > view.bottom) box.scrollTop += rect.bottom - view.bottom;
+        else if (rect.top < view.top) box.scrollTop -= view.top - rect.top;
+        break;
+      }
       case "Home":
         focusRow(0);
         break;
       case "End":
-        focusRow(rows.length - 1);
+        focusRow(elements.length - 1);
         break;
       case "ArrowLeft":
       case "Backspace":
         if (location.trail.length === 0) return;
         goTo(location.trail.length - 1, true);
         break;
-      default:
-        return;
+      default: {
+        // A printable key, but not Space, which chooses, "/", which goes to the search box, nor a
+        // shortcut.
+        if (event.key.length !== 1 || " /".includes(event.key) || hasModifier(event)) return;
+        const { typed, at } = typeAhead.current;
+        const next = (event.timeStamp - at < TYPEAHEAD_MS ? typed : "") + event.key.toLocaleLowerCase();
+        typeAhead.current = { typed: next, at: event.timeStamp };
+        const match = typeAheadMatch(options.map(titleOf), index, next);
+        if (match !== undefined) focusRow(match);
+      }
     }
     event.preventDefault();
   };
@@ -490,7 +470,10 @@ const Navigator = (props: HierarchyPickerProps) => {
   };
 
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Tab" && event.shiftKey && !text) {
+    // An input method's own, as Escape is when it cancels what the user is composing.
+    if (event.nativeEvent.isComposing) return;
+    // Without tabs, the breadcrumb comes before the search box, which hid it while focused.
+    if (!hasTabs && event.key === "Tab" && event.shiftKey && !text) {
       event.preventDefault();
       focusCrumb.current = true;
       setSearchFocused(false);
@@ -502,63 +485,89 @@ const Navigator = (props: HierarchyPickerProps) => {
     setQuery("");
   };
 
-  const iconFor = (icon: string | undefined, kind: Item["kind"]): ReactNode => {
+  /** The module's icon `icon` names, when its `icons` has one. */
+  const customIcon = (icon: string | undefined): ReactNode => {
     const custom = icon && icons && Object.hasOwn(icons, icon) ? icons[icon] : undefined;
-    if (isValidElement(custom)) return custom;
-    return kind === "container" ? <FolderIcon size={20} /> : <FileIcon size={20} />;
+    return isValidElement(custom) ? custom : undefined;
   };
+  const iconFor = (icon: string | undefined, kind: Item["kind"]): ReactNode => customIcon(icon) ?? DEFAULT_ICONS[kind];
 
-  const crumb = (title: string, depth: number) => {
-    const isCurrent = depth === location.trail.length;
-    return (
-      <Button
-        variant="ghost"
-        size="xs"
-        className={cn("max-w-48 truncate", isCurrent && "text-kumo-strong")}
-        aria-current={isCurrent ? "location" : undefined}
-        disabled={disabled}
-        onClick={() => goTo(depth, false)}
-      >
-        {title}
-      </Button>
-    );
-  };
-  const separator = <CaretRightIcon aria-hidden="true" size={12} className="shrink-0 text-kumo-subtle" />;
+  const count = `${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`;
 
   let announcement: ReactNode;
-  if (status === "loading") announcement = "Loading…";
+  // Loading is only said; the placeholder rows show it.
+  if (status === "loading") announcement = <span className="sr-only">Loading…</span>;
   else if (status === "failed") announcement = fresh?.message;
-  else if (rows.length === 0) announcement = query ? `No results for "${query}".` : "Nothing here.";
   else {
+    // The notes are drawn above the list, so they are only said here.
+    const said = [rows.length > 0 && count, ...notes].filter(Boolean).join(". ");
     announcement = (
       <>
-        <span className="sr-only">
-          {`${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`}
-        </span>
+        {rows.length === 0 && !fresh?.notice && (query ? `No results for "${query}".` : "Nothing here.")}
+        {said && <span className="sr-only">{said}</span>}
         {fresh?.moreMessage && <>{" "}<span className="text-kumo-danger">{fresh.moreMessage}</span></>}
       </>
     );
   }
 
+  // Hidden from assistive technology, which hears it from the status below the list.
+  const shownCount = status === "ready" && settled && rows.length > 0 && (
+    <span aria-hidden="true" className="shrink-0 px-1 text-xs text-kumo-subtle">{count}</span>
+  );
+
+  const breadcrumb = (
+    <Breadcrumb
+      top={openTab?.title ?? root.title}
+      location={location}
+      disabled={disabled}
+      navRef={crumbsRef}
+      onGo={depth => goTo(depth, false)}
+    />
+  );
+
+  const searchBox = searchPlaceholder && (
+    <div
+      className={hasTabs
+        ? "min-w-40 flex-1"
+        : cn("ml-auto shrink-0 transition-[width] duration-150", searchOpen ? "w-full" : "w-40")}
+      onFocus={() => setSearchFocused(true)}
+      onBlur={() => setSearchFocused(false)}
+    >
+      <FilterInput
+        label={searchPlaceholder}
+        placeholder={hasTabs || searchOpen ? searchPlaceholder : "Search"}
+        value={text}
+        disabled={disabled}
+        onChange={search}
+        onKeyDown={onSearchKeyDown}
+      />
+    </div>
+  );
+
+  const bar = "flex items-center gap-2 border-b border-kumo-line px-2";
+
   return (
     <div
+      ref={pickerRef}
       data-name={name}
+      data-hierarchy-picker=""
       aria-disabled={disabled || undefined}
       className={cn("flex flex-col overflow-hidden rounded-lg border border-kumo-line bg-kumo-base",
         disabled && "opacity-60")}
     >
       {root.selectable === true && (
-        <div className="border-b border-kumo-line p-2">
+        <div className="border-b border-kumo-line p-1">
           <button
             type="button"
             aria-pressed={rootChosen}
             disabled={disabled}
             onClick={() => select(asContainer(root))}
+            // Without a border, and chosen as a row is, with its radio and icon in line with the rows'.
             className={cn(
-              "flex w-full items-center gap-3 rounded-lg border p-3 text-left text-sm outline-none",
+              "flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm outline-none",
               "focus-visible:ring-2 focus-visible:ring-kumo-focus",
-              rootChosen ? "border-kumo-brand bg-kumo-tint text-kumo-strong" : "border-kumo-hairline",
-              !disabled && "cursor-pointer hover:bg-kumo-tint",
+              rootChosen && "bg-kumo-tint text-kumo-strong",
+              !disabled && "group/choice cursor-pointer hover:bg-kumo-tint",
             )}
           >
             <ChoiceBody
@@ -570,43 +579,64 @@ const Navigator = (props: HierarchyPickerProps) => {
           </button>
         </div>
       )}
-      <div className="flex min-h-11 items-center gap-2 border-b border-kumo-line p-2">
-        {!searchOpen && (
-          <nav ref={crumbsRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 text-sm">
-            {crumb(root.title, 0)}
-            {location.detached && location.trail.length > 0 && (
-              <>
-                {separator}
-                <span className="px-1 text-kumo-subtle">…</span>
-              </>
-            )}
-            {location.trail.map((ancestor, index) => (
-              <span key={ancestor.id} className="contents">
-                {separator}
-                {crumb(ancestor.title, index + 1)}
-              </span>
-            ))}
-          </nav>
-        )}
-        {searchPlaceholder && (
-          <div
-            className={cn("ml-auto shrink-0 transition-[width] duration-150", searchOpen ? "w-full" : "w-40")}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-          >
-            <FilterInput
-              label={searchPlaceholder}
-              placeholder={searchOpen ? searchPlaceholder : "Search"}
-              value={text}
-              disabled={disabled}
-              onChange={search}
-              onKeyDown={onSearchKeyDown}
-            />
+      {hasTabs ? (
+        <>
+          {/* Wraps the search box below the tabs where both do not fit, rather than scroll the tabs. */}
+          <div className={cn(bar, "flex-wrap py-2")}>
+            {/* Kumo's Tabs cannot be disabled; `inert` keeps a disabled picker's out of reach. */}
+            <div inert={disabled || undefined} className="min-w-0">
+              <Tabs
+                variant="segmented"
+                size="sm"
+                tabs={tabs.map(({ id, title, icon }) => {
+                  const drawn = customIcon(icon);
+                  // Hidden from assistive technology, which names the tab by its title.
+                  return { value: id, label: drawn ? (
+                    <span className="flex items-center gap-1.5">
+                      <span aria-hidden="true" className="flex size-3.5 shrink-0 [&>svg]:size-3.5">{drawn}</span>
+                      {title}
+                    </span>
+                  ) : title };
+                })}
+                value={location.tab ?? undefined}
+                onValueChange={tab => navigate({ tab, trail: [], detached: false }, false)}
+              />
+            </div>
+            {searchBox}
           </div>
-        )}
-      </div>
-      {/* One fixed height, so neither a navigation nor the listing it loads moves the form. */}
-      <div className={cn("h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
+          {/* Kept while searching, so the list does not move. */}
+          <div className={cn(bar, "min-h-8")}>
+            {text === "" ? breadcrumb : (
+              <span aria-hidden="true" className="min-w-0 flex-1 px-1 text-xs text-kumo-subtle">Search results</span>
+            )}
+            {shownCount}
+          </div>
+        </>
+      ) : (
+        <div className={cn(bar, "min-h-10 py-1.5")}>
+          {!searchOpen && <>{breadcrumb}{shownCount}</>}
+          {searchBox}
+        </div>
+      )}
+      {/* One fixed height, so neither a navigation nor the listing it loads moves the form. Scrolling
+          near the end loads the next page; Load more stays for the keyboard. Only scrolling does, so
+          a short page cannot chain into many, and a page that failed waits for its Retry. Not while
+          focus is on Load more, whose focusing scrolls here: a load would take focus to the rows it
+          brings, so Tab could not pass the list until it had loaded every page. */}
+      <div
+        ref={boxRef}
+        className="h-80 overflow-y-auto p-1"
+        onScroll={({ currentTarget: box }) => {
+          if (fresh?.moreMessage || footerRef.current?.contains(document.activeElement)) return;
+          if (box.scrollTop + box.clientHeight >= box.scrollHeight - 96) loadMore();
+        }}
+      >
+        {notes.map(note => (
+          <p key={note} aria-hidden="true" className="flex gap-2 px-2 py-1.5 text-xs text-kumo-subtle">
+            <InfoIcon size={14} className="mt-px shrink-0" />
+            {note}
+          </p>
+        ))}
         <div
           ref={listRef}
           role="listbox"
@@ -623,15 +653,16 @@ const Navigator = (props: HierarchyPickerProps) => {
             <>
               <Row
                 key={scope.id}
-                title={scope.choice?.title ?? `Everything in ${scope.title}`}
+                id={scope.id}
+                title={titleOf(scope)}
                 subtitle={scope.choice?.subtitle}
                 icon={iconFor(scope.icon, "container")}
-                action="choose"
+                action={actionOf(scope)}
                 selected={value === scope.id}
                 disabled={disabled}
                 tabbable={focusId === scope.id}
-                onFocus={() => setActiveId(scope.id)}
-                onActivate={() => select(scope)}
+                onFocus={setActiveId}
+                onActivate={activateRow}
               />
               <div aria-hidden="true" className="mx-2 my-1 border-t border-kumo-line" />
             </>
@@ -639,21 +670,23 @@ const Navigator = (props: HierarchyPickerProps) => {
           {rows.map(item => (
             <Row
               key={item.id}
+              id={item.id}
               title={item.title}
-              subtitle={query ? searchSubtitle(item) : item.subtitle}
+              subtitle={rowSubtitle(item, query !== "")}
+              badge={item.badge}
+              meta={item.meta}
               icon={iconFor(item.icon, item.kind)}
-              action={item.kind === "container" ? "open" : item.selectable ? "choose" : "none"}
+              action={actionOf(item)}
               selected={showsChoice(item)}
               disabled={disabled}
               tabbable={focusId === item.id}
-              onFocus={() => setActiveId(item.id)}
-              onActivate={() => item.kind === "container" ? openContainer(item) : select(item)}
+              onFocus={setActiveId}
+              onActivate={activateRow}
             />
           ))}
         </div>
-        <div ref={footerRef} className={cn("flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden",
-          status === "loading" && "m-auto")}>
-          {status === "loading" && <span aria-hidden="true"><Loader size="sm" /></span>}
+        {status === "loading" && <PlaceholderRows />}
+        <div ref={footerRef} className="flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden">
           <div role="status" aria-live="polite" className={cn(status === "failed" && "text-kumo-danger")}>
             {announcement}
           </div>

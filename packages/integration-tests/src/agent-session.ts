@@ -505,7 +505,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   }
 
   // The Workshop aborts a session on purpose when it loses its workspace DO (server.ts,
-  // #openGadgetInternal) and the browser reconnects (main.tsx); the DO itself resumes the
+  // #openWorkspaceInternal) and the browser reconnects (main.tsx); the DO itself resumes the
   // interrupted turn. This client does the same, so a turn is judged on what the product did
   // rather than on the socket. Without it the first eval run sat on a dead socket for the whole
   // 28-minute budget with zero model turns.
@@ -532,7 +532,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       try {
         await this.#beforeCancellationDeadline(async () => {
           const authenticated = await logIn(publicApi, this.username);
-          const workspace = await authenticated.openGadget(this.#workspaceId);
+          const workspace = await authenticated.openWorkspace(this.#workspaceId);
           this.#authenticatedApi = authenticated;
           this.#workspace = workspace;
           this.#publicApi = publicApi;
@@ -683,7 +683,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   async enableAmbientGatekeeper(vendorId: string): Promise<void> {
     await this.#ready();
     await this.#authenticatedApi.provisionAmbientAccount(vendorId);
-    (await this.#authenticatedApi.openGadget(this.#workspaceId))[Symbol.dispose]();
+    (await this.#authenticatedApi.openWorkspace(this.#workspaceId))[Symbol.dispose]();
     await waitFor(`the workspace's ${vendorId} gatekeeper`, async () =>
       (await this.#workspace.listObserverRequirements("build"))
           .some(need => need.vendorId === vendorId) || null);
@@ -1069,7 +1069,7 @@ export async function openAgentSession(
       accounts.set(vendorId, account);
     }
 
-    workspace = await authenticated.newGadget();
+    workspace = await authenticated.newWorkspace();
     const { id: workspaceId } = await workspace.getMetadata();
     session = new WorkshopAgentSessionImpl({
       username,

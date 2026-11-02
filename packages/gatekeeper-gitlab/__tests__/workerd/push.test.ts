@@ -599,6 +599,19 @@ describe("applying a push", () => {
 });
 
 describe("rejecting a push", () => {
+  it("discards a push whose branches GitLab cannot read, cascading nothing", async () => {
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain().withCommit(OTHER, commitPayload(TREE1, [], "root"));
+    const push = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", OTHER, false, stubOf(cache)], DESC));
+    const mr = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
+      [{ title: "x", sourceBranch: "feature", targetBranch: "main" }], DESC));
+    gitlab.on("GET", /\/repository\/branches\//, () => json({ message: "500 Internal Server Error" }, { status: 500 }));
+    expect(await unwrap(await hooks().rejectAction(name, props, push.approvalId))).toBeUndefined();
+    await expect(unwrap(await hooks().applyAction(name, props, push.approvalId))).rejects.toThrow();
+    // Not cascaded, so the user discards the merge request as its own decision.
+    expect(await unwrap(await hooks().rejectAction(name, props, mr.approvalId))).toEqual({ restart: true });
+  });
+
   it("cascades to a queued merge request whose source branch the push would have created", async () => {
     const { props, name } = await setup();
     const cache = cacheWithChain().withCommit(OTHER, commitPayload(TREE1, [], "root"));

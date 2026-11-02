@@ -11,12 +11,21 @@ const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
 const MAX_BATCH_FILES = 100;
 const MAX_BATCH_RESPONSE_BYTES = 1_000_000;
 const MAX_JSON_RESPONSE_BYTES = 5_000_000;
+/** Per-attempt budget for a file download, which carries far more than a metadata read. */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 /**
  * Parents one `q` may name. Drive documents no query-length limit, so this is ours: the batched
  * parent proof chunks at 100, and without a cap here a longer set would pass that and then fail
  * the search with an opaque provider 400.
  */
 export const MAX_QUERY_PARENTS = 50;
+
+const DRIVE_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
+
+/** Whether `id` has the shape of a Drive file ID, checked before it reaches a Drive request path. */
+export function isDriveFileId(id: string): boolean {
+  return DRIVE_FILE_ID_PATTERN.test(id);
+}
 
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
@@ -159,6 +168,8 @@ export type DriveFileQuery = {
   directParentIds?: readonly string[];
   /** Only files shared with this account by others, as Drive's "Shared with me" lists them. */
   sharedWithMe?: boolean;
+  /** Leaves out folders, though not shortcuts to them, whose target the query cannot see. */
+  excludeFolders?: boolean;
 };
 
 /**
@@ -455,6 +466,16 @@ export function isFileInvisible(error: unknown): boolean {
     (error.status === 403 || error.status === 404);
 }
 
+/**
+ * Whether Drive refused to send a file's content because the token cannot read content at all.
+ * A token holding only `drive.metadata.readonly` is refused a download with
+ * `appNotAuthorizedToFile`, which {@link isInsufficientScope} does not match.
+ */
+export function lacksFileContentAccess(error: unknown): boolean {
+  return isInsufficientScope(error) || (error instanceof DriveApiRequestError &&
+    error.status === 403 && error.reason === "appNotAuthorizedToFile");
+}
+
 const RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"]);
 
 /**
@@ -548,6 +569,7 @@ export function buildDriveQuery(query: DriveFileQuery, internal: InternalDriveQu
     clauses.push(parents.length === 1 ? inParents(parents[0]) : `(${parents.map(inParents).join(" or ")})`);
   }
   if (query.sharedWithMe) clauses.push("sharedWithMe = true");
+  if (query.excludeFolders) clauses.push(literalClause("mimeType", "!=", FOLDER_MIME_TYPE));
   if (internal.convertedFrom !== undefined) {
     clauses.push(`appProperties has { key='${CONVERTED_FROM_PROPERTY}' and value='${
       escapeDriveQueryLiteral(internal.convertedFrom)}' }`);
@@ -694,6 +716,20 @@ export class DriveApi {
     });
     let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
     return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
+  }
+
+  /**
+   * One file's content as a stream, of whatever size. Nothing is buffered: the caller pulls the
+   * body through, and cancels it to stop the download.
+   */
+  async openDownload(fileId: string): Promise<ReadableStream<Uint8Array>> {
+    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
+    let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, {},
+      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    if (!response.ok) throw await driveError(response);
+    return response.body ?? new ReadableStream({ start: controller => controller.close() });
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */

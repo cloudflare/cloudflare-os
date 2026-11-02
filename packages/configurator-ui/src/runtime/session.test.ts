@@ -55,6 +55,16 @@ describe("collectResourceUrl", () => {
     await expect(collectingFailed).rejects.toThrow(/failed to render its current state/i);
   });
 
+  it("lets a redraw that changed no value pass, since a module redraws through setValues({})", async () => {
+    const url = deferred<string>();
+    const redrawn = session(() => url.promise);
+    const collecting = collectResourceUrl(redrawn);
+    redrawn.store.setValues({});
+    redrawn.store.setValues({ folderId: "F1" });
+    url.resolve("https://example.com/F1");
+    await expect(collecting).resolves.toBe("https://example.com/F1");
+  });
+
   it("refuses an empty URL", async () => {
     await expect(collectResourceUrl(session(() => ""))).rejects.toThrow(/did not provide a resource URL/i);
   });

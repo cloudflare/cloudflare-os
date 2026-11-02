@@ -88,7 +88,7 @@ async function armHooks(prefix: string, names: string[]): Promise<ArmedHooks> {
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the ambient account", async () =>
     (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  const ws = stack.use(await api.newGadget());
+  const ws = stack.use(await api.newWorkspace());
   const { id: workspaceId } = await ws.getMetadata();
 
   const chatId = await ws.newChat("Build a hooked gadget.", SCRIPTED_MODEL_ID);
@@ -146,7 +146,7 @@ it("an enabled hook fires into a restarted workspace; disabled and deleted hooks
 
   using publicApi = connect(harness.url);
   using api = await logIn(publicApi, username);
-  using reopened = await api.openGadget(workspaceId);
+  using reopened = await api.openWorkspace(workspaceId);
   expect(await streamGeneration(reopened)).not.toBe(generation);
 
   expect(await fire(keys.live, 101)).toEqual({ fired: true });

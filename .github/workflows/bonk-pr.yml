@@ -144,9 +144,45 @@ jobs:
             echo "active=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The head, not the merge commit: opencode reviews the branch, and the setup below installs
+      # what it checks out.
       - name: Checkout repository
         if: steps.break_glass.outputs.active != 'true'
         uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Enable Corepack
+        if: steps.break_glass.outputs.active != 'true'
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        if: steps.break_glass.outputs.active != 'true'
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: "24.19.0"
+          cache: false
+          run-install: true
+
+      - name: Install Chromium for the browser suites
+        if: steps.break_glass.outputs.active != 'true'
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
+
+      # Adapted from workerd's auto-reviewer:
+      # https://github.com/cloudflare/workerd/blob/4a92109c11b107f0fb6ceb097d5f60af9e07c910/.github/workflows/new-pr-review.yml#L29-L38
+      - name: Load review prompt
+        id: prompt
+        if: steps.break_glass.outputs.active != 'true'
+        run: |
+          delimiter="EOF_$(openssl rand -hex 16)"
+          {
+            echo "value<<$delimiter"
+            echo "Review this pull request. Follow the repository's review guidelines below, and read"
+            echo "the AGENTS.md package guides they name for every directory the diff touches."
+            echo
+            cat REVIEW.md
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run Bonk
         if: steps.break_glass.outputs.active != 'true'
@@ -170,6 +206,7 @@ jobs:
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
+          prompt: ${{ steps.prompt.outputs.value }}
           # The model declaration in OPENCODE_CONFIG_CONTENT is needed only while this version's
           # catalog lacks BONK_MODEL under the gateway. Re-check it when bumping: delete it if
           # `opencode models cloudflare-ai-gateway --verbose` shows the model's variants without it.

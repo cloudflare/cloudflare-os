@@ -107,7 +107,8 @@ export class ActionApplyError extends Error {}
  * Marks an apply failure as terminal with an **unknown** provider outcome: the call may already
  * have taken effect. The record is not pruned and no dependent is retired on its account -- a
  * reference it was to provide may in fact exist at the provider -- so it stays until the user
- * rejects it and the reconciliation warning survives.
+ * rejects it and the reconciliation warning survives. Rejecting it retires the dependents whose
+ * references it never bound, since nothing can bind them once it is withdrawn.
  *
  * Pair it with `claimBeforeApply`. Non-replay rests on the durable claim taken *before* dispatch:
  * without one the record is still `pending` when the handler throws, so an activation that dies
@@ -204,6 +205,9 @@ export type ActionDefinition<Payload, Host> = {
    * rejects a terminal failure the apply refused *before* dispatch, whose artifacts are still
    * unreleased; a failure the handler itself raised is cleared without it, since the handler owns
    * whatever its partial effect left behind.
+   *
+   * Cleanup only: rejecting withdraws the action even when the provider may already hold its
+   * effect, so the hook must not refuse. One that throws is logged and the action removed anyway.
    * @param payload Stored action payload.
    * @param host Bound provider host.
    * @param ctx Durable action context.
@@ -685,15 +689,14 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         if (record === undefined) return;
         // The same proof of receipt apply takes.
         journal.markSubmitted(id);
-        if (record.state === "claimed" && !claimedHere.has(id)) {
-          return failOrphanedClaim(id);
-        }
 
         const action = record.action;
         // Rejecting a terminal failure is the user clearing the record: its handler already ran
         // and owns whatever it left behind. One that never reached the handler is the exception —
-        // its staging artifacts are still the rejection's to release.
-        const failed = record.state === "failed";
+        // its staging artifacts are still the rejection's to release. A claim orphaned by an
+        // earlier activation reached its handler with an unknown outcome, so it is cleared alike.
+        const failed = record.state === "failed"
+          || (record.state === "claimed" && !claimedHere.has(id));
         try {
           if (!failed || record.undispatched) {
             await definitionFor(action)?.reject?.(action.payload, host, {
@@ -702,13 +705,18 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             });
           }
         } catch (error) {
-          // Same reasoning as a failed apply: the handler may have half-changed simulation state.
-          await resolved("failed");
-          throw error;
+          // Rejecting withdraws the action whatever the provider holds, so a refusal here would
+          // leave it with no way out.
+          attributed.warn("reject hook failed; removing the action anyway", {
+            event: "actions.reject.hook.failed",
+            action: id,
+            error,
+          });
         }
         journal.remove(id);
-        // A failure stranded its dependents when it was recorded.
-        if (!failed) strandDependents(id, action);
+        // A known failure stranded its dependents when it was recorded. An unknown outcome left
+        // them waiting on a reference it might still bind, which nothing can once it is withdrawn.
+        if (record.state !== "failed" || record.outcome === "unknown") strandDependents(id, action);
         await resolved("rejected");
       };
 

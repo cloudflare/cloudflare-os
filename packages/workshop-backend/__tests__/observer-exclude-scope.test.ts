@@ -216,9 +216,9 @@ describe("hooks keep an unbound connection in use scope", () => {
   }));
 });
 
-// A bound agent spawner's env hands the connections it names to any agent a "use" collaborator
-// spawns through the gadget (connectToGadget -> spawn/spawnCallable seeds the chat from
-// config.env), so those connections stay in their verification scope even with no direct binding
+// A bound agent spawner's bindings hand the connections they name to any agent a "use"
+// collaborator spawns through the gadget (connectToGadget -> spawn/spawnCallable seeds the chat
+// from them), so those connections stay in their verification scope even with no direct binding
 // edge -- both for exclusion and for what a fresh open verifies them against.
 describe("a bound agent spawner's env keeps its targets in use scope", () => {
   function bindSpawnerIntoGadget(impl: any): void {
@@ -226,10 +226,8 @@ describe("a bound agent spawner's env keeps its targets in use scope", () => {
       id: 200,
       resourceTitle: "Spawner",
       class: {} as any,
-      creationSpec: {
-        type: "agentSpawner",
-        config: { displayName: "S", modelId: null, env: { DB: GATEKEEPER_ID } },
-      },
+      creationSpec: { type: "agentSpawner", config: { displayName: "S", modelId: null } },
+      bindings: { DB: { target: GATEKEEPER_ID } },
     });
     impl.storage.gadgets.put(
         { type: "gadget", id: 100, title: "G", created: new Date(0), bindingName: "G", bindings: {} });

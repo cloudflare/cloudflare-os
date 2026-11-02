@@ -121,6 +121,11 @@ export type RadioCardsProps = {
   value?: string | null;
   options: Array<{ value: string; title: string; description: string }>;
   onChange(value: string): void;
+  /**
+   * One bordered list of single-line rows, each its radio, its title and then its description, for
+   * a list of like options such as the sites of one account. Cards stacked apart otherwise.
+   */
+  compact?: boolean;
 };
 
 /** Props of {@link CheckboxList}. */
@@ -169,17 +174,12 @@ export type ConfiguratorUIHierarchyChoice = {
   subtitle?: string;
 };
 
-/** An ancestor of a {@link ConfiguratorUIHierarchyItem}, as its breadcrumb shows it. */
-export type ConfiguratorUIHierarchyAncestor = {
-  id: string;
-  title: string;
-  /** As for {@link ConfiguratorUIHierarchyItem.selectable}: whether, once open, it is offered as a choice. */
-  selectable?: boolean;
-  /** As for {@link ConfiguratorUIHierarchyItem.icon}, shown on that choice. */
-  icon?: string;
-  /** As for {@link ConfiguratorUIHierarchyItem.choice}. */
-  choice?: ConfiguratorUIHierarchyChoice;
-};
+/**
+ * An ancestor of a {@link ConfiguratorUIHierarchyItem}, as its breadcrumb shows it, and what it
+ * offers once open.
+ */
+export type ConfiguratorUIHierarchyAncestor =
+  Pick<ConfiguratorUIHierarchyItem, "id" | "title" | "selectable" | "unselectableReason" | "icon" | "choice">;
 
 /** One node listed by a {@link HierarchyPicker}. */
 export type ConfiguratorUIHierarchyItem = {
@@ -198,6 +198,10 @@ export type ConfiguratorUIHierarchyItem = {
    */
   icon?: string;
   subtitle?: string;
+  /** A short label at the end of the title's line, such as a classification or a state. */
+  badge?: string;
+  /** A short detail at the end of the line under the title, such as when the node changed or its size. */
+  meta?: string;
   /**
    * Whether the node can be connected. Defaults to true. A leaf is chosen from its own row; a
    * container from the row its listing starts with once it is open (see `choice`). An unselectable
@@ -205,17 +209,22 @@ export type ConfiguratorUIHierarchyItem = {
    * without being offered as a resource.
    */
   selectable?: boolean;
+  /**
+   * Why the node cannot be connected, so the user knows what to choose instead. Shown in place of a
+   * leaf's subtitle, and of an open container's own row.
+   */
+  unselectableReason?: string;
   /** For a container, how it is offered as a choice once open. */
   choice?: ConfiguratorUIHierarchyChoice;
   /**
-   * The node's ancestors below the root, outermost first. Optional in a listing, where the picker
-   * knows where it is, but needed for search results and for `loadItem`, so the breadcrumb can show
-   * where the node lives.
+   * The node's ancestors below the root, outermost first, starting with its tab when the picker has
+   * {@link HierarchyPickerProps.tabs}. Optional in a listing, where the picker knows where it is, but
+   * needed for search results and for `loadItem`, so the breadcrumb can show where the node lives.
    */
   path?: ConfiguratorUIHierarchyAncestor[];
 };
 
-/** Where a {@link HierarchyPicker} starts. */
+/** The top of the hierarchy a {@link HierarchyPicker} shows, and where it starts unless it has tabs. */
 export type ConfiguratorUIHierarchyRoot = {
   id: string;
   title: string;
@@ -230,9 +239,22 @@ export type ConfiguratorUIHierarchyRoot = {
   icon?: string;
 };
 
+/**
+ * A top-level container a {@link HierarchyPicker} shows as a tab, such as a drive, or a view such as
+ * recent files. It is listed with its id as `parentId`, and heads the `path` of every node under it.
+ * Its `icon`, when the picker's `icons` has it, is drawn before its title; a tab has no default icon.
+ */
+export type ConfiguratorUIHierarchyTab = Omit<ConfiguratorUIHierarchyAncestor, "selectable"> & {
+  /**
+   * Whether, once open, it is offered as a choice in the row its listing starts with. Unlike a
+   * container's, defaults to false, since a tab is as often a view as something to connect.
+   */
+  selectable?: boolean;
+};
+
 /** One request a {@link HierarchyPicker} makes of its `loadItems`. */
 export type ConfiguratorUIHierarchyRequest = {
-  /** Id of the open location: the root's or a container's. */
+  /** Id of the open location: the root's, a tab's or a container's. */
   parentId: string;
   /**
    * Empty to list the open location. Otherwise the user's search; whether it searches under
@@ -251,6 +273,12 @@ export type ConfiguratorUIHierarchyPage = {
   /** Present when more nodes follow; passed back as the next request's `cursor`. */
   nextCursor?: string | null;
   /**
+   * Something to tell the user about the whole listing, such as that it is partial or why it is
+   * empty, rather than about nodes still to load, which the picker shows itself. Shown above its
+   * nodes, or in place of saying it has none. A later page's replaces it; a page without one keeps it.
+   */
+  notice?: string;
+  /**
    * Why this location cannot be listed yet, such as a grant the user has still to give. Shown with
    * Retry in place of its nodes, as a rejected load is, but expected, so not reported as an error.
    */
@@ -266,6 +294,16 @@ export type HierarchyPickerProps = {
    */
   value?: string | null;
   root: ConfiguratorUIHierarchyRoot;
+  /**
+   * Splits what lies below the root into tabs, the first open at the start. The root is then never
+   * listed, only offered above the tabs when selectable, and the breadcrumb starts at the open tab.
+   * A node's `path` names its tab first; one whose path does not opens in the open tab, with a gap
+   * in the breadcrumb above the containers it opens, since where they lie in that tab is unknown (a
+   * leaf with no path at all opens none, and is shown atop the tab's own listing). Switching tabs
+   * moves to another location. A new set of tab ids starts the picker afresh, as a new root does.
+   * Omit it, or leave it empty, for a picker without tabs.
+   */
+  tabs?: ConfiguratorUIHierarchyTab[];
   loadItems(request: ConfiguratorUIHierarchyRequest): Promise<ConfiguratorUIHierarchyPage>;
   /**
    * Looks up the node a `value` names, with its `path`, so a value the picker is not showing (a
@@ -288,8 +326,10 @@ export type HierarchyPickerProps = {
    */
   icons?: Record<string, unknown>;
   /**
-   * Shows a search box beside the breadcrumb, named by this text. While in use it takes the
-   * breadcrumb's place and shows this text as its placeholder. Omit it for a picker without search.
+   * Shows a search box, named by this text. Without tabs it sits compact beside the breadcrumb and,
+   * while in use, takes the breadcrumb's place and shows this text as its placeholder. With tabs it
+   * sits beside them, showing this text, and the breadcrumb gives way while a search is entered.
+   * Omit it for a picker without search.
    */
   searchPlaceholder?: string;
   disabled?: boolean;
@@ -305,8 +345,14 @@ export type ButtonProps = {
   variant?: "primary" | "secondary";
 };
 
+/**
+ * The one step a {@link Notice} offers, as a button at its trailing end. `disabled` behaves as on
+ * {@link Button}.
+ */
+export type NoticeAction = Pick<ButtonProps, "onClick" | "disabled"> & { label: string };
+
 /** Props of {@link Notice}. */
-export type NoticeProps = { children?: unknown; tone?: "info" | "error" };
+export type NoticeProps = { children?: unknown; tone?: "info" | "error"; action?: NoticeAction };
 
 /** Groups related configurator fields. Provided by the sandbox runtime. */
 export function Section(_props: SectionProps): unknown {
@@ -323,7 +369,7 @@ export function TextInput(_props: TextInputProps): unknown {
   throw new Error("TextInput is provided by the configurator UI sandbox runtime.");
 }
 
-/** Card-style single-select component provided by the sandbox runtime. */
+/** Single-select cards, or a compact list of rows, provided by the sandbox runtime. */
 export function RadioCards(_props: RadioCardsProps): unknown {
   throw new Error("RadioCards is provided by the configurator UI sandbox runtime.");
 }
@@ -349,8 +395,8 @@ export function Autocomplete(_props: AutocompleteProps): unknown {
 
 /**
  * Navigable list for choosing one node of a hierarchy -- the whole hierarchy, a container in it, or a
- * single leaf -- with breadcrumbs, optional search, and paging. As in a file dialog, a choice lasts
- * while it is in view. Provided by the sandbox runtime.
+ * single leaf -- with optional tabs, breadcrumbs, optional search, and paging. As in a file dialog, a
+ * choice lasts while it is in view. Provided by the sandbox runtime.
  */
 export function HierarchyPicker(_props: HierarchyPickerProps): unknown {
   throw new Error("HierarchyPicker is provided by the configurator UI sandbox runtime.");
@@ -367,7 +413,8 @@ export function Button(_props: ButtonProps): unknown {
 /**
  * Inline message provided by the sandbox runtime. An `error` notice is announced assertively. An
  * `info` notice is announced politely, through one live region that announces the last info notice
- * on screen whenever its text changes.
+ * on screen whenever its text changes. Only the message is announced, not its `action`, which suits
+ * the one step the message leads to (allow access, try again); a choice between steps is Buttons.
  */
 export function Notice(_props: NoticeProps): unknown {
   throw new Error("Notice is provided by the configurator UI sandbox runtime.");

@@ -147,6 +147,11 @@ describe("UserDurableObject model editing", () => {
       expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(PROFILE);
       await user.deleteModel(PROFILE.id);
       expect(await user.listModels()).toEqual([]);
+      // The Auto Router model runs only through a gateway, so it can't be added without one.
+      const auto =
+          { provider: "cloudflare-auto-router" as const, model: "cloudflare/auto", apiToken: "" };
+      await expect(user.addModel(PROFILE, auto))
+          .rejects.toThrow("The Auto Router model runs only through an AI Gateway.");
     });
   });
 });
@@ -250,7 +255,12 @@ describe("UserDurableObject gateway model modes", () => {
       // An admin's listing of a provider AI Gateway does not serve enables nothing.
       const ollama = { provider: "ollama" as const, model: "llama", apiToken: "" };
       await expect(user.addModel(PROFILE, ollama)).rejects.toThrow(providerUnavailable("ollama"));
-    }, { addedProviders: ["google", "ollama"] }));
+      // Nor is the Auto Router's, whose one model is the deployment's.
+      const auto =
+          { provider: "cloudflare-auto-router" as const, model: "cloudflare/auto", apiToken: "" };
+      await expect(user.addModel(PROFILE, auto))
+          .rejects.toThrow(providerUnavailable("cloudflare-auto-router"));
+    }, { addedProviders: ["google", "ollama", "cloudflare-auto-router"] }));
 
     // As when a provider leaves CF_AI_GATEWAY_PROVIDERS: the model stays and runs, uneditable.
     it("keeps a model whose provider an admin turned off again", () => {

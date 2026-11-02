@@ -191,7 +191,10 @@ export type ContextDocumentSummary = {
   name: string;
   description: string;
   contentType: string;
+  /** Set when this document is a valid skill. */
   skillName?: string;
+  /** Set when this document is a SKILL.md whose frontmatter fails validation; says why. */
+  skillError?: string;
   lastUpdated: Date;
 };
 

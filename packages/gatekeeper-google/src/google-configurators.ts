@@ -14,13 +14,10 @@ import {
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
-import type { GoogleDocConfiguratorRpc } from "./configurator/google-doc-configurator-types";
-import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-configurator-types";
-import type { GoogleSlidesConfiguratorRpc } from "./configurator/google-slides-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
 import {
-  OFFICE_KINDS, officeLabel, type OfficeConversion, type OfficeConversionResult,
-  type OfficeFileInspection, type OfficeKind,
+  editorKind, OFFICE_KINDS, OfficeConversion, type OfficeConversionResult, type OfficeFileInspection,
+  type OfficeKind,
 } from "./office-conversion";
 import type {
   ChatAccountConfiguratorRpc,
@@ -30,7 +27,7 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type {
   DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
 } from "./configurator/drive-configurator-types";
-import { parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
+import { OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -39,8 +36,7 @@ import { parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
 type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAccessToken>;
 
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
-const officeConversions = new WeakMap<object, OfficeConversion>();
-const sharedDrivesGrantChecks = new WeakMap<object, () => Promise<boolean>>();
+const grantChecks = new WeakMap<object, (grant: string) => Promise<boolean>>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
@@ -55,12 +51,6 @@ function googleToken(target: object, opts?: AccessTokenRequest): Promise<GoogleA
   let getToken = googleTokenGetters.get(target);
   if (!getToken) throw new Error("Google configurator is not initialized.");
   return getToken(opts);
-}
-
-function officeConversion(target: object): OfficeConversion {
-  let conversion = officeConversions.get(target);
-  if (!conversion) throw new Error("Google configurator is not initialized.");
-  return conversion;
 }
 
 /** A provider that re-asks on every call, so `fetchWithAuthRetry` can refresh a rejected token. */
@@ -156,38 +146,6 @@ function chatSpaceOption(space: ChatSpaceInfo, title = space.name): Configurator
     title: title ?? kind,
     subtitle: space.lastActiveAt ? `${kind} · Active ${space.lastActiveAt.toLocaleDateString()}` : kind,
   };
-}
-
-/**
- * Recent files of `kind`'s native type, and the Office files a connect converts into one. An Office
- * file is named with its extension, unless its name already ends with it.
- */
-async function listDriveFiles(
-  target: object,
-  query: string,
-  kind: OfficeKind,
-): Promise<ConfiguratorOption[]> {
-  let drive = new DriveApi(googleTokenProvider(target));
-  let { nativeMimeType, officeMimeTypes, resourceTitle } = OFFICE_KINDS[kind];
-
-  let { files } = await withDriveApiEnabled(
-    `Google ${resourceTitle} search requires the Google Drive API to be enabled for this OAuth project.`,
-    () => drive.listFiles({
-      mimeTypes: [nativeMimeType, ...Object.keys(officeMimeTypes)], namePrefix: query,
-    }),
-  );
-
-  return files.map(file => {
-    let owner = file.owners?.[0];
-    let subtitle = [
-      owner?.displayName ?? owner?.emailAddress,
-      file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
-    ].filter(Boolean).join(" · ");
-    let label = officeLabel(kind, file.mimeType);
-    if (label === undefined) return { value: file.id, title: file.name, subtitle };
-    let title = file.name.toLowerCase().endsWith(`.${label}`) ? file.name : `${file.name} (${label})`;
-    return { value: file.id, title, subtitle, meta: `Makes a Google ${resourceTitle} copy` };
-  });
 }
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
@@ -296,93 +254,6 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
-export class GoogleDocConfiguratorUI extends RpcTarget implements GoogleDocConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>, conversion: OfficeConversion) {
-    super();
-    googleTokenGetters.set(this, getToken);
-    officeConversions.set(this, conversion);
-  }
-
-  async listDocs(query: string): Promise<ConfiguratorOption[]> {
-    return listDriveFiles(this, query, "doc");
-  }
-
-  /** Whether `fileId` is native, an Office file this kind converts, or neither. */
-  async inspectFile(fileId: string): Promise<OfficeFileInspection> {
-    return officeConversion(this).inspectFile(fileId);
-  }
-
-  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
-  async hasConversionAccess(): Promise<boolean> {
-    return officeConversion(this).hasConversionAccess();
-  }
-
-  /** Makes a native copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
-  async convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
-    return officeConversion(this).convertFile(fileId, opts);
-  }
-}
-
-// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
-@validateRpc()
-export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheetsConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>, conversion: OfficeConversion) {
-    super();
-    googleTokenGetters.set(this, getToken);
-    officeConversions.set(this, conversion);
-  }
-
-  async listSpreadsheets(query: string): Promise<ConfiguratorOption[]> {
-    return listDriveFiles(this, query, "sheets");
-  }
-
-  /** Whether `fileId` is native, an Office file this kind converts, or neither. */
-  async inspectFile(fileId: string): Promise<OfficeFileInspection> {
-    return officeConversion(this).inspectFile(fileId);
-  }
-
-  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
-  async hasConversionAccess(): Promise<boolean> {
-    return officeConversion(this).hasConversionAccess();
-  }
-
-  /** Makes a native copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
-  async convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
-    return officeConversion(this).convertFile(fileId, opts);
-  }
-}
-
-// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
-@validateRpc()
-export class GoogleSlidesConfiguratorUI extends RpcTarget implements GoogleSlidesConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>, conversion: OfficeConversion) {
-    super();
-    googleTokenGetters.set(this, getToken);
-    officeConversions.set(this, conversion);
-  }
-
-  async listPresentations(query: string): Promise<ConfiguratorOption[]> {
-    return listDriveFiles(this, query, "slides");
-  }
-
-  /** Whether `fileId` is native, an Office file this kind converts, or neither. */
-  async inspectFile(fileId: string): Promise<OfficeFileInspection> {
-    return officeConversion(this).inspectFile(fileId);
-  }
-
-  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
-  async hasConversionAccess(): Promise<boolean> {
-    return officeConversion(this).hasConversionAccess();
-  }
-
-  /** Makes a native copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
-  async convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
-    return officeConversion(this).convertFile(fileId, opts);
-  }
-}
-
-// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
-@validateRpc()
 export class ChatAccountConfiguratorUI extends RpcTarget implements ChatAccountConfiguratorRpc {}
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
@@ -442,16 +313,20 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
 const DRIVE_ROOT_ID = "drive";
 const SHARED_DRIVES: DriveNodeAncestor = { id: "shared-drives", title: "Shared drives" };
 const SHARED_WITH_ME: DriveNodeAncestor = { id: "shared-with-me", title: "Shared with me" };
+const RECENT: DriveNodeAncestor = { id: "recent", title: "Recent" };
 const DRIVE_PAGE_SIZE = 100;
 /** Bounds the walk up a pre-filled node's ancestors, which costs one request per level. */
 const MAX_DRIVE_PATH_DEPTH = 20;
 const DRIVE_BROWSE_DISABLED =
   "Browsing Drive requires the Google Drive API to be enabled for this OAuth project.";
 
+type DriveNodeKind = "folder" | "file" | OfficeKind;
+const DRIVE_NODE_ID = new RegExp(`^(folder|file|${Object.keys(OFFICE_KINDS).join("|")}):(.+)$`, "s");
+
 /** The Drive file a folder or file node names. Groupings and the root name none. */
-function parseDriveNodeId(id: string): { kind: "folder" | "file"; fileId: string } | undefined {
-  let match = /^(folder|file):(.+)$/s.exec(id);
-  return match ? { kind: match[1] as "folder" | "file", fileId: match[2] } : undefined;
+function parseDriveNodeId(id: string): { kind: DriveNodeKind; fileId: string } | undefined {
+  let match = DRIVE_NODE_ID.exec(id);
+  return match ? { kind: match[1] as DriveNodeKind, fileId: match[2] } : undefined;
 }
 
 /** My Drive's root folder id, read afresh: Allow access may reconnect the account as someone else. */
@@ -461,7 +336,8 @@ async function myDriveId(drive: DriveApi): Promise<string> {
 
 /**
  * The picker's node for a listed file. A shortcut stands for its target, as read into `targets`, and
- * outlives it: one whose target is gone, trashed or out of reach is left out.
+ * outlives it: one whose target is gone, trashed or out of reach is left out. A native Docs, Sheets
+ * or Slides file, or an Office file one converts, is named by that kind, which it connects as.
  */
 function driveFileNode(
   file: DriveFile, detail?: string, targets?: ReadonlyMap<string, DriveScopeNode | undefined>,
@@ -482,9 +358,12 @@ function driveFileNode(
     ...(file.modifiedTime ? { modifiedTime: file.modifiedTime } : {}),
     ...(detail ? { detail } : {}),
   };
-  return mimeType === FOLDER_MIME_TYPE
-    ? { id: `folder:${id}`, kind: "folder", listable, ...shown }
-    : { id: `file:${id}`, kind: "file", ...(mimeType ? { mimeType } : {}), ...shown };
+  if (mimeType === FOLDER_MIME_TYPE) return { id: `folder:${id}`, kind: "folder", listable, ...shown };
+  let size = file.size === undefined ? NaN : Number(file.size);
+  return {
+    id: `${editorKind(mimeType) ?? "file"}:${id}`, kind: "file", ...(mimeType ? { mimeType } : {}), ...shown,
+    ...(Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
+  };
 }
 
 function drivePage(nodes: DriveNode[], nextPageToken: string | undefined): DriveNodePage {
@@ -549,30 +428,31 @@ function linkedDriveNodeId(text: string): string | undefined {
   switch (target.kind) {
     case "driveFolder": return `folder:${target.folderId}`;
     case "driveFile": return `file:${target.fileId}`;
-    case "doc": return `file:${target.documentId}`;
-    case "sheets": return `file:${target.spreadsheetId}`;
-    case "slides": return `file:${target.presentationId}`;
+    case "doc": return `doc:${target.documentId}`;
+    case "sheets": return `sheets:${target.spreadsheetId}`;
+    case "slides": return `slides:${target.presentationId}`;
     default: return undefined;
   }
 }
 
 @validateRpc()
 export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>, holdsSharedDrivesGrant: () => Promise<boolean>) {
+  /** `holds` says whether the account holds a grant, asked afresh: one can arrive while the picker is open. */
+  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
     super();
     googleTokenGetters.set(this, getToken);
-    sharedDrivesGrantChecks.set(this, holdsSharedDrivesGrant);
+    grantChecks.set(this, holds);
   }
 
   /**
    * Search spans My Drive, "Shared with me" and every shared drive, wherever the picker is open;
    * a folder's listing spans them too, since its id does not say which it lives in. A pasted link
-   * is answered with the one node it names, found as a pre-filled value is.
+   * is answered with the node the picker would list for what it names.
    */
   async listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
     let linked = linkedDriveNodeId(query);
     if (linked) {
-      let node = await this.getDriveNode(linked);
+      let node = await driveNode(this, linked);
       return { nodes: node ? [node] : [] };
     }
     let drive = new DriveApi(googleTokenProvider(this));
@@ -592,13 +472,14 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
             { id: `folder:${myDrive}`, title: "My Drive", kind: "folder", listable: true },
             { ...SHARED_DRIVES, kind: "group" },
             { ...SHARED_WITH_ME, kind: "group" },
+            { ...RECENT, kind: "group" },
           ],
         };
       }
       if (parentId === SHARED_DRIVES.id) {
         // Drive lists shared drives only under a wider grant than browsing needs, so the picker asks
         // for it when the user first opens them.
-        if (!(await sharedDrivesGrantChecks.get(this)!())) {
+        if (!(await grantChecks.get(this)!(SHARED_DRIVES_GRANT))) {
           return { nodes: [], needsGrant: SHARED_DRIVES_GRANT };
         }
         let { drives, nextPageToken } = await drive.listSharedDrives(page);
@@ -610,6 +491,13 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
         return driveFilePage(drive,
           await drive.listFiles({ ...page, sharedWithMe: true, orderBy: "folder,name" }));
       }
+      if (parentId === RECENT.id) {
+        // Files the account created, opened or had shared with it, newest first, as Drive's Recent
+        // shows them. Folders are browsed, so Drive leaves them out before paging, where they could
+        // empty a page; a shortcut to one is dropped once resolved.
+        let recent = await driveFilePage(drive, await drive.listFiles({ ...page, excludeFolders: true }));
+        return { ...recent, nodes: recent.nodes.filter(node => node.kind === "file") };
+      }
       let folder = parseDriveNodeId(parentId);
       if (folder?.kind !== "folder") throw new Error("Unknown Drive location.");
       return driveFilePage(drive, await drive.listFiles({
@@ -618,23 +506,50 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
     });
   }
 
+  /** A Drive file link (`file:`) keeps its id for a pre-fill, and so binds as a Drive file. */
   async getDriveNode(id: string): Promise<DriveNode | null> {
-    let fileId = parseDriveNodeId(id)?.fileId;
-    if (!fileId) return null;
-    let drive = new DriveApi(googleTokenProvider(this));
-    return withDriveApiEnabled<DriveNode | null>(DRIVE_BROWSE_DISABLED, async () => {
-      let file: DriveFile;
-      try {
-        file = await drive.getFile(fileId);
-      } catch (error) {
-        if (isFileInvisible(error)) return null;
-        throw error;
-      }
-      // A folder named as a file, or a shortcut, is not the node the id claims.
-      let node = file.trashed ? undefined : driveFileNode(file);
-      if (node?.id !== id) return null;
-      let path = await drivePath(drive, file);
-      return path ? { ...node, path } : node;
-    });
+    let node = await driveNode(this, id);
+    return node && parseDriveNodeId(id)?.kind === "file" ? { ...node, id } : node;
   }
+
+  async inspectFile(kind: OfficeKind, fileId: string): Promise<OfficeFileInspection> {
+    return officeConversion(this, kind).inspectFile(fileId);
+  }
+
+  async hasConversionAccess(): Promise<boolean> {
+    return grantChecks.get(this)!(OFFICE_IMPORT_GRANT);
+  }
+
+  async convertFile(kind: OfficeKind, fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
+    return officeConversion(this, kind).convertFile(fileId, opts);
+  }
+}
+
+function officeConversion(picker: DriveConfiguratorUI, kind: OfficeKind): OfficeConversion {
+  return new OfficeConversion(kind, googleTokenProvider(picker), () => grantChecks.get(picker)!(OFFICE_IMPORT_GRANT));
+}
+
+/**
+ * The node the picker would list for what `id` names, or null when this account cannot see it or it
+ * is another kind of node. A Drive file link (`file:`) names any file.
+ */
+async function driveNode(picker: DriveConfiguratorUI, id: string): Promise<DriveNode | null> {
+  let named = parseDriveNodeId(id);
+  if (!named) return null;
+  let drive = new DriveApi(googleTokenProvider(picker));
+  return withDriveApiEnabled<DriveNode | null>(DRIVE_BROWSE_DISABLED, async () => {
+    let file: DriveFile;
+    try {
+      file = await drive.getFile(named.fileId);
+    } catch (error) {
+      if (isFileInvisible(error)) return null;
+      throw error;
+    }
+    // A folder named as a file, or a shortcut, is not the node the id claims.
+    let node = file.trashed ? undefined : driveFileNode(file);
+    if (!node) return null;
+    if (node.id !== id && (named.kind !== "file" || node.kind !== "file")) return null;
+    let path = await drivePath(drive, file);
+    return path ? { ...node, path } : node;
+  });
 }

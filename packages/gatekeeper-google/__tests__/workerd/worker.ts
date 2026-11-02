@@ -13,7 +13,8 @@ import type {
   GmailMessageInfo, GmailReplyOptions, GmailScopedSession, GmailSession, GmailThread,
 } from "../../src/types";
 import type {
-  ChatListMessagesOptions, ChatMessageInfo, ChatNewMessageEntry, ChatSession, ChatSpace, ChatThread,
+  ChatListMessagesOptions, ChatMessageInfo, ChatNewMessageEntry, ChatSession, ChatSpace, ChatSubscribeOptions,
+  ChatThread,
 } from "../../src/chat-types";
 import type { ChatMessageRaw } from "../../src/chat-api";
 import { ChatHookDriver as GoogleChatHookDriver, type ChatHookParams } from "../../src/chat-hooks";
@@ -607,12 +608,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   #hookKind: "chat" | "gmail" = "chat";
 
   /** Subscribe through the facet's own subscribeNewMessages(), keeping the controller it binds. */
-  async chatSubscribe(facet: ChatFacet): Promise<void> {
+  async chatSubscribe(facet: ChatFacet, options?: ChatSubscribeOptions): Promise<void> {
     const chat = this.#chat(facet.facetName, facet.id, facet.props) as unknown as TestChat;
     await chat.testRestoreThrough(this.ctx.id.toString(), facet);
     using queue = new RpcStub(new HookBindingQueue(this.ctx.storage));
     using capability = await chat.startSession(queue as never) as (ChatSpace | ChatThread) & Disposable;
-    await capability.subscribeNewMessages(new RpcStub(new RecordingHook(this.#hook)));
+    await capability.subscribeNewMessages(new RpcStub(new RecordingHook(this.#hook)), options);
     this.#hookKind = "chat";
   }
 

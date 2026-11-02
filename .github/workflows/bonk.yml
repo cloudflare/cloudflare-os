@@ -47,8 +47,25 @@ jobs:
             exit 1
           fi
 
+      # opencode switches to a pull request's head after the setup below, so install the head's
+      # dependencies. Issues keep the default branch.
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || (github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number)) || '' }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: "24.19.0"
+          cache: false
+          run-install: true
+
+      - name: Install Chromium for the browser suites
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
 
       - name: Run Bonk
         uses: Cloudflare-Studio/ask-bonk/github@14a1af226388b15b389a0c1b7df9168a940165b6 # v0.5.1

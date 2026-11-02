@@ -51,7 +51,14 @@ export const ComposerModelSelector = ({
               onClick={() => onModelChange(model.id)}
               className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default"
             >
-              <span className="min-w-0 flex-1 truncate">{model.name}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{model.name}</span>
+                {model.description && (
+                  <span className="block truncate text-[11px] text-kumo-inactive">
+                    {model.description}
+                  </span>
+                )}
+              </span>
               {active && (
                 <Check
                   size={12}

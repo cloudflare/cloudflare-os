@@ -555,12 +555,16 @@ second attempt is safe. `ActionApplyError` is terminal and asserts the provider 
 absent** — it retires the dependents waiting on references this action was to provide.
 `ActionOutcomeUnknownError` is terminal and asserts nothing: use it for a timeout, an aborted
 request, or any failure after the provider was reached. That record is never replayed and never
-pruned, strands no dependent, and holds a slot until the user rejects it, so the "check the
-provider" warning survives.
+pruned, and holds a slot until the user rejects it, so the "check the provider" warning survives.
+It strands no dependent until then; rejecting it retires those whose references it never bound.
 
 `claimBeforeApply` produces that same unknown outcome when an activation dies mid-dispatch. Neither
 substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
 what makes a retry safe in the first place.
+
+Rejecting always withdraws the action, whatever its outcome at the provider: the gatekeeper stops
+tracking it, and an effect that already landed stays. So a `reject` hook is cleanup only and must
+not refuse because the outcome is uncertain; one that throws is logged and the record removed anyway.
 
 `submit` refuses a payload whose `dependsOn` names a reference that is neither resolved nor
 provided by a pending or claimed action: once its provider was rejected or failed, every apply

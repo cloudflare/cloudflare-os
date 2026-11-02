@@ -255,17 +255,41 @@ function isTokenLimit(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
 }
 
+/** How many gateway model names Auto Router may be allowed, at most. */
+export const MAX_ALLOWED_MODELS = 100;
+
+/**
+ * Whether `value` is a gateway model name as Auto Router's allow-list takes one: `provider/model`
+ * with no whitespace or comma (the list's separator on the wire), no longer than an added model's
+ * id.
+ */
+export function isAllowedModelName(value: string): boolean {
+  return value.length <= MAX_ADDED_MODEL_TEXT && /^[^\s,/]+\/[^\s,]+$/.test(value);
+}
+
+// The well-formed names of `value`, trimmed and once each, or undefined for no list or an empty
+// or over-long one.
+function sanitizeAllowedModels(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  let names = [...new Set(value.filter((name): name is string => typeof name === "string")
+      .map(name => name.trim()).filter(isAllowedModelName))];
+  return names.length > 0 && names.length <= MAX_ALLOWED_MODELS ? names : undefined;
+}
+
 /**
  * The well-formed part of a gateway model's settings, or undefined if none of it is. Shape only:
  * how large a compaction budget may be depends on the model (see compactionBudgetRange() in
- * admin-settings.ts).
+ * admin-settings.ts), and which model may list allowed models on the model (see
+ * AdminSettings.setGatewayModelSettings).
  */
 export function sanitizeModelSettings(value: unknown): GatewayModelSettings | undefined {
   if (!value || typeof value !== "object") return undefined;
-  let {reasoning, compactionInputBudget} = value as Partial<GatewayModelSettings>;
+  let {reasoning, compactionInputBudget, allowedModels} = value as Partial<GatewayModelSettings>;
   let settings: GatewayModelSettings = {};
   if (isReasoningLevel(reasoning)) settings.reasoning = reasoning;
   if (isTokenLimit(compactionInputBudget)) settings.compactionInputBudget = compactionInputBudget;
+  let allowed = sanitizeAllowedModels(allowedModels);
+  if (allowed) settings.allowedModels = allowed;
   return Object.keys(settings).length > 0 ? settings : undefined;
 }
 
@@ -299,6 +323,27 @@ export function isUpdateCheckInterval(value: unknown): value is number {
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+// An exact, lowercase ASCII host name: no scheme, port, path, wildcard or trailing dot. ASCII because
+// `URL.host` always is (an IDN arrives as punycode), so any other entry could never match.
+const HOST_NAME = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
+/**
+ * An admin's `restrictedWebFetchHosts` as stored: trimmed, lowercased, without blanks or
+ * duplicates. Throws on an entry that is not an exact ASCII host name.
+ */
+export function parseRestrictedWebFetchHosts(hosts: string[]): string[] {
+  let parsed = new Set<string>();
+  for (let entry of hosts) {
+    let host = entry.trim().toLowerCase();
+    if (host === "") continue;
+    if (!HOST_NAME.test(host)) {
+      throw new Error(`"${entry}" is not a host name. Enter exact host names, such as docs.example.com.`);
+    }
+    parsed.add(host);
+  }
+  return [...parsed];
 }
 
 /**
@@ -352,6 +397,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     disabledResources,
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
+    restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
     formats: parseFormats(p.formats),
     modelModes,
     addedProviders: Array.isArray(p.addedProviders)

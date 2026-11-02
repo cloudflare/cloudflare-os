@@ -3,7 +3,7 @@ import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { SharingManager, SharingStorage } from "../src/sharing.js";
 import type { CollaboratorRecord, ShareKeyRecord } from "../src/storage-schema/overseer-storage.js";
 import {
-  AiChatAuthorInfo, PermissionEdge, CollaboratorRole, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES,
+  AiChatAuthorInfo, PermissionEdge, CollaboratorRole, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES,
 } from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage.js";
 
@@ -640,9 +640,9 @@ describe("ownerInvitesOnly", () => {
         .rejects.toThrow(/Share links are disabled/);
     expect([...storage.shareKeys.list()].map(r => r.id)).toEqual(["k1"]);
 
-    // Link management isn't an open() failure, so it carries no open-gadget code.
+    // Link management isn't an open() failure, so it carries no open-workspace code.
     let error = await mgr.createShareLink({ caller: owner, role: "use" }).catch(e => e);
-    expect(getOpenGadgetErrorCode(error)).toBeUndefined();
+    expect(getOpenWorkspaceErrorCode(error)).toBeUndefined();
   });
 
   it("persists nothing when the flag flips while a key is being minted", async () => {
@@ -669,7 +669,7 @@ describe("ownerInvitesOnly", () => {
       rawKey: key, profileId: "newbie",
       fetchProfile: async () => { fetched++; return profile("newbie"); },
     })).rejects.toMatchObject({
-      code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+      code: OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled,
       message: expect.stringMatching(/Share links are disabled/),
     });
 
@@ -685,7 +685,7 @@ describe("ownerInvitesOnly", () => {
     await expect(mgr.redeemShareKey({
       rawKey: key, profileId: "newbie",
       fetchProfile: async () => { flags.ownerInvitesOnly = true; return profile("newbie"); },
-    })).rejects.toMatchObject({ code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled });
+    })).rejects.toMatchObject({ code: OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled });
     expect(storage.collaborators.get("newbie")).toBeUndefined();
   });
 
@@ -716,7 +716,7 @@ describe("ownerInvitesOnly", () => {
     await expect(mgr.redeemShareKey({
       rawKey: key, profileId: "a",
       fetchProfile: async () => profile("a"),
-    })).rejects.toMatchObject({ code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled });
+    })).rejects.toMatchObject({ code: OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled });
     expect(storage.collaborators.get("a")!.addedBy).toEqual([
       expect.objectContaining({ type: "shareKey", keyId: linkId }),
     ]);

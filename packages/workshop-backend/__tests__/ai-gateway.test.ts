@@ -358,6 +358,36 @@ describe("GatewayModels", () => {
     const OPUS = { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" };
     const FABLE = { provider: "anthropic", model: "claude-fable-5-1", apiToken: "" };
 
+    it("gives the Auto Router model the enabled providers to pick from, or the models listed",
+        () => {
+      const models = gatewayModels({}, "anthropic,cloudflare-auto-router,ollama");
+      expect(ids(models.all)).toContain("cloudflare/auto");
+      // Its provider takes no added model, and ollama has no gateway route.
+      expect(models.addableProviders).toEqual(["anthropic"]);
+      expect(models.resolve("cloudflare/auto")?.config).toStrictEqual({
+        provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "",
+        autoRouterPool: { providers: ["anthropic"] },
+      });
+      expect(models.resolve("claude-opus-5-5")?.config).toStrictEqual(OPUS);
+
+      // The list is kept as stored, but the pool keeps only the enabled providers' models: openai
+      // was turned off since the list named it, and Workers AI models carry their own prefix.
+      const settings = { allowedModels: ["anthropic/*", "openai/gpt-6-luna", "@cf/*/*"] };
+      const listed = gatewayModels({ modelSettings: { "cloudflare/auto": settings } },
+          "anthropic,cloudflare,cloudflare-auto-router");
+      expect(listed.get("cloudflare/auto")?.settings).toStrictEqual(settings);
+      expect(listed.resolve("cloudflare/auto")?.config.autoRouterPool)
+          .toStrictEqual({ models: ["anthropic/*", "@cf/*/*"] });
+      // With every listed provider off the pool is empty, which getModel() refuses to send.
+      const openaiOnly = { allowedModels: ["openai/gpt-6-luna"] };
+      expect(gatewayModels({ modelSettings: { "cloudflare/auto": openaiOnly } },
+          "anthropic,cloudflare-auto-router").resolve("cloudflare/auto")?.config.autoRouterPool)
+          .toStrictEqual({ models: [] });
+      // The router routes to no Google model, so with Google alone on Auto is not offered.
+      expect(gatewayModels({}, "google,cloudflare-auto-router").get("cloudflare/auto"))
+          .toBeUndefined();
+    });
+
     it("gives a model the reasoning level set for it, and no other model", () => {
       const models = gatewayModels({ modelSettings: { "claude-opus-5-5": { reasoning: "low" } } });
       expect(models.get("claude-opus-5-5")).toStrictEqual({
@@ -581,7 +611,7 @@ describe("GatewayModels", () => {
   });
 
   describe("providers", () => {
-    const CATALOG_ORDER = ["cloudflare", "anthropic", "openai", "google"];
+    const CATALOG_ORDER = ["cloudflare-auto-router", "cloudflare", "anthropic", "openai", "google"];
     const GEMINI = "gemini-3.6-flash";
     const NO_TOKEN = 'Provider "google" cannot use the Workers AI binding transport, and no ' +
         "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.";
@@ -626,6 +656,7 @@ describe("GatewayModels", () => {
     it("says who enabled each provider the gateway serves, in catalog order", () => {
       expect(gatewayModels({ addedProviders: ["google"] }, "anthropic,ollama").providerSettings)
           .toStrictEqual([
+            { provider: "cloudflare-auto-router", needsApiToken: false },
             { provider: "cloudflare", needsApiToken: false },
             { provider: "anthropic", enabledBy: "environment", needsApiToken: false },
             { provider: "openai", needsApiToken: false },
@@ -634,7 +665,7 @@ describe("GatewayModels", () => {
       // The environment's listing comes first, so a provider it lists can't be turned off.
       expect(gatewayModels({ addedProviders: ["anthropic", "cloudflare"] }, "anthropic")
           .providerSettings.map(({ enabledBy }) => enabledBy))
-          .toEqual(["admin", "environment", undefined, undefined]);
+          .toEqual([undefined, "admin", "environment", undefined, undefined]);
     });
 
     it("reports a provider whose requests need a token the deployment lacks", () => {
@@ -657,7 +688,7 @@ describe("GatewayModels", () => {
 
       const models = new GatewayModels(
           new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] });
-      expect(models.providerSettings.at(-1)).toStrictEqual(
+      expect(models.providerSettings.find(({ provider }) => provider === "google")).toStrictEqual(
           { provider: "google", enabledBy: "admin", needsApiToken: true });
       expect(ids(models.list("language"))).toContain(GEMINI);
       expect(ids(models.list("language"))).toContain("claude-opus-5-5");
@@ -694,7 +725,8 @@ describe("GatewayModels", () => {
   });
 
   // The table keeps its own list of the providers getModel can route through the gateway, so an
-  // added model it offers is one that can run. This holds the two in step.
+  // added model it offers is one that can run. This holds the two in step. The Auto Router's
+  // provider is routable but takes no added model: the router is its one model.
   it.each(Object.keys(SUGGESTED_MODELS) as AiModelProvider[])(
       "offers an added model on %s only if the gateway can route it", (provider) => {
     const unroutable = (() => {
@@ -705,18 +737,21 @@ describe("GatewayModels", () => {
         return String(err).includes("is not supported through AI Gateway");
       }
     })();
+    const addable = !unroutable && provider !== "cloudflare-auto-router";
 
     const models = gatewayModels({
       addedModels: [{ provider, id: "test-model", name: "Test", contextWindow: 1000 }],
     }, provider);
-    expect(models.get("test-model")?.provider).toBe(unroutable ? undefined : provider);
-    expect(models.resolve("test-model")?.config.provider).toBe(unroutable ? undefined : provider);
+    expect(models.get("test-model")?.provider).toBe(addable ? provider : undefined);
+    expect(models.resolve("test-model")?.config.provider).toBe(addable ? provider : undefined);
 
-    expect(models.addableProviders).toEqual(unroutable ? [] : [provider]);
+    expect(models.addableProviders).toEqual(addable ? [provider] : []);
     const add = () => gatewayModels({}, provider).assertAddable(
         { provider, id: "test-model", name: "Test", contextWindow: 1000 });
     if (unroutable) {
       expect(add).toThrow(`Provider "${provider}" is not served through AI Gateway.`);
+    } else if (!addable) {
+      expect(add).toThrow(`Models can't be added under provider "${provider}".`);
     } else {
       expect(add).not.toThrow();
     }

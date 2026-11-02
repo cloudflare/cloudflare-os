@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { RpcStub } from "capnweb";
@@ -727,6 +727,35 @@ describe("revert and draft discard", () => {
 
     // The reverted declaration's base no longer applies during reconstruction.
     expect(await gadgetContent(impl, 1, 1)).toEqual({});
+  }));
+
+  // Replay hides the results of reads of reverted content, so the next turn's request no longer
+  // starts with the one being kept warm.
+  it("stops keeping the chat's prompt cached", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+    });
+    let materialized = impl.materializeChatChanges(1)!;
+
+    impl.cacheWarmer.view(1);
+    let resend = vi.fn(() => Promise.reject(new Error("Not resent in this test.")));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      impl.cacheWarmer.start(1,
+          { sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, expiryCost: 1, resend },
+          "model");
+      expect(vi.getTimerCount()).toBe(1);
+      await impl.revertChanges(1, materialized.sequence, USER);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(resend).not.toHaveBeenCalled();
   }));
 
   it("discardChatDraftChanges drops unlogged pins but keeps declared ones",

@@ -76,4 +76,9 @@ test runs against a stub of `cloudflare:workers` that the package's vitest confi
 - `pptx` -- a server-only PresentationML renderer for block-based slide decks, inlined into each
   importing blueprint's `server.js`, not shipped as a separate `pptx.js`. `deckToPptx(deck, adaptBlock)`
   validates authored quotas before a per-block adapter replaces brand-specific blocks; adapted
-  output is bounded separately. Installed gadgets cannot resolve these package imports at runtime.
+  output is bounded separately. Besides the editor's block types it draws `logo` (a wordmark text
+  box; `LOGO_DEFAULT_TEXT` is the name an unnamed one shows) and two blocks an adapter can emit:
+  `brandBar` (a native gradient strip) and an `image` carrying `svgMarkup`, which embeds the SVG
+  (stripped of scripts, event handlers and outside links) as a picture with its `src` PNG as the
+  fallback for viewers without SVG support.
+  Installed gadgets cannot resolve these package imports at runtime.

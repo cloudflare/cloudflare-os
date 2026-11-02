@@ -148,10 +148,10 @@ export async function withOwnerWorkspace<T>(
   using publicApi = connect(baseUrl);
   using api = await logIn(publicApi, username);
   const [workspace] = await waitFor("the session's workspace", async () => {
-    const workspaces = await api.listGadgets();
+    const workspaces = await api.listWorkspaces();
     return workspaces.length > 0 ? workspaces : null;
   });
-  using ws = await api.openGadget(workspace.id);
+  using ws = await api.openWorkspace(workspace.id);
   return await fn(ws);
 }
 

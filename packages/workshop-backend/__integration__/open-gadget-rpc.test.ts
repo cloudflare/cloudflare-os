@@ -6,11 +6,11 @@ import {
 import { env, exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import {
-  createOpenGadgetError,
-  getOpenGadgetErrorCode,
-  OPEN_GADGET_ERROR_CODES,
+  createOpenWorkspaceError,
+  getOpenWorkspaceErrorCode,
+  OPEN_WORKSPACE_ERROR_CODES,
   type AuthenticatedApi,
-  type OpenGadgetErrorCode,
+  type OpenWorkspaceErrorCode,
   type PublicApi,
 } from "@gadgets/workshop-shared/api";
 import server from "../src/server";
@@ -22,10 +22,10 @@ const PASSWORD_HASH = new Uint8Array([1, 2, 3]);
 // Also whitelisted in vitest.integration.config.ts onUnhandledError: capabilities held across
 // the injected abort reject on their own schedule.
 const USER_DO_ABORT_REASON = "user-DO reset injected by test";
-const EXPECTED_MESSAGES: Record<OpenGadgetErrorCode, string> = {
-  [OPEN_GADGET_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
-  [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
-  [OPEN_GADGET_ERROR_CODES.shareLinksDisabled]:
+const EXPECTED_MESSAGES: Record<OpenWorkspaceErrorCode, string> = {
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
+  [OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled]:
       "Share links are disabled for this workspace because it contains sensitive data. " +
       "The owner must add each person directly.",
 };
@@ -46,11 +46,11 @@ async function rejection(value: PromiseLike<unknown>): Promise<CodedError> {
   throw new Error("Expected RPC to reject.");
 }
 
-function expectRpcCode(error: CodedError, code: OpenGadgetErrorCode): void {
+function expectRpcCode(error: CodedError, code: OpenWorkspaceErrorCode): void {
   expect(error.message).toBe(EXPECTED_MESSAGES[code]);
   expect(error.code).toBe(code);
   expect(Object.prototype.propertyIsEnumerable.call(error, "code")).toBe(true);
-  expect(getOpenGadgetErrorCode(error)).toBe(code);
+  expect(getOpenWorkspaceErrorCode(error)).toBe(code);
 }
 
 async function connect(): Promise<RpcStub<PublicApi>> {
@@ -79,15 +79,15 @@ async function createAccount(
 async function openRejection(
     authenticated: RpcStub<AuthenticatedApi>,
     id: string): Promise<CodedError> {
-  using workspace = authenticated.openGadget(id);
+  using workspace = authenticated.openWorkspace(id);
   return await rejection(workspace.getMetadata());
 }
 
 // TODO: This test suite keeps timing out in CI, skipping for now.
-describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
+describe.skip("openWorkspace errors across native RPC and Cap'n Web", () => {
   it("retains enumerable Error.code at the native Durable Object boundary", async () => {
-    const code = OPEN_GADGET_ERROR_CODES.workspaceNotFound;
-    const local = createOpenGadgetError(code);
+    const code = OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound;
+    const local = createOpenWorkspaceError(code);
 
     expect(local.message).toBe(EXPECTED_MESSAGES[code]);
     expect(local.code).toBe(code);
@@ -109,7 +109,7 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
     using authenticated = await publicApi.authenticate(account.token);
 
     const error = await openRejection(authenticated, "not-a-durable-object-id");
-    expectRpcCode(error, OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+    expectRpcCode(error, OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
   });
 
   it("maps valid-but-missing IDs through AuthenticatedApi", async () => {
@@ -119,7 +119,7 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
 
     const id = exports.OverseerDurableObject.newUniqueId().toString();
     const error = await openRejection(authenticated, id);
-    expectRpcCode(error, OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+    expectRpcCode(error, OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
   });
 
   it("maps an unauthorized existing workspace to access denied", async () => {
@@ -129,7 +129,7 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
     using owner = await publicApi.authenticate(ownerAccount.token);
     using intruder = await publicApi.authenticate(intruderAccount.token);
 
-    using workspace = await owner.newGadget();
+    using workspace = await owner.newWorkspace();
     const metadata = await workspace.getMetadata();
 
     const nativeError = await rejection(
@@ -141,10 +141,10 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
           () => {},
         ),
     );
-    expectRpcCode(nativeError, OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+    expectRpcCode(nativeError, OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
 
     const browserError = await openRejection(intruder, metadata.id);
-    expectRpcCode(browserError, OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+    expectRpcCode(browserError, OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
   });
 });
 
@@ -208,7 +208,7 @@ describe("workspace session across a user-DO-only reset", () => {
     using publicApi = await connect();
     const account = await createAccount(publicApi, "chatreset");
     using authenticated = await publicApi.authenticate(account.token);
-    using workspace = await authenticated.newGadget();
+    using workspace = await authenticated.newWorkspace();
 
     // Model id null: commits the message without starting an agent — the pure chat-start path.
     expect(await workspace.newChat("before the reset", null)).toEqual(expect.any(Number));

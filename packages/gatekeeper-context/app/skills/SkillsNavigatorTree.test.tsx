@@ -13,7 +13,7 @@ import type {
 } from "../../src/context-types";
 import { ContextApiProvider } from "../bridge";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
-import type { SkillNavigatorCollection } from "./skillNavigatorModel";
+import type { SkillNavigatorCollection, SkillNavigatorNode } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
 import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
@@ -38,9 +38,10 @@ const OWNED: Pick<EnabledCollectionInfo, "source" | "membership"> = {
 const navigator = (
   collectionId: string,
   access = OWNED,
+  children?: SkillNavigatorNode[],
 ): SkillNavigatorCollection[] => [{
   collection: info(collectionId, access),
-  children: [{
+  children: children ?? [{
     type: "directory",
     path: "legacy",
     name: "legacy",
@@ -59,6 +60,7 @@ const navigator = (
 const metadata = (
   source: "web" | "git",
   visibility: ContextCollectionMetadata["visibility"] = "private",
+  documentCount = 1,
 ): ContextCollectionMetadata => ({
   id: "collection",
   title: "collection",
@@ -66,7 +68,7 @@ const metadata = (
   visibility,
   created: new Date(),
   lastUpdated: new Date(),
-  documentCount: 1,
+  documentCount,
   content: source === "web"
     ? { source }
     : { source, remote: "", branch: "main", lastRefreshedAt: new Date() },
@@ -95,6 +97,8 @@ describe("SkillsNavigatorTree", () => {
     retryFails = false,
     source = "web",
     visibility = "private",
+    children,
+    documentCount,
     onUploadSkills = () => {},
   }: {
     writable: boolean;
@@ -105,6 +109,8 @@ describe("SkillsNavigatorTree", () => {
     retryFails?: boolean;
     source?: "web" | "git";
     visibility?: ContextCollectionMetadata["visibility"];
+    children?: SkillNavigatorNode[];
+    documentCount?: number;
     onUploadSkills?: (target: UploadSkillsTarget) => void;
   }) => {
     container = document.createElement("div");
@@ -115,6 +121,7 @@ describe("SkillsNavigatorTree", () => {
     >(async () => {});
     const onDelete = vi.fn<(target: NavigatorDeleteTarget) => void>();
     const onOpenCollection = vi.fn<(collectionId: string) => void>();
+    const onSelectSkill = vi.fn<(collectionId: string, manifestPath: string) => void>();
     const onShareCollection = vi.fn<(collection: { id: string; title: string }) => void>();
     const onLeaveCollection = vi.fn<(collection: { id: string; title: string }) => void>();
     const onRetryCollection = vi.fn<(collectionId: string) => Promise<void>>(async () => {
@@ -128,16 +135,16 @@ describe("SkillsNavigatorTree", () => {
       <ContextApiProvider value={api}>
         <Toasty>
           <SkillsNavigatorTree
-            navigator={navigator("collection", access)}
+            navigator={navigator("collection", access, children)}
             collectionMetadata={metadataAvailable
-              ? new Map([["collection", metadata(source, visibility)]])
+              ? new Map([["collection", metadata(source, visibility, documentCount)]])
               : new Map()}
             collectionPermissions={permissions ? new Map([["collection", permissions]]) : new Map()}
             failedDocumentCollectionIds={documentsFailed ? new Set(["collection"]) : new Set()}
             writableCollectionIds={writable ? new Set(["collection"]) : new Set()}
             supportsGitCollections
             expandAll
-            onSelectSkill={() => {}}
+            onSelectSkill={onSelectSkill}
             onOpenCollection={onOpenCollection}
             onAddSkill={() => {}}
             onUploadSkills={onUploadSkills}
@@ -152,8 +159,8 @@ describe("SkillsNavigatorTree", () => {
       </ContextApiProvider>,
     ));
     return {
-      onDelete, onLeaveCollection, onOpenCollection, onRetryCollection, onShareCollection,
-      syncContextCollectionArtifactSource,
+      onDelete, onLeaveCollection, onOpenCollection, onRetryCollection, onSelectSkill,
+      onShareCollection, syncContextCollectionArtifactSource,
     };
   };
 
@@ -391,5 +398,52 @@ describe("SkillsNavigatorTree", () => {
     expect(container?.querySelector('[aria-label="Rename skill"]')).toBeNull();
     act(() => vi.advanceTimersByTime(0));
     expect(container?.querySelector('[aria-label="Rename skill"]')).not.toBeNull();
+  });
+
+  it("shows an invalid skill manifest with its error and opens it for fixing", () => {
+    const { onSelectSkill } = renderTree({
+      writable: true,
+      children: [{
+        type: "skill",
+        collectionId: "collection",
+        manifestPath: "pricing-analytics/SKILL.md",
+        directoryPath: "pricing-analytics",
+        name: "pricing-analytics",
+        description: "Unused",
+        lastUpdated: new Date(),
+        invalid: "Skill frontmatter is not valid YAML.",
+      }],
+    });
+
+    const skillRow = row("pricing-analytics");
+    expect(skillRow?.textContent).toContain("Skill frontmatter is not valid YAML.");
+    expect(skillRow?.draggable).toBe(false);
+    expect(skillRow?.textContent).not.toContain("Unused");
+
+    openMenu("pricing-analytics");
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Delete"]);
+
+    act(() => skillRow?.click());
+    expect(onSelectSkill).toHaveBeenCalledWith("collection", "pricing-analytics/SKILL.md");
+  });
+
+  it("opens a collection that has documents but no skills", () => {
+    const { onOpenCollection } = renderTree({
+      writable: false,
+      source: "git",
+      children: [],
+      documentCount: 40,
+    });
+
+    expect(container?.textContent).not.toContain("No contents");
+    act(() => row("40 files, no skills. Open collection")?.click());
+    expect(onOpenCollection).toHaveBeenCalledWith("collection");
+  });
+
+  it("calls a collection with no documents empty", () => {
+    renderTree({ writable: true, children: [], documentCount: 0 });
+
+    expect(row("No contents")).toBeDefined();
+    expect(container?.textContent).not.toContain("Open collection");
   });
 });

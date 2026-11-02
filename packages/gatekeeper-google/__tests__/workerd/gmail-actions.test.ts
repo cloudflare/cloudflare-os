@@ -940,6 +940,34 @@ describe("Gmail session API surface", () => {
     expect(await values.has(`gmail:sentAlias:${messageId.slice(1, -1)}`)).toBe(false);
   });
 
+  it("withdraws a send whose outcome Gmail never confirmed when it is denied", async () => {
+    let writes = 0;
+    const {gatekeeper, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: []});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
+        writes++;
+        throw new Error("connection lost after write");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    await session.send(["to@example.com"], "Subject", "Body");
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(
+      /outcome is still unknown.*deny this request to clear it/);
+    expect(writes).toBe(1);
+
+    await gatekeeper.rejectAction(1);
+
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/Unknown pending Gmail action/);
+    expect(writes).toBe(1);
+  });
+
   it("admits a sent message created through a restricted binding", async () => {
     const sourceId = "abc123";
     let sentMessageId = "";
@@ -1745,8 +1773,6 @@ describe("Gmail forward action snapshots", () => {
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
     expect((await values.keys()).some(key => key.includes(snapshot.handle))).toBe(true);
     expect(await values.has("gmail:applying:1")).toBe(true);
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
-    expect(await values.has("pending:action:1")).toBe(true);
 
     const chunkKey = (await values.keys()).find(key =>
       key.includes(snapshot.handle) && key.includes(":chunk:"))!;
@@ -1984,6 +2010,30 @@ describe("Gmail forward action snapshots", () => {
     expect(creates).toBe(1);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({providerId: "provider-draft"});
+  });
+
+  it("withdraws an ambiguous draft create Gmail shows no trace of when it is denied", async () => {
+    let creates = 0;
+    const {gatekeeper, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/drafts" && init.method === "POST") {
+        creates++;
+        throw new Error("connection lost after draft create");
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) return json({messages: []});
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await session.createDraft({to: ["to@example.com"], subject: "Subject", text: "Body"});
+    const {id: logicalId} = await draft.getMetadata();
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/outcome is still unknown/);
+    await gatekeeper.rejectAction(1);
+
+    expect(creates).toBe(1);
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+    expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({status: "rejected"});
   });
 
   it("allows rejection when an ambiguously created draft was edited externally", async () => {
@@ -3790,7 +3840,7 @@ describe("Gmail message mutations", () => {
     if (body) expect(JSON.parse(String(call?.init.body))).toEqual(body);
   });
 
-  it("keeps a partially applied multi-chunk mutation unrejectable until retry succeeds", async () => {
+  it("retries a partially applied multi-chunk mutation from its first chunk", async () => {
     let rejectSecond = true;
     const writes: string[] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
@@ -3814,11 +3864,36 @@ describe("Gmail message mutations", () => {
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(true);
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
 
     await gatekeeper.applyAction(1);
 
     expect(writes).toEqual(["m0", "m1000", "m0", "m1000"]);
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+  });
+
+  it("withdraws a partially applied multi-chunk mutation when it is denied", async () => {
+    const writes: string[] = [];
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const first = (JSON.parse(String(init.body)) as BatchBody).ids[0];
+        writes.push(first);
+        return first === "m1000" ? json({error: "invalid mutation"}, 400) : new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation",
+      operation: "markRead",
+      target: {kind: "messages", messageIds: Array.from({length: 1001}, (_, i) => `m${i}`)},
+    });
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
+    expect(await values.has("gmail:applying:1")).toBe(true);
+
+    await gatekeeper.rejectAction(1);
+
+    expect(writes).toEqual(["m0", "m1000"]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
   });
@@ -4891,6 +4966,52 @@ describe("Gmail pending sends", () => {
     for (const key of ["pending:action:2", "gmail:applying:2"]) {
       expect(await values.has(key)).toBe(false);
     }
+  });
+
+  it("reads and sends Gmail's own draft after denying an inline-forward update whose response was lost",
+      async () => {
+    const {gatekeeper, receive, values, mailbox} = mailHarness({loseDraftUpdateResponse: true});
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    await (await session.getMessage(source.id)).createForwardDraft(["recipient@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "After"});
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/connection lost after draft update/);
+
+    await gatekeeper.rejectAction(2);
+
+    expect(await values.has("gmail:applying:2")).toBe(false);
+    // Gmail holds the update, so reads show it, not the forward body retained from before.
+    const fresh = await gatekeeper.startSession(approvalQueue());
+    const current = (await (await fresh.listDrafts()).next())![0].draft;
+    expect((await current.getContent()).text).toContain("After");
+    // A send queued now is staged against what Gmail holds, so it is not refused as an outside edit.
+    await current.send();
+    await gatekeeper.applyAction(3);
+    expect(await values.has("pending:action:3")).toBe(false);
+    expect(mailbox.some(mail => mail.labelIds.includes("SENT"))).toBe(true);
+  });
+
+  it("forwards once in reads after denying an inline-forward update an update still builds on",
+      async () => {
+    const {gatekeeper, receive} = mailHarness({loseDraftUpdateResponse: true});
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    await (await session.getMessage(source.id)).createForwardDraft(["recipient@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "After"});
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/connection lost after draft update/);
+    await draft.update({text: "Third"});
+
+    await gatekeeper.rejectAction(2);
+
+    const fresh = await gatekeeper.startSession(approvalQueue());
+    const current = (await (await fresh.listDrafts()).next())![0].draft;
+    const {text} = await current.getContent();
+    expect(text).toContain("After");
+    expect(text?.split("Forwarded message")).toHaveLength(2);
   });
 
   it.each(["update", "delete", "send"] as const)(
@@ -6142,6 +6263,19 @@ describe("Gmail pending sends", () => {
     expect(mailbox[1].labelIds).toEqual(["SENT", "STARRED"]);
   });
 
+  it("reports that a send denied while its outcome was unknown may already have been sent",
+      async () => {
+    const {gatekeeper, saveDraft} = mailHarness({loseDraftSendResponse: true});
+    saveDraft(calendarSpec());
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await (await session.listDrafts()).next())![0].draft.send();
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost after draft send/);
+
+    const {error} = await (await session.getMessage(id)).readAcrossDecision(1, "reject");
+
+    expect(error).toMatch(/denied while its outcome was unknown, so it may already have been sent/);
+  });
+
   it("reports that the message was not sent once the send is rejected", async () => {
     const {gatekeeper, receive} = mailHarness();
     const source = receive();
@@ -7124,7 +7258,6 @@ describe("Gmail draft dependency reconciliation", () => {
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/drafts\.get failed/);
     expect(await values.has("gmail:draftWriteReceipt:1")).toBe(true);
 
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
     const session = await gatekeeper.startSession(approvalQueue());
     await expect(session.getDraft(providerId)).rejects.toThrow(/has been deleted/);
     await gatekeeper.applyAction(1);
@@ -7765,7 +7898,6 @@ describe("Gmail draft dependency reconciliation", () => {
     const session = await gatekeeper.startSession(approvalQueue());
     expect(await (await session.listDrafts()).next()).toBeNull();
 
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
     gone = true;
     await expect(session.getDraft(providerId)).rejects.toThrow(/has been deleted/);
     await gatekeeper.applyAction(1);

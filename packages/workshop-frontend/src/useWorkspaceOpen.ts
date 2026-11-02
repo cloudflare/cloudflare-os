@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import type {
   AuthenticatedApi,
-  GadgetMetadata,
+  WorkspaceMetadata,
   ObserverAccountChoice,
   ObserverBindingNeed,
   ObserverConfigCallback,
@@ -31,7 +31,7 @@ type ObserverConfigState = {
 type Options = {
   id: string | undefined
   authenticatedApi: RpcStub<AuthenticatedApi>
-  onMetadata: (metadata: GadgetMetadata) => void
+  onMetadata: (metadata: WorkspaceMetadata) => void
   onShareKeyConsumed: () => void
   onInvalidShareKey: () => void
 }
@@ -44,7 +44,7 @@ export function useWorkspaceOpen({
   onInvalidShareKey,
 }: Options) {
   const [overseer, setOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
-  const [metadata, setMetadata] = useState<GadgetMetadata | null>(null)
+  const [metadata, setMetadata] = useState<WorkspaceMetadata | null>(null)
   const [error, setError] = useState<WorkspaceLoadError | null>(null)
   const [connectionLost, setConnectionLost] = useState(false)
   const [observerConfig, setObserverConfig] = useState<ObserverConfigState | null>(null)
@@ -116,7 +116,7 @@ export function useWorkspaceOpen({
         })()
         configureObservers = new RpcStub(configureObserversTarget)
 
-        overseerStub = authenticatedApi.openGadget(id, shareKey, configureObservers)
+        overseerStub = authenticatedApi.openWorkspace(id, shareKey, configureObservers)
         linkActionLog(overseerStub, id)
         setOverseer({ stub: overseerStub })
 

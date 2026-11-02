@@ -34,7 +34,8 @@ The mechanism is a per-user, gatekeeper-mediated check — "this data may be sha
 people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
-puts the workspace into a restricted mode — no web fetches, and every action requires manual
+puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
+that data (`AdminConfig.restrictedWebFetchHosts`, none by default), and every action requires manual
 approval (auto-approval rules are suspended), the approver checking the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
 is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
@@ -104,7 +105,7 @@ The check works as follows:
 | Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts` |
 | Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
-| Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
+| Server `openWorkspace` path | `packages/workshop-backend/src/server.ts` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
 | `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `getWebFetchEnv`, `submitAction`) |
 | `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation` sets `ownerInvitesOnly` and restarts the workspace if anyone lost access); `sharing.ts` (`computeEffectiveRoles` counts only direct owner grants; the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
@@ -202,7 +203,7 @@ legitimate UI state).
 > awaiting it (see the Cap'n Web note in `AGENTS.md`). The observer-open path awaits it because a
 > null result means the account must be re-selected before calling `addObserver()`.
 
-### Step 2 — Client-server API: a configuration callback on `open` / `openGadget`
+### Step 2 — Client-server API: a configuration callback on `open` / `openWorkspace`
 
 We must avoid structured/typed errors for control flow (prohibited in this codebase) and must not
 break promise pipelining in the common case. So `open()` gains an **optional callback** that is
@@ -211,7 +212,7 @@ invoked **only** when the opening user needs to configure gatekeeper accounts. I
 without an extra round trip.
 
 Add to the RPC API (`packages/workshop-shared/src/api.ts`) and thread through
-`server.ts` `openGadget` → `overseer.open()`:
+`server.ts` `openWorkspace` → `overseer.open()`:
 
 ```ts
 // Provided by the client when opening a gadget. Invoked by the overseer only if the opening
@@ -236,7 +237,7 @@ type ObserverAccountChoice = {
 
 `open()` signature gains `configureObservers?: RpcStub<ObserverConfigCallback>`.
 
-(Same goes for `openGadget()`, which is the public-facing API method on `AuthenticatedApi`.)
+(Same goes for `openWorkspace()`, which is the public-facing API method on `AuthenticatedApi`.)
 
 ### Step 3 — Overseer: observer configuration & re-verification at `open()`
 
@@ -679,9 +680,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    at every `open()`, so nobody can be in the workspace without having passed the producing
    gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
    session (see "Restarting when verification scope widens"). Setting `containsRestrictedData` also
-   puts the workspace into a restricted mode: no web fetches, and every action requires manual
-   approval (auto-approval rules are suspended), the approver checking the action text for
-   restricted data. An action whose description is not complete
+   puts the workspace into a restricted mode: web fetches reach only the hosts an admin trusts with
+   that data, and every action requires manual approval (auto-approval rules are suspended), the
+   approver checking the action text for restricted data. An action whose description is not complete
    (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
    pushes are refused.
    Verification is held to each collaborator's own role scope, because `ensureObserver` can
@@ -760,7 +761,7 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
 
 1. **Data model + User DO** — add the `observers` collection (Step in §4) and `User.getVerifier`
    (Step 1).
-2. **API plumbing** — `ObserverConfigCallback` + `open()`/`openGadget()` signature (Step 2).
+2. **API plumbing** — `ObserverConfigCallback` + `open()`/`openWorkspace()` signature (Step 2).
 3. **Overseer enforcement** — `ensureObserver` and the `open()` hook (Step 3). Land with a
    temporary "deny if `configureCb` absent / any uncovered binding" path so server logic can be
    tested before the UI exists.
@@ -790,10 +791,10 @@ its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (no web fetches, and every action requires manual approval — auto-approval rules are
-  suspended — the approver checking the action text for restricted data) is available separately;
-  combined with strategy A it makes the workspace effectively private once sensitive data is
-  observed.
+  mode (web fetches reach only admin-trusted hosts, and every action requires manual approval —
+  auto-approval rules are suspended — the approver checking the action text for restricted data) is
+  available separately; combined with strategy A it makes the workspace effectively private once
+  sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
 
 - **B — ACL check (single unit).** The resource is treated as one atomic unit.
@@ -852,6 +853,9 @@ its resource types.
 | **context** | Context Library singleton | **C** | Track collections whose contents a read revealed (search results, a collection's listing, a document); verify each is in the observer's sharing domain and is public, is everyone-viewable, or grants the observer's Context account a viewer, editor, or owner role. Uses the kit's default observer cap to bound per-read verifier fanout. The top-level collection listing tracks nothing: its titles, descriptions and counts are discovery metadata the agent catalog already advertises unobserved. The denial never names the collection, which the refused collaborator cannot read. |
 | **x** | Account | **C** | Admit any observer with a working X connection: public posts, profiles, public Lists and follow graphs need only an X account. Reads private to the account -- bookmarks, likes, mute state, private Lists, and any page holding a protected account's post -- authorize against one synthetic `owner` collection, which admits only an observer connected as the same X user. |
 | **x** | Post / List | **C** | As Account, plus a check on every open that the observer's own X account can see the bound post or List (`canViewPost` / `canViewList`). Each check is a read billed to the observer's connection, so a passed check is trusted for an hour; a failed one never is. |
+| **microsoft** | SharePoint (all, site, library, folder, file, list, page) | **C** | Track every object a read revealed as a unit (`sharepoint-observers.ts`), since SharePoint breaks inheritance at any level and one container's ACL never vouches for its contents; verify each by probing it with the observer's own token, twenty to a `$batch`, where 403 and 404 both mean no access. A file's content and its version history are their own units, since someone may see a file they can't open; a draft the owner read pins its version, and the probe passes only if the observer is shown the same one. |
+| **microsoft** | Outlook Mailbox / Folder / Conversation / Sender | **C** | Track the mailbox, folders and messages each read revealed (`outlook-observers.ts`); verify each by a probe `GET` as the observer: the whole mailbox needs access to all of it (someone shared one folder gets 404), a folder or message needs that folder or message. |
+| **microsoft** | Outlook Calendar / Availability | **C** | Track calendar units at the detail level each read revealed (`calendar-observers.ts`): a calendar unit admits an observer only when the owner's `calendarPermissions` give them a role that sees that level (`calendar-acl.ts`, where a group entry can only lower the organization default), which only the owner can read, so a unit of someone else's calendar admits that owner alone; an `availability:<address>` unit only when `getSchedule` as the observer answers for that address; the all-calendars unit admits nobody but the owner. |
 | **x** | Profile | **C** | As Account: a public profile needs only an X account, and the `owner` collection covers a protected user's posts. Accepted over-permissiveness for every X binding: an author who has blocked the observer is still readable through the gadget, since checking each author per observer per read would cost a read each and what leaks is public. |
 
 ### 9.3 The "broad binding" lens

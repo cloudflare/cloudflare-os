@@ -645,23 +645,12 @@ async function publishAll(host: XActionHost, ctx: ActionContext, drafts: readonl
 }
 
 /**
- * Refuses to reject a publish that may already be on X: part of its thread went out, or X never
- * reported a send's outcome. Approving it again checks the account's recent posts before sending,
- * so nothing posts twice, and the result can then be reverted.
+ * Forgets a rejected publish's thread progress and send attempts. Rejecting withdraws the action
+ * without asking X, so any post X already published stays on the account.
  */
-function refuseIfSent(host: XActionHost, id: number, posts: number): void {
-  const published = host.progress.get(id).length;
-  const unconfirmed = Array.from({ length: posts }, (_, index) => host.attempts.get(`${id}:${index}`))
-    .some(attempt => attempt !== undefined);
-  if (published > 0) {
-    throw new Error(`${published} of this thread's ${posts} posts are already on X, so it can't be ` +
-      "rejected. Approve it again to finish the thread, then revert it to delete every post.");
-  }
-  if (unconfirmed) {
-    throw new Error("X never confirmed whether this post was published, so it may already be on X " +
-      "and can't be rejected. Approve it again -- that checks the account's recent posts first, so " +
-      "it is never posted twice -- then revert it if it shouldn't stay.");
-  }
+function forgetAttempts(host: XActionHost, id: number, posts: number): void {
+  host.progress.delete(id);
+  for (let index = 0; index < posts; index++) host.attempts.delete(`${id}:${index}`);
 }
 
 /** Deletes posts, newest first; one already gone counts as deleted. */
@@ -711,7 +700,7 @@ export const actions = defineActions<XActionHost, XActions>({
       return { action: { ...payload, createdIds, appliedAt: Date.now() } };
     },
     reject: async (payload, host, ctx) => {
-      refuseIfSent(host, ctx.id, payload.drafts.length);
+      forgetAttempts(host, ctx.id, payload.drafts.length);
       host.releaseImages(payload.drafts);
     },
   },
@@ -740,7 +729,7 @@ export const actions = defineActions<XActionHost, XActions>({
       return { action: { ...payload, createdId, appliedAt: Date.now() } };
     },
     reject: async (payload, host, ctx) => {
-      refuseIfSent(host, ctx.id, 1);
+      forgetAttempts(host, ctx.id, 1);
       host.releaseImages([payload.draft]);
     },
   },
@@ -971,13 +960,8 @@ export const actions = defineActions<XActionHost, XActions>({
       host.refs.bind(payload.ref, createdId);
       return { action: { ...payload, createdId, appliedAt: Date.now() } };
     },
-    reject: async (_payload, host, ctx) => {
-      if (host.attempts.get(`${ctx.id}:0`)) {
-        throw new Error("X never confirmed whether this List was created, so it may already exist and " +
-          "can't be rejected. Approve it again -- that checks the account's Lists first, so it is never " +
-          "created twice -- then revert it if it shouldn't stay.");
-      }
-    },
+    // A List X already created stays on the account.
+    reject: async (_payload, host, ctx) => host.attempts.delete(`${ctx.id}:0`),
   },
 
   updateList: {

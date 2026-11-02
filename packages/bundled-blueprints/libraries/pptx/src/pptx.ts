@@ -2,7 +2,7 @@ import { createZip, crc32, type ZipEntry } from "@gadgets/bundled-blueprints/lib
 
 type Scalar = string | number | boolean | undefined;
 interface PreparedProps {
-  text?: string;
+  text?: string | null;
   size?: string;
   fontSize?: Scalar;
   weight?: Scalar;
@@ -10,6 +10,7 @@ interface PreparedProps {
   letterSpacing?: string;
   lineHeight?: Scalar;
   highlightMarks?: Uint8Array;
+  highlightColor?: string;
   align?: string;
   treatment?: string;
   eyebrow?: string;
@@ -24,10 +25,17 @@ interface PreparedProps {
   strokeWidth?: Scalar;
   radius?: Scalar;
   fit?: string;
+  objectPosition?: string;
   alt?: string;
+  decorative?: boolean;
+  emptyText?: string;
   background?: string;
   image?: PreparedImage;
+  svgImage?: PreparedSvg | null;
   relationshipId?: string;
+  svgRelationshipId?: string;
+  variant?: string;
+  scale?: Scalar;
   x1?: Scalar;
   y1?: Scalar;
   x2?: Scalar;
@@ -58,9 +66,9 @@ interface ExportLimits {
 }
 
 interface MediaDescriptor {
-  extension: "png" | "jpeg";
+  extension: "png" | "jpeg" | "svg";
   mime: string;
-  aspect: number;
+  aspect: number | null;
   pixels: number;
 }
 
@@ -75,9 +83,16 @@ interface PreparedImage {
   omitted?: boolean;
 }
 
+/** An SVG picture: its media part and aspect ratio (null when the markup declares no size). */
+interface PreparedSvg {
+  media: Media;
+  aspect: number | null;
+}
+
 interface MediaState {
   media: Media[];
   bySource: Map<string, PreparedImage>;
+  bySvgSource: Map<string, PreparedSvg | null>;
   totalPixels: number;
 }
 
@@ -114,6 +129,8 @@ interface PreparedDeck {
 
 interface RenderState {
   nextShapeId: number;
+  /** True until the slide's first title block is drawn: that one becomes the slide's title. */
+  titlePending: boolean;
 }
 
 interface ShapeOptions {
@@ -136,21 +153,26 @@ interface TextStyle {
 interface ParagraphOptions {
   bullet?: boolean;
   spacingAfter?: number;
-  highlightMarks?: Uint8Array;
+  highlightMarks?: Uint8Array | null;
+  highlightColor?: Color | null;
 }
 
 interface TextSource {
-  text?: string;
+  text?: string | null;
   items?: string[];
   spacingAfter?: number;
-  highlightMarks?: Uint8Array;
+  highlightMarks?: Uint8Array | null;
+  highlightColor?: Color | null;
 }
 
 interface TextShapeOptions extends ShapeOptions {
+  /** The slide's title placeholder: PowerPoint's outline, slide list and screen readers name the slide by it. */
+  title?: boolean;
   insets?: Partial<Record<"left" | "right" | "top" | "bottom", number>>;
   anchor?: "top" | "middle" | "bottom";
   wrap?: boolean;
-  autofit?: "grow" | "shrink" | false;
+  /** "grow" extends an auto-height box; a number shrinks the text to that font scale (1: none yet). */
+  autofit?: "grow" | number | false;
 }
 
 interface Crop {
@@ -174,11 +196,28 @@ const PX_TO_LINE_EMU = PX_TO_EMU;
 const PX_TO_POINT = PX_TO_EMU / 12700;
 const MAX_DRAWING_COORDINATE = 2147483647;
 const ARIAL_ASCENT = 0.905; // ascender 1854 / 2048 em
+const ARIAL_DESCENT = 0.212; // descender 434 / 2048 em
 const ARIAL_LINE_HEIGHT = 1.15; // (ascender 1854 + descender 434 + lineGap 67) / 2048 em
-// buSzPts is the bullet's font size, not the marker's size: Arial's U+25CF black circle inks a
-// 0.43em disc (CoreText glyph bbox at 1000upm: origin x 87, y 67, width 430, height 430). This is
-// the font size whose disc matches the browser's 6px bullet.
-const BULLET_FONT_HUNDREDTHS = Math.round(6 * PX_TO_POINT / 0.43 * 100);
+// PowerPoint's single line spacing (spcPct 100%) is 1.2em whatever the font; LibreOffice and
+// Quick Look agree. The browser's `line-height` is a plain multiple of the font size.
+const PPT_SINGLE_LINE = 1.2;
+// The line-height a slide element without its own inherits from the Slides page (`body { font:
+// 13px/1.4 }`): the tone pill and the unknown-block badge.
+const INHERITED_LINE_HEIGHT = 1.4;
+// The share of the leading beyond 1em that PowerPoint sets above a top- or bottom-anchored box's
+// first line (fitted in PowerPoint for the web; see firstBaselineShift).
+const PPT_EXTRA_LEADING_ABOVE = 0.2;
+// The bullet is Arial's U+2022, sized by buSzPct so its disc matches the browser's 6px dot: the
+// glyph inks a 0.2476em disc (Arial at 2048upm) whose centre sits 0.35em above the baseline.
+// PowerPoint for the web ignores buSzPts and draws the bullet at the text's size, so the size is a
+// percentage of the paragraph's font size. U+2022 rather than U+25CF (a 0.43em disc 0.28em above
+// the baseline): enlarged to the dot's width, its centre rises to within about a pixel of the
+// browser's dot, where U+25CF shrunk to that width sits several pixels low.
+const BULLET_DOT = 6;
+const ARIAL_BULLET_DISC = 0.2476;
+// The smallest stored autofit `fontScale` (60%): below it a card body is unreadable, and overflowing
+// text beats that.
+const MIN_FONT_SCALE = 0.6;
 
 const MAX_SLIDES = 500;
 const MAX_BLOCKS_PER_SLIDE = 1000;
@@ -203,7 +242,9 @@ const MAX_TOTAL_HIGHLIGHT_TRANSITIONS = 32768;
 const TEXT_CHUNK_SIZE = 64 * 1024;
 // The deck's own data-URL strings stay alive alongside the decoded bytes for the whole export, so
 // the aggregate budgets are set for both to fit comfortably inside a Worker's 128 MiB heap.
-const MAX_MEDIA_COUNT = 256;
+// Each SVG picture is two parts (the SVG and its PNG stand-in); the byte and pixel budgets below
+// are what bound memory.
+const MAX_MEDIA_COUNT = 1024;
 const MAX_MEDIA_ENCODED_BYTES = 24 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_ENCODED_BYTES = 48 * 1024 * 1024;
 const MAX_MEDIA_DECODED_BYTES = 16 * 1024 * 1024;
@@ -466,24 +507,6 @@ function transformXml(box: Box, extra = ""): string {
   return `<a:xfrm${extra}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.width}" cy="${box.height}"/></a:xfrm>`;
 }
 
-// A hexagon with its points at the top and bottom: PowerPoint's preset points left and right, so
-// the box is laid out with the long axis horizontal and rotated a quarter turn about its centre.
-// `inset` is the distance from the pointed end to the flat side as a fraction of the short side.
-function pointUpHexagonXml(state: RenderState, name: string, box: Box, inset: number, line: string): string {
-  const id = nextShapeId(state);
-  const centerX = box.x + box.width / 2;
-  const centerY = box.y + box.height / 2;
-  const unrotated = {
-    x: Math.round(centerX - box.height / 2), y: Math.round(centerY - box.width / 2),
-    width: box.height, height: box.width,
-  };
-  const adjust = Math.round(inset * 100000);
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>` +
-    `<p:spPr>${transformXml(unrotated, ' rot="5400000"')}<a:prstGeom prst="hexagon"><a:avLst>` +
-    `<a:gd name="adj" fmla="val ${adjust}"/><a:gd name="vf" fmla="val 115470"/></a:avLst></a:prstGeom>` +
-    `<a:noFill/>${line}</p:spPr></p:sp>`;
-}
-
 function nextShapeId(state: RenderState): number {
   return state.nextShapeId++;
 }
@@ -602,13 +625,19 @@ function highlightMarks(text: string, terms: string[], label: string, limits: Ex
   return marks;
 }
 
+// The bullet's size as a percentage of the text's (ST_TextBulletSizePercent: 25% to 400%, in
+// thousandths of a percent) whose disc is the browser's dot.
+function bulletSizePercent(style: TextStyle): number {
+  const fontSize = cssNumber(style.fontSize, 12, 1, 1000);
+  return Math.round(Math.max(25, Math.min(400, BULLET_DOT / ARIAL_BULLET_DISC / fontSize * 100))) * 1000;
+}
+
 function* paragraphXml(text: string, style: TextStyle, options: ParagraphOptions = {}): Generator<string, void, unknown> {
   const alignment = ({left: "l", center: "ctr", right: "r"} as Record<string, string>)[style.align ?? ""] || "l";
   // CSS line-height is a multiple of the font size; lnSpc percentages are multiples of the
-  // font's natural line height (ascent + descent + line gap = 1.15em for Arial). Exact spcPts
-  // would be right in PowerPoint but Google Slides converts it back to a percentage of the
-  // natural height, so the divided percentage is the value both consumers render correctly.
-  const lineSpacing = Math.round(cssNumber(style.lineHeight, 1.2, 0.5, 4) / ARIAL_LINE_HEIGHT * 100000);
+  // consumer's single spacing (1.2em). Exact spcPts would be right in PowerPoint but Google Slides
+  // converts it back to a percentage, so the divided percentage is the value consumers agree on.
+  const lineSpacing = Math.round(cssNumber(style.lineHeight, 1.2, 0.5, 4) / PPT_SINGLE_LINE * 100000);
   let properties = `<a:pPr algn="${alignment}" fontAlgn="base"`;
   if (options.bullet) properties += ` marL="${Math.round(18 * PX_TO_EMU)}" indent="-${Math.round(18 * PX_TO_EMU)}"`;
   properties += `><a:lnSpc><a:spcPct val="${lineSpacing}"/></a:lnSpc>`;
@@ -617,7 +646,7 @@ function* paragraphXml(text: string, style: TextStyle, options: ParagraphOptions
   }
   if (options.bullet) {
     properties += `<a:buClr><a:srgbClr val="${COLORS.tangerine}"/></a:buClr>` +
-      `<a:buSzPts val="${BULLET_FONT_HUNDREDTHS}"/><a:buFont typeface="Arial"/><a:buChar char="&#x25CF;"/>`;
+      `<a:buSzPct val="${bulletSizePercent(style)}"/><a:buFont typeface="Arial"/><a:buChar char="&#x2022;"/>`;
   } else {
     properties += "<a:buNone/>";
   }
@@ -626,9 +655,10 @@ function* paragraphXml(text: string, style: TextStyle, options: ParagraphOptions
   const marks = options.highlightMarks;
   const normalRun = `<a:r><a:rPr ${runProperties(style)}</a:rPr><a:t xml:space="preserve">`;
   const highlightRun = marks
-    ? `<a:r><a:rPr ${runProperties(style, HIGHLIGHT_COLOR)}</a:rPr><a:t xml:space="preserve">`
+    ? `<a:r><a:rPr ${runProperties(style, options.highlightColor || HIGHLIGHT_COLOR)}</a:rPr><a:t xml:space="preserve">`
     : normalRun;
-  // One run per maximal same-mark span within a line; `<a:br/>` between lines.
+  const breakXml = `<a:br><a:rPr ${runProperties(style)}</a:rPr></a:br>`;
+  // One run per maximal same-mark span within a line; `<a:br>` between lines.
   let start = 0;
   for (let end = 0; end <= text.length; ++end) {
     const lineBreak = end === text.length || text.charCodeAt(end) === 10;
@@ -638,16 +668,50 @@ function* paragraphXml(text: string, style: TextStyle, options: ParagraphOptions
       yield* escapedText(text.slice(start, end));
       yield "</a:t></a:r>";
     }
-    if (lineBreak && end < text.length) yield "<a:br/>";
+    // The break carries the run's size: a bare <a:br/> takes the master's 18pt, which sets an empty
+    // line (a blank line between paragraphs of text) at the wrong height.
+    if (lineBreak && end < text.length) yield breakXml;
     start = lineBreak ? end + 1 : end;
   }
   yield `<a:endParaRPr ${runProperties(style)}</a:endParaRPr></a:p>`;
 }
 
 // PresentationML text cannot be clipped. "grow" lets the consumer extend an auto-height box to
-// its own wrapping; "shrink" asks it to scale text down inside a fixed surface (the card), the
-// nearest native equivalent of the browser's overflow: hidden.
-const AUTOFIT_XML = {grow: "<a:spAutoFit/>", shrink: "<a:normAutofit/>"};
+// its own wrapping; a scale shrinks text inside a fixed surface (the card body), the nearest native
+// equivalent of the browser's overflow: hidden. The scale is written out because PowerPoint draws
+// the stored `fontScale` and only refits when the text is edited. It stops at MIN_FONT_SCALE: text
+// that still doesn't fit overflows its surface, as it would in PowerPoint, rather than turning
+// unreadably small. The line spacing scales with the font (lnSpc is a percentage), so no
+// `lnSpcReduction` is written: the browser's line-height doesn't tighten either.
+function autofitXml(autofit: TextShapeOptions["autofit"]): string {
+  if (autofit === "grow") return "<a:spAutoFit/>";
+  if (typeof autofit !== "number") return "<a:noAutofit/>";
+  const scale = Math.round(Math.max(MIN_FONT_SCALE, Math.min(1, autofit)) * 100000);
+  return scale === 100000 ? "<a:normAutofit/>" : `<a:normAutofit fontScale="${scale}"/>`;
+}
+
+// How far below the browser's first baseline PowerPoint sets it, in CSS pixels. CSS splits a line's
+// leading evenly above and below the glyphs. LibreOffice puts all of it above them (its baseline is
+// a descent above the line's bottom), so for LibreOffice the difference is the half-leading.
+// PowerPoint, the renderer this targets, puts only part of the extra leading above the first line:
+// measured in PowerPoint for the web over 86 text boxes, a top- or bottom-anchored box needs the
+// half-leading of a single (1em) line plus 0.2em per 1em of line-height above 1 (the half-leading
+// would set loose text, line-height 1.5 and up, about 3px too high). The trade-off: LibreOffice now
+// draws loose text up to 0.3em per extra 1em of line-height too low. A centred box (anchor "ctr")
+// does take the full half-leading in PowerPoint, so it keeps it. Quick Look splits the leading like
+// CSS, so it draws the corrected text too high.
+function firstBaselineShift(style: TextStyle, anchor: string): number {
+  const fontSize = cssNumber(style.fontSize, 12, 1, 1000);
+  const lineHeight = cssNumber(style.lineHeight, 1.2, 0.5, 4);
+  const singleHalfLeading = (1 - ARIAL_ASCENT - ARIAL_DESCENT) / 2;
+  if (anchor === "ctr") return (singleHalfLeading + (lineHeight - 1) / 2) * fontSize;
+  return (singleHalfLeading + PPT_EXTRA_LEADING_ABOVE * (lineHeight - 1)) * fontSize;
+}
+
+// The browser's first baseline below the top of a line box: half the leading, then the ascent.
+function cssBaseline(fontSize: number, lineHeight: number): number {
+  return ((lineHeight - ARIAL_ASCENT - ARIAL_DESCENT) / 2 + ARIAL_ASCENT) * fontSize;
+}
 
 function* textShapeXml(state: RenderState, name: string, box: Box, style: TextStyle, source: TextSource, options: TextShapeOptions = {}): Generator<string, void, unknown> {
   const id = nextShapeId(state);
@@ -655,17 +719,33 @@ function* textShapeXml(state: RenderState, name: string, box: Box, style: TextSt
   const preset = options.preset || "rect";
   const fill = options.fill === undefined ? "<a:noFill/>" : options.fill;
   const line = options.line || "<a:ln><a:noFill/></a:ln>";
-  const insets = options.insets || {};
+  const insets = {...options.insets};
   const anchor = options.anchor === "middle" ? "ctr" : options.anchor === "bottom" ? "b" : "t";
+  // Raise the text by the baseline shift so it lands where the browser draws it: a bare text box
+  // moves; a drawn surface (pill, placeholder) stays put and its insets take the shift instead.
+  const shift = firstBaselineShift(style, anchor);
+  if (options.fill === undefined && options.line === undefined) {
+    box = {...box, y: emuPosition(box.y / PX_TO_EMU - shift)};
+  } else if (anchor === "ctr") {
+    if (shift > 0) insets.bottom = (insets.bottom || 0) + 2 * shift;
+    else insets.top = (insets.top || 0) - 2 * shift;
+  } else if (anchor === "t") {
+    insets.top = Math.max(0, (insets.top || 0) - shift);
+  } else {
+    insets.bottom = Math.max(0, (insets.bottom || 0) + shift);
+  }
   const wrap = options.wrap === false ? "none" : "square";
+  const nonVisual = options.title
+    ? '<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr>'
+    : '<p:cNvSpPr txBox="1"/><p:nvPr/>';
   yield `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}"${descr}/>` +
-    '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>' + transformXml(box) +
+    nonVisual + '</p:nvSpPr><p:spPr>' + transformXml(box) +
     presetGeometry(preset, options.radius || 0, box.width / PX_TO_EMU, box.height / PX_TO_EMU) +
     fill + line + '</p:spPr><p:txBody>' +
     `<a:bodyPr wrap="${wrap}" anchor="${anchor}" lIns="${emuLength(insets.left || 0)}" ` +
     `rIns="${emuLength(insets.right || 0)}" tIns="${emuLength(insets.top || 0)}" ` +
     `bIns="${emuLength(insets.bottom || 0)}">` +
-    `${options.autofit ? AUTOFIT_XML[options.autofit] : "<a:noAutofit/>"}</a:bodyPr><a:lstStyle/>`;
+    `${autofitXml(options.autofit)}</a:bodyPr><a:lstStyle/>`;
   if (source.items) {
     for (let i = 0; i < source.items.length; ++i) {
       yield* paragraphXml(source.items[i], style, {
@@ -675,7 +755,7 @@ function* textShapeXml(state: RenderState, name: string, box: Box, style: TextSt
     }
     if (!source.items.length) yield* paragraphXml("", style);
   } else {
-    yield* paragraphXml(source.text ?? "", style, {highlightMarks: source.highlightMarks});
+    yield* paragraphXml(source.text ?? "", style, {highlightMarks: source.highlightMarks, highlightColor: source.highlightColor});
   }
   yield "</p:txBody></p:sp>";
 }
@@ -925,6 +1005,188 @@ function prepareImageData(value: string, label: string, limits: ExportLimits, me
   }, mediaState)};
 }
 
+const SVG_SCRIPT_OPEN = /<(?:[\w.-]+:)?script(?=[\s/>]|$)/gi;
+const SVG_SCRIPT_CLOSE = /<\/(?:[\w.-]+:)?script\s*>/gi;
+// An event-handler attribute after whitespace, a slash or the previous value's closing quote,
+// with its value: quoted (an unclosed quote runs to the end) or bare.
+const SVG_EVENT_HANDLER = /(?<=[\s/"'])on[a-z]+\s*=\s*(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s>]*)/gi;
+// A link attribute (`href`, `xlink:href`, `src`), likewise; only a fragment or image data is kept.
+const SVG_LINK = /(?<=[\s/"'])(?:[\w.-]+:)?(?:href|src)\s*=\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$)|([^\s>]*))/gi;
+const SAFE_SVG_LINK = /^\s*(?:#|data:image\/)/i;
+
+// SVG markup without script elements (an unclosed one runs to the end), event handlers, or links
+// to anything outside the file, which a viewer would fetch on opening it -- CSS `@import` and
+// `url()` references in `<style>` and in attributes included. A removed script leaves a space, so
+// its neighbours can't join into a new tag. Linear in the markup: a lazy
+// `<script[\s\S]*?<\/script>` regex rescans to the end from every unclosed tag.
+function sanitizeSvg(svg: string): string {
+  const kept: string[] = [];
+  let at = 0;
+  SVG_SCRIPT_OPEN.lastIndex = 0;
+  for (let open = SVG_SCRIPT_OPEN.exec(svg); open; open = SVG_SCRIPT_OPEN.exec(svg)) {
+    kept.push(svg.slice(at, open.index));
+    const tagEnd = svg.indexOf(">", SVG_SCRIPT_OPEN.lastIndex);
+    if (tagEnd < 0) {
+      at = svg.length;
+    } else if (svg[tagEnd - 1] === "/") {
+      at = tagEnd + 1;
+    } else {
+      SVG_SCRIPT_CLOSE.lastIndex = tagEnd;
+      at = SVG_SCRIPT_CLOSE.exec(svg) ? SVG_SCRIPT_CLOSE.lastIndex : svg.length;
+    }
+    SVG_SCRIPT_OPEN.lastIndex = at;
+  }
+  kept.push(svg.slice(at));
+  return mapSvgTags(sanitizeSvgStyleSheets(kept.join(" ")), (tag) => (SVG_HREF_ANIMATION.test(tag) ? tag.replace(SVG_ATTRIBUTE_NAME, "") : tag)
+    .replace(SVG_EVENT_HANDLER, "")
+    .replace(SVG_LINK, (link: string, ...values: Array<string | undefined>) => SAFE_SVG_LINK.test(values[0] ?? values[1] ?? values[2] ?? "") ? link : "")
+    .replace(SVG_QUOTED_ATTRIBUTE, (attribute: string, name: string, double?: string, single?: string) => {
+      const decoded = decodeXmlText(double ?? single ?? "");
+      const clean = sanitizeSvgCss(decoded);
+      return clean === decoded ? attribute : name + '"' + escapeXmlText(clean).replace(/"/g, "&quot;") + '"';
+    }));
+}
+
+// `svg` with each tag passed through `clean`, and its text, comments and CDATA left as they are:
+// attributes exist only inside tags. A tag runs to the first `>` outside quotes (one left open,
+// to the end of the markup).
+function mapSvgTags(svg: string, clean: (tag: string) => string): string {
+  let out = "", at = 0;
+  for (let lt = svg.indexOf("<"); lt >= 0; lt = svg.indexOf("<", at)) {
+    const opaque = svg.startsWith("<!--", lt) ? "-->" : svg.startsWith("<![CDATA[", lt) ? "]]>" : null;
+    if (opaque) {
+      const close = svg.indexOf(opaque, lt);
+      const end = close < 0 ? svg.length : close + opaque.length;
+      out += svg.slice(at, end);
+      at = end;
+      continue;
+    }
+    let end = lt + 1, quote = "";
+    for (; end < svg.length; end++) {
+      const c = svg[end];
+      if (quote) { if (c === quote) quote = ""; }
+      else if (c === '"' || c === "'") quote = c;
+      else if (c === ">") break;
+    }
+    end = Math.min(end + 1, svg.length);
+    out += svg.slice(at, lt) + clean(svg.slice(lt, end));
+    at = end;
+  }
+  return out + svg.slice(at);
+}
+
+// An animation that writes a link (`<set attributeName="href" to="https://…">`), which would get
+// past the link check; without its attributeName it animates nothing.
+const SVG_HREF_ANIMATION = /^<\s*(?:[\w.-]+:)?(?:animate|set)(?=[\s/>])[\s\S]*?\sattributeName\s*=\s*["']?\s*(?:[\w.-]+:)?href\b/i;
+const SVG_ATTRIBUTE_NAME = /\sattributeName\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+)/gi;
+const SVG_STYLE_OPEN = /<(?:[\w.-]+:)?style(?=[\s/>]|$)/gi;
+const SVG_STYLE_CLOSE = /<\/(?:[\w.-]+:)?style\s*>/gi;
+// A quoted attribute: its name with the `=`, and its value in double or single quotes.
+const SVG_QUOTED_ATTRIBUTE = /(?<=[\s/"'])([\w.:-]+\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
+
+// Each `<style>` element's CSS through sanitizeSvgCss, rewritten only when that removes something.
+function sanitizeSvgStyleSheets(svg: string): string {
+  let out = "", at = 0;
+  SVG_STYLE_OPEN.lastIndex = 0;
+  for (let open = SVG_STYLE_OPEN.exec(svg); open; open = SVG_STYLE_OPEN.exec(svg)) {
+    const tagEnd = svg.indexOf(">", SVG_STYLE_OPEN.lastIndex);
+    if (tagEnd < 0) break;
+    if (svg[tagEnd - 1] === "/") { SVG_STYLE_OPEN.lastIndex = tagEnd + 1; continue; }
+    SVG_STYLE_CLOSE.lastIndex = tagEnd;
+    const close = SVG_STYLE_CLOSE.exec(svg);
+    const end = close ? close.index : svg.length;
+    const css = decodeXmlText(svg.slice(tagEnd + 1, end));
+    const clean = sanitizeSvgCss(css);
+    if (clean !== css) {
+      out += svg.slice(at, tagEnd + 1) + escapeXmlText(clean);
+      at = end;
+    }
+    SVG_STYLE_OPEN.lastIndex = close ? SVG_STYLE_CLOSE.lastIndex : svg.length;
+  }
+  return out + svg.slice(at);
+}
+
+// Character data as an XML parser reads it: CDATA sections as written, comments and tags left out,
+// and character references decoded.
+function decodeXmlText(xml: string): string {
+  return xml.replace(/<!\[CDATA\[([\s\S]*?)(?:\]\]>|$)|<!--[\s\S]*?(?:-->|$)|<[^>]*>?|&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi,
+    (match: string, cdata: string | undefined, entity: string | undefined) => {
+      if (cdata !== undefined) return cdata;
+      if (entity === undefined) return "";
+      const lower = entity.toLowerCase();
+      if (!lower.startsWith("#")) return {amp: "&", lt: "<", gt: ">", quot: '"', apos: "'"}[lower] ?? match;
+      const code = lower.startsWith("#x") ? parseInt(lower.slice(2), 16) : parseInt(lower.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "\ufffd";
+    });
+}
+
+function escapeXmlText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// CSS a viewer would fetch from outside the file: a CSS escape that spells an ASCII letter
+// (`@\69mport`) is read as the letter, `@import` rules are removed, and a `url()` naming anything
+// but a fragment or image data becomes `none`. Unchanged when there is nothing to remove.
+const CSS_LETTER_ESCAPE = /\\(?:([0-9a-f]{1,6})[ \t\n\r\f]?|([g-z]))/gi;
+const CSS_IMPORT = /@import\b[^;]*;?/gi;
+const CSS_URL = /url\(\s*(?:"([^"]*)"\s*\)|'([^']*)'\s*\)|([^)]*)(?:\)|$))/gi;
+const SAFE_CSS_URL = /^(#|data:image\/)/i;
+function sanitizeSvgCss(css: string): string {
+  if (!/@|url|\\/i.test(css)) return css;
+  const spelled = css.replace(CSS_LETTER_ESCAPE, (escape: string, hex: string | undefined, letter: string | undefined) => {
+    const char = letter ?? String.fromCharCode(Math.min(parseInt(hex ?? "", 16), 0xffff));
+    return /^[a-z]$/i.test(char) ? char : escape;
+  });
+  const clean = spelled.replace(CSS_IMPORT, "").replace(CSS_URL, (token: string, double?: string, single?: string, bare?: string) =>
+    SAFE_CSS_URL.test((double ?? single ?? bare ?? "").trim()) ? token : "none");
+  return clean === spelled ? css : clean;
+}
+
+/**
+ * An image block's `svgMarkup` -- SVG artwork an adapter supplies beside a PNG `src` -- ready to
+ * embed as the picture's SVG part, with the PNG as the fallback for viewers without SVG support.
+ * Scripts, inline event handlers and outside links are stripped, the namespaces a standalone SVG file needs are
+ * added, and `fit: "fill"` stretches it as the PNG is. Null when there is no `<svg>` element.
+ */
+function prepareSvgSource(value: unknown, fit: string | undefined, label: string, limits: ExportLimits, mediaState: MediaState): PreparedSvg | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  if (value.length > MAX_MEDIA_ENCODED_BYTES) {
+    throw new Error(`${label} exceeds the ${MAX_MEDIA_ENCODED_BYTES}-byte encoded-image limit.`);
+  }
+  const key = "svg:" + fit + ":" + value;
+  const cached = mediaState.bySvgSource.get(key);
+  if (cached !== undefined) return cached;
+  let result: PreparedSvg | null = null;
+  let svg = value.trim();
+  const start = svg.search(/<svg[\s>]/i);
+  if (start >= 0) {
+    svg = sanitizeSvg(svg.slice(start));
+    const open = /^<svg\b[^>]*>/i.exec(svg);
+    if (open) {
+      let tag = open[0];
+      if (!/\sxmlns\s*=/.test(tag)) tag = tag.replace(/^<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+      if (/xlink:/.test(svg) && !/\sxmlns:xlink\s*=/.test(tag)) tag = tag.replace(/^<svg/i, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+      if (fit === "fill") tag = tag.replace(/\spreserveAspectRatio\s*=\s*("[^"]*"|'[^']*')/i, "").replace(/^<svg/i, '<svg preserveAspectRatio="none"');
+      svg = tag + svg.slice(open[0].length);
+      // The aspect ratio comes from the viewBox, else the width and height attributes.
+      const viewBox = /\sviewBox\s*=\s*["']\s*[-\d.e]+[\s,]+[-\d.e]+[\s,]+([\d.e]+)[\s,]+([\d.e]+)/i.exec(tag);
+      const widthAttribute = /\swidth\s*=\s*["']\s*([\d.]+)(px)?\s*["']/i.exec(tag);
+      const heightAttribute = /\sheight\s*=\s*["']\s*([\d.]+)(px)?\s*["']/i.exec(tag);
+      const width = viewBox ? Number(viewBox[1]) : widthAttribute ? Number(widthAttribute[1]) : 0;
+      const height = viewBox ? Number(viewBox[2]) : heightAttribute ? Number(heightAttribute[1]) : 0;
+      const bytes = encoder.encode(svg);
+      limits.encodedBytes += bytes.length;
+      if (limits.encodedBytes > MAX_TOTAL_MEDIA_ENCODED_BYTES) {
+        throw new Error(`Deck images exceed the ${MAX_TOTAL_MEDIA_ENCODED_BYTES}-byte aggregate encoded-image limit.`);
+      }
+      const aspect = width > 0 && height > 0 ? width / height : null;
+      result = {media: addMedia(bytes, {extension: "svg", mime: "image/svg+xml", aspect, pixels: 0}, mediaState), aspect};
+    }
+  }
+  mediaState.bySvgSource.set(key, result);
+  return result;
+}
+
 function prepareBlock(source: unknown, slideIndex: number, blockIndex: number, limits: ExportLimits, mediaState: MediaState): PreparedBlock {
   const blockSource: Record<string, unknown> = source !== null && typeof source === "object" && !Array.isArray(source)
     ? source as Record<string, unknown>
@@ -943,9 +1205,6 @@ function prepareBlock(source: unknown, slideIndex: number, blockIndex: number, l
     case "sectionLabel":
       props.text = inlineText("text").toUpperCase();
       break;
-    case "gadgetsMark":
-      props.size = text("size");
-      break;
     case "title": {
       props.text = text("text");
       props.fontSize = sourceScalar(propsSource.fontSize);
@@ -955,6 +1214,8 @@ function prepareBlock(source: unknown, slideIndex: number, blockIndex: number, l
       props.lineHeight = sourceScalar(propsSource.lineHeight);
       const terms = parseHighlightTerms(text("highlight"), label);
       if (terms.length) props.highlightMarks = highlightMarks(props.text, terms, label, limits);
+      // An adapter may pick the highlight's colour (e.g. one legible on the slide's background).
+      props.highlightColor = text("highlightColor");
       break;
     }
     case "subtitle":
@@ -999,11 +1260,23 @@ function prepareBlock(source: unknown, slideIndex: number, blockIndex: number, l
       break;
     case "image":
       props.fit = text("fit");
+      props.objectPosition = text("objectPosition");
       props.radius = sourceScalar(propsSource.radius);
       props.alt = text("alt");
+      props.decorative = propsSource.decorative === true;
+      props.emptyText = inlineText("emptyText");
       props.image = prepareImageSource(propsSource.src, `${label} image`, limits, mediaState);
+      props.svgImage = prepareSvgSource(propsSource.svgMarkup, props.fit, `${label} SVG`, limits, mediaState);
       break;
     case "svg":
+      break;
+    case "brandBar":
+      break;
+    case "logo":
+      props.text = propsSource.text == null ? null : inlineText("text");
+      props.variant = text("variant");
+      props.scale = sourceScalar(propsSource.scale);
+      props.align = text("align");
       break;
     case "arrow":
       props.x1 = sourceScalar(propsSource.x1);
@@ -1040,7 +1313,7 @@ function prepareDeck(deck: unknown, adaptBlock?: PptxBlockAdapter): PreparedDeck
     totalText: 0, totalLineBreaks: 0, totalHighlightWork: 0, totalHighlightTransitions: 0,
     encodedBytes: 0, decodedBytes: 0,
   };
-  const mediaState: MediaState = {media: [], bySource: new Map(), totalPixels: 0};
+  const mediaState: MediaState = {media: [], bySource: new Map(), bySvgSource: new Map(), totalPixels: 0};
   const deckSource = deck !== null && typeof deck === "object" && !Array.isArray(deck)
     ? deck as Record<string, unknown>
     : null;
@@ -1103,15 +1376,20 @@ function prepareDeck(deck: unknown, adaptBlock?: PptxBlockAdapter): PreparedDeck
     const relationshipByMedia = new Map<number, string>();
     const relationships: PreparedRelationship[] = [];
     for (const block of blocks) {
-      const media = block.props.image?.media;
-      if (!media) continue;
-      let relationshipId = relationshipByMedia.get(media.index);
-      if (!relationshipId) {
-        relationshipId = `rId${relationships.length + 2}`;
-        relationshipByMedia.set(media.index, relationshipId);
-        relationships.push({id: relationshipId, media});
+      // A picture's raster part, and its SVG part when it has one.
+      for (const [media, slot] of [
+        [block.props.image?.media, "relationshipId"],
+        [block.props.svgImage?.media, "svgRelationshipId"],
+      ] as const) {
+        if (!media) continue;
+        let relationshipId = relationshipByMedia.get(media.index);
+        if (!relationshipId) {
+          relationshipId = `rId${relationships.length + 2}`;
+          relationshipByMedia.set(media.index, relationshipId);
+          relationships.push({id: relationshipId, media});
+        }
+        block.props[slot] = relationshipId;
       }
-      block.props.relationshipId = relationshipId;
     }
     return {background, blocks, relationships};
   });
@@ -1172,7 +1450,7 @@ function textWidth(text: string, fontSize: number, weight: unknown, letterSpacin
 
 // Greedy word wrap at spaces, breaking a word wider than the line mid-word as browsers and
 // PowerPoint do. Auto-height boxes also autofit, but card and box children are laid out from this.
-function estimateTextHeight(text: string, width: number, fontSize: number, lineHeight: number, weight: unknown, letterSpacing: unknown = ""): number {
+function estimateTextHeight(text: string, width: number, fontSize: number, lineHeight: number, weight: unknown, letterSpacing: unknown = "", slack = 2): number {
   const maxWidth = Math.max(1, width);
   const spacing = letterSpacingPixels(letterSpacing, fontSize);
   const spaceWidth = textWidth(" ", fontSize, weight) + spacing;
@@ -1197,7 +1475,7 @@ function estimateTextHeight(text: string, width: number, fontSize: number, lineH
     }
     lines += count;
   }
-  return Math.max(fontSize * lineHeight, lines * fontSize * lineHeight + 2);
+  return Math.max(fontSize * lineHeight, lines * fontSize * lineHeight + slack);
 }
 
 // Width for a single-line box: measured text plus 2% slack, so a consumer that wraps at the box
@@ -1244,27 +1522,6 @@ function* renderSectionLabel(state: RenderState, block: PreparedBlock, name: str
   yield* textShapeXml(state, name, box, style, {text: props.text ?? ""}, {wrap: false});
 }
 
-// The browser draws the mark as a 68x74 point-up hexagon (stroke 10, round joins) inside an 86-unit
-// square, sized to the icon; everything below is that square scaled by iconSize / 86.
-function* renderGadgetsMark(state: RenderState, block: PreparedBlock, name: string): Generator<string, void, unknown> {
-  const small = block.props.size === "small";
-  const iconSize = small ? 48 : 59;
-  const gap = small ? 18 : 26;
-  const fontSize = small ? 40 : 49;
-  const unit = iconSize / 86;
-  const x = positionPixels(block.x);
-  const y = positionPixels(block.y);
-  yield pointUpHexagonXml(state, `${name} hexagon`, boxFromPixels(x + 9 * unit, y + 6 * unit, 68 * unit, 74 * unit),
-    19 / 68, lineXml(parseColor("#FF4801"), 10 * unit, false, 1, false, "<a:round/>"));
-  const wordmark = "gadgets";
-  yield* textShapeXml(state, `${name} wordmark`,
-    boxFromPixels(x + iconSize + gap, y + (iconSize - fontSize) / 2,
-      naturalTextWidth(wordmark, fontSize, 500, -0.055 * fontSize) + 8, fontSize + 5), {
-      fontSize, weight: 500, letterSpacing: "-0.055em", lineHeight: 1,
-      color: parseColor("#140400"), align: "left",
-    }, {text: wordmark}, {wrap: false});
-}
-
 // A block with no `w` is an absolutely positioned `width: auto` wrapper in the browser: it
 // shrink-to-fits its content, up to the slide's right edge.
 function autoWidth(block: PreparedBlock, contentWidth: number): number {
@@ -1278,6 +1535,14 @@ function maxContentWidth(text: string, fontSize: number, weight: unknown, letter
   let widest = 0;
   for (const line of linesOf(text)) widest = Math.max(widest, textWidth(line, fontSize, weight, spacing));
   return Math.max(fontSize * 0.5, widest * 1.02);
+}
+
+// The first title block on a slide is its title (every property it needs is set on the shape, so
+// nothing is inherited from the master's title style).
+function takeTitle(state: RenderState): boolean {
+  const title = state.titlePending;
+  state.titlePending = false;
+  return title;
 }
 
 function* renderTitle(state: RenderState, block: PreparedBlock, name: string): Generator<string, void, unknown> {
@@ -1297,7 +1562,7 @@ function* renderTitle(state: RenderState, block: PreparedBlock, name: string): G
     lineHeight,
     color: parseColor(props.color, "#2B0B05"),
     align: "left",
-  }, {text, highlightMarks: props.highlightMarks}, {autofit: block.h == null && "grow"});
+  }, {text, highlightMarks: props.highlightMarks, highlightColor: parseColor(props.highlightColor)}, {autofit: block.h == null && "grow", title: takeTitle(state)});
 }
 
 function* renderSubtitle(state: RenderState, block: PreparedBlock, name: string): Generator<string, void, unknown> {
@@ -1368,42 +1633,52 @@ function* renderCard(state: RenderState, block: PreparedBlock, name: string): Ge
     props.title ? maxContentWidth(props.title, 18, 600, "-0.02em") : 0,
     props.body ? maxContentWidth(props.body, 15, 400) : 0));
   const width = Math.max(1, outerWidth - 40);
-  const eyebrowHeight = props.eyebrow ? estimateTextHeight(props.eyebrow, width, 10, 1.2, 600, "0.05em") : 0;
+  // The stack's own heights (no slack), so each text starts where the browser's flex column puts it.
+  const eyebrowHeight = props.eyebrow ? estimateTextHeight(props.eyebrow, width, 10, 1.2, 600, "0.05em", 0) : 0;
   // An empty title is a zero-height element in the browser; only the flex gap remains.
-  const titleHeight = props.title ? estimateTextHeight(props.title, width, 18, 1.3, 600, "-0.02em") : 0;
+  const titleHeight = props.title ? estimateTextHeight(props.title, width, 18, 1.3, 600, "-0.02em", 0) : 0;
   const bodyHeight = props.body ? estimateTextHeight(props.body, width, 15, 1.5, 400) : 0;
   const contentHeight = (props.eyebrow ? eyebrowHeight + 12 : 0) + titleHeight + 12 + bodyHeight;
   const outer = pixelBox(block, outerWidth, 40 + contentHeight);
   const padding = Math.min(20, outer.height / 2);
-  // Shrink the whole text stack's boxes and gaps before asking consumers to fit each text.
-  const heightScale = Math.min(1, Math.max(0, outer.height - 2 * padding) / contentHeight);
-  yield shapeXml(state, `${name} surface`, boxFromPixels(outer.x, outer.y, outer.width, outer.height), {
+  const surface = strokeInset(outer, 1);
+  yield shapeXml(state, `${name} surface`, boxFromPixels(surface.x, surface.y, surface.width, surface.height), {
     preset: "roundRect",
-    radius: 2,
+    radius: 1.5,
     fill: solidFill(parseColor("#FFFFFF")),
     line: lineXml(parseColor("#E5E5E5"), 1),
   });
+  // The browser lays the eyebrow and title out at full size and clips whatever overflows the card.
+  // Text can't be clipped here, so only the body gives way: it shrinks to the space left.
   const x = outer.x + 20;
   let y = outer.y + padding;
   if (props.eyebrow) {
-    yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, eyebrowHeight * heightScale), {
+    yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, eyebrowHeight), {
       fontSize: 10, weight: 600, letterSpacing: "0.05em", lineHeight: 1.2,
       color: parseColor("#FF6633"), align: "left",
-    }, {text: props.eyebrow}, {autofit: "shrink"});
-    y += (eyebrowHeight + 12) * heightScale;
+    }, {text: props.eyebrow});
+    y += eyebrowHeight + 12;
   }
   if (props.title) {
-    yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight * heightScale), {
+    yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight), {
       fontSize: 18, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
       color: parseColor("#000000"), align: "left",
-    }, {text: props.title}, {autofit: "shrink"});
+    }, {text: props.title});
   }
-  y += (titleHeight + 12) * heightScale;
-  yield* textShapeXml(state, `${name} body`,
-    boxFromPixels(x, y, width, Math.max(0, outer.y + outer.height - padding - y)), {
-      fontSize: 15, weight: 400, lineHeight: 1.5,
-      color: parseColor("#747474"), align: "left",
-    }, {text: props.body}, {autofit: "shrink"});
+  y += titleHeight + 12;
+  const bodyRoom = Math.max(0, outer.y + outer.height - padding - y);
+  yield* textShapeXml(state, `${name} body`, boxFromPixels(x, y, width, bodyRoom), {
+    fontSize: 15, weight: 400, lineHeight: 1.5,
+    color: parseColor("#747474"), align: "left",
+  }, {text: props.body}, {autofit: shrinkScale(props.body ?? "", width, bodyRoom, 15, 1.5, 400)});
+}
+
+// The font scale at which `text` fits `height` (PowerPoint's `normAutofit fontScale`, which it
+// stores rather than recomputes on open), in 2.5% steps down to MIN_FONT_SCALE.
+function shrinkScale(text: string, width: number, height: number, fontSize: number, lineHeight: number, weight: unknown): number {
+  let scale = 1;
+  while (scale > MIN_FONT_SCALE && estimateTextHeight(text, width, fontSize * scale, lineHeight, weight, "", 0) > height) scale -= 0.025;
+  return Math.max(MIN_FONT_SCALE, Math.round(scale * 1000) / 1000);
 }
 
 function* renderBox(state: RenderState, block: PreparedBlock, name: string): Generator<string, void, unknown> {
@@ -1413,13 +1688,14 @@ function* renderBox(state: RenderState, block: PreparedBlock, name: string): Gen
     props.title ? maxContentWidth(props.title, 16, 600, "-0.02em") : 0,
     props.body ? maxContentWidth(props.body, 14, 400) : 0));
   const width = Math.max(1, outerWidth - 28);
-  const titleHeight = props.title ? estimateTextHeight(props.title, width, 16, 1.3, 600, "-0.02em") : 0;
-  const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45, 400) : 0;
+  const titleHeight = props.title ? estimateTextHeight(props.title, width, 16, 1.3, 600, "-0.02em", 0) : 0;
+  const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45, 400, "", 0) : 0;
   const contentHeight = titleHeight + (props.body ? 6 + bodyHeight : 0);
   const outer = pixelBox(block, outerWidth, 28 + contentHeight);
-  yield shapeXml(state, `${name} surface`, boxFromPixels(outer.x, outer.y, outer.width, outer.height), {
+  const surface = strokeInset(outer, 1);
+  yield shapeXml(state, `${name} surface`, boxFromPixels(surface.x, surface.y, surface.width, surface.height), {
     preset: "roundRect",
-    radius: 2,
+    radius: 1.5,
     fill: solidFill(parseColor("#FFFFFF")),
     line: lineXml(parseColor("#E5E5E5"), 1, Boolean(props.dashed)),
   });
@@ -1448,17 +1724,22 @@ function* renderTonePill(state: RenderState, block: PreparedBlock, name: string)
     ruby: "#FF6633",
   } as Record<string, string>)[String(props.tone)] || "#F6821F";
   // An intrinsic inline-block in the browser: the wrapper's w/h size only the wrapper around it.
-  const width = naturalTextWidth(props.text ?? "", 11, 850, 0.06 * 11) + 24;
-  const height = 24;
+  // CSS letter-spacing also follows the last letter. Height: 5px padding around one line at the
+  // inherited line-height. The text is centred: a roundRect's text area is inset by its corners,
+  // which a top-anchored line would feel and a centred one does not.
+  const width = naturalTextWidth(props.text ?? "", 11, 850, 0.06 * 11) + 0.06 * 11 + 24;
+  const height = 10 + 11 * INHERITED_LINE_HEIGHT;
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
-    fontSize: 11, weight: 850, letterSpacing: "0.06em", lineHeight: 1,
+    fontSize: 11, weight: 850, letterSpacing: "0.06em", lineHeight: INHERITED_LINE_HEIGHT,
     color: parseColor(tone), align: "center",
   }, {text: props.text ?? ""}, {
     preset: "roundRect",
     radius: Math.min(width, height) / 2,
     fill: solidFill(parseColor(tone), 0.12),
+    // Centred with no side insets, so a viewer whose text runs a little wider than the estimate
+    // still centres it in the pill.
     anchor: "middle",
-    insets: {left: 12, right: 12, top: 5, bottom: 5},
+    insets: {left: 0, right: 0, top: 0, bottom: 0},
     wrap: false,
   });
 }
@@ -1469,30 +1750,51 @@ function renderDivider(state: RenderState, block: PreparedBlock, name: string): 
   });
 }
 
+// A CSS border is drawn inside the box, a DrawingML line centred on the outline: inset the outline
+// by half the stroke so the outer edges agree.
+function strokeInset(box: Box, width: number): Box {
+  const d = Math.min(width / 2, box.width / 2, box.height / 2);
+  return {x: box.x + d, y: box.y + d, width: box.width - 2 * d, height: box.height - 2 * d};
+}
+
 function renderShape(state: RenderState, block: PreparedBlock, name: string): string {
   const props = block.props;
   const box = pixelBox(block, 200, 200);
   const radius = cssNumber(props.radius, 0, 0, 100000);
   const preset = props.kind === "ellipse" ? "ellipse" : radius > 0 ? "roundRect" : "rect";
   const shapeOpacity = opacity(props.opacity, 1);
-  const width = props.strokeWidth ? numberOr(props.strokeWidth, 0, 0, 1000) : 0;
-  return shapeXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height), {
+  const stroke = parseColor(props.stroke);
+  const width = stroke && props.strokeWidth ? numberOr(props.strokeWidth, 0, 0, 1000) : 0;
+  const inset = strokeInset(box, width);
+  return shapeXml(state, name, boxFromPixels(inset.x, inset.y, inset.width, inset.height), {
     preset,
-    radius,
+    radius: Math.max(0, radius - width / 2),
     fill: solidFill(parseColor(props.fill), shapeOpacity),
     line: lineXml(parseColor(props.stroke), width, false, shapeOpacity),
   });
 }
 
-function pictureXml(state: RenderState, name: string, box: Box, relationshipId: string, alt: unknown, radius: number, crop: Crop | null): string {
+function pictureXml(state: RenderState, name: string, box: Box, relationshipId: string, alt: unknown, radius: number, crop: Crop | null, svgRelationshipId = "", decorative = false): string {
   const id = nextShapeId(state);
   const sourceRectangle = crop
     ? `<a:srcRect l="${crop.left}" t="${crop.top}" r="${crop.right}" b="${crop.bottom}"/>`
     : "";
   const preset = radius > 0 ? "roundRect" : "rect";
-  return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}" descr="${xmlAttribute(alt)}"/>` +
+  // An SVG picture: the PNG is the fallback for viewers without SVG support.
+  const blip = svgRelationshipId
+    ? `<a:blip r:embed="${relationshipId}" cstate="print"><a:extLst><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}">` +
+      `<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" r:embed="${svgRelationshipId}"/>` +
+      "</a:ext></a:extLst></a:blip>"
+    : `<a:blip r:embed="${relationshipId}" cstate="print"/>`;
+  // Artwork that carries no meaning (an adapter's background art) is marked decorative, so
+  // accessibility checkers and screen readers skip it rather than report missing alt text.
+  const nonVisual = decorative
+    ? `<p:cNvPr id="${id}" name="${xmlAttribute(name)}"><a:extLst><a:ext uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}">` +
+      '<adec:decorative xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="1"/></a:ext></a:extLst></p:cNvPr>'
+    : `<p:cNvPr id="${id}" name="${xmlAttribute(name)}" descr="${xmlAttribute(alt)}"/>`;
+  return `<p:pic><p:nvPicPr>${nonVisual}` +
     '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>' +
-    `<p:blipFill><a:blip r:embed="${relationshipId}" cstate="print"/>${sourceRectangle}` +
+    `<p:blipFill>${blip}${sourceRectangle}` +
     '<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>' + transformXml(box) +
     presetGeometry(preset, radius, box.width / PX_TO_EMU, box.height / PX_TO_EMU) +
     '<a:ln><a:noFill/></a:ln></p:spPr></p:pic>';
@@ -1508,16 +1810,19 @@ function imageCrop(imageAspect: number, boxWidth: number, boxHeight: number): Cr
   return {left: 0, top: crop, right: 0, bottom: crop};
 }
 
-// The largest box of the given aspect ratio centred inside `target` (CSS object-fit: contain).
-function containBox(target: Box, imageAspect: number): Box {
+// The largest box of the given aspect ratio inside `target` (CSS object-fit: contain), placed as
+// CSS `object-position` keywords place it: centred, unless `position` names an edge ("right top").
+function containBox(target: Box, imageAspect: number, position = ""): Box {
   const targetAspect = target.width / Math.max(1e-9, target.height);
   if (imageAspect === targetAspect) return target;
+  const words = position.toLowerCase().split(/\s+/);
+  const along = (start: string, end: string) => words.includes(start) ? 0 : words.includes(end) ? 1 : 0.5;
   if (imageAspect > targetAspect) {
     const height = target.width / imageAspect;
-    return {x: target.x, y: target.y + (target.height - height) / 2, width: target.width, height};
+    return {x: target.x, y: target.y + (target.height - height) * along("top", "bottom"), width: target.width, height};
   }
   const width = target.height * imageAspect;
-  return {x: target.x + (target.width - width) / 2, y: target.y, width, height: target.height};
+  return {x: target.x + (target.width - width) * along("left", "right"), y: target.y, width, height: target.height};
 }
 
 function* renderPlaceholder(state: RenderState, name: string, block: PreparedBlock, text: string, background: unknown, defaultWidth = 320, defaultHeight = 180): Generator<string, void, unknown> {
@@ -1526,9 +1831,9 @@ function* renderPlaceholder(state: RenderState, name: string, block: PreparedBlo
     ? solidFill(parseColor(background))
     : solidFill(parseColor("#7B6254"), 0.06);
   yield* textShapeXml(state, name, box, {
-    fontSize: 11, weight: 700, letterSpacing: "0.04em", lineHeight: 1.2,
+    fontSize: 11, weight: 700, letterSpacing: "0.08em", lineHeight: 1.2,
     color: parseColor("#A89082"), align: "center",
-  }, {text}, {
+  }, {text: text.toUpperCase()}, {
     preset: "roundRect",
     radius: 2,
     fill,
@@ -1543,23 +1848,33 @@ function* renderImage(state: RenderState, block: PreparedBlock, name: string): G
   const image = props.image ?? {placeholder: "No image"};
   if (image.omitted) return;
   if (!image.media) {
-    yield* renderPlaceholder(state, name, block, image.placeholder ?? "No image", null, 600, 675);
+    // An adapter can name what an empty block asks for (`emptyText`), as its editor does.
+    const label = !props.image?.media && typeof props.image?.placeholder === "string" && props.image.placeholder !== "No image"
+      ? props.image.placeholder
+      : props.emptyText || "No image";
+    yield* renderPlaceholder(state, name, block, label, null, 600, 675);
     return;
   }
   const media = image.media;
+  // An SVG picture is laid out by the artwork's own aspect ratio; its PNG fallback is stretched to it.
+  const aspect = props.svgImage ? props.svgImage.aspect : media.aspect;
   const target = pixelBox(block, 600, 675);
   let box = target;
   let crop = null;
-  if (media.aspect != null && props.fit === "cover") {
-    crop = imageCrop(media.aspect, target.width, target.height);
-  } else if (media.aspect != null && props.fit !== "fill") {
-    box = containBox(target, media.aspect);
+  if (aspect != null && props.fit === "cover") {
+    crop = imageCrop(aspect, target.width, target.height);
+  } else if (aspect != null && props.fit !== "fill") {
+    box = containBox(target, aspect, props.objectPosition);
   }
-  // The radius clips the block's box in the browser; a letterboxed picture is inset from the box's
-  // corners, so only a picture that fills the box is rounded.
-  const radius = box === target ? cssNumber(props.radius, 0, 0, 100000) : 0;
+  // The radius clips the block's box in the browser. A letterboxed picture is inset from the box's
+  // corners by the letterbox gap, so the clip cuts its corners only when that gap is under the
+  // radius: the box's corner arc then crosses the picture's edge `r - sqrt(r² - (r - gap)²)` from
+  // its corner, which is the radius the picture gets.
+  const boxRadius = cssNumber(props.radius, 0, 0, 100000);
+  const gap = Math.max(box.x - target.x, box.y - target.y);
+  const radius = gap < boxRadius ? boxRadius - Math.sqrt(boxRadius ** 2 - (boxRadius - gap) ** 2) : 0;
   yield pictureXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height),
-    props.relationshipId ?? "", props.alt ?? "", radius, crop);
+    props.relationshipId ?? "", props.alt ?? "", radius, crop, props.svgRelationshipId ?? "", props.decorative);
 }
 
 
@@ -1571,7 +1886,7 @@ function arrowColor(value: unknown): Color | null {
   } as Record<string, string>)[String(value)] || "#747474");
 }
 
-function connectorXml(state: RenderState, name: string, x1: number, y1: number, x2: number, y2: number, color: Color | null, width: number, dashed: boolean): string {
+function connectorXml(state: RenderState, name: string, x1: number, y1: number, x2: number, y2: number, color: Color | null, width: number, dashed: boolean, arrow = true): string {
   const id = nextShapeId(state);
   const left = Math.min(x1, x2);
   const top = Math.min(y1, y2);
@@ -1580,7 +1895,7 @@ function connectorXml(state: RenderState, name: string, x1: number, y1: number, 
   return `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}"/>` +
     '<p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr>' + transformXml(box, flips) +
     '<a:prstGeom prst="line"><a:avLst/></a:prstGeom>' +
-    lineXml(color, width, dashed, 0.85, true) + "</p:spPr></p:cxnSp>";
+    lineXml(color, width, dashed, 0.85, arrow) + "</p:spPr></p:cxnSp>";
 }
 
 function* renderArrow(state: RenderState, block: PreparedBlock, name: string): Generator<string, void, unknown> {
@@ -1592,12 +1907,29 @@ function* renderArrow(state: RenderState, block: PreparedBlock, name: string): G
   const y2 = positionPixels(props.y2);
   const width = props.width ? numberOr(props.width, 2, 0, 1000) : 2;
   const color = arrowColor(props.color || "muted");
-  yield connectorXml(state, name, x1, y1, x2, y2, color, width, Boolean(props.dashed));
+  // The head is the browser's SVG marker as a native triangle: 9w long and 6w wide (w = stroke
+  // width), its tip 1w past the end point. PowerPoint's own line ends top out at 5w, so they can't
+  // match. The line stops at the head's base, so its 85% opacity doesn't double up under the head.
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  if (length > 0) {
+    const ux = (x2 - x1) / length, uy = (y2 - y1) / length;
+    const back = 8 * width;
+    if (length > back) {
+      yield connectorXml(state, name, x1, y1, x2 - ux * back, y2 - uy * back, color, width, Boolean(props.dashed), false);
+    }
+    const cx = x2 - ux * 3.5 * width, cy = y2 - uy * 3.5 * width;
+    const degrees = (Math.atan2(uy, ux) * 180 / Math.PI + 90 + 360) % 360;
+    const head = boxFromPixels(cx - 3 * width, cy - 4.5 * width, 6 * width, 9 * width);
+    yield `<p:sp><p:nvSpPr><p:cNvPr id="${nextShapeId(state)}" name="${xmlAttribute(name + " head")}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>` +
+      `<p:spPr>${transformXml(head, degrees ? ` rot="${Math.round(degrees * 60000)}"` : "")}` +
+      `<a:prstGeom prst="triangle"><a:avLst/></a:prstGeom>${solidFill(color, 0.85)}<a:ln><a:noFill/></a:ln></p:spPr></p:sp>`;
+  }
   if (props.label) {
     const fontSize = 12;
     const labelWidth = naturalTextWidth(props.label, fontSize, 800, 0.02 * fontSize) + 16;
     yield* textShapeXml(state, `${name} label`,
-      boxFromPixels((x1 + x2 - labelWidth) / 2, (y1 + y2) / 2 - 8 - fontSize,
+      // The browser's SVG text sits on a baseline 8px above the midpoint.
+      boxFromPixels((x1 + x2 - labelWidth) / 2, (y1 + y2) / 2 - 8 - cssBaseline(fontSize, 1),
         labelWidth, fontSize * 1.3), {
         fontSize, weight: 800, letterSpacing: "0.02em", lineHeight: 1,
         color, align: "center",
@@ -1605,12 +1937,44 @@ function* renderArrow(state: RenderState, block: PreparedBlock, name: string): G
   }
 }
 
+// The logo wordmark (a logo without an image; an adapter draws one with an image as a picture):
+// plain text, as one native text box, so it is exact in every viewer. 24px at scale 1, bold,
+// line-height 1, tracked -0.02em, never wraps; with a width and align "right" its right edge is
+// pinned. An emptied wordmark draws nothing. (The Slides blueprint's client renders the same
+// numbers. Older decks may carry `accentDot`, from when the wordmark ended in a coloured full
+// stop; it is ignored.)
+const LOGO_FONT_PX = 24;
+/** The wordmark a logo block without its own `text` shows. */
+export const LOGO_DEFAULT_TEXT = "Workspace";
+
+function* renderLogo(state: RenderState, block: PreparedBlock, name: string): Generator<string, void, unknown> {
+  const props = block.props;
+  const scale = Number(props.scale) > 0 ? numberOr(props.scale, 1, 0.01, 20) : 1;
+  const fontSize = LOGO_FONT_PX * scale;
+  const dark = props.variant === "dark";
+  const raw = props.text == null ? LOGO_DEFAULT_TEXT : props.text;
+  const text = String(raw).replace(/[\t\n\r ]+/g, " ").trim();
+  if (!text) return;
+  const right = props.align === "right" && block.w != null;
+  // (Slack so no viewer's metrics wrap the last letter onto a second line.)
+  const width = block.w != null ? sizePixels(block.w, 1) : naturalTextWidth(text, fontSize, 700, -0.02 * fontSize) + fontSize * 0.25;
+  yield* textShapeXml(state, name, blockBox({...block, w: width, h: fontSize}, width, fontSize), {
+    fontSize,
+    weight: 700,
+    letterSpacing: "-0.02em",
+    lineHeight: 1,
+    color: parseColor(dark ? "#000000" : "#FFFFFF"),
+    align: right ? "right" : "left",
+  }, {text}, {wrap: false});
+}
+
 function* renderUnknown(state: RenderState, block: PreparedBlock, name: string): Generator<string, void, unknown> {
   const text = `?: ${block.type}`;
-  const width = block.w == null ? naturalTextWidth(text, 12, 400) + 20 : sizePixels(block.w, 120);
-  const height = block.h == null ? 27 : sizePixels(block.h, 27);
+  // The browser's badge ignores an authored size: padding around one line of its text.
+  const width = naturalTextWidth(text, 12, 400) + 20;
+  const height = 12 + 12 * INHERITED_LINE_HEIGHT;
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
-    fontSize: 12, weight: 400, lineHeight: 1, color: parseColor("#FFFFFF"), align: "left",
+    fontSize: 12, weight: 400, lineHeight: INHERITED_LINE_HEIGHT, color: parseColor("#FFFFFF"), align: "left",
   }, {text}, {
     preset: "roundRect", radius: 4, fill: solidFill(parseColor("#BB0000")),
     anchor: "middle", insets: {left: 10, right: 10, top: 6, bottom: 6},
@@ -1621,7 +1985,6 @@ function* renderBlockXml(state: RenderState, block: PreparedBlock, blockIndex: n
   const name = `Block ${blockIndex + 1} ${block.type}`;
   switch (block.type) {
     case "sectionLabel": yield* renderSectionLabel(state, block, name); break;
-    case "gadgetsMark": yield* renderGadgetsMark(state, block, name); break;
     case "title": yield* renderTitle(state, block, name); break;
     case "subtitle": yield* renderSubtitle(state, block, name); break;
     case "text": yield* renderText(state, block, name); break;
@@ -1634,6 +1997,18 @@ function* renderBlockXml(state: RenderState, block: PreparedBlock, blockIndex: n
     case "image": yield* renderImage(state, block, name); break;
     case "svg": break;
     case "arrow": yield* renderArrow(state, block, name); break;
+    // The content-slide brand strip as a native gradient rectangle, which every viewer draws (a
+    // stretched tiny PNG did not show up everywhere).
+    case "brandBar":
+      yield shapeXml(state, name, blockBox(block, 1200, 12), {
+        fill: gradientFill([
+          {position: 0, color: "#FF6633"},
+          {position: 50000, color: "#F6821F"},
+          {position: 100000, color: "#FBAD41"},
+        ], 0),
+      });
+      break;
+    case "logo": yield* renderLogo(state, block, name); break;
     default: yield* renderUnknown(state, block, name); break;
   }
 }
@@ -1650,7 +2025,7 @@ function groupShapeXml() {
 }
 
 function* slideXml(slide: PreparedSlide): Generator<string, void, unknown> {
-  const state = {nextShapeId: 2};
+  const state = {nextShapeId: 2, titlePending: true};
   yield `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="${DML_NS}" xmlns:r="${REL_NS}" xmlns:p="${PML_NS}">`;
   yield `<p:cSld>${slideBackgroundXml(slide.background)}<p:spTree>${groupShapeXml()}`;
   if (slide.background?.coverOrange) yield* coverArtworkXml(state);
@@ -1728,7 +2103,7 @@ function appProperties(slideCount: number): string {
     '<MMClips>0</MMClips><ScaleCrop>false</ScaleCrop>' +
     '<HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Slides</vt:lpstr></vt:variant>' +
     `<vt:variant><vt:i4>${slideCount}</vt:i4></vt:variant></vt:vector></HeadingPairs>` +
-    `<TitlesOfParts>${titles}</TitlesOfParts><Company>Cloudflare</Company>` +
+    `<TitlesOfParts>${titles}</TitlesOfParts>` +
     '<LinksUpToDate>false</LinksUpToDate><SharedDoc>false</SharedDoc><HyperlinksChanged>false</HyperlinksChanged>' +
     '<AppVersion>16.0000</AppVersion></Properties>';
 }

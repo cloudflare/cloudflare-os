@@ -648,7 +648,7 @@ describe("push rejection cascade", () => {
     }
   });
 
-  it("reads branches before discarding, so a retry after a failed read still cascades", async () => {
+  it("discards a push whose branch cannot be read, leaving its pull request queued", async () => {
     const github = scenarioGitHub();
     const gk = await repoGatekeeper();
     const cache = scenarioCache();
@@ -656,9 +656,10 @@ describe("push rejection cascade", () => {
     const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
 
     github.failingBranchReads.add("feature");
-    await expect(gk.rejectAction(push.approvalId)).rejects.toThrow();
-    expect(await gk.rejectAction(push.approvalId)).toEqual({ restart: true });
-    await expect(gk.applyAction(pr.approvalId, cache)).rejects.toThrow(/was discarded/);
+    expect(await gk.rejectAction(push.approvalId)).toBeUndefined();
+    await expect(gk.applyAction(push.approvalId, cache)).rejects.toThrow(/was discarded/);
+    // Not cascaded, so the user discards the pull request as its own decision.
+    expect(await gk.rejectAction(pr.approvalId)).toEqual({ restart: true });
   });
 
   it("cascades a pull request queued while the discard reads its branch", async () => {

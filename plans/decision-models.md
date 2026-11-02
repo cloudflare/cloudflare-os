@@ -86,14 +86,14 @@ probe.
 | Direct | decision model `/ai/run` | that token | 200, answers |
 
 Every passthrough 401 carried a `cf-aig-log-id`, so the gateway accepted the request and Workers
-AI behind it refused it. The gateway supplies its own Workers AI credential only for its
-OpenAI-compatible chat route, not for `/run` or the model path. It also ignores
-`cf-aig-authorization` on binding requests. On both transports, then, the decision model needs a
-Workers AI credential that the chat path never sends. Over HTTPS that is an `Authorization` token.
-The gateway passes a separate one through, but the gateway token can't be it: a request that
-reuses it there is refused, even when the token also grants Workers AI and works against Workers
-AI directly. Over the binding the decision model uses the binding's own `run()` instead, which still
-goes through the gateway. Clef's `model: "clef"` input selector is optional on the binding.
+AI behind it refused it. AI Gateway's source (`providers/WorkersAI.ts` in `ai-gateway-infra`)
+explains the HTTPS rows: the gateway supplies its own Workers AI credential only to a request with
+no `Authorization` header whose endpoint is chat or `run/<model>`, and forwards any `Authorization`
+it does get to Workers AI as the credential. pi's request goes to `run` and carries its key as
+`Authorization`, so it fails on both counts, while the bare input sent to `run/<model>` with
+`cf-aig-authorization` alone succeeds. The gateway ignores `cf-aig-authorization` on binding
+requests, so over the binding the decision model uses the binding's own `run()` instead, which
+still goes through the gateway. Clef's `model: "clef"` input selector is optional on the binding.
 
 The last three rows were run on 2026-10-05 against the `default` gateways of the Gadgets, Gadgets
 Staging and Cloudflare OS Previews accounts, with a token holding AI Gateway Run and Workers AI
@@ -250,31 +250,32 @@ export function getDecisionModel(env, config, initiator, metadata?): DecisionMod
 - **Model:** `CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS[config.model]`, with `baseUrl` overridden
   where the request goes to a different address. pi's entry supplies the API, provider, cost and
   window, as `catalogModel()` does for language models.
-- **HTTPS platform gateway** (`gwConfig` set, `gwConfig.bindingFor("cloudflare")` unset):
-  - `baseUrl = https://gateway.ai.cloudflare.com/v1/{acct}/{gw}/workers-ai`;
-  - options `{apiKey: gwConfig.apiToken, headers: {"cf-aig-authorization": Bearer token,
-    "cf-aig-metadata": JSON(buildMetadata(initiator, metadata))}}`.
+- **HTTPS platform gateway** (`gwConfig` set, `gwConfig.bindingFor("cloudflare")` unset): pi's
+  `fetch` option becomes an adapter that POSTs the bare input to
+  `https://gateway.ai.cloudflare.com/v1/{acct}/{gw}/workers-ai/run/{model}` with only
+  `cf-aig-authorization: Bearer {gateway token}` and `cf-aig-metadata`, and wraps the bare result
+  it gets back in the REST envelope pi reads.
 
-  pi sends `apiKey` as `Authorization`. Chat nulls that header and doesn't need it, but `/run`
-  does (the 401 above), and the gateway token can't fill it (Live evidence). So this route fails
-  until AI Gateway authenticates `/run` as it does chat. It stays as written until the AI Gateway
-  team answers (see Open questions), and the docs tell deployments without the binding transport
-  to disable decision models.
+  The gateway supplies Workers AI's credential itself only to a request that names the model in
+  the path and carries no `Authorization`; one that carries it has that header forwarded to
+  Workers AI as the credential, which is the 401 above. pi's own request breaks both rules (it
+  POSTs `{model, input}` to `run` and sends its key as `Authorization`), hence the adapter. A
+  failed response goes back to pi as is, for its retries and error message.
 - **Binding platform gateway:** the gateway's passthrough refuses `/run` even with the binding's
   identity, so binding requests use the binding's own `run()`, which goes through the same gateway
   (verified above). pi's `fetch` option becomes a small adapter:
 
   ```ts
   // pi's System One transport POSTs {model, input} as Workers AI's REST API takes them and reads
-  // back the REST envelope; the binding's run() takes and returns the bare values.
-  fetch: async (_url, init) => {
-    const {model, input} = JSON.parse(init!.body as string);
-    const result = await binding.run(model, input, {gateway: {id: gwConfig.gateway, metadata}});
-    return Response.json({success: true, result});
-  }
+  // back the REST envelope; both gateway routes take the bare input and return the bare result.
+  const piInput = async (init?: RequestInit) =>
+      (await new Response(init?.body).json<{input: Record<string, unknown>}>()).input;
+  fetch: async (_url, init) => Response.json({success: true, result: await binding.run(
+      config.model, await piInput(init), {gateway: {id: gwConfig.gateway, metadata}})}),
   ```
 
-  `apiKey` is the binding sentinel, because pi requires a key; the adapter sends no headers. pi
+  `apiKey` is the binding sentinel on both gateway routes, because pi requires a key; neither
+  adapter sends it. pi
   still owns the request shape (`bool` sent as `noul`), answer validation and usage. A `run()`
   error is thrown through `fetch`, and pi reports it as `stopReason: "error"` with the error's
   message.
@@ -399,8 +400,8 @@ the minted capability kind. `server.ts` exports the new class.
    the decision models, beside a new `listModels("decision")` assertion.
 9. Docs:
    - `docs/blueprints.md`: the `modelKind` field;
-   - `docs/public-server.md` and `docs/ai-gateway-billing.md`: decision models need the binding
-     transport, and a deployment without it disables them on the admin Models tab.
+   - `docs/public-server.md` and `docs/ai-gateway-billing.md`: every provider, Workers AI and its
+     decision models included, routes through the same Gateway on either transport.
 
 ### Commit 2: frontend
 
@@ -421,9 +422,11 @@ Backend unit tests, in a new `describe("getDecisionModel routing")` in
   `{model: id, input: {state, questions}}`, with `bool` sent as `noul`. A Clef-shaped
   `{success, result: {model, answers, usage}}` response yields typed answers. This ties the
   catalog's `kind` to pi's catalog and pins the Clef envelope fix the bump brings.
-- **Platform HTTPS.** The request goes to `…/v1/{acct}/{gw}/workers-ai/run`.
-  `cf-aig-authorization` and `authorization` are both `Bearer {gateway token}`, and
-  `cf-aig-metadata` carries the gadget attribution.
+- **Platform HTTPS.** The request goes to `…/v1/{acct}/{gw}/workers-ai/run/@cf/cloudflare/clef`
+  with the bare `{state, questions}` as its body. `cf-aig-authorization` is
+  `Bearer {gateway token}`, there is no `authorization` header, and `cf-aig-metadata` carries the
+  gadget attribution. A bare Clef result comes back as typed answers, and a 401 from the gateway
+  comes back as `stopReason: "error"` with the gateway's message.
 - **Platform binding.** A fake binding's `run()` receives `("@cf/cloudflare/clef", {state,
   questions with noul}, {gateway: {id: gw, metadata: {user, source: "model-binding", gadgetId,
   automated: true}}})`, and its bare Clef result comes back as typed answers. When `run()`
@@ -433,8 +436,9 @@ Backend unit test, `describe("DecisionModelGatekeeper.startSession")` in the sam
 for Clef is refused once the admin disables it. The language model's session tests already cover
 the shared check's cases; this one pins that the decision model's session runs it.
 
-HTTPS and direct requests are captured by stubbing `globalThis.fetch`. pi's `classify` falls back
-to it when no `fetch` option is given, so `getDecisionModel` takes no test-only parameter.
+HTTPS and direct requests are captured by stubbing `globalThis.fetch`: pi's `classify` falls back
+to it on the direct route, and the HTTPS adapter calls it, so `getDecisionModel` takes no
+test-only parameter.
 
 Backend unit test, `__tests__/user-models.test.ts`: in gateway mode with `cloudflare` added by the
 admin and a hand-added decision model, `listModels("decision")` lists the built-in and hand-added
@@ -469,9 +473,9 @@ call `decide` from a gadget. Check the providers page and the pickers in the bro
   chats and blueprints are untouched.
 - **Cost.** In gateway mode, decision model calls from gadgets are platform-funded and uncapped,
   exactly as LLM binding calls are today.
-- **HTTPS-gateway deployments** (a Gateway in another account, or no `WORKERS_AI` binding) can't
-  run decision models yet. Their admins disable Clef and Clef Flash on the Models tab, which turns
-  a gadget's 401 into a clear refusal. Chat is unaffected. Binding deployments need nothing new.
+- **HTTPS-gateway deployments** (a Gateway in another account, or no `WORKERS_AI` binding) run
+  decision models through the Gateway like binding deployments, provided the Gateway has
+  authentication on. Neither needs anything new.
 
 ## Open questions
 
@@ -481,11 +485,10 @@ Settled before merge:
 - **Naming:** the code says "decision model", the industry term Cloudflare's Clef docs use, rather
   than pi's "classifier".
 
-Pending with the AI Gateway team: whether `/run` can authenticate as chat does, with
-`cf-aig-authorization` alone, or pass on a token the gateway also accepted. If it can, the HTTPS
-route should work as written. If not, the choices are calling Workers AI directly over HTTPS with
-the gateway token (those calls then skip the gateway's logs), refusing decision models over HTTPS,
-or a second token setting.
+Settled since: `/run` does authenticate as chat does, with `cf-aig-authorization` alone, once the
+model is in the path (`workers-ai/run/<model>`) and the request carries no `Authorization`, which
+the gateway would otherwise forward to Workers AI as the credential (`providers/WorkersAI.ts` in
+`ai-gateway-infra`).
 
 Optional: check that the binding path's `metadata` shows up on the gateway's log entries (AI
 Gateway › Read, or the dashboard) for log IDs `01M3Z9A89284H1RT2C7T40T4AB` and

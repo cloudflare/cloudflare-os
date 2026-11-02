@@ -1,11 +1,22 @@
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import type { NoticeProps } from "../index.ts";
+import { disabledButtonProps } from "./Button.tsx";
 
-/** Info notices are not live regions themselves: {@link NoticeAnnouncer} speaks for them. */
-export const Notice = ({ children, tone = "info" }: NoticeProps) => tone === "error"
-  ? <Banner variant="error" size="sm" role="alert" description={children as ReactNode} />
-  : <Banner variant="secondary" size="sm" data-configurator-info-notice="" description={children as ReactNode} />;
+/**
+ * Info notices are not live regions themselves: {@link NoticeAnnouncer} speaks for them. Both tones
+ * mark the message alone, so neither announces the action's label with it.
+ */
+export const Notice = ({ children, tone = "info", action }: NoticeProps) => (
+  <Banner
+    variant={tone === "error" ? "error" : "secondary"}
+    size="sm"
+    description={tone === "error"
+      ? <span role="alert">{children as ReactNode}</span>
+      : <span data-configurator-info-notice="">{children as ReactNode}</span>}
+    action={action && <Banner.Action {...disabledButtonProps(action)}>{action.label}</Banner.Action>}
+  />
+);
 
 /**
  * The one polite live region for info notices, holding the text of the last one on screen. A live

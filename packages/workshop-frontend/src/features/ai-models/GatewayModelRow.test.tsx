@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   AdminModelView,
+  AiModelProvider,
   BuiltInReasoning,
   GatewayModelCapabilities,
   GatewayModelMode,
@@ -163,6 +164,7 @@ describe('GatewayModelRow', () => {
     model: AdminModelView
     defaultReasoning?: ReasoningLevel | null
     behavesLikeName?: string
+    poolProviders?: AiModelProvider[]
     busy?: boolean
     removable?: boolean
     test?: GatewayTestState
@@ -179,7 +181,10 @@ describe('GatewayModelRow', () => {
     root = createRoot(container)
     // Shows the row as a re-read of the settings reported it.
     const show = (
-      { model, defaultReasoning = null, behavesLikeName, busy = false, removable, test }: Shown,
+      {
+        model, defaultReasoning = null, behavesLikeName, poolProviders, busy = false, removable,
+        test,
+      }: Shown,
     ) =>
       act(async () => root!.render(
         <ul>
@@ -187,6 +192,7 @@ describe('GatewayModelRow', () => {
             model={model}
             defaultReasoning={defaultReasoning}
             behavesLikeName={behavesLikeName}
+            poolProviders={poolProviders}
             busy={busy}
             test={test}
             onModeChange={onModeChange}
@@ -448,6 +454,109 @@ describe('GatewayModelRow', () => {
       await choose(levelSelect(), 'Deployment default (built-in: no level sent)')
 
       expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
+    })
+  })
+
+  describe('the allowed models', () => {
+    // The Auto Router model: no reasoning levels, and the gateway's name for it.
+    const AUTO: AdminModelView = {
+      provider: 'cloudflare-auto-router', id: 'cloudflare/auto', name: 'Auto',
+      contextWindow: 200000, outputLimit: 32768, mode: 'enabled', defaultMode: 'enabled',
+      added: false, reasoningLevels: [], builtInReasoning: null,
+      builtInCompactionInputBudget: 167232, maxCompactionInputBudget: 167232, runtimeKnown: false,
+    }
+    const field = () => {
+      const label = Array.from(document.body.querySelectorAll('label'))
+        .find((element) => element.textContent === 'Allowed models for Auto')
+      const element = document.getElementById(label?.htmlFor ?? '')
+      if (!(element instanceof HTMLInputElement)) throw new Error('No allowed models field')
+      return element
+    }
+    const save = () => button('Save the allowed models of Auto')
+
+    it('offers the list to the Auto Router model alone', async () => {
+      await render({ model: SONNET })
+      expect(() => field()).toThrow('No allowed models field')
+
+      const { show } = await render({ model: AUTO, poolProviders: ['anthropic', 'openai'] })
+      expect(field().value).toBe('')
+      expect(field().placeholder).toBe('Every model of the providers that are on')
+      expect(() => button('Reset the allowed models of Auto')).toThrow('No button')
+      // The field names the pool the blank list resolves to, and where the gateway lists it.
+      expect(describedBy(field())).toContain('providers that are on (Anthropic, OpenAI)')
+      expect(document.querySelector('a[href$="/auto-router/#models"]')).not.toBeNull()
+      await show({ model: AUTO, poolProviders: [] })
+      expect(describedBy(field())).toContain('No provider is on for Auto to pick from')
+    })
+
+    it('saves the names typed, trimmed and once each, beside the model’s other settings',
+      async () => {
+      const { onSettingsChange, show } = await render({
+        model: { ...AUTO, settings: { compactionInputBudget: 100000 } },
+      })
+      await type(field(), ' anthropic/* ,openai/gpt-6-luna, anthropic/*, ')
+
+      await click(save())
+
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({
+        compactionInputBudget: 100000, allowedModels: ['anthropic/*', 'openai/gpt-6-luna'],
+      })
+      await show({
+        model: {
+          ...AUTO,
+          settings: {
+            compactionInputBudget: 100000, allowedModels: ['anthropic/*', 'openai/gpt-6-luna'],
+          },
+        },
+      })
+      expect(field().value).toBe('anthropic/*, openai/gpt-6-luna')
+    })
+
+    it('refuses a name that is no gateway model name without sending it, and points at the field',
+      async () => {
+        const { onSettingsChange } = await render({ model: AUTO })
+        await type(field(), 'anthropic/*, claude opus')
+
+        await click(save())
+
+        expect(onSettingsChange).not.toHaveBeenCalled()
+        expect(field().getAttribute('aria-invalid')).toBe('true')
+        expect(describedBy(field())).toContain('“claude opus” is not a gateway model name')
+        expect(document.activeElement).toBe(field())
+      })
+
+    it('unsets the list when a blank field is saved, or Reset is pressed', async () => {
+      const held = { ...AUTO, settings: { allowedModels: ['anthropic/*'] } }
+      const { onSettingsChange } = await render({ model: held })
+      await type(field(), '  ')
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
+
+      onSettingsChange.mockClear()
+      await type(field(), 'openai/*')
+      await click(button('Reset the allowed models of Auto'))
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
+      expect(document.activeElement).toBe(field())
+      expect(field().value).toBe('anthropic/*')
+    })
+
+    it('sends nothing when the list the model has is saved again', async () => {
+      const { onSettingsChange } = await render({
+        model: { ...AUTO, settings: { allowedModels: ['anthropic/*'] } },
+      })
+      await type(field(), 'anthropic/*,')
+      await click(save())
+      expect(onSettingsChange).not.toHaveBeenCalled()
+    })
+
+    it('names the model the router answered with', async () => {
+      await render({
+        model: AUTO,
+        test: answered({
+          model: 'cloudflare/auto', ok: true, routedModel: 'anthropic/claude-sonnet-5.5',
+        }),
+      })
+      expect(testSaid()).toEqual(['Answered through the gateway via anthropic/claude-sonnet-5.5.'])
     })
   })
 

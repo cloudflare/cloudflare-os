@@ -1,4 +1,4 @@
-import type { ConfiguratorUIHostContext, ConfiguratorUISpec } from "../index.ts";
+import type { ConfiguratorUIHostContext, ConfiguratorUISpec, ConfiguratorUIValues } from "../index.ts";
 import type { ConfiguratorStore } from "./store.ts";
 
 /**
@@ -62,10 +62,17 @@ const assertCollectable = (session: ConfiguratorSession): void => {
   if (reason !== null) throw new Error(reason);
 };
 
+/** Whether two value sets hold the same fields with the same values. */
+const sameValues = (a: ConfiguratorUIValues, b: ConfiguratorUIValues): boolean => {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key => key in b && a[key] === b[key]);
+};
+
 /**
  * The resource URL for the values on screen. Refuses whatever readiness withholds (the render
  * failed, a field holds collection, or the module does not call the values ready), and values that
- * changed while the module's `resourceUrl` was computing it.
+ * changed while the module's `resourceUrl` was computing it. A redraw that left every value as it
+ * was (a module calling `setValues({})` when state of its own changed) is not a change.
  */
 export const collectResourceUrl = async (session: ConfiguratorSession): Promise<string> => {
   assertCollectable(session);
@@ -73,7 +80,7 @@ export const collectResourceUrl = async (session: ConfiguratorSession): Promise<
   const { spec, ui, acceptedResourceUrlPatterns } = session;
   const resourceUrl = await spec.resourceUrl({ values: renderedValues, ui, acceptedResourceUrlPatterns });
   assertCollectable(session);
-  if (session.store.getState().values !== renderedValues) {
+  if (!sameValues(session.store.getState().values, renderedValues)) {
     throw new Error("Configurator changed while its resource URL was being collected. Please try again.");
   }
   if (typeof resourceUrl !== "string" || resourceUrl.length === 0) {

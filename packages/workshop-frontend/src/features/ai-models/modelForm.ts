@@ -11,6 +11,7 @@ export const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   google: 'Google',
   cloudflare: 'Cloudflare Workers AI',
   ollama: 'Ollama',
+  'cloudflare-auto-router': 'AI Gateway Auto Router',
 }
 
 /** Each reasoning level's name as the Models tab shows it. */
@@ -37,4 +38,23 @@ export const parseTokenLimit = (text: string): number | undefined | null => {
   if (!/^\d+$/.test(trimmed)) return null
   const value = Number(trimmed)
   return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+// A gateway model name as Auto Router's allow-list takes one: provider/model, where * stands for
+// a whole model name. The server checks the same shape.
+const ALLOWED_MODEL_NAME = /^[^\s,/]+\/[^\s,]+$/
+
+/**
+ * Parse the allowed-models field, a comma-separated list of gateway model names: the names,
+ * trimmed and once each (none when blank), or else the first entry that is no such name.
+ */
+export const parseAllowedModels = (text: string): { names: string[] } | { malformed: string } => {
+  const names: string[] = []
+  for (const entry of text.split(',')) {
+    const name = entry.trim()
+    if (!name) continue
+    if (!ALLOWED_MODEL_NAME.test(name)) return { malformed: name }
+    if (!names.includes(name)) names.push(name)
+  }
+  return { names }
 }

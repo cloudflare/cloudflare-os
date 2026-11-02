@@ -54,6 +54,13 @@ export type AdminConfig = {
    * vendors that declare autoProvisionsAccount.
    */
   ambientGatekeeperModes: Record<string, AmbientGatekeeperMode>;
+  /**
+   * The hosts `webFetch` may reach in a workspace that has observed restricted data (see
+   * Overseer.getWebFetchEnv), as lowercase ASCII host names. Empty ⇒ no web fetches there. A host
+   * belongs here only if everyone who can see requests to it is cleared for that data: its logs,
+   * analytics and caches, and anything it fetches on a request's behalf.
+   */
+  restrictedWebFetchHosts: string[];
 
   /**
    * The blueprints offered as this deployment's standard output formats. What a user gets from
@@ -151,6 +158,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledResources: {},
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
+  restrictedWebFetchHosts: [],
   formats: [],
   modelModes: {},
   addedProviders: [],

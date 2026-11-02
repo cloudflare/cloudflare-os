@@ -116,14 +116,19 @@ const SPAWNER_TYPES = {
   mainType: "Drafter",
 };
 
-// The binding a gadget holds, as the gadget would reach it: the spawner gatekeeper instantiated
-// as one of this overseer's facets (the only way to reach a DurableObject class carrying props),
-// then its session. Calls made through it go over RPC back into the overseer.
-async function spawnerBinding(impl: any, config = SPAWNER_CONFIG): Promise<AgentSpawnerBinding> {
+// The binding a gadget holds, as the gadget would reach it: a spawner gatekeeper added to this
+// overseer (instantiated as one of its facets, the only way to reach a DurableObject class
+// carrying props), then its session. Calls made through it go over RPC back into the overseer.
+async function spawnerBinding(impl: any, {env, ...config} = SPAWNER_CONFIG)
+    : Promise<AgentSpawnerBinding> {
   let cls = impl.ctx.exports.AgentSpawnerGatekeeper({ props: {
-    overseerId: impl.ctx.id.toString(), config, creatorUserId: OWNER_USER_ID,
+    config, creatorUserId: OWNER_USER_ID,
   } });
-  return (await impl.getGatekeeperFacet(900, cls)).startSession(undefined);
+  let bindings = Object.fromEntries(
+      Object.entries(env).map(([name, target]) => [name, { target }]));
+  let client = await impl.addGatekeeper(
+      cls, { type: "agentSpawner", config }, OWNER_USER_ID, undefined, bindings);
+  return client.openSession();
 }
 
 describe("durable agent calls", () => {

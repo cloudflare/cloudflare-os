@@ -21,6 +21,7 @@ import {
 } from "./artifact-sync.js";
 import {
   isSkillManifestPath, parseSkillManifest, updateSkillManifestName, type SkillIndexEntry,
+  type SkillManifestMetadata,
 } from "./agent-skill.js";
 import { obsContext } from "./observability.js";
 import {
@@ -32,6 +33,11 @@ const logger = obsContext.createLogger({
 });
 
 const MAX_DOCUMENT_PATH_LENGTH = 1024;
+// Invalid skill manifests named in one sync's warning; the count covers the rest.
+const MAX_LOGGED_INVALID_SKILLS = 10;
+
+type AgentSkillParse = { manifest: SkillManifestMetadata } | { error: string };
+
 // Git tokens created through the web UI are valid for one year,
 // the maximum TTL supported by Artifacts.
 const GIT_TOKEN_TTL_SECONDS = 31_536_000;
@@ -596,39 +602,49 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     });
   }
 
-  #parseAgentSkill(record: ContextRecord) {
+  // Undefined for documents that are not text SKILL.md files. The error is one of
+  // parseSkillManifest's fixed validation messages, never document content.
+  #readAgentSkill(record: ContextRecord): AgentSkillParse | undefined {
     if (!isSkillManifestPath(record.path) ||
         !isTextContentType(record.contentType ?? DEFAULT_DOCUMENT_CONTENT_TYPE)) {
       return undefined;
     }
     try {
-      return parseSkillManifest(
-        record.path,
-        decodeStoredContextBody(record.contentType ?? DEFAULT_DOCUMENT_CONTENT_TYPE, record.body),
-      );
-    } catch {
-      return undefined;
+      return {
+        manifest: parseSkillManifest(
+          record.path,
+          decodeStoredContextBody(record.contentType ?? DEFAULT_DOCUMENT_CONTENT_TYPE, record.body),
+        ),
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Skill manifest is invalid." };
     }
   }
 
+  #parseAgentSkill(record: ContextRecord): SkillManifestMetadata | undefined {
+    let parsed = this.#readAgentSkill(record);
+    return parsed && "manifest" in parsed ? parsed.manifest : undefined;
+  }
+
   // Update the skill entry after saving a document.
-  #updateSkillIndex(record: ContextRecord): void {
-    let manifest = this.#parseAgentSkill(record);
-    if (manifest) {
+  #updateSkillIndex(record: ContextRecord): AgentSkillParse | undefined {
+    let skill = this.#readAgentSkill(record);
+    if (skill && "manifest" in skill) {
       this.storage.skillIndex.put({
         path: record.path,
-        skillName: manifest.name,
-        description: manifest.description,
+        skillName: skill.manifest.name,
+        description: skill.manifest.description,
       });
     } else {
       this.storage.skillIndex.delete(record.path);
     }
+    return skill;
   }
 
   // Save a document and update its skill entry together.
-  #putDocument(record: ContextRecord): void {
+  #putDocument(record: ContextRecord): AgentSkillParse | undefined {
     this.storage.documents.put(record);
-    this.#updateSkillIndex(record);
+    return this.#updateSkillIndex(record);
   }
 
   // Delete a document and its skill entry together.
@@ -721,13 +737,15 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     let options = prefix ? { prefix } : undefined;
     let result: ContextDocumentSummary[] = [];
     for (let record of this.storage.documents.list(options)) {
-      let manifest = this.#parseAgentSkill(record);
+      let skill = this.#readAgentSkill(record);
+      let manifest = skill && "manifest" in skill ? skill.manifest : undefined;
       result.push({
         path: record.path,
         name: record.name,
         description: manifest?.description ?? record.description,
         contentType: record.contentType ?? DEFAULT_DOCUMENT_CONTENT_TYPE,
         ...(manifest ? {skillName: manifest.name} : {}),
+        ...(skill && "error" in skill ? {skillError: skill.error} : {}),
         lastUpdated: record.lastUpdated,
       });
     }
@@ -1159,13 +1177,15 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   }
 
   #replaceArtifactDocuments(commit: string, documents: ArtifactContextDocument[]): void {
+    let invalidSkills: Array<{ filepath: string; reason: string }> = [];
     this.storage.transaction(() => {
       for (let record of this.storage.documents.list()) {
         this.storage.documents.delete(record.path);
       }
       this.#clearSkillIndex();
       for (let doc of documents) {
-        this.#putDocument(doc);
+        let skill = this.#putDocument(doc);
+        if (skill && "error" in skill) invalidSkills.push({ filepath: doc.path, reason: skill.error });
       }
 
       let meta = this.getMetadata();
@@ -1177,6 +1197,17 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       this.storage.metadata.put(meta);
       this.storage.skillIndexVersion.put(SKILL_INDEX_VERSION);
     });
+    if (invalidSkills.length > 0) {
+      // Git pushes bypass createContextSkill's validation, so a broken manifest would otherwise
+      // only surface as a missing skill. One bounded line per sync, not one per manifest.
+      logger.warn("git-based context collection has invalid skill manifests", {
+        event: "context.skill.manifest.invalid",
+        collectionId: this.getMetadata().id,
+        commit,
+        invalidSkillManifestCount: invalidSkills.length,
+        invalidSkillManifests: invalidSkills.slice(0, MAX_LOGGED_INVALID_SKILLS),
+      });
+    }
   }
 
   #deleteArtifactDocuments(commit: string): void {

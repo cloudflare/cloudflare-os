@@ -3,7 +3,7 @@ import { BellSlash, DotsThree, Star, ShareNetwork, Trash, Pencil } from '@phosph
 import { DropdownMenu } from '@cloudflare/kumo'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from '../menuStyles'
 import { useState, useEffect, useRef } from 'react'
-import type { GadgetMetadataWithTimestamps, NotificationMute } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps, NotificationMute } from '@gadgets/workshop-shared/api'
 import { WorkspaceNotificationsMenu } from '../../features/notifications/WorkspaceNotificationsMenu'
 import { describeMute } from '../../features/notifications/notificationMute'
 import { isImeComposing } from '../../keyboardEvent'
@@ -29,13 +29,13 @@ export default function SidebarGadgetRow({
   onNotificationMuteChange,
   onDelete,
 }: {
-  gadget: GadgetMetadataWithTimestamps
+  gadget: WorkspaceMetadataWithTimestamps
   collapsed?: boolean
-  onTogglePin: (g: GadgetMetadataWithTimestamps) => void
-  onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
-  onShare: (g: GadgetMetadataWithTimestamps) => void
-  onNotificationMuteChange: (g: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) => void
-  onDelete: (g: GadgetMetadataWithTimestamps) => void
+  onTogglePin: (g: WorkspaceMetadataWithTimestamps) => void
+  onRename: (g: WorkspaceMetadataWithTimestamps, newTitle: string) => void
+  onShare: (g: WorkspaceMetadataWithTimestamps) => void
+  onNotificationMuteChange: (g: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) => void
+  onDelete: (g: WorkspaceMetadataWithTimestamps) => void
 }) {
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')

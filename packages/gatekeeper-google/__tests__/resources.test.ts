@@ -154,23 +154,23 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
   });
 
-  // Pins every permanent scope each Drive resource needs. No broader Drive scope is ever
-  // requested; a wider one only ever arrives from a grant the account already held.
+  // Pins every permanent scope each Drive resource needs: drive.readonly, so a PDF's content can be
+  // downloaded, and never full drive.
   it.each([
     [GOOGLE_DRIVE_RESOURCE, [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
     ]],
     [GOOGLE_DRIVE_FOLDER_RESOURCE, [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
     ]],
     [GOOGLE_DRIVE_FILE_RESOURCE, [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -209,7 +209,7 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
   it("covers a Drive resource's spreadsheets.readonly with a spreadsheets grant", () => {
     expect(resourcesCoveredByScopes([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern], [
       ...IDENTITY_SCOPES,
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -243,6 +243,46 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     };
     expect(grantedResourceUrlPatterns(grant)).toEqual([]);
     expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]);
+  });
+
+  // `freeBusy.query` accepts only `calendar`, `calendar.readonly`, `calendar.freebusy` and
+  // `calendar.events.freebusy`. With `calendar.events` alone Google answers 403
+  // ACCESS_TOKEN_SCOPE_INSUFFICIENT, which failed every checkAvailability and every all-visible
+  // observer check.
+  it("asks a Calendar connection for a scope free/busy accepts", () => {
+    expect(resourceUrlPatternsToOAuthScopes([GOOGLE_CALENDAR_RESOURCE.urlPattern])).toEqual([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/calendar.events",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
+    ]);
+  });
+
+  it("re-prompts a Calendar grant made before availability had its own scope", () => {
+    const grant = {
+      resourceUrlPatterns: [GOOGLE_CALENDAR_RESOURCE.urlPattern],
+      oauthScopes: [
+        ...IDENTITY_SCOPES,
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+      ],
+    };
+    expect(grantedResourceUrlPatterns(grant)).toEqual([]);
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_CALENDAR_RESOURCE.urlPattern]);
+  });
+
+  // Free/busy already worked for an account holding a whole-calendar scope, so it keeps its grant.
+  it("covers Calendar free/busy with a whole-calendar grant", () => {
+    for (const wider of [
+      "https://www.googleapis.com/auth/calendar",
+      "https://www.googleapis.com/auth/calendar.readonly",
+    ]) {
+      expect(resourcesCoveredByScopes([GOOGLE_CALENDAR_RESOURCE.urlPattern], [
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+        wider,
+      ])).toEqual([GOOGLE_CALENDAR_RESOURCE.urlPattern]);
+    }
   });
 
   it("deduplicates scopes shared between resources", () => {
@@ -330,12 +370,13 @@ describe("resourcesCoveredByScopes", () => {
       ])).toEqual([]);
     }
 
+    // Full metadata access plus the read-write editor scopes still cannot read a file's content.
     expect(resourcesCoveredByScopes(folderIntent, [
       "https://www.googleapis.com/auth/drive.metadata",
       "https://www.googleapis.com/auth/documents",
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/presentations",
-    ])).toEqual(folderIntent);
+    ])).toEqual([]);
     // Sheets needs the read-write `spreadsheets` scope, which only `drive` subsumes.
     expect(resourcesCoveredByScopes(
       [GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern],
@@ -731,6 +772,20 @@ describe("recorded account grants", () => {
     expect(grantedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
   });
 
+  // Calendar gained calendar.events.freebusy after this generation was written. Its earlier scopes
+  // were never requested by anything else, so a reconnect still asks for Calendar, and with it the
+  // new scope, while the Workshop reports the grant as missing. Either scope alone proves nothing.
+  it("keeps an outgrown Calendar grant requestable for a scope-only account", () => {
+    const calendarList = "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
+    const events = "https://www.googleapis.com/auth/calendar.events";
+    const grant = { oauthScopes: [...IDENTITY_SCOPES, calendarList, events] };
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_CALENDAR_RESOURCE.urlPattern]);
+    expect(grantedResourceUrlPatterns(grant)).toEqual([]);
+    for (const scope of [calendarList, events]) {
+      expect(recordedResourceUrlPatterns({ oauthScopes: [...IDENTITY_SCOPES, scope] })).toEqual([]);
+    }
+  });
+
   // A urlPattern retired by a later deploy. Keeping it would make every reconnect throw on an
   // unknown pattern; the account re-consents under the live pattern instead.
   it("drops a retired pattern from a recorded grant", () => {
@@ -781,11 +836,12 @@ describe("Office import grant", () => {
     expect(LEGACY_GRANTED_RESOURCE_URL_PATTERNS).not.toContain(OFFICE_IMPORT_GRANT);
   });
 
-  // connectAccount requests every supported resource when the caller names none.
+  // connectAccount requests every supported resource when the caller names none. The Drive
+  // resources bring drive.readonly; the copy's drive.file comes only from this grant.
   it("is not part of a first connection's request-everything default", () => {
     let everything = resourceUrlPatternsToOAuthScopes(
       SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
-    expect(everything).not.toContain(DRIVE_READONLY);
+    expect(everything).toContain(DRIVE_READONLY);
     expect(everything).not.toContain(DRIVE_FILE);
   });
 
@@ -863,5 +919,23 @@ describe("shared drives grant", () => {
     };
     expect(grantedResourceUrlPatterns(grant)).toEqual([SHARED_DRIVES_GRANT]);
     expect(hasDriveResourceGrant(grantedResourceUrlPatterns(grant))).toBe(false);
+  });
+});
+
+describe("Drive resources' file content access", () => {
+  const DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly";
+  const DRIVE_METADATA_READONLY = "https://www.googleapis.com/auth/drive.metadata.readonly";
+  const DRIVE_RESOURCES = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
+    .map(resource => resource.urlPattern);
+
+  it("no longer counts an account that holds only drive.metadata.readonly as granted", () => {
+    let scopes = resourceUrlPatternsToOAuthScopes(DRIVE_RESOURCES)
+      .map(scope => scope === DRIVE_READONLY ? DRIVE_METADATA_READONLY : scope);
+    let granted = grantedResourceUrlPatterns({ resourceUrlPatterns: DRIVE_RESOURCES, oauthScopes: scopes });
+    expect(granted).toEqual([]);
+    expect(hasDriveResourceGrant(granted)).toBe(false);
+    // A reconnect asks for them again.
+    expect(recordedResourceUrlPatterns({ resourceUrlPatterns: DRIVE_RESOURCES, oauthScopes: scopes }))
+      .toEqual(DRIVE_RESOURCES);
   });
 });

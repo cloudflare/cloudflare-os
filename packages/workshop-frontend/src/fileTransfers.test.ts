@@ -13,6 +13,18 @@ describe('export file transfers', () => {
       .toBe('Quarterly-report-2026.csv')
   })
 
+  it('uses a custom full filename without appending another extension', () => {
+    expect(makeExportFilename('Gadget title', '.pdf', 'one-pager.pdf'))
+      .toBe('one-pager.pdf')
+  })
+
+  it('sanitizes custom filenames and falls back when nothing remains', () => {
+    expect(makeExportFilename('Gadget title', '.pdf', ' reports / one-pager.pdf '))
+      .toBe('reports-one-pager.pdf')
+    expect(makeExportFilename('Gadget title', '.pdf', ' / '))
+      .toBe('Gadget-title.pdf')
+  })
+
   it('opens the picker before starting the export stream', async () => {
     const order: string[] = []
     const picker = vi.fn<(_options: unknown) => Promise<{

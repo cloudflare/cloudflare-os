@@ -64,7 +64,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
     try {
       await saveStreamToFile(
         () => gadget.export(format.id, chatId),
-        makeExportFilename(gadgetTitle, format.fileExtension),
+        makeExportFilename(gadgetTitle, format.fileExtension, format.fileName),
         {
           description: format.label,
           contentType: format.contentType,

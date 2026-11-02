@@ -71,7 +71,7 @@ async function steerChat(usernamePrefix: string, script: readonly ChatCompletion
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, username!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const chatId = await ws.newChat(PROMPT, SCRIPTED_MODEL_ID);
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await ws.sendChatMessage(chatId, STEER, SCRIPTED_MODEL_ID);
@@ -110,7 +110,7 @@ it.concurrent("every member sees the queued steers, and stopping the agent drops
     // A collaborator without the running turn's model can still steer it.
     using api = await signUp(publicApi, name!);
     if (!await ws.addCollaborator(name!, "build")) throw new Error(`Failed to share with ${name}`);
-    using shared = await api.openGadget((await ws.getMetadata()).id);
+    using shared = await api.openWorkspace((await ws.getMetadata()).id);
     const before = (await shared.listChats()).find(chat => chat.id === chatId);
     expect(queued(before)).toEqual([STEER]);
 
@@ -234,7 +234,7 @@ it.concurrent("a steer sent while the chat compacts prompts the next turn", asyn
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, username!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const chatId = await ws.newChat(PROMPT, SCRIPTED_MODEL_ID);
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await waitForIdleChat(ws, chatId);
