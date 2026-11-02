@@ -351,6 +351,18 @@ export class SpaceModel {
   }
 
   /**
+   * Refuses unless `profileId` may add workspaces they own to the space (see
+   * `canAddWorkspaces`), as `noSuchSpace` does, and, given a `parentId`, unless the space lists
+   * that entry to place them under.
+   */
+  checkPlacement(profileId: string, parentId?: string): void {
+    if (!this.canAddWorkspaces(profileId)) throw noSuchSpace();
+    if (parentId !== undefined && !this.storage.workspaces.get(parentId)) {
+      throw new Error("This space does not list that workspace.");
+    }
+  }
+
+  /**
    * List `owner`'s workspaces in the space, or bring the entries it already holds for them up to
    * date. Returns false, having changed nothing, if any of them is refused, so that a caller
    * handles a refusal without matching an error's text.
@@ -931,6 +943,15 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   /** `SpaceModel.workspaceVisible`, called like `workspaceRole`. */
   async workspaceVisible(id: string, ownerId: string): Promise<boolean> {
     return this.#model.workspaceVisible(id, ownerId);
+  }
+
+  /**
+   * `SpaceModel.checkPlacement`. Called only by the User DO of `profileId`, which states its own
+   * user's profile id, before it starts a space sync that will add workspaces of theirs here
+   * (see `UserDurableObject.startSpaceSync`).
+   */
+  async checkPlacement(profileId: string, parentId?: string): Promise<void> {
+    this.#model.checkPlacement(profileId, parentId);
   }
 
   /**

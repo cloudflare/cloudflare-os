@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, SpaceInfo, isValidTeamSpaceKey } from '@gadgets/workshop-shared/api';
-import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, SpaceInfo, isValidTeamSpaceKey, SpaceSyncJobInfo } from '@gadgets/workshop-shared/api';
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, SpaceSyncProgress, MAX_SPACE_SYNC_WARNINGS, MAX_SPACE_SYNC_MESSAGE_LENGTH, SPACE_SYNC_ERROR_CODES, createSpaceSyncError } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -32,8 +32,9 @@ import {
   type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
 import {
-  personalSpaceClaim, checkTeamSpaceKey, noSuchSpace, type WorkspaceRegistration,
+  personalSpaceClaim, checkTeamSpaceKey, noSuchSpace, type WorkspaceRegistration, checkSpaceKey,
 } from "./spaces.js";
+import { BUNDLED_BLUEPRINTS } from "./generated/bundled-blueprints.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -52,6 +53,9 @@ export const GATEKEEPER_USER_SELECTION_LIFETIME_MS = 30 * 60 * 1000;
 
 // How many workspaces #backfillSpaces() registers with a space in one call.
 const SPACES_BACKFILL_PAGE = 128;
+
+// How many of the user's space-sync jobs that have ended are kept, the most recently ended.
+const MAX_ENDED_SPACE_SYNC_JOBS = 20;
 
 /**
  * Metadata about an auto-provisioned account that provides an agent singleton and/or a management UI.
@@ -76,6 +80,14 @@ type AccountCreatorStub = Required<Pick<GatekeeperVendor, "createAccount">>;
 type ResourceCreatorStub = Required<Pick<GatekeeperVendor, "createResource">>;
 type SingletonAccountStub = Required<Pick<GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi">>;
 type CreationConfiguratorStub = Required<Pick<GatekeeperUser, "startCreationConfigurator">>;
+
+// The space-sync methods, viewed the same way: gated on description.providesSpaceSync.
+type SpaceSyncAccountStub = Required<Pick<GatekeeperUser, "startSpaceSync" | "cancelSpaceSync">>;
+
+// A message an account supplies for a space-sync job, as the job keeps it (see SpaceSyncProgress).
+function clipSpaceSyncMessage(message: string): string {
+  return message.slice(0, MAX_SPACE_SYNC_MESSAGE_LENGTH);
+}
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.credentialsExpired) return false;
@@ -1553,6 +1565,161 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return page.length === SPACES_BACKFILL_PAGE ? page.at(-1)!.id : undefined;
   }
 
+  // --- Space-sync jobs (see AuthenticatedApi.startSpaceSync) ---
+  //
+  // A job is kept here, with the user's other records, and is the only authority on what the
+  // account running it may still do for it: the loopback the account is handed
+  // (SpaceSyncLoopback) acts for that one job, and only while it is "running" and the account
+  // is connected. A job that has ended never runs again, so ending it revokes the loopback.
+
+  /**
+   * AuthenticatedApi.startSpaceSync. Whether the account is still connected and whether a job
+   * already runs into the space are decided after the calls to other objects, with nothing
+   * awaited between that and recording the job, so that two starts cannot both pass.
+   */
+  async startSpaceSync(accountId: number, spaceKey: string,
+      { resourceUrl, parentId }: { resourceUrl: string; parentId?: string })
+      : Promise<SpaceSyncJobInfo> {
+    checkSpaceKey(spaceKey);
+    let blueprintId =
+        this.storage.connectedAccounts.get(accountId)?.description.providesSpaceSync?.blueprintId;
+    if (blueprintId === undefined) throw new Error("This account cannot sync into a space.");
+    let blueprint = BUNDLED_BLUEPRINTS.find(entry => entry.blueprintId === blueprintId);
+    if (!blueprint) {
+      throw new Error("This account syncs with a blueprint this deployment does not ship.");
+    }
+    await this.#space(spaceKey).checkPlacement(this.storage.profile.get().id, parentId);
+    // The chokepoint where admin settings are enforced; the class it mints is not needed.
+    await this.getGatekeeperClassFor(accountId, resourceUrl);
+
+    let record = this.storage.connectedAccounts.get(accountId);
+    if (!record) throw new Error("No such account.");
+    if (this.#spaceSyncJobs().some(job => job.spaceKey === spaceKey && job.status === "running")) {
+      throw new Error("A sync into this space is already running.");
+    }
+    let jobId = crypto.randomUUID();
+    let job: SpaceSyncJobInfo = {
+      jobId, accountId, vendorId: record.vendorId, spaceKey,
+      ...(parentId !== undefined && { parentId }),
+      publication: blueprint.publication ?? "use", status: "running",
+      progress: { done: 0, warnings: [] }, created: new Date(),
+    };
+    this.storage.spaceSyncJobs.put(job);
+    let target = this.ctx.exports.SpaceSyncLoopback(
+        { props: { userId: this.ctx.id.toString(), accountId, jobId } });
+    try {
+      await (record.account as unknown as SpaceSyncAccountStub)
+          .startSpaceSync({ jobId, resourceUrl }, target);
+    } catch (error) {
+      logger.warn("an account failed to start a space sync", {
+        event: "space.sync.start.failed", vendorId: record.vendorId, accountId, error,
+      });
+      let message = error instanceof Error ? error.message : String(error);
+      this.#endSpaceSync(jobId, "failed", { error: clipSpaceSyncMessage(message) });
+      // The account may have kept the job before it threw.
+      await this.#stopSpaceSyncWork(job);
+    }
+    return this.storage.spaceSyncJobs.get(jobId) ?? job;
+  }
+
+  /** AuthenticatedApi.listSpaceSyncJobs. */
+  async listSpaceSyncJobs(spaceKey?: string): Promise<SpaceSyncJobInfo[]> {
+    return this.#spaceSyncJobs()
+        .filter(job => spaceKey === undefined || job.spaceKey === spaceKey);
+  }
+
+  /** AuthenticatedApi.cancelSpaceSync. */
+  async cancelSpaceSync(jobId: string): Promise<void> {
+    if (!this.storage.spaceSyncJobs.get(jobId)) throw new Error("No such space sync.");
+    await this.#cancelSpaceSyncs(job => job.jobId === jobId);
+  }
+
+  /**
+   * SpaceSyncTarget.reportProgress, for the loopback acting for job `jobId` through the user's
+   * account `accountId` (see SpaceSyncLoopback), bounded as SpaceSyncProgress describes. A
+   * report that is not "running" ends the job, with its error if it failed. Refused while the
+   * job may do nothing more (see #runningSpaceSync()).
+   */
+  async reportSpaceSyncProgress(accountId: number, jobId: string, progress: SpaceSyncProgress)
+      : Promise<void> {
+    let job = this.#runningSpaceSync(accountId, jobId);
+    let { state, done, total, warnings = [], error } = progress;
+    if (![done, total ?? 0].every(count => Number.isSafeInteger(count) && count >= 0)) {
+      throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.notAllowed);
+    }
+    let reported = {
+      done, ...(total !== undefined && { total }),
+      warnings: warnings.slice(0, MAX_SPACE_SYNC_WARNINGS).map(clipSpaceSyncMessage),
+    };
+    if (state === "running") {
+      this.storage.spaceSyncJobs.put({ ...job, progress: reported });
+    } else {
+      this.#endSpaceSync(jobId, state, {
+        progress: reported,
+        ...(state === "failed" && error !== undefined && { error: clipSpaceSyncMessage(error) }),
+      });
+    }
+  }
+
+  // The jobs kept, newest first.
+  #spaceSyncJobs(): SpaceSyncJobInfo[] {
+    return [...this.storage.spaceSyncJobs.list()]
+        .toSorted((a, b) => b.created.getTime() - a.created.getTime());
+  }
+
+  // Job `jobId`, for the loopback acting for it through account `accountId`, while it may still
+  // act: the job is running and the account is connected. Otherwise refused with the code from
+  // SPACE_SYNC_ERROR_CODES that says why, which is final for the job. A job that is not kept
+  // has ended, since every running job is.
+  #runningSpaceSync(accountId: number, jobId: string): SpaceSyncJobInfo {
+    let job = this.storage.spaceSyncJobs.get(jobId);
+    if (!job) throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.finished);
+    if (job.accountId !== accountId) throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.notAllowed);
+    if (job.status === "cancelled") throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.cancelled);
+    if (job.status !== "running") throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.finished);
+    if (!this.storage.connectedAccounts.get(accountId)) {
+      throw createSpaceSyncError(SPACE_SYNC_ERROR_CODES.accountGone);
+    }
+    return job;
+  }
+
+  // Ends job `jobId` as `status` with `changes`, if it is running, and drops the jobs that ended
+  // before the MAX_ENDED_SPACE_SYNC_JOBS most recent, never `jobId` itself.
+  #endSpaceSync(jobId: string, status: Exclude<SpaceSyncJobInfo["status"], "running">,
+      changes: Pick<Partial<SpaceSyncJobInfo>, "progress" | "error"> = {}): void {
+    let job = this.storage.spaceSyncJobs.get(jobId);
+    if (job?.status !== "running") return;
+    this.storage.spaceSyncJobs.put({ ...job, ...changes, status, finished: new Date() });
+    let others = [...this.storage.spaceSyncJobs.list()]
+        .filter(kept => kept.status !== "running" && kept.jobId !== jobId)
+        .toSorted((a, b) => (b.finished?.getTime() ?? 0) - (a.finished?.getTime() ?? 0));
+    for (let dropped of others.slice(MAX_ENDED_SPACE_SYNC_JOBS - 1)) {
+      this.storage.spaceSyncJobs.delete(dropped.jobId);
+    }
+  }
+
+  // Cancels the running jobs that `which` picks: each ends first, so that its account is refused
+  // whatever it calls for it from then on, and only then is the account asked to stop the work,
+  // best effort.
+  async #cancelSpaceSyncs(which: (job: SpaceSyncJobInfo) => boolean): Promise<void> {
+    let cancelled = this.#spaceSyncJobs().filter(job => job.status === "running" && which(job));
+    for (let { jobId } of cancelled) this.#endSpaceSync(jobId, "cancelled");
+    await Promise.all(cancelled.map(job => this.#stopSpaceSyncWork(job)));
+  }
+
+  // Asks the account running a job that has ended to stop its work, if it is still connected;
+  // best effort, a failure is logged and not retried.
+  async #stopSpaceSyncWork({ jobId, accountId, vendorId }: SpaceSyncJobInfo): Promise<void> {
+    try {
+      let account = this.storage.connectedAccounts.get(accountId)?.account;
+      if (account) await (account as unknown as SpaceSyncAccountStub).cancelSpaceSync(jobId);
+    } catch (error) {
+      logger.warn("an account failed to stop an ended space sync", {
+        event: "space.sync.cancel.failed", vendorId, accountId, error,
+      });
+    }
+  }
+
   // --- Blueprint methods (called by Overseer during propagation) ---
 
   async updateBlueprint(id: string, metadata: BlueprintMetadata, gadgetId: string): Promise<boolean> {
@@ -2262,6 +2429,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         if (shouldAutoProvisionAccount(await readAdminConfig(this.env), account.vendorId)) {
           throw new Error("This account is provided automatically and can't be disconnected.");
         }
+        // The account's space-sync jobs are cancelled while it can still be asked to stop them,
+        // and again right after its record is deleted, with nothing awaited in between: a start
+        // that was past its checks may have recorded a job meanwhile. The account is not asked to
+        // stop that one, but its loopback is refused from then on.
+        await this.#cancelSpaceSyncs(job => job.accountId === accountId);
         // An opt-in ("optional") ambient account: the user added it, so let them remove it. revoke()
         // gives the gatekeeper a chance to delete its own per-user storage (e.g. the account's
         // private collections DO) — it's its cleanup hook, not just OAuth revocation. Best-effort:
@@ -2275,14 +2447,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           });
         }
         this.storage.connectedAccounts.delete(accountId);
+        await this.#cancelSpaceSyncs(job => job.accountId === accountId);
         logger.info("account disconnected", {
           event: "account.disconnected",
           vendorId: account.vendorId, accountId, autoProvisioned: true,
         });
         return;
       }
+      // As above: before revoking, and again right after the record is deleted.
+      await this.#cancelSpaceSyncs(job => job.accountId === accountId);
       await account.account.revoke();
       this.storage.connectedAccounts.delete(accountId);
+      await this.#cancelSpaceSyncs(job => job.accountId === accountId);
       // Disconnecting the Cloudflare account also clears the AI Gateway billing state (selected
       // account + cached balance), which is meaningless without the underlying grant.
       if (account.vendorId === CLOUDFLARE_VENDOR_ID) {

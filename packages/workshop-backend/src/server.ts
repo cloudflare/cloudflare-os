@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, Space, SpaceInfo, PublishedSpaceInfo } from '@gadgets/workshop-shared/api';
+import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, Space, SpaceInfo, PublishedSpaceInfo, SpaceSyncJobInfo } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { backendVersion, getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
@@ -26,6 +26,7 @@ import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentS
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { SpaceDirectoryDurableObject } from "./space-directory.js";
 import { SpaceDurableObject, checkSpaceKey, checkTeamSpaceKey, noSuchSpace, teamSpaceClaim } from "./spaces.js";
+import { SpaceSyncLoopback } from "./space-sync-loopback.js";
 import { DEFAULT_WORKSPACE_TITLE } from "./storage-schema/overseer-storage.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
@@ -77,6 +78,9 @@ export { SpaceDurableObject };
 
 // Re-export the deployment-wide space directory Durable Object.
 export { SpaceDirectoryDurableObject };
+
+// Re-export the entrypoint a space-sync job's account runs the job through.
+export { SpaceSyncLoopback };
 
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl };
@@ -209,6 +213,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       : Promise<{ spaces: PublishedSpaceInfo[]; cursor?: string }> {
     return retryOnDoReset(() => this.ctx.exports.SpaceDirectoryDurableObject.getByName("")
         .listSpaces(query, cursor));
+  }
+  startSpaceSync(accountId: number, spaceKey: string,
+      { resourceUrl, parentId }: { resourceUrl: string; parentId?: string })
+      : Promise<SpaceSyncJobInfo> {
+    return this.#user.startSpaceSync(accountId, spaceKey, { resourceUrl, parentId });
+  }
+  listSpaceSyncJobs(spaceKey?: string): Promise<SpaceSyncJobInfo[]> {
+    return retryOnDoReset(() => this.#user.listSpaceSyncJobs(spaceKey));
+  }
+  cancelSpaceSync(jobId: string): Promise<void> {
+    return this.#user.cancelSpaceSync(jobId);
   }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
     return this.#user.changePassword(oldHash, newHash);
