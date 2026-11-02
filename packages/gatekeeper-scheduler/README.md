@@ -159,6 +159,9 @@ The Scheduler is capability-authorized. It does not receive Workshop user identi
 ambient policy, expose external network authority, or implement actions. The Workshop's existing hook
 admission and observation authorization remain the security boundaries.
 
+Observers follow the low-stakes policy: `list()` and each delivery report `subresources: []`, and
+`addObserver` and `verifyObserverAccess` admit every collaborator.
+
 ## Limits
 
 - 500 enabled or terminal schedule rows per account.

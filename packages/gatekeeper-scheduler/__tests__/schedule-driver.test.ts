@@ -6,7 +6,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { HookInitiator } from "@gadgets/workshop-shared/gatekeeper";
+import type { HookInitiator, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { reportIssue } from "@gadgets/observability/error-reporting";
 import type { ScheduledTaskHook } from "../src/types.js";
 import { ScheduleDriver } from "../src/schedule-driver.js";
@@ -24,6 +24,7 @@ type TestHooks = HookInitiator<ScheduleHookTarget> & {
   holdCallbacksUntilConcurrent(count: number): Promise<void>;
   read(): Promise<{
     events: string[];
+    observations: ObservationDescription[];
     callbackScheduleIds: string[];
     maxActiveCallbacks: number;
     disposedApprovalQueues: number;
@@ -192,11 +193,13 @@ describe("ScheduleDriver", () => {
 
     const stored = await driver.getSchedule("workspace-a", "schedule-a");
     expect(stored?.state).toMatchObject({ status: "active" });
-    expect((await testEnv.TEST_HOOKS.read()).events.map((event) => event.split(":")[0])).toEqual([
+    const hook = await testEnv.TEST_HOOKS.read();
+    expect(hook.events.map((event) => event.split(":")[0])).toEqual([
       "start",
       "authorize",
       "callback",
     ]);
+    expect(hook.observations).toMatchObject([{ subresources: [] }]);
   });
 
   it("completes consecutive Sunday and Wednesday deliveries for a weekly schedule", async () => {

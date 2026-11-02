@@ -108,6 +108,11 @@ One corollary that is easy to get wrong: the "nothing escaped to the internet" a
 running, so it would inspect and clear state they are still using — and could discard an escape a
 sibling was about to be blamed for.
 
+Reconnection helpers must retain the reopened workspace and its child capabilities until the caller
+finishes using them. Return an owned `DisposableStack` with `stack.move()` rather than letting
+`using` dispose the workspace before returning a child read session; that workspace owns the native
+RPC session the child needs. See `observer-exclusion.test.ts`'s `reopenAfterRestart()`.
+
 ### A redeploy keeps storage, so an upgrade can be tested
 
 `server.update()` is the opposite of `reset()`: it reloads the Workers from new configs and keeps
