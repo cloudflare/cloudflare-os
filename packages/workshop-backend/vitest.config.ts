@@ -85,7 +85,12 @@ export default defineConfig({
           compatibilityDate: COMPATIBILITY_DATE,
           compatibilityFlags: ['experimental', 'streaming_tail_worker'],
         }],
-        bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
+        // FAST_CHECK_SEED reaches the property suites' `process.env` (see
+        // @gadgets/scripts/property-runs) through `nodejs_compat`, which copies string bindings there.
+        bindings: {
+          PUBLIC_BASE_URL: 'https://workshop.example/',
+          ...process.env.FAST_CHECK_SEED ? { FAST_CHECK_SEED: process.env.FAST_CHECK_SEED } : {},
+        },
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
         workerLoaders: { LOADER: {} },
         // Where a blueprint's content is published to and read back from.

@@ -1,7 +1,8 @@
 // Property-based end-to-end tests: fast-check generates sequences of the operations a real client
 // performs, and each run replays one against the real Workshop over RPC, checked against a small
-// model. Seeds and the shrink time limit come from `src/property-runs.ts`; a failure prints the
-// seed and the shrunk counterexample's path, which replay it when passed to that fc.assert().
+// model. Seeds and the shrink time limit come from `@gadgets/scripts/property-runs`; a failure
+// prints the seed and the shrunk counterexample's path, which replay it when passed to that
+// fc.assert().
 // Scenarios a fixed seed might not reach are pinned as `examples`, which run on every seed.
 //
 // Every run allocates a fresh account (and so a fresh workspace and fixture-gatekeeper label),
@@ -18,13 +19,13 @@ import type {
 import {
   applyCodeChange, diffFiles, replaceSpanChange, type CodeChange, type CodeContent,
 } from "@gadgets/workshop-shared/code-change";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import { loadAllChatHistory } from "../src/agent-session.js";
 import {
   startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState, type Harness,
 } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { PROPERTY_RUN_OPTIONS } from "../src/property-runs.js";
 import {
   accountLabel, connect, listConnectedAccounts, nextUsernames, RpcTarget, signUp, stubFor, waitFor,
   WorkpieceRecorder,

@@ -52,7 +52,7 @@ pinned as fast-check `examples`, which run on every seed.
 
 Every run is real RPC, so a property costs hundreds of milliseconds per run and `numRuns` is kept
 small; `interruptAfterTimeLimit` bounds the shrink of a failing property inside the test timeout
-(`src/property-runs.ts`).
+(`@gadgets/scripts/property-runs`).
 
 `FAST_CHECK_SEED` pins the seed of every property, so the same cases run each time. CI sets it, so
 a pull request's result depends only on its code. Without it, each run draws a fresh seed, but a

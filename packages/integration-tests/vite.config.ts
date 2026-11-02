@@ -52,8 +52,8 @@ export default {
        */
       test: {
         ...testTask,
-        // The property suites' seed (src/property-runs.ts) decides which cases run, so it is
-        // passed and fingerprinted: a different seed is a cache miss, not a replayed result.
+        // The property suites' seed (@gadgets/scripts/property-runs) decides which cases run, so it
+        // is passed and fingerprinted: a different seed is a cache miss, not a replayed result.
         cache: { ...testTask.cache, env: [...testTask.cache.env, 'FAST_CHECK_SEED'] },
         // Real gatekeepers boot from prebuilt validated trees, tracked as inputs like the fixture,
         // plus the release the Google upgrade suite starts from, and `cli-admins-only.test.ts` runs
