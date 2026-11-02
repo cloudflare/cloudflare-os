@@ -53,6 +53,11 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       // The indexes are the space's slugs: each slug in use names one entry, and a former slug
       // names the entry that gave it up. An entry with no slug yields no key for either, so it is
       // in neither index, and deleting an entry frees every slug it held.
+      //
+      // `byPublished` holds the entries of workspaces published to the deployment, by the role
+      // each is published with: all that someone who is not a member sees of the space, and
+      // while it is empty the space is closed to them (see SpaceModel.infoFor()). An entry that
+      // is not published yields no key, as every entry written before the index did.
       workspaces: collection<SpaceWorkspaceRecord>()({
         primaryKey: "id",
         uniqueIndexes: {
@@ -60,6 +65,7 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
         },
         nonUniqueIndexes: {
           byFormerSlug(record: SpaceWorkspaceRecord) { return record.formerSlugs ?? []; },
+          byPublished(record: SpaceWorkspaceRecord) { return record.published ?? null; },
         },
       }),
       // Every (workspace, member) the space has answered with a role and not taken back since

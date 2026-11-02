@@ -17,10 +17,14 @@
 // (Records and revoked keys accumulate in storage; a future GC could reclaim long-dead entries.)
 //
 // NOTE: The sensitive-data (`containsRestrictedData`) policy intentionally does NOT live here; the
-// Overseer enforces it. This module only answers questions about the sharing graph. The one
-// exception is the `ownerInvitesOnly` flag, which the Overseer supplies as a hook: once it is set,
-// only direct grants from the owner count, so it narrows which edges `computeEffectiveRoles`
-// follows and must be checked synchronously with each grant's storage write.
+// Overseer enforces it. This module only answers questions about the sharing graph, with two
+// exceptions, each a hook the Overseer supplies. One is the `ownerInvitesOnly` flag: once it is
+// set, only direct grants from the owner count, so it narrows which edges `computeEffectiveRoles`
+// follows and must be checked synchronously with each grant's storage write. The other is the
+// role the workspace is published to the deployment with (`publicAccess`), a floor under the
+// graph and no part of it: while there is one, nobody is denied at open(), whatever the graph
+// gives them. It raises the role `getEffectiveRole` reports and the roles in a report of whom a
+// removal affects, and counts nowhere else (see `getGraphRole`).
 
 import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator,
     createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES } from "@gadgets/workshop-shared/api";
@@ -111,11 +115,17 @@ export class SharingManager {
    * `ObservationDescription.ownerInvitesOnly`). `computeEffectiveRoles` reads it to count only
    * direct owner grants once it is set. Grants call it after their last await, right before the
    * storage write, so an observation that sets the flag mid-call cannot slip a grant through.
+   *
+   * `publicAccess` reports the role anyone signed in to the deployment may open the workspace
+   * with, as it stands at the call, or undefined while it is not published (see
+   * `Overseer.setPublicAccess`). The Overseer decides it; here it is only a floor under the role
+   * the graph gives (see `getEffectiveRole`).
    */
   constructor(
       private storage: SharingStorage,
       private ownerProfileId: string,
-      private ownerInvitesOnly: () => boolean) {}
+      private ownerInvitesOnly: () => boolean,
+      private publicAccess: () => CollaboratorRole | undefined) {}
 
   // Throw if share links are disabled by `ownerInvitesOnly`. Redemption refusals surface
   // from open(), so they carry the `shareLinksDisabled` open-workspace code; link management throws
@@ -140,20 +150,46 @@ export class SharingManager {
 
   /**
    * True if `profileId` currently has a collaborator record. This only checks membership; use
-   * `getEffectiveRole()` to determine the actual access level (and whether the record is still
-   * reachable from the owner in the permission graph).
+   * `getGraphRole()` to determine the role it gives (and whether the record is still reachable
+   * from the owner in the permission graph).
    */
   isCollaborator(profileId: string): boolean {
     return this.storage.collaborators.get(profileId) !== undefined;
   }
 
   /**
-   * The effective role of `profileId` -- the maximum role reachable from the owner through valid
-   * permission edges -- or undefined if the user has no access. The owner always has "build".
+   * The role `profileId` may open the workspace with as far as this module knows: the role the
+   * permission graph gives them (see `getGraphRole`), raised to the role the workspace is
+   * published with if that is higher -- or undefined if the user has no access. The owner always
+   * has "build".
    */
   getEffectiveRole(profileId: string): CollaboratorRole | undefined {
+    return this.#raisedToFloor(this.getGraphRole(profileId));
+  }
+
+  /**
+   * The role `profileId` holds as a collaborator -- the maximum role reachable from the owner
+   * through valid permission edges -- or undefined if the graph gives them none, whether or not
+   * the workspace is published. The owner always has "build". This is what tells a collaborator
+   * from someone a publication alone admits, and the role a collaborator was granted from the
+   * one they open with.
+   *
+   * Only `getEffectiveRole()` and the report of whom a removal affects (`#computeAffected`) see
+   * the published role. `computeEffectiveRoles()` stays graph-only: its callers enumerate known
+   * collaborators (listings, previews, the roles a removal starts from), and a publication names
+   * nobody in particular. So does the caller's own role when they share (`#requireCallerRole`):
+   * a publication admits its holder and gives them nothing to grant.
+   */
+  getGraphRole(profileId: string): CollaboratorRole | undefined {
     if (profileId === this.ownerProfileId) return "build";
     return this.computeEffectiveRoles().get(profileId);
+  }
+
+  // `role` raised to the role the workspace is published with, if it is published and that role
+  // is higher: what someone the graph gives `role`, or with undefined nothing, can do.
+  #raisedToFloor(role: CollaboratorRole | undefined): CollaboratorRole | undefined {
+    let floor = this.publicAccess();
+    return role && floor ? maxRole(role, floor) : role ?? floor;
   }
 
   /**
@@ -196,7 +232,7 @@ export class SharingManager {
     if (this.ownerInvitesOnly()) {
       // Only direct owner grants count (see computeEffectiveRoles), so the link can grant nothing.
       // Let someone who already has access through the owner re-open with it; refuse anyone else.
-      if (!this.getEffectiveRole(opts.profileId)) {
+      if (!this.getGraphRole(opts.profileId)) {
         this.#requireShareLinksAllowed({ redeeming: true });
       }
       return;
@@ -362,13 +398,15 @@ export class SharingManager {
     }
 
     // Permission check: owner can remove anyone; collaborators can only remove users
-    // they themselves added.
+    // they themselves added, and only while the graph gives them a role (see
+    // `#requireCallerRole`).
     if (!caller.isOwner) {
       let hasEdgeFromCaller = target.addedBy.some(
           e => e.type === "user" && e.sharer === caller.profileId);
       if (!hasEdgeFromCaller) {
         throw new Error("You can only remove users that you added.");
       }
+      this.#requireCallerRole(caller);
     }
 
     let baseline = this.computeEffectiveRoles();
@@ -392,11 +430,14 @@ export class SharingManager {
   // Share link management
 
   // Enforce that `caller` may manage `link`: the owner can manage any link; a collaborator only
-  // the links they created. `action` is the user-facing verb (e.g. "revoke", "edit", "copy").
+  // the links they created, and only while the graph gives them a role (see
+  // `#requireCallerRole`). `action` is the user-facing verb (e.g. "revoke", "edit", "copy").
   #requireLinkManager(caller: SharingCaller, link: ShareLinkRecord, action: string): void {
-    if (!caller.isOwner && link.createdBy !== caller.profileId) {
+    if (caller.isOwner) return;
+    if (link.createdBy !== caller.profileId) {
       throw new Error(`You can only ${action} share links that you created.`);
     }
+    this.#requireCallerRole(caller);
   }
 
   // Look up a link by id, throwing the caller-facing error if the id is unknown or names an alias..
@@ -625,8 +666,11 @@ export class SharingManager {
     return eff;
   }
 
-  // The caller's effective role, throwing if the caller has no access at all (which should not
-  // happen for an authorized session).
+  // The caller's role in the graph, throwing if the graph gives them none. Every change a
+  // non-owner makes to the graph requires one: a session can hold a role the Overseer gives from
+  // outside the graph, and the edges and links of someone the graph has dropped grant nothing
+  // but must stay as they are, so re-adding them restores everyone they had shared with (see
+  // `removeCollaborator`).
   #requireCallerRole(caller: SharingCaller): CollaboratorRole {
     if (caller.isOwner) return "build";
     let role = this.computeEffectiveRoles().get(caller.profileId);
@@ -647,13 +691,18 @@ export class SharingManager {
 
   // Diff two effective-role maps, returning the collaborators whose access changed. A user is
   // affected if they had access in `baseline` and either lost it (newRole null) or were downgraded
-  // (newRole lower than oldRole) in `modified`. Profiles/edges are read from current storage.
+  // (newRole lower than oldRole) in `modified`. Both sides are raised to the role the workspace is
+  // published with, as it stands now, so the report says what each user can do afterwards: while
+  // it is published, a removed collaborator keeps the published role rather than losing access,
+  // and one the graph gave no more than that role is not affected. Profiles/edges are read from
+  // current storage.
   #computeAffected(
       baseline: Map<string, CollaboratorRole>,
       modified: Map<string, CollaboratorRole>): AffectedCollaborator[] {
     let result: AffectedCollaborator[] = [];
-    for (let [id, oldRole] of baseline) {
-      let newRole = modified.get(id) ?? null;
+    for (let [id, graphRole] of baseline) {
+      let oldRole = this.#raisedToFloor(graphRole)!;
+      let newRole = this.#raisedToFloor(modified.get(id)) ?? null;
       if (newRole !== null && roleRank(newRole) >= roleRank(oldRole)) {
         continue;  // unchanged or (shouldn't happen) upgraded
       }

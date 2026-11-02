@@ -155,11 +155,32 @@ function isListable(record: GadgetRecord): boolean {
 
 // Records on `record`, if the workspace is the user's own, the two flags its Overseer states.
 // Both are one-way there, so one recorded as set stays set: a report made before it was set
-// may arrive after one made later.
+// may arrive after one made later. The role the workspace is published with is stated with them
+// and goes both ways, so a statement of it made before one already recorded, after fewer
+// changes of it, is passed over. The record holds no role once a flag is set, under which a
+// workspace is not published.
 function mirrorRestrictions(record: GadgetRecord, stated: WorkspaceRestrictions): void {
   if (record.owner) return;
   record.containsRestrictedData ||= stated.containsRestrictedData;
   record.ownerInvitesOnly ||= stated.ownerInvitesOnly;
+  let revision = stated.publicAccessRevision ?? 0;
+  let recorded = record.publicAccessRevision ?? 0;
+  let { publicAccess } = revision < recorded ? record : stated;
+  if (revision > recorded) record.publicAccessRevision = revision;
+  if (publicAccess && !record.containsRestrictedData && !record.ownerInvitesOnly) {
+    record.publicAccess = publicAccess;
+  } else {
+    delete record.publicAccess;
+  }
+}
+
+// What a space is told of the workspace of `record`, one of the user's own that has seen
+// activity, and what the marker then says the space acknowledged, with that space's key.
+function registrationOf({ id, title, created, publicAccess }: GadgetRecord): WorkspaceRegistration {
+  return { id, title, created, ...(publicAccess && { published: publicAccess }) };
+}
+function acknowledged(spaceKey: string, { title, published }: WorkspaceRegistration) {
+  return { spaceKey, title, ...(published && { published }) };
 }
 
 // Whether `record` is listed as it should be: acknowledged as it is now by space `spaceKey`, or
@@ -167,11 +188,14 @@ function mirrorRestrictions(record: GadgetRecord, stated: WorkspaceRestrictions)
 function isRegistered(record: GadgetRecord, spaceKey: string | undefined): boolean {
   let { registered } = record;
   return spaceKey === undefined ? !registered
-      : registered?.spaceKey === spaceKey && registered.title === record.title;
+      : registered?.spaceKey === spaceKey && registered.title === record.title
+          && registered.published === record.publicAccess;
 }
 
-// A gadget record as it leaves this object: without `registered`, which is its own bookkeeping.
-function withoutRegistered<T extends GadgetRecord>({ registered: _registered, ...gadget }: T) {
+// A gadget record as it leaves this object: without `registered` and `publicAccessRevision`,
+// which are its own bookkeeping.
+function withoutBookkeeping<T extends GadgetRecord>(
+    { registered: _registered, publicAccessRevision: _revision, ...gadget }: T) {
   return gadget;
 }
 
@@ -981,7 +1005,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let result: WorkspaceMetadataWithTimestamps[] = [];
     for (let workspace of this.storage.gadgets.list()) {
       if (isFullyCreated(workspace)) {
-        result.push(withoutRegistered(workspace));
+        result.push(withoutBookkeeping(workspace));
       }
     }
     return result;
@@ -1009,7 +1033,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async getWorkspace(id: string): Promise<WorkspaceMetadata | null> {
     let record = this.storage.gadgets.get(id);
-    return record ? withoutRegistered(record) : null;
+    return record ? withoutBookkeeping(record) : null;
   }
 
   /**
@@ -1248,7 +1272,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // listing shows of it could derive from that data. Its Overseer states those two flags in every
   // call that leads here and the record mirrors them (see mirrorRestrictions()): the workspace is
   // listed only while both are known to be false, is dropped otherwise by every space that may
-  // list it, and keeps its `spaceKey` either way.
+  // list it, and keeps its `spaceKey` either way. The same calls state the role the workspace
+  // is published with, if it is: the record mirrors that too, and its entry in the listing
+  // carries it (`SpaceWorkspaceInfo.published`), which is what a space shows someone who is
+  // not a member.
 
   // The tail of the chain everything below runs on. Reconciling calls other objects, and this
   // one takes further requests meanwhile, so two reconciliations of one workspace could
@@ -1301,11 +1328,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let spaceKey = isListable(record) ? pointedAt : undefined;
     if (isRegistered(record, spaceKey)) return true;
 
-    let { title, created, registered } = record;
+    let { registered } = record;
+    let registration = registrationOf(record);
     let owner = this.storage.profile.get();
     if (spaceKey !== undefined) {
       if (!registered) this.#amendGadget(id, gadget => { gadget.registered = { spaceKey }; });
-      if (!await this.#space(spaceKey).attachWorkspaces(owner, [{ id, title, created }])) {
+      if (!await this.#space(spaceKey).attachWorkspaces(owner, [registration])) {
         if (!registered) this.#amendGadget(id, gadget => { delete gadget.registered; });
         return false;
       }
@@ -1315,7 +1343,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     this.#amendGadget(id, gadget => {
       if (spaceKey === undefined) delete gadget.registered;
-      else gadget.registered = { spaceKey, title };
+      else gadget.registered = acknowledged(spaceKey, registration);
     });
     return true;
   }
@@ -1375,6 +1403,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.#pointGadget(id, previous);
       throw noSuchSpace();
     });
+  }
+
+  /**
+   * Overseer.setPublicAccess: records what the Overseer of the user's own workspace `id` states
+   * of it, the role it is now published with among it, and waits for the workspace's entry in
+   * its space's listing to follow. If the sync fails so does this, with the record written, and
+   * the next sync of the workspace does what is left.
+   */
+  async setGadgetPublicAccess(id: string, restrictions: WorkspaceRestrictions): Promise<void> {
+    this.#amendGadget(id, record => mirrorRestrictions(record, restrictions));
+    await this.#inSpaceOrder(() => this.#syncSpace(id));
   }
 
   /**
@@ -1466,8 +1505,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (record.owner || !isFullyCreated(record) || record.spaceKey || !isListable(record)
           || (record.registered?.spaceKey ?? spaceKey) !== spaceKey
           || isRegistered(record, spaceKey)) continue;
-      let { id, title, created } = record;
-      page.push({ id, title, created });
+      page.push(registrationOf(record));
       if (page.length === SPACES_BACKFILL_PAGE) break;
     }
     if (page.length === 0) return undefined;
@@ -1477,8 +1515,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!await this.#space(spaceKey).attachWorkspaces(this.storage.profile.get(), page)) {
       throw new Error("A personal space refused workspaces of its owner's.");
     }
-    for (let { id, title } of page) {
-      this.#amendGadget(id, record => { record.registered = { spaceKey, title }; });
+    for (let registration of page) {
+      this.#amendGadget(
+          registration.id, record => { record.registered = acknowledged(spaceKey, registration); });
     }
     return page.length === SPACES_BACKFILL_PAGE ? page.at(-1)!.id : undefined;
   }

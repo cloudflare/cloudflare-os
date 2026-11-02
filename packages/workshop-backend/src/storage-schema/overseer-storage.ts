@@ -1368,6 +1368,17 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // project-specific part of the agent's system prompt, so nobody without that prompt can
       // probe a shared prompt cache for it (see runAgentPass).
       promptCacheSalt: <string | undefined>undefined,
+
+      // The role anyone signed in to the deployment may open this workspace with, once its owner
+      // has published it (Overseer.setPublicAccess); undefined while it is not published. A floor
+      // under the roles the sharing graph and the workspace's space give, held by nobody in
+      // particular. Never set under either flag above: the observation that first sets one
+      // clears it, and it cannot be set afterwards.
+      publicAccess: <CollaboratorRole | undefined>undefined,
+      // How many times `publicAccess` has changed. It is stated with it (see
+      // WorkspaceRestrictions), so that the owner's User DO can tell a statement made before a
+      // change from one made after.
+      publicAccessRevision: 0,
     },
 
     collections: {

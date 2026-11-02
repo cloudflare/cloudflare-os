@@ -90,12 +90,14 @@ export async function openFakeOverseer(
       ensureObserver: async () => {},
       syncOutputsTo: async () => {},
       recordGadgetAnalytics: () => {},
+      sharingRevoked: () => {},
+      collaboratorRoles: async () => new Map(),
       wrapUserDo: (stub: unknown) => stub,
       // What open() consults for a non-owner's role: the permission-graph lookup and observer
       // verification in one. The sharing manager is reached besides, for the role the graph gives
       // them, which is the one their own record of the workspace is given.
       authorizeCollaborator: async () => role,
-      getSharingManager: async () => ({ getEffectiveRole: () => role }),
+      getSharingManager: async () => ({ getGraphRole: () => role }),
       ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
       users: {
         idFromString: (id: string) => id,

@@ -25,10 +25,12 @@ function makeStorage(): SharingStorage {
 
 const OWNER = "owner@example.com";
 
-function makeManager(ownerInvitesOnly: () => boolean = () => false)
+function makeManager(
+    ownerInvitesOnly: () => boolean = () => false,
+    publicAccess: () => CollaboratorRole | undefined = () => undefined)
     : { storage: SharingStorage; mgr: SharingManager } {
   let storage = makeStorage();
-  return { storage, mgr: new SharingManager(storage, OWNER, ownerInvitesOnly) };
+  return { storage, mgr: new SharingManager(storage, OWNER, ownerInvitesOnly, publicAccess) };
 }
 
 // A manager whose `ownerInvitesOnly` flag the test can flip at any point.
@@ -824,5 +826,130 @@ describe("ownerInvitesOnly", () => {
 
     mgr.addCollaborator({ caller: owner, profile: profile("b"), role: "use" });
     expect(mgr.getEffectiveRole("b")).toBe("use");
+  });
+});
+
+// A manager whose published role, and `ownerInvitesOnly` flag, the test can change at any point.
+function makePublished(publicAccess?: CollaboratorRole) {
+  let state = { publicAccess, ownerInvitesOnly: false };
+  return { state, ...makeManager(() => state.ownerInvitesOnly, () => state.publicAccess) };
+}
+
+// The role a workspace is published to the deployment with, which the Overseer supplies as a
+// hook: a floor under the role the graph gives, and no part of the graph.
+describe("publicAccess", () => {
+  it("gives its role to a profile the graph gives none", () => {
+    let { state, mgr } = makePublished("use");
+    expect(mgr.getEffectiveRole("stranger")).toBe("use");
+    state.publicAccess = "build";
+    expect(mgr.getEffectiveRole("stranger")).toBe("build");
+    state.publicAccess = undefined;
+    expect(mgr.getEffectiveRole("stranger")).toBeUndefined();
+  });
+
+  it("raises a lower graph role and never lowers a higher one", () => {
+    let { state, storage, mgr } = makePublished("build");
+    seedCollaborator(storage, "user", [userEdge(OWNER, "use")]);
+    seedCollaborator(storage, "builder", [userEdge(OWNER, "build")]);
+    expect(mgr.getEffectiveRole("user")).toBe("build");
+    state.publicAccess = "use";
+    expect(mgr.getEffectiveRole("user")).toBe("use");
+    expect(mgr.getEffectiveRole("builder")).toBe("build");
+    expect(mgr.getEffectiveRole(OWNER)).toBe("build");
+  });
+
+  it("is no part of the role the graph gives, of the graph's roles or of who is a collaborator",
+      () => {
+    let { storage, mgr } = makePublished("build");
+    seedCollaborator(storage, "user", [userEdge(OWNER, "use")]);
+    expect(mgr.getGraphRole("user")).toBe("use");
+    expect(mgr.getGraphRole("stranger")).toBeUndefined();
+    expect(mgr.getGraphRole(OWNER)).toBe("build");
+    expect([...mgr.computeEffectiveRoles()]).toEqual([["user", "use"]]);
+    expect(mgr.listCollaborators()).toEqual(
+        [expect.objectContaining({ profile: profile("user"), role: "use" })]);
+  });
+
+  it("gives no power to share", async () => {
+    let { storage, mgr } = makePublished("build");
+    seedCollaborator(storage, "user", [userEdge(OWNER, "use")]);
+    let add = (caller: string, role: CollaboratorRole) =>
+        mgr.addCollaborator({ caller: collab(caller), profile: profile("x"), role });
+    // Someone it alone admits has nothing to grant.
+    expect(() => add("stranger", "use")).toThrow(/do not have permission to share/);
+    await expect(mgr.createShareLink({ caller: collab("stranger"), role: "use" }))
+        .rejects.toThrow(/do not have permission to share/);
+    // A collaborator it raises grants no more than the graph gives them, and gets no more
+    // through an edge than the graph does: the grant made at "use" stays "use".
+    expect(() => add("user", "build")).toThrow(/higher than your own/);
+    await expect(mgr.createShareLink({ caller: collab("user"), role: "build" }))
+        .rejects.toThrow(/higher than your own/);
+    expect(add("user", "use")).toMatchObject({ role: "use" });
+  });
+
+  it("lets nobody the graph has dropped change their own grants", () => {
+    let { storage, mgr } = makePublished("build");
+    seedLink(storage, "k1", "a", "build");
+    seedCollaborator(storage, "a", []);
+    seedCollaborator(storage, "b", [userEdge("a", "build")]);
+    seedCollaborator(storage, "c", [keyEdge("k1", "build")]);
+    // Re-adding a must bring b and c back, so a, whom only the publication admits, severs nothing.
+    expect(() => mgr.removeCollaborator(collab("a"), "b", [])).toThrow(/permission to share/);
+    expect(() => mgr.updateShareLink(collab("a"), "k1", "x")).toThrow(/permission to share/);
+    expect(() => mgr.revokeShareLink(collab("a"), "k1", [])).toThrow(/permission to share/);
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), role: "build" });
+    expect([...mgr.computeEffectiveRoles()].toSorted())
+        .toEqual([["a", "build"], ["b", "build"], ["c", "build"]]);
+    expect(link(storage, "k1").note).toBeUndefined();
+  });
+
+  it("raises both sides of the report of whom a removal affects", () => {
+    let { state, storage, mgr } = makePublished("use");
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "b", [userEdge("a", "use")]);
+    // Removed, a is left with the published role, and b, who had no more than it, is unaffected.
+    let report = [{ profile: profile("a"), oldRole: "build", newRole: "use" }];
+    expect(mgr.previewRemoveCollaborator(owner, "a")).toMatchObject(report);
+    expect(mgr.previewRemoveCollaborator(owner, "b")).toEqual([]);
+    expect(mgr.removeCollaborator(owner, "a", [])).toMatchObject(report);
+    expect(mgr.getGraphRole("a")).toBeUndefined();
+    expect(mgr.getEffectiveRole("b")).toBe("use");
+
+    // Published at "build", a removal changes what nobody can do.
+    state.publicAccess = "build";
+    seedCollaborator(storage, "c", [userEdge(OWNER, "build")]);
+    expect(mgr.removeCollaborator(owner, "c", [])).toEqual([]);
+  });
+
+  it("raises both sides of the report of whom a revoked link affects", () => {
+    let { state, storage, mgr } = makePublished("use");
+    seedLink(storage, "k1", OWNER, "build");
+    seedCollaborator(storage, "a", [keyEdge("k1", "build")]);
+    expect(mgr.previewRevokeShareLink(owner, "k1"))
+        .toMatchObject([{ profile: profile("a"), oldRole: "build", newRole: "use" }]);
+    // The report says what stands when it is made: with the publication withdrawn, a loses access.
+    state.publicAccess = undefined;
+    expect(mgr.revokeShareLink(owner, "k1", []))
+        .toMatchObject([{ profile: profile("a"), oldRole: "build", newRole: null }]);
+  });
+
+  it("re-roots a kept dependent at the role the graph gave them", () => {
+    let { storage, mgr } = makePublished("build");
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "b", [userEdge("a", "use")]);
+    expect(mgr.removeCollaborator(owner, "a", ["b"])).toEqual([]);
+    expect(mgr.getGraphRole("b")).toBe("use");
+  });
+
+  it("lets nobody redeem a link under ownerInvitesOnly whom the graph gives no role", async () => {
+    let { state, storage, mgr } = makePublished("use");
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    seedCollaborator(storage, "direct", [userEdge(OWNER, "use")]);
+    state.ownerInvitesOnly = true;
+    let redeem = (profileId: string) => mgr.redeemShareKey(
+        { rawKey: key, profileId, fetchProfile: async () => profile(profileId) });
+    await redeem("direct");
+    await expect(redeem("stranger")).rejects.toThrow(/Share links are disabled/);
+    expect(mgr.isCollaborator("stranger")).toBe(false);
   });
 });

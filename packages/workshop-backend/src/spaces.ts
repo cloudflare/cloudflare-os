@@ -22,6 +22,12 @@
 // revocations, which the space's alarm delivers to each workspace's Overseer, so that no open
 // session outlives the membership or the listing it was opened through.
 //
+// A space is never published, but a workspace can be, to everyone signed in to the deployment,
+// and its entry says so (`SpaceWorkspaceInfo.published`, which its owner's User DO registers
+// with the rest). Someone who is not a member may open the space while it lists such an entry,
+// as a visitor: they see its info and its published entries, and nothing else of it. A visitor
+// holds no role in the space, so the space gives them none on a workspace and no lease.
+//
 // Trust: every method `SpaceDurableObject` exposes takes the acting user as a plain parameter,
 // exactly like `OverseerDurableObject.open(userId, profileId, ...)`. Its only callers are
 // `AuthenticatedApiImpl` (server.ts) and `UserDurableObject` (user.ts) -- never a client, gadget,
@@ -138,7 +144,7 @@ function workspaceRoleOf(role: SpaceMemberRole): CollaboratorRole | undefined {
   }
 }
 
-// An entry of the listing as a member is shown it: without the slugs it used to have.
+// An entry of the listing as a member or a visitor is shown it: without the slugs it used to have.
 function listed({ formerSlugs: _formerSlugs, ...workspace }: SpaceWorkspaceRecord)
     : SpaceWorkspaceInfo {
   return workspace;
@@ -189,13 +195,17 @@ export class SpaceModel {
   }
 
   /**
-   * The space as `profileId` sees it, or undefined if they cannot: the key is unclaimed or they
-   * are not a member, which callers must not tell apart (see `noSuchSpace`).
+   * The space as `profileId` sees it: with their role if they are a member, without one if they
+   * are a visitor, someone who is not a member of a space that lists a published workspace.
+   * Undefined if they cannot see it: the key is unclaimed, or they are not a member and the
+   * space lists nothing published, which callers must not tell apart (see `noSuchSpace`).
    */
   infoFor(profileId: string): SpaceInfo | undefined {
     let info = this.info;
     let role = this.roleOf(profileId);
-    return info && role && { ...info, role };
+    if (role) return info && { ...info, role };
+    let [published] = this.storage.workspaces.byPublished.list({ limit: 1 });
+    return published && info;
   }
 
   /** Space.listMembers: any member. */
@@ -278,9 +288,11 @@ export class SpaceModel {
       let entry = this.storage.workspaces.get(id);
       if (entry ? entry.owner.id !== owner.id : !mayAdd) return false;
     }
-    for (let { id, title, created } of registrations) {
+    for (let { id, title, created, published } of registrations) {
       let entry: SpaceWorkspaceRecord =
-          { ...this.storage.workspaces.get(id), id, title, owner, created };
+          { ...this.storage.workspaces.get(id), id, title, owner, created, published };
+      // A registration says whether the workspace is published, so one that does not ends it.
+      if (!published) delete entry.published;
       if (entry.slug === undefined && !PLACEHOLDER_TITLES.includes(title)) {
         entry.slug = this.#deriveSlug(title);
       }
@@ -350,17 +362,18 @@ export class SpaceModel {
     this.storage.revocations.put({ ...revocation, due: now + retryMs, retryMs });
   }
 
-  /** Space.listWorkspaces: any member, newest first. */
+  /** Space.listWorkspaces: any member, and a visitor for the published entries; newest first. */
   listWorkspaces(caller: string): SpaceWorkspaceInfo[] {
-    this.#requireMember(caller);
-    return [...this.storage.workspaces.list()].map(listed)
-        .toSorted((a, b) => b.created.getTime() - a.created.getTime());
+    let { workspaces } = this.storage;
+    return [...(this.#visiting(caller) ? workspaces.byPublished.list() : workspaces.list())]
+        .map(listed).toSorted((a, b) => b.created.getTime() - a.created.getTime());
   }
 
-  /** Space.resolveWorkspace: any member. */
+  /** Space.resolveWorkspace: any member, and a visitor for the slugs of published entries. */
   resolveWorkspace(caller: string, slug: string): SpaceWorkspaceResolution | null {
-    this.#requireMember(caller);
-    return this.#resolve(slug) ?? null;
+    let visiting = this.#visiting(caller);
+    let resolution = this.#resolve(slug);
+    return resolution && (!visiting || resolution.workspace.published) ? resolution : null;
   }
 
   /**
@@ -440,10 +453,19 @@ export class SpaceModel {
     this.storage.revocations.put({ seq, workspace, profile, due: 0, retryMs: 0 });
   }
 
+  // Refuses a `caller` who is not a member, a visitor included, as an unclaimed key is refused.
   #requireMember(caller: string): SpaceMemberRole {
     let role = this.roleOf(caller);
     if (!role) throw noSuchSpace();
     return role;
+  }
+
+  // Refuses a `caller` the space is not open to, and says whether they see it as a visitor,
+  // who is shown only its published entries, and not as a member.
+  #visiting(caller: string): boolean {
+    let info = this.infoFor(caller);
+    if (!info) throw noSuchSpace();
+    return info.role === undefined;
   }
 
   // Refuses to take the admin role from `profileId` if they are the space's last admin. A
@@ -476,13 +498,15 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Open the space as `caller`, a profile id. Returns the capability handed to their client, or
-   * null if they cannot open it: the key is unclaimed or they are not a member, which the answer
-   * does not tell apart. The caller's mirror is brought in line first (see `#mirror`), so a push
-   * that was lost heals the next time they open the space.
+   * null if they cannot open it: the key is unclaimed, or they are not a member and the space
+   * lists nothing published, which the answer does not tell apart. The caller's mirror is
+   * brought in line first (see `#mirror`), so a push that was lost heals the next time they open
+   * the space. A visitor gets the same capability as a member, which decides on each call what
+   * its caller may do, and their mirror gets nothing: it holds memberships only.
    */
   async open(caller: string): Promise<Space | null> {
     await this.#mirror(caller);
-    return this.#model.roleOf(caller) ? new SpaceClientInterface(this, caller) : null;
+    return this.#model.infoFor(caller) ? new SpaceClientInterface(this, caller) : null;
   }
 
   /** Space.getInfo, as `caller`. */
@@ -599,12 +623,14 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
     let key = this.#model.info?.key;
     if (!key) return;
     let user = this.ctx.exports.UserDurableObject.getByName(profileId);
+    // A visitor's info has no role, and is no membership to record.
     let info = this.#model.infoFor(profileId);
+    let membership = info?.role ? info : undefined;
     try {
-      await (info ? user.recordSpaceMembership(info) : user.forgetSpace(key));
+      await (membership ? user.recordSpaceMembership(membership) : user.forgetSpace(key));
     } catch (error) {
       logger.warn("failed to mirror a space membership to its member", {
-        event: "space.membership.mirror.failed", operation: info ? "record" : "forget",
+        event: "space.membership.mirror.failed", operation: membership ? "record" : "forget",
         durableObjectId: this.ctx.id.toString(), error,
       });
     }
@@ -614,7 +640,7 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
 /**
  * The client-facing capability for one space, minted by `SpaceDurableObject.open()`. It acts as
  * `caller`, the profile id fixed at open time, and holds no permission of its own: every method
- * has the space resolve that user's membership again.
+ * has the space resolve again whether that user is a member, a visitor or neither.
  */
 @validateRpc()
 class SpaceClientInterface extends RpcTarget implements Space {
