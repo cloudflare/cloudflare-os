@@ -23,7 +23,7 @@ import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-k
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
+import { CredentialCoordinator, CredentialsExpiredError } from "@gadgets/gatekeeper-kit/credentials";
 import {
   ZoomInfoApi,
   ZoomInfoApiError,
@@ -117,15 +117,21 @@ type StoredIdentity = {
   uniqueName?: string;
 };
 
-/** The values a token grant is persisted as; staged whole during a reconnect (see commitReconnect). */
+/**
+ * The values a token grant is persisted as, in the kit's CredentialCoordinator (see UserAccount);
+ * staged whole during a reconnect (see commitReconnect).
+ */
 type StoredGrant = {
   refreshToken: string;
   accessToken: string;
   accessTokenExpiresAt: number;
   scopes: string[];
   identity: StoredIdentity;
-  /** The ZoomInfo user the grant acts for, as its ID token names them (see readIdToken). */
-  userId: string;
+  /**
+   * The ZoomInfo user the grant acts for, as its ID token names them (see readIdToken). Absent from
+   * a grant stored before the gatekeeper kept it, until a refresh learns it (see getAccessToken).
+   */
+  userId?: string;
 };
 
 /**
@@ -141,7 +147,6 @@ type ZoomInfoGatekeeperImplProps = {
 const NONCE_BYTES = 32;
 const INITIATION_NONCE_LIFETIME_MS = 10 * 60 * 1000;
 const OAUTH_NONCE_LIFETIME_MS = 10 * 60 * 1000;
-const ACCESS_TOKEN_SAFETY_MS = 60 * 1000;
 const CONNECT_TIMEOUT_MS = 60 * 60 * 1000;
 // Lookup taxonomies (industries, job functions, intent topics, entitled enrich fields, …) are
 // effectively static reference data, so we cache them per account binding for a day to avoid
@@ -401,11 +406,68 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // tokens (persisting rotated refresh tokens).
 
 export class UserAccount extends DurableObject<Env> {
-  // ZoomInfo refresh tokens are single-use, so overlapping reads must share one exchange.
-  readonly #refreshes = new SingleFlight();
+  // ZoomInfo refresh tokens are single-use. The coordinator redeems one once for overlapping reads,
+  // and drops what a refresh minted when a reconnect or revoke replaced the grant it refreshed.
+  readonly #creds = new CredentialCoordinator<StoredGrant>(this.ctx.storage.kv, {
+    // A grant whose user isn't known yet reads as expired, so its next use refreshes it to learn
+    // them from the ID token ZoomInfo returns with every refresh.
+    expiresAt: grant => grant.userId === undefined ? 0 : grant.accessTokenExpiresAt,
+    // The layout before the kit, one key per value.
+    legacyKeys: ["accessToken", "accessTokenExpiresAt", "refreshToken", "scopes", "identity"],
+    upgrade: kv => {
+      const accessToken = kv.get<string>("accessToken");
+      const refreshToken = kv.get<string>("refreshToken");
+      if (!accessToken || !refreshToken) return undefined;
+      return {
+        accessToken,
+        refreshToken,
+        accessTokenExpiresAt: kv.get<number>("accessTokenExpiresAt") ?? 0,
+        scopes: kv.get<string[]>("scopes") ?? [],
+        identity: kv.get<StoredIdentity>("identity") ?? {},
+      };
+    },
+    // No `discardMint`: ZoomInfo exposes no token-revocation endpoint, so a mint a reconnect or
+    // revoke overtook is dropped unrevoked.
+    vendorId: "zoominfo",
+  });
+
+  /** How the coordinator refreshes a grant and announces its death to the Workshop. */
+  readonly #recovery = {
+    refresh: async (grant: StoredGrant): Promise<StoredGrant> => {
+      ensureConfigured(this.env);
+      let refreshed;
+      try {
+        refreshed = await refreshAccessToken(grant.refreshToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET,
+          resolveOAuthConfig(this.env).tokenUrl);
+      } catch (err) {
+        if (err instanceof ZoomInfoApiError && (err.isAuthError || err.status === 400)) {
+          throw new CredentialsExpiredError(
+            "ZoomInfo credentials have expired or been revoked. Please reconnect the account.", { cause: err });
+        }
+        throw err;
+      }
+      const userId = readIdToken(refreshed.idToken, this.env.CLIENT_ID).userId ?? grant.userId;
+      if (grant.userId !== undefined && userId !== grant.userId) {
+        throw new CredentialsExpiredError(
+          "ZoomInfo named a different user for this connection. Please reconnect the account.");
+      }
+      return {
+        ...grant,
+        accessToken: refreshed.accessToken,
+        accessTokenExpiresAt: Date.now() + refreshed.expiresIn * 1000,
+        // ZoomInfo rotates refresh tokens: keep the new one, never the consumed one.
+        refreshToken: refreshed.refreshToken ?? grant.refreshToken,
+        scopes: refreshed.scopes.length > 0 ? refreshed.scopes : grant.scopes,
+        // Still absent when ZoomInfo didn't identify the user: getAccessToken refuses the grant, and
+        // its next use refreshes again.
+        userId,
+      };
+    },
+    notify: () => this.noteCredentialsExpired(),
+  };
 
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string): Promise<void> {
-    if (!this.ctx.storage.kv.get<string>("refreshToken")) {
+    if (this.#creds.stored() === undefined) {
       await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
     }
     this.ctx.storage.kv.put("callback", callback);
@@ -508,13 +570,12 @@ export class UserAccount extends DurableObject<Env> {
       const stageId = stageCredentials(this.ctx.storage.kv, storedGrant, Date.now());
       handoff = await callback.reconnectComplete(stageId);
     } else {
-      this.#writeGrant(storedGrant);
+      this.#creds.connect(storedGrant);
       try {
         const props: ZoomInfoGatekeeperImplProps = { userObjectId: this.ctx.id.toString() };
         handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
-        this.ctx.storage.kv.delete("refreshToken");
-        this.ctx.storage.kv.delete("accessToken");
+        this.#creds.clear();
         throw err;
       }
     }
@@ -527,80 +588,32 @@ export class UserAccount extends DurableObject<Env> {
   async commitReconnect(stageId: string): Promise<void> {
     const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now(), stageId);
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
-    this.#writeGrant(grant);
-  }
-
-  #writeGrant(grant: StoredGrant): void {
-    this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
-    this.ctx.storage.kv.put("accessToken", grant.accessToken);
-    this.ctx.storage.kv.put("accessTokenExpiresAt", grant.accessTokenExpiresAt);
-    this.ctx.storage.kv.put("scopes", grant.scopes);
-    this.ctx.storage.kv.put<StoredIdentity>("identity", grant.identity);
-    this.ctx.storage.kv.put("userId", grant.userId);
-    clearCredentialExpiryLatch(this.ctx.storage.kv);
+    this.#creds.connect(grant);
   }
 
   /**
    * A current access token and the ZoomInfo user it acts for. A connection made before the user's
-   * ID was kept has none, so it refreshes its token early to learn it from the ID token ZoomInfo
-   * returns with every refresh; one ZoomInfo still doesn't identify must be reconnected.
+   * ID was kept has none, so its first use refreshes the grant early to learn it from the ID token
+   * ZoomInfo returns with every refresh; one ZoomInfo still doesn't identify must be reconnected,
+   * as must one whose refresh names another user (see #recovery).
    */
   async getAccessToken(): Promise<ZoomInfoAccess> {
-    const userId = this.ctx.storage.kv.get<string>("userId");
-    const token = this.ctx.storage.kv.get<string>("accessToken");
-    const expiresAt = this.ctx.storage.kv.get<number>("accessTokenExpiresAt") ?? 0;
-    if (userId && token && Date.now() < expiresAt - ACCESS_TOKEN_SAFETY_MS) {
-      return { accessToken: token, userId };
-    }
-    return this.#refreshes.run("refresh", () => this.#refresh());
-  }
-
-  async #refresh(): Promise<ZoomInfoAccess> {
-    const userId = this.ctx.storage.kv.get<string>("userId");
-    const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
-    if (!refreshToken) {
-      throw new Error("ZoomInfo credentials have not been configured for this account.");
-    }
-    ensureConfigured(this.env);
-    const oauth = resolveOAuthConfig(this.env);
-
-    let grant;
-    try {
-      grant = await refreshAccessToken(refreshToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET, oauth.tokenUrl);
-    } catch (err) {
-      if (err instanceof ZoomInfoApiError && (err.isAuthError || err.status === 400)) {
-        await this.noteCredentialsExpired();
-      }
-      throw err;
-    }
-    const refreshedUserId = readIdToken(grant.idToken, this.env.CLIENT_ID).userId ?? userId;
-    if (userId !== undefined && refreshedUserId !== userId) {
-      await this.noteCredentialsExpired();
-      throw new Error("ZoomInfo named a different user for this connection. Please reconnect the account.");
-    }
-
-    this.ctx.storage.kv.put("accessToken", grant.accessToken);
-    this.ctx.storage.kv.put("accessTokenExpiresAt", Date.now() + grant.expiresIn * 1000);
-    // ZoomInfo rotates refresh tokens: always persist the new one and drop the consumed one.
-    if (grant.refreshToken) this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
-    if (grant.scopes.length > 0) this.ctx.storage.kv.put("scopes", grant.scopes);
-    if (refreshedUserId === undefined) {
+    const { creds } = await this.#creds.snapshot(this.#recovery.refresh, this.#recovery);
+    if (creds.userId === undefined) {
       await this.noteCredentialsExpired();
       throw new Error(
         "ZoomInfo hasn't identified which ZoomInfo user this connection belongs to. Please reconnect the account.");
     }
-    // Stored with the token it identifies, in the same turn, so the two always name one grant.
-    this.ctx.storage.kv.put("userId", refreshedUserId);
-    return { accessToken: grant.accessToken, userId: refreshedUserId };
+    return { accessToken: creds.accessToken, userId: creds.userId };
   }
 
   /** The ZoomInfo user this connection acts for, learned as getAccessToken() does when unknown. */
   async getUserId(): Promise<string> {
-    return this.ctx.storage.kv.get<string>("userId") ?? (await this.getAccessToken()).userId;
+    return this.#creds.stored()?.userId ?? (await this.getAccessToken()).userId;
   }
 
   async getIdentity(): Promise<StoredIdentity> {
-    return this.ctx.storage.kv.get<StoredIdentity>("identity") ?? {};
+    return this.#creds.stored()?.identity ?? {};
   }
 
   async noteCredentialsExpired(): Promise<void> {
@@ -609,14 +622,16 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    if (!this.ctx.storage.kv.get<string>("refreshToken")) {
+    if (this.#creds.stored() === undefined) {
       await this.ctx.storage.deleteAll();
     }
   }
 
   async revoke(): Promise<void> {
-    // ZoomInfo exposes no token-revocation endpoint; drop the local credentials. The user can
-    // revoke the app's access from their ZoomInfo admin settings.
+    // Fence before the first await, so a refresh still in flight is never stored, not even into the
+    // wiped account. ZoomInfo exposes no token-revocation endpoint; the user can revoke the app's
+    // access from their ZoomInfo admin settings.
+    this.#creds.clear();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }

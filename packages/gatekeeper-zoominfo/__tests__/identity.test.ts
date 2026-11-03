@@ -8,8 +8,8 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import {
-  ALICE, BOB, CLIENT_ID, FakeZoomInfo, accountStub, accountValue, failure, hooks, reconnectAs,
-  seedAccount, unwrap,
+  ALICE, BOB, CLIENT_ID, FakeZoomInfo, accountStub, failure, hooks, reconnectAs, seedAccount,
+  storedGrant, unwrap,
 } from "./fake-zoominfo";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -71,6 +71,20 @@ async function aliceWithHistory(fake: FakeZoomInfo) {
   return { id, zoominfo, done, pending };
 }
 
+/**
+ * A connection as Alice from before her ID was kept, whose first read is held inside the refresh
+ * that learns it until `refresh` resolves.
+ */
+async function readHeldInRefresh(fake: FakeZoomInfo) {
+  const id = await seedAccount(fake, ALICE, { legacy: true });
+  const zoominfo = binding(id);
+  const refresh = Promise.withResolvers<void>();
+  fake.holdRefreshes = refresh.promise;
+  const reading = zoominfo.run(["searchCompanies", {}]);
+  await vi.waitUntil(() => fake.count(/^POST \/gtm\/oauth\/v1\/token$/) === 1);
+  return { id, zoominfo, reading, refresh };
+}
+
 describe("connecting", () => {
   it.each([
     ["no ID token", null],
@@ -80,8 +94,7 @@ describe("connecting", () => {
     const fake = new FakeZoomInfo().install();
     const { id, accepted } = await connect(fake, claims);
     expect(failure(accepted)).toMatch(/did not identify the user who signed in/);
-    expect(await accountValue(id, "refreshToken")).toBeUndefined();
-    expect(await accountValue(id, "userId")).toBeUndefined();
+    expect(await storedGrant(id)).toBeUndefined();
   });
 });
 
@@ -93,7 +106,7 @@ describe("a connection made before its user's ID was kept", () => {
     unwrap(await zoominfo.run(["searchCompanies", {}]));
     expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
     expect(await zoominfo.reported()).toEqual([[ALICE_ID]]);
-    expect(await accountValue(id, "userId")).toBe(ALICE.sub);
+    expect(await storedGrant(id)).toMatchObject({ userId: ALICE.sub });
     // Once known, the user is read with the token, with no further refresh.
     unwrap(await zoominfo.run(["getCreditUsage"]));
     expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
@@ -171,7 +184,28 @@ describe("a refresh", () => {
     const zoominfo = binding(id);
     expect(failure(await zoominfo.run(["searchCompanies", {}]))).toMatch(/different user/);
     expect(fake.count(/^POST \/gtm\/data\//)).toBe(0);
-    expect(await accountValue(id, "userId")).toBe(ALICE.sub);
+    expect(await storedGrant(id)).toMatchObject({ userId: ALICE.sub });
+  });
+
+  it("a reconnect overtakes is dropped, leaving the reconnected user's credentials", async () => {
+    const fake = new FakeZoomInfo().install();
+    const { id, zoominfo, reading, refresh } = await readHeldInRefresh(fake);
+    await reconnectAs(fake, id, BOB);
+    refresh.resolve();
+    unwrap(await reading);
+    unwrap(await zoominfo.run(["getCreditUsage"]));
+    // Both reads ran with Bob's token: the one the reconnect overtook, and the next.
+    expect(await zoominfo.reported()).toEqual([[BOB_ID], [BOB_ID]]);
+  });
+
+  it("a disconnect overtakes is dropped, restoring no credentials", async () => {
+    const fake = new FakeZoomInfo().install();
+    const { id, reading, refresh } = await readHeldInRefresh(fake);
+    await accountStub(id).revoke();
+    refresh.resolve();
+    expect(failure(await reading)).toMatch(/disconnected/);
+    expect(fake.count(/^POST \/gtm\/data\//)).toBe(0);
+    expect(await storedGrant(id)).toBeUndefined();
   });
 });
 
@@ -217,8 +251,9 @@ describe("reconnecting", () => {
     const { id, zoominfo, done, pending } = await aliceWithHistory(fake);
     await reconnectAs(fake, id, BOB);
     // The ID token's `sub` is kept as the user; its name and email only display them.
-    expect(await accountValue(id, "userId")).toBe(BOB.sub);
-    expect(await accountValue(id, "identity")).toEqual({ displayName: BOB.name, uniqueName: BOB.email });
+    const grant = await storedGrant(id);
+    expect(grant?.userId).toBe(BOB.sub);
+    expect(grant?.identity).toEqual({ displayName: BOB.name, uniqueName: BOB.email });
 
     // Alice's result stays hers; Bob's connection doesn't make it his.
     expect(unwrap(await zoominfo.run(["getEnrichmentResult", done]))).toMatchObject({

@@ -7,6 +7,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { CredentialCoordinator } from "@gadgets/gatekeeper-kit/credentials";
 
 /** The OAuth client the suite's gatekeeper runs as (see vitest.config.ts). */
 export const CLIENT_ID = "test-client-id";
@@ -40,6 +41,8 @@ export class FakeZoomInfo {
   failEnrichment = false;
   /** How long the token endpoint takes to answer, so requests to it can overlap. */
   tokenLatencyMs = 0;
+  /** While set, the token endpoint holds each refresh until it settles, so a test can act mid-refresh. */
+  holdRefreshes?: Promise<void>;
   /** The user each live access token, refresh token and authorization code belongs to. */
   readonly #owners = new Map<string, FakeUser>();
   #issued = 0;
@@ -77,6 +80,7 @@ export class FakeZoomInfo {
     if (url.pathname === "/gtm/oauth/v1/token") {
       const form = new URLSearchParams(await request.text());
       if (this.tokenLatencyMs > 0) await scheduler.wait(this.tokenLatencyMs);
+      if (form.get("grant_type") === "refresh_token") await this.holdRefreshes;
       return this.#token(form);
     }
 
@@ -131,8 +135,8 @@ export function accountStub(userObjectId: string) {
 
 /**
  * Seeds a connected account for `user` whose token needs no refresh, as a completed connect leaves
- * one, with a Workshop callback. `legacy` leaves out the user's ID, as a connection made before the
- * gatekeeper kept it has none. Returns the account id.
+ * one, with a Workshop callback. `legacy` stores it as a version from before the gatekeeper kept the
+ * user's ID did. Returns the account id.
  */
 export async function seedAccount(fake: FakeZoomInfo, user: FakeUser, options: {
   legacy?: boolean; expiresInMs?: number;
@@ -141,20 +145,27 @@ export async function seedAccount(fake: FakeZoomInfo, user: FakeUser, options: {
   const id = env.USER_ACCOUNT.newUniqueId();
   await runInDurableObject(env.USER_ACCOUNT.get(id), (_instance, state) => {
     const kv = state.storage.kv;
-    kv.put("refreshToken", grant.refreshToken);
-    kv.put("accessToken", grant.accessToken);
-    kv.put("accessTokenExpiresAt", Date.now() + (options.expiresInMs ?? 60 * 60 * 1000));
-    kv.put("scopes", ["api:data:company"]);
-    kv.put("identity", { displayName: user.name, uniqueName: user.email });
-    if (!options.legacy) kv.put("userId", user.sub);
+    const stored = {
+      ...grant,
+      accessTokenExpiresAt: Date.now() + (options.expiresInMs ?? 60 * 60 * 1000),
+      scopes: ["api:data:company"],
+      identity: { displayName: user.name, uniqueName: user.email },
+    };
+    if (options.legacy) {
+      // One key per value, and no user ID.
+      for (const [key, value] of Object.entries(stored)) kv.put(key, value);
+    } else {
+      new CredentialCoordinator(kv).connect({ ...stored, userId: user.sub });
+    }
   });
   await hooks().installCallback(id.toString(), generateNonce());
   return id.toString();
 }
 
-/** The account's stored value for `key`. */
-export async function accountValue(userObjectId: string, key: string): Promise<unknown> {
-  return await runInDurableObject(accountStub(userObjectId), (_instance, state) => state.storage.kv.get(key));
+/** The account's stored grant, read as the kit's CredentialCoordinator holds it. */
+export async function storedGrant(userObjectId: string): Promise<Record<string, unknown> | undefined> {
+  return await runInDurableObject(accountStub(userObjectId),
+    (_instance, state) => new CredentialCoordinator<Record<string, unknown>>(state.storage.kv).stored());
 }
 
 /** Runs a reconnect in which `user` signs in to ZoomInfo, through the Workshop's commit. */

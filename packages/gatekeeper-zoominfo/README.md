@@ -96,7 +96,8 @@ Optional overrides read by the Worker:
   client, is refused at connect. A connection made before the gatekeeper kept the user's ID learns
   it from the ID token of its next token refresh, which happens early for that purpose; if ZoomInfo
   doesn't identify the user there, reads fail and the account asks to be reconnected. A refresh
-  naming a different user than the connection's fails the same way. Reconnecting as another
+  naming a different user than the connection's fails the same way, and one a reconnect or
+  disconnect overtakes is dropped rather than stored over what replaced it. Reconnecting as another
   ZoomInfo user is allowed, and new reads then report that user, while what the binding already
   holds keeps the user it came from: an enrichment result reports the user whose token retrieved
   it, and a cached lookup is served only to the user it was fetched as. Enrichment results stored
