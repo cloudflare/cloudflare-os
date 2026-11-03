@@ -1222,21 +1222,32 @@ describe("AdminSettings.testGatewayProvider", () => {
   // The router rides the binding's /compat route, and names the model it picked in a response
   // header.
   it("names the model Auto Router answered with, and the pool it was given", async () => {
-    const { test, testModel, requests } = tested(() => {
+    const { test, testModel, requests, inDo } = tested(() => {
       const response = completion("OK");
       response.headers.set("cf-aig-routed-model", "anthropic/claude-sonnet-5.5");
       return response;
     }, { CF_AI_GATEWAY_PROVIDERS: "anthropic,cloudflare-auto-router" });
-    // A provider test carries no pool, so the gateway's own default pool answers.
+    // With no allowed models, the provider's test and the model's both carry the enabled
+    // providers, which is the pool the model's chats are given.
     expect((await test("cloudflare-auto-router")).result).toStrictEqual(
         { model: "cloudflare/auto", ok: true, routedModel: "anthropic/claude-sonnet-5.5" });
     expect(requests[0]!.url).toBe("https://workers-binding.ai/ai-gateway/gateways/" +
         "platform-gateway/compat/chat/completions");
-    expect(requests[0]!.headers.get("cf-aig-allowed-providers")).toBeNull();
-    // The model's test runs with its config, which carries the enabled providers.
+    expect(requests[0]!.headers.get("cf-aig-allowed-providers")).toBe("anthropic");
     expect((await testModel("cloudflare/auto")).result).toMatchObject({ ok: true });
     expect(requests[1]!.headers.get("cf-aig-allowed-providers")).toBe("anthropic");
     expect(requests[1]!.headers.get("cf-aig-skip-cache")).toBe("true");
+
+    // Allowed models narrow both tests' pool alike.
+    await inDo(admin => admin.setGatewayModelSettings(
+        "cloudflare/auto", { allowedModels: ["anthropic/claude-sonnet-5.5"] }));
+    await test("cloudflare-auto-router");
+    await testModel("cloudflare/auto");
+    for (const request of requests.slice(2)) {
+      expect(request.headers.get("cf-aig-allowed-models")).toBe("anthropic/claude-sonnet-5.5");
+      expect(request.headers.get("cf-aig-allowed-providers")).toBeNull();
+    }
+    expect(requests).toHaveLength(4);
   });
 
   it("throws for a provider AI Gateway does not serve", async () => {
