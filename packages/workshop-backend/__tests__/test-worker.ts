@@ -273,10 +273,16 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
 /** Git provider fixture recognizes only the immutable source commit, not DO-only heads. */
 export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
+  #pack?: ReadableStreamDefaultController<Uint8Array>;
   async getAgentCatalog() { return null; }
   async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT",
     tsType: "Git", gitRepositoryUrl: "https://github.com/fixture/repo.git"}; }
   allowGitCommit(commit: string): void { this.ctx.storage.kv.put("gitCommit", commit); }
+  holdGitPack(): void { this.ctx.storage.kv.put("holdPack", true); }
+  finishGitPack(): void {
+    this.#pack!.enqueue(new Uint8Array([...new TextEncoder().encode("0007"), 1, 2, 254, ...FLUSH_PKT]));
+    this.#pack!.close();
+  }
   async gitPull(request: Request, observer?: RpcStub<import("@gadgets/workshop-shared/gatekeeper").ObservationAuthorizer>): Promise<Response> {
     gitPullPath(request);
     if (observer) {
@@ -292,6 +298,12 @@ export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
     const body = await request.text();
     if (!body.includes(`want ${this.ctx.storage.kv.get("gitCommit")}\n`)) throw new Error("Unknown remote commit");
     if (!body.includes("deepen 1\n") || body.includes("filter ")) throw new Error("Expected a complete depth-one checkout");
+    if (this.ctx.storage.kv.get("holdPack")) return new Response(new ReadableStream<Uint8Array>({
+      start: controller => {
+        this.#pack = controller;
+        controller.enqueue(new Uint8Array([...encodePktLine("packfile"), ...new TextEncoder().encode("0007"), 1, 1, 255]));
+      },
+    }));
     return new Response(new Blob([encodePktLine("packfile"),
       new TextEncoder().encode("0007"), Uint8Array.of(1, 1, 255), FLUSH_PKT]));
   }

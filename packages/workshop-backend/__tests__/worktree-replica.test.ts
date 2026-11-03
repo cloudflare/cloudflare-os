@@ -5,7 +5,7 @@ import {runInDurableObject, abortAllDurableObjects} from "cloudflare:test";
 import {beginReplicaTurn, pauseReplicaTurn} from "./replica-fixtures";
 import {decodePackStream} from "../src/git-codec";
 import {diffFiles, type CodeChange} from "@gadgets/workshop-shared/code-change";
-import type {OverseerDurableObject} from "./test-worker";
+import type {OverseerDurableObject, ReplicaGitSource} from "./test-worker";
 import type {TestReplicaTransfer} from "./replica-transfer-worker";
 import {runAgent, type WorktreeTurnAccess} from "../src/agent";
 import {UserDurableObject} from "../src/user";
@@ -59,6 +59,24 @@ const gitRequest = (binding = "GIT", stream = false) => new Request("https://git
   headers: {"git-protocol": "version=2", "x-workshop-git-binding": binding,
     ...(stream ? {"x-test-open-stream": "1"} : {})},
 });
+
+async function sourcePackFixture(impl: Impl, f: Awaited<ReturnType<typeof setup>>) {
+  bindGit(impl);
+  const piece = impl.storage.gadgets.get(f.tree.id)!;
+  if (piece.type !== "worktree") throw new Error("Expected a worktree");
+  impl.storage.gadgets.put({...piece, sourceGatekeeperId: 40});
+  impl.storage.gatekeepers.put({...impl.storage.gatekeepers.get(40)!, id: 41});
+  const source = impl.ctx.facets.get<ReplicaGitSource>("gatekeeper41", () => ({
+    class: impl.storage.gatekeepers.get(41)!.class,
+  }));
+  await source.allowGitCommit(f.commit);
+  await source.holdGitPack();
+  impl.storage.gitObjectMetadata.put({oid: f.commit, type: "commit", onRemote: [40, 41], pullableFrom: [], pendingPush: []});
+  const mount = await f.context().export("REPO");
+  const reader = (await impl.exportWorktreePack(mount.id, true)).body!.getReader();
+  expect((await reader.read()).value).toEqual(Uint8Array.of(1, 255));
+  return {mount, source, reader};
+}
 
 describe("single-worktree command mount and writeback", () => {
   it.each(["writeFile", "editFile"] as const)("replays the original %s result after an early replica flush", toolName => within(async (impl, f) => {
@@ -308,6 +326,69 @@ describe("single-worktree command mount and writeback", () => {
     const next = reader.read().then(result => result.done, () => true);
     await mount.writeback.submitChanges("final", [], true);
     expect(await next).toBe(true);
+  }));
+  it("reuses paused binding replay and invalidates it on history and context changes", () => within(async (impl, f) => {
+    bindGit(impl);
+    const mount = await f.context().export("REPO");
+    pauseReplicaTurn(impl, 1);
+    const replay = vi.spyOn(impl.storage.chats, "list");
+    try {
+      for (let i = 0; i < 2; ++i)
+        expect([...new Uint8Array(await (await impl.commandGitPull(mount.id, "GIT", gitRequest())).arrayBuffer())])
+          .toEqual([0, 255, 128, 13]);
+      expect(replay).toHaveBeenCalledTimes(1);
+      impl.addChatMessages(1, author, [{type: "message", message: "New history invalidates replay"}]);
+      await (await impl.commandGitPull(mount.id, "GIT", gitRequest())).arrayBuffer();
+      expect(replay).toHaveBeenCalledTimes(2);
+      const context = impl.storage.chatContext.get(1)!;
+      impl.storage.chatContext.put({...context, bindings: {...context.bindings, GIT: 31}});
+      await expect(impl.commandGitPull(mount.id, "GIT", gitRequest())).rejects.toThrow(/binding/);
+      expect(replay).toHaveBeenCalledTimes(3);
+    } finally { replay.mockRestore(); await mount.writeback.submitChanges("final", [], true); }
+  }));
+  it("invalidates cached bindings when an existing history record is updated or removed", () => within(async (impl, f) => {
+    pauseReplicaTurn(impl, 1);
+    const extra = await impl.createWorktree("Extra", 1, f.commit);
+    const message = [...impl.storage.chats.list({})].at(-1)!;
+    expect(impl.replicaSelection(1).some(tree => tree.checkoutId === extra.id)).toBe(false);
+    const changed = {...message, type: "changes" as const, change: {}, createdWorktrees: [
+      {worktreeId: extra.id, title: "Extra", bindingName: "EXTRA"},
+    ]};
+    impl.storage.chats.put(changed);
+    expect(impl.replicaSelection(1).some(tree => tree.checkoutId === extra.id)).toBe(true);
+    impl.storage.chats.deleteRecord(changed);
+    expect(impl.replicaSelection(1).some(tree => tree.checkoutId === extra.id)).toBe(false);
+  }));
+  it.each([false, true])("rechecks a fallback bootstrap source while streaming (removed=%s)", removed => within(async (impl, f) => {
+    const {mount, source, reader} = await sourcePackFixture(impl, f);
+    try {
+      const next = reader.read();
+      // Revoke the record while the provider still holds its response open.
+      if (removed) impl.storage.gatekeepers.delete(41);
+      await source.finishGitPack();
+      if (removed) expect(await next.then(chunk => chunk.done, () => true)).toBe(true);
+      else {
+        expect((await next).value).toEqual(Uint8Array.of(2, 254));
+        expect((await reader.read()).done).toBe(true);
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+      await mount.writeback.submitChanges("final", [], true);
+    }
+  }));
+  it("cancels a stalled bootstrap read when final writeback seals the command", () => within(async (impl, f) => {
+    const {mount, source, reader} = await sourcePackFixture(impl, f);
+    let finished = false;
+    const next = reader.read().then(chunk => { finished = true; return chunk.done; }, () => { finished = true; return true; });
+    try {
+      await mount.writeback.submitChanges("final", [], true);
+      await vi.waitFor(() => expect(finished).toBe(true), {timeout: 1000});
+      expect(await next).toBe(true);
+      // The native RPC transport may not cancel the provider's own HTTP handler;
+      // even a late provider result must not reopen the consumer stream.
+      await source.finishGitPack();
+      expect(await reader.read().then(chunk => chunk.done, () => true)).toBe(true);
+    } finally { await reader.cancel().catch(() => {}); }
   }));
   it.each([false, true])("rechecks the Git connection before delivering an open response (removed=%s)", removed => within(async (impl, f) => {
     bindGit(impl);

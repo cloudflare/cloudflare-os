@@ -1247,6 +1247,8 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
+    const invalidateBindings = () => { this.#integrationBindingCache = undefined; };
+    this.storage.chats.subscribe({add: invalidateBindings, update: invalidateBindings, remove: invalidateBindings});
     this.gitStore = new GitStore(this.storage.gitObjects);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
@@ -6416,6 +6418,8 @@ class OverseerImpl implements AgentHooks {
   // along.
   #gatekeepersPendingRestart = new Set<number>();
   #commandGitRequests = new Map<string, Set<AbortController>>();
+  // Keep at most one paused chat's replay; advancing history or changing its inputs invalidates it.
+  #integrationBindingCache?: {key: string; bindings: Map<string, ChatBindingEntry>};
 
   // Whether `id` is NOT blocked pending a scheduled restart (see #gatekeepersPendingRestart).
   // For callers that enumerate connections (listSlashCommands, prepareChatBindings' ambient
@@ -6464,15 +6468,24 @@ class OverseerImpl implements AgentHooks {
   #integrationBindings(chatId: number): Map<string, ChatBindingEntry> {
     const context = this.getChatAgentContext(chatId);
     const active = this.#worktreeReplicaTurns.get(chatId);
-    if (active) return new Map(active.bindings());
+    if (active) {
+      this.#integrationBindingCache = undefined;
+      return new Map(active.bindings());
+    }
     const checkpoint = this.getActiveChatCompaction(chatId);
+    const key = JSON.stringify([chatId, this.nextChatSequencePeek(chatId), context.bindings,
+      checkpoint?.compactedTo, checkpoint?.chatBindings]);
+    if (this.#integrationBindingCache?.key === key)
+      return new Map(this.#integrationBindingCache.bindings);
     const initial = new Map<string, ChatBindingEntry>(checkpoint?.chatBindings ?? []);
     for (const [name, id] of Object.entries(context.bindings ?? {})) {
       if (!initial.has(name)) initial.set(name, {type: "workpiece", id});
     }
     const messages = this.storage.chats.list({prefix: chatKeyPrefix(chatId),
       start: checkpoint && chatKey(chatId, checkpoint.compactedTo)});
-    return replayChatBindings(messages, initial);
+    const bindings = replayChatBindings(messages, initial);
+    this.#integrationBindingCache = {key, bindings};
+    return new Map(bindings);
   }
 
   replicaSelection(chatId: number): WorktreeBase[] {
@@ -6632,40 +6645,60 @@ class OverseerImpl implements AgentHooks {
     let cause: unknown;
     for (const source of new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])) {
       if (!this.storage.gatekeepers.get(source)) continue;
-      try {
+      const request = this.#commandGitRequest(lease.id);
+      const requireLive = () => {
         this.requireReplicaLease(lease.id);
+        request.signal.throwIfAborted();
+        if (!this.storage.gatekeepers.get(source)) throw new Error("Worktree source connection was removed.");
+        this.assertGatekeeperUsable(source);
+      };
+      try {
+        requireLive();
         const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
           Required<Pick<Gatekeeper<any>, "gitPull">>>;
+        requireLive();
         const transfer = await startGitPull(body => facet.gitPull(gitObjectRequest(body)),
           [commit], {type: "commit", commitHistory: {kind: "depth", depth: 1}});
-        let reader: ReadableStreamDefaultReader<Uint8Array>;
-        try { reader = (await transfer.stream()).getReader(); }
-        catch (error) { transfer[Symbol.dispose](); throw error; }
-        const requireLive = () => this.requireReplicaLease(lease.id);
+        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+        try {
+          requireLive();
+          reader = (await transfer.stream()).getReader();
+          requireLive();
+        } catch (error) {
+          await reader?.cancel(error).catch(() => {});
+          transfer[Symbol.dispose]();
+          throw error;
+        }
+        const pack = reader;
+        const cancel = () => { void pack.cancel().catch(() => {}); };
+        request.signal.addEventListener("abort", cancel, {once: true});
+        const done = () => {
+          request.signal.removeEventListener("abort", cancel);
+          request.forget();
+          transfer[Symbol.dispose]();
+        };
         return new ReadableStream<Uint8Array>({
           async pull(controller) {
             try {
               requireLive();
-              const {done, value} = await reader.read();
+              const {done: ended, value} = await pack.read();
               requireLive();
-              if (!done) { controller.enqueue(value); return; }
+              if (!ended) { controller.enqueue(value); return; }
               const status = await transfer.status();
+              requireLive();
               if (status.state !== "complete") throw new Error(status.state === "failed"
                 ? status.message : "Git transfer did not complete.");
+              done();
               controller.close();
-              transfer[Symbol.dispose]();
             } catch (error) {
-              controller.error(error);
-              await reader.cancel().catch(() => {});
-              transfer[Symbol.dispose]();
+              done(); controller.error(error);
+              await pack.cancel(error).catch(() => {});
             }
           },
-          async cancel(reason) {
-            try { await reader.cancel(reason); }
-            finally { transfer[Symbol.dispose](); }
-          },
-        });
+          async cancel(reason) { done(); await pack.cancel(reason); },
+        }, {highWaterMark: 0});
       } catch (error) {
+        request.forget();
         this.requireReplicaLease(lease.id);
         cause = error;
       }
@@ -6724,6 +6757,17 @@ class OverseerImpl implements AgentHooks {
     this.#commandGitRequests.delete(id);
   }
 
+  #commandGitRequest(id: string): {signal: AbortSignal; forget(): void} {
+    const abort = new AbortController();
+    const requests = this.#commandGitRequests.get(id) ?? new Set<AbortController>();
+    this.#commandGitRequests.set(id, requests);
+    requests.add(abort);
+    return {signal: abort.signal, forget: () => {
+      requests.delete(abort);
+      if (!requests.size) this.#commandGitRequests.delete(id);
+    }};
+  }
+
   async commandGitPull(id: string, binding: string, request: Request): Promise<Response> {
     const check = () => {
       const lease = this.requireReplicaLease(id);
@@ -6736,14 +6780,7 @@ class OverseerImpl implements AgentHooks {
       return {lease, source};
     };
     const {lease, source} = check();
-    const abort = new AbortController();
-    const requests = this.#commandGitRequests.get(id) ?? new Set<AbortController>();
-    this.#commandGitRequests.set(id, requests);
-    requests.add(abort);
-    const forget = () => {
-      requests.delete(abort);
-      if (!requests.size) this.#commandGitRequests.delete(id);
-    };
+    const {signal, forget} = this.#commandGitRequest(id);
     try {
       const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
         Required<Pick<Gatekeeper<any>, "gitPull">>>;
@@ -6755,7 +6792,7 @@ class OverseerImpl implements AgentHooks {
       const response = await facet.gitPull(new Request(request.url, {
         method: request.method, headers: request.headers, body: request.body,
       }), observer);
-      try { check(); abort.signal.throwIfAborted(); }
+      try { check(); signal.throwIfAborted(); }
       catch (error) { await response.body?.cancel(error); throw error; }
       // Only Git protocol metadata leaves the credentialed provider. In particular, never
       // forward upstream cookies or authentication/proxy headers into the guest.
@@ -6764,14 +6801,14 @@ class OverseerImpl implements AgentHooks {
       if (!response.body) { forget(); return new Response(null, init); }
       const reader = response.body.getReader();
       const cancel = () => { void reader.cancel().catch(() => {}); };
-      abort.signal.addEventListener("abort", cancel, {once: true});
-      const done = () => { abort.signal.removeEventListener("abort", cancel); forget(); };
+      signal.addEventListener("abort", cancel, {once: true});
+      const done = () => { signal.removeEventListener("abort", cancel); forget(); };
       return new Response(new ReadableStream<Uint8Array>({
         async pull(controller) {
           try {
-            check(); abort.signal.throwIfAborted();
+            check(); signal.throwIfAborted();
             const chunk = await reader.read();
-            check(); abort.signal.throwIfAborted();
+            check(); signal.throwIfAborted();
             if (chunk.done) { done(); controller.close(); }
             else controller.enqueue(chunk.value);
           } catch (error) {
