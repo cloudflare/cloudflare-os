@@ -19,7 +19,7 @@ function workflowsIn(dir: URL): Record<string, string> {
     [`.github/workflows/${name}`, readFileSync(new URL(name, dir), "utf8")]));
 }
 const recordedBase = (name: string) => workflowsIn(new URL(`./testdata/actions/${name}/`, import.meta.url));
-/** This checkout's workflows, which the cache rule must hold for. */
+/** This checkout's workflows, which fail the cache rule until ask-bonk passes `no-cache` (see below). */
 const repoWorkflows = workflowsIn(new URL("../../../.github/workflows/", import.meta.url));
 
 function input(diff: string, baseWorkflows: Record<string, string>): ActionsInput {
@@ -40,9 +40,12 @@ function input(diff: string, baseWorkflows: Record<string, string>): ActionsInpu
   };
 }
 
-/** #621's ci.yml bump onto this checkout's workflows, with ci.yml replaced by `workflow`. */
+/**
+ * #621's ci.yml bump with `workflow` as ci.yml and `others` as the only other workflows at the base,
+ * so each rule is seen apart from this checkout's other workflows (which fail, see below).
+ */
 function ciBump(workflow: string, others: Record<string, string> = {}): ActionsInput {
-  return input("pr621-ci-only.diff", { ...repoWorkflows, [CI]: workflow, ...others });
+  return input("pr621-ci-only.diff", { [CI]: workflow, ...others });
 }
 
 function reasons(value: ActionsInput): string[] {
@@ -53,25 +56,40 @@ function reasons(value: ActionsInput): string[] {
   return listed.map(String);
 }
 
+const BONK = "Cloudflare-Studio/ask-bonk/github@14a1af226388b15b389a0c1b7df9168a940165b6";
+
 describe("proof-actions on recorded Dependabot pull requests", () => {
-  it("holds for #621's bump confined to ci.yml, onto workflows that keep the cache rule", () => {
-    const outcome = evaluateActions(input("pr621-ci-only.diff", { ...repoWorkflows, [CI]: ciAtBase }));
+  // ask-bonk at this pin runs oven-sh/setup-bun@v2 without `no-cache` (github/action.yml:158-162),
+  // which restores bun from the Actions cache in jobs that hold the AI Gateway secrets. Until it
+  // passes `no-cache: true`, no github-actions bump holds here.
+  it("fails #621's ci.yml bump onto this checkout's workflows, while ask-bonk restores bun from the cache", () => {
+    assert.deepEqual(reasons(input("pr621-ci-only.diff", { ...repoWorkflows, [CI]: ciAtBase })), [
+      `.github/workflows/bonk-pr.yml: job bonk holds a credential, step 7: ${BONK} is not known to leave the Actions cache alone`,
+      `.github/workflows/bonk.yml: job bonk holds a credential, step 6: ${BONK} is not known to leave the Actions cache alone`,
+      `.github/workflows/workshop-evals-pr.yml: job trajectory-review holds a credential, step 11: ${BONK} is not known to leave the Actions cache alone`,
+      ".github/workflows/workshop-evals.yml: job evals holds a credential, step 7: " +
+        "getsentry/vitest-evals@d37153f06d7d086393927c57a2faaeff464a55e2 is not known to leave the Actions cache alone",
+    ]);
+  });
+
+  it("holds for #621's bump confined to ci.yml when ci.yml is the only workflow", () => {
+    const outcome = evaluateActions(ciBump(ciAtBase));
     assert.equal(outcome.holds, true, JSON.stringify(outcome.details));
     assert.deepEqual(outcome.details.moves, [
       "voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1",
       "voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1",
     ]);
     assert.deepEqual(outcome.details.workflows_checked, [CI]);
-    assert.deepEqual(outcome.details.cache_rule_checked, Object.keys(repoWorkflows));
+    assert.deepEqual(outcome.details.cache_rule_checked, [CI]);
   });
 
   it("fails #621's ci.yml bump at its real base, where preview.yml restored a cache beside its token", () => {
     const listed = reasons(input("pr621-ci-only.diff", recordedBase("pr621-base")));
     assert.deepEqual(listed.filter((reason) => reason.startsWith(CI)), []);
     for (const reason of [
-      `${PREVIEW}: job deploy holds a credential, step 4: setup-vp cache is not false`,
-      `${PREVIEW}: job cleanup holds a credential, step 4: setup-vp cache is not false`,
-      ".github/workflows/workshop-evals.yml: job evals holds a credential, step 3: setup-vp cache is not false",
+      `${PREVIEW}: job deploy holds a credential, step 4: setup-vp cache is not stated as false`,
+      `${PREVIEW}: job cleanup holds a credential, step 4: setup-vp cache is not stated as false`,
+      ".github/workflows/workshop-evals.yml: job evals holds a credential, step 3: setup-vp cache is not stated as false",
     ]) assert.ok(listed.includes(reason), `missing "${reason}" in ${JSON.stringify(listed)}`);
   });
 
@@ -111,7 +129,7 @@ describe("proof-actions on recorded Dependabot pull requests", () => {
   });
 });
 
-describe("proof-actions cache rule, on this checkout's workflows", () => {
+describe("proof-actions cache rule", () => {
   const preview = repoWorkflows[PREVIEW];
   const CACHE_OFF = "          cache: false\n";
   const SECRET_JOB = [
@@ -119,34 +137,55 @@ describe("proof-actions cache rule, on this checkout's workflows", () => {
     "    steps:", "      - run: echo \"$T\"", "        env:", "          T: ${{ secrets.T }}",
   ].join("\n");
   const EXTRA = ".github/workflows/extra.yml";
+  const SETUP_VP = "voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76";
+  const secretJobWith = (step: string) => ({ [EXTRA]: `${SECRET_JOB}\n${step}` });
+  const unknown = (step: number, uses: string) =>
+    `${EXTRA}: job extra holds a credential, step ${step}: ${uses} is not known to leave the Actions cache alone`;
 
-  it("holds for every workflow here, each checked", () => {
-    const outcome = evaluateActions(ciBump(ciAtBase));
+  it("holds for preview.yml, whose jobs hold tokens and restore no cache", () => {
+    const outcome = evaluateActions(ciBump(ciAtBase, { [PREVIEW]: preview }));
     assert.equal(outcome.holds, true, JSON.stringify(outcome.details));
-    assert.deepEqual(outcome.details.cache_rule_checked, Object.keys(repoWorkflows));
+    assert.deepEqual(outcome.details.cache_rule_checked, [CI, PREVIEW]);
   });
 
   const cases: [string, Record<string, string>, string][] = [
     ["preview.yml's deploy job with setup-vp's cache back on", { [PREVIEW]: preview.replace(CACHE_OFF, "          cache: true\n") },
-      `${PREVIEW}: job deploy holds a credential, step 4: setup-vp cache is not false`],
-    ["setup-vp's toolchain cache in a job with a secret",
-      { [EXTRA]: `${SECRET_JOB}\n      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76\n        with:\n          cache-toolchain: true\n` },
+      `${PREVIEW}: job deploy holds a credential, step 4: setup-vp cache is not stated as false`],
+    ["ask-bonk, a composite action that restores bun from the cache, in a job with a secret",
+      secretJobWith(`      - uses: ${BONK}\n`), unknown(2, BONK)],
+    ["setup-vp with its cache left to the default", secretJobWith(`      - uses: ${SETUP_VP}\n        with:\n          run-install: true\n`),
+      `${EXTRA}: job extra holds a credential, step 2: setup-vp cache is not stated as false`],
+    ["setup-vp with no inputs", secretJobWith(`      - uses: ${SETUP_VP}\n`),
+      `${EXTRA}: job extra holds a credential, step 2: setup-vp cache is not stated as false`],
+    ["setup-vp with `Cache: true`", secretJobWith(`      - uses: ${SETUP_VP}\n        with:\n          Cache: true\n`),
+      `${EXTRA}: job extra holds a credential, step 2: setup-vp cache is not stated as false`],
+    ["setup-vp's sfw, which restores its binary from the cache",
+      secretJobWith(`      - uses: ${SETUP_VP}\n        with:\n          cache: false\n          sfw: true\n`),
+      `${EXTRA}: job extra holds a credential, step 2: setup-vp sfw is not false`],
+    ["setup-vp's toolchain cache", secretJobWith(`      - uses: ${SETUP_VP}\n        with:\n          cache: false\n          cache-toolchain: true\n`),
       `${EXTRA}: job extra holds a credential, step 2: setup-vp cache-toolchain is not false`],
-    ["actions/cache/restore in a job with a secret",
-      { [EXTRA]: `${SECRET_JOB}\n      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830\n` },
-      `${EXTRA}: job extra holds a credential, step 2: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 restores a cache`],
-    ["setup-node, which caches by default, in a job with a secret",
-      { [EXTRA]: `${SECRET_JOB}\n      - uses: actions/setup-node@v5\n` },
-      `${EXTRA}: job extra holds a credential, step 2: actions/setup-node@v5 restores a cache`],
+    ["actions/cache/restore", secretJobWith("      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830\n"),
+      unknown(2, "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830")],
+    ["a local action", secretJobWith("      - uses: ./.github/actions/setup\n"), unknown(2, "./.github/actions/setup")],
+    ["a docker action", secretJobWith("      - uses: docker://alpine:3\n"), unknown(2, "docker://alpine:3")],
     ["a cache where the token's permissions are left to the repository default",
       { [EXTRA]: "on: push\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/cache@v5\n" },
-      `${EXTRA}: job extra holds a credential, step 1: actions/cache@v5 restores a cache`],
+      unknown(1, "actions/cache@v5")],
     ["a cache in a job whose token may write",
       { [EXTRA]: "on: push\npermissions: {}\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n" +
         "    steps:\n      - uses: actions/cache@v5\n" },
-      `${EXTRA}: job extra holds a credential, step 1: actions/cache@v5 restores a cache`],
+      unknown(1, "actions/cache@v5")],
     ["a workflow the reader cannot parse", { [EXTRA]: "on: push\njobs: &j\n" },
       `${EXTRA}: cannot be parsed: line 2: an anchor, alias or tag`],
+    ["setup-vp's sfw turned on through an INPUT_ variable",
+      secretJobWith(`      - uses: ${SETUP_VP}\n        with:\n          cache: false\n        env:\n          INPUT_SFW: true\n`),
+      `${EXTRA}: job extra holds a credential and sets an INPUT_ variable`],
+    ["a reusable workflow handed a secret through with:, which restores a cache", {
+      ".github/workflows/caller.yml": "on: push\npermissions: {}\njobs:\n  c:\n    uses: ./.github/workflows/extra.yml\n" +
+        "    with:\n      t: ${{ secrets.T }}\n",
+      [EXTRA]: "on:\n  workflow_call:\n    inputs:\n      t:\n        type: string\npermissions:\n  contents: read\njobs:\n" +
+        "  d:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: oven-sh/setup-bun@v2\n",
+    }, unknown(1, "oven-sh/setup-bun@v2").replace("job extra", "job d")],
   ];
   for (const [name, others, reason] of cases) {
     it(`fails ${name}`, () => {
@@ -155,12 +194,25 @@ describe("proof-actions cache rule, on this checkout's workflows", () => {
     });
   }
 
-  it("allows a cache in a job that holds no credential", () => {
+  it("fails a job with a credential that calls a reusable workflow it does not read, but not a local one it does", () => {
+    const caller = "on: push\npermissions: {}\njobs:\n" +
+      "  local:\n    uses: ./.github/workflows/extra.yml\n    secrets: inherit\n" +
+      "  missing:\n    uses: ./.github/workflows/gone.yml\n    secrets: inherit\n" +
+      "  remote:\n    uses: someone/else/.github/workflows/x.yml@0123456789abcdef0123456789abcdef01234567\n    secrets: inherit\n";
+    const extra = "on:\n  workflow_call:\npermissions: {}\njobs:\n  called:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n";
+    const CALLER = ".github/workflows/caller.yml";
+    assert.deepEqual(reasons(ciBump(ciAtBase, { [CALLER]: caller, [EXTRA]: extra })), [
+      `${CALLER}: job missing holds a credential and calls a workflow this check does not read`,
+      `${CALLER}: job remote holds a credential and calls a workflow this check does not read`,
+    ]);
+  });
+
+  it("allows any action in a job that holds no credential", () => {
     const extra = "on: push\npermissions:\n  contents: read\njobs:\n  extra:\n    runs-on: ubuntu-latest\n" +
-      "    steps:\n      - uses: actions/cache@v5\n";
+      `    steps:\n      - uses: actions/cache@v5\n      - uses: ${BONK}\n`;
     const outcome = evaluateActions(ciBump(ciAtBase, { [EXTRA]: extra }));
     assert.equal(outcome.holds, true, JSON.stringify(outcome.details));
-    assert.ok(Array.isArray(outcome.details.cache_rule_checked) && outcome.details.cache_rule_checked.includes(EXTRA));
+    assert.deepEqual(outcome.details.cache_rule_checked, [CI, EXTRA]);
   });
 });
 

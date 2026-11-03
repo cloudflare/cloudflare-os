@@ -1,73 +1,44 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { asObject, parseJson } from "./json.ts";
 import { evaluateSmoke, isReadyLine, startServer, type Answer } from "./smoke.ts";
 import { parseWorkflow } from "./workflow.ts";
 
-const PREVIEW = "https://pr966-preview-router.example.workers.dev";
-const html: Answer = { status: 200, contentType: "text/html; charset=utf-8", location: "", body: "<!doctype html>" };
-const version: Answer = { status: 200, contentType: "application/json", location: "", body: '{"version":"r000966-91f4e70"}' };
-// What pr966's preview answered without a token on 2026-11-02.
-const accessLogin: Answer = {
-  status: 302, contentType: "", body: "",
-  location: "https://cf-cloudflare-os-previews.cloudflareaccess.com/cdn-cgi/access/login/pr966-preview-router.example.workers.dev",
-};
+const ORIGIN = "http://localhost:8799";
+const html: Answer = { status: 200, contentType: "text/html; charset=utf-8", body: "<!doctype html>" };
+// What the local server's /api/version answered on 2026-11-03.
+const version: Answer = { status: 200, contentType: "application/json", body: '{"version":"118f3e9a-eb13-46b1-aee7-7f14bd326b9e"}' };
 
 describe("preview-smoke", () => {
   it("holds when / serves HTML and /api/version names a version", () => {
-    const outcome = evaluateSmoke(PREVIEW, html, version);
+    const outcome = evaluateSmoke(ORIGIN, html, version);
     assert.equal(outcome.holds, true, JSON.stringify(outcome.details));
-    assert.equal(outcome.details.backend_version, "r000966-91f4e70");
-  });
-
-  it("is an error, not a failure, when Access turns the request away", () => {
-    for (const [root, api] of [[accessLogin, accessLogin], [html, accessLogin]]) {
-      const outcome = evaluateSmoke(PREVIEW, root, api);
-      assert.equal(outcome.status, "error");
-      assert.equal(outcome.holds, false);
-    }
+    assert.equal(outcome.details.backend_version, "118f3e9a-eb13-46b1-aee7-7f14bd326b9e");
   });
 
   it("fails when the backend is down behind the router", () => {
-    const outcome = evaluateSmoke(PREVIEW, html, { ...version, status: 502, body: "Bad Gateway" });
-    assert.deepEqual(outcome.details.reasons, ["GET /api/version answered 502"]);
+    const outcome = evaluateSmoke(ORIGIN, html, { ...version, status: 500, body: "broken on purpose" });
+    assert.deepEqual(outcome.details.reasons, ["GET /api/version answered 500"]);
   });
 
   it("fails when /api/version answers without a version", () => {
-    const outcome = evaluateSmoke(PREVIEW, html, { ...version, body: '{"ok":true}' });
+    const outcome = evaluateSmoke(ORIGIN, html, { ...version, body: '{"ok":true}' });
     assert.deepEqual(outcome.details.reasons, ["GET /api/version answered 200 without a version field"]);
   });
 
-  it("fails when / is not the frontend", () => {
-    const outcome = evaluateSmoke(PREVIEW, { ...html, contentType: "application/json" }, version);
-    assert.deepEqual(outcome.details.reasons, ["GET / answered 200 application/json"]);
+  it("fails when / is not the frontend, a redirect included", () => {
+    assert.deepEqual(evaluateSmoke(ORIGIN, { ...html, contentType: "application/json" }, version).details.reasons,
+      ["GET / answered 200 application/json"]);
+    assert.deepEqual(evaluateSmoke(ORIGIN, { status: 302, contentType: "", body: "" }, version).details.reasons,
+      ["GET / answered 302 "]);
   });
 
-  it("fails a redirect that is not the Access login", () => {
-    const outcome = evaluateSmoke(PREVIEW, { ...accessLogin, location: "https://evil.example/" }, version);
-    assert.equal(outcome.status, "ok");
-    assert.equal(outcome.holds, false);
-  });
-
-  it("records a maintainer preview as preview-deploy, status error without the Access service token", () => {
-    const out = mkdtempSync(join(tmpdir(), "smoke-test-"));
-    try {
-      execFileSync(process.execPath, [fileURLToPath(new URL("./smoke.ts", import.meta.url)), "deploy", PREVIEW], {
-        env: { PATH: process.env.PATH, AUTOMERGE_OUT_DIR: out, AUTOMERGE_HEAD_SHA: "a".repeat(40), AUTOMERGE_BASE_SHA: "b".repeat(40) },
-        stdio: "pipe",
-      });
-      const artifact = asObject(parseJson(readFileSync(join(out, "automerge-preview-deploy.json"), "utf8")), "artifact");
-      assert.equal(artifact.name, "preview-deploy");
-      assert.equal(artifact.status, "error");
-      assert.equal(artifact.holds, false);
-    } finally {
-      rmSync(out, { recursive: true, force: true });
-    }
+  it("runs only locally: there is no deployed-preview mode", () => {
+    assert.throws(() => execFileSync(process.execPath,
+      [fileURLToPath(new URL("./smoke.ts", import.meta.url)), "deploy", "https://pr966-preview-router.example.workers.dev"],
+      { env: { PATH: process.env.PATH }, stdio: "pipe" }), /usage: smoke\.ts local/);
   });
 });
 
@@ -125,13 +96,11 @@ describe("smoke workflows", () => {
     assert.match(text, /name: automerge-preview-smoke\n/);
   });
 
-  it("deploys no bot preview and records maintainer previews as preview-deploy", () => {
+  it("deploys no bot preview and leaves maintainer previews without a smoke record", () => {
     const preview = workflow("preview.yml");
     const on = parseWorkflow(preview).entries.get("on");
     assert.ok(on?.kind === "map" && !on.entries.has("workflow_run"), "preview.yml runs on workflow_run");
-    assert.doesNotMatch(preview, /PREVIEW_BOT|prebuilt|bot-deploy/);
-    assert.match(preview, /smoke\.ts deploy "\$\(cat output\/preview-url\)"/);
-    assert.match(preview, /name: automerge-preview-deploy-\$\{\{ github\.event\.pull_request\.head\.sha \}\}\n/);
+    assert.doesNotMatch(preview, /PREVIEW_BOT|prebuilt|bot-deploy|smoke\.ts|automerge-preview|PREVIEW_ACCESS/);
     assert.doesNotMatch(workflow("automerge-evidence.yml"), /automerge-bot-preview-release/);
   });
 });

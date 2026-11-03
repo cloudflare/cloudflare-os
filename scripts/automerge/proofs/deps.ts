@@ -17,8 +17,8 @@
 //   - OSV lists no advisory for any version the lockfile adds or removes. An advisory on the old
 //     version is a security fix, and those go to a person.
 //
-// The preview smoke for bot pull requests is its own artifact (`preview-smoke`, from preview.yml);
-// the gate needs both.
+// The preview smoke is its own artifact (`preview-smoke`, from the `preview-smoke` job in
+// automerge-evidence.yml, which builds and runs the workers locally); the gate needs both.
 //
 //   node scripts/automerge/proofs/deps.ts
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA, AUTOMERGE_PR_AUTHOR, AUTOMERGE_HEAD_REF

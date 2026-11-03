@@ -115,8 +115,9 @@ export function evaluateActions(input: ActionsInput): Outcome {
   // still write a cache entry that a job holding one restores.
   const all = Object.keys(input.baseWorkflows).toSorted();
   if (all.length === 0) reasons.push("no workflows at the base");
+  const known = new Set(all);
   for (const path of all) {
-    for (const reason of cacheReasons(input.baseWorkflows[path])) reasons.push(`${path}: ${reason}`);
+    for (const reason of cacheReasons(input.baseWorkflows[path], known)) reasons.push(`${path}: ${reason}`);
   }
   return decide(reasons, {
     moves: moves.map((move) => `${move.repo}@${move.sha} # ${move.tag}`),
