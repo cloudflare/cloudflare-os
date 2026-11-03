@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24.19.0"
+
+jobs:
+  # Parallel to `test` so lint, type and test failures surface on the same run. The package type
+  # check (`pnpm build`) runs here rather than ahead of the tests, which do not need it: each test
+  # task declares the codegen it reads. `scripts/` has its own type check, kept off `pnpm build`'s
+  # hot path (see docs/build-system.md).
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    # A wedged build would otherwise burn the 6-hour default, as `test` notes below.
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH for the steps below.
+      - name: Enable Corepack
+        run: corepack enable
+
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      #
+      # No dependency cache in this workflow: restoring setup-vp's (~540 MB) takes longer than
+      # letting `vp install` download the packages (setup p50 29 s cached, 20 s uncached).
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      - name: Lint
+        run: pnpm lint:check
+
+      - name: Type-check scripts/
+        run: pnpm types:scripts
+
+      - name: Check generated worker configs
+        run: pnpm configs:check
+
+      # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases
+      # this). It runs even when a step above failed, so a lint error does not hide a type error.
+      - name: Build
+        if: ${{ !cancelled() }}
+        run: pnpm build
+
+  # The three slowest test tasks each get a runner, and every other package shares one. Each leg runs
+  # the root `test` script's command (package.json) with its own filters; keep the two in step.
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # Without an explicit cap a wedged test process (a spawned child that outlives its reap keeps
+    # `node --test` alive forever) burns the 6-hour default instead of failing, on every run of the
+    # branch.
+    timeout-minutes: 20
+    strategy:
+      # Let every leg finish, so one run reports every failing package.
+      fail-fast: false
+      # scripts/vp/concurrency.ts gives each suite 2 vitest workers, because it assumes 4 suites
+      # share the 4 cores. A leg that tests one package runs one suite at a time, so it uses 3.
+      # Measured in pairs on the same runner, 3 workers were faster in 8 of 9 pairs across the three
+      # packages, by 22-26 s for the backend, which sets the run's pace.
+      matrix:
+        include:
+          - name: workshop-backend
+            filters: --filter=@gadgets/workshop-backend
+            vitest-workers: 3
+          - name: workshop-frontend
+            filters: --filter=@gadgets/workshop-frontend
+            vitest-workers: 3
+            chromium: true
+          - name: integration-tests
+            filters: --filter=@gadgets/integration-tests
+            vitest-workers: 3
+          # Must exclude every package named above, or its tests run twice.
+          - name: other packages
+            filters: >-
+              --filter=!cloudflare-os
+              --filter=!@gadgets/workshop-backend
+              --filter=!@gadgets/workshop-frontend
+              --filter=!@gadgets/integration-tests
+            # configurator-ui's browser suite and generated-frame test.
+            chromium: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH for the steps below.
+      - name: Enable Corepack
+        run: corepack enable
+
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed. No dependency cache, as `lint` explains.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      # The frontend's and configurator-ui's browser suites (`vitest.browser.config.ts`), and
+      # configurator-ui's generated-frame test, run in Chromium, which Playwright downloads outside
+      # node_modules; both packages pin the catalog `playwright`, so one install serves them.
+      # `--with-deps` adds the system libraries it needs.
+      - name: Install Chromium for the browser suite
+        if: ${{ matrix.chromium }}
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
+
+      # `vp run` exits 0 when a filter matches no package, so a renamed package would pass its leg
+      # having run nothing. `--fail-if-no-match` makes that an error.
+      # Sets `VITEST_MAX_WORKERS` only when the leg asks: an empty value would count as explicit
+      # and leave every suite at vitest's own default.
+      - name: Test
+        env:
+          FILTERS: ${{ matrix.filters }}
+          VITEST_WORKERS: ${{ matrix.vitest-workers }}
+        run: |
+          [ -z "$VITEST_WORKERS" ] || export VITEST_MAX_WORKERS="$VITEST_WORKERS"
+          node scripts/vp/run.ts --cache --fail-if-no-match $FILTERS test
+
+  # main's ruleset requires a check with exactly this name: renaming the job blocks every merge. It
+  # passes only if every `test` leg passed. `always()` because a skipped required check counts as
+  # passed, and without it a failed or cancelled leg would skip this job.
+  build-and-test:
+    name: Build and test
+    needs: test
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every test leg to pass
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success
