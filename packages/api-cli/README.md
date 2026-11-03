@@ -68,9 +68,7 @@ chain fails, so `new-workspace set-title X`, which prints only `null` on stdout,
 workspace it made: its method in api.ts has a `@reportsId <noun> <method>().<property>` tag
 (`@reportsId workspace getMetadata().id`), which the generator records in the command table, and
 the run pipelines that method on the capability, beside the chain, in the same session; its help
-says so. Stdout holds only the last command's result. A provisional workspace (one with no chat
-or edit yet, which `list-workspaces` leaves out) whose id was lost all the same is listed by
-`list-provisional-workspaces`, with when it was created, to open or `delete-self`.
+says so. Stdout holds only the last command's result.
 
 When the command meant next was taken for a positional the line left out (`open-workspace
 get-metadata`), it says so instead, and names the line with the positional back in place, the
@@ -180,18 +178,17 @@ pnpm cf-os api open-workspace <id> list-models                                 #
 pnpm cf-os api open-workspace <id> new-chat "What is 17 times 23?" <modelId>   # prints the chat id
 pnpm cf-os api open-workspace <id> wait-for-agent <chatId>                     # prints the reply
 pnpm cf-os api open-workspace <id> send-chat-message <chatId> "And 17 times 24?" <modelId>
-pnpm cf-os api open-workspace <id> wait-for-agent <chatId> --timeout-ms 120000
+pnpm cf-os api open-workspace <id> wait-for-agent <chatId> --timeout 120
 pnpm cf-os api open-workspace <id> get-chat-history <chatId>                   # the whole chat
 ```
 
 On a chat with no turn running, `wait-for-agent` returns at once, so it can run as its own
-command: by the time `send-chat-message` returns, the turn it started is recorded. It waits at most
-ten minutes, or `--timeout-ms` if shorter; when that runs out with the agent still running it fails,
-exit 1 (`The agent was still running when the wait timed out.`), and the turn goes on: wait again, or
-`stop-agent <chatId>`. A turn that paused on an action (`list-actions --options '{"filter":
-"pending"}'`) goes on once the action is approved or rejected; wait again then. If the workspace
-restarts during the wait, the call fails as a lost connection does, exit 1, and the turn resumes
-by itself; wait again.
+command: by the time `send-chat-message` returns, the turn it started is recorded. It waits as long
+as the turn runs, or until the run's `--timeout`; when that runs out it fails, exit 1 (`timed out
+after 120s.`), and the turn goes on: wait again, or `stop-agent <chatId>`. A turn that paused on an
+action (`list-actions --options '{"filter": "pending"}'`) goes on once the action is approved or
+rejected; wait again then. If the workspace restarts during the wait, the call fails as a lost
+connection does, exit 1, and the turn resumes by itself; wait again.
 
 ## Arguments
 
