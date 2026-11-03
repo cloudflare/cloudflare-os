@@ -17,7 +17,7 @@ catalog:
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
   # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
-  miniflare: 5.20261001.0-alpha
+  miniflare: 5.20261023.0-beta
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
   # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
   # use the "typescript6" npm alias below instead; capnweb-validate
