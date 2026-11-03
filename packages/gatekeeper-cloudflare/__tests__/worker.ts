@@ -6,8 +6,10 @@
 // instantiates a gatekeeper in production.
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
-import type { GatekeeperUserVerifier, GitCache, GitObjectType, GitOid }
+import type { ApprovalQueue, ActionDescription, HookController, HookDescription, GatekeeperUserVerifier, GitCache, GitObjectType, GitOid, ObservationDescription }
   from "@gadgets/workshop-shared/gatekeeper";
+import type { CloudflareNotificationSubscription } from "../src/types.js";
+import { CloudflareNotificationsGatekeeper } from "../src/notifications.js";
 import type { CloudflareObservabilityGatekeeper } from "../src/cloudflare.js";
 
 export { default } from "../src/cloudflare.js";
@@ -72,7 +74,32 @@ export class TestConnectCallback extends WorkerEntrypoint<Env, { label: string }
   }
 }
 
+class SubscriptionTestQueue extends RpcTarget implements ApprovalQueue {
+  descriptions: HookDescription[] = [];
+  async getGitCache(): Promise<GitCache> { throw new Error("Unexpected git cache"); }
+  async submitAction(_action: number, _description: ActionDescription): Promise<void> { throw new Error("Unexpected action"); }
+  async authorizeObservation(_description: ObservationDescription): Promise<void> { throw new Error("Unexpected observation"); }
+  async bindHook<Hook extends RpcTarget>(_controller: Fetcher<HookController<Hook>>, _callback: RpcStub<Hook>, description: HookDescription): Promise<void> {
+    this.descriptions.push(description);
+  }
+}
+
 export class TestHooks extends DurableObject<Env> {
+  async subscribeNotification(props: { userObjectId: string; accountId: string }, subscription: CloudflareNotificationSubscription): Promise<{ descriptions: HookDescription[]; error: string | null }> {
+    const gatekeeper = this.ctx.facets.get<CloudflareNotificationsGatekeeper>("notifications", () => ({
+      class: this.ctx.exports.CloudflareNotificationsGatekeeper({ props }),
+    }));
+    const queue = new SubscriptionTestQueue();
+    using session = await gatekeeper.startSession(queue);
+    using callback = new RpcStub(new NotificationTestCallback("approval-test"));
+    try {
+      await session.subscribe(callback, subscription);
+      return { descriptions: queue.descriptions, error: null };
+    } catch (error) {
+      return { descriptions: queue.descriptions, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   #gatekeeper(facetName: string, props: GatekeeperProps) {
     const exports = this.ctx.exports as unknown as TestExports;
     return this.ctx.facets.get<CloudflareObservabilityGatekeeper>(facetName, () => ({
@@ -119,5 +146,62 @@ export class TestHooks extends DurableObject<Env> {
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
+  }
+}
+// Export notification classes directly so the Workers test runner can discover them for ctx.exports.
+export { CloudflareNotificationReceiver, CloudflareNotificationsGatekeeper,
+  CloudflareNotificationHookController } from "../src/notifications.js";
+
+const notificationEvents: string[] = [];
+const notificationObservations: ObservationDescription[] = [];
+let rejectNotification = false;
+let rejectedNotificationHook: string | undefined;
+let denyNotificationObservation = false;
+let callbackBarrier: Promise<void> | undefined;
+let releaseCallback: (() => void) | undefined;
+let callbackBlocked: Promise<void> = Promise.resolve();
+let markCallbackBlocked: (() => void) | undefined;
+class NotificationTestQueue extends RpcTarget {
+  async authorizeObservation(description: ObservationDescription): Promise<void> {
+    notificationEvents.push("authorize");
+    notificationObservations.push(description);
+    if (denyNotificationObservation) throw new Error("Observation denied");
+  }
+}
+class NotificationTestCallback extends RpcTarget {
+  constructor(private hookId: string) { super(); }
+  async onNotification(value: { id: string }): Promise<void> {
+    notificationEvents.push(`callback:${JSON.stringify({ ...value, subscriber: this.hookId })}`);
+    if (callbackBarrier) {
+      markCallbackBlocked?.();
+      await callbackBarrier;
+    }
+    if (rejectNotification && (!rejectedNotificationHook || rejectedNotificationHook === this.hookId)) throw new Error("callback rejected");
+  }
+}
+export class NotificationTestHooks extends WorkerEntrypoint {
+  async startHook() { return { callback: new NotificationTestCallback((this.ctx.props as { hookId: string }).hookId), approvalQueue: new NotificationTestQueue() }; }
+  async reset(reject: boolean, denyObservation = false, rejectedHook?: string) {
+    notificationEvents.length = 0;
+    notificationObservations.length = 0;
+    rejectNotification = reject;
+    rejectedNotificationHook = rejectedHook;
+    denyNotificationObservation = denyObservation;
+    releaseCallback?.();
+    callbackBarrier = undefined;
+    releaseCallback = undefined;
+    markCallbackBlocked = undefined;
+    callbackBlocked = Promise.resolve();
+  }
+  async read() { return [...notificationEvents]; }
+  async readObservations() { return [...notificationObservations]; }
+  blockCallback(): void {
+    callbackBlocked = new Promise(resolve => { markCallbackBlocked = resolve; });
+    callbackBarrier = new Promise(resolve => { releaseCallback = resolve; });
+  }
+  waitUntilCallbackBlocked(): Promise<void> { return callbackBlocked; }
+  releaseCallback(): void {
+    releaseCallback?.();
+    callbackBarrier = undefined;
   }
 }
