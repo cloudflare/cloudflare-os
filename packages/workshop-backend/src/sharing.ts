@@ -208,7 +208,7 @@ export class SharingManager {
 
   // The edge fields recording `grant`, throwing if it names a gadget that can't be shared.
   #grantFields(grant: CollaboratorGrant): GrantFields {
-    if (grant === "build") return {role: "build"};
+    if (grant === "workspace") return {role: "build"};
     if (!this.gadgetExists(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }

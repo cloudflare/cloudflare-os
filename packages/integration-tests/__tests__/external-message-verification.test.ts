@@ -112,7 +112,7 @@ describe("external-message verification", () => {
 
       const bobApi = await signUp(publicApi, bob);
       const bobAccount = await provisionAccount(bobApi);
-      await overseer.addCollaborator(bob, "build");
+      await overseer.addCollaborator(bob, "workspace");
 
       // A stranger is turned away by role, before verification is ever attempted.
       await signUp(publicApi, carol);

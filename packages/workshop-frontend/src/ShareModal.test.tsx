@@ -243,7 +243,7 @@ function stagedNames(rendered: HTMLElement): string[] {
 }
 
 function accessFor(grant: CollaboratorGrant): CollaboratorAccess {
-  return grant === 'build' ? { role: 'build' } : { role: 'use', gadgetIds: [grant.gadgetId] }
+  return grant === 'workspace' ? { role: 'build' } : { role: 'use', gadgetIds: [grant.gadgetId] }
 }
 
 function profileFor(userId: string, grant: CollaboratorGrant, name: string): CollaboratorInfo {
@@ -421,7 +421,7 @@ describe('ShareModal', () => {
     expect(peopleInput(rendered).value).toBe('')
     await click(button(rendered, 'Invite'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'workspace', undefined)
     expect(stagedNames(rendered)).toEqual([])
   })
 
@@ -439,7 +439,7 @@ describe('ShareModal', () => {
       .toContain('Ada Lovelace')
     await click(button(rendered, 'Invite'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'workspace', undefined)
   })
 
   it('excludes the workspace owner when the caller is a collaborator', async () => {
@@ -507,7 +507,7 @@ describe('ShareModal', () => {
 
     // Enter on the now-empty field sends everyone staged.
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'workspace', undefined)
   })
 
   it('stages a typed id as a chip and clears the field', async () => {
@@ -551,7 +551,7 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Invite').disabled).toBe(false)
     await click(button(rendered, 'Invite'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'workspace', undefined)
     expect(rendered.textContent).toContain('Added Grace Hopper')
   })
 
@@ -657,7 +657,7 @@ describe('ShareModal', () => {
     await click(exactOption!)
     expect(stagedNames(rendered)).toEqual(['alex'])
     await click(button(rendered, 'Invite'))
-    expect(addCollaborator).toHaveBeenCalledWith('alex', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('alex', 'workspace', undefined)
   })
 
   it('falls back to a direct invite when the directory lookup fails', async () => {
@@ -674,7 +674,7 @@ describe('ShareModal', () => {
     const input = peopleInput(rendered)
     await pressKey(input, 'Enter')
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'workspace', undefined)
     consoleError.mockRestore()
   })
 
@@ -717,7 +717,7 @@ describe('ShareModal', () => {
     await pressKey(input, 'Enter')
     expect(stagedNames(rendered)).toEqual(['alex'])
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenCalledWith('alex', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('alex', 'workspace', undefined)
 
     // Arrow keys reopen the list instead of moving a hidden highlight.
     await typeDirectorySearch(rendered, 'alex')
@@ -816,8 +816,8 @@ describe('ShareModal', () => {
     await click(button(rendered, 'Invite 2 people'))
 
     expect(addCollaborator).toHaveBeenCalledTimes(2)
-    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
-    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'workspace', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'workspace', undefined)
     expect(listCollaborators).toHaveBeenCalledTimes(loadsBefore + 1)
     expect(stagedNames(rendered)).toEqual([])
     expect(rendered.textContent).toContain('Added Ada Lovelace and Grace Hopper')
@@ -842,8 +842,8 @@ describe('ShareModal', () => {
 
     await click(button(rendered, 'Invite 2 people'))
 
-    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
-    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'workspace', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'workspace', undefined)
   })
 
   it('keeps a chip staged during a pending batch and blocks removal until it settles', async () => {
@@ -874,7 +874,7 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Remove ada@example.com').disabled).toBe(true)
 
     await act(async () => {
-      pending.resolve(profileFor('ada@example.com', 'build', 'Ada Lovelace'))
+      pending.resolve(profileFor('ada@example.com', 'workspace', 'Ada Lovelace'))
       await Promise.resolve()
     })
     expect(stagedNames(rendered)).toEqual(['grace@example.com'])
@@ -886,7 +886,7 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Invite').disabled).toBe(false)
 
     await pressKey(input, 'Enter')
-    expect(addCollaborator).toHaveBeenLastCalledWith('grace@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenLastCalledWith('grace@example.com', 'workspace', undefined)
     expect(stagedNames(rendered)).toEqual([])
   })
 
@@ -964,7 +964,7 @@ describe('ShareModal', () => {
     await click(button(rendered, 'Invite'))
 
     expect(addCollaborator).toHaveBeenCalledTimes(1)
-    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'build', undefined)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'workspace', undefined)
   })
 
   it('removes a chip with its button or Backspace on an empty field', async () => {
@@ -1133,7 +1133,7 @@ describe('ShareModal', () => {
 
   it('lists the connections recipients must verify for the dialog’s grant', async () => {
     const listObserverRequirements = vi.fn<Overseer['listObserverRequirements']>(
-      async grant => grant === 'build' ? [DOC_REQUIREMENT, CRM_REQUIREMENT] : [DOC_REQUIREMENT])
+      async grant => grant === 'workspace' ? [DOC_REQUIREMENT, CRM_REQUIREMENT] : [DOC_REQUIREMENT])
     const rendered = await render(fakeOverseer({ listObserverRequirements }), fakeAuthenticatedApi(),
       METADATA, { target: GADGET_TARGET })
 
@@ -1164,14 +1164,14 @@ describe('ShareModal', () => {
   it('refreshes requirements when the modal regains focus', async () => {
     const listObserverRequirements = vi.fn<Overseer['listObserverRequirements']>(async () => [])
     await render(fakeOverseer({ listObserverRequirements }))
-    expect(listObserverRequirements.mock.calls).toEqual([['build']])
+    expect(listObserverRequirements.mock.calls).toEqual([['workspace']])
 
     await act(async () => {
       window.dispatchEvent(new Event('focus'))
       await Promise.resolve()
     })
 
-    expect(listObserverRequirements.mock.calls).toEqual([['build'], ['build']])
+    expect(listObserverRequirements.mock.calls).toEqual([['workspace'], ['workspace']])
   })
 
   it('keeps sharing controls live when the workspace has read restricted data', async () => {
@@ -1342,7 +1342,7 @@ describe('ShareModal', () => {
       const rendered = await render(fakeOverseer({ createShareLink }))
 
       await createLink(rendered)
-      expect(createShareLink).toHaveBeenCalledWith('build', undefined)
+      expect(createShareLink).toHaveBeenCalledWith('workspace', undefined)
       expect(rendered.textContent).toContain(`${WORKSPACE_URL}#share=secret`)
     })
 

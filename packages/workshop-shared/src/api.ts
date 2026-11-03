@@ -5807,11 +5807,12 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
 export type CollaboratorRole = "build" | "use";
 
 /**
- * Access a new grant confers: "build" on the whole workspace, or "use" of one gadget's deployed
- * UI. ("use" of every gadget at once can no longer be granted, though collaborators who received
- * it before gadgets were shared individually keep it; see CollaboratorAccess.)
+ * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
+ * gadget's deployed UI. ("use" of every gadget at once can no longer be granted, though
+ * collaborators who received it before gadgets were shared individually keep it; see
+ * CollaboratorAccess.)
  */
-export type CollaboratorGrant = "build" | {gadgetId: WorkpieceId};
+export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId};
 
 /**
  * A collaborator's effective access: the union of their valid grants reachable from the owner.

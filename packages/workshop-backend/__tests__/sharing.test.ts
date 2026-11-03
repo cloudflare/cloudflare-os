@@ -97,7 +97,7 @@ function link(storage: SharingStorage, linkId: string) {
 // Such links can no longer be made, so mint a link and rewrite it into the legacy shape.
 async function legacyAllUseLink(storage: SharingStorage, mgr: SharingManager)
     : Promise<{ key: string; linkId: string }> {
-  let result = await mgr.createShareLink({ caller: owner, grant: "build" });
+  let result = await mgr.createShareLink({ caller: owner, grant: "workspace" });
   storage.shareKeys.put({ ...link(storage, result.linkId), role: "use" });
   return result;
 }
@@ -162,7 +162,7 @@ describe("accessIncludesGadget", () => {
 describe("redeemShareKey", () => {
   it("creates a new collaborator (fetching profile) when the key is valid", async () => {
     let { storage, mgr } = makeManager();
-    let { key } = await mgr.createShareLink({ caller: owner, grant: "build" });
+    let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
 
     let fetched = 0;
     await mgr.redeemShareKey({
@@ -214,7 +214,7 @@ describe("redeemShareKey", () => {
 
   it("does not duplicate an edge for the same key", async () => {
     let { storage, mgr } = makeManager();
-    let { key } = await mgr.createShareLink({ caller: owner, grant: "build" });
+    let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
 
     await mgr.redeemShareKey({
       rawKey: key, profileId: "a",
@@ -282,7 +282,7 @@ describe("redeemShareKey", () => {
 describe("addCollaborator", () => {
   it("adds a new collaborator with a user edge from the caller", () => {
     let { storage, mgr } = makeManager();
-    let info = mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build", note: "hi" });
+    let info = mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace", note: "hi" });
     expect(info.addedBy).toEqual([
       expect.objectContaining({ type: "user", sharer: OWNER, role: "build", note: "hi" }),
     ]);
@@ -301,7 +301,7 @@ describe("addCollaborator", () => {
 
   it("refuses to add the owner", () => {
     let { mgr } = makeManager();
-    expect(() => mgr.addCollaborator({ caller: owner, profile: profile(OWNER), grant: "build" }))
+    expect(() => mgr.addCollaborator({ caller: owner, profile: profile(OWNER), grant: "workspace" }))
         .toThrow(/owner/);
   });
 
@@ -315,7 +315,7 @@ describe("addCollaborator", () => {
   it("forbids sharing by a caller without build, even a gadget they hold", () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
-    for (let grant of ["build", { gadgetId: 1 }, { gadgetId: 2 }] as const) {
+    for (let grant of ["workspace", { gadgetId: 1 }, { gadgetId: 2 }] as const) {
       expect(() => mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), grant }))
           .toThrow("You do not have permission to share this workspace.");
     }
@@ -324,10 +324,10 @@ describe("addCollaborator", () => {
 
   it("adds a second edge from a different sharer but dedups the same grant from one sharer", () => {
     let { storage, mgr } = makeManager();
-    mgr.addCollaborator({ caller: owner, profile: profile("b"), grant: "build" });
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
-    mgr.addCollaborator({ caller: collab("b"), profile: profile("a"), grant: "build" });
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build", note: "again" });
+    mgr.addCollaborator({ caller: owner, profile: profile("b"), grant: "workspace" });
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace" });
+    mgr.addCollaborator({ caller: collab("b"), profile: profile("a"), grant: "workspace" });
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace", note: "again" });
     expect(edgesOf(storage, "a")).toHaveLength(2);
     // Re-granting only updates the note.
     expect(edgesOf(storage, "a")).toContainEqual(
@@ -345,7 +345,7 @@ describe("addCollaborator", () => {
     ]);
 
     // A build grant from the same sharer covers them.
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace" });
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
 
     // Re-granting a gadget that build covers narrows nothing.
@@ -441,7 +441,7 @@ describe("computeEffectiveAccess", () => {
     expect(mgr.getEffectiveAccess("a")).toEqual(only(2));
     expect(mgr.getEffectiveAccess("b")).toBeUndefined();
 
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace" });
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
     expect(mgr.getEffectiveAccess("b")).toEqual(BUILD);
   });
@@ -535,8 +535,8 @@ describe("removeCollaborator", () => {
 
   it("restores downstream invitations only when re-added with build access", async () => {
     let { mgr } = makeManager();
-    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: "build" });
-    mgr.addCollaborator({ caller: collab("bob"), profile: profile("carol"), grant: "build" });
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: "workspace" });
+    mgr.addCollaborator({ caller: collab("bob"), profile: profile("carol"), grant: "workspace" });
     mgr.addCollaborator({ caller: owner, profile: profile("carol"), grant: { gadgetId: 2 } });
     let { key } = await mgr.createShareLink({ caller: collab("bob"), grant: { gadgetId: 1 } });
     await mgr.redeemShareKey({ rawKey: key, profileId: "dave", fetchProfile: async () => profile("dave") });
@@ -554,7 +554,7 @@ describe("removeCollaborator", () => {
     expect(mgr.getEffectiveAccess("dave")).toBeUndefined();
     expect(ids(mgr.listCollaborators())).toEqual(["bob", "carol"]);
 
-    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: "build" });
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: "workspace" });
     expect(mgr.getEffectiveAccess("bob")).toEqual(BUILD);
     expect(mgr.getEffectiveAccess("carol")).toEqual(BUILD);
     expect(mgr.getEffectiveAccess("dave")).toEqual(only(1));
@@ -729,7 +729,7 @@ describe("revokeShareLink", () => {
     expect(mgr.getEffectiveAccess("b")).toBeUndefined();
 
     // Undo: re-add a, and b regains access through k2.
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace" });
     expect(mgr.getEffectiveAccess("b")).toEqual(BUILD);
   });
 
@@ -811,7 +811,7 @@ describe("createShareLink", () => {
 
   it("persists a build link with no gadget", async () => {
     let { mgr } = makeManager();
-    await mgr.createShareLink({ caller: owner, grant: "build" });
+    await mgr.createShareLink({ caller: owner, grant: "workspace" });
     let [record] = mgr.listShareLinkRecords();
     expect(record.role).toBe("build");
     expect(record.gadgetId).toBeUndefined();
@@ -827,7 +827,7 @@ describe("createShareLink", () => {
   it("forbids a caller without build from creating a link, even to a gadget they hold", async () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
-    for (let grant of ["build", { gadgetId: 1 }, { gadgetId: 2 }] as const) {
+    for (let grant of ["workspace", { gadgetId: 1 }, { gadgetId: 2 }] as const) {
       await expect(mgr.createShareLink({ caller: collab("a"), grant }))
           .rejects.toThrow("You do not have permission to share this workspace.");
     }
@@ -860,7 +860,7 @@ describe("newShareLinkKey", () => {
 
   it("revoking a link revokes every key minted for it", async () => {
     let { storage, mgr } = makeManager();
-    let { key: key1, linkId } = await mgr.createShareLink({ caller: owner, grant: "build" });
+    let { key: key1, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
     let { key: key2 } = await mgr.newShareLinkKey({ caller: owner, linkId });
 
     mgr.revokeShareLink(owner, linkId, []);
@@ -912,7 +912,7 @@ describe("newShareLinkKey", () => {
 
   it("cannot manage a link through the id of one of its copies", async () => {
     let { storage, mgr } = makeManager();
-    let { linkId } = await mgr.createShareLink({ caller: owner, grant: "build" });
+    let { linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
     await mgr.newShareLinkKey({ caller: owner, linkId });
 
     // A copy has its own hash in the same table. Mistaking one for a link would make revocation a
@@ -1025,7 +1025,7 @@ describe("ownerInvitesOnly", () => {
 
   it("refuses a new user redeeming a link created before ownerInvitesOnly", async () => {
     let { storage, flags, mgr } = makeManagerWithFlag();
-    let { key } = await mgr.createShareLink({ caller: owner, grant: "build" });
+    let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
     flags.ownerInvitesOnly = true;
 
     let fetched = 0;
@@ -1055,7 +1055,7 @@ describe("ownerInvitesOnly", () => {
 
   it("lets a direct collaborator reopen a link without adding an edge", async () => {
     let { storage, flags, mgr } = makeManagerWithFlag();
-    let { key } = await mgr.createShareLink({ caller: owner, grant: "build" });
+    let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
     flags.ownerInvitesOnly = true;
 
@@ -1073,7 +1073,7 @@ describe("ownerInvitesOnly", () => {
 
   it("refuses an existing collaborator the owner did not add directly", async () => {
     let { storage, flags, mgr } = makeManagerWithFlag();
-    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "build" });
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
     seedCollaborator(storage, "a", [keyEdge(linkId)]);
     flags.ownerInvitesOnly = true;
 
@@ -1199,7 +1199,7 @@ describe("ownerInvitesOnly", () => {
 
     // Without the flag, re-adding a would bring b back through a's untouched edge. Once it is set,
     // only the owner's direct grants count, so b stays out until the owner adds them directly.
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "build" });
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace" });
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
     expect(mgr.getEffectiveAccess("b")).toBeUndefined();
 

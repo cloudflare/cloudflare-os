@@ -113,7 +113,7 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       // The flag is enforced by the memoized sharing manager.
       let sharing = await impl.getSharingManager();
       await expect(sharing.createShareLink({
-        caller: { profileId: OWNER, isOwner: true }, grant: "build",
+        caller: { profileId: OWNER, isOwner: true }, grant: "workspace",
       })).rejects.toThrow(/Share links are disabled/);
     });
   });

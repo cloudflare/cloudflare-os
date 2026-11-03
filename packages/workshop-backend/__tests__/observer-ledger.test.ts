@@ -59,7 +59,7 @@ function effectiveAccess(access: Access): CollaboratorAccess {
 
 // What ensureObserver verifies a profile holding the "build"/"use" shorthand for.
 function grantOf(role: "build" | "use"): CollaboratorGrant {
-  return role === "build" ? "build" : { gadgetId: GADGET };
+  return role === "build" ? "workspace" : { gadgetId: GADGET };
 }
 
 // One test's fakes: who holds which access, what each profile's verifier answers, and what was
@@ -585,7 +585,7 @@ describe("observations with and without subresources", () => {
 
     // Admission checks exactly those.
     world.roles.set("carol", "build");
-    await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
     expect(world.checks.map(check => ({ ...check, ids: check.ids.toSorted() }))).toEqual([
       { profileId: "carol", ids: ["also-reported", "reported"] },
     ]);
@@ -761,7 +761,7 @@ describe("observations reporting subresources", () => {
         return Promise.resolve(observerVerifier(() => world, "carol", ids => ids));
       },
     };
-    let admitted = await impl.ensureObserver("carol", clientUser, "build", configureAll)
+    let admitted = await impl.ensureObserver("carol", clientUser, "workspace", configureAll)
         .then(() => true, () => false);
     expect(read).toBeDefined();
     let authorized = await read;
@@ -1064,7 +1064,7 @@ describe("admission against recorded requirements", () => {
     impl.storage.observers.put(
         { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
 
-    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "build");
+    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
     await expect(admission).rejects.toThrow(/could not confirm/);
     await expect(admission).rejects.toThrow(/Invalid account selection/);
     expect(callsTo(calls, "addObserver")).toEqual([]);
@@ -1090,7 +1090,7 @@ describe("admission against recorded requirements", () => {
         return configureAll.configure(needs);
       },
     };
-    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "build", configureCb);
+    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureCb);
     await promptOpen;
 
     // The owner reads more while Carol chooses an account; she is not an observer yet, so the
@@ -1159,7 +1159,7 @@ describe("admission against recorded requirements", () => {
     expect(asked).toEqual([]);
     expect(world.checks).toEqual([]);
 
-    await impl.ensureObserver("dave", world.clientUser("dave"), "build", configure);
+    await impl.ensureObserver("dave", world.clientUser("dave"), "workspace", configure);
     expect(asked).toEqual([[CONN]]);
     expect(world.checks).toEqual([{ profileId: "dave", ids: ["chat-only"] }]);
   }));
@@ -1235,7 +1235,7 @@ describe("admission against recorded requirements", () => {
         return configureAll.configure(needs);
       },
     };
-    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "build", configureCb);
+    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureCb);
     await promptOpen;
     impl.removeGatekeeper(removed);
     release();
@@ -1266,13 +1266,13 @@ describe("admission against recorded requirements", () => {
     world.roles.set("carol", "build");
     world.verifiers.set("carol", observerVerifier(() => world, "carol",
         batch => batch.filter(id => id === required.at(-1))));
-    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll))
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks).toContainEqual({ profileId: "carol", ids: required.slice(10_000) });
     expect(impl.storage.observers.get("carol")).toBeUndefined();
 
     world.verifiers.delete("carol");
-    await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
     expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
   }));
 
@@ -1289,14 +1289,14 @@ describe("admission against recorded requirements", () => {
     world.verifiers.set("carol", observerVerifier(() => world, "carol",
         ids => ids.filter(id => id !== first)));
 
-    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll))
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks.some(check => check.ids.includes(second))).toBe(true);
     expect(impl.storage.observers.get("carol")).toBeUndefined();
     expect(rows(impl, WORKSPACE)).toEqual([`2:${first}`, `3:${second}`]);
 
     world.verifiers.delete("carol");
-    await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
     expect(impl.storage.observers.get("carol").accountChoices).toEqual({ 2: 20, 3: 30 });
 
     // A grant for this leaf name in workspace A cannot authorize a read in workspace B.
@@ -1323,7 +1323,7 @@ describe("additive admission", () => {
     });
     world.roles.set("carol", "build");
 
-    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll))
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/Connection 2 .*can't read the sheet/);
     expect(callsTo(calls, "addObserver")).toContain(CONN);
     expect(callsTo(calls, "verifyObserverAccess")).toEqual([]);
@@ -1342,7 +1342,7 @@ describe("additive admission", () => {
     impl.storage.observers.put(
         { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
 
-    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "build");
+    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
     await expect(admission).rejects.toThrow(/could not confirm/);
     await expect(admission).rejects.toThrow(/can't access some of the data/);
     expect(callsTo(calls, "addObserver")).toEqual([CONN]);
@@ -1365,7 +1365,7 @@ describe("additive admission", () => {
     world.roles.set("carol", "build");
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
 
-    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll))
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/can't access some of the data/);
     // Both connections' addObserver() accepted her, but every registration this call made is
     // removed under the observer ID it registered, and nothing persists.
@@ -1391,7 +1391,7 @@ describe("additive admission", () => {
     fakeFacets(impl, { calls });
     world.roles.set("carol", "build");
 
-    await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
 
     // Every connection registered her; only the one with requirements checked them.
     expect(callsTo(calls, "addObserver").toSorted()).toEqual([unrecorded, CONN]);
@@ -1517,7 +1517,7 @@ describe("pending creation", () => {
           gatekeeperId, await impl.getGatekeeperFacet(gatekeeperId), { from: "user" });
 
       world.roles.set("carol", "build");
-      await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
+      await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
       world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
       let beforeDenied = impl.storage.nextActionId.get();
       await expect(realSession.read(withSubresources(["next-id"])))

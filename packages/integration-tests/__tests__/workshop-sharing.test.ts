@@ -185,7 +185,7 @@ it.concurrent("a collaborator's Outputs page follows their access", async () => 
   const { id: workspaceId, defaultGadgetId } = await workspace.getMetadata();
   if (defaultGadgetId === undefined) throw new Error("Output workspace has no default Gadget");
 
-  const added = await workspace.addCollaborator(collaboratorName, "build");
+  const added = await workspace.addCollaborator(collaboratorName, "workspace");
   if (added === null) throw new Error("Collaborator was not added");
   setup.use(await collaborator.openWorkspace(workspaceId));
 
@@ -354,12 +354,12 @@ it.concurrent("removing a sharer keeps or drops the people they shared with", as
     const owner = stack.use(await logIn(ownerPublic, ownerName!));
     const workspace = stack.use(await owner.newWorkspace());
     const workspaceId = await activate(workspace);
-    const bobInfo = await workspace.addCollaborator(bobName!, "build");
+    const bobInfo = await workspace.addCollaborator(bobName!, "workspace");
     if (bobInfo === null) throw new Error(`Failed to share with ${bobName}`);
     using bobPublic = connect(requireHarness().url);
     using bob = await logIn(bobPublic, bobName!);
     using bobWorkspace = await bob.openWorkspace(workspaceId);
-    const carolInfo = await bobWorkspace.addCollaborator(carolName!, "build");
+    const carolInfo = await bobWorkspace.addCollaborator(carolName!, "workspace");
     if (carolInfo === null) throw new Error(`Failed to share with ${carolName}`);
     const resources = stack.move();
     return {
@@ -441,11 +441,11 @@ it.concurrent("losing a build path falls back to the owner's direct gadget grant
     expect(ownerBundle).toEqual({ jsCode: MAINLINE_UI });
   }
 
-  const bobInfo = await workspace.addCollaborator(bobName!, "build");
+  const bobInfo = await workspace.addCollaborator(bobName!, "workspace");
   if (bobInfo === null) throw new Error(`Failed to share with ${bobName}`);
   {
     using bobWorkspace = await bob.openWorkspace(workspaceId);
-    const carolInfo = await bobWorkspace.addCollaborator(carolName!, "build");
+    const carolInfo = await bobWorkspace.addCollaborator(carolName!, "workspace");
     if (carolInfo === null) throw new Error(`Failed to share with ${carolName}`);
   }
   if (!await workspace.addCollaborator(carolName!, { gadgetId })) {

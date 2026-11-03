@@ -162,7 +162,7 @@ it.concurrent("only the owner deletes a workspace, and later opens say why", asy
   using strangerApi = await signUp(strangerPublic, stranger);
   using ownerWorkspace = await ownerApi.newWorkspace();
   const workspaceId = (await ownerWorkspace.getMetadata()).id;
-  if (!await ownerWorkspace.addCollaborator(collaborator, "build")) {
+  if (!await ownerWorkspace.addCollaborator(collaborator, "workspace")) {
     throw new Error(`Failed to share the workspace with ${collaborator}`);
   }
   using collaboratorWorkspace = await collaboratorApi.openWorkspace(workspaceId);

@@ -294,7 +294,7 @@ describe("access-scoped observer enforcement", () => {
       const [bob] = nextUsernames("bob");
       const bobApi = await signUp(publicApi, bob);
       const bobAccount = await provisionAccount(bobApi);
-      if (!await ws.overseer.addCollaborator(bob, "build")) {
+      if (!await ws.overseer.addCollaborator(bob, "workspace")) {
         throw new Error(`Failed to share the gadget with ${bob}`);
       }
 

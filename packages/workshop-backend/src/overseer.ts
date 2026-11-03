@@ -9889,7 +9889,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Selects the gatekeepers a non-owner observer holding `grant` must be verified against:
-  //   - "build" collaborators (full access): every account-requiring gatekeeper.
+  //   - "workspace" (a "build" collaborator, full access): every account-requiring gatekeeper.
   //   - a "use" collaborator's gadget: only account-requiring gatekeepers the gadget reaches (see
   //     #gadgetReach), since that is all a session holding it can reach -- plus every connection
   //     through which a gadget it reaches recorded requirements, whose data that gadget's state
@@ -9904,8 +9904,9 @@ class OverseerImpl implements AgentHooks {
   //   reached their gadget, yet restricted data read from it can reach gadget state they see,
   //   because provenance is not tracked past the observation. Accepted for v1; see "Known security
   //   risk -- never-bound producers" in plans/restricted-data-sharing.md.
-  #inScopeGatekeepers(grant: CollaboratorGrant,
-                      reach = grant === "build" ? undefined : this.#gadgetReach(grant.gadgetId))
+  #inScopeGatekeepers(
+      grant: CollaboratorGrant,
+      reach = grant === "workspace" ? undefined : this.#gadgetReach(grant.gadgetId))
       : GatekeeperRecord[] {
     let ids = reach && new Set(
         [...reach.gatekeeperIds, ...this.observerLedger.gadgetProducers(reach.gadgetIds)]);
@@ -9923,7 +9924,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   listObserverRequirements(grant: CollaboratorGrant): ObserverBindingNeed[] {
-    if (grant !== "build" && !this.isShareableGadget(grant.gadgetId)) {
+    if (grant !== "workspace" && !this.isShareableGadget(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
     return this.#inScopeGatekeepers(grant).map(observerBindingNeed);
@@ -10058,7 +10059,7 @@ class OverseerImpl implements AgentHooks {
     // observe the count dip to zero across the handoff.
     let leaveSession = this.joinSession("build");
     try {
-      await this.ensureObserver(profileId, clientUser, "build", opts.configureCb);
+      await this.ensureObserver(profileId, clientUser, "workspace", opts.configureCb);
     } finally {
       leaveSession();
     }
@@ -10320,10 +10321,11 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Everything a collaborator holding `grant` is verified against (see
-  // ObserverLedger.observerScope): for "build", every connection and context; for a gadget, the
-  // connections it reaches (see #inScopeGatekeepers) and the contexts of the gadgets it reaches.
+  // ObserverLedger.observerScope): for "workspace", every connection and context; for a gadget,
+  // the connections it reaches (see #inScopeGatekeepers) and the contexts of the gadgets it
+  // reaches.
   #observerScope(grant: CollaboratorGrant): ObserverScope {
-    let reach = grant === "build" ? undefined : this.#gadgetReach(grant.gadgetId);
+    let reach = grant === "workspace" ? undefined : this.#gadgetReach(grant.gadgetId);
     return this.observerLedger.observerScope(
         reach?.gadgetIds ?? "build", this.#inScopeGatekeepers(grant, reach));
   }

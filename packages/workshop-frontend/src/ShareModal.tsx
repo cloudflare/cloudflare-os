@@ -33,7 +33,7 @@ export type ShareTarget =
   | { kind: 'gadget'; gadgetId: WorkpieceId; title: string }
 
 function grantFor(gadgetId: WorkpieceId | undefined): CollaboratorGrant {
-  return gadgetId === undefined ? 'build' : { gadgetId }
+  return gadgetId === undefined ? 'workspace' : { gadgetId }
 }
 
 // What one permission edge grants, in the terms the dialogs list people under: the workspace, one

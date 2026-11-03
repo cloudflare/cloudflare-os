@@ -112,7 +112,7 @@ async function observerEvents(resourceUrl: string): Promise<ObserverEvent[]> {
  */
 async function verifiedCollaborator(
     publicApi: RpcStub<PublicApi>, ws: Workspace, grant: CollaboratorGrant, resourceUrl: string) {
-  const [name] = nextUsernames(grant === "build" ? "bob" : "carol");
+  const [name] = nextUsernames(grant === "workspace" ? "bob" : "carol");
   using api = await signUp(publicApi, name);
   const account = await provisionAccount(api);
   const added = await ws.overseer.addCollaborator(name, grant);
@@ -121,7 +121,7 @@ async function verifiedCollaborator(
   using callback =
       stubFor(new ObserverConfigRecorder().alwaysChoose(account.id, MAX_OBSERVER_PROMPTS));
   using opened = await api.openWorkspace(ws.gadgetId, undefined, callback);
-  if (grant !== "build") (await opened.getGadget(grant.gadgetId, callback))[Symbol.dispose]();
+  if (grant !== "workspace") (await opened.getGadget(grant.gadgetId, callback))[Symbol.dispose]();
   const events = (await observerEvents(resourceUrl)).slice(before.length);
   expect(events).toMatchObject([{ type: "add" }]);
   return { profileId: added.profile.id, observerId: events[0]!.id };
@@ -131,7 +131,7 @@ it("an excluded build collaborator blocks the observation until removed", async 
   await withSession(async publicApi => {
     using ws = await newWorkspace(publicApi, "exclude-build");
     const url = thingUrl("exclude-build");
-    const bob = await verifiedCollaborator(publicApi, ws, "build", url);
+    const bob = await verifiedCollaborator(publicApi, ws, "workspace", url);
 
     await expect(ws.session.readValue(true, true, [bob.observerId])).rejects.toThrow(BLOCKED);
     expect((await ws.overseer.listActions({ filter: "observation" })).entries).toEqual([]);

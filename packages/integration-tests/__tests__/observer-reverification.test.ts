@@ -128,7 +128,7 @@ async function shareGadgetWithBob(
     await overseer.newGatekeeper(aliceAccount.id, thingUrl(thingName));
   }
   const { id: gadgetId } = await overseer.getMetadata();
-  const collaborator = await overseer.addCollaborator(bob, "build");
+  const collaborator = await overseer.addCollaborator(bob, "workspace");
   if (!collaborator) throw new Error(`Failed to share the gadget with ${bob}`);
   overseer[Symbol.dispose]();
 
@@ -195,7 +195,7 @@ describe("observer re-verification", () => {
           .resolves.toEqual([
             expect.objectContaining({ gatekeeperId: await other.getId() }),
           ]);
-      await expect(overseer.listObserverRequirements("build")).resolves.toEqual([
+      await expect(overseer.listObserverRequirements("workspace")).resolves.toEqual([
         expect.objectContaining({ resourceTitle: "Test Ambient" }),
         expect.objectContaining({ resourceTitle: "Test Thing bound" }),
         expect.objectContaining({ resourceTitle: "Test Thing other" }),
@@ -218,7 +218,7 @@ describe("observer re-verification", () => {
 
       const ownerWorkspace = await aliceApi.newWorkspace();
       const { id: gadgetId } = await ownerWorkspace.getMetadata();
-      const collaborator = await ownerWorkspace.addCollaborator(bob, "build");
+      const collaborator = await ownerWorkspace.addCollaborator(bob, "workspace");
       if (!collaborator) throw new Error(`Failed to share the gadget with ${bob}`);
       ownerWorkspace[Symbol.dispose]();
 

@@ -117,7 +117,7 @@ type Collaborator = Disposable & {
  * Share `grant` with a fresh collaborator, with an account of their own. They get their own
  * connection, which a restart of the owner's workspace doesn't sever.
  */
-async function addCollaborator(ws: Workspace, grant: CollaboratorGrant = "build")
+async function addCollaborator(ws: Workspace, grant: CollaboratorGrant = "workspace")
     : Promise<Collaborator> {
   const [bob] = nextUsernames("trackbob");
   const connection = connect(harness.url);
@@ -541,7 +541,7 @@ it.concurrent("reported hook deliveries are authorized, check both collaborator 
   expect(await ws.overseer.listHooks()).toMatchObject([{ id: hook.id, enabled: true }]);
   using facet = await gadget.connectToGadget() as RpcStub<HookGadget>;
 
-  using builder = await addCollaborator(ws, "build");
+  using builder = await addCollaborator(ws, "workspace");
   using viewer = await addCollaborator(ws, { gadgetId });
   using observers = new DisposableStack();
   for (const [collaborator, held] of [[builder, undefined], [viewer, gadgetId]] as const) {

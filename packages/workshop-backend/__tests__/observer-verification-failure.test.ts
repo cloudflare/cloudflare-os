@@ -98,7 +98,7 @@ describe("a binding that fails verification", () => {
       // The rejection is caught per binding like any other refusal, so with no repair channel the
       // open is denied with the descriptive message that names what to fix -- rather than the
       // transport error escaping mid-Promise.all.
-      await expect(impl.ensureObserver("alice", failingClientUser, "build"))
+      await expect(impl.ensureObserver("alice", failingClientUser, "workspace"))
           .rejects.toThrow(/could not confirm/);
 
       // Alice was already an admitted observer, so this call registered nothing and there is
@@ -135,7 +135,7 @@ describe("a binding that fails verification", () => {
         removeObserver: async id => { removed.push(id); },
       });
 
-      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureAll))
+      await expect(impl.ensureObserver("alice", fakeClientUser, "workspace", configureAll))
           .rejects.toThrow(/could not confirm/);
 
       // Gatekeeper 1's registration predates this call and survives, so it keeps naming her in
@@ -186,13 +186,13 @@ describe("a binding that fails verification", () => {
       });
 
       // Call A registers her with connection 2, then parks before registering with connection 3.
-      let callA = impl.ensureObserver("alice", parkingClientUser, "build", configureAll);
+      let callA = impl.ensureObserver("alice", parkingClientUser, "workspace", configureAll);
       callA.catch(() => {});  // asserted below; not unhandled in the meantime
       await verifierReached;
 
       // Call B -- the same returning observer opening concurrently -- verifies everything and
       // persists the record asserting all three registrations.
-      await impl.ensureObserver("alice", fakeClientUser, "build", configureAll);
+      await impl.ensureObserver("alice", fakeClientUser, "workspace", configureAll);
       expect(impl.storage.observers.get("alice")?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
 
       // Now connection 3 refuses call A terminally.
@@ -233,7 +233,7 @@ describe("a binding that fails verification", () => {
         describeConnectedAccount: async () => null,
       } as unknown as ObserverClientUser;
 
-      await expect(impl.ensureObserver("alice", clientUser, "build", configureAll))
+      await expect(impl.ensureObserver("alice", clientUser, "workspace", configureAll))
           .rejects.toThrow(/could not confirm/);
 
       // Both the one that verified and the one that refused are rolled back, and no record is
@@ -262,7 +262,7 @@ describe("a binding that fails verification", () => {
         removeObserver: async id => { removed.push(id); },
       });
 
-      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureAll))
+      await expect(impl.ensureObserver("alice", fakeClientUser, "workspace", configureAll))
           .rejects.toThrow(/could not confirm/);
 
       expect(attempts.get(1)).toBe(2);

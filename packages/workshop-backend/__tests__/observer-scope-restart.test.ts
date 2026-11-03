@@ -511,7 +511,7 @@ describe("restarting sessions when verification scope widens", () => {
     let configureCb = { configure: async (needs: { gatekeeperId: number }[]) =>
         needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: 10 })) } as any;
 
-    await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureCb))
+    await expect(impl.ensureObserver("alice", fakeClientUser, "workspace", configureCb))
         .rejects.toThrow(/could not confirm/);
 
     // Only this open is denied. Nothing widened, so Alice's other sessions keep the access their
@@ -547,7 +547,7 @@ describe("restarting sessions when verification scope widens", () => {
 
     // "Build" scope is everything, so the record is in scope and the intended fail-closed error
     // still fires: the owner must remove it before the workspace can be shared at that level.
-    expect(() => impl.listObserverRequirements("build")).toThrow(/cannot verify collaborators/);
+    expect(() => impl.listObserverRequirements("workspace")).toThrow(/cannot verify collaborators/);
   }));
 
   it("...and still blocks opening the gadget that binds it, and only that one",
