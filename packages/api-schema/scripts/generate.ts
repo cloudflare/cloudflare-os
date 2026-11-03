@@ -211,6 +211,10 @@ export function staleness(): string | undefined {
     // A record cut short (the generator killed as it wrote it) is regenerated, not fatal.
     return `${INPUTS_PATH} cannot be read`;
   }
+  // As is one that parses but lacks either map (`{}`).
+  if (typeof inputs !== "object" || !inputs || typeof outputs !== "object" || !outputs) {
+    return `${INPUTS_PATH} cannot be read`;
+  }
   for (const [path, hash] of Object.entries(outputs)) {
     if (hashFile(path) !== hash) return `${path} is gone or was changed`;
   }

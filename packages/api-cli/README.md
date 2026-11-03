@@ -84,7 +84,7 @@ line that reaches it (`list-chats is on Overseer: cf-os api open-workspace <id> 
 forgotten-positional error, if it has one), and a command returning a capability lists that
 capability's commands too. After a command returning an untyped capability, `call <method>
 [json-args...]` calls a method by name, unchecked. Each argument is read as a typed
-`<text|json|@file|->` argument is ([Arguments](#arguments)): JSON, inline, from `@file` or from `-`
+`<text|json|@file|->` argument ([Arguments](#arguments)): JSON, inline, from `@file` or from `-`
 (stdin), and text that is not JSON is that string, but text that starts as JSON does (`{`, `[` or
 `"`) and does not parse fails, exit 2, inline or from a file alike, since nothing says the method
 takes text; quote such text, or a literal `@x` or `-`, as a JSON string (`'"@x"'`). An empty method

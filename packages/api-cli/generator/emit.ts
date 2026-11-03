@@ -24,9 +24,9 @@
 // and `@appApi` ({@link APP_API_TAG}), which it turns into a capability property's `byArgument`,
 // each left out of the command's doc.
 //
-// The gatekeeper app UIs (`AppApi`) are schemas of their own, one per gatekeeper whose package.json
-// names its app UI's interface, each built into the table as the API's own schema is, from that
-// interface, and prefixed with the gatekeeper's vendor id (`context:ContextApi`), nodes, callbacks
+// The gatekeeper app UIs (`AppApi`) are schemas of their own, one per gatekeeper whose
+// `src/app-api.ts` re-exports its app UI's interface as `AppApi`, each built into the table as the
+// API's own schema is, from that interface, and prefixed with the gatekeeper's vendor id (`context:ContextApi`), nodes, callbacks
 // and shapes alike, so that none can collide with the API's or another gatekeeper's. A method tagged
 // `@appApi` types its result's untyped capability property by its argument: the generator fills
 // that map from these, so the runtime never names a vendor.
