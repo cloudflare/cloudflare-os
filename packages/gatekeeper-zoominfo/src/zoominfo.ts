@@ -22,6 +22,7 @@ import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/co
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
+import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import {
   ZoomInfoApi,
   ZoomInfoApiError,
@@ -399,6 +400,9 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // tokens (persisting rotated refresh tokens).
 
 export class UserAccount extends DurableObject<Env> {
+  // ZoomInfo refresh tokens are single-use, so overlapping reads must share one exchange.
+  readonly #refreshes = new SingleFlight();
+
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string): Promise<void> {
     if (!this.ctx.storage.kv.get<string>("refreshToken")) {
       await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
@@ -547,7 +551,11 @@ export class UserAccount extends DurableObject<Env> {
     if (userId && token && Date.now() < expiresAt - ACCESS_TOKEN_SAFETY_MS) {
       return { accessToken: token, userId };
     }
+    return this.#refreshes.run("refresh", () => this.#refresh());
+  }
 
+  async #refresh(): Promise<ZoomInfoAccess> {
+    const userId = this.ctx.storage.kv.get<string>("userId");
     const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
     if (!refreshToken) {
       throw new Error("ZoomInfo credentials have not been configured for this account.");

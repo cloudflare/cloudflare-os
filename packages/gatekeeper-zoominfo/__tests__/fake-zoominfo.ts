@@ -38,6 +38,8 @@ export class FakeZoomInfo {
     user => ({ sub: user.sub, aud: CLIENT_ID, name: user.name, email: user.email });
   /** Enrichments fail as an outage would. */
   failEnrichment = false;
+  /** How long the token endpoint takes to answer, so requests to it can overlap. */
+  tokenLatencyMs = 0;
   /** The user each live access token, refresh token and authorization code belongs to. */
   readonly #owners = new Map<string, FakeUser>();
   #issued = 0;
@@ -72,7 +74,11 @@ export class FakeZoomInfo {
     const token = request.headers.get("Authorization")?.match(/^Bearer (.+)$/)?.[1];
     this.requests.push({ method: request.method, path: url.pathname, token });
     if (url.origin !== "https://api.zoominfo.com") throw new Error(`Unexpected request: ${url}`);
-    if (url.pathname === "/gtm/oauth/v1/token") return this.#token(new URLSearchParams(await request.text()));
+    if (url.pathname === "/gtm/oauth/v1/token") {
+      const form = new URLSearchParams(await request.text());
+      if (this.tokenLatencyMs > 0) await scheduler.wait(this.tokenLatencyMs);
+      return this.#token(form);
+    }
 
     const user = token === undefined ? undefined : this.#owners.get(token);
     if (!user) return json({ errors: [{ detail: "Invalid token" }] }, 401);

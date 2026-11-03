@@ -99,6 +99,19 @@ describe("a connection made before its user's ID was kept", () => {
     expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
   });
 
+  it("learns its user once when first reads overlap, leaving the connection healthy", async () => {
+    const fake = new FakeZoomInfo().install();
+    const id = await seedAccount(fake, ALICE, { legacy: true });
+    fake.tokenLatencyMs = 20;
+    const [first, second] = [binding(id), binding(id)];
+    const results = await Promise.all([first.run(["searchCompanies", {}]), second.run(["getCreditUsage"])]);
+    results.forEach(unwrap);
+    expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
+    expect(await first.reported()).toEqual([[ALICE_ID]]);
+    expect(await second.reported()).toEqual([[ALICE_ID]]);
+    expect(await hooks().expiredNotices(id)).toBe(0);
+  });
+
   it("must be reconnected when ZoomInfo's refresh doesn't identify the user, and returns nothing", async () => {
     const fake = new FakeZoomInfo().install();
     const id = await seedAccount(fake, ALICE, { legacy: true });
