@@ -435,8 +435,8 @@ importers:
         specifier: 'catalog:'
         version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
       postal-mime:
-        specifier: ^2.7.6
-        version: 2.7.6
+        specifier: ^4.0.11
+        version: 4.0.11
     devDependencies:
       '@gadgets/scripts':
         specifier: workspace:*
@@ -552,8 +552,8 @@ importers:
         specifier: ^3.0.28
         version: 3.0.28
       postal-mime:
-        specifier: ^2.7.6
-        version: 2.7.6
+        specifier: ^4.0.11
+        version: 4.0.11
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 'catalog:'
@@ -4978,8 +4978,9 @@ packages:
     resolution: {integrity: sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg==}
     engines: {node: '>= 0.4'}
 
-  postal-mime@2.7.6:
-    resolution: {integrity: sha512-UUlyE2KlxmvwMGq060onF/VWU3zD6dVW31FwokQ5v26jWd35fbs2MoTFzh+jXnPwAyV2MULMKXcBInGOl5TO6Q==}
+  postal-mime@4.0.11:
+    resolution: {integrity: sha512-T0zAqYnuSB8s+zL9WdiGj/2DeWeObEjqrcw2LWq+hgwpCSbLt7xujsFXn6Kgr1wsLl8DJh+v+lG9GQSQfMcUyA==}
+    engines: {node: '>=20'}
 
   postcss@8.5.25:
     resolution: {integrity: sha512-DTPx3RWSSnWyzLxQnlH0rJP+EW5ekl16ZU4/psbIhA0e53kJfdgaN5vKM+xP7yJtXVu+nfdVFmlgFDEKAe4Pyw==}
@@ -9333,7 +9334,7 @@ snapshots:
 
   possible-typed-array-names@1.1.0: {}
 
-  postal-mime@2.7.6: {}
+  postal-mime@4.0.11: {}
 
   postcss@8.5.25:
     dependencies:
