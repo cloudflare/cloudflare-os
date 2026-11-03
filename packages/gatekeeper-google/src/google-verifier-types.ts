@@ -26,13 +26,9 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   /** As `checkSubresourceAccess`, for one calendar. */
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
   /**
-   * Whether the observer's Google account passes each access check, in order, reusing recent
-   * answers (see `UserAccount.checkSubresourceAccess`). Each is the subresource ID naming a check,
-   * which the Calendar gatekeeper substitutes for every subresource it answers: a calendar's, for
-   * the role `hasCalendarWriterAccess` checks on it, or a calendar's free/busy, for Google answering
-   * a free/busy query for it. Throws for any other ID, an event's included, or when access can't be
-   * determined, including when Google refuses a free/busy query itself (expired credentials, a
-   * missing scope, a rate limit).
+   * Whether the observer's Google account can read each subresource, in order, reusing recent
+   * answers (see `UserAccount.checkSubresourceAccess`). Throws for an ID it can't check, or when
+   * access can't be determined (expired credentials, a missing scope, a rate limit).
    */
   checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;

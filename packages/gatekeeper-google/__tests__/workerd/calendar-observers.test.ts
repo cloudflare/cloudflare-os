@@ -293,7 +293,7 @@ describe("Google Calendar verifyObserverAccess", () => {
     expect(calendar.backend.queries).toEqual([]);
   });
 
-  it("keeps each answer of a mixed check under its own ID", async () => {
+  it("caches each answer of a mixed verification under its own subresource", async () => {
     const calendar = calendarHarness();
     calendar.backend.roles.alice = "reader";
     calendar.backend.freeBusy.alice = id => id === ALICE;
@@ -301,7 +301,7 @@ describe("Google Calendar verifyObserverAccess", () => {
     // Alice sees Alice's free/busy, but not the event details on the bound calendar.
     await expect(calendar.verify({alice: "alice"}, [STANDUP, ALICE_FREE_BUSY]))
       .resolves.toEqual({allowedObserverIds: []});
-    // Both answers are reused, each for the ID it answered.
+    // Both answers are reused, each for the subresource it answered.
     await expect(calendar.verify({alice: "alice"}, [ALICE_FREE_BUSY]))
       .resolves.toEqual({allowedObserverIds: ["alice"]});
     await expect(calendar.verify({alice: "alice"}, [BOUND_CALENDAR]))
