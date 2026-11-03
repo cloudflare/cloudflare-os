@@ -123,7 +123,7 @@ Fixed rather than configurable.
 | Tool description | 4 KB | `client.ts` | As above, per tool, before it reaches storage |
 | Tool input schema | 20 KB | `client.ts` | Dropped rather than clipped; half a schema is not a schema |
 | `tools/list` pages | 50 | `client.ts` | Stops a cursor that never ends; exhaustion truncates catalogs and fails exact/search discovery as a scan limit |
-| Response body | 1 MiB | `fetch.ts` | Every response is buffered whole before it can be parsed, and a `tools/call` result is otherwise unbounded |
+| Response body | 2 MiB | `fetch.ts` | Every response is buffered whole before it can be parsed, and a `tools/call` result is otherwise unbounded |
 | Bounded outbound operation | 30 seconds | `fetch.ts` | OAuth and discovery callers opt into one deadline covering redirects, pagination, body streaming, and session retry |
 | Retained result | 128 KB | `action-store.ts` | Held until the Gadget collects it; oversized ones are replaced by a note |
 | Retained actions | 100 | `action-store.ts` | Records are for collecting a result, not an audit log |
