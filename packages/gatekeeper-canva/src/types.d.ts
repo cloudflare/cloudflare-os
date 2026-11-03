@@ -265,19 +265,24 @@ export type CanvaRemoveBackgroundOptions = {
  * Why a design generation job failed. "content_not_allowed": the brief or output failed Canva's
  * content-safety checks. "generation_failed": Canva could not complete the job. "expired": the job
  * aged out on Canva before completing. "refused": Canva refused to start the job (the message says
- * why, e.g. the user's plan lacks the feature). Other codes may appear as Canva adds them.
+ * why, e.g. the user's plan lacks the feature). "outcome_unknown": the request failed after it may
+ * have reached Canva, so the design may exist anyway; look for it with `listDesigns()` before
+ * asking again. Other codes may appear as Canva adds them.
  */
 export type CanvaGenerationErrorCode =
-  | "content_not_allowed" | "generation_failed" | "expired" | "refused" | (string & {});
+  | "content_not_allowed" | "generation_failed" | "expired" | "refused" | "outcome_unknown" | (string & {});
 
 /**
  * Why a background removal job failed. "no_foreground_found": the image has no subject to keep.
  * "quota_exceeded": the user's AI credits ran out. "internal_error": Canva could not complete the
  * job. "expired": the job aged out before completing. "refused": Canva refused to start the job.
- * Other codes may appear as Canva adds them.
+ * "outcome_unknown": the request failed after it may have reached Canva, so the new asset may
+ * exist anyway; look in `listFolderItems("uploads")` before asking again. Other codes may appear as
+ * Canva adds them.
  */
 export type CanvaBackgroundRemovalErrorCode =
-  | "no_foreground_found" | "quota_exceeded" | "internal_error" | "expired" | "refused" | (string & {});
+  | "no_foreground_found" | "quota_exceeded" | "internal_error" | "expired" | "refused" | "outcome_unknown"
+  | (string & {});
 
 /** One design generation job started from this connection, as returned by `listGeneratedDesigns()`. */
 export type CanvaGenerationJob = {
@@ -291,7 +296,7 @@ export type CanvaGenerationJob = {
   startedAt: string;
   /**
    * "in_progress" while Canva is still generating; "success" once the design exists; "failed" when
-   * Canva could not or would not generate it.
+   * Canva could not or would not generate it, or the request's outcome is unknown (see `error`).
    */
   status: "in_progress" | "success" | "failed";
   /** The generated design. Present only when `status` is "success". */
@@ -346,9 +351,9 @@ export interface CanvaAccountSession {
    * Accepts a bare design ID ("DAFVztcvd9z"), a Canva design URL
    * ("https://www.canva.com/design/DAFVztcvd9z/..."), or the temporary id of a design a pending
    * `createDesign()` or `generateDesign()` makes ("~1"). For a temporary id it returns the pending
-   * design, with null URLs, until Canva has made it, then the real one; for a design Canva could
-   * not create or generate it throws with Canva's reason. Throws if the design does not exist, the
-   * connected user cannot access it, or its creation was rejected.
+   * design, with null URLs, until Canva has made it, then the real one; once its creation or
+   * generation has failed it throws with the reason and error code. Throws if the design does not
+   * exist, the connected user cannot access it, or its creation was rejected.
    */
   getDesign(designIdOrUrl: string): Promise<CanvaDesign>;
 
@@ -373,7 +378,7 @@ export interface CanvaAccountSession {
    * its title and contents, so until generation finishes the design has a null title, page count
    * and URLs. Once the user approves, the gatekeeper starts the job on Canva, and generation takes
    * anywhere from seconds to a few minutes; `getDesign()` with the temporary id returns the real
-   * design as soon as it is done, and throws with Canva's reason if generation failed. Keep the
+   * design as soon as it is done, and throws with the reason if generation failed. Keep the
    * returned design and poll `getDesign()` with its id; do not call this again for the same brief,
    * as every approval spends credits. Check `getProfile().canGenerateDesigns` first; Canva refuses
    * the job for users whose plan or team settings don't allow generation.
@@ -388,8 +393,9 @@ export interface CanvaAccountSession {
    * pending row `generateDesign()` returned, so read that with `getDesign()`. An empty list after
    * calling `generateDesign()` means the user has not decided yet, not that the request was lost;
    * never ask again, since each approval spends credits. Refreshes the status of any job still in
-   * progress before returning, and includes jobs Canva refused to start, as failed. To wait for one
-   * design, poll `getDesign()` with its id.
+   * progress before returning, and includes as failed the jobs Canva refused to start and those
+   * whose request may not have reached it ("outcome_unknown"). To wait for one design, poll
+   * `getDesign()` with its id.
    */
   listGeneratedDesigns(): Promise<CanvaGenerationJob[]>;
 
@@ -400,7 +406,7 @@ export interface CanvaAccountSession {
    *
    * Asset IDs come from `listFolderItems()` entries of type "image" or from `removeBackground()`,
    * whose temporary id ("~2") is accepted throughout: it returns the pending asset, without a
-   * thumbnail, until Canva has made it, then the real one, and throws with Canva's reason if the
+   * thumbnail, until Canva has made it, then the real one, and throws with the reason if the
    * removal failed. Only IDs are accepted, because Canva has no public URL for an asset. Throws if
    * the asset does not exist, is not an image (Canva also stores videos as assets), or the
    * connected user cannot access it.
@@ -434,8 +440,8 @@ export interface CanvaAccountSession {
    * calling `removeBackground()` means the user has not decided yet, not that the request was lost;
    * never ask again, since each approval spends credits (a repeat for the same image is refused
    * while the first waits). Refreshes the status of any job still in progress before returning, and
-   * includes jobs Canva refused to start, as failed. To wait for one asset, poll `getImageAsset()`
-   * with its id.
+   * includes as failed the jobs Canva refused to start and those whose request may not have reached
+   * it ("outcome_unknown"). To wait for one asset, poll `getImageAsset()` with its id.
    */
   listBackgroundRemovals(): Promise<CanvaBackgroundRemovalJob[]>;
 

@@ -155,17 +155,18 @@ function isRefusal(error: unknown): error is CanvaApiError {
     && error.status !== 429 && !error.isAuthError;
 }
 
-/** The record fields of an approved action Canva refused, so reads of its temporary id can say why. */
-const refused = (error: CanvaApiError) =>
-  ({ status: "failed" as const, error: { code: "refused", message: error.message } });
+/** What a job record says of an approved action that failed for good. */
+type FailedJob = { status: "failed"; error: JobError };
 
 /**
  * Classifies an apply failure for the kit: a refusal is terminal and known absent; a rate limit or
  * dead credentials are retryable, since nothing was spent and a later attempt may succeed; anything
- * else may already have taken effect on Canva, so it is terminal with an unknown outcome.
+ * else may already have taken effect on Canva, so it is terminal with an unknown outcome. A terminal
+ * failure is handed to `record` first, so reads of the action's temporary id can say what happened.
  */
-function applyFailure(error: unknown, what: string): never {
+function applyFailure(error: unknown, what: string, record: (failed: FailedJob) => void): never {
   if (isRefusal(error)) {
+    record({ status: "failed", error: { code: "refused", message: error.message } });
     const hint = error.status === 403 ? " Canva may not allow this on the user's plan or team." : "";
     throw new ActionApplyError(`Canva refused to ${what}: ${error.message}.${hint}`);
   }
@@ -177,6 +178,10 @@ function applyFailure(error: unknown, what: string): never {
   // cases the request was never sent, so a retry is right.
   if (isCredentialsExpired(error) || isCredentialsChanged(error)) throw error;
   const detail = error instanceof Error ? error.message : String(error);
+  record({ status: "failed", error: {
+    code: "outcome_unknown",
+    message: `the request may have reached Canva (${detail}), so look for the result in Canva before asking again`,
+  } });
   throw new ActionOutcomeUnknownError(`The request to ${what} failed after it may have reached Canva ` +
     `(${detail}). ${APPLY_OUTCOME_UNKNOWN_MESSAGE}`);
 }
@@ -238,8 +243,7 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
           ...(assetId !== undefined ? { asset_id: assetId } : {}),
         }));
       } catch (error) {
-        if (isRefusal(error)) host.recordJob({ ...base, ...refused(error) });
-        applyFailure(error, "create the design");
+        applyFailure(error, "create the design", failed => host.recordJob({ ...base, ...failed }));
       }
       host.refs.bind(payload.ref, created.id);
       host.recordJob({ ...base, status: "success", design: normalizeDesign(created) });
@@ -281,9 +285,8 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
           ...(payload.outline !== undefined ? { outline: payload.outline } : {}),
         }));
       } catch (error) {
-        // A refusal is a decided outcome worth listing: an approved request that went nowhere.
-        if (isRefusal(error)) host.recordJob({ ...base, jobId: null, ...refused(error) });
-        applyFailure(error, "start the design generation");
+        // A decided outcome is worth listing: an approved request that went nowhere, or may have.
+        applyFailure(error, "start the design generation", failed => host.recordJob({ ...base, jobId: null, ...failed }));
       }
       // Generation takes minutes, so the temporary id stays unbound until a read finds the job done.
       const state = generationStateFromJob(job);
@@ -343,8 +346,8 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
               ...(payload.name !== undefined ? { name: payload.name } : {}),
             }));
           } catch (error) {
-            if (isRefusal(error)) host.recordJob({ ...base, jobId: null, ...refused(error) });
-            applyFailure(error, "start the background removal");
+            applyFailure(error, "start the background removal",
+              failed => host.recordJob({ ...base, jobId: null, ...failed }));
           }
           // Recorded before the wait, so a read during it sees the job running, and a retry finds it.
           host.recordJob({ ...base, ...transformationStateFromJob(job) });

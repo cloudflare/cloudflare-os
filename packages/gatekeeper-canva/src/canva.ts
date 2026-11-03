@@ -818,7 +818,7 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       if (current.status === "success" && current.design) return current.design;
       if (current.status === "failed") {
         const reason = current.error ? `${current.error.message} (${current.error.code})` : "the job failed";
-        throw new Error(`Canva did not make design ${ref}: ${reason}.`);
+        throw new Error(`Design ${ref} failed: ${reason}.`);
       }
       const row = runningRow(current, me);
       if (row?.type === "design") return row.design;
@@ -837,7 +837,7 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       if (current.status === "success" && current.asset) return current.asset;
       if (current.status === "failed") {
         const reason = current.error ? `${current.error.message} (${current.error.code})` : "the job failed";
-        throw new Error(`Canva did not make asset ${ref}: ${reason}.`);
+        throw new Error(`Asset ${ref} failed: ${reason}.`);
       }
       const row = runningRow(current, me);
       if (row?.type === "image") return row.image;
