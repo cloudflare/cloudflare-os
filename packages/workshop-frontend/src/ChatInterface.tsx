@@ -6298,7 +6298,7 @@ function ChatInterface({
                                     </Tooltip>
                                   )}
                                   {isLast && msg.code !== "usage_limit" && (
-                                    <Tooltip content="Retry the last action." asChild>
+                                    <Tooltip content={msg.code === "stopped" ? "Continue where the agent stopped." : "Retry the last action."} asChild>
                                       <button
                                         type="button"
                                         onClick={() => handleRetry()}
@@ -6306,7 +6306,7 @@ function ChatInterface({
                                         className="flex flex-shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 text-[13px] leading-4 font-medium text-kumo-default transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default-hover focus-visible:text-kumo-default-hover focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                                       >
                                         <ArrowsClockwise size={12} weight="bold" />
-                                        Retry
+                                        {msg.code === "stopped" ? "Continue" : "Retry"}
                                       </button>
                                     </Tooltip>
                                   )}
