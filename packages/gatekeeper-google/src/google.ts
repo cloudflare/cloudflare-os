@@ -19,6 +19,7 @@ import {
 } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
 import { GoogleSlidesApi } from "./slides-api";
+import { GoogleApiError } from "./google-response";
 import {
   boundProps, createFileOnce, creationAction, isSimulated, newFileTitle, UNCREATED_FILE_ID,
   type SimulatedFileProps,
@@ -1293,7 +1294,10 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
 
 /**
  * Whether the account behind `getToken` can open a native file in the API that reads it (Docs,
- * Sheets or Slides): false when Google answers 401, 403 or 404, and a throw for any other failure.
+ * Sheets or Slides): false when Google refuses it without giving a reason (403) or doesn't hold it
+ * for the account (404), and a throw for any other failure. Google gives a reason for the refusals
+ * that say nothing about the account's access, such as a missing scope or a disabled API, and a
+ * 401 that survives a fresh token means the credentials, not the file.
  */
 async function hasNativeFileAccess(
     getToken: (opts?: AccessTokenRequest) => Promise<string>,
@@ -1306,7 +1310,11 @@ async function hasNativeFileAccess(
     }
     return true;
   } catch (error) {
-    if (isNoAccessStatus(httpStatusFromError(error))) return false;
+    let status = httpStatusFromError(error);
+    if (error instanceof GoogleApiError &&
+        (status === 404 || (status === 403 && error.providerReasons.length === 0))) {
+      return false;
+    }
     throw error;
   }
 }

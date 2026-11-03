@@ -54,6 +54,11 @@ type WorkspaceBackendState = {
   access: Map<string, string[]>;
   /** Observer tokens whose lookups fail as an outage would. */
   failing: Set<string>;
+  /**
+   * Observer tokens Docs, Sheets and Slides refuse with 403 and this `ErrorInfo` reason, as they
+   * do one missing a scope.
+   */
+  refusals: Map<string, string>;
   /** Each file lookup an observer token made, as `<token> <host> <fileId>`. */
   lookups: string[];
 };
@@ -121,10 +126,11 @@ const FILES: Record<string, FileNode> = {
 /**
  * Drive, Docs, Sheets and Slides as far as these reads and checks use them. Every lookup answers
  * the owner, and answers an observer only for the files `access` grants its token (Drive with
- * 404, the others with 403), failing with 500 for a token in `failing`.
+ * 404, the others with 403), failing with 500 for a token in `failing` and, in Docs, Sheets and
+ * Slides, with a reasoned 403 for a token in `refusals`.
  */
 function workspaceBackend(): WorkspaceBackend {
-  const state: WorkspaceBackendState = {access: new Map(), failing: new Set(), lookups: []};
+  const state: WorkspaceBackendState = {access: new Map(), failing: new Set(), refusals: new Map(), lookups: []};
   const visible = (token: string, id: string): FileNode | undefined =>
     token === OWNER_TOKEN || state.access.get(token)?.includes(id) ? FILES[id] : undefined;
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
@@ -140,6 +146,12 @@ function workspaceBackend(): WorkspaceBackend {
     const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
     if (observer) state.lookups.push(`${token} ${url.hostname} ${id}`);
     if (state.failing.has(token)) return json({error: {code: 500, message: "Backend error"}}, 500);
+    const reason = state.refusals.get(token);
+    if (reason && url.hostname !== "www.googleapis.com") {
+      return json({error: {code: 403, status: "PERMISSION_DENIED", message: "Refused", details: [
+        {"@type": "type.googleapis.com/google.rpc.ErrorInfo", reason, domain: "googleapis.com"},
+      ]}}, 403);
+    }
     const node = visible(token, id);
     if (url.hostname === "www.googleapis.com" && url.pathname.startsWith("/drive/v3/files/")) {
       return node
@@ -371,6 +383,17 @@ describe("Drive, Docs, Sheets and Slides verifyObserverAccess", () => {
     ];
     backend.state.failing.add("flaky-token");
     await expect(doc.verify(observers, [`docs/document/${DOC}`])).rejects.toThrow(/500/);
+  });
+
+  it("throws when Docs refuses for a reason, which says nothing about access, and asks again next time", async () => {
+    const backend = workspaceBackend();
+    const doc = workspaceHarness(backend, "doc", {documentId: DOC});
+    const observers = [{id: "reader", userObjectId: await doc.observer("reader-token", [DOC])}];
+    backend.state.refusals.set("reader-token", "ACCESS_TOKEN_SCOPE_INSUFFICIENT");
+    await expect(doc.verify(observers, [`docs/document/${DOC}`])).rejects.toThrow(/http=403/);
+
+    backend.state.refusals.clear();
+    expect(await doc.verify(observers, [`docs/document/${DOC}`])).toEqual({allowedObserverIds: ["reader"]});
   });
 
   it("fails the whole call when Drive cannot tell", async () => {
