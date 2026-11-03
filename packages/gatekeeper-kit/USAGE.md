@@ -891,11 +891,11 @@ formatSubresourceId({ namespace: "drive", fragments: [{ name: "file", id: fileId
 ```
 
 Each fragment names a resource: a kind and the provider's id for it. It never names a predicate or
-a policy. A mailbox no collaborator may see is still `gmail/inbox/<address>`, not a `private`
-marker; the verifier knows what access each kind of resource requires, including that one is never
-shared. Set `namespace` only when the gatekeeper exposes distinct product families with their own
-resources, as Google does with Gmail, Drive and BigQuery. A single-product gatekeeper omits it
-instead of repeating its own name.
+a policy. A mailbox only its owner may see is still `gmail/user/<sub>`, naming the owner's Google
+account, not a `private` marker; the verifier knows what access each kind of resource requires,
+including that one is shared with nobody else. Set `namespace` only when the gatekeeper exposes
+distinct product families with their own resources, as Google does with Gmail, Drive and BigQuery.
+A single-product gatekeeper omits it instead of repeating its own name.
 
 `parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
 resource always reports one string. That string is what the Workshop deduplicates and indexes. The
