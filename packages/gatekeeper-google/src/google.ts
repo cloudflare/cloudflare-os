@@ -53,7 +53,7 @@ import type {
   DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
-import { ChatApi, isChatNoAccessError } from "./chat-api";
+import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
@@ -1224,8 +1224,10 @@ async function hasBigQueryDatasetAccess(
 
 /**
  * Whether `api`'s account can open a Google Chat space, or with `members`, list its members, which
- * a space can restrict to its managers: false when Chat answers that it can't (see
- * isChatNoAccessError), and a throw for any other failure.
+ * a space can restrict to its managers: false when Chat refuses it without giving a reason (403)
+ * or doesn't hold it for the account (404), and a throw for any other failure. Chat gives a reason
+ * for the refusals that say nothing about the account's access, such as a missing scope or a
+ * disabled API.
  */
 async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean): Promise<boolean> {
   try {
@@ -1233,9 +1235,10 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
     else await api.getSpace(spaceName);
     return true;
   } catch (error) {
-    // Chat answers a space the account is not a member of with 403 or 404, which
-    // isChatNoAccessError recognizes; anything else is transient and must fail loudly.
-    if (isChatNoAccessError(error)) return false;
+    if (error instanceof ChatApiError &&
+        (error.status === 404 || (error.status === 403 && error.reasons.length === 0))) {
+      return false;
+    }
     throw error;
   }
 }

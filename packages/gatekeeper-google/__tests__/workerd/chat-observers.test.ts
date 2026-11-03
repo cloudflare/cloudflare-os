@@ -36,6 +36,8 @@ type GoogleBackend = {
   hiddenMembers: Set<string>;
   /** Tokens whose Chat requests fail as an outage would. */
   failing: Set<string>;
+  /** Tokens Chat refuses with 403 and this `ErrorInfo` reason, as it does one missing a scope. */
+  refusals: Map<string, string>;
 };
 
 /** A named, threaded space as Chat returns it. */
@@ -50,6 +52,7 @@ const chatSpace = (id: string) => ({
 function googleBackend(): GoogleBackend {
   const backend: GoogleBackend = {
     subjects: new Map([[OWNER_TOKEN, "100"]]), outsiders: new Set(), hiddenMembers: new Set(), failing: new Set(),
+    refusals: new Map(),
   };
   const member = {
     name: "spaces/AAAA/members/200", state: "JOINED", role: "ROLE_MEMBER",
@@ -69,6 +72,12 @@ function googleBackend(): GoogleBackend {
     }
     if (url.hostname !== "chat.googleapis.com") throw new Error(`Unexpected request: ${url}`);
     if (backend.failing.has(token)) return json({error: {status: "UNAVAILABLE"}}, 503, {"Retry-After": "0"});
+    const reason = backend.refusals.get(token);
+    if (reason) {
+      return json({error: {status: "PERMISSION_DENIED", details: [
+        {"@type": "type.googleapis.com/google.rpc.ErrorInfo", reason, domain: "googleapis.com"},
+      ]}}, 403);
+    }
     if (backend.outsiders.has(token)) return json({error: {status: "PERMISSION_DENIED"}}, 403);
     if (url.pathname === "/v1/spaces") return json({spaces: [chatSpace("AAAA"), chatSpace("BBBB")]});
     const spaceId = /^\/v1\/spaces\/([A-Z]+)$/.exec(url.pathname)?.[1];
@@ -236,5 +245,17 @@ describe("Google Chat verifyObserverAccess", () => {
     ];
     backend.failing.add("flaky-token");
     await expect(chat.verify(observers, [SPACE])).rejects.toThrow(/http=503/);
+  });
+
+  it("throws when Chat refuses for a reason, which says nothing about access, and asks again next time", async () => {
+    const backend = googleBackend();
+    const chat = chatHarness(backend, {spaceId: "AAAA"});
+    const observers = [{id: "member", userObjectId: await chat.observer("member-token", "200")}];
+    backend.refusals.set("member-token", "ACCESS_TOKEN_SCOPE_INSUFFICIENT");
+    await expect(chat.verify(observers, [SPACE]))
+      .rejects.toThrow(/http=403 PERMISSION_DENIED ACCESS_TOKEN_SCOPE_INSUFFICIENT/);
+
+    backend.refusals.clear();
+    expect(await chat.verify(observers, [SPACE])).toEqual({allowedObserverIds: ["member"]});
   });
 });
