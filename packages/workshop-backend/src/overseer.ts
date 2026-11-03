@@ -7410,8 +7410,13 @@ class OverseerImpl implements AgentHooks {
         controller.signal.throwIfAborted();
 
         await this.#migrateChatAttachments(chatId);
+        // Read the invoking participant's defaults, not the workspace owner's; never persist them here.
+        let globalInstructions = await retryOnDoReset(() => this.users.get(
+            this.users.idFromString(initiatorUserId)).getGlobalInstructionsForAgent(), this.logger);
+        controller.signal.throwIfAborted();
         lastRequest = await runAgent(
-            this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config);
+            this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config,
+            globalInstructions);
         finished = true;
         turnLogger.debug("agent run finished", {
           event: "agent.run.finished", outcome: "ok",

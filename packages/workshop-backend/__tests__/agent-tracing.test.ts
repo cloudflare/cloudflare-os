@@ -11,6 +11,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { UserDurableObject } from "../src/user.js";
 import type { ActionRecord, AutoApproveTagRecord }
   from "../src/storage-schema/overseer-storage.js";
 
@@ -22,6 +23,7 @@ interface OverseerInternals {
     idFromString(id: string): string;
     get(id: string): {
       getChatContext(): Promise<{ profile: AiChatAuthorInfo, aiModel: AiModel }>;
+      getGlobalInstructionsForAgent: UserDurableObject["getGlobalInstructionsForAgent"];
       getCloudflareGatekeeperAccount(): Promise<null>;
       consumeDailyLlmCall(): Promise<{ withinLimits: boolean }>;
       publishNotification(notification: UserNotification): Promise<void>;
@@ -185,6 +187,7 @@ function startTurn(responses: (() => Response)[], {
       idFromString: (id: string) => id,
       get: (userId: string) => ({
         getChatContext: async () => ({ profile: OWNER, aiModel: { profile: MODEL, config } }),
+        getGlobalInstructionsForAgent: async () => ({ instructions: "", cacheSalt: "" }),
         getCloudflareGatekeeperAccount: async () => null,
         consumeDailyLlmCall: async () => ({ withinLimits: false }),
         publishNotification: async notification => {

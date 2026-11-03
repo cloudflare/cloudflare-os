@@ -1,5 +1,6 @@
 import { RpcStub } from "capnweb";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import type { PersonalInstructions } from "./global-instructions";
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, validateGlobalInstructions, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -662,6 +663,26 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile.commitEmail = email;
     }
     this.storage.profile.put(profile);
+  }
+
+  async getOwnGlobalInstructions(): Promise<string> {
+    return this.storage.globalInstructions.get();
+  }
+
+  async setOwnGlobalInstructions(instructions: string): Promise<void> {
+    validateGlobalInstructions(instructions);
+    this.ctx.storage.transactionSync(() => {
+      this.storage.globalInstructions.put(instructions);
+      this.storage.globalInstructionsCacheSalt.put(instructions.trim() ? crypto.randomUUID() : "");
+    });
+  }
+
+  /** Internal inference snapshot; the per-edit salt prevents cross-user cache probing. */
+  async getGlobalInstructionsForAgent(): Promise<PersonalInstructions> {
+    return {
+      instructions: this.storage.globalInstructions.get(),
+      cacheSalt: this.storage.globalInstructionsCacheSalt.get(),
+    };
   }
 
   async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {
