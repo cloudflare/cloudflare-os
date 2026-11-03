@@ -4,9 +4,7 @@
 // endpoint with HTTP Basic credentials, and rotates refresh tokens: each refresh response carries a
 // new refresh token and the old one is dead. Access tokens last about four hours.
 
-import {
-  createPkce, isInvalidGrant, OAuthClient, type OAuthTokens,
-} from "@gadgets/gatekeeper-kit/oauth-client";
+import { isInvalidGrant, OAuthClient } from "@gadgets/gatekeeper-kit/oauth-client";
 
 const CANVA_AUTHORIZE_URL = "https://www.canva.com/api/oauth/authorize";
 const CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token";
@@ -64,12 +62,6 @@ export function oauthClient(config: CanvaOAuthConfig): OAuthClient {
   });
 }
 
-/** Generate a PKCE verifier and its S256 challenge. The verifier is stored until the code exchange. */
-export async function generatePkce(): Promise<{ verifier: string; challenge: string }> {
-  const { codeVerifier, codeChallenge } = await createPkce();
-  return { verifier: codeVerifier, challenge: codeChallenge };
-}
-
 /** The URL to send the user's browser to. `state` must be the per-flow nonce the callback checks. */
 export function buildAuthorizeUrl(
   config: CanvaOAuthConfig, state: string, challenge: string, scopes: string[],
@@ -77,26 +69,6 @@ export function buildAuthorizeUrl(
   return oauthClient(config).authorizationUrl({
     redirectUri: config.redirectUri, state, scopes, codeChallenge: challenge,
   }).toString();
-}
-
-/** Exchange an authorization code (with its PKCE verifier) for tokens. */
-export function exchangeCode(
-  config: CanvaOAuthConfig, code: string, verifier: string,
-): Promise<OAuthTokens> {
-  return oauthClient(config).exchangeCode({ code, redirectUri: config.redirectUri, codeVerifier: verifier });
-}
-
-/**
- * Refresh an access token. The response carries a rotated refresh token which MUST replace the
- * stored one; callers should go through the account DO so two refreshes never race.
- */
-export function refreshTokens(config: CanvaOAuthConfig, refreshToken: string): Promise<OAuthTokens> {
-  return oauthClient(config).refresh({ refreshToken });
-}
-
-/** Revoke a token at Canva. Best-effort: a failure here only means Canva still lists the grant. */
-export function revokeToken(config: CanvaOAuthConfig, token: string): Promise<void> {
-  return oauthClient(config).revoke({ token });
 }
 
 /**

@@ -79,7 +79,10 @@ type JobError = { code: string; message: string };
  * reads) are written over the same record.
  */
 export type CanvaJobRecord =
-  | { kind: "createDesign"; actionId: number; at: number; ref: string; design: CanvaDesign }
+  | {
+    kind: "createDesign"; actionId: number; at: number; ref: string;
+    status: "success" | "failed"; design?: CanvaDesign; error?: JobError;
+  }
   | {
     kind: "generateDesign"; actionId: number; at: number; ref: string;
     brief: string; designType: CanvaGenerationDesignType;
@@ -152,6 +155,10 @@ function isRefusal(error: unknown): error is CanvaApiError {
     && error.status !== 429 && !error.isAuthError;
 }
 
+/** The record fields of an approved action Canva refused, so reads of its temporary id can say why. */
+const refused = (error: CanvaApiError) =>
+  ({ status: "failed" as const, error: { code: "refused", message: error.message } });
+
 /**
  * Classifies an apply failure for the kit: a refusal is terminal and known absent; a rate limit or
  * dead credentials are retryable, since nothing was spent and a later attempt may succeed; anything
@@ -159,10 +166,7 @@ function isRefusal(error: unknown): error is CanvaApiError {
  */
 function applyFailure(error: unknown, what: string): never {
   if (isRefusal(error)) {
-    const hint = error.status === 403
-      ? " If this Canva account was connected before the gatekeeper requested every scope it now " +
-        "uses, disconnect and reconnect it; otherwise the user's plan may not include this feature."
-      : "";
+    const hint = error.status === 403 ? " Canva may not allow this on the user's plan or team." : "";
     throw new ActionApplyError(`Canva refused to ${what}: ${error.message}.${hint}`);
   }
   if (error instanceof CanvaApiError && error.status === 429) {
@@ -222,7 +226,7 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
     provides: payload => [payload.ref],
     dependsOn: payload => payload.assetId !== undefined && isProvisional(payload.assetId) ? [payload.assetId] : [],
     apply: async (payload, host, ctx) => {
-      const at = Date.now();
+      const base = { kind: "createDesign" as const, actionId: ctx.id, at: Date.now(), ref: payload.ref };
       const assetId = payload.assetId === undefined
         ? undefined
         : host.refs.requireResolved(payload.assetId, { expectedKind: "asset" });
@@ -234,10 +238,11 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
           ...(assetId !== undefined ? { asset_id: assetId } : {}),
         }));
       } catch (error) {
+        if (isRefusal(error)) host.recordJob({ ...base, ...refused(error) });
         applyFailure(error, "create the design");
       }
       host.refs.bind(payload.ref, created.id);
-      host.recordJob({ kind: "createDesign", actionId: ctx.id, at, ref: payload.ref, design: normalizeDesign(created) });
+      host.recordJob({ ...base, status: "success", design: normalizeDesign(created) });
     },
   },
 
@@ -277,9 +282,7 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
         }));
       } catch (error) {
         // A refusal is a decided outcome worth listing: an approved request that went nowhere.
-        if (isRefusal(error)) {
-          host.recordJob({ ...base, jobId: null, status: "failed", error: { code: "refused", message: error.message } });
-        }
+        if (isRefusal(error)) host.recordJob({ ...base, jobId: null, ...refused(error) });
         applyFailure(error, "start the design generation");
       }
       // Generation takes minutes, so the temporary id stays unbound until a read finds the job done.
@@ -340,9 +343,7 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
               ...(payload.name !== undefined ? { name: payload.name } : {}),
             }));
           } catch (error) {
-            if (isRefusal(error)) {
-              host.recordJob({ ...base, jobId: null, status: "failed", error: { code: "refused", message: error.message } });
-            }
+            if (isRefusal(error)) host.recordJob({ ...base, jobId: null, ...refused(error) });
             applyFailure(error, "start the background removal");
           }
           // Recorded before the wait, so a read during it sees the job running, and a retry finds it.

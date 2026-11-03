@@ -281,16 +281,12 @@ type CallbackResult =
 const IDENTITY_KEY = "identity";
 
 export class UserAccount extends DurableObject<Env> {
-  // No legacy migration: the pre-kit layout stored its grant under the same `credentials` key the
-  // coordinator owns, with the same fields but `accessTokenExpiresAt` for `expiresAt`. The
-  // coordinator reads such a record as a non-expiring grant, and the first 401 heals it through a
-  // refresh that rewrites it canonically, so a dev account connected before the port keeps working.
   readonly #creds = new CredentialCoordinator<CanvaGrant>(this.ctx.storage.kv, {
     expiresAt: grant => grant.expiresAt,
     refreshSkewMs: ACCESS_TOKEN_SAFETY_MS,
-    // No `discardMint`: Canva does not document whether revoking one refresh token revokes the
-    // whole authorization, so a mint a reconnect overtook is dropped unrevoked rather than risking
-    // the connection that won.
+    // No `discardMint`: revoking a refresh token at Canva also revokes the user's consent, and with
+    // it every token they granted this integration, so a mint a reconnect overtook is dropped
+    // unrevoked rather than taking down the connection that won.
     vendorId: VENDOR_ID,
   });
 
@@ -361,7 +357,9 @@ export class UserAccount extends DurableObject<Env> {
     try {
       identity = await fetchIdentity(grant.accessToken);
     } catch (error) {
-      await this.#revokeGrant(grant);
+      // A reconnect's grant is the connected user's own: revoking it would revoke their consent, and
+      // the live connection with it.
+      if (attempt.firstConnect) await this.#revokeGrant(grant);
       throw new Error("Could not read which Canva account authorized this connection. Please try again.",
         { cause: error });
     }
@@ -465,16 +463,10 @@ export class UserAccount extends DurableObject<Env> {
     return await this.#creds.adjudicateRejection(identity, { refresh: this.#refresh, notify: this.#notify });
   }
 
-  /**
-   * The Canva user this connection is pinned to. An account connected before the pin existed reads
-   * it from Canva once and keeps it; the pin never moves after that.
-   */
+  /** The Canva user this connection is pinned to, stored when it was made. */
   async getIdentity(): Promise<StoredIdentity> {
-    const stored = this.ctx.storage.kv.get<StoredIdentity>(IDENTITY_KEY);
-    if (stored !== undefined) return stored;
-    const { creds } = await this.#creds.snapshot(this.#refresh, { notify: this.#notify });
-    const identity = await fetchIdentity(creds.accessToken);
-    this.ctx.storage.kv.put<StoredIdentity>(IDENTITY_KEY, identity);
+    const identity = this.ctx.storage.kv.get<StoredIdentity>(IDENTITY_KEY);
+    if (identity === undefined) throw new CredentialsExpiredError(RECONNECT_MESSAGE);
     return identity;
   }
 
@@ -656,8 +648,8 @@ type CanvaSessionHost = {
   pending(): Pending;
   /** The record of an applied action that makes `ref`, if any. Not refreshed. */
   jobForRef(ref: string): CanvaJobRecord | undefined;
-  /** The records of applied actions whose jobs were still running when last seen. Not refreshed. */
-  runningJobs(): CanvaJobRecord[];
+  /** The records of applied actions whose jobs are still running, each polled first. */
+  runningJobs(): Promise<CanvaJobRecord[]>;
   getProfile(): Promise<CanvaProfile>;
   getDesign(designId: string): Promise<CanvaDesign>;
   getFolder(folderId: string): Promise<CanvaFolder>;
@@ -815,12 +807,12 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       if (row.type === "design") return row.design;
     }
     const job = this.#jobForRef(ref);
-    if (job?.kind === "generateDesign") {
+    if (job?.kind === "createDesign" || job?.kind === "generateDesign") {
       const current = await this.#settleJob(job);
       if (current.status === "success" && current.design) return current.design;
       if (current.status === "failed") {
-        throw new Error(`Canva did not generate design ${ref}: ${current.error?.message ?? "the job failed"}` +
-          `${current.error ? ` (${current.error.code})` : ""}.`);
+        const reason = current.error ? `${current.error.message} (${current.error.code})` : "the job failed";
+        throw new Error(`Canva did not make design ${ref}: ${reason}.`);
       }
       const row = runningRow(current, me);
       if (row?.type === "design") return row.design;
@@ -838,8 +830,8 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       const current = await this.#settleJob(job);
       if (current.status === "success" && current.asset) return current.asset;
       if (current.status === "failed") {
-        throw new Error(`Canva did not produce asset ${ref}: ${current.error?.message ?? "the job failed"}` +
-          `${current.error ? ` (${current.error.code})` : ""}.`);
+        const reason = current.error ? `${current.error.message} (${current.error.code})` : "the job failed";
+        throw new Error(`Canva did not make asset ${ref}: ${reason}.`);
       }
       const row = runningRow(current, me);
       if (row?.type === "image") return row.image;
@@ -854,12 +846,18 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     return undefined;
   }
 
-  #runningJobs(): CanvaJobRecord[] {
-    const running: CanvaJobRecord[] = [];
-    for (const [, record] of this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
-      if (record.kind !== "createDesign" && record.status === "in_progress") running.push(record);
-    }
-    return running;
+  /**
+   * The jobs applied actions started that are still running, polled first so one that has finished
+   * gives way to what Canva made. A job that can't be polled is kept as last seen.
+   */
+  async #runningJobs(): Promise<CanvaJobRecord[]> {
+    const running = Array.from(this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX }), ([, record]) => record)
+      .filter(record => record.status === "in_progress");
+    const settled = await Promise.all(running.map(record => this.#settleJob(record).catch((error: unknown) => {
+      logger.warn("failed to poll a running Canva job", { event: "canva.job.poll.failed", error });
+      return record;
+    })));
+    return settled.filter(record => record.status === "in_progress");
   }
 
   // -------------------------------------------------------------------------
@@ -935,41 +933,39 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     if (!record) {
       return { message: "This action has not been applied, so there is nothing to revert.", canRetry: false };
     }
-    switch (record.kind) {
-      case "createDesign":
-        return {
-          message: "Canva designs cannot be deleted through the API, so this creation must be undone by hand. " +
-            `It is at ${record.design.editUrl ?? `https://www.canva.com/design/${record.design.id}/edit`}; ` +
-            "move it to the trash from the Canva editor.",
-          canRetry: false,
-        };
-      case "generateDesign": {
-        const where = record.design ? ` It is at ${record.design.editUrl}; move it to the trash from the Canva editor.` : "";
-        return {
-          message: `Canva designs cannot be deleted through the API, so this generation must be undone by hand.${where} ` +
-            "The AI credits it consumed are not refunded.",
-          canRetry: false,
-        };
-      }
-      case "removeBackground": {
-        const which = record.asset ? ` The new asset is "${record.asset.name}" (id ${record.asset.id}).` : "";
-        return {
-          message: "The Connect API cannot delete an asset, so remove the transformed image from your Canva " +
-            `Uploads by hand if you don't want it.${which} The AI credits it consumed are not refunded.`,
-          canRetry: false,
-        };
-      }
+    if (record.kind === "removeBackground") {
+      const which = record.asset ? ` The new asset is "${record.asset.name}" (id ${record.asset.id}).` : "";
+      return {
+        message: "The Connect API cannot delete an asset, so remove the transformed image from your Canva " +
+          `Uploads by hand if you don't want it.${which} The AI credits it consumed are not refunded.`,
+        canRetry: false,
+      };
     }
+    const { design } = record;
+    const where = design
+      ? ` It is at ${design.editUrl ?? `https://www.canva.com/design/${design.id}/edit`}; move it to the trash from the Canva editor.`
+      : "";
+    const generated = record.kind === "generateDesign";
+    return {
+      message: `Canva designs cannot be deleted through the API, so this ${generated ? "generation" : "creation"} ` +
+        `must be undone by hand.${where}${generated ? " The AI credits it consumed are not refunded." : ""}`,
+      canRetry: false,
+    };
   }
 
-  /** Drops job records older than the retention window. Runs at most every few hours, from apply. */
+  /**
+   * Drops job records older than the retention window. Runs at most every few hours, from apply.
+   * A record whose action is still undecided is kept, whatever its job's state: re-approving a
+   * timed-out removal must resume the job it started rather than start, and pay for, another.
+   */
   #housekeep(): void {
     const kv = this.ctx.storage.kv;
     const now = Date.now();
     if (now - (kv.get<number>(HOUSEKEEPING_KEY) ?? 0) < HOUSEKEEPING_INTERVAL_MS) return;
     kv.put(HOUSEKEEPING_KEY, now);
+    const undecided = new Set(this.#journal.listUndecided().map(({ id }) => id));
     for (const [key, record] of kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
-      if (record.at < now - JOB_RETENTION_MS) kv.delete(key);
+      if (!undecided.has(record.actionId) && record.at < now - JOB_RETENTION_MS) kv.delete(key);
     }
   }
 }
@@ -991,9 +987,11 @@ const FOLDER_ITEM_SORTS = new Set([
   "title_ascending", "title_descending",
 ]);
 const PRESET_DESIGN_TYPES = new Set(["doc", "whiteboard", "presentation"]);
-// Canva's documented bounds for custom design dimensions, in pixels.
+// Canva's documented bounds for custom designs, in pixels, and for design titles.
 const CUSTOM_DESIGN_MIN_PX = 40;
 const CUSTOM_DESIGN_MAX_PX = 8000;
+const CUSTOM_DESIGN_MAX_AREA = 25_000_000;
+const DESIGN_TITLE_MAX = 255;
 // Canva's documented bounds for design generation requests.
 const GENERATION_DESIGN_TYPES = new Set(["doc", "presentation"]);
 const GENERATION_BRIEF_MAX = 5000;
@@ -1020,6 +1018,9 @@ function parseDesignType(value: unknown, method: string): CanvaDesignType {
       if (!Number.isInteger(px) || (px as number) < CUSTOM_DESIGN_MIN_PX || (px as number) > CUSTOM_DESIGN_MAX_PX) {
         throw new Error(`${method}: ${label} must be an integer between ${CUSTOM_DESIGN_MIN_PX} and ${CUSTOM_DESIGN_MAX_PX} pixels.`);
       }
+    }
+    if ((width as number) * (height as number) > CUSTOM_DESIGN_MAX_AREA) {
+      throw new Error(`${method}: width × height must be at most ${CUSTOM_DESIGN_MAX_AREA} pixels.`);
     }
     return { width: width as number, height: height as number };
   }
@@ -1109,17 +1110,18 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   }
 
   /** What has no Canva id yet: actions awaiting a decision, and jobs still running after approval. */
-  #unmade(): Unmade {
-    return { pending: this.#host.pending(), running: this.#host.runningJobs() };
+  async #unmade(): Promise<Unmade> {
+    const running = await this.#host.runningJobs();
+    return { pending: this.#host.pending(), running };
   }
 
   /** A design listing's pending rows, or none for an order a pending row cannot be placed in. */
-  #injectDesigns(me: StoredIdentity, sortBy: CanvaDesignSort): CursorInjection<CanvaDesign> | undefined {
+  async #injectDesigns(sortBy: CanvaDesignSort): Promise<CursorInjection<CanvaDesign> | undefined> {
     const compare = designOrder(sortBy);
     if (compare === undefined) return undefined;
-    const host = this.#host;
+    const [me, unmade] = await Promise.all([this.#host.identity(), this.#unmade()]);
     return {
-      items: pendingDesigns(this.#unmade(), me, id => host.resolve(id)).toSorted(compare),
+      items: pendingDesigns(unmade, me, id => this.#host.resolve(id)).toSorted(compare),
       compare,
       revalidate: design => this.#revalidateDesign(design, me),
       identity: design => design.id,
@@ -1130,16 +1132,15 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
    * A folder listing's pending rows: new designs land in the Projects root and transformed images
    * in Uploads, so only those two folders have any. Honors the listing's item types.
    */
-  #injectFolderItems(me: StoredIdentity, folderId: string, itemTypes: readonly string[] | undefined,
-                     sortBy: CanvaFolderItemSort): CursorInjection<CanvaFolderItem> | undefined {
-    const host = this.#host;
-    const wants = (type: string) => itemTypes === undefined || itemTypes.includes(type);
-    const resolve = (id: string) => host.resolve(id);
-    const items: CanvaFolderItem[] = folderId === "root" || folderId === "projects"
-      ? wants("design") ? pendingDesigns(this.#unmade(), me, resolve).map(design => ({ type: "design", design })) : []
-      : folderId === "uploads" && wants("image")
-        ? pendingAssets(this.#unmade(), me, resolve).map(image => ({ type: "image", image }))
-        : [];
+  async #injectFolderItems(folderId: string, itemTypes: readonly string[] | undefined,
+                           sortBy: CanvaFolderItemSort): Promise<CursorInjection<CanvaFolderItem> | undefined> {
+    const type = folderId === "root" || folderId === "projects" ? "design" : folderId === "uploads" ? "image" : undefined;
+    if (type === undefined || (itemTypes !== undefined && !itemTypes.includes(type))) return undefined;
+    const [me, unmade] = await Promise.all([this.#host.identity(), this.#unmade()]);
+    const resolve = (id: string) => this.#host.resolve(id);
+    const items: CanvaFolderItem[] = type === "design"
+      ? pendingDesigns(unmade, me, resolve).map(design => ({ type: "design", design }))
+      : pendingAssets(unmade, me, resolve).map(image => ({ type: "image", image }));
     if (items.length === 0) return undefined;
     const compare = folderItemOrder(sortBy);
     return {
@@ -1188,9 +1189,7 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     const what = opts.query ? `designs matching "${opts.query}"` : "designs";
     // A search cannot say whether a pending design would match, and a design the agent makes is
     // its own, so only an unqueried listing that admits owned designs shows pending ones.
-    const inject = opts.query === undefined && opts.ownership !== "shared"
-      ? this.#injectDesigns(await this.#host.identity(), sortBy)
-      : undefined;
+    const inject = opts.query === undefined && opts.ownership !== "shared" ? await this.#injectDesigns(sortBy) : undefined;
     return this.#cursor<CanvaDesign>({
       ...(inject ? { inject } : {}),
       title: opts.query ? `Search Canva designs for "${opts.query}"` : "List Canva designs",
@@ -1224,13 +1223,15 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   async createDesign(options: CanvaCreateDesignOptions): Promise<CanvaDesign> {
     if (!options || typeof options !== "object") throw new Error("createDesign(): options are required.");
     const designType = parseDesignType(options.designType, "createDesign()");
-    if (options.title !== undefined && !isNonEmptyString(options.title)) {
-      throw new Error("createDesign(): title must be a non-empty string when provided.");
+    if (options.title !== undefined && !isNonEmptyString(options.title, DESIGN_TITLE_MAX)) {
+      throw new Error(`createDesign(): title must be 1 to ${DESIGN_TITLE_MAX} characters when provided.`);
     }
     if (options.assetId !== undefined && !isNonEmptyString(options.assetId)) {
       throw new Error("createDesign(): assetId must be a non-empty string when provided.");
     }
     const assetId = options.assetId === undefined ? undefined : this.#assetRef(options.assetId.trim(), "createDesign()");
+    // Canva places only images, and would refuse anything else only after the user approved.
+    if (assetId !== undefined && !isProvisional(assetId)) await this.#host.getImageAsset(assetId);
     const me = await this.#host.identity();
     // Rebuilt from known members: nothing else the caller's object carried is stored or sent.
     const payload: CanvaActions["createDesign"] = {
@@ -1317,7 +1318,6 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
 
   async listGeneratedDesigns(): Promise<CanvaGenerationJob[]> {
     const jobs = (await this.#host.listJobs("generateDesign")).map(record => ({
-      id: record.jobId,
       designId: record.ref,
       brief: record.brief,
       designType: record.designType,
@@ -1379,7 +1379,6 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
 
   async listBackgroundRemovals(): Promise<CanvaBackgroundRemovalJob[]> {
     const jobs = (await this.#host.listJobs("removeBackground")).map(record => ({
-      id: record.jobId,
       assetId: record.ref,
       sourceAssetId: record.sourceAssetId,
       startedAt: new Date(record.at).toISOString(),
@@ -1432,8 +1431,7 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     }
     const sortBy = opts.sortBy;
     const kinds = itemTypes ? ` (${itemTypes.join(", ")})` : "";
-    const inject = this.#injectFolderItems(await this.#host.identity(), folderId, itemTypes,
-      sortBy ?? "modified_descending");
+    const inject = await this.#injectFolderItems(folderId, itemTypes, sortBy ?? "modified_descending");
     return this.#cursor<CanvaFolderItem>({
       ...(inject ? { inject } : {}),
       title: "List Canva folder contents",

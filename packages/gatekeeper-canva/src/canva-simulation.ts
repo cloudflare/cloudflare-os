@@ -26,7 +26,7 @@ export type Resolve = (id: string) => string;
 export const isProvisional = (id: string): boolean => id.startsWith("~");
 
 /** The largest image a background removal produces, in pixels; larger sources are scaled down. */
-const TRANSFORMED_MAX_PIXELS = 10_000_000;
+const TRANSFORMED_MAX_PIXELS = 25_000_000;
 
 /**
  * A pending design as reads show it until Canva makes it: the agent's title and type, the pinned

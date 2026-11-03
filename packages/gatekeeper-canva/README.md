@@ -85,14 +85,11 @@ You can see and manage connected accounts in settings (via the account menu in t
   the job, which usually suffices; if Canva is still working after that, the approval card reports
   it and asks the user to approve again, and the retry resumes the same job (no second request, no
   further credits), so the temporary id stays live for actions that depend on the asset. A
-  generation can take minutes, so its design stays pending until a read of its id finds the job
-  done. `getDesign()` / `getImageAsset()` with the temporary
-  id poll the job, and `listGeneratedDesigns()` / `listBackgroundRemovals()` list every job with
-  its status. Jobs expire on Canva after 24 hours. Both features are plan-gated; `getProfile()`
+  generation can take minutes, so its design stays pending until a read finds the job done:
+  `getDesign()` / `getImageAsset()` with the temporary id and the design and folder listings poll
+  running jobs, and `listGeneratedDesigns()` / `listBackgroundRemovals()` list every job with its
+  status. Jobs expire on Canva after 24 hours. Both features are plan-gated; `getProfile()`
   reports `canGenerateDesigns` and `canRemoveBackgrounds`.
-- **Reconnect after the `asset:write` scope was added.** Accounts connected before background
-  removal existed hold a grant without `asset:write`, and Canva answers a background removal with
-  403 until the user disconnects and reconnects Canva from the Connectors page.
 - **Token rotation.** Canva access tokens are short-lived and refresh tokens are single-use. The
   account refreshes transparently; if a refresh is rejected the account is marked expired and the
   user is prompted to reconnect.

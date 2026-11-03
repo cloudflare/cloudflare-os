@@ -1,11 +1,8 @@
 // TypeScript API exposed to Gadgets by the Canva gatekeeper.
 //
-// One resource granularity is offered (see getGatekeeperClassFor / getSupportedResources):
-//
-//   1. Canva Account (whole-instance, `https://*`) -> `CanvaAccountSession`.
-//      Access to the connected account via the Canva Connect API: the user's profile, their
-//      designs (search, metadata), their folders and image assets, creating and AI-generating
-//      designs, and AI image transformation.
+// `CanvaAccountSession` gives access to the connected account via the Canva Connect API: the user's
+// profile, their designs (search, metadata), their folders and image assets, creating and
+// AI-generating designs, and AI background removal.
 //
 // Reads are observations: they are logged and may be blocked by policy, but need no approval.
 // Listings return a `Cursor`: call `next()` until it returns null, and dispose it when done.
@@ -207,7 +204,7 @@ export type CanvaPresetDesignType = "doc" | "whiteboard" | "presentation";
 
 /**
  * The kind of design to create: a preset name, or custom pixel dimensions (each between 40 and
- * 8000 pixels).
+ * 8000 pixels, and at most 25,000,000 pixels in area).
  */
 export type CanvaDesignType = CanvaPresetDesignType | { width: number; height: number };
 
@@ -215,12 +212,13 @@ export type CanvaDesignType = CanvaPresetDesignType | { width: number; height: n
 export type CanvaCreateDesignOptions = {
   /** What kind of design to create. */
   designType: CanvaDesignType;
-  /** Title for the new design. Untitled if omitted. */
+  /** Title for the new design, 1 to 255 characters. Untitled if omitted. */
   title?: string;
   /**
    * ID of an image asset to place on the first page: one in the user's Canva account (see
    * `listFolderItems()` with `itemTypes: ["image"]`), or the temporary id of the asset a pending
    * `removeBackground()` makes, in which case this design is created once that asset exists.
+   * Throws if the asset is not an image the connected user can access.
    */
   assetId?: string;
 };
@@ -283,8 +281,6 @@ export type CanvaBackgroundRemovalErrorCode =
 
 /** One design generation job started from this connection, as returned by `listGeneratedDesigns()`. */
 export type CanvaGenerationJob = {
-  /** Canva's job ID. Null when Canva refused to start the job. */
-  id: string | null;
   /** The id `generateDesign()` returned for the design, which `getDesign()` accepts throughout. */
   designId: string;
   /** The brief the design was generated from. */
@@ -306,8 +302,6 @@ export type CanvaGenerationJob = {
 
 /** One background removal job started from this connection, as returned by `listBackgroundRemovals()`. */
 export type CanvaBackgroundRemovalJob = {
-  /** Canva's job ID. Null when the job finished during creation, or Canva refused to start it. */
-  id: string | null;
   /** The id `removeBackground()` returned for the new asset, which `getImageAsset()` accepts throughout. */
   assetId: string;
   /** The source asset. It is never modified; the result is a new asset. */
@@ -353,8 +347,8 @@ export interface CanvaAccountSession {
    * ("https://www.canva.com/design/DAFVztcvd9z/..."), or the temporary id of a design a pending
    * `createDesign()` or `generateDesign()` makes ("~1"). For a temporary id it returns the pending
    * design, with null URLs, until Canva has made it, then the real one; for a design Canva could
-   * not generate it throws with Canva's reason. Throws if the design does not exist, the connected
-   * user cannot access it, or its creation was rejected.
+   * not create or generate it throws with Canva's reason. Throws if the design does not exist, the
+   * connected user cannot access it, or its creation was rejected.
    */
   getDesign(designIdOrUrl: string): Promise<CanvaDesign>;
 
@@ -417,15 +411,14 @@ export interface CanvaAccountSession {
    * Remove an image's background with Canva's AI, producing a new asset. Action.
    *
    * This spends the user's Canva AI credit allowance, so it always requires approval. The source
-   * asset is left untouched; the result is a new asset with a transparent background, capped at 10
+   * asset is left untouched; the result is a new asset with a transparent background, capped at 25
    * megapixels. Returns the new asset at once, under a temporary id and with its name and size
    * predicted from the source; it appears in `listFolderItems("uploads")`, `getImageAsset()`
-   * accepts its id, and `createDesign({ assetId })` can place it before it exists. Once the user
-   * approves, the gatekeeper starts the job on Canva, which usually completes within seconds (if
-   * it takes longer, the user is asked to approve again and the same job is resumed). Keep the
-   * returned asset and poll `getImageAsset()` with its id; do not call this again for the same
-   * image, as every approval spends credits. Check `getProfile().canRemoveBackgrounds` first;
-   * Canva refuses the job for users on plans without it.
+   * accepts its id, and `createDesign({ assetId })` can place it before it exists. Once approved,
+   * Canva usually completes the job within seconds. Keep the returned asset and poll
+   * `getImageAsset()` with its id; do not call this again for the same image, as every approval
+   * spends credits. Check `getProfile().canRemoveBackgrounds` first; Canva refuses the job for
+   * users on plans without it.
    *
    * @param assetId The source image asset, which must have finished uploading, or the temporary id
    * of the asset an earlier `removeBackground()` makes.
