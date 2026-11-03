@@ -19,6 +19,7 @@ interface WorktreeExport {
   id: string;
   binding: string;
   head: string | null;
+  shallowCommit: string | null;
   packs: Fetcher[]; // GET returns raw binary Git packs, consumed in order
   pendingChanges: FileChangeByPath[];
   writeback: Fetcher<WorktreeWriteback>;
@@ -86,7 +87,9 @@ required: the former OID/hints provider signature is replaced, not kept as a sec
 ## Bootstrap
 
 1. Capture the selected worktree's accepted commit and pending transforms.
-2. Import the raw Git packs in order, then check out `head`. Null means an empty base.
+2. Import the raw Git packs in order. Before checking out `head`, record a non-null
+   `shallowCommit` in `.git/shallow`; null means the exported ancestry is complete. The
+   boundary is the remote source commit, not a newer DO-local `head`. Null `head` means an empty base.
 3. Apply `pendingChanges` above that base. Only then admit shell execution.
 
 For a remote repository, the kernel obtains the complete depth-one pack through its authorized
@@ -95,6 +98,10 @@ cache. A subsequent pack supplies actual DO-local commits/objects above that sou
 referenced by pending binary changes. Commit identities are preserved, not replaced with
 synthetic OTs. Local/scratch worktrees export their Git objects directly. Pack generation
 buffers at most one object; transfers use raw bytes, not base64.
+
+Raw packs do not carry Git's shallow-info protocol framing, so consumers must preserve the
+exported boundary separately. Marking `head` shallow would hide DO-local parents; omitting
+the boundary would leave history traversal looking for remote parents the packs do not contain.
 
 This v0 exposes one accepted head, not a separate explicit-head/history navigation interface.
 It does not import guest commits/branches back. Binary bootstrap preserves exact bytes; binary

@@ -119,6 +119,7 @@ describe("single-worktree command mount and writeback", () => {
     const blobs = vi.spyOn(impl.gitStore, "readBlob");
     const input = await f.context().export("REPO");
     expect(blobs).not.toHaveBeenCalled();
+    expect(input.shallowCommit).toBeNull();
     const response = await input.packs[0].fetch("https://export.invalid/");
     expect(response.headers.get("content-type")).toBe("application/x-git-packed-objects");
     expect(new Uint8Array(await response.arrayBuffer()).slice(0, 4)).toEqual(new TextEncoder().encode("PACK"));
@@ -130,12 +131,30 @@ describe("single-worktree command mount and writeback", () => {
   it("keeps the frozen pack plan if Git provenance is learned while approval is pending", () => within(async (impl, f) => {
     const input = await f.context().export("REPO");
     expect(input.packs).toHaveLength(1);
+    expect(input.shallowCommit).toBeNull();
     bindGit(impl);
     impl.storage.gitObjectMetadata.put({oid: f.commit, type: "commit", onRemote: [40], pullableFrom: [], pendingPush: []});
     const response = await input.packs[0].fetch("https://export.invalid/");
     const objects = [];
     for await (const object of decodePackStream(response.body!, {maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024})) objects.push(object.oid);
     expect(objects).toContain(f.commit);
+    await input.writeback.submitChanges("final", [], true);
+  }));
+
+  it("keeps the remote shallow boundary below a DO-only accepted commit", () => within(async (impl, f) => {
+    bindGit(impl);
+    impl.storage.gitObjectMetadata.put({oid: f.commit, type: "commit", onRemote: [40], pullableFrom: [], pendingPush: []});
+    const accepted = await impl.gitStore.writeFilesAsCommit(new Map([["a.txt", "accepted in the DO"]]), {
+      parents: [f.commit], author: {name: "Test", email: "test@example.com"}, message: "DO accepted", timestamp: new Date(1),
+    });
+    const piece = impl.storage.gadgets.get(f.tree.id)!;
+    if (piece.type !== "worktree") throw new Error("Expected a worktree");
+    impl.storage.gadgets.put({...piece, pinBase: accepted, headCommit: accepted});
+    const input = await f.context().export("REPO");
+    expect(input.head).toBe(accepted);
+    expect(input.shallowCommit).toBe(f.commit);
+    expect(input.shallowCommit).not.toBe(input.head);
+    expect(input.packs).toHaveLength(2);
     await input.writeback.submitChanges("final", [], true);
   }));
 
@@ -289,6 +308,22 @@ describe("single-worktree command mount and writeback", () => {
     const next = reader.read().then(result => result.done, () => true);
     await mount.writeback.submitChanges("final", [], true);
     expect(await next).toBe(true);
+  }));
+  it.each([false, true])("rechecks the Git connection before delivering an open response (removed=%s)", removed => within(async (impl, f) => {
+    bindGit(impl);
+    const mount = await f.context().export("REPO");
+    const reader = (await mount.git!.fetch(gitRequest())).body!.getReader();
+    try {
+      if (removed) {
+        impl.removeGatekeeper(40);
+        expect(impl.storage.gatekeepers.get(40)).toBeUndefined();
+        // Native response transport may expose revocation as EOF instead of a stream error.
+        expect(await reader.read().then(result => result.done, () => true)).toBe(true);
+      } else {
+        expect((await reader.read()).value).toEqual(Uint8Array.of(0, 255, 128, 13));
+        expect((await reader.read()).done).toBe(true);
+      }
+    } finally { await reader.cancel().catch(() => {}); }
   }));
   it.each(["integration", "repository", "binding", "turn"])("fences Git after %s revocation", edge => within(async (impl, f) => {
     bindGit(impl);

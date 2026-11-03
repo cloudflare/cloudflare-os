@@ -6567,6 +6567,7 @@ class OverseerImpl implements AgentHooks {
       this.requireReplicaLease(lease.id);
       if (this.replicaVersion(lease) !== lease.version) throw new Error("Workspace changed during worktree capture; retry.");
       return {id: lease.id, binding, head: worktree.acceptedCommit ?? null, packs, pendingChanges, gitRepositories,
+        shallowCommit: lease.sourcePack ? lease.worktree.baseCommit : null,
         git: this.ctx.exports.CommandGitEndpoint({props: {overseerId: this.ctx.id.toString(), leaseId: lease.id}}),
         writeback: this.ctx.exports.WorktreeWritebackEndpoint({
           props: {overseerId: this.ctx.id.toString(), leaseId: lease.id},
@@ -6728,7 +6729,8 @@ class OverseerImpl implements AgentHooks {
       const lease = this.requireReplicaLease(id);
       const source = lease.gitSources?.[binding];
       const current = this.#integrationBindings(lease.chatId).get(binding);
-      if (source === undefined || current?.type !== "workpiece" || current.id !== source)
+      if (source === undefined || current?.type !== "workpiece" || current.id !== source ||
+          !this.storage.gatekeepers.get(source))
         throw new Error("Git repository binding is unavailable to this command.");
       this.assertGatekeeperUsable(source);
       return {lease, source};

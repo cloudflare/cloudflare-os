@@ -16,7 +16,9 @@ export interface WorktreeExport {
   gitRepositories?: CommandGitRepository[];
   /** Commit to check out after importing packs; null for an empty worktree. */
   head: string | null;
-  /** Raw, shallow Git pack readers. Fetch each once, in order, when preparing the command. */
+  /** Remote history boundary to record in .git/shallow; null when the packs include full ancestry. */
+  shallowCommit: string | null;
+  /** Raw Git pack readers. Fetch each once, in order, when preparing the command. */
   packs: Fetcher[];
   /** Uncommitted transforms above head, captured once at export time. */
   pendingChanges: FileChangeByPath[];
