@@ -34,6 +34,11 @@ catalog:
   # decorators ignore their `context` argument.
   vite: 7.3.6
   vite-plus: ^1.4.0
+  # Also a root devDependency. vite-plus pins this same vitest version for its own `vp test` (on its
+  # bundled vite core) and has `@vitest/browser-playwright` as a peer, so with no vitest at the root
+  # that peer is auto-installed against vite-plus's vitest. pnpm then shares that browser provider
+  # with the packages' browser suites, `@vitest/browser`'s `declare module 'vitest'` augments the
+  # wrong copy, and `expect.element` disappears from their type-check.
   vitest: ^5.0.5
   # Vitest's browser-mode provider, which must match vitest's version, and the Playwright it
   # drives. Playwright's browsers are not dependencies: `playwright install chromium` fetches them.
