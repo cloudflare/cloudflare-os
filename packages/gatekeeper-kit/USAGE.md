@@ -886,8 +886,9 @@ instead of repeating its own name.
 
 `parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
 resource always reports one string. That string is what the Workshop deduplicates and indexes. The
-Workshop refuses IDs over 512 UTF-16 code units, and escaping can triple a component's length, so a
-resource whose provider id approaches that limit needs a shorter identity.
+Workshop refuses IDs over 512 UTF-16 code units, and escaping can lengthen a component up to ninefold
+(a three-byte UTF-8 character becomes nine), so a resource whose provider id approaches that limit
+needs a shorter identity.
 
 ## Bounds
 

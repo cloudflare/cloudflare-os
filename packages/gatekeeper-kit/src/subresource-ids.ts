@@ -39,8 +39,8 @@ export type SubresourceId = {
  * everywhere it is reported.
  *
  * The Workshop refuses an observation carrying an ID over 512 UTF-16 code units, and escaping can
- * triple a component's length, so a resource whose provider id approaches that needs a shorter
- * identity.
+ * lengthen a component up to ninefold (a three-byte UTF-8 character becomes nine), so a resource
+ * whose provider id approaches that needs a shorter identity.
  * @param value Namespace and fragments.
  * @returns The encoded ID.
  * @throws Error when the namespace is empty, there are no fragments, a fragment's name or id is
