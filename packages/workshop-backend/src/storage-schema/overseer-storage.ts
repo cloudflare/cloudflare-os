@@ -1079,6 +1079,12 @@ export type ShareLinkRecord = {
   role?: CollaboratorRole;
 
   /**
+   * The one gadget a "use" link grants (see PermissionEdge.gadgetId). A "use" link without one
+   * grants every gadget; no such links are created anymore, and redeeming one adds no one new.
+   */
+  gadgetId?: WorkpieceId;
+
+  /**
    * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
    * permission graph keeps its `shareKey` edges intact (no dangling references) and access could
    * be restored in the future. A revoked link contributes nothing to the permission graph and its
@@ -1104,10 +1110,11 @@ export type ShareKeyRecord = ShareLinkRecord | ShareKeyAliasRecord;
 
 /**
  * Storage record describing a non-owner collaborator who has configured their gatekeeper accounts
- * and passed all `addObserver` checks -- i.e. is actually set up to observe data the Gadget has
- * read. This is distinct from the sharing table (which records the owner's *intent* that a user
- * have access): opening requires BOTH a reachable role in the sharing graph AND a complete
- * observer record. See observers-implementation-plan.md §3.
+ * and passed the observer checks of something they opened -- the workspace, for a "build"
+ * collaborator, or one gadget -- i.e. is actually set up to observe data it has read. This is
+ * distinct from the sharing table (which records the owner's *intent* that a user have access):
+ * opening requires BOTH reachable access in the sharing graph AND passing verification for what
+ * is opened, which this record only remembers choices for. See observers-implementation-plan.md §3.
  */
 export type ObserverRecord = {
   /** The sharing-table key for this user (their profile.id). Primary key of the collection. */
@@ -1166,11 +1173,16 @@ const OBSERVER_CONTEXT_TAGS = {workspace: "w", chat: "c", gadget: "g"} as const;
 
 /**
  * `listKeys()` prefix selecting the actions `byObserverRequirement` keys through `gatekeeperId` on
- * every context of type `contexts`.
+ * `context`, or on every context of that type when given only a type.
  */
 export function observerRequirementPrefix(
-    gatekeeperId: WorkpieceId, contexts: ObserverContext["type"]): string {
-  return `${keyString(gatekeeperId)}:${OBSERVER_CONTEXT_TAGS[contexts]}`;
+    gatekeeperId: WorkpieceId, context: ObserverContext | ObserverContext["type"]): string {
+  if (typeof context === "string") {
+    return `${keyString(gatekeeperId)}:${OBSERVER_CONTEXT_TAGS[context]}`;
+  }
+  let id = context.type === "chat" ? keyString(context.chatId)
+      : context.type === "gadget" ? keyString(context.gadgetId) : "";
+  return `${observerRequirementPrefix(gatekeeperId, context.type)}${id}:`;
 }
 
 /**
@@ -1181,9 +1193,7 @@ export function observerRequirementPrefix(
  */
 export function observerRequirementKey(
     gatekeeperId: WorkpieceId, context: ObserverContext, subresource: string): string {
-  let id = context.type === "chat" ? keyString(context.chatId)
-      : context.type === "gadget" ? keyString(context.gadgetId) : "";
-  return `${observerRequirementPrefix(gatekeeperId, context.type)}${id}:${subresource}`;
+  return `${observerRequirementPrefix(gatekeeperId, context)}${subresource}`;
 }
 
 /** The subresource an observerRequirementKey() names: everything after its second colon. */

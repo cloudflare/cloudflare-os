@@ -138,12 +138,12 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   updateBlueprint: ws => ws.updateBlueprint("blueprint", { title: "Title" }),
   deleteBlueprint: ws => ws.deleteBlueprint("blueprint"),
   retryBlueprintPublish: ws => ws.retryBlueprintPublish("blueprint"),
-  listObserverRequirements: ws => ws.listObserverRequirements("build"),
+  listObserverRequirements: ws => ws.listObserverRequirements("workspace"),
   listCollaborators: ws => ws.listCollaborators(),
-  addCollaborator: ws => ws.addCollaborator("someone", "build"),
+  addCollaborator: ws => ws.addCollaborator("someone", "workspace"),
   removeCollaborator: ws => ws.removeCollaborator("someone", []),
   previewRemoveCollaborator: ws => ws.previewRemoveCollaborator("someone"),
-  createShareLink: ws => ws.createShareLink("build"),
+  createShareLink: ws => ws.createShareLink("workspace"),
   newShareLinkKey: ws => ws.newShareLinkKey("link"),
   listShareLinks: ws => ws.listShareLinks(),
   updateShareLink: ws => ws.updateShareLink("link"),
@@ -214,7 +214,9 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
 
   using viewerPublic = connect(harness.url);
   using viewerApi = await signUp(viewerPublic, viewer!);
-  if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
+  if (!await ws.addCollaborator(viewer!, { gadgetId })) {
+    throw new Error(`Failed to share with ${viewer}`);
+  }
   using useWs = await viewerApi.openWorkspace(workspaceId);
   using useGadget = await useWs.getGadget(gadgetId);
 

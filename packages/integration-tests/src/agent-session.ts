@@ -685,7 +685,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     await this.#authenticatedApi.provisionAmbientAccount(vendorId);
     (await this.#authenticatedApi.openWorkspace(this.#workspaceId))[Symbol.dispose]();
     await waitFor(`the workspace's ${vendorId} gatekeeper`, async () =>
-      (await this.#workspace.listObserverRequirements("build"))
+      (await this.#workspace.listObserverRequirements("workspace"))
           .some(need => need.vendorId === vendorId) || null);
   }
 
