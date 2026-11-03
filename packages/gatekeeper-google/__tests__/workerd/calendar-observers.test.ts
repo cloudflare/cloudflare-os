@@ -28,9 +28,8 @@ const BOUND_FREE_BUSY = "calendar/freeBusy/team%40group.calendar.google.com";
 const ALICE_FREE_BUSY = "calendar/freeBusy/alice%40example.com";
 const HOLIDAYS_FREE_BUSY = "calendar/freeBusy/en.usa%23holiday%40group.v.calendar.google.com";
 const BOUND_CALENDAR = "calendar/calendar/team%40group.calendar.google.com";
+const ALICE_CALENDAR = "calendar/calendar/alice%40example.com";
 const STANDUP = `${BOUND_CALENDAR}/event/standup`;
-const RETRO = `${BOUND_CALENDAR}/event/retro`;
-const ALICE_EVENT = "calendar/calendar/alice%40example.com/event/offsite";
 
 const timeMin = new Date("2026-11-03T00:00:00Z");
 const timeMax = new Date("2026-11-04T00:00:00Z");
@@ -196,7 +195,7 @@ describe("Google Calendar subresources", () => {
     await calendar.addObserver("late", "writer");
   });
 
-  it("reports the calendar its metadata came from and each event a listing returned", async () => {
+  it("reports the calendar its metadata and its events came from", async () => {
     const calendar = calendarHarness();
     using session = await calendar.session();
 
@@ -204,32 +203,10 @@ describe("Google Calendar subresources", () => {
     await session.listEvents({timeMin, timeMax});
 
     expect((await calendar.observations()).map(observation => observation.subresources))
-      .toEqual([[BOUND_CALENDAR], [STANDUP, RETRO]]);
+      .toEqual([[BOUND_CALENDAR], [BOUND_CALENDAR]]);
   });
 
-  it("reports the events it returns that Google listed, edited or not, but no pending creation", async () => {
-    const calendar = calendarHarness();
-    using session = await calendar.session();
-    await session.createEvent({
-      title: "Lunch",
-      start: {kind: "dateTime", dateTime: new Date("2026-11-03T12:00:00Z")},
-      end: {kind: "dateTime", dateTime: new Date("2026-11-03T13:00:00Z")},
-    });
-    await session.updateEvent("standup", {title: "Standup (moved)"});
-    await session.updateEvent("retro", {
-      start: {kind: "dateTime", dateTime: new Date("2026-11-05T16:00:00Z")},
-      end: {kind: "dateTime", dateTime: new Date("2026-11-05T17:00:00Z")},
-    });
-
-    const events = await session.listEvents({timeMin, timeMax});
-
-    // The pending lunch is returned but Google doesn't hold it; the retro's edit moves it out.
-    expect(events.map(event => event.title)).toEqual(["Standup (moved)", "Lunch"]);
-    expect((await calendar.observations()).map(observation => observation.subresources))
-      .toEqual([[STANDUP]]);
-  });
-
-  it("reports nothing for a failed lookup or a listing with no events", async () => {
+  it("reports the calendar for a listing with no events, and nothing for a failed lookup", async () => {
     const calendar = calendarHarness();
     calendar.backend.events = [];
     using session = await calendar.session();
@@ -238,7 +215,7 @@ describe("Google Calendar subresources", () => {
     await session.checkAvailability({people: [BOB], timeMin, timeMax});
 
     expect((await calendar.observations()).map(observation => observation.subresources))
-      .toEqual([[], []]);
+      .toEqual([[BOUND_CALENDAR], []]);
   });
 
   it("reports the bound calendar's free/busy on a binding limited to it", async () => {
@@ -249,6 +226,16 @@ describe("Google Calendar subresources", () => {
 
     expect((await calendar.observations()).map(observation => observation.subresources))
       .toEqual([[BOUND_FREE_BUSY]]);
+  });
+
+  it("refuses another calendar's availability on a binding limited to its own, asking Google nothing", async () => {
+    const calendar = calendarHarness("thisCalendar");
+    using session = await calendar.session();
+
+    await expect(Promise.resolve(session.checkAvailability({people: [BOUND, ALICE], timeMin, timeMax})))
+      .rejects.toThrow(/only allows availability for the bound calendar/);
+    expect(calendar.backend.queries).toEqual([]);
+    expect(await calendar.observations()).toEqual([]);
   });
 });
 
@@ -279,14 +266,14 @@ describe("Google Calendar verifyObserverAccess", () => {
     expect(asked.flatMap(query => query.calendarIds).toSorted()).toEqual(people.toSorted());
   });
 
-  it("checks a calendar and its events by the observer's role on that calendar, once per calendar", async () => {
+  it("checks each calendar by the observer's role on it, which must see private event details", async () => {
     const calendar = calendarHarness();
     calendar.backend.roles.writer = "writer";
     calendar.backend.roles.limited = "writerWithoutPrivateAccess";
     calendar.backend.roles.reader = "reader";
     const observers = {writer: "writer", limited: "limited", reader: "reader", absent: "absent"};
 
-    await expect(calendar.verify(observers, [BOUND_CALENDAR, STANDUP, RETRO, ALICE_EVENT]))
+    await expect(calendar.verify(observers, [BOUND_CALENDAR, ALICE_CALENDAR]))
       .resolves.toEqual({allowedObserverIds: ["writer"]});
     expect(calendar.backend.lookups.filter(lookup => lookup.token === "writer")
       .map(lookup => lookup.calendarId)).toEqual([BOUND, ALICE]);
@@ -299,7 +286,7 @@ describe("Google Calendar verifyObserverAccess", () => {
     calendar.backend.freeBusy.alice = id => id === ALICE;
 
     // Alice sees Alice's free/busy, but not the event details on the bound calendar.
-    await expect(calendar.verify({alice: "alice"}, [STANDUP, ALICE_FREE_BUSY]))
+    await expect(calendar.verify({alice: "alice"}, [BOUND_CALENDAR, ALICE_FREE_BUSY]))
       .resolves.toEqual({allowedObserverIds: []});
     // Both answers are reused, each for the subresource it answered.
     await expect(calendar.verify({alice: "alice"}, [ALICE_FREE_BUSY]))
@@ -310,15 +297,15 @@ describe("Google Calendar verifyObserverAccess", () => {
     expect(calendar.backend.lookups).toHaveLength(1);
   });
 
-  it("throws when Google fails an observer's calendar lookup, and asks again next time", async () => {
+  it("throws when Google refuses an observer's calendar lookup, and asks again next time", async () => {
     const calendar = calendarHarness();
     calendar.backend.roles.writer = "writer";
-    // Neither a refusal of access nor a status the client retries.
-    calendar.backend.roleStatus.writer = 400;
+    // A refused lookup (a rate limit, a missing scope) is no answer about the writer's role.
+    calendar.backend.roleStatus.writer = 403;
 
-    await expect(calendar.verify({writer: "writer"}, [STANDUP])).rejects.toThrow(/400/);
+    await expect(calendar.verify({writer: "writer"}, [BOUND_CALENDAR])).rejects.toThrow(/403/);
     delete calendar.backend.roleStatus.writer;
-    await expect(calendar.verify({writer: "writer"}, [STANDUP]))
+    await expect(calendar.verify({writer: "writer"}, [BOUND_CALENDAR]))
       .resolves.toEqual({allowedObserverIds: ["writer"]});
   });
 
@@ -327,8 +314,8 @@ describe("Google Calendar verifyObserverAccess", () => {
     ["another product's namespace", "gmail/freeBusy/alice%40example.com"],
     ["no namespace", "freeBusy/alice%40example.com"],
     ["more than one resource", "calendar/freeBusy/alice%40example.com/freeBusy/bob%40example.com"],
+    ["an event", STANDUP],
     ["an event outside a calendar", "calendar/event/standup"],
-    ["a resource within an event", `${STANDUP}/attachment/agenda`],
     ["an unknown kind of calendar resource", "calendar/acl/alice%40example.com"],
   ])("denies everyone for an ID with %s", async (_, subresource) => {
     const calendar = calendarHarness();

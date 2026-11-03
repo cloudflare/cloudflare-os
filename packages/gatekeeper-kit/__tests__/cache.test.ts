@@ -373,6 +373,16 @@ describe("KvTtlCache", () => {
       .rejects.toThrow("batchSize must be a positive");
   });
 
+  it("fails a load whose value its TTL refuses, storing nothing", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    const ttl = (allowed: boolean) => allowed ? 60_000 : 0;
+
+    await expect(cache.cachedMany(["key"], ttl, async () => [false]))
+      .rejects.toThrow("ttlMs must be a positive");
+    // Stored, the refused value would fail every later read of the key without loading it again.
+    expect(await cache.cachedMany(["key"], ttl, async () => [true])).toEqual([true]);
+  });
+
   it("joins a key another caller is loading, and lets later callers join its own", async () => {
     const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
     const single = Promise.withResolvers<string>();

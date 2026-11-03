@@ -137,10 +137,11 @@ export class KvTtlCache {
    * Returns or loads cached values for several keys at once, in `keys` order (duplicates
    * included), loading the missing keys in batches of at most `batchSize`, one batch at a time.
    * Each batch is stored as it returns, so a batch that fails keeps what the batches before it
-   * loaded; the batches after it are not loaded, and fail with it. Each entry is stored, expired,
-   * coalesced and fenced as {@link cached} does it, and the two share in-flight loads: a key
-   * another caller is already loading is joined rather than reloaded, and a key this call loads is
-   * joined by later callers of either method.
+   * loaded; the batches after it are not loaded, and fail with its error, as does any other caller
+   * that joined one of their keys. Each entry is stored, expired, coalesced and fenced as
+   * {@link cached} does it, and the two share in-flight loads: a key another caller is already
+   * loading is joined rather than reloaded, and a key this call loads is joined by later callers
+   * of either method.
    * @param keys Cache keys within the authority partition.
    * @param ttlMs Maximum entry age in milliseconds, or a function giving it for the value an entry
    * holds, as {@link cached} takes it.
@@ -199,7 +200,7 @@ export class KvTtlCache {
       }));
     }
     if (missing.length > 0) {
-      void this.#loadBatches(missing, batches, batchSize, generation, authority, load);
+      void this.#loadBatches(missing, batches, batchSize, generation, authority, ttlMs, load);
     }
     return Promise.all(keys.map(key => results.get(key)!));
   }
@@ -210,12 +211,13 @@ export class KvTtlCache {
    */
   async #loadBatches<T>(
     missing: string[], batches: PromiseWithResolvers<T[]>[], batchSize: number,
-    generation: number, authority: string, load: (keys: string[]) => Promise<T[]>,
+    generation: number, authority: string, ttlMs: number | ((value: T) => number),
+    load: (keys: string[]) => Promise<T[]>,
   ): Promise<void> {
     for (const [index, batch] of batches.entries()) {
       try {
         const keys = missing.slice(index * batchSize, (index + 1) * batchSize);
-        batch.resolve(await this.#loadAndStore(keys, generation, authority, load));
+        batch.resolve(await this.#loadAndStore(keys, generation, authority, ttlMs, load));
       } catch (error) {
         for (const failed of batches.slice(index)) failed.reject(error);
         return;
@@ -225,17 +227,21 @@ export class KvTtlCache {
 
   /**
    * Loads `keys` together and stores each value, unless the generation or authority moved during
-   * the load: such a load returns to its callers but is not cached.
+   * the load: such a load returns to its callers but is not cached. A value the TTL function
+   * refuses fails the load, rather than being stored and refused at every later read.
    */
   async #loadAndStore<T>(
     keys: string[], generation: number, authority: string,
-    load: (keys: string[]) => Promise<T[]>,
+    ttlMs: number | ((value: T) => number), load: (keys: string[]) => Promise<T[]>,
   ): Promise<T[]> {
     // Stamped before the load, not after it or the fence read that follows: the provider answered
     // somewhere in between, and a loader making several requests learned its first answer long
     // before it returned, so a later stamp would serve that answer past its TTL.
     const fetchedAt = Date.now();
     const values = await loadExactly(load, keys);
+    if (typeof ttlMs === "function") {
+      for (const value of values) requirePositiveInt("ttlMs", ttlMs(value));
+    }
     let current: string | undefined;
     try {
       current = await this.#authority();

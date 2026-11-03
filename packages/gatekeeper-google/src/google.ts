@@ -463,13 +463,26 @@ export class UserAccount extends DurableObject<Env> {
   // The last mint that failed permanently — revoked credentials, or a scope an admin has blocked.
   #mintFailure: { error: Error; at: number } | undefined;
 
-  // This account's answers about its own access to subresources, keyed by subresource. Bypassed
-  // while the account holds no credentials, so an answer can't outlive a disconnect that left
-  // storage behind, and invalidated whenever credentials are installed, since a reconnect may sign
-  // in as another Google account.
-  #access = new KvTtlCache(this.ctx.storage.kv,
-      () => this.ctx.storage.kv.get<string>("refreshToken") ? "connected" : undefined,
-      { name: "access" });
+  // This account's answers about its own access to subresources, keyed by subresource and
+  // partitioned by the credentials that learned them (see #credentialsId), so an answer can't
+  // outlive a disconnect that left storage behind, nor survive a reconnect, which may sign in as
+  // another Google account. Bypassed while the account holds no credentials.
+  #access = new KvTtlCache(this.ctx.storage.kv, () => this.#credentialsId(), { name: "access" });
+
+  // Names the credentials installed now, or undefined while there are none. Every install names
+  // its credentials afresh, and revoking deletes the name with everything else, so no load that
+  // started under earlier credentials can find the same name when it finishes. Credentials
+  // installed before names existed are named on first use.
+  #credentialsId(): string | undefined {
+    let kv = this.ctx.storage.kv;
+    if (!kv.get<string>("refreshToken")) return undefined;
+    let id = kv.get<string>("credentialsId");
+    if (id === undefined) {
+      id = crypto.randomUUID();
+      kv.put<string>("credentialsId", id);
+    }
+    return id;
+  }
 
   async setCallback(
       callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
@@ -573,7 +586,7 @@ export class UserAccount extends DurableObject<Env> {
 
       this.ctx.storage.kv.put<string>("refreshToken", response.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
-      this.#access.invalidateAll();
+      this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
       // These credentials are new, so any recorded permanent failure no longer applies
       this.#mintFailure = undefined;
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
@@ -613,7 +626,7 @@ export class UserAccount extends DurableObject<Env> {
       if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
       this.ctx.storage.kv.put<string>("refreshToken", staged.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
-      this.#access.invalidateAll();
+      this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
       // These credentials are new, so any recorded permanent failure no longer applies
       this.#mintFailure = undefined;
       this.ctx.storage.kv.put<string[]>("grantedScopes", staged.grantedScopes);
@@ -1099,13 +1112,14 @@ function isNoAccessStatus(status: number | undefined): boolean {
 }
 
 // Whether the account behind `api` holds a role on the calendar that sees private event details,
-// not merely write access (see hasCalendarPrivateAccessRole): false when Google says it can't see
-// the calendar (401/403/404), and a throw for any other failure.
+// not merely write access (see hasCalendarPrivateAccessRole): false when the calendar isn't on the
+// account's list (404), and a throw for any other failure. A refused request (expired
+// credentials, a missing scope, a rate limit) says nothing about the account's access.
 async function hasCalendarDetailAccess(api: GoogleCalendarApi, calendarId: string): Promise<boolean> {
   try {
     return hasCalendarPrivateAccessRole(await api.getCalendar(calendarId));
   } catch (error) {
-    if (isNoAccessStatus(httpStatusFromError(error))) return false;
+    if (httpStatusFromError(error) === 404) return false;
     throw error;
   }
 }
@@ -2634,21 +2648,20 @@ function summarizePeople(people: string[]): string {
 }
 
 // What Calendar reports as subresources, each something a read returned from Google: a calendar
-// (`calendar/calendar/<calendarId>`) for its metadata, an event on one
-// (`calendar/calendar/<calendarId>/event/<eventId>`) for its details, and a calendar's free/busy
-// information (`calendar/freeBusy/<calendarId>`), which Google shares separately from, and more
-// widely than, its events ("See only free/busy"). Access to an event is checked on its calendar
-// (see mapCalendarSubresources).
+// (`calendar/calendar/<calendarId>`) for its metadata and its events, which its role on the
+// calendar decides who may see, and a calendar's free/busy information
+// (`calendar/freeBusy/<calendarId>`), which Google shares separately from, and more widely than,
+// its events ("See only free/busy").
 const CALENDAR_SUBRESOURCE_NAMESPACE = "calendar";
 const CALENDAR_FRAGMENT = "calendar";
-const EVENT_FRAGMENT = "event";
 const FREE_BUSY_FRAGMENT = "freeBusy";
 
-/** The subresource ID of a calendar, or of one event on it. */
-function calendarSubresourceId(calendarId: string, eventId?: string): string {
-  let fragments = [{name: CALENDAR_FRAGMENT, id: calendarId}];
-  if (eventId !== undefined) fragments.push({name: EVENT_FRAGMENT, id: eventId});
-  return formatSubresourceId({namespace: CALENDAR_SUBRESOURCE_NAMESPACE, fragments});
+/** The subresource ID of a calendar. */
+function calendarSubresourceId(calendarId: string): string {
+  return formatSubresourceId({
+    namespace: CALENDAR_SUBRESOURCE_NAMESPACE,
+    fragments: [{name: CALENDAR_FRAGMENT, id: calendarId}],
+  });
 }
 
 /** The subresource ID of a calendar's free/busy information. */
@@ -2661,7 +2674,7 @@ function freeBusySubresourceId(calendarId: string): string {
 
 /**
  * The calendar a calendar or free/busy subresource names, and which of the two it is. Throws for
- * any other ID, an event's included.
+ * any other ID.
  */
 function parseCalendarSubresource(subresource: string)
     : {kind: "calendar" | "freeBusy", calendarId: string} {
@@ -2672,23 +2685,6 @@ function parseCalendarSubresource(subresource: string)
     if (name === FREE_BUSY_FRAGMENT) return {kind: "freeBusy", calendarId: id};
   }
   throw new Error("Not a Google Calendar subresource.");
-}
-
-/**
- * Maps the subresources reads reported to the mapped subresources an observer's account is asked
- * about, deduplicated: an event maps to its calendar, whose role check covers every event on it,
- * and anything else maps to itself, for the account to check or refuse.
- */
-function mapCalendarSubresources(subresources: string[]): string[] {
-  let mapped = new Set<string>();
-  for (let subresource of subresources) {
-    let {namespace, fragments} = parseSubresourceId(subresource);
-    let [calendar, event] = fragments;
-    let isEvent = namespace === CALENDAR_SUBRESOURCE_NAMESPACE && fragments.length === 2 &&
-        calendar.name === CALENDAR_FRAGMENT && event.name === EVENT_FRAGMENT;
-    mapped.add(isEvent ? calendarSubresourceId(calendar.id) : subresource);
-  }
-  return [...mapped];
 }
 
 // Admits an observer only if their own account can read every subresource, as its UserAccount
@@ -2876,14 +2872,13 @@ export class GoogleCalendarGatekeeperImpl
   }
 
   /**
-   * Checks the subresources this binding's reads report, as mapCalendarSubresources maps them, so
-   * each observer's account is asked once per calendar for its metadata and all its events. Any
-   * ID Calendar doesn't report fails the whole call.
+   * Checks the subresources this binding's reads report, each with the observer's own account.
+   * Any ID Calendar doesn't report fails the whole call.
    */
   async verifyObserverAccess(
       observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
       subresources: string[]): Promise<{allowedObserverIds: string[]}> {
-    return verifyCalendarAccess(observers, mapCalendarSubresources(subresources));
+    return verifyCalendarAccess(observers, subresources);
   }
 }
 
@@ -2934,12 +2929,8 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     validateCalendarTimeWindow(opts.timeMin, opts.timeMax, 366);
     let events = await this.#api.listEvents(this.#calendarId, opts);
     let simulated = applyPendingCalendarActions(events, this.#pendingActions.list(), opts);
-    // The events read from Google that this returns, edited or not: not a pending creation, which
-    // Google doesn't hold yet, nor an event a pending edit moves out of the window.
-    let read = new Set(events.map(event => event.id));
-    let subresources = simulated
-        .filter(event => read.has(event.id))
-        .map(event => calendarSubresourceId(this.#calendarId, event.id));
+    // Even an empty window reveals something about the calendar, so every listing reports it.
+    let subresources = [calendarSubresourceId(this.#calendarId)];
 
     await this.#authorizeObservation({
       title: "List Google Calendar events",
