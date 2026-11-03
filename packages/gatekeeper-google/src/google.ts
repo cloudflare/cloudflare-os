@@ -39,10 +39,15 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
-import { DriveApi, DriveApiRequestError, lacksFileContentAccess } from "./drive-api";
+import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_BATCH_FILES } from "./drive-api";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
+import {
+  DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, fileSubresourceId, parseFileSubresource,
+  requireFileSubresources, SHEETS_SUBRESOURCE_NAMESPACE, SLIDES_SUBRESOURCE_NAMESPACE,
+  type FileSubresource, type NativeFileSubresource,
+} from "./file-subresources";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
@@ -115,7 +120,7 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "./oauth-flow";
 import {
-  DEFAULT_CONCURRENCY, mapWithConcurrency, type ObserverBatchResult, type ObserverCheck, ObserverTracker,
+  DEFAULT_CONCURRENCY, mapWithConcurrency, type ObserverBatchResult, ObserverTracker,
 } from "./observers";
 import type {Pager} from "./cursor";
 import {
@@ -467,12 +472,14 @@ type AccountSubresource =
   | { kind: "calendar" | "freeBusy"; calendarId: string }
   | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef }
   | { kind: "gmailUser"; subject: string }
-  | ChatSubresource;
+  | ChatSubresource
+  | FileSubresource;
 
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
- * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, or a Google Chat
- * conversation, its member list or account (see parseChatSubresource). Throws for any other ID.
+ * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, a Google Chat
+ * conversation, its member list or account (see parseChatSubresource), or a Drive file or folder or
+ * a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any other ID.
  */
 function parseAccountSubresource(subresource: string): AccountSubresource {
   switch (parseSubresourceId(subresource).namespace) {
@@ -484,6 +491,11 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
       return { kind: "gmailUser", subject: parseGmailUserSubresource(subresource) };
     case CHAT_SUBRESOURCE_NAMESPACE:
       return parseChatSubresource(subresource);
+    case DRIVE_SUBRESOURCE_NAMESPACE:
+    case DOCS_SUBRESOURCE_NAMESPACE:
+    case SHEETS_SUBRESOURCE_NAMESPACE:
+    case SLIDES_SUBRESOURCE_NAMESPACE:
+      return parseFileSubresource(subresource);
     default:
       throw new Error("Not a Google subresource.");
   }
@@ -686,6 +698,8 @@ export class UserAccount extends DurableObject<Env> {
     let datasets = new Map<string, BigQueryDatasetRef>();
     let owners = new Map<string, string>();
     let conversations = new Map<string, { spaceName: string; members: boolean }>();
+    let driveUnits = new Map<string, DriveObservation>();
+    let nativeFiles = new Map<string, NativeFileSubresource>();
     for (let [subresource, resource] of parsed) {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
       else if (resource.kind === "gmailUser" || resource.kind === "chatUser") {
@@ -693,7 +707,11 @@ export class UserAccount extends DurableObject<Env> {
       } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
         conversations.set(subresource,
           { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
-      } else (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
+      } else if (resource.kind === "file" || resource.kind === "folder") {
+        driveUnits.set(subresource, resource);
+      } else if ("calendarId" in resource) {
+        (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
+      } else nativeFiles.set(subresource, resource);
     }
     let api = new GoogleCalendarApi(getToken);
     let ttl = (allowed: boolean) =>
@@ -727,6 +745,26 @@ export class UserAccount extends DurableObject<Env> {
       let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY,
         ([subresource, { spaceName, members }]) =>
           this.#access.cached(subresource, ttl, () => hasChatAccess(chat, spaceName, members)));
+      entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+    }
+    if (driveUnits.size > 0) {
+      // As verifyDriveObservations does, an account without a Drive grant is denied every Drive
+      // unit, and Drive is asked about each unit (100 to a batch) only for one with it.
+      let drive = new DriveApi(getToken);
+      let unitIds = [...driveUnits.keys()];
+      let answers = await this.#access.cachedMany(unitIds, ttl, async missing => {
+        let units = missing.map(subresource => driveUnits.get(subresource)!);
+        return hasDriveResourceGrant(await this.getGrantedResourceUrlPatterns())
+          ? drive.checkObservations(units)
+          : units.map(() => false);
+      }, { batchSize: MAX_BATCH_FILES });
+      unitIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+    }
+    if (nativeFiles.size > 0) {
+      // Docs, Sheets and Slides answer for one file per request, so a few run at a time.
+      let entries = [...nativeFiles];
+      let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY, ([subresource, file]) =>
+          this.#access.cached(subresource, ttl, () => hasNativeFileAccess(getToken, file)));
       entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
     }
     if (owners.size > 0) {
@@ -1149,12 +1187,18 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //   - Gmail Mailbox — strategy A (private-only), kernel-checked: every read reports its owner's
 //     account as a `gmail/user/<sub>` subresource, which checkSubresourceAccess grants only to that
 //     same Google account. addObserver still always throws, for reads made before they reported it.
-//   - Google Doc — strategy B (ACL check, single unit): hasDocAccess answers whether the observer's
-//     own token can open the bound document (Docs API returns 401/403/404 otherwise).
-//   - Google Sheets — strategy B (ACL check, single unit): hasSpreadsheetAccess answers whether the
-//     observer's own token can open the bound spreadsheet.
-//   - Google Slides — strategy B (ACL check, single unit): hasPresentationAccess answers whether the
-//     observer's own token can open the bound presentation.
+//   - Google Doc, Sheets and Slides — strategy B (ACL check, single unit), kernel-checked: every
+//     read reports the bound file as `docs/document/<documentId>`,
+//     `sheets/spreadsheet/<spreadsheetId>` or `slides/presentation/<presentationId>`, which
+//     checkSubresourceAccess checks by opening it in that API, as hasDocAccess,
+//     hasSpreadsheetAccess and hasPresentationAccess do without reusing answers for addObserver,
+//     which still checks the bound file for reads made before they reported it.
+//   - Google Drive — strategy C by file, kernel-checked: reads report each file whose metadata they
+//     return as `drive/file/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each
+//     native file whose content they read as Docs, Sheets or Slides names it.
+//     checkSubresourceAccess checks a file or folder as verifyDriveObservations does (a Drive grant,
+//     then the file visible or the folder listable), which addObserver still uses, asking Drive
+//     every time, for the bound folder or file and the units recorded before reads reported them.
 //   - Google Calendar — strategy B reporting subresources: every read reports the calendar or
 //     free/busy it returned, checked by checkSubresourceAccess, where a calendar needs the role
 //     hasCalendarWriterAccess also checks for the bound calendar at admission;
@@ -1248,6 +1292,26 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
 }
 
 /**
+ * Whether the account behind `getToken` can open a native file in the API that reads it (Docs,
+ * Sheets or Slides): false when Google answers 401, 403 or 404, and a throw for any other failure.
+ */
+async function hasNativeFileAccess(
+    getToken: (opts?: AccessTokenRequest) => Promise<string>,
+    { kind, fileId }: NativeFileSubresource): Promise<boolean> {
+  try {
+    switch (kind) {
+      case "document": await new GoogleDocsApi(getToken).getDocumentMetadata(fileId); break;
+      case "spreadsheet": await new GoogleSheetsApi(getToken).getSpreadsheet(fileId); break;
+      case "presentation": await new GoogleSlidesApi(getToken).getPresentationTitle(fileId); break;
+    }
+    return true;
+  } catch (error) {
+    if (isNoAccessStatus(httpStatusFromError(error))) return false;
+    throw error;
+  }
+}
+
+/**
  * The non-standard methods the Google gatekeepers call on their own verifier (see addObserver). Not
  * part of the generic GatekeeperUserVerifier contract.
  *
@@ -1267,36 +1331,18 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
   }
 
   async hasDocAccess(documentId: string): Promise<boolean> {
-    let api = new GoogleDocsApi(opts => this.#getToken(opts));
-    try {
-      await api.getDocumentMetadata(documentId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasNativeFileAccess(
+      opts => this.#getToken(opts), { kind: "document", fileId: documentId });
   }
 
   async hasSpreadsheetAccess(spreadsheetId: string): Promise<boolean> {
-    let api = new GoogleSheetsApi(opts => this.#getToken(opts));
-    try {
-      await api.getSpreadsheet(spreadsheetId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasNativeFileAccess(
+      opts => this.#getToken(opts), { kind: "spreadsheet", fileId: spreadsheetId });
   }
 
   async hasPresentationAccess(presentationId: string): Promise<boolean> {
-    let api = new GoogleSlidesApi(opts => this.#getToken(opts));
-    try {
-      await api.getPresentationTitle(presentationId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasNativeFileAccess(
+      opts => this.#getToken(opts), { kind: "presentation", fileId: presentationId });
   }
 
   /**
@@ -1935,7 +1981,8 @@ function materializeGoogleDocAction(
   }
 }
 
-type GoogleDocGatekeeperImplProps = { userObjectId: string; documentId: string } | SimulatedFileProps;
+export type GoogleDocGatekeeperImplProps =
+  { userObjectId: string; documentId: string } | SimulatedFileProps;
 
 /** The ID of the first tab of a document just created, for the real class to adopt pending edits. */
 const CREATED_DOC_TAB_KEY = "createdDocTab";
@@ -2276,6 +2323,9 @@ export class GoogleDocGatekeeperImpl
    * The document is the atomic unit (everything read through this binding is that one doc), so no
    * observers are tracked and removeObserver is a no-op. The overseer re-runs addObserver on every
    * open, catching loss of access promptly.
+   *
+   * Reads now also report the document as a `docs/document/<documentId>` subresource, which
+   * verifyObserverAccess checks; this check stays for the reads made before they did.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
@@ -2287,6 +2337,19 @@ export class GoogleDocGatekeeperImpl
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  /**
+   * Checks the document subresource every read reports, failing the whole call for any other ID.
+   * Each observer's UserAccount answers whether the Docs API opens the document for their own
+   * account, reusing recent answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    requireFileSubresources(subresources, ["document"]);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 @validateRpc()
@@ -2298,6 +2361,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #pendingActions: PendingActionStore<GoogleDocAction>;
   #storage: DurableObjectStorage;
   #simulationCache: GoogleDocSimulationCacheHolder;
+  /** What every read reports: the document, or nothing for one not created yet. */
+  #subresources: string[];
 
   constructor(
     docsApi: GoogleDocReader,
@@ -2316,6 +2381,16 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     this.#pendingActions = pendingActions;
     this.#storage = storage;
     this.#simulationCache = simulationCache;
+    this.#subresources = documentId === UNCREATED_FILE_ID
+      ? []
+      : [fileSubresourceId({kind: "document", fileId: documentId})];
+  }
+
+  // Every read authorizes through here, which reports the document it read as its subresource.
+  #authorizeRead(description: Omit<ObservationDescription, "subresources">): Promise<void> {
+    return this.#approvalQueue.authorizeObservation({
+      ...description, subresources: this.#subresources,
+    });
   }
 
   async #getSnapshot(): Promise<GoogleDocSnapshot> {
@@ -2405,7 +2480,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
         .map(({action}) => action)
         .filter(action => !action.invalidatedReason);
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeRead({
       title: "Read Google Doc metadata",
       description: "Read the title and modification time of the document.",
     });
@@ -2468,7 +2543,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   async listTabs(): Promise<GoogleDocTab[]> {
     let snapshot = await this.#getSnapshot();
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeRead({
       title: "List Google Doc tabs",
       description: "Read the document's tab names and hierarchy.",
     });
@@ -2482,14 +2557,14 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       selected = await this.#getSimulatedContent(tabId, "getContent");
     } catch (error) {
       // The error says whether that tab exists, so the attempt discloses something too.
-      await this.#approvalQueue.authorizeObservation({
+      await this.#authorizeRead({
         title: "Read Google Doc content",
         description: "Read the content of one tab of the document.",
       });
       throw error;
     }
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeRead({
       title: "Read Google Doc content",
       description:
         `Read the full simulated content of tab ${googleDocTabLabel(selected.tab)} as Markdown.`,
@@ -2519,7 +2594,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       }
     } catch (error) {
       // The error says whether that tab, or that text, exists.
-      await this.#approvalQueue.authorizeObservation({
+      await this.#authorizeRead({
         title: "Read Google Doc content",
         description: "Read the content of one tab of the document.",
       });
@@ -2571,7 +2646,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       requireGoogleDocAppendIndex(selected.appendIndex);
     } catch (error) {
       // The error says whether that tab exists, so the attempt discloses something too.
-      await this.#approvalQueue.authorizeObservation({
+      await this.#authorizeRead({
         title: "Read Google Doc content",
         description: "Read the content of one tab of the document.",
       });
@@ -3249,7 +3324,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
 // Google Drive Gatekeeper
 // =======================================================================================
 
-type GoogleDriveGatekeeperImplProps = {
+export type GoogleDriveGatekeeperImplProps = {
   userObjectId: string;
   scope: DriveBindingScope;
 };
@@ -3312,7 +3387,6 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
-    let observerTracker = this.#observerTracker();
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
     // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
     // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
@@ -3327,8 +3401,6 @@ export class GoogleDriveGatekeeperImpl
       convertPdf,
       this.#scope,
       approvalQueue.dup(),
-      observations => observerTracker.prepareObservation(observations),
-      () => observerTracker.prepareWithheld(),
     );
   }
 
@@ -3338,6 +3410,16 @@ export class GoogleDriveGatekeeperImpl
   revertAction(_action: number): Promise<void> {
     throw new Error("Google Drive gatekeeper has no writable actions to revert");
   }
+
+  // Observers: every read reports the Drive units it depends on as subresources (see
+  // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
+  // whose metadata it returned, each folder it listed, and each native file whose content it read,
+  // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
+  // empty search or a folder it cannot list) reports `[]`. An invisible-file check reports `[]`
+  // on a folder binding, but `drive/file/<fileId>` on an account binding before propagating the
+  // error. The tracker no longer records what reads reveal. It keeps what addObserver() still
+  // enforces: a Drive grant, the bound folder or file (seeded below), and the units reads recorded
+  // before they reported subresources.
 
   #observerTracker(): ObserverTracker<DriveObservation, Fetcher<GoogleVerifierApi>> {
     return driveObserverTracker<Fetcher<GoogleVerifierApi>>(
@@ -3355,6 +3437,21 @@ export class GoogleDriveGatekeeperImpl
 
   async removeObserver(id: string): Promise<void> {
     this.#observerTracker().removeObserver(id);
+  }
+
+  /**
+   * Checks the Drive, Docs, Sheets and Slides subresources this binding's reads report, failing
+   * the whole call for any other ID. Each observer's UserAccount answers whether their own account
+   * can see each file, list each folder and open each native file, reusing recent answers (see
+   * UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    requireFileSubresources(
+      subresources, ["file", "folder", "document", "spreadsheet", "presentation"]);
+    return verifyGoogleSubresourceAccess(observers, subresources);
   }
 }
 
@@ -3489,10 +3586,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
   #approvalQueue: RpcStub<ApprovalQueue>;
-  #prepareObservation: (
-    observations: DriveObservation[],
-  ) => Promise<ObserverCheck<DriveObservation>>;
-  #prepareWithheld: () => ObserverCheck<DriveObservation>;
 
   constructor(
     driveApi: DriveApi,
@@ -3502,10 +3595,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
     convertPdf: PdfConverter | undefined,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
-    prepareObservation: (
-      observations: DriveObservation[],
-    ) => Promise<ObserverCheck<DriveObservation>>,
-    prepareWithheld: () => ObserverCheck<DriveObservation>,
     location?: FolderLocation,
   ) {
     super();
@@ -3519,8 +3608,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
       ? location ?? {folderIds: [scope.folderId]}
       : undefined;
     this.#approvalQueue = approvalQueue;
-    this.#prepareObservation = prepareObservation;
-    this.#prepareWithheld = prepareWithheld;
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -3550,7 +3637,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#scope, queue, this.#prepareObservation, this.#prepareWithheld, location,
+        this.#scope, queue, location,
       );
     });
   }
@@ -3617,8 +3704,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {
     let common = {
       api: this.#driveApi,
-      prepareObservation: this.#prepareObservation,
-      prepareWithheld: this.#prepareWithheld,
       authorize: (description: ObservationDescription) => queue.authorizeObservation(description),
     };
     if (this.#scope.kind === "folder") {

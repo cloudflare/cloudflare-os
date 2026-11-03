@@ -1,7 +1,5 @@
-import { OBSERVATION_REFUSED_CODE } from "@gadgets/gatekeeper-kit/observers";
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import type { DriveObservation } from "../src/drive-observers";
 import {
   DriveFolderSessionCore, DriveSessionCore, driveFileToEntry, requireDriveBindingScope,
 } from "../src/drive-session";
@@ -11,15 +9,16 @@ import {
   type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
 } from "../src/drive-api";
 import type { DriveListOptions, DriveSearchQuery } from "../src/drive-types";
-import type { ObserverCheck } from "../src/observers";
-import { driveObserverTracker } from "../src/drive-observers";
-import { FakeKv } from "./fake-kv";
-
-const refusal = () =>
-  Object.assign(new Error("refused"), { code: OBSERVATION_REFUSED_CODE });
 
 const docMime = "application/vnd.google-apps.document";
 const sheetMime = "application/vnd.google-apps.spreadsheet";
+const pdfMime = "application/pdf";
+
+/** A converted read reports exactly `subresources` and leaves observer exclusion to them. */
+function expectReported(description: ObservationDescription | undefined, subresources: string[]) {
+  expect(description?.subresources).toEqual(subresources);
+  expect(description).not.toHaveProperty("excludeObservers");
+}
 
 const file = (overrides: Partial<DriveFile> = {}): DriveFile => ({
   id: "file-1",
@@ -38,45 +37,24 @@ function core(overrides: {
     nextPageToken?: string;
   }>;
   getScopeNodes?: (ids: readonly string[]) => Promise<(DriveScopeNode | undefined)[]>;
-  prepareObservation?: (
-    observations: DriveObservation[],
-  ) => Promise<ObserverCheck<DriveObservation>>;
-  prepareWithheld?: () => ObserverCheck<DriveObservation>;
   authorize?: (description: ObservationDescription) => Promise<void>;
 } = {}) {
   let listFiles = vi.fn(overrides.listFiles ?? (async () => ({ files: overrides.files ?? [file()] })));
   let getFile = vi.fn(overrides.getFile ?? (async (id: string) => file({ id })));
   let getScopeNodes = vi.fn(overrides.getScopeNodes ??
     (async (ids: readonly string[]) => ids.map(() => undefined)));
-  let prepared: string[][] = [];
-  let units: DriveObservation[][] = [];
   let authorizations: ObservationDescription[] = [];
   let events: string[] = [];
   let session = new DriveSessionCore({
     api: { listFiles, getFile, getScopeNodes },
     scope: overrides.scope ?? { kind: "account" },
-    prepareObservation: overrides.prepareObservation ?? (async observations => {
-      prepared.push(observations.map(observation => observation.fileId));
-      units.push([...observations]);
-      return {
-        excludeObservers: ["excluded"],
-        pendingSets: observations,
-        commit: () => events.push("commit"),
-      };
-    }),
-    prepareWithheld: overrides.prepareWithheld ?? (() => ({
-      excludeObservers: ["excluded"],
-      pendingSets: [],
-      commit: () => events.push("latch"),
-      discard: () => events.push("unlatch"),
-    })),
     authorize: async (description: ObservationDescription) => {
       authorizations.push(description);
       events.push("authorize");
       await overrides.authorize?.(description);
     },
   });
-  return { session, listFiles, getFile, getScopeNodes, prepared, units, authorizations, events };
+  return { session, listFiles, getFile, getScopeNodes, authorizations, events };
 }
 
 const folder = (id: string, overrides: Partial<DriveFile> = {}): DriveFile =>
@@ -174,104 +152,67 @@ describe("requireDriveBindingScope", () => {
 });
 
 describe("Drive session scope", () => {
-  it("lists the connected account and authorizes every returned file before committing", async () => {
-    let { session, listFiles, prepared, authorizations, events } = core();
+  it("lists the connected account and reports every returned file", async () => {
+    let { session, listFiles, authorizations, events } = core({
+      files: [file(), file({ id: "file-2" })],
+    });
     let page = await (await session.list()).next();
 
-    expect(page?.map(entry => entry.id)).toEqual(["file-1"]);
+    expect(page?.map(entry => entry.id)).toEqual(["file-1", "file-2"]);
     expect(listFiles).toHaveBeenCalledWith(expect.objectContaining({ corpus: { kind: "user" } }));
-    expect(prepared).toEqual([["file-1"]]);
-    expect(authorizations[0].excludeObservers).toEqual(["excluded"]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/file/file-1", "drive/file/file-2"]);
+    expect(events).toEqual(["authorize"]);
   });
 
-  it("audits and rejects an empty account search", async () => {
-    let { session, prepared, authorizations, events } = core({ files: [] });
+  it("authorizes an empty account search and ends it normally", async () => {
+    let { session, authorizations, events } = core({ files: [] });
 
     let cursor = await session.search({ namePrefix: "missing" });
-    await expect(cursor.next()).rejects
-      .toThrow(new Error("An empty Drive search cannot be shared safely."));
+    await expect(cursor.next()).resolves.toBeNull();
 
-    expect(prepared).toEqual([]);
     expect(authorizations).toEqual([expect.objectContaining({
-      title: "Search Google Drive metadata",
+      title: "Read Google Drive metadata",
       description: expect.stringContaining('name starts with "missing"'),
-      excludeObservers: ["excluded"],
     })]);
-    expect(authorizations[0]).not.toHaveProperty("containsRestrictedData");
-    expect(authorizations[0].description).not.toContain("0");
-    // The read registers no file ID, so nothing could ever verify a later observer against it:
-    // the audit lands, then admission latches closed, and only then is the caller refused.
-    expect(events).toEqual(["authorize", "latch"]);
-  });
-
-  // The overseer can record the observation and lose the response, so an unmarked failure leaves
-  // the outcome unknown and the fence must stand.
-  it("latches admission when an empty search's audit fails ambiguously", async () => {
-    let { session, events } = core({
-      files: [],
-      authorize: async () => { throw new Error("connection lost"); },
-    });
-
-    await expect((await session.search({ namePrefix: "missing" })).next())
-      .rejects.toThrow("connection lost");
-    expect(events).toEqual(["authorize", "latch"]);
-  });
-
-  it("leaves admission open when the overseer marks the audit refused", async () => {
-    let { session, events } = core({
-      files: [],
-      authorize: async () => { throw refusal(); },
-    });
-
-    await expect((await session.search({ namePrefix: "missing" })).next())
-      .rejects.toThrow("refused");
-    expect(events).toEqual(["authorize", "unlatch"]);
-  });
-
-  // An empty slice with pages still ahead is this call's budget running out, not a negative
-  // answer: fencing it would close collaborator admission for good over nothing disclosed.
-  it("keeps admission open when the page budget slices a listing", async () => {
-    let page = 0;
-    let { session, events } = core({
-      listFiles: async () => ({ files: [], nextPageToken: `page-${++page}` }),
-    });
-
-    await expect((await session.search({ namePrefix: "missing" })).next()).resolves.toEqual([]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expectReported(authorizations[0], []);
+    expect(events).toEqual(["authorize"]);
   });
 
   // A file unit proves only metadata access, so it cannot stand for "this account can list the
   // folder": a metadata-only observer would pass it vacuously.
-  it("records a listable parent folder as a folder observation", async () => {
-    let { session, units, events } = core({ getFile: async id => folder(id) });
+  it("reports a listable parent folder as a folder subresource", async () => {
+    let { session, authorizations, events } = core({ getFile: async id => folder(id) });
 
     await session.list({ directParentId: "F" });
-    expect(units).toEqual([[{ kind: "folder", fileId: "F" }]]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/folder/F"]);
+    expect(events).toEqual(["authorize"]);
   });
 
-  it("fences a live parent folder this account cannot list", async () => {
-    let { session, units, events } = core({
+  it("reports nothing for a live parent folder this account cannot list", async () => {
+    let { session, authorizations, events } = core({
       getFile: async id => folder(id, { capabilities: { canListChildren: false } }),
     });
 
     await expect(session.list({ directParentId: "F" }))
       .rejects.toThrow("directParentId must identify a folder whose children can be listed");
-    expect(units).toEqual([]);
-    expect(events).toEqual(["authorize", "latch"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], []);
+    expect(events).toEqual(["authorize"]);
   });
 
   it.each([
     ["a non-folder", (id: string) => file({ id })],
     ["a trashed folder", (id: string) => folder(id, { trashed: true })],
   ])("refuses %s parent as an objective disclosure", async (_label, getFile) => {
-    let { session, units, events } = core({ getFile: async id => getFile(id) });
+    let { session, authorizations, events } = core({ getFile: async id => getFile(id) });
 
     await expect(session.list({ directParentId: "F" }))
       .rejects.toThrow("directParentId must identify a folder whose children can be listed");
-    expect(units).toEqual([[{ kind: "file", fileId: "F" }]]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/file/F"]);
+    expect(events).toEqual(["authorize"]);
   });
 
   // Dropping a blank parent as if it were absent turns a folder listing into an account-wide one,
@@ -321,7 +262,7 @@ describe("Drive session scope", () => {
   });
 
   it("lists an exact-file binding without scanning the connected account", async () => {
-    let { session, listFiles, getFile, prepared } = core({
+    let { session, listFiles, getFile, authorizations } = core({
       scope: { kind: "file", fileId: "file-1" },
       getFile: async id => file({ id, trashed: false }),
     });
@@ -330,37 +271,41 @@ describe("Drive session scope", () => {
       .resolves.toEqual([expect.objectContaining({ id: "file-1" })]);
     expect(getFile).toHaveBeenCalledWith("file-1");
     expect(listFiles).not.toHaveBeenCalled();
-    expect(prepared).toEqual([["file-1"]]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/file/file-1"]);
   });
 
   it("omits a trashed file from an exact-file listing", async () => {
-    let { session, prepared } = core({
+    let { session, authorizations } = core({
       scope: { kind: "file", fileId: "file-1" },
       getFile: async () => file({ trashed: true }),
     });
 
     await expect((await session.list()).next()).resolves.toBeNull();
-    expect(prepared).toEqual([["file-1"]]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/file/file-1"]);
   });
 
   it("omits an exact file whose trash state is absent", async () => {
-    let { session, prepared } = core({
+    let { session, authorizations } = core({
       scope: { kind: "file", fileId: "file-1" },
     });
 
     await expect((await session.list()).next()).resolves.toBeNull();
-    expect(prepared).toEqual([["file-1"]]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/file/file-1"]);
   });
 
   it("still returns a trashed exact file from getEntry", async () => {
-    let { session, prepared } = core({
+    let { session, authorizations } = core({
       scope: { kind: "file", fileId: "file-1" },
       getFile: async () => file({ trashed: true }),
     });
 
     await expect(session.getEntry("file-1")).resolves
       .toEqual(expect.objectContaining({ id: "file-1" }));
-    expect(prepared).toEqual([["file-1"]]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/file/file-1"]);
   });
 
   it("rejects an exact-file listing when the provider returns a different id", async () => {
@@ -374,14 +319,14 @@ describe("Drive session scope", () => {
   });
 
   it("refuses a file scope read when the provider returns another file", async () => {
-    let { session, getFile, prepared } = core({
+    let { session, getFile, authorizations } = core({
       scope: { kind: "file", fileId: "file-1" },
       getFile: async () => file({ id: "file-other", name: "Spoofed name" }),
     });
 
     await expect(session.getScope()).rejects.toThrow(/outside this Drive binding/);
     expect(getFile).toHaveBeenCalledWith("file-1");
-    expect(prepared).toEqual([]);
+    expect(authorizations).toEqual([]);
   });
 });
 
@@ -406,62 +351,34 @@ describe("Drive native sessions", () => {
   });
 
   it("rejects a mismatched provider file ID before authorizing", async () => {
-    let { session, prepared, authorizations } = core({
+    let { session, authorizations } = core({
       getFile: async () => file({ id: "file-2", mimeType: docMime }),
     });
 
     await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
       .rejects.toThrow(/outside this Drive binding/);
-    expect(prepared).toEqual([]);
     expect(authorizations).toEqual([]);
   });
 
   // Excluding today's observers is not enough: nothing durable would stop a collaborator admitted
-  // afterwards from inheriting the history, so the probed id is tracked like any other read.
+  // afterwards from inheriting the history, so the probed id is reported like any other read.
   it.each([403, 404])(
-    "tracks an account-scope %s probe so later observers are checked against it",
+    "reports an account-scope %s probe so later observers are checked against it",
     async status => {
-      let { session, prepared, authorizations, events } = core({
+      let { session, authorizations, events } = core({
         getFile: async () => { throw new DriveApiRequestError(status); },
       });
 
       await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
         .rejects.toBeInstanceOf(DriveApiRequestError);
-      expect(prepared).toEqual([["file-1"]]);
-      expect(events).toEqual(["authorize", "commit"]);
+      expect(events).toEqual(["authorize"]);
       expect(authorizations).toEqual([{
         title: "Check Google Drive file access",
         description: "Check whether the connected account can access Drive file file-1.",
-        excludeObservers: ["excluded"],
+        subresources: ["drive/file/file-1"],
       }]);
     },
   );
-
-  // Through the real tracker: the probe is what a collaborator who joins afterwards is measured
-  // against, which is the only thing that keeps them out of the history that holds its result.
-  it("locks out a collaborator admitted after a failed probe", async () => {
-    let kv = new FakeKv();
-    let track = driveObserverTracker<string>(kv, { kind: "account" },
-      async (_verifier, fileIds) => ({ baselineAllowed: true, allowed: fileIds.map(() => false) }));
-    let session = new DriveSessionCore({
-      api: {
-        listFiles: async () => ({ files: [] }),
-        getFile: async () => { throw new DriveApiRequestError(404); },
-        getScopeNodes: async ids => ids.map(() => undefined),
-      },
-      scope: { kind: "account" },
-      prepareObservation: fileIds => track.prepareObservation(fileIds),
-      prepareWithheld: () => track.prepareWithheld(),
-      authorize: async () => {},
-    });
-
-    await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
-      .rejects.toBeInstanceOf(DriveApiRequestError);
-
-    await expect(track.addObserver("late", "verifier"))
-      .rejects.toThrow(/cannot access Drive data this workspace has read/);
-    expect([...track.observers()]).toEqual([]);
-  });
 
   it("rejects another exact-file ID before calling Google", async () => {
     let { session, getFile } = core({ scope: { kind: "file", fileId: "file-1" } });
@@ -477,15 +394,15 @@ describe("Drive native sessions", () => {
     ["blob", "application/pdf", undefined],
     ["shortcut", "application/vnd.google-apps.shortcut", { targetId: "target-1" }],
   ])("observes a %s before rejecting its MIME type", async (_name, mimeType, shortcutDetails) => {
-    let { session, prepared, authorizations, events } = core({
+    let { session, authorizations, events } = core({
       getFile: async id => file({ id, mimeType, shortcutDetails }),
     });
 
     await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
       .rejects.toThrow(/not a Google Doc/);
-    expect(prepared).toEqual([["file-1"]]);
-    expect(authorizations).toEqual([expect.objectContaining({ excludeObservers: ["excluded"] })]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/file/file-1"]);
+    expect(events).toEqual(["authorize"]);
   });
 
   it("never follows a shortcut target implicitly", async () => {
@@ -502,8 +419,8 @@ describe("Drive native sessions", () => {
     expect(getFile).toHaveBeenCalledWith("shortcut-1");
   });
 
-  it("forwards observer exclusions and commits only after authorization", async () => {
-    let { session, authorizations, events } = core({
+  it("reports the opened file's Drive metadata", async () => {
+    let { session, authorizations } = core({
       getFile: async id => file({ id, mimeType: docMime }),
     });
 
@@ -511,25 +428,39 @@ describe("Drive native sessions", () => {
 
     expect(authorizations).toEqual([expect.objectContaining({
       title: "Open Google Doc from Google Drive",
-      excludeObservers: ["excluded"],
     })]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expectReported(authorizations[0], ["drive/file/file-1"]);
   });
 
-  it("leaves a denied file observation pending rather than observed", async () => {
-    let state = "unknown";
-    let { session } = core({
-      getFile: async id => file({ id, mimeType: docMime }),
-      prepareObservation: async ids => {
-        state = "pending";
-        return { pendingSets: ids, commit: () => { state = "observed"; } };
-      },
-      authorize: async () => { throw new Error("denied"); },
-    });
+  // openNativeFile() already reported the Drive metadata, so each content read reports only the
+  // file as the API that reads it names it; a PDF's text is read through Drive itself.
+  it.each([
+    ["account Doc", { kind: "account" } as const, docMime, "docs/document/file-1"],
+    ["account Sheet", { kind: "account" } as const, sheetMime, "sheets/spreadsheet/file-1"],
+    ["account PDF", { kind: "account" } as const, pdfMime, "drive/file/file-1"],
+    ["exact-file Doc", { kind: "file", fileId: "file-1" } as const,
+      docMime, "docs/document/file-1"],
+    ["exact-file PDF", { kind: "file", fileId: "file-1" } as const,
+      pdfMime, "drive/file/file-1"],
+  ])("reports only the native file on an %s read", async (_name, scope, mimeType, expected) => {
+    let { session, authorizations } = core({ scope });
 
-    await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
-      .rejects.toThrow("denied");
-    expect(state).toBe("pending");
+    await expect(session.nativeRead("file-1", mimeType)(
+      async () => "content",
+      value => ({ title: "Read file", description: `Read ${value}.` }),
+    )).resolves.toBe("content");
+    expect(authorizations).toEqual([{
+      title: "Read file", description: "Read content.", subresources: [expected],
+    }]);
+  });
+
+  it("withholds a native read's value when authorization is denied", async () => {
+    let { session } = core({ authorize: async () => { throw new Error("denied"); } });
+
+    await expect(session.nativeRead("file-1", docMime)(
+      async () => "content",
+      () => ({ title: "Read file", description: "Read content." }),
+    )).rejects.toThrow("denied");
   });
 });
 
@@ -565,15 +496,14 @@ describe("Drive search validation", () => {
 });
 
 describe("Drive observation authorization", () => {
-  it("does not commit an observation when authorization is denied", async () => {
-    let { session, events } = core({
+  it("discloses no page when authorization is denied", async () => {
+    let { session } = core({
       authorize: async () => {
         throw new Error("denied");
       },
     });
 
     await expect((await session.list()).next()).rejects.toThrow(/denied/);
-    expect(events).toEqual(["authorize"]);
   });
 
   it("includes the binding scope and a truncated query in the description", async () => {
@@ -611,7 +541,6 @@ describe("positioned Drive folder session", () => {
   ) {
     const provider = tree(nodes);
     const queries: DriveListFilesOptions[] = [];
-    const observations: DriveObservation[][] = [];
     const authorizations: ObservationDescription[] = [];
     const events: string[] = [];
     const scopeBatches: string[][] = [];
@@ -635,17 +564,12 @@ describe("positioned Drive folder session", () => {
         },
       },
       location,
-      prepareObservation: async units => {
-        observations.push([...units]);
-        return { pendingSets: units, commit: () => events.push("commit") };
-      },
-      prepareWithheld: () => ({ pendingSets: [], commit: () => events.push("latch") }),
       authorize: async description => {
         authorizations.push(description);
         events.push("authorize");
       },
     });
-    return { session, provider, queries, observations, authorizations, events, scopeBatches };
+    return { session, provider, queries, authorizations, events, scopeBatches };
   }
 
   it("lists and searches only the positioned folder's direct children", async () => {
@@ -721,20 +645,52 @@ describe("positioned Drive folder session", () => {
     await expect(childSession.getEntry("X")).rejects.toThrow(/outside this Drive binding/);
   });
 
-  it("fences an unopenable child only when the refusal is owner-relative", async () => {
+  it("reports the positioned folder alongside each child it reads", async () => {
+    const { session, authorizations } = positioned([root, nested, directDoc]);
+
+    await session.getEntry("D0");
+    await session.openNativeFile("D0", docMime, "Google Doc");
+    await session.openFolder("A");
+    await session.getScope();
+    expect(authorizations).toHaveLength(4);
+    expectReported(authorizations[0], ["drive/folder/R", "drive/file/D0"]);
+    expectReported(authorizations[1], ["drive/folder/R", "drive/file/D0"]);
+    expectReported(authorizations[2], ["drive/folder/R", "drive/folder/A"]);
+    expectReported(authorizations[3], ["drive/folder/R"]);
+  });
+
+  // Each content read revalidates the child in the folder, so it reports both as well as the
+  // file as its own API names it; a PDF's text is read through Drive, collapsing the last two.
+  it.each([
+    ["Doc", directDoc, ["drive/folder/R", "drive/file/D0", "docs/document/D0"]],
+    ["PDF", child("P", "R", { mimeType: pdfMime }), ["drive/folder/R", "drive/file/P"]],
+  ])("reports the folder, the child and the native file on a %s read",
+    async (_name, target, expected) => {
+      const { session, authorizations } = positioned([root, target]);
+
+      await expect(session.nativeRead(target.id, target.mimeType!)(
+        async () => "content",
+        value => ({ title: "Read file", description: `Read ${value}.` }),
+      )).resolves.toBe("content");
+      expect(authorizations).toEqual([{
+        title: "Read file", description: "Read content.", subresources: expected,
+      }]);
+    });
+
+  it("reports an unopenable child, or nothing when the refusal is account-relative", async () => {
     const objective = positioned([root, directDoc]);
     await expect(objective.session.openFolder("D0")).rejects.toThrow(/outside this Drive binding/);
-    expect(objective.observations).toEqual([[
-      { kind: "folder", fileId: "R" }, { kind: "file", fileId: "D0" },
-    ]]);
-    expect(objective.events).toEqual(["authorize", "commit"]);
+    expect(objective.authorizations).toHaveLength(1);
+    expectReported(objective.authorizations[0], ["drive/folder/R", "drive/file/D0"]);
+    expect(objective.events).toEqual(["authorize"]);
 
     const unlistable = folder("U", { parents: ["R"], capabilities: { canListChildren: false } });
-    const ownerRelative = positioned([root, unlistable]);
-    await expect(ownerRelative.session.openFolder("U"))
+    const accountRelative = positioned([root, unlistable]);
+    await expect(accountRelative.session.openFolder("U"))
       .rejects.toThrow(/outside this Drive binding/);
-    expect(ownerRelative.observations).toEqual([]);
-    expect(ownerRelative.events).toEqual(["authorize", "latch"]);
+    expect(accountRelative.authorizations).toHaveLength(1);
+    expectReported(accountRelative.authorizations[0], []);
+    expect(accountRelative.events).toEqual(["authorize"]);
   });
 
   it("invalidates a saved path when one edge changes", async () => {
@@ -763,50 +719,40 @@ describe("positioned Drive folder session", () => {
   });
 
   // Converting first would let a metadata failure answer whether the id is a direct child without
-  // the file ever being recorded for a later observer to be checked against.
-  it("records a direct child before its metadata can fail to convert", async () => {
+  // the file ever being reported for a later observer to be checked against.
+  it("reports a direct child before its metadata can fail to convert", async () => {
     const malformed = child("M", "R", { mimeType: undefined });
-    const { session, observations, events } = positioned([root, malformed]);
+    const { session, authorizations, events } = positioned([root, malformed]);
 
     await expect(session.getEntry("M")).rejects
       .toThrow("Google Drive omitted required file mimeType");
-    expect(observations).toEqual([[
-      { kind: "folder", fileId: "R" }, { kind: "file", fileId: "M" },
-    ]]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/folder/R", "drive/file/M"]);
+    expect(events).toEqual(["authorize"]);
   });
 
-  it("fences an invisible probe but not a visible non-child", async () => {
+  it("reports nothing for an invisible probe and skips a visible non-child", async () => {
     const visible = positioned([root, nested, nestedDoc]);
     await expect(visible.session.getEntry("D1")).rejects.toThrow(/outside this Drive binding/);
     expect(visible.events).toEqual([]);
 
     const invisible = positioned([root]);
     await expect(invisible.session.getEntry("gone")).rejects.toThrow(/outside this Drive binding/);
-    expect(invisible.events).toEqual(["authorize", "latch"]);
+    expect(invisible.events).toEqual(["authorize"]);
+    expectReported(invisible.authorizations[0], []);
   });
 
-  it("audits and rejects an empty folder search", async () => {
+  it("authorizes an empty folder search against the positioned folder", async () => {
     const { session, authorizations, events } =
       positioned([root], undefined, async () => ({ files: [] }));
 
-    await expect((await session.search({ namePrefix: "missing" })).next())
-      .rejects.toThrow("An empty Drive search cannot be shared safely.");
+    await expect((await session.search({ namePrefix: "missing" })).next()).resolves.toBeNull();
     expect(authorizations).toEqual([expect.objectContaining({
-      title: "Search Google Drive metadata",
+      title: "Read Google Drive metadata",
       description: expect.stringContaining('name starts with "missing"'),
     })]);
-    expect(events).toEqual(["authorize", "latch"]);
-  });
-
-  it("keeps admission open when the page budget slices a folder listing", async () => {
-    let page = 0;
-    const { session, observations, events } = positioned([root], undefined,
-      async () => ({ files: [], nextPageToken: `page-${++page}` }));
-
-    await expect((await session.search({ namePrefix: "missing" })).next()).resolves.toEqual([]);
-    expect(observations).toEqual([[{ kind: "folder", fileId: "R" }]]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expectReported(authorizations[0], ["drive/folder/R"]);
+    expect(events).toEqual(["authorize"]);
   });
 
   // Polling N sibling folders one at a time costs a request each. The proof is unchanged: every
@@ -814,7 +760,7 @@ describe("positioned Drive folder session", () => {
   it("searches several proven child folders in one request", async () => {
     const second = folder("B", { parents: ["R"] });
     const secondDoc = child("D2", "B", { mimeType: docMime });
-    const { session, queries, observations, events } =
+    const { session, queries, authorizations, events } =
       positioned([root, nested, second, nestedDoc, secondDoc]);
 
     await expect((await session.search({
@@ -826,14 +772,11 @@ describe("positioned Drive folder session", () => {
     expect(queries).toEqual([
       expect.objectContaining({ directParentIds: ["A", "B"], namePrefix: "D" }),
     ]);
-    expect(observations).toEqual([[
-      { kind: "folder", fileId: "R" },
-      { kind: "folder", fileId: "A" },
-      { kind: "folder", fileId: "B" },
-      { kind: "file", fileId: "D1" },
-      { kind: "file", fileId: "D2" },
-    ]]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], [
+      "drive/folder/R", "drive/folder/A", "drive/folder/B", "drive/file/D1", "drive/file/D2",
+    ]);
+    expect(events).toEqual(["authorize"]);
   });
 
   it("names every searched folder in the recorded description", async () => {
@@ -842,10 +785,11 @@ describe("positioned Drive folder session", () => {
       positioned([root, nested, second, nestedDoc], undefined, async () => ({ files: [] }));
 
     await expect((await session.search({ namePrefix: "D", childFolderIds: ["A", "B"] })).next())
-      .rejects.toThrow(/empty Drive search/);
+      .resolves.toBeNull();
     expect(authorizations).toEqual([expect.objectContaining({
       description: expect.stringContaining("parents A, B"),
     })]);
+    expectReported(authorizations[0], ["drive/folder/R", "drive/folder/A", "drive/folder/B"]);
   });
 
   it("refuses a page carrying a file from outside the named folders", async () => {
@@ -868,13 +812,14 @@ describe("positioned Drive folder session", () => {
     expect(queries).toEqual([]);
   });
 
-  it("fences a named child folder this account cannot list", async () => {
+  it("reports nothing for a named child folder this account cannot list", async () => {
     const unlistable = folder("B", { parents: ["R"], capabilities: { canListChildren: false } });
-    const { session, queries, events } = positioned([root, unlistable]);
+    const { session, queries, authorizations, events } = positioned([root, unlistable]);
 
     await expect((await session.search({ namePrefix: "D", childFolderIds: ["B"] })).next())
       .rejects.toThrow(/outside this Drive binding/);
-    expect(events).toEqual(["authorize", "latch"]);
+    expect(events).toEqual(["authorize"]);
+    expectReported(authorizations[0], []);
     expect(queries).toEqual([]);
   });
 
@@ -896,17 +841,16 @@ describe("positioned Drive folder session", () => {
     expect(queries).toEqual([]);
   });
 
-  // A direct child that is not a folder is an objective refusal, recorded as a file unit exactly
-  // as openFolder does; leaving it unrecorded lets a later collaborator inherit the probe.
-  it("records a non-folder named child before refusing it", async () => {
-    const { session, observations, events } = positioned([root, directDoc]);
+  // A direct child that is not a folder is an objective refusal, reported as a file exactly as
+  // openFolder does; leaving it unreported lets a later collaborator inherit the probe.
+  it("reports a non-folder named child before refusing it", async () => {
+    const { session, authorizations, events } = positioned([root, directDoc]);
 
     await expect((await session.search({ namePrefix: "D", childFolderIds: ["D0"] })).next())
       .rejects.toThrow(/outside this Drive binding/);
-    expect(observations).toEqual([[
-      { kind: "folder", fileId: "R" }, { kind: "file", fileId: "D0" },
-    ]]);
-    expect(events).toEqual(["authorize", "commit"]);
+    expect(authorizations).toHaveLength(1);
+    expectReported(authorizations[0], ["drive/folder/R", "drive/file/D0"]);
+    expect(events).toEqual(["authorize"]);
   });
 
   // The authorizer revalidates immediately after `buildEntries` with no provider read between, so
@@ -917,7 +861,7 @@ describe("positioned Drive folder session", () => {
       positioned([root, nested, second, nestedDoc], undefined, async () => ({ files: [] }));
 
     await expect((await session.search({ namePrefix: "D", childFolderIds: ["A", "B"] })).next())
-      .rejects.toThrow(/empty Drive search/);
+      .resolves.toBeNull();
     expect(scopeBatches).toEqual([["R"], ["A", "B"], ["R"], ["A", "B"]]);
   });
 });
