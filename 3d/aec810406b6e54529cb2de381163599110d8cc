@@ -1,0 +1,38 @@
+packages/gatekeeper-gitlab/__tests__/fixtures/gitlab-docs.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 71-84
+packages/gatekeeper-gitlab/__tests__/workerd/push.test.ts
+  s_1e2c74fa3cab0c::t_85133ef0f6db19 302,312,315-316,319,322,326,329,335,338-339,345,347-377,379,390,393,396-398
+  s_1e2c74fa3cab0c::t_df73c8e3e2dcef 122-125,142,144-145,289-301,303-311,313-314,317-318,320-321,323-325,327-328,330-334,336-337,340-344,346,378,380-389,391-392,394-395,399-400
+packages/gatekeeper-gitlab/storage-schema.md
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 32
+packages/gatekeeper-gitlab/src/gitlab-api.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 391-395,906-913,1226-1229
+  s_1e2c74fa3cab0c::t_315a3c5c2f7e03 1230-1231
+packages/gatekeeper-gitlab/__tests__/gitlab-action-types.test.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 7,36-37,41,68-100,113,120-146
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 75,224-225,2538-2543,2546,2551-2552,2556-2557,2573-2574,3368-3371,3374-3375,3384-3412
+  s_1e2c74fa3cab0c::t_335a131dea23ac 3413
+packages/gatekeeper-gitlab/README.md
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 34-51
+packages/gatekeeper-gitlab/src/gitlab-action-types.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 6,91-97,106-107,215-220,240-241,263-264,270,282-287,289,291-320
+packages/gatekeeper-gitlab/__tests__/workerd/actions.test.ts
+  s_1e2c74fa3cab0c::t_5f33f842a6806d 64,73,99-123,455,475
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3daec810406b6e54529cb2de381163599110d8cc",
+  "prompts": {},
+  "sessions": {
+    "s_1e2c74fa3cab0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8c6c553-ef88-423d-93fa-d223f193a726",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
