@@ -4137,7 +4137,7 @@ export type AiChatMessageBody = {
   resources: AlwaysAvailableResource[];
 } | {
   /**
-   * Indicates that the agent run ended with an error (e.g. LLM API failure, abort, server
+   * Indicates that the agent run ended with an error (e.g. LLM API failure, server
    * restart). This is displayed to the user with a "retry" button, but is NOT included in the
    * chat log sent to the LLM so the agent does not react to it.
    */
@@ -4145,7 +4145,8 @@ export type AiChatMessageBody = {
   message: string;
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
-   * the "connect Cloudflare / add credits" modal instead of a generic error + retry).
+   * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
+   * marks a run the user stopped, which is not a failure).
    */
   code?: string;
 } | {

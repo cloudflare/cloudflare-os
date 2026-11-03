@@ -400,6 +400,29 @@ describe('send and retry failures', () => {
     expect(addToast).toHaveBeenCalledExactlyOnceWith(
         { title: 'Failed to retry agent', description: undefined, variant: 'error' })
   })
+
+  it('shows a turn the user stopped as stopped, not as an error, and offers Continue', async () => {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [openChat])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    chat.emitMessage({
+      chatId: 1,
+      sequence: 0,
+      timestamp: new Date(),
+      author: { type: 'agent', id: 'model', name: 'Model' },
+      type: 'error',
+      message: 'The user stopped the agent.',
+      code: 'stopped',
+    })
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Stopped')
+    expect(text).not.toContain('Error:')
+    expect(text).not.toContain('The user stopped the agent.')
+    const buttons = [...document.querySelectorAll('button')].map(b => b.textContent)
+    expect(buttons).toContain('Continue')
+    expect(buttons).not.toContain('Retry')
+  })
 })
 
 describe('hook toggles', () => {
