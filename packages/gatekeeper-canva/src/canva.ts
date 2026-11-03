@@ -64,7 +64,7 @@ import {
   type CanvaJobRecord,
 } from "./canva-actions";
 import {
-  normalizeDesign, normalizeFolder, normalizeFolderItem, normalizeImageAsset, parseDesignId, parseFolderId,
+  normalizeDesign, normalizeFolder, normalizeFolderItem, normalizeImageAsset, parseAssetId, parseDesignId, parseFolderId,
 } from "./canva-normalize";
 import {
   designOrder, folderItemIdentity, folderItemOrder, isProvisional, pendingActionFor, pendingAssets,
@@ -626,6 +626,9 @@ const JOB_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const EXPIRED_JOB_ERROR = { code: "expired", message: "The job expired on Canva before it completed." };
 // Rows per `next()` on a listing cursor. Canva chooses its own provider page size.
 const CURSOR_PAGE_SIZE = 50;
+// Canva allows 10 capabilities reads a minute per user, and agents check the profile before each
+// AI action, so one answer serves this long.
+const CAPABILITIES_TTL_MS = 5 * 60 * 1000;
 
 /** The kinds of job that keep running on Canva after their action is applied. */
 type RunningJobKind = Exclude<CanvaJobRecord["kind"], "createDesign">;
@@ -706,6 +709,21 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     return this.#creds.run(creds => op(new CanvaApi(async () => creds.accessToken)), { replayable: true });
   }
 
+  #capabilities?: { expiresAt: number; value: Promise<string[]> };
+
+  /** The user's plan-gated features, shared by concurrent reads and kept briefly unless the read fails. */
+  #getCapabilities(): Promise<string[]> {
+    if (this.#capabilities && Date.now() < this.#capabilities.expiresAt) return this.#capabilities.value;
+    const entry = {
+      expiresAt: Date.now() + CAPABILITIES_TTL_MS,
+      value: this.#read(api => api.getCapabilities()).then(response => response.capabilities),
+    };
+    entry.value.catch(() => {
+      if (this.#capabilities === entry) this.#capabilities = undefined;
+    });
+    return (this.#capabilities = entry).value;
+  }
+
   async describe(): Promise<ResourceDescription> {
     const identity = await this.#account().getIdentity();
     return {
@@ -747,16 +765,13 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   // Reads the session delegates to
 
   async #getProfile(): Promise<CanvaProfile> {
-    const [identity, capabilities] = await Promise.all([
-      this.#account().getIdentity(),
-      this.#read(api => api.getCapabilities()),
-    ]);
+    const [identity, capabilities] = await Promise.all([this.#account().getIdentity(), this.#getCapabilities()]);
     return {
       userId: identity.userId,
       teamId: identity.teamId,
       displayName: identity.displayName,
-      canGenerateDesigns: capabilities.capabilities.includes("design_generation"),
-      canRemoveBackgrounds: capabilities.capabilities.includes("background_removal"),
+      canGenerateDesigns: capabilities.includes("design_generation"),
+      canRemoveBackgrounds: capabilities.includes("background_removal"),
     };
   }
 
@@ -827,7 +842,6 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   }
 
   async #pendingAsset(ref: string): Promise<CanvaImageAsset> {
-    if (this.#refs.kindOf(ref) === "design") throw new Error(`${ref} is the temporary id of a design, not an image asset.`);
     const me = await this.#account().getIdentity();
     const action = pendingActionFor(ref, this.#journal.listPending());
     if (action?.kind === "removeBackground") return pendingTransformedAsset(action.payload, me);
@@ -852,17 +866,27 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     return undefined;
   }
 
-  /**
-   * The jobs of `kind` applied actions started that are still running, polled first so one that has
-   * finished gives way to what Canva made. A job that can't be polled is kept as last seen.
-   */
-  async #runningJobs(kind: RunningJobKind): Promise<CanvaJobRecord[]> {
-    const running = Array.from(this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX }), ([, record]) => record)
-      .filter(record => record.kind === kind && record.status === "in_progress");
-    const settled = await Promise.all(running.map(record => this.#settleJob(record).catch((error: unknown) => {
+  /** The job records of `kind`, read before any await. */
+  #jobRecords(kind: CanvaJobRecord["kind"]): CanvaJobRecord[] {
+    return Array.from(this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX }), ([, record]) => record)
+      .filter(record => record.kind === kind);
+  }
+
+  /** `#settleJob`, or the record as last seen when Canva can't be polled. */
+  #settleOrKeep<R extends CanvaJobRecord>(record: R): Promise<R> {
+    return this.#settleJob(record).catch((error: unknown) => {
       logger.warn("failed to poll a running Canva job", { event: "canva.job.poll.failed", error });
       return record;
-    })));
+    });
+  }
+
+  /**
+   * The jobs of `kind` applied actions started that are still running, polled first so one that has
+   * finished gives way to what Canva made.
+   */
+  async #runningJobs(kind: RunningJobKind): Promise<CanvaJobRecord[]> {
+    const running = this.#jobRecords(kind).filter(record => record.status === "in_progress");
+    const settled = await Promise.all(running.map(record => this.#settleOrKeep(record)));
     return settled.filter(record => record.status === "in_progress");
   }
 
@@ -870,11 +894,8 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   // Jobs: what applied actions recorded, refreshed from Canva while still running
 
   async #listJobs<K extends CanvaJobRecord["kind"]>(kind: K): Promise<Extract<CanvaJobRecord, { kind: K }>[]> {
-    const records: CanvaJobRecord[] = [];
-    for (const [, record] of this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
-      if (record.kind === kind) records.push(await this.#settleJob(record));
-    }
-    // Filtered on `kind` above, which is what the return type states.
+    const records = await Promise.all(this.#jobRecords(kind).map(record => this.#settleOrKeep(record)));
+    // Filtered on `kind` by `#jobRecords`, which is what the return type states.
     return records.toSorted((a, b) => b.at - a.at) as Extract<CanvaJobRecord, { kind: K }>[];
   }
 
@@ -1237,12 +1258,10 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     if (options.title !== undefined && !isNonEmptyString(options.title, DESIGN_TITLE_MAX)) {
       throw new Error(`createDesign(): title must be 1 to ${DESIGN_TITLE_MAX} characters when provided.`);
     }
-    if (options.assetId !== undefined && !isNonEmptyString(options.assetId)) {
-      throw new Error("createDesign(): assetId must be a non-empty string when provided.");
-    }
-    const assetId = options.assetId === undefined ? undefined : this.#assetRef(options.assetId.trim(), "createDesign()");
-    // Canva places only images, and would refuse anything else only after the user approved.
-    if (assetId !== undefined && !isProvisional(assetId)) await this.#host.getImageAsset(assetId);
+    const assetId = options.assetId === undefined ? undefined : this.#assetRef(options.assetId, "createDesign()");
+    // Canva places only images, and would refuse anything else only after the user approved. This
+    // read is itself an observation.
+    if (assetId !== undefined && !isProvisional(assetId)) await this.getImageAsset(assetId);
     const me = await this.#host.identity();
     // Rebuilt from known members: nothing else the caller's object carried is stored or sent.
     const payload: CanvaActions["createDesign"] = {
@@ -1257,11 +1276,13 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   }
 
   /**
-   * An asset id an action will send to Canva: one Canva issued, or the temporary id of a pending
-   * background removal, which the action then waits for. A design's temporary id is refused here,
-   * with a message that says so, rather than at apply.
+   * An asset id a method was given: one Canva issued, or the temporary id of a pending background
+   * removal, which an action then waits for. Anything else, a design's temporary id included, is
+   * refused with a message that says so, rather than at apply.
    */
-  #assetRef(assetId: string, method: string): string {
+  #assetRef(input: unknown, method: string): string {
+    const assetId = parseAssetId(input);
+    if (assetId === null) throw new Error(`${method}: assetId must be a Canva asset id or a temporary id ("~2").`);
     const resolved = this.#host.resolve(assetId);
     if (isProvisional(resolved) && this.#host.kindOf(resolved) === "design") {
       throw new Error(`${method}: ${assetId} is the temporary id of a design, not of an image asset.`);
@@ -1346,8 +1367,7 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   }
 
   async getImageAsset(assetId: string): Promise<CanvaImageAsset> {
-    if (!isNonEmptyString(assetId)) throw new Error("getImageAsset(): assetId must be a non-empty string.");
-    const asset = await this.#host.getImageAsset(assetId.trim());
+    const asset = await this.#host.getImageAsset(this.#assetRef(assetId, "getImageAsset()"));
     await this.#queue.authorizeObservation({
       title: `Read image asset "${asset.name}"`,
       description: isProvisional(asset.id)
@@ -1359,7 +1379,6 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
 
   @skipRpcValidation()
   async removeBackground(assetId: string, options?: CanvaRemoveBackgroundOptions): Promise<CanvaImageAsset> {
-    if (!isNonEmptyString(assetId)) throw new Error("removeBackground(): assetId must be a non-empty string.");
     const name = options?.name;
     if (name !== undefined && !isNonEmptyString(name, ASSET_NAME_MAX)) {
       throw new Error(`removeBackground(): name must be 1 to ${ASSET_NAME_MAX} characters when provided.`);
@@ -1367,7 +1386,7 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     // Read the source first so the approval card can name it, and so a video or a missing asset is
     // refused before anything is queued. This read is itself an observation. The source may be the
     // pending result of an earlier removal, which this one then waits for.
-    const source = await this.getImageAsset(this.#assetRef(assetId.trim(), "removeBackground()"));
+    const source = await this.getImageAsset(this.#assetRef(assetId, "removeBackground()"));
     const duplicate = this.#host.pending().find(({ action }) => action.kind === "removeBackground"
       && this.#host.resolve(action.payload.assetId) === source.id);
     if (duplicate !== undefined) {

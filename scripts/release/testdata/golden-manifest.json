@@ -43,7 +43,7 @@
           "name": "CLIENT_ID",
           "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/canva/oauth",
           "setupSteps": [
-            "In the Canva Developer Portal, create a new integration (Public is fine; Private limits it to your own team).",
+            "In the Canva Developer Portal, create a new integration and make it Private, so members of your Canva team can connect. A Public one can't pass Canva's review, because design generation and background removal are preview APIs.",
             "Under Authentication, add the redirect URL below.",
             "Under Scopes, enable the scopes this gatekeeper requests: design:meta:read, design:content:write, asset:read, asset:write, folder:read, profile:read.",
             "Copy the integration's Client ID here, then generate a Client Secret and copy that below."

@@ -108,6 +108,12 @@ export function parseFolderId(input: string): string | null {
   return idFromCanvaUrl(trimmed, "folder");
 }
 
+/** An asset id: one Canva issued or the temporary id of a pending asset, or null for anything else. */
+export function parseAssetId(input: unknown): string | null {
+  const trimmed = typeof input === "string" ? input.trim() : "";
+  return ID_PATTERN.test(trimmed) || PROVISIONAL_ID_PATTERN.test(trimmed) ? trimmed : null;
+}
+
 /**
  * The wire form of a design type, built from its known members only. Nothing else a caller's
  * object carried reaches Canva or escapes the approval card.
