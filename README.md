@@ -125,6 +125,11 @@ Being built on Workers does not mean that Cloudflare OS can only run on Cloudfla
 
 The Cloudflare OS coding agent is actually a fully multi-purpose agent that can perform arbitrary tasks; like other popular coding agents, you don't have to code with it. You can use it to build Gadgets, but you can also skip the Gadget and just have the agent perform tasks directly. The Cloudflare OS agent is a [Code Mode](https://blog.cloudflare.com/code-mode/) agent -- it performs tasks by writing and immediately executing snippets of code. It can be connected to external resources using Gatekeepers (like MCP -- see below).
 
+### Personal global instructions
+
+Save working preferences for your agent turns across workspaces in **Profile → Personal global
+instructions**. See [scope, privacy and limits](docs/global-instructions.md).
+
 ### Build apps with AI
 
 While you can code a Gadget by hand if you want, the expectation is that AI writes the code for you. Cloudflare OS features a built-in coding agent that will build whatever you ask it, test it for you, and debug errors.
