@@ -1343,19 +1343,36 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  chatHead(chatId: number, includeHistory = true): ChatTimelineHead | undefined {
+  chatHead(chatId: number): ChatTimelineHead | undefined {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
     let latest = this.storage.nextChatSequences.get(chatId)?.latestVisibleMessageSequence;
     let message = latest === undefined ? undefined : this.storage.chats.get(chatKey(chatId, latest));
-    // Inbox fanout tracks newly numbered messages only, so it never needs a legacy tail scan.
-    let candidates = message ? [message] : includeHistory ?
-      this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true}) : [];
-    for (let message of candidates) {
-      if (!isCountableChatMessage(message)) continue;
-      return headForMessage(meta, message);
+    return headForMessage(meta, message);
+  }
+
+  async setChatReadHorizon(userId: string, chatId: number, sequence: number | undefined,
+      rewind: boolean): Promise<boolean> {
+    if (!this.ownerId) throw new Error("Workspace has been deleted.");
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta) return false;
+    let counter = this.storage.nextChatSequences.get(chatId);
+    let boundary = sequence ?? counter?.latestVisibleMessageSequence ?? -1;
+    if (rewind && boundary < 0) return false;
+    let through = rewind ? boundary - 1 : boundary;
+    let tail = this.nextChatSequencePeek(chatId) - 1;
+    if (!Number.isSafeInteger(through) || through < -1 || through > tail) {
+      throw new Error("Invalid timeline sequence.");
     }
-    return headForMessage(meta);
+    let [message] = through < 0 ? [] : this.storage.chats.list({
+      prefix: chatKeyPrefix(chatId), end: chatKey(chatId, through + 1), reverse: true, limit: 1});
+    return this.wrapUserDo(this.users.get(this.users.idFromString(userId))).applyReadHorizon(
+      this.ctx.id.toString(), chatId, {
+        readThroughSequence: through, readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
+        latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
+        head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
+        notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1,
+      }, rewind);
   }
 
   // Background reads retain the admission established on open, with the same lazy revocation
@@ -1366,7 +1383,7 @@ class OverseerImpl implements AgentHooks {
     let sharing = await this.getSharingManager();
     if (sharing.getEffectiveAccess(profileId)?.role !== "build") return false;
     let observer = this.storage.observers.get(profileId);
-    return this.#inScopeGatekeepers("build").every(gk =>
+    return this.#inScopeGatekeepers("workspace").every(gk =>
       observer?.accountChoices[gk.id] !== undefined);
   }
 
@@ -10963,33 +10980,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return this.impl.outputsSnapshot();
   }
 
-  /** Read metadata without changing enrollment, horizons, or observer registrations. */
-  async getChatHeadsForUser(userId: string, profileId: string) {
-    // The owner's listing precedes first open. An uninitialized source has no chats, not a denial.
-    if (!this.impl.ownerId) return [];
-    if (!await this.impl.mayReadChatState(userId, profileId)) return null;
-    return [...this.impl.storage.chatMeta.list()].flatMap(meta => this.impl.chatHead(meta.id) ?? []);
-  }
-
-  /** Translate an explicit UI read boundary with one indexed seek, never an unread-tail scan. */
-  async getChatReadPositionForUser(userId: string, profileId: string, chatId: number, readThroughSequence: number) {
-    if (!this.impl.ownerId) return null;
-    if (!await this.impl.mayReadChatState(userId, profileId)) return "denied" as const;
-    let meta = this.impl.storage.chatMeta.get(chatId);
-    if (!meta) return null;
-    let tail = this.impl.nextChatSequencePeek(chatId) - 1;
-    if (readThroughSequence > tail) throw new Error("Invalid timeline sequence.");
-    // Old records intentionally have no ordinal; new non-visible records carry the prefix too.
-    let [message] = readThroughSequence < 0 ? [] : this.impl.storage.chats.list({
-      prefix: chatKeyPrefix(chatId), end: chatKey(chatId, readThroughSequence + 1), reverse: true, limit: 1});
-    let counter = this.impl.storage.nextChatSequences.get(chatId);
-    return {readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
-      latestVisibleSequence: counter?.visibleThroughSequence ?? 0, timelineTailSequence: tail,
-      head: this.impl.chatHead(chatId, false),
-      headUpdatedAt: meta.lastActive,
-      notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1};
-  }
-
   /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openWorkspaceInternal() to detect Durable Object disconnects.
@@ -11109,7 +11099,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // subsequent arrivals fan out normally once the User DO has recorded the listing.
       let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
-        head: this.impl.chatHead(meta.id, false),
+        head: this.impl.chatHead(meta.id),
         headUpdatedAt: meta.lastActive,
         readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
@@ -12662,6 +12652,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }));
   }
 
+  async markChatRead(chatId: number, throughSequence?: number): Promise<void> {
+    await this.impl.setChatReadHorizon(this.clientUserId, chatId, throughSequence, false);
+  }
+
+  async markChatUnread(chatId: number, fromSequence?: number): Promise<boolean> {
+    return this.impl.setChatReadHorizon(this.clientUserId, chatId, fromSequence, true);
+  }
+
   async listChats(): Promise<AiChatMetadata[]> {
     return [...this.impl.storage.chatMeta.list({reverse: true})]
         .map(meta => this.impl.chatMetaForClient(meta));
@@ -13533,6 +13531,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       }
     }));
   }
+  async markChatRead(_chatId: number, _throughSequence?: number): Promise<void> { this.#deny(); }
+  async markChatUnread(_chatId: number, _fromSequence?: number): Promise<boolean> { this.#deny(); }
   async listChats(): Promise<AiChatMetadata[]> { this.#deny(); }
   async listModels(): Promise<AiChatAuthorInfo[]> { this.#deny(); }
   async getChatHistory(_chatId: number, _beforeSequence?: number): Promise<AiChatHistoryPage> {

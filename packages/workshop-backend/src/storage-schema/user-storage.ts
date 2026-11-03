@@ -134,7 +134,7 @@ export type ChatReadCursor = {
   notifiedThroughSequence: number;
   /** Delivered IDs at that position. Absent means the entire position was skipped on admission. */
   notifiedEventIds?: string[];
-  /** Source-owned inbox metadata, copied through the same durable message/title fanout. */
+  /** Every live tracked cursor has this source-owned head; deletion tombstones may omit it. */
   head?: Omit<ChatTimelineHead, "chatId">;
   /** Source metadata's existing lastActive timestamp, ordering renames at the same message position. */
   headUpdatedAt?: Date;

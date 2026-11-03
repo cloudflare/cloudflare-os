@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import type { ChatReadReceipt, ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
+import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -68,6 +68,16 @@ export type ChatMessageProgress = {
   firstVisibleSequence?: number;
   /** Eligible alerts from this source batch; never fetched again by the recipient. */
   notifications: (Pick<UserNotification, "id" | "kind" | "chatTitle"> & {sequence: number})[];
+};
+
+/** A raw read boundary translated by an already-authorized workspace session. */
+export type ChatReadPosition = Pick<ChatMessageProgress, "head" | "headUpdatedAt" | "latestVisibleSequence"> & {
+  /** Inclusive raw timeline boundary. */
+  readThroughSequence: number;
+  /** Dense visible prefix at that boundary. */
+  readThroughVisibleSequence: number;
+  /** Pre-tracking alert boundary, used only when creating a cursor. */
+  notificationBaseline: number;
 };
 
 /**
@@ -682,11 +692,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       {head: current.head, headUpdatedAt: current.headUpdatedAt};
   }
 
-  #workspace(workspaceId: string) {
-    return this.ctx.exports.OverseerDurableObject.get(
-      this.ctx.exports.OverseerDurableObject.idFromString(workspaceId));
-  }
-
   #hasWorkspace(workspaceId: string): boolean {
     return this.#unreadWorkspaces.has(workspaceId);
   }
@@ -725,52 +730,41 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount};
   }
 
-  // No source reads during delivery/recovery. Only an explicit read command translates a raw
-  // UI boundary to its persisted visible position, with one indexed source seek.
-  async #processChat(workspaceId: string, chatId: number, options: {
-    horizon?: {through: number; rewind: boolean};
-  } = {}): Promise<boolean> {
+  /** Apply a source-authorized boundary using only local state; never drain alerts on a read command. */
+  async applyReadHorizon(workspaceId: string, chatId: number, position: ChatReadPosition,
+      rewind: boolean): Promise<boolean> {
+    let admission = this.#unreadWorkspaces.get(workspaceId);
+    let key = `${workspaceId}:${chatId}`;
+    let changed = false;
+    await this.#serialize(key, async () => {
+      if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+      let current = this.#cursor(workspaceId, chatId);
+      if (current.deleted) return;
+      let through = position.readThroughSequence;
+      let visible = position.readThroughVisibleSequence;
+      // An own-message arrival can advance the horizon before this packet acquires the mutex.
+      if (!rewind && current.readThroughSequence > through) {
+        through = current.readThroughSequence;
+        visible = current.readThroughVisibleSequence!;
+      }
+      let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
+      changed = this.#storeCursor({...current, ...this.#mergeHead(current, position),
+        readThroughSequence: through, readThroughVisibleSequence: visible,
+        latestVisibleSequence: latest, unreadCount: latest - visible,
+        notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline});
+      if (changed) this.#unreadChanged(workspaceId, chatId);
+    });
+    return changed;
+  }
+
+  // Only notification delivery takes this path. All payloads needed for recovery are local.
+  async #processChat(workspaceId: string, chatId: number): Promise<void> {
     let admission = this.#unreadWorkspaces.get(workspaceId);
     let key = `${workspaceId}:${chatId}`;
     let hadNotifications = this.#notificationChats.has(key);
-    let changed = false;
     try {
       await this.#serialize(key, async () => {
         if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
-        let existing = this.#readCursors.get(key);
-        if (existing?.deleted) return;
-        if (options.horizon) {
-          let cursor = this.#cursor(workspaceId, chatId);
-          let through = options.horizon.rewind ? options.horizon.through :
-            Math.max(options.horizon.through, cursor.readThroughSequence);
-          if (existing && through === cursor.readThroughSequence &&
-              cursor.readThroughVisibleSequence !== undefined) return;
-          let state = await this.#workspace(workspaceId).getChatReadPositionForUser(
-            this.ctx.id.toString(), this.storage.profile.get().id, chatId, through);
-          if (this.#unreadWorkspaces.get(workspaceId) !== admission || this.#readCursors.get(key)?.deleted) return;
-          if (state === "denied") throw new Error("Workspace access denied.");
-          if (!state) { this.#forgetChat(workspaceId, chatId); return; }
-          if (through > state.timelineTailSequence) throw new Error("Invalid timeline sequence.");
-          // Arrivals can advance the head and consume the user's own next message during this
-          // await. Preserve both advances unless the command explicitly rewinds the read horizon.
-          let current = this.#cursor(workspaceId, chatId);
-          let readThroughVisibleSequence = state.readThroughVisibleSequence;
-          if (!options.horizon.rewind && current.readThroughSequence > through) {
-            through = current.readThroughSequence;
-            readThroughVisibleSequence = current.readThroughVisibleSequence!;
-          }
-          let latest = Math.max(current.latestVisibleSequence ?? 0, state.latestVisibleSequence);
-          let updated = {...current, ...this.#mergeHead(current, state), readThroughSequence: through,
-            readThroughVisibleSequence, latestVisibleSequence: latest,
-            unreadCount: latest - readThroughVisibleSequence,
-            notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : state.notificationBaseline};
-          this.#storeCursor(updated);
-          // Publish the committed read position before alert delivery can suspend or reset us.
-          if (!existing || current.readThroughSequence !== through || current.unreadCount !== updated.unreadCount) {
-            changed = true;
-            this.#unreadChanged(workspaceId, chatId);
-          }
-        }
         while (this.#unreadWorkspaces.get(workspaceId) === admission) {
           let [event] = this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`, limit: 1});
           if (!event) break;
@@ -808,7 +802,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     } finally {
       if (hadNotifications || this.#notificationChats.has(key)) await this.#armExpirySweep();
     }
-    return changed;
   }
 
   /** Read inbox rows directly from the user's local projection. */
@@ -851,13 +844,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       workspaces.set(cursor.workspaceId, summary);
     }
     return {unreadChatCount, unreadMessageCount, workspaces: [...workspaces.values()]};
-  }
-
-  /** Display metadata follows the workspace's existing authorization and query path. */
-  async getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null> {
-    if (!this.#hasWorkspace(workspaceId)) return null;
-    return this.#workspace(workspaceId).getChatHeadsForUser(
-      this.ctx.id.toString(), this.storage.profile.get().id);
   }
 
   async subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
@@ -954,26 +940,36 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /** Advance to the requested boundary; older read requests never move the horizon backward. */
-  async markChatRead(receipt: ChatReadReceipt): Promise<void> {
-    await this.markChatsRead([receipt]);
+  /** Mark the locally known heads in one workspace read, without waking the workspace. */
+  async markWorkspaceRead(workspaceId: string): Promise<void> {
+    await this.#markRead(workspaceId);
   }
 
-  async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
-    let results = await Promise.allSettled(receipts.map(receipt =>
-      this.#setReadHorizon(receipt.workspaceId, receipt.chatId, receipt.throughSequence,
-        false)));
+  /** Mark all locally known heads read; later source updates remain unread. */
+  async markAllRead(): Promise<void> {
+    await this.#markRead();
+  }
+
+  async #markRead(workspaceId?: string): Promise<void> {
+    let changed = false;
+    let results = await Promise.allSettled([...this.#readCursors.values()]
+      .filter(cursor => workspaceId === undefined || cursor.workspaceId === workspaceId)
+      .map(cursor => {
+        let admission = this.#unreadWorkspaces.get(cursor.workspaceId);
+        return this.#serialize(`${cursor.workspaceId}:${cursor.chatId}`, async () => {
+          if (!admission || this.#unreadWorkspaces.get(cursor.workspaceId) !== admission) return;
+          let current = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
+          if (!current || current.deleted || !current.unreadCount) return;
+          // Every tracked live cursor has a source-supplied head; raw and visible positions stay paired.
+          let visible = Math.max(current.readThroughVisibleSequence!, cursor.latestVisibleSequence!);
+          let updated = {...current,
+            readThroughSequence: Math.max(current.readThroughSequence, cursor.head!.latestSequence),
+            readThroughVisibleSequence: visible, unreadCount: current.latestVisibleSequence! - visible};
+          if (this.#storeCursor(updated)) changed = true;
+        });
+      }));
+    if (changed) this.#unreadChanged();
     for (let result of results) if (result.status === "rejected") throw result.reason;
-  }
-
-  async markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<boolean> {
-    return this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, true);
-  }
-
-  async #setReadHorizon(workspaceId: string, chatId: number, through: number,
-      rewind: boolean): Promise<boolean> {
-    if (!Number.isSafeInteger(through) || through < -1) throw new Error("Invalid timeline sequence.");
-    return this.#processChat(workspaceId, chatId, {horizon: {through, rewind}});
   }
 
   async #deliverNotifications(): Promise<void> {
@@ -1025,33 +1021,40 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     let attemptUntil = Math.min(retryUntil, Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS);
     let admission = this.#unreadWorkspaces.get(notification.workspaceId);
-    let signal = AbortSignal.any([AbortSignal.timeout(Math.max(1, attemptUntil - Date.now())),
+    let controller = new AbortController();
+    let deadline = setTimeout(() => controller.abort(
+      new DOMException("Notification delivery attempt timed out.", "TimeoutError")),
+      Math.max(1, attemptUntil - Date.now()));
+    let signal = AbortSignal.any([controller.signal,
       ...(admission ? [admission.signal] : [])]);
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    let acknowledged = await Promise.race([
-      Promise.any([...this.#notificationSubscribers.values()]
-          .map(subscriber => subscriber.notify(notification))).then(() => true, () => false),
-      new Promise<boolean>(resolve => {
-        timeout = setTimeout(() => resolve(false), Math.max(1, Math.min(3_000, attemptUntil - Date.now())));
-      }),
-    ]).finally(() => clearTimeout(timeout));
-    if (acknowledged) return;
-    signal.throwIfAborted();
-    if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
-    let subject = this.#notificationSubject;
-    let stores = [
-      this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions,
-    ];
-    let results = await Promise.allSettled(stores.flatMap(store =>
-      Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
-        if (await deliver(this.env, subject, subscriptionId, notification, signal)) return;
-        // This subscription is dead; the device gets a new one when its app next opens. Keep one it
-        // registered while this delivery was in flight.
-        let { [deviceKey]: current, ...others } = store.get();
-        if (current === subscriptionId) store.put(others);
-      })));
-    for (let result of results) {
-      if (result.status === "rejected") throw result.reason;
+    try {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let acknowledged = await Promise.race([
+        Promise.any([...this.#notificationSubscribers.values()]
+            .map(subscriber => subscriber.notify(notification))).then(() => true, () => false),
+        new Promise<boolean>(resolve => {
+          timeout = setTimeout(() => resolve(false), Math.max(1, Math.min(3_000, attemptUntil - Date.now())));
+        }),
+      ]).finally(() => clearTimeout(timeout));
+      if (acknowledged) return;
+      signal.throwIfAborted();
+      if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
+      let subject = this.#notificationSubject;
+      let stores = [
+        this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions,
+      ];
+      let results = await Promise.allSettled(stores.flatMap(store =>
+        Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
+          if (await deliver(this.env, subject, subscriptionId, notification, signal)) return;
+          // This subscription is dead; the device gets a new one when its app next opens. Keep one it
+          // registered while this delivery was in flight.
+          let { [deviceKey]: current, ...others } = store.get();
+          if (current === subscriptionId) store.put(others);
+        })));
+      for (let result of results) {
+        if (result.status === "rejected") throw result.reason;
+    } finally {
+      clearTimeout(deadline);
     }
   }
 

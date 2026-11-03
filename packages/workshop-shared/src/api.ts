@@ -276,12 +276,6 @@ export type UnreadSummaryUpdate = Pick<UserUnreadSummary, "unreadChatCount" | "u
   workspace: WorkspaceUnreadSummary;
 };
 
-/** An observed read boundary for a single-thread or bulk mark-read command. */
-export type ChatReadReceipt = Pick<ChatReadState, "workspaceId" | "chatId"> & {
-  /** Highest observed sequence to mark read; later activity stays unread. */
-  throughSequence: number;
-};
-
 /** The thread rows a live unread subscription needs; no scope exposes all historical threads. */
 export type UnreadStateScope = "summary" | "unread" | {
   /** Include read and unread thread statuses only for this workspace. */
@@ -649,9 +643,6 @@ export interface AuthenticatedApi extends RpcTarget {
   /** Fetch instance and workspace badge rollups without transferring individual thread rows or querying workspaces. */
   getUnreadSummary(): Promise<UserUnreadSummary>;
 
-  /** Query a workspace's thread metadata for display or an observed read boundary; null if access is denied. */
-  getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null>;
-
   /**
    * Subscribe to badge rollups and explicitly scoped thread rows, never all thread history.
    * Use summary for global indicators, unread for the inbox, or a workspace ID for its thread list.
@@ -660,21 +651,11 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Advance to the requested boundary without moving an already-later read horizon backward. */
-  markChatRead(receipt: ChatReadReceipt): Promise<void>;
+  /** Mark this workspace's locally received thread heads read, without querying the workspace. */
+  markWorkspaceRead(workspaceId: string): Promise<void>;
 
-  /**
-   * Mark observed thread boundaries read. A workspace failure does not block healthy workspaces,
-   * but rejects the command to report partial success; retrying the same receipts is safe.
-   */
-  markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
-
-  /**
-   * Set the horizon immediately before an existing item, allowing a rewind.
-   * Return whether a read-state update was published; an already-applied command returns false
-   * without writing. A reset retry can also return false after the original attempt applied it.
-   */
-  markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<boolean>;
+  /** Mark all locally received thread heads read, without querying any workspace. */
+  markAllRead(): Promise<void>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute
@@ -3268,6 +3249,12 @@ export interface Overseer extends RpcTarget {
    * immediately before `listActions()`, similar to `subscribeToChat()`.
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
+
+  /** Mark through a raw timeline boundary read, or the latest visible message if omitted. Uses this session's identity. */
+  markChatRead(chatId: number, throughSequence?: number): Promise<void>;
+
+  /** Rewind before a raw timeline boundary, or the latest visible message if omitted. Returns whether user state changed. */
+  markChatUnread(chatId: number, fromSequence?: number): Promise<boolean>;
 
   /** List past AI chats, with each one's id and title. */
   listChats(): Promise<AiChatMetadata[]>;

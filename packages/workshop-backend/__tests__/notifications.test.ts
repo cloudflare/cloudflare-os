@@ -75,6 +75,13 @@ const bodies = (fetcher: Mock<Fetch>, pathname: string) => fetcher.mock.calls
     .filter(([url]) => new URL(String(url)).pathname === pathname)
     .map(([, init]) => JSON.parse(String(init?.body)));
 
+// Expose the native timeout's otherwise uncancellable timer to the fake clock.
+const trackNativeTimeouts = () => vi.spyOn(AbortSignal, "timeout").mockImplementation(milliseconds => {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), milliseconds);
+  return controller.signal;
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -273,6 +280,24 @@ async function publish(notify?: () => Promise<void>): Promise<string[]> {
 }
 
 describe("UserDurableObject notifications", () => {
+  it.each(["browser", "push", "failure"] as const)("releases the attempt deadline after %s delivery", async outcome => {
+    vi.useFakeTimers();
+    using _timeout = trackNativeTimeouts();
+    const fetcher = stubService();
+    await inUser(async user => {
+      await user.registerNotificationDevice("a".repeat(64));
+      if (outcome === "browser") {
+        await user.subscribeToNotifications(new RpcStub(new Subscriber(async () => {})));
+      } else if (outcome === "failure") {
+        fetcher.mockRejectedValueOnce(new Error("Provider unavailable"));
+      }
+      const pending = user.publishNotification(NOTIFICATION);
+      if (outcome === "failure") await expect(pending).rejects.toThrow("Provider unavailable");
+      else await pending;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
   it("derives one central subject for every registration and delivery", async () => {
     const fetcher = stubService();
     await inUser(async user => {

@@ -44,7 +44,7 @@ Each `chatReadCursors` row contains:
 
 - `workspaceId`, `chatId`
 - `readThroughSequence`: inclusive raw UI horizon, -1 means before the timeline
-- `readThroughVisibleSequence`: corresponding dense visible horizon, initially 0
+- `readThroughVisibleSequence`: corresponding dense visible horizon, initialized immediately before the first delivered visible position
 - `latestVisibleSequence`: latest accepted visible head, monotonic
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
@@ -65,8 +65,9 @@ The existing source fanout carries inbox metadata with the count; title changes 
 same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
 change read horizons. The existing admission callback can repair metadata skipped during denied
 admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
-Older rows acquire the projection on their next source update; until then the
-inbox shows a fallback title/preview, without migration or background metadata queries.
+Every live tracked cursor stores a head and both visible positions, supplied by message fanout,
+first admission or an open-session read command. Tombstones may omit a head. Bulk actions rely
+on this invariant; there is no metadata lookup fallback.
 
 Three targeted local queries avoid transferring the full thread state for every consumer:
 
@@ -83,8 +84,7 @@ send one thread delta (null removes a now-read inbox row); out-of-scope changes 
 Each delta carries just the changed workspace's rollup and global totals, not every workspace.
 Bulk replacements and reconnects retain the same scope, never the full historical thread list.
 The web app uses one subscription, switching its scope with the active view. The inbox refreshes
-its targeted local query on those updates, including title-only updates. Ordinary workspace metadata
-and explicit read-boundary lookups retain their separate authorized workspace path.
+its targeted local query on those updates, including title-only updates. Ordinary workspace thread lists retain their existing open-session query path.
 Native badge replacement uses the existing
 versioned `notificationBadge` scalar outbox; its version is not a read-state/source version.
 
@@ -147,26 +147,35 @@ checkpoints, ACKed/denied recipients are absent from its retry list, including a
 
 ## Explicit read commands
 
-The UI retains raw timeline coordinates. An explicit read/unread command takes the thread mutex
-and asks the workspace to authorize and translate that boundary with one reverse indexed seek
-(`end`, `reverse: true`, `limit: 1`). There is no visible-tail scan or per-user count RPC. A future
-raw position is rejected; a non-visible record or gap maps to its preceding visible prefix.
+The UI retains raw timeline coordinates. Individual read/unread commands are methods on the
+already-authorized `Overseer` session. The Workspace DO translates the boundary with one local
+reverse indexed seek (`end`, `reverse: true`, `limit: 1`), then sends the paired raw/visible
+horizon, latest visible position and head to `UserDurableObject.applyReadHorizon`. A future raw
+position is rejected; a non-visible record or gap maps to its preceding visible prefix. Omitting
+the boundary uses the latest visible message, so thread menus need no metadata fetch.
+Use-only sessions deny these commands. No separate caller-supplied identity authorization path exists.
 
-The User DO commits raw horizon, visible horizon and subtraction-derived count together. Arrivals
-can update the head while this seek awaits; the command re-reads local state and preserves that
-newer head and pending alerts. Read commands and alert delivery share the same mutex, preventing
-concurrent send/checkpoint operations. Snapshot reads do not need that mutex.
+The User DO applies this packet under the existing thread mutex using only local rows. It
+preserves newer heads and own-message read advances received before the packet is processed,
+unless the command explicitly rewinds. It commits changed horizons/counts and publishes updates;
+identical state causes no write. Read commands never drain queued alerts, so a delivery failure
+cannot reject a successfully committed read. Alert delivery retains its own mutexed processing.
 
-Commands apply in processing order: mark-read only advances the raw horizon, while mark-unread
-may rewind it. Identical horizons cause no RPC or write. There are no receipt tokens or read
-versions. Read commands do not consume alerts waiting for delayed source fanout; the workspace's
-first tracked raw position supplies the new cursor's pre-tracking notification baseline.
+`AuthenticatedApi.markWorkspaceRead(workspaceId)` and `markAllRead()` operate entirely in the
+User DO. They advance each tracked unread row to its locally received head and visible position,
+without waking a workspace or fetching its newer tail. Messages arriving afterward remain unread.
+Read commands leave notification receipts and queued alerts unchanged.
 
-The API retains its existing one-time reset retry for read/unread commands. A lost response can
-therefore replay an already-committed command after a conflicting action from another session.
-Retry attempts participate in processing order too: the final horizon is not guaranteed to follow
-the original human-action order in this race. This best-effort conflict behavior is accepted;
-there are no durable operation IDs, deduplication receipts or ordering fences for read commands.
+There are no read receipt tokens or versions. In-workspace commands use the ordinary session
+failure/reopen behavior; local bulk commands retain the API's existing one-time reset retry.
+Processing order, including retries, determines the result of conflicting actions. There is no
+new operation journal, lifecycle or retry protocol.
+
+**Acceptance criterion:** no unread-related User DO operation accesses a Workspace DO. Message
+processing, notification recovery, queries, subscriptions and bulk commands are local; individual
+read commands enter through an open workspace and push their translated result to the User DO.
+The removed `getChatHeads`, `getChatHeadsForUser`, `getChatReadPositionForUser` and authenticated
+raw-receipt command APIs must not be reintroduced as fallback paths.
 
 ## Authorization and lifecycle
 

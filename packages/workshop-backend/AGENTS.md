@@ -91,7 +91,9 @@ them:
   .allowedModels`, or else the enabled providers) is built there too; a model binding takes the
   current pool at each session start, not the one it was minted with.
 
-For private read/count/notification horizons, dirty-thread delivery and reset recovery, read
-[the unread-state design](../../docs/user-unread-state.md). Its verification section lists the
-focused Worker/API suites. Background metadata reads must check current membership and existing
-observer admission; do not re-register observers or invoke external gatekeeper verifiers per message.
+For private read horizons, source-to-user fanout and notification recovery, read
+[the unread-state design](../../docs/user-unread-state.md). All unread-related data flows from
+Workspace DO to User DO: individual read commands use an authorized open workspace session;
+bulk read actions and unread queries use only local User DO state. Never add a User DO callback
+to the workspace for unread state or metadata. The workspace checks existing observer admission
+locally before fanout, without re-enrolling observers or calling gatekeeper verifiers per message.
