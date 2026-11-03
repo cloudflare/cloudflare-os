@@ -23,7 +23,14 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasSpreadsheetAccess(spreadsheetId: string): Promise<boolean>;
   hasPresentationAccess(presentationId: string): Promise<boolean>;
   hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
+  /** As `checkSubresourceAccess`, for one calendar. */
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
+  /**
+   * Whether the observer's Google account can read each subresource, in order, reusing recent
+   * answers (see `UserAccount.checkSubresourceAccess`). Throws for an ID it can't check, or when
+   * access can't be determined (expired credentials, a missing scope, a rate limit).
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
   /** Whether the observer's own account can open one Google Chat space, and with `members`, list its members. */
   hasChatSpaceAccess(spaceName: string, options?: { members?: boolean }): Promise<boolean>;
