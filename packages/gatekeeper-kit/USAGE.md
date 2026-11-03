@@ -541,8 +541,10 @@ constructor only where it is genuinely local.
 Use `cachedMany` when the provider answers many keys in one request. Fresh entries are served,
 keys another caller is already loading are joined, and the rest reach the loader together; each key
 is then stored and fenced as `cached` stores it, so a later batch of a different shape reuses them.
-The loader still owns provider limits, such as splitting what it is given into request-sized
-chunks.
+Pass the provider's per-request limit as `batchSize` rather than splitting keys inside the loader:
+the cache cuts batches from the missing keys alone, loads them one at a time and stores each as it
+returns, so a failing request keeps what the requests before it learned. A loader that throws
+stores nothing. Use `cached` for a key answered by a request of its own.
 
 Either method takes its TTL as a function of the cached value instead of a number when some answers
 deserve trust for longer than others, such as an access check that keeps a grant longer than a

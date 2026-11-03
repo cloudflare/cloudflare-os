@@ -628,32 +628,30 @@ export class UserAccount extends DurableObject<Env> {
    * determined, which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
-    // Parsed before the cache is consulted, so an ID this account can't check is refused outright.
+    // Parsed before anything is asked, so an ID this account can't check is refused outright.
     let parsed = new Map(subresources.map(subresource =>
         [subresource, parseCalendarSubresource(subresource)] as const));
-    return this.#access.cachedMany<boolean>(subresources,
-      allowed => allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS,
-      async missing => {
-        let api = new GoogleCalendarApi(async opts => (await this.getAccessToken(opts)).token);
-        let access = new Map<string, boolean>();
-        // One query at a time, so a long list doesn't trip Google's per-user rate limit. A query
-        // Google refuses outright (expired credentials, a missing scope, a rate limit) says
-        // nothing about the account's access, so it throws rather than reading as a denial.
-        let freeBusy = missing.filter(subresource => parsed.get(subresource)!.kind === "freeBusy");
-        for (let start = 0; start < freeBusy.length; start += MAX_FREE_BUSY_CALENDARS) {
-          let chunk = freeBusy.slice(start, start + MAX_FREE_BUSY_CALENDARS);
-          let answers = await api.hasFreeBusyAccess(
-              chunk.map(subresource => parsed.get(subresource)!.calendarId));
-          chunk.forEach((subresource, index) => access.set(subresource, answers[index]));
-        }
-        for (let subresource of missing) {
-          let {kind, calendarId} = parsed.get(subresource)!;
-          if (kind === "calendar") {
-            access.set(subresource, await hasCalendarDetailAccess(api, calendarId));
-          }
-        }
-        return missing.map(subresource => access.get(subresource)!);
-      });
+    let api = new GoogleCalendarApi(async opts => (await this.getAccessToken(opts)).token);
+    let ttl = (allowed: boolean) =>
+        allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
+    let access = new Map<string, boolean>();
+    // Each Google request is cached on its own, so a later failure keeps what earlier ones learned,
+    // and the free/busy queries carry only the calendars without a recent answer. One request at a
+    // time, so a long list doesn't trip Google's per-user rate limit. A query Google refuses
+    // outright (expired credentials, a missing scope, a rate limit) says nothing about the
+    // account's access, so it throws rather than reading as a denial.
+    let freeBusy = [...parsed].filter(([, {kind}]) => kind === "freeBusy").map(([id]) => id);
+    let answers = await this.#access.cachedMany(freeBusy, ttl, missing =>
+        api.hasFreeBusyAccess(missing.map(subresource => parsed.get(subresource)!.calendarId)),
+        {batchSize: MAX_FREE_BUSY_CALENDARS});
+    freeBusy.forEach((subresource, index) => access.set(subresource, answers[index]));
+    for (let [subresource, {kind, calendarId}] of parsed) {
+      if (kind === "calendar") {
+        access.set(subresource, await this.#access.cached(subresource, ttl,
+            () => hasCalendarDetailAccess(api, calendarId)));
+      }
+    }
+    return subresources.map(subresource => access.get(subresource)!);
   }
 
   /**

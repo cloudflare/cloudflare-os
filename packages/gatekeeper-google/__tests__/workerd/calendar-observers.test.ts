@@ -359,6 +359,23 @@ describe("Google Calendar verifyObserverAccess", () => {
       .resolves.toEqual({allowedObserverIds: ["alice"]});
   });
 
+  it("keeps what Google answered before a later request failed", async () => {
+    const calendar = calendarHarness();
+    calendar.backend.freeBusy.alice = id => id === ALICE;
+    calendar.backend.roles.alice = "writer";
+    // Neither a refusal of access nor a status the client retries.
+    calendar.backend.roleStatus.alice = 400;
+
+    await expect(calendar.verify({alice: "alice"}, [ALICE_FREE_BUSY, BOUND_CALENDAR]))
+      .rejects.toThrow(/400/);
+    delete calendar.backend.roleStatus.alice;
+    await expect(calendar.verify({alice: "alice"}, [ALICE_FREE_BUSY, BOUND_CALENDAR]))
+      .resolves.toEqual({allowedObserverIds: ["alice"]});
+    // The free/busy answer outlived the failed lookup, so only the lookup reached Google again.
+    expect(calendar.backend.queries).toHaveLength(1);
+    expect(calendar.backend.lookups).toHaveLength(2);
+  });
+
   it("reuses an account's recent answers, asking Google only about calendars it hasn't", async () => {
     const calendar = calendarHarness();
     calendar.backend.freeBusy.alice = id => id === ALICE;

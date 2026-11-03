@@ -135,28 +135,38 @@ export class KvTtlCache {
 
   /**
    * Returns or loads cached values for several keys at once, in `keys` order (duplicates
-   * included), loading every missing key in one call. Each entry is stored, expired, coalesced and
-   * fenced as {@link cached} does it, and the two share in-flight loads: a key another caller is
-   * already loading is joined rather than reloaded, and a key this call loads is joined by later
-   * callers of either method.
+   * included), loading the missing keys in batches of at most `batchSize`, one batch at a time.
+   * Each batch is stored as it returns, so a batch that fails keeps what the batches before it
+   * loaded; the batches after it are not loaded, and fail with it. Each entry is stored, expired,
+   * coalesced and fenced as {@link cached} does it, and the two share in-flight loads: a key
+   * another caller is already loading is joined rather than reloaded, and a key this call loads is
+   * joined by later callers of either method.
    * @param keys Cache keys within the authority partition.
    * @param ttlMs Maximum entry age in milliseconds, or a function giving it for the value an entry
    * holds, as {@link cached} takes it.
-   * @param load Loads fresh values for the missing keys, each once and in first-seen order, and
-   * returns one value per key, in the same order. Not called when nothing is missing.
+   * @param load Loads fresh values for one batch of missing keys, each once and in first-seen
+   * order, and returns one value per key, in the same order. Not called when nothing is missing. A
+   * load that throws stores none of its values, so it should make one provider request.
+   * @param options `batchSize` is the most keys one load is given, such as the most one provider
+   * request takes; by default every missing key goes to one load.
    * @returns The cached or loaded value for each key.
    * @throws Error when `load` returns a different number of values than it was given keys, or
-   * when a TTL is not a positive safe integer.
+   * when a TTL or `batchSize` is not a positive safe integer.
    */
   async cachedMany<T>(
     keys: readonly string[], ttlMs: number | ((value: T) => number),
-    load: (keys: string[]) => Promise<T[]>,
+    load: (keys: string[]) => Promise<T[]>, options: { batchSize?: number } = {},
   ): Promise<T[]> {
     if (typeof ttlMs === "number") requirePositiveInt("ttlMs", ttlMs);
+    const batchSize = options.batchSize === undefined
+      ? Infinity : requirePositiveInt("batchSize", options.batchSize);
     const authority = await this.#authority();
     if (authority === undefined) {
       const unique = [...new Set(keys)];
-      const values = await loadExactly(load, unique);
+      const values: T[] = [];
+      for (let start = 0; start < unique.length; start += batchSize) {
+        values.push(...await loadExactly(load, unique.slice(start, start + batchSize)));
+      }
       return keys.map(key => values[unique.indexOf(key)]);
     }
 
@@ -177,19 +187,40 @@ export class KvTtlCache {
     }
     // Claimed in the same synchronous turn, so no other caller can start a load for a key between
     // this call finding it missing and claiming it. Each joins another caller's load of its key, or
-    // claims the key for this call's batch.
+    // claims the key for one of this call's batches. Batches are cut from the claimed keys alone,
+    // so fresh and joined keys never take a place in one.
     const missing: string[] = [];
-    const batch = Promise.withResolvers<T[]>();
+    const batches: PromiseWithResolvers<T[]>[] = [];
     for (const [key, loadKey] of loadKeys) {
       results.set(key, flights.run(loadKey, () => {
         const index = missing.push(key) - 1;
-        return batch.promise.then(values => values[index]);
+        const batch = batches[Math.floor(index / batchSize)] ??= Promise.withResolvers<T[]>();
+        return batch.promise.then(values => values[index % batchSize]);
       }));
     }
     if (missing.length > 0) {
-      this.#loadAndStore(missing, generation, authority, load).then(batch.resolve, batch.reject);
+      void this.#loadBatches(missing, batches, batchSize, generation, authority, load);
     }
     return Promise.all(keys.map(key => results.get(key)!));
+  }
+
+  /**
+   * Loads and stores `missing` one batch after another, settling each of `batches` with its slice.
+   * A failed batch fails itself and every batch after it, which are never loaded.
+   */
+  async #loadBatches<T>(
+    missing: string[], batches: PromiseWithResolvers<T[]>[], batchSize: number,
+    generation: number, authority: string, load: (keys: string[]) => Promise<T[]>,
+  ): Promise<void> {
+    for (const [index, batch] of batches.entries()) {
+      try {
+        const keys = missing.slice(index * batchSize, (index + 1) * batchSize);
+        batch.resolve(await this.#loadAndStore(keys, generation, authority, load));
+      } catch (error) {
+        for (const failed of batches.slice(index)) failed.reject(error);
+        return;
+      }
+    }
   }
 
   /**

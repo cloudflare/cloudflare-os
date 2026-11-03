@@ -324,6 +324,55 @@ describe("KvTtlCache", () => {
     expect(load).toHaveBeenCalledOnce();
   });
 
+  it("cuts batches from the missing keys alone, loading one batch at a time", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    await cache.cachedMany(["a", "c"], 60_000, async keys => keys.map(key => `cached ${key}`));
+    let loading = 0;
+    const load = vi.fn(async (keys: string[]) => {
+      expect(++loading).toBe(1);
+      await Promise.resolve();
+      loading--;
+      return keys.map(key => `loaded ${key}`);
+    });
+
+    expect(await cache.cachedMany(["a", "b", "c", "d", "e"], 60_000, load, { batchSize: 2 }))
+      .toEqual(["cached a", "loaded b", "cached c", "loaded d", "loaded e"]);
+    expect(load.mock.calls).toEqual([[["b", "d"]], [["e"]]]);
+  });
+
+  it("keeps the batches before one that failed, and loads none after it", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    const failing = vi.fn(async ([key]: string[]) => {
+      if (key === "b") throw new Error("b failed");
+      return [key];
+    });
+
+    await expect(cache.cachedMany(["a", "b", "c"], 60_000, failing, { batchSize: 1 }))
+      .rejects.toThrow("b failed");
+    expect(failing.mock.calls).toEqual([[["a"]], [["b"]]]);
+
+    const retry = vi.fn(async (keys: string[]) => keys);
+    expect(await cache.cachedMany(["a", "b", "c"], 60_000, retry, { batchSize: 1 }))
+      .toEqual(["a", "b", "c"]);
+    expect(retry.mock.calls).toEqual([[["b"]], [["c"]]]);
+  });
+
+  it("batches the keys it loads without a known authority", async () => {
+    const cache = new KvTtlCache(makeKv(), () => undefined, { name: "access" });
+    const load = vi.fn(async (keys: string[]) => keys);
+
+    expect(await cache.cachedMany(["a", "b", "a", "c"], 60_000, load, { batchSize: 2 }))
+      .toEqual(["a", "b", "a", "c"]);
+    expect(load.mock.calls).toEqual([[["a", "b"]], [["c"]]]);
+  });
+
+  it("refuses a batch size that is not a positive integer", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+
+    await expect(cache.cachedMany(["a"], 60_000, async keys => keys, { batchSize: 0 }))
+      .rejects.toThrow("batchSize must be a positive");
+  });
+
   it("joins a key another caller is loading, and lets later callers join its own", async () => {
     const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
     const single = Promise.withResolvers<string>();
