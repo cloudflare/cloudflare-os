@@ -199,7 +199,7 @@ describe("findWorkspaceParentPage", () => {
 });
 
 describe("stageAction", () => {
-  function memoryStore(appended: string[]) {
+  function memoryStore(appended: string[], failApply = false) {
     const kv = new Map<string, unknown>();
     const storage = {
       get: (key: string) => structuredClone(kv.get(key)),
@@ -207,7 +207,11 @@ describe("stageAction", () => {
       delete: (key: string) => kv.delete(key),
       list: ({ prefix }: { prefix: string }) => [...kv].filter(([key]) => key.startsWith(prefix)),
     };
-    const api = { appendBlockChildren: async (pageId: string) => { appended.push(pageId); return ["block-1"]; } };
+    const api = { appendBlockChildren: async (pageId: string) => {
+      if (failApply) throw new Error("Notion is unavailable");
+      appended.push(pageId);
+      return ["block-1"];
+    } };
     return new NotionStore(storage as never, api as never);
   }
 
@@ -224,6 +228,18 @@ describe("stageAction", () => {
 
     expect(appended).toEqual(["page-1"]);
     expect(store.getAction(id)).toMatchObject({ state: "applied", appendedBlockIds: ["block-1"] });
+  });
+
+  it("keeps an action whose apply failed before a lost submit reply, for a retry", async () => {
+    const store = memoryStore([], true);
+    const queue = { submitAction: async (id: number) => {
+      await applyStoredAction(store, id).catch(() => {});
+      throw new Error("Network connection lost.");
+    } };
+
+    const id = await stageAction(store, queue as never, { type: "appendContent", pageId: "page-1", markdown: "Hello" });
+
+    expect(store.getAction(id)).toMatchObject({ state: "pending" });
   });
 
   it("drops the record and fails when the submit fails without applying", async () => {

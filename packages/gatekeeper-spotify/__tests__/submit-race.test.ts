@@ -85,6 +85,27 @@ describe("submitActionForApproval when the action is applied before the reply", 
     expect(kv.get(`action:${action.approvalId}`)).toMatchObject({ state: "failed" });
   });
 
+  it("keeps an action whose apply is still under way when the reply is lost", async () => {
+    let release: (() => void) | undefined;
+    const fetch = vi.fn(() => new Promise<Response>(resolve => {
+      release = () => resolve(new Response(null, { status: 204 }));
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const { gk, kv } = gatekeeper();
+    const action = pause(gk);
+    let applying: Promise<void> | undefined;
+    const queue = { submitAction: async (id: number) => {
+      applying = gk.applyAction(id);
+      throw new Error("Network connection lost.");
+    } } as never;
+    await expect(gk.submitActionForApproval(queue, action, presentation)).resolves.toBeUndefined();
+    expect(kv.get(`action:${action.approvalId}`)).toMatchObject({ state: "pending" });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    release!();
+    await applying;
+    expect(kv.get(`retiredAction:${action.approvalId}`)).toMatchObject({ state: "approved" });
+  });
+
   it("still drops the record and fails when the submit fails without applying", async () => {
     const { gk, kv } = gatekeeper();
     const action = pause(gk);

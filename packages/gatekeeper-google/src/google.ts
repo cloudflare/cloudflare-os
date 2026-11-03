@@ -1347,6 +1347,21 @@ class PendingActionStore<Action> {
 
   remove(id: number): void {
     this.#kv.delete(this.#actionKey(id));
+    this.#kv.delete(this.#applyingKey(id));
+  }
+
+  #applyingKey(id: number): string {
+    return `pending:applying:${id}`;
+  }
+
+  /** Records that the overseer has started applying `id`, which proves it received the action. */
+  markApplying(id: number): void {
+    this.#kv.put(this.#applyingKey(id), true);
+  }
+
+  /** Whether the overseer has started applying `id` (see `markApplying`). */
+  isApplying(id: number): boolean {
+    return this.#kv.get<boolean>(this.#applyingKey(id)) === true;
   }
 }
 
@@ -2840,6 +2855,7 @@ export class GoogleCalendarGatekeeperImpl
     if (!action) {
       throw new Error(`Unknown pending Google Calendar action: ${actionId}`);
     }
+    pendingActions.markApplying(actionId);
 
     let api = new GoogleCalendarApi(opts => this.#getAccessToken(opts));
     switch (action.type) {
@@ -3173,10 +3189,11 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
   }
 
   // An auto-approval can apply an action before its submit reply arrives. Its pending record goes
-  // only once the overseer has applied or rejected it, so a lost reply then is no failure, and
-  // reporting one would invite a repeated write.
+  // only once the overseer has applied or rejected it, and is marked while an apply is under way
+  // or has failed, so a lost reply then is no failure: reporting one would invite a repeated write,
+  // and dropping the record would take away the retry.
   #receivedDespite(actionId: number): boolean {
-    return this.#pendingActions.get(actionId) === undefined;
+    return this.#pendingActions.get(actionId) === undefined || this.#pendingActions.isApplying(actionId);
   }
 }
 

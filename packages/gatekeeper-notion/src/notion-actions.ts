@@ -91,6 +91,11 @@ export type StoredActionRecord = {
   action: NotionAction;
   state: "pending" | "applied" | "reverted";
   submittedAt: number;
+  /**
+   * When the overseer first applied it, which proves it received the action even if the submit
+   * reply was lost (see stageAction).
+   */
+  applyStartedAt?: number;
   /** For appendContent revert: the IDs of the blocks created on apply. */
   appendedBlockIds?: string[];
   /** For createPage: the real Notion page ID assigned on apply. */
@@ -1153,8 +1158,9 @@ export async function stageAction(
     await approvalQueue.submitAction(id, describeAction(action));
   } catch (err) {
     // An auto-approval can apply the action before the reply arrives, so a lost reply on an
-    // applied action proves the overseer received it; failing would invite a repeated write.
-    if (store.getAction(id)?.state === "applied") return id;
+    // action the overseer has started applying proves it received it: failing would invite a
+    // repeated write, and deleting would take away its retry.
+    if (store.getAction(id)?.applyStartedAt !== undefined) return id;
     store.deleteAction(id);
     throw err;
   }
@@ -1164,9 +1170,17 @@ export async function stageAction(
 // ---------------------------------------------------------------------------------------------
 // Overseer-facing dispatch (called by the gatekeeper DO's applyAction/rejectAction/revertAction).
 
+/** Records that the overseer has started applying `record`, before anything reaches the provider. */
+function markApplyStarted(store: NotionStore, record: StoredActionRecord): void {
+  if (record.applyStartedAt !== undefined) return;
+  record.applyStartedAt = Date.now();
+  store.putAction(record);
+}
+
 export async function applyStoredAction(store: NotionStore, id: number): Promise<void> {
   const record = store.getAction(id);
   if (!record) throw new Error(`Unknown action: ${id}`);
+  markApplyStarted(store, record);
   await applyNotionAction(store, record);
 }
 

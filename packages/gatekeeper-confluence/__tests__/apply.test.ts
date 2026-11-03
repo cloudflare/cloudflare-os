@@ -200,6 +200,20 @@ describe("staging an action", () => {
     expect(calls.addComment).toHaveLength(1);
     expect(store.getAction(id)?.state).toBe("applied");
   });
+
+  it("keeps one whose apply failed before a lost submit reply, for a retry", async () => {
+    const { api } = makeApi();
+    api.addComment = async () => { throw new Error("temporary failure"); };
+    const store = storeWith(api);
+    const queue = { submitAction: async (id: number) => {
+      await applyStoredAction(store, id).catch(() => {});
+      throw new Error("Network connection lost.");
+    } };
+
+    const id = await stageAction(store, queue as never, { type: "addComment", contentId: "555", text: "hi" });
+
+    expect(store.getAction(id)?.state).toBe("pending");
+  });
 });
 
 describe("attachment files", () => {

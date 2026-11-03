@@ -26,6 +26,8 @@ class CalendarModel {
   readonly versions = new Map<string, number>();
   /** Runs after each GET, to change an event between the gatekeeper's read and its write. */
   afterRead?: (event: GoogleEvent) => void;
+  /** Refuses every creation, as Google does a request it rejects. */
+  failCreates = false;
 
   /** Changes an event the way a collaborator editing it in Google would, giving it a new etag. */
   edit(id: string, change: Partial<GoogleEvent>): void {
@@ -50,6 +52,7 @@ class CalendarModel {
       let url = new URL(request.url);
       let prefix = `/calendar/v3/calendars/${encodeURIComponent(TEST_CALENDAR_ID)}/events/`;
       if (request.method === "POST" && `${url.pathname}/` === prefix) {
+        if (this.failCreates) return new Response("Bad Request", { status: 400 });
         let body = await request.json();
         this.created.push(body);
         return Response.json({ ...body as object, id: `created-${this.created.length}` });
@@ -121,6 +124,15 @@ describe("Google Calendar auto-approval", () => {
     let call = await hooks().createEventLosingReply("create-lost-reply", draft);
     expect(call.error).toBeUndefined();
     expect(calendar.created).toHaveLength(1);
+  });
+
+  it("reports a create whose apply failed before its submit reply was lost as submitted", async () => {
+    let calendar = new CalendarModel();
+    calendar.failCreates = true;
+    calendar.install();
+    let call = await hooks().createEventLosingReply("create-failed-lost-reply", draft);
+    expect(call.error).toBeUndefined();
+    expect(calendar.created).toHaveLength(0);
   });
 
   it("reports an update applied before its submit reply was lost as submitted", async () => {

@@ -51,7 +51,7 @@ class ApplyThenLoseReplyQueue extends RecordingApprovalQueue {
 
   override async submitAction(actionId: number, description: ActionDescription): Promise<void> {
     await super.submitAction(actionId, description);
-    await this.#apply(actionId);
+    await this.#apply(actionId).catch(() => {});
     throw new Error("Network connection lost.");
   }
 }

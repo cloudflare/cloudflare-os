@@ -1067,6 +1067,8 @@ type PendingActionRow = {
   submittedAt: number;
   /** The verdict submitted with the action; apply re-checks a `true` one (see applyAction). */
   autoApprovable?: boolean;
+  /** Set when the overseer first applies it, which proves it received the action (see submitWrite). */
+  applyStarted?: true;
 };
 
 // Internal storage row for actions that have been applied. Retained so that revertAction() can
@@ -1198,6 +1200,7 @@ export class HomeAssistantGatekeeperImpl
       throw new Error(`No queued Home Assistant action exists with id ${actionId}.`);
     }
     const action = pending.action;
+    if (!pending.applyStarted) this.ctx.storage.kv.put<PendingActionRow>(`pending:${actionId}`, { ...pending, applyStarted: true });
     const creds = await this.#getCreds();
     let revertInfo: HomeAssistantRevertInfo;
     try {
@@ -1365,8 +1368,9 @@ export class HomeAssistantGatekeeperImpl
           await approvalQueue.submitAction(id, description);
         } catch (e) {
           // An auto-approval can apply the action before the reply arrives, so a lost reply on an
-          // applied action proves the overseer received it; failing would invite a repeated call.
-          if (self.ctx.storage.kv.get(`applied:${id}`) !== undefined) return;
+          // action the overseer has started applying proves it received it; failing would invite a
+          // repeated call, and dropping the row would take away its retry.
+          if (self.ctx.storage.kv.get(`applied:${id}`) !== undefined || self.#getPending(id)?.applyStarted) return;
           // The submit failed (e.g., the approval queue stub is gone). Drop the pending row.
           self.#deletePending(id);
           throw e;

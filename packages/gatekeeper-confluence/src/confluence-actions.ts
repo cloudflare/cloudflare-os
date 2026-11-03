@@ -72,6 +72,11 @@ export type StoredActionRecord = {
   action: ConfluenceAction;
   state: "pending" | "applied" | "reverted";
   submittedAt: number;
+  /**
+   * When the overseer first applied it, which proves it received the action even if the submit
+   * reply was lost (see stageAction).
+   */
+  applyStartedAt?: number;
   /** For createContent / addComment: the real content ID assigned on apply. */
   createdContentId?: string;
   /** For uploadAttachment: the attachment ID assigned on apply. */
@@ -544,8 +549,9 @@ export async function stageAction(
     await approvalQueue.submitAction(id, { ...describeAction(action), ...autoApprovalOf(action) });
   } catch (err) {
     // An auto-approval can apply the action before the reply arrives, so a lost reply on an
-    // applied action proves the overseer received it; failing would invite a repeated write.
-    if (store.getAction(id)?.state === "applied") return id;
+    // action the overseer has started applying proves it received it: failing would invite a
+    // repeated write, and deleting would take away its retry.
+    if (store.getAction(id)?.applyStartedAt !== undefined) return id;
     store.deleteAction(id);
     throw err;
   }
@@ -685,12 +691,20 @@ async function applyAction(store: ConfluenceStore, record: StoredActionRecord): 
   if (action.type === "uploadAttachment") store.releaseAttachment(action);
 }
 
+/** Records that the overseer has started applying `record`, before anything reaches the provider. */
+function markApplyStarted(store: ConfluenceStore, record: StoredActionRecord): void {
+  if (record.applyStartedAt !== undefined) return;
+  record.applyStartedAt = Date.now();
+  store.putAction(record);
+}
+
 export async function applyStoredAction(store: ConfluenceStore, id: number): Promise<void> {
   const record = store.getAction(id);
   if (!record) throw new Error(`Unknown action: ${id}`);
   // The Workshop marks its side approved only after this RPC returns, so a restart in between
   // re-applies an action whose work (and attachment file) is already done and gone.
   if (record.state === "applied") return;
+  markApplyStarted(store, record);
   await applyAction(store, record);
 }
 

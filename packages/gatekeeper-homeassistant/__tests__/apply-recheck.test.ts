@@ -18,7 +18,7 @@ for (const name of ["instance", "area", "label", "device", "entity"]) {
 }
 vi.mock("../src/types.txt", () => ({ default: "" }));
 
-const live = vi.hoisted(() => ({ registry: undefined as unknown as RegistrySnapshot }));
+const live = vi.hoisted(() => ({ registry: undefined as unknown as RegistrySnapshot, failCalls: false }));
 vi.mock("../src/homeassistant-api", async importOriginal => ({
   ...await importOriginal<typeof import("../src/homeassistant-api")>(),
   fetchRegistrySnapshot: async () => live.registry,
@@ -26,7 +26,10 @@ vi.mock("../src/homeassistant-api", async importOriginal => ({
 const executed = vi.hoisted(() => [] as unknown[]);
 vi.mock("../src/approvals", async importOriginal => ({
   ...await importOriginal<typeof import("../src/approvals")>(),
-  executeAction: async (action: unknown) => void executed.push(action),
+  executeAction: async (action: unknown) => {
+    if (live.failCalls) throw new Error("Home Assistant is unavailable");
+    executed.push(action);
+  },
   canRevert: () => false,
 }));
 
@@ -118,6 +121,22 @@ describe("submitting a call that is applied before the reply arrives", () => {
     await expect(session.callService(turnOnLounge.domain, turnOnLounge.service, undefined, turnOnLounge.target)).resolves.toBeUndefined();
     expect(executed).toHaveLength(1);
     expect([...kv.keys()].filter(key => key.startsWith("applied:"))).toHaveLength(1);
+  });
+
+  it("keeps a call whose apply failed before the reply was lost, for a retry", async () => {
+    const { gk, kv } = gatekeeper();
+    live.registry = home();
+    live.failCalls = true;
+    try {
+      const session = await gk.startSession(queue(async submitted => {
+        await gk.applyAction(submitted).catch(() => {});
+        throw new Error("Network connection lost.");
+      })) as any;
+      await expect(session.callService(turnOnLounge.domain, turnOnLounge.service, undefined, turnOnLounge.target)).resolves.toBeUndefined();
+      expect([...kv.keys()].filter(key => key.startsWith("pending:"))).toHaveLength(1);
+    } finally {
+      live.failCalls = false;
+    }
   });
 
   it("still fails when the submit fails without applying", async () => {

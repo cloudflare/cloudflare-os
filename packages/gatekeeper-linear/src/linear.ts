@@ -941,7 +941,7 @@ type IssueOverlayPatch = {
   parent?: RawIssue["parent"];
 };
 
-type StoredAction =
+type StoredAction = (
   | { id: number; status: ActionStatus; kind: "createIssue"; input: IssueCreateInput;
       provisionalId: string; createdIssueId?: string; synthetic: RawIssue; title: string }
   | { id: number; status: ActionStatus; kind: "updateIssue"; issueRef: string;
@@ -954,7 +954,14 @@ type StoredAction =
       createdCommentId?: string; synthetic: RawComment; title: string }
   | { id: number; status: ActionStatus; kind: "createLabel"; teamId: string; name: string;
       color?: string; description?: string; createdLabelId?: string; synthetic: RawLabel; title: string }
-  | { id: number; status: ActionStatus; kind: "archive"; issueRef: string; archived: boolean; title: string };
+  | { id: number; status: ActionStatus; kind: "archive"; issueRef: string; archived: boolean; title: string }
+) & {
+  /**
+   * Set when the overseer first applies the action, which proves it received it even if the submit
+   * reply was lost (see `enqueue`).
+   */
+  applyStarted?: true;
+};
 
 /**
  * A stored action before `enqueue` assigns its id and status. The Omit is distributive, so each
@@ -1153,7 +1160,7 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
       // only the reply was lost, and reporting failure would invite a repeated provider write. A
       // missing record proves nothing: a dependency's rejection cascade deletes it too.
       const current = this.ctx.storage.kv.get<StoredAction>(`action:${id}`);
-      if (current?.status === "applied") return;
+      if (current?.status === "applied" || current?.applyStarted) return;
       if (current) {
         // Drop the record so simulated reads don't show an action no approver can resolve.
         this.ctx.storage.kv.delete(`action:${id}`);
@@ -1572,6 +1579,10 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
   async applyAction(actionId: number): Promise<void> {
     const action = this.ctx.storage.kv.get<StoredAction>(`action:${actionId}`);
     if (!action) throw new Error(`Unknown action: ${actionId}`);
+    if (!action.applyStarted) {
+      action.applyStarted = true;
+      this.ctx.storage.kv.put<StoredAction>(`action:${actionId}`, action);
+    }
 
     await this.#run(async api => {
       switch (action.kind) {
