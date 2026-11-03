@@ -13,16 +13,20 @@ This package provides Cloudflare OAuth integration for Gadgets. It serves three 
   Gateway.
 - **Workers Observability:** gadgets can receive read-only access to logs, events, invocations,
   aggregate metrics, and traces either across an account or restricted to one Worker. Every result
-  is authorized as an observation, and Worker bindings inject an immutable service filter and
-  defensively discard foreign-service events. Distributed trace summaries are account-only because
-  their names, timing, services, and counts describe the whole cross-service trace; a Worker binding
-  can still retrieve its own events for a known trace ID.
+  is authorized as an observation, and Worker bindings stay pinned to the Worker's immutable ID,
+  injecting that Worker's name and versions as filters and defensively discarding any event from
+  another version. Distributed trace summaries are account-only because their names, timing,
+  services, and counts describe the whole cross-service trace; a Worker binding can still retrieve
+  its own events for a known trace ID.
 
-Observability connections request `workers-observability.read`. The OAuth client must allow that
-scope or Cloudflare will omit/reject it. Existing billing-only connections can add the grant when the
-user first selects an observability resource. Cloudflare exposes account and Worker resource choices,
-but both map to this one indivisible OAuth scope; resource bindings provide the finer capability
-boundary after connection.
+Observability connections request `workers-observability.read`, and a connection that may bind a
+single Worker also requests `workers-tail.read`, which lets it read the Worker's ID, name and
+versions. The OAuth client must allow both scopes or Cloudflare will omit/reject them. Existing
+billing-only connections can add the grant when the user first selects an observability resource,
+and a connection granted only `workers-observability.read` (as every one was before Worker bindings
+needed the second scope) is asked for `workers-tail.read` the first time it connects a Worker.
+Cloudflare exposes account and Worker resource choices; resource bindings provide the finer
+capability boundary after connection.
 
 Workers telemetry is retained by Cloudflare for at most seven days. Queries default to the last hour,
 and the Worker picker searches the full retention window. Suggested bindings are
@@ -30,13 +34,39 @@ and the Worker picker searches the full retention window. Suggested bindings are
 
 ### Sharing a gadget that reads telemetry
 
-A binding is not transferable. When a gadget with an observability binding is shared, each
-collaborator is admitted only if **their own** connected Cloudflare account can read that resource
-(`addObserver` checks it against their credentials, not the owner's). A collaborator without access is
-refused, and a verification that fails for any other reason — a 5xx, a transport error — is also a
-refusal rather than an admission.
+A binding is not transferable. Every read reports what it disclosed as a subresource,
+`account/<accountId>` for an account binding and `account/<accountId>/worker/<workerId>` for a
+Worker binding, and the Workshop admits a collaborator to what was read only if **their own**
+connected Cloudflare account can read it (`verifyObserverAccess` checks their credentials, not the
+owner's). An account needs a telemetry read to succeed in it; a Worker needs that and the Worker,
+looked up by its ID, to be visible, so the check follows the Worker the binding was granted rather
+than whichever Worker now has its name. A connection without the scopes for a resource type is
+refused without asking Cloudflare. A collaborator without access is refused, and a verification that
+fails for any other reason — a 5xx, a transport error — is an error rather than an admission.
+
+Each collaborator's answers are cached in their own connected account and reused across every
+workspace: an allowed answer for up to 15 minutes and a denial for up to 15 seconds, until their
+credentials are next installed. Cloudflare does not say when a role changes, so access revoked in
+Cloudflare can still admit a collaborator for up to 15 minutes, and a new grant is noticed within 15
+seconds. `addObserver` still requires the binding's own subresource on every admission, for reads
+made before reads reported one.
 
 ### What a Worker binding trusts, and what it re-checks
+
+Telemetry names the Worker that emitted an event only by the name it had then
+(`$metadata.service`), and a name is freed by a rename and can be taken by a new Worker. So a Worker
+binding records the Worker's immutable ID (the Workers API's `id`, the legacy Scripts API's `tag`)
+when it is created, and each read resolves that ID to the Worker's current name and its versions.
+The query requires both, and every event that comes back is re-checked against the versions:
+`$workers.scriptVersion.id` names a version, and a version belongs to one Worker for good. An event
+from another Worker that held or took the name is dropped; telemetry the Worker recorded under a
+name it no longer has is not asked for, since the query names the current one (though the version
+re-check would keep any the provider returned anyway, as the Worker's own); and once the Worker is
+deleted the binding reads nothing, whoever takes its name. A Worker binding created before bindings
+recorded the Worker ID cannot tell its Worker from a later one, so it refuses to read until the
+connection is removed and the Worker connected again; its collaborators must still be able to read
+the whole account's telemetry, since its earlier reads went to whichever Worker had the name at the
+time.
 
 The scope filter is prepended to every query, but a filter the provider *accepted* is not evidence it
 *applied* it — three separate behaviours here return wrong-but-plausible data with no error. So events
@@ -50,10 +80,12 @@ and this provider has surprised us often enough that turning a hypothetical disc
 guaranteed outage would be the worse trade.
 
 `calculate()` is the exception, and knowingly so: an aggregate cannot be un-mixed, so there is no
-second line of defence to add. It rests entirely on the injected filter. The fix that would work —
-grouping by `$metadata.service` and keeping this binding's own group, whose value *is* the correctly
-scoped answer even for a median — changes `limit` and `orderBy` semantics for every caller, so it is a
-follow-up rather than a footnote.
+second line of defence to add. It rests entirely on the injected conditions: the provider filtering
+`query` by `$metadata.service` is verified against a live account and keeps an aggregate to one
+name, while the version condition that keeps it to one Worker rests on the documented
+`$workers.scriptVersion.id` field. The fix that would work — grouping by version and keeping this
+binding's own groups — changes `limit` and `orderBy` semantics for every caller, so it is a follow-up
+rather than a footnote.
 
 ### Why discovery sometimes costs a query
 
@@ -68,6 +100,14 @@ provider does filter correctly. Unconstrained account-wide discovery still uses 
 > requires the Workers Observability **Write** permission to read telemetry. This has not been
 > verified against a live token; if reads 403 on a correctly-scoped grant, that is the first thing to
 > check.
+>
+> Also unverified against a live account, and taken from Cloudflare's API reference: that the
+> Workers API accepts an OAuth token's `workers-tail.read` for `workers/workers/<id>` and its
+> `versions` (the reference lists Workers Tail Read among the permissions both accept); that its
+> `id` is the legacy Scripts API's `tag`; and that every Worker event carries a filterable
+> `$workers.scriptVersion.id` matching the versions list. If the last is wrong, a Worker binding
+> returns no events rather than another Worker's, and an aggregate either matches nothing or, should
+> the provider ignore the version condition, is kept to the Worker's current name alone.
 
 ### Two names for one field
 
@@ -112,8 +152,8 @@ a visible truncation for an invisible one.
 
 You need a Cloudflare dashboard OAuth client (client id + secret). The dashboard OAuth endpoints and
 scopes are hardcoded in `src/oauth.ts`, so you only configure the client id/secret and register the
-redirect URI. Ensure the client's scope allowlist includes `workers-observability.read` when this
-deployment offers Workers Observability resources.
+redirect URI. Ensure the client's scope allowlist includes `workers-observability.read` and
+`workers-tail.read` when this deployment offers Workers Observability resources.
 
 ### Step 1: Register the redirect URI
 
@@ -163,7 +203,7 @@ The order controls the order of the login buttons. For the AI Gateway billing / 
 set `ENABLE_CLOUDFLARE_LIMITS=true` (see [AI Gateway billing](../../docs/ai-gateway-billing.md)); a
 user enables billing by connecting Cloudflare, which requests the billing scopes
 (`offline_access aig.read aig.run user-details.read account-settings.read`). Connecting all
-Cloudflare gadget resources also requests `workers-observability.read`.
+Cloudflare gadget resources also requests `workers-observability.read` and `workers-tail.read`.
 
 ### Step 4: Verify Setup
 

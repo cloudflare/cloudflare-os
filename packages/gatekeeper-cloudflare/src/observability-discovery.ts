@@ -6,7 +6,7 @@
 // correctly returns nothing. So on a single-Worker binding those two endpoints cannot be constrained
 // at the provider, and a naive discovery call would hand an agent every Worker's field values.
 //
-// Deriving from a service-filtered events sample is correct by construction: the events have already
+// Deriving from a Worker-scoped events sample is correct by construction: the events have already
 // passed both the provider's filter and this module's own scope filter, so nothing another Worker
 // emitted can appear in the result.
 

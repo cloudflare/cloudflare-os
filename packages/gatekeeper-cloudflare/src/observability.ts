@@ -11,7 +11,11 @@ export type CloudflareObservabilityFields = {
   status: number;
   statusText: string;
   attempt: number;
+  /** Which kind of subresource an observer was denied: `account` or `worker`. */
+  subresourceKind: string;
   totalCount: number;
+  /** Worker versions a binding listed before the page cap stopped it. */
+  versionsListed: number;
   vendorId: string;
 };
 

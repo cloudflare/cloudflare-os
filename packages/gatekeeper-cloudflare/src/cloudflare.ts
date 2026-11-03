@@ -6,8 +6,10 @@ import {
   SupportedResource, ResourceConfiguratorFrame, ResourceDescription, ApprovalQueue, ActionKind,
   GitCache, stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import {
   getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens, isGrantDeath,
@@ -22,9 +24,12 @@ import {
   accountObservabilityUrl,
   workerObservabilityUrl,
   parseObservabilityResourceUrl,
+  observabilitySubresourceId,
+  parseObservabilitySubresourceId,
 } from "./resources.js";
 import { CloudflareObservabilityApi, deniesAccess } from "./observability-api.js";
 import { CloudflareObservabilitySessionImpl } from "./observability-session.js";
+import { getWorker, resolveWorkerScope, type WorkerScope } from "./workers-api.js";
 import {
   CloudflareAccountConfiguratorUI,
   CloudflareWorkerConfiguratorUI,
@@ -65,6 +70,18 @@ const NONCE_BYTES = 32;
 const INITIATION_NONCE_LIFETIME_MS = 10 * 60 * 1000;
 const OAUTH_NONCE_LIFETIME_MS = 10 * 60 * 1000;
 const ACCESS_TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
+
+// How long an account reuses an answer about its own access to a subresource, counted from when it
+// started asking Cloudflare. Cloudflare doesn't say when access changes: a revoked role is noticed
+// only once the answer that allowed it expires, while a denial is kept briefly so that a new grant
+// is noticed soon.
+const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
+
+// How long a Worker binding reuses its Worker's resolved name and versions. A stale answer can only
+// withhold the Worker's own telemetry: a version deployed since is missing from it, and so is what
+// it emitted under a name it took since.
+const WORKER_SCOPE_TTL_MS = 60_000;
 
 // Official Cloudflare logomark (orange cloud on a transparent background), as a data URI so it can
 // be rendered directly as the vendor/account avatar.
@@ -222,6 +239,27 @@ export class UserAccount extends DurableObject<Env> {
   // when the new grant reuses the refresh token.
   #grantGeneration = 0;
 
+  // This account's answers about its own access to subresources, keyed by subresource and
+  // partitioned by the credentials that learned them (see #credentialsId), so an answer can't
+  // outlive a disconnect that left storage behind, nor survive a reconnect, which may sign in as
+  // another Cloudflare user. Bypassed while the account holds no credentials.
+  #access = new KvTtlCache(this.ctx.storage.kv, () => this.#credentialsId(), { name: "access" });
+
+  // Names the credentials installed now, or undefined while there are none. Every install names
+  // its credentials afresh, and revoking deletes the name with everything else, so no load that
+  // started under earlier credentials can find the same name when it finishes. Credentials
+  // installed before names existed are named on first use.
+  #credentialsId(): string | undefined {
+    const kv = this.ctx.storage.kv;
+    if (!kv.get<string>("refreshToken")) return undefined;
+    let id = kv.get<string>("credentialsId");
+    if (id === undefined) {
+      id = crypto.randomUUID();
+      kv.put<string>("credentialsId", id);
+    }
+    return id;
+  }
+
   #config() {
     const config = getOAuthConfig(this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env));
     if (!config) throw new Error("The Cloudflare Gatekeeper is not configured.");
@@ -355,7 +393,82 @@ export class UserAccount extends DurableObject<Env> {
     this.#grantGeneration++;
     this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
     this.ctx.storage.kv.put<StoredAccessToken>("accessToken", grant.accessToken);
+    this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
     this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
+  }
+
+  /**
+   * Whether this account can read each subresource, in order. An account's telemetry needs a
+   * telemetry read there to succeed; a Worker's needs that and for the Worker, looked up by its ID,
+   * to be one this account can see, so a Worker that took its name since is never asked about.
+   * Scopes are checked on every call, before anything is reused, so a connection whose grant lacks
+   * telemetry, a billing-only one, is denied without asking Cloudflare. An allowed answer from
+   * Cloudflare is reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
+   * SUBRESOURCE_ACCESS_DENIED_TTL_MS, under the credentials that learned it. Throws for an ID it
+   * can't check, or when access can't be determined (no usable credentials, an outage, a
+   * reconnect landing mid-check), which is never reused.
+   */
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    // Parsed before anything is asked, so an ID this account can't check fails the whole call.
+    const parsed = subresources.map(parseObservabilitySubresourceId);
+    // Every answer must come from the credentials installed when the check began: a reconnect
+    // landing between an account's check and its Worker's would otherwise pair one principal's
+    // telemetry access with another's Worker.
+    const credentials = this.#credentialsId();
+    const granted = grantedObservabilityResourcePatterns(await this.getGrantedScopes());
+    const answers = new Map<string, boolean>();
+    // Each Cloudflare request is cached on its own, and asked one at a time, so a long list doesn't
+    // trip Cloudflare's per-user rate limit.
+    const ask = async (subresource: string) => {
+      let answer = answers.get(subresource);
+      if (answer === undefined) {
+        answer = await this.#access.cached<boolean>(subresource,
+          allowed => allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS,
+          () => this.#askCloudflare(subresource));
+        answers.set(subresource, answer);
+      }
+      return answer;
+    };
+
+    const allowed: boolean[] = [];
+    // A Worker's check starts with its account's, so a Worker is looked up only in an account this
+    // one can read telemetry in.
+    for (const { accountId, workerId } of parsed) {
+      allowed.push(granted.includes(ACCOUNT_OBSERVABILITY_RESOURCE.urlPattern) &&
+        await ask(observabilitySubresourceId(accountId)) &&
+        (workerId === undefined || (granted.includes(WORKER_OBSERVABILITY_RESOURCE.urlPattern) &&
+          await ask(observabilitySubresourceId(accountId, workerId)))));
+    }
+    if (this.#credentialsId() !== credentials) {
+      throw new Error("This Cloudflare connection was reconnected while its access was being checked.");
+    }
+    return allowed;
+  }
+
+  /** Cloudflare's answer for one subresource, from one request with this account's credentials. */
+  async #askCloudflare(subresource: string): Promise<boolean> {
+    const { accountId, workerId } = parseObservabilitySubresourceId(subresource);
+    const getToken = async () => {
+      const token = await this.getAccessToken();
+      // Thrown as a plain error, which no check reads as a denial: an account without credentials
+      // can't say what it may read.
+      if (!token) throw new Error("This Cloudflare connection has no usable credentials to check access with.");
+      return token;
+    };
+    try {
+      if (workerId === undefined) {
+        await new CloudflareObservabilityApi(getToken, accountId).listKeys({ limit: 1 });
+        return true;
+      }
+      return await getWorker(getToken, accountId, { workerId }) !== null;
+    } catch (error) {
+      if (!deniesAccess(error)) throw error;
+      logger.info("observer denied access to telemetry", {
+        event: "observer.denied", status: error.status,
+        subresourceKind: workerId === undefined ? "account" : "worker",
+      });
+      return false;
+    }
   }
 
   hasRefreshToken() {
@@ -503,12 +616,25 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
   }> {
-    const parsed = parseObservabilityResourceUrl(url);
+    const { userObjectId } = this.ctx.props;
+    const { accountId, workerName } = parseObservabilityResourceUrl(url);
+    if (workerName === undefined) {
+      return {
+        class: this.ctx.exports.CloudflareObservabilityGatekeeper({ props: { userObjectId, accountId } }),
+        resource: ACCOUNT_OBSERVABILITY_RESOURCE,
+      };
+    }
+    // The URL names the Worker, but the binding is to the Worker that has the name now: its ID goes
+    // into the props the overseer stores, so a later rename, or another Worker taking the name,
+    // can't move the binding.
+    const account = this.#account();
+    const worker = await getWorker(() => account.getAccessToken(), accountId, { name: workerName });
+    if (!worker) throw new Error(`This Cloudflare account has no Worker named ${workerName}.`);
     return {
       class: this.ctx.exports.CloudflareObservabilityGatekeeper({
-        props: { userObjectId: this.ctx.props.userObjectId, ...parsed },
+        props: { userObjectId, accountId, workerName: worker.name, workerId: worker.workerId },
       }),
-      resource: parsed.workerName ? WORKER_OBSERVABILITY_RESOURCE : ACCOUNT_OBSERVABILITY_RESOURCE,
+      resource: WORKER_OBSERVABILITY_RESOURCE,
     };
   }
 
@@ -554,56 +680,83 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
 /** Vendor-specific verifier methods trusted only after the overseer's same-vendor handoff. */
 export interface CloudflareVerifierApi extends GatekeeperUserVerifier {
-  /** Check whether this connected Cloudflare account can read the bound telemetry resource. */
-  hasObservabilityAccess(accountId: string, workerName?: string): Promise<boolean>;
+  /**
+   * Whether this connected Cloudflare account can read each subresource, in order, reusing recent
+   * answers (see `UserAccount.checkSubresourceAccess`). Throws for an ID it can't check, or when
+   * access can't be determined.
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
 }
 
 /** Verifies an observer's access using that observer's own Cloudflare credentials. */
 @validateRpc()
 export class CloudflareVerifier extends WorkerEntrypoint<Env, GatekeeperUserImplProps>
     implements CloudflareVerifierApi {
-  async hasObservabilityAccess(accountId: string, workerName?: string): Promise<boolean> {
-    const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    const account = this.ctx.exports.UserAccount.get(id);
-    try {
-      await new CloudflareObservabilityApi(
-        () => account.getAccessToken(), accountId, workerName,
-      ).listKeys({ limit: 1 });
-      return true;
-    } catch (error) {
-      if (deniesAccess(error)) {
-        logger.info("observer denied access to bound telemetry", {
-          event: "observer.denied", status: error.status,
-        });
-        return false;
-      }
-      throw error;
-    }
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    const account = this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+    return await account.checkSubresourceAccess(subresources);
   }
 }
+
+// Admits an observer only if their own account can read every subresource, as its UserAccount last
+// learned (see UserAccount.checkSubresourceAccess for how long it reuses answers).
+const verifyObservabilityAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<CloudflareVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkSubresourceAccess([...subresources]),
+});
 
 type CloudflareObservabilityGatekeeperProps = {
   userObjectId: string;
   accountId: string;
+  /** The bound Worker's name when the binding was created, for display and its dashboard URL. */
   workerName?: string;
+  /**
+   * The bound Worker's immutable ID, which every read is pinned to. Absent from a Worker binding
+   * created before bindings recorded it, which can no longer read anything (see #api).
+   */
+  workerId?: string;
 };
 
 @validateRpc()
 export class CloudflareObservabilityGatekeeper
     extends DurableObject<Env, CloudflareObservabilityGatekeeperProps>
     implements Gatekeeper<CloudflareObservabilitySession> {
+  // The bound Worker's name and versions as last resolved, reused for WORKER_SCOPE_TTL_MS.
+  #workerScope: { resolved: Promise<WorkerScope>; at: number } | undefined;
+
   #account() {
     const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     return this.ctx.exports.UserAccount.get(id);
   }
 
   #api(): CloudflareObservabilityApi {
+    const { accountId, workerName, workerId } = this.ctx.props;
+    // A Worker binding that recorded only a name can't tell its Worker from one that took the name
+    // since, so it reads nothing rather than trust whichever Worker has the name now.
+    if (workerName !== undefined && workerId === undefined) {
+      throw new Error(
+        `This connection to the Worker ${workerName} predates Worker IDs, so it can't confirm ` +
+        "which Worker it was granted. Remove it and connect the Worker again.");
+    }
     const account = this.#account();
-    return new CloudflareObservabilityApi(
-      () => account.getAccessToken(),
-      this.ctx.props.accountId,
-      this.ctx.props.workerName,
-    );
+    const getToken = () => account.getAccessToken();
+    return new CloudflareObservabilityApi(getToken, accountId,
+      workerId === undefined ? undefined : () => this.#resolveWorkerScope(getToken, workerId));
+  }
+
+  #resolveWorkerScope(getToken: () => Promise<string | null>, workerId: string): Promise<WorkerScope> {
+    const now = Date.now();
+    if (this.#workerScope && now - this.#workerScope.at < WORKER_SCOPE_TTL_MS) {
+      return this.#workerScope.resolved;
+    }
+    const entry = { resolved: resolveWorkerScope(getToken, this.ctx.props.accountId, workerId), at: now };
+    this.#workerScope = entry;
+    // A failure is not reused: the next read asks again.
+    entry.resolved.catch(() => {
+      if (this.#workerScope === entry) this.#workerScope = undefined;
+    });
+    return entry.resolved;
   }
 
   async describe(): Promise<ResourceDescription> {
@@ -625,23 +778,46 @@ export class CloudflareObservabilityGatekeeper
   async getAutoApprovableActions(): Promise<ActionKind[]> { return []; }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<CloudflareObservabilitySession> {
-    const target = this.ctx.props.workerName
-      ? `Worker ${this.ctx.props.workerName}`
-      : `Cloudflare account ${this.ctx.props.accountId}`;
-    return new CloudflareObservabilitySessionImpl(this.#api(), approvalQueue.dup(), target);
+    const { accountId, workerName, workerId } = this.ctx.props;
+    const api = this.#api();
+    const target = workerId
+      ? `Worker ${workerName} (ID ${workerId})`
+      : `Cloudflare account ${accountId}`;
+    return new CloudflareObservabilitySessionImpl(
+      api, approvalQueue.dup(), target, observabilitySubresourceId(accountId, workerId));
   }
 
+  /**
+   * Observers: every read reports the binding's subresource, which the Workshop checks through
+   * verifyObserverAccess(): `account/<accountId>` for an account binding, and
+   * `account/<accountId>/worker/<workerId>` for a Worker binding, pinned to the Worker's immutable
+   * ID. This keeps requiring the binding's own subresource at every admission, for the reads made
+   * before reads reported it. A Worker binding that predates Worker IDs read whichever Worker had
+   * its name at the time, so its collaborators must be able to read the whole account.
+   */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     // The overseer only hands a verifier back to its own vendor, making this strategy-B ACL check
     // authoritative for the one account or Worker represented by the binding.
     const verifier = user as unknown as Fetcher<CloudflareVerifierApi>;
-    if (!(await verifier.hasObservabilityAccess(this.ctx.props.accountId, this.ctx.props.workerName))) {
+    const [allowed] = await verifier.checkSubresourceAccess(
+      [observabilitySubresourceId(this.ctx.props.accountId, this.ctx.props.workerId)]);
+    if (!allowed) {
       throw new Error("This collaborator does not have access to the bound Workers telemetry.");
     }
   }
 
   async removeObserver(_id: string): Promise<void> {
     // Strategy B verifies on each admission and retains no observer state to remove.
+  }
+
+  /**
+   * Checks account and Worker subresources, as observabilitySubresourceId spells them, each against
+   * the observer's own account; any other ID fails the whole call.
+   */
+  async verifyObserverAccess(
+      observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
+      subresources: string[]): Promise<{allowedObserverIds: string[]}> {
+    return verifyObservabilityAccess(observers, subresources);
   }
 
   /**

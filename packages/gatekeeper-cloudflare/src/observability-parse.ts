@@ -1,10 +1,10 @@
 // The trust boundary between Cloudflare's Workers Observability JSON and everything downstream.
 //
 // This matters more than a normal response check: the Worker-scope security filter in
-// `observability-api.ts` reads `$metadata.service` off these objects to decide what a single-Worker
-// binding is allowed to see. An unvalidated shape would make that filter throw a raw `TypeError`
-// out of a security check instead of producing the typed 502 the rest of the module returns, so
-// every element is narrowed here before any caller — or any filter — touches it.
+// `observability-api.ts` reads each event's `$workers.scriptVersion.id` off these objects to decide
+// what a single-Worker binding is allowed to see. An unvalidated shape would make that filter throw
+// a raw `TypeError` out of a security check instead of producing the typed 502 the rest of the
+// module returns, so every element is narrowed here before any caller — or any filter — touches it.
 
 import type {
   CloudflareObservabilityAggregate,
@@ -104,6 +104,18 @@ function parseEvent(value: unknown): CloudflareObservabilityEvent {
 export function parseEvents(value: unknown): CloudflareObservabilityEvent[] {
   if (!Array.isArray(value)) throw invalidResponse();
   return value.map(parseEvent);
+}
+
+/**
+ * The version of the Worker that emitted an event, as `$workers.scriptVersion.id` names it, or
+ * undefined when the event names none. Each version belongs to one Worker for good, so this is
+ * what ties an event to the Worker a binding is pinned to.
+ */
+export function eventScriptVersionId(event: CloudflareObservabilityEvent): string | undefined {
+  const workers = event.$workers;
+  if (!isRecord(workers) || !isRecord(workers.scriptVersion)) return undefined;
+  const { id } = workers.scriptVersion;
+  return typeof id === "string" ? id : undefined;
 }
 
 /** Narrow the `{count?, events?}` container the events view wraps its page in. */

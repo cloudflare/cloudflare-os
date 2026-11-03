@@ -20,9 +20,11 @@ import type {
 import { obsContext } from "./observability.js";
 import { VENDOR_ID } from "./vendor.js";
 import { assertCloudflareAccountId } from "./resources.js";
+import type { WorkerScope } from "./workers-api.js";
 import { deriveKeys, deriveValues } from "./observability-discovery.js";
 import {
   CloudflareObservabilityApiError,
+  eventScriptVersionId,
   invalidResponse,
   isFiniteNumber,
   isRecord,
@@ -88,8 +90,8 @@ const SOURCE_ENVELOPE_PREFIX = "source.";
  * `listEvents` returns a caller's structured log fields nested under `source`, but they are filterable
  * only by their bare name (see `observability-discovery.ts`), so copying a path out of a result and
  * filtering on it would otherwise match nothing and report no error. Accepting both spellings cannot
- * widen a query: the binding's own `$metadata.service` condition is a separate `AND` term that is
- * never rewritten, and an extra condition on any other field can only narrow.
+ * widen a query: the binding's own Worker conditions are separate `AND` terms that are never
+ * rewritten, and an extra condition on any other field can only narrow.
  */
 export function observabilityFieldKey(key: string): string {
   return key.startsWith(SOURCE_ENVELOPE_PREFIX) ? key.slice(SOURCE_ENVELOPE_PREFIX.length) : key;
@@ -110,25 +112,36 @@ function normalizeFilterKeys(expression: ObservabilityFilter): ObservabilityFilt
   return { ...expression, key: observabilityFieldKey(expression.key) };
 }
 
+/** The field telemetry names the emitting Worker by: its name when the event was recorded. */
+const SERVICE_KEY = "$metadata.service";
+/** The field telemetry names the emitting Worker's version by, which belongs to that Worker alone. */
+const SCRIPT_VERSION_KEY = "$workers.scriptVersion.id";
+
 /**
- * Prepend the binding's immutable Worker condition to a caller filter. The provider honours these on
- * the `query` endpoint, and `#scopeEvents` re-checks the result regardless.
+ * Prepend a Worker binding's conditions to a caller filter. Telemetry carries no Worker ID, so the
+ * binding is pinned by its Worker's versions, each of which belongs to that one Worker for good; the
+ * name it has now narrows the query further, so that an aggregate whose version condition the
+ * provider ignored would still cover one name rather than the whole account. The provider honours
+ * these on the `query` endpoint, and `#scopeEvents` re-checks every event's version regardless.
  */
 export function scopeObservabilityFilters(
-  workerName: string | undefined,
+  scope: WorkerScope | undefined,
   expression?: ObservabilityFilter,
 ): ObservabilityFilter[] {
   if (expression) validateFilterExpression(expression);
 
   const filters: ObservabilityFilter[] = [];
-  if (workerName) {
-    filters.push({
-      kind: "filter",
-      key: "$metadata.service",
-      operation: "eq",
-      type: "string",
-      value: workerName,
-    });
+  if (scope) {
+    filters.push(
+      { kind: "filter", key: SERVICE_KEY, operation: "eq", type: "string", value: scope.name },
+      {
+        kind: "filter",
+        key: SCRIPT_VERSION_KEY,
+        operation: "in",
+        type: "string",
+        value: [...scope.versionIds].join(","),
+      },
+    );
   }
   if (expression) filters.push(normalizeFilterKeys(expression));
   return filters;
@@ -298,85 +311,111 @@ async function wait(milliseconds: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
+/**
+ * One Cloudflare API call under an account: a GET, or a POST of `body`. Returns the response
+ * envelope once it reports success with a `result`. A timeout or transport failure is retried once,
+ * and so is a retryable status whose backoff hint fits the budget. Every failure is a
+ * CloudflareObservabilityApiError carrying the status callers switch on.
+ * @param label Names the call in logs, so it must never carry caller text.
+ * @param path Below `/accounts/<accountId>/`, already escaped.
+ */
+export async function requestAccountApi(
+  getToken: () => Promise<string | null>,
+  accountId: string,
+  label: string,
+  path: string,
+  body?: unknown,
+): Promise<Record<string, unknown>> {
+  const token = await getToken();
+  if (!token) throw new CloudflareObservabilityApiError(401, "Cloudflare credentials have expired.");
+
+  const url = `${API_BASE}/accounts/${encodeURIComponent(assertCloudflareAccountId(accountId))}/${path}`;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let response: Response | undefined;
+    try {
+      response = await fetch(url, {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/json",
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      const data = await readJson(response);
+      if (!response.ok || !isRecord(data) || data.success !== true) {
+        throw providerError(data, response.status);
+      }
+      if (!("result" in data) || data.result === undefined || data.result === null) {
+        throw invalidResponse();
+      }
+      return data;
+    } catch (caught) {
+      const timedOut = isTimeout(caught);
+      // A connection reset or DNS failure is not an `AbortError` and not a typed provider error, so
+      // normalize it here rather than letting a raw TypeError reach callers that switch on status.
+      const error = timedOut
+        ? new CloudflareObservabilityApiError(504, "Cloudflare Workers Observability request timed out.")
+        : caught instanceof CloudflareObservabilityApiError
+          ? caught
+          : new CloudflareObservabilityApiError(
+            502, "Could not reach the Cloudflare Workers Observability API.");
+      // The provider's own message is deliberately absent here: Cloudflare can echo a
+      // caller-supplied filter value back in an error, and filter values are kept out of the audit
+      // trail for exactly that reason (see `summarizeFilter`). Cloudflare's numeric codes identify
+      // the failure without carrying caller text. Our own messages are safe, so a timeout or
+      // transport failure is still logged in full.
+      //
+      // The discriminator is provenance, not `codes.length`: Cloudflare can return a message with
+      // no numeric code at all, and keying on the codes would have logged exactly the text this is
+      // meant to withhold. When a provider error carries no codes, the status is all that is left,
+      // and that is the fail-closed answer.
+      logger.warn("Workers Observability request failed", {
+        event: "observability.request.failed", path: label, status: error.status, attempt,
+        ...(error.codes.length > 0 ? { providerCodes: error.codes.join(",") } : {}),
+        ...(error.fromProvider ? {} : { error }),
+      });
+      if (attempt === 2) throw error;
+      // A timeout or transport failure gets one fast retry; a provider status only retries when it
+      // is retryable and its own backoff hint fits the budget. Timeouts are checked first because a
+      // body-read timeout arrives with an already-successful status, which is not itself retryable.
+      const delay = timedOut || response === undefined
+        ? RETRY_DELAY_MS
+        : RETRYABLE_STATUSES.has(response.status) ? retryDelay(response) : null;
+      if (delay === null) throw error;
+      await wait(delay);
+    }
+  }
+  throw new Error("Unreachable Workers Observability retry state.");
+}
+
 export class CloudflareObservabilityApi {
   private readonly accountId: string;
 
+  /**
+   * @param workerScope For a Worker binding, resolves the Worker its reads are pinned to; asked
+   * before every query, so a rename or a new version takes effect as soon as it resolves them.
+   */
   constructor(
     private readonly getToken: () => Promise<string | null>,
     accountId: string,
-    private readonly workerName?: string,
+    private readonly workerScope?: () => Promise<WorkerScope>,
   ) {
     this.accountId = assertCloudflareAccountId(accountId);
   }
 
   async #request(path: string, body: unknown): Promise<unknown> {
-    const token = await this.getToken();
-    if (!token) throw new CloudflareObservabilityApiError(401, "Cloudflare credentials have expired.");
-
-    const url = `${API_BASE}/accounts/${encodeURIComponent(this.accountId)}` +
-      `/workers/observability/telemetry/${path}`;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      let response: Response | undefined;
-      try {
-        response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-        const data = await readJson(response);
-        if (!response.ok || !isRecord(data) || data.success !== true) {
-          throw providerError(data, response.status);
-        }
-        if (!("result" in data) || data.result === undefined || data.result === null) {
-          throw invalidResponse();
-        }
-        return data.result;
-      } catch (caught) {
-        const timedOut = isTimeout(caught);
-        // A connection reset or DNS failure is not an `AbortError` and not a typed provider error, so
-        // normalize it here rather than letting a raw TypeError reach callers that switch on status.
-        const error = timedOut
-          ? new CloudflareObservabilityApiError(504, "Cloudflare Workers Observability request timed out.")
-          : caught instanceof CloudflareObservabilityApiError
-            ? caught
-            : new CloudflareObservabilityApiError(
-              502, "Could not reach the Cloudflare Workers Observability API.");
-        // The provider's own message is deliberately absent here: Cloudflare can echo a
-        // caller-supplied filter value back in an error, and filter values are kept out of the audit
-        // trail for exactly that reason (see `summarizeFilter`). Cloudflare's numeric codes identify
-        // the failure without carrying caller text. Our own messages are safe, so a timeout or
-        // transport failure is still logged in full.
-        //
-        // The discriminator is provenance, not `codes.length`: Cloudflare can return a message with
-        // no numeric code at all, and keying on the codes would have logged exactly the text this is
-        // meant to withhold. When a provider error carries no codes, the status is all that is left,
-        // and that is the fail-closed answer.
-        logger.warn("Workers Observability request failed", {
-          event: "observability.request.failed", path, status: error.status, attempt,
-          ...(error.codes.length > 0 ? { providerCodes: error.codes.join(",") } : {}),
-          ...(error.fromProvider ? {} : { error }),
-        });
-        if (attempt === 2) throw error;
-        // A timeout or transport failure gets one fast retry; a provider status only retries when it
-        // is retryable and its own backoff hint fits the budget. Timeouts are checked first because a
-        // body-read timeout arrives with an already-successful status, which is not itself retryable.
-        const delay = timedOut || response === undefined
-          ? RETRY_DELAY_MS
-          : RETRYABLE_STATUSES.has(response.status) ? retryDelay(response) : null;
-        if (delay === null) throw error;
-        await wait(delay);
-      }
-    }
-    throw new Error("Unreachable Workers Observability retry state.");
+    const data = await requestAccountApi(
+      this.getToken, this.accountId, path, `workers/observability/telemetry/${path}`, body);
+    return data.result;
   }
 
   /**
-   * Drop anything the binding must not disclose, reporting whether anything was dropped.
+   * Drop anything the binding must not disclose, reporting whether anything was dropped. An event
+   * survives only if it names one of the bound Worker's versions, which no other Worker can have:
+   * the name it was recorded under proves nothing, since another Worker may have held that name
+   * before or since.
    *
    * The provider honours the scope filter on the `query` endpoint, so this normally removes nothing.
    * It is the authoritative check regardless, because a filter the provider silently ignored would
@@ -392,9 +431,13 @@ export class CloudflareObservabilityApi {
    */
   #scopeEvents(
     events: CloudflareObservabilityEvent[],
+    scope: WorkerScope | undefined,
   ): { events: CloudflareObservabilityEvent[]; dropped: boolean } {
-    if (!this.workerName) return { events, dropped: false };
-    const scoped = events.filter(event => event.$metadata.service === this.workerName);
+    if (!scope) return { events, dropped: false };
+    const scoped = events.filter(event => {
+      const versionId = eventScriptVersionId(event);
+      return versionId !== undefined && scope.versionIds.has(versionId);
+    });
     if (scoped.length !== events.length) {
       // An operational alarm, not a routine event: it means the provider's filtering changed under
       // us and every aggregate this binding can return has silently widened.
@@ -408,6 +451,7 @@ export class CloudflareObservabilityApi {
 
   async #query(
     view: "events" | "invocations" | "traces" | "calculations",
+    scope: WorkerScope | undefined,
     options?: QueryOptions,
   ): Promise<QueryResult> {
     const limit = validatedLimit(options?.limit);
@@ -426,7 +470,7 @@ export class CloudflareObservabilityApi {
       parameters: {
         datasets: DATASETS,
         filterCombination: "and",
-        filters: scopeObservabilityFilters(this.workerName, options?.filter),
+        filters: scopeObservabilityFilters(scope, options?.filter),
         needle: options?.search && {
           value: options.search.value,
           isRegex: options.search.isRegex,
@@ -467,7 +511,7 @@ export class CloudflareObservabilityApi {
    * binding's Worker scope or by a caller filter -- cannot be answered there.
    */
   #requiresDerivedDiscovery(options?: CloudflareObservabilityDiscoveryOptions): boolean {
-    return this.workerName !== undefined || options?.filter !== undefined;
+    return this.workerScope !== undefined || options?.filter !== undefined;
   }
 
   async #discoverySample(
@@ -511,9 +555,10 @@ export class CloudflareObservabilityApi {
   }
 
   async #listEventsPage(options?: CloudflareObservabilityEventsQuery): Promise<EventsPageResult> {
-    const result = await this.#query("events", options);
+    const scope = await this.workerScope?.();
+    const result = await this.#query("events", scope, options);
     const { count, events: rawEvents } = parseEventsContainer(result.events);
-    const { events, dropped } = this.#scopeEvents(rawEvents);
+    const { events, dropped } = this.#scopeEvents(rawEvents, scope);
     return {
       page: {
         events,
@@ -542,7 +587,8 @@ export class CloudflareObservabilityApi {
   async listInvocations(
     options?: CloudflareObservabilityInvocationsQuery,
   ): Promise<CloudflareObservabilityInvocationsPage> {
-    const result = await this.#query("invocations", options);
+    const scope = await this.workerScope?.();
+    const result = await this.#query("invocations", scope, options);
     const groups = parseInvocationsContainer(result.invocations);
     // The provider returns a request-ID map, so iteration order is not a page order. Take the oldest
     // event as the cursor: results run newest-first, so that is the page's continuation point.
@@ -551,7 +597,7 @@ export class CloudflareObservabilityApi {
       .reduce<CloudflareObservabilityEvent | undefined>(
         (last, event) => !last || event.timestamp < last.timestamp ? event : last, undefined);
     const invocations = groups
-      .map(({ requestId, events }) => ({ requestId, events: this.#scopeEvents(events).events }))
+      .map(({ requestId, events }) => ({ requestId, events: this.#scopeEvents(events, scope).events }))
       .filter(invocation => invocation.events.length > 0);
     return {
       invocations,
@@ -561,10 +607,10 @@ export class CloudflareObservabilityApi {
   }
 
   async listTraces(options?: CloudflareObservabilityTracesQuery): Promise<CloudflareObservabilityTracesPage> {
-    if (this.workerName) {
+    if (this.workerScope) {
       throw new Error("Trace summaries are available only from an account-scoped observability binding.");
     }
-    const result = await this.#query("traces", options);
+    const result = await this.#query("traces", undefined, options);
     const traces = parseTraceSummaries(result.traces);
     return {
       traces,
@@ -631,26 +677,27 @@ export class CloudflareObservabilityApi {
   /**
    * Aggregate over the matched telemetry.
    *
-   * Unlike every other read here, a Worker-scoped binding's safety rests *solely* on the
-   * `$metadata.service` filter injected by `scopeObservabilityFilters`. An aggregate cannot be
-   * re-checked the way `#scopeEvents` re-checks events: there is no way to un-mix a median or a
-   * `uniq` that was computed across services. So if the provider ever stopped honouring the filter,
-   * this would widen silently, and the `dropped` alarm on the events path is the only thing that
-   * would say so.
+   * Unlike every other read here, a Worker-scoped binding's safety rests *solely* on the Worker
+   * conditions injected by `scopeObservabilityFilters`. An aggregate cannot be re-checked the way
+   * `#scopeEvents` re-checks events: there is no way to un-mix a median or a `uniq` that was
+   * computed across services. So if the provider ever stopped honouring the filter, this would
+   * widen silently, and the `dropped` alarm on the events path is the only thing that would say so.
+   * The name condition is the backstop: `query` honouring a `$metadata.service` filter is verified
+   * against a live account, while the version condition rests on the documented
+   * `$workers.scriptVersion.id` field.
    *
-   * That asymmetry is accepted rather than overlooked. `query` honouring filters is verified against
-   * a live account and is already load-bearing elsewhere (it is why `observability-discovery.ts`
-   * exists at all), and the alternatives are worse: refusing aggregates to Worker bindings removes
-   * the most valuable question the tier can answer, and recomputing them from a sampled page would
-   * return confidently wrong numbers. The scopable-but-unverifiable fix -- grouping by
-   * `$metadata.service` and keeping this binding's own group, whose value *is* the scoped answer --
-   * is deliberately left out of this change: it rewrites `limit`/`orderBy` semantics for every
-   * caller and needs its own review.
+   * That asymmetry is accepted rather than overlooked. `query` honouring filters is already
+   * load-bearing elsewhere (it is why `observability-discovery.ts` exists at all), and the
+   * alternatives are worse: refusing aggregates to Worker bindings removes the most valuable
+   * question the tier can answer, and recomputing them from a sampled page would return confidently
+   * wrong numbers. The scopable-but-unverifiable fix -- grouping by version and keeping this
+   * binding's own groups -- is deliberately left out: it rewrites `limit`/`orderBy` semantics for
+   * every caller and needs its own review.
    */
   async calculate(
     options: CloudflareObservabilityCalculationQuery,
   ): Promise<CloudflareObservabilityCalculationResult> {
-    const result = await this.#query("calculations", options);
+    const result = await this.#query("calculations", await this.workerScope?.(), options);
     return {
       calculations: parseCalculations(result.calculations),
       statistics: result.statistics,
