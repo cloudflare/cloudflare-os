@@ -11,10 +11,12 @@ It currently offers one resource granularity:
   AI design generation, and AI background removal.
 
 > **Design generation and background removal use Canva preview APIs.** Canva may change them
-> without a version bump, and public integrations that use preview APIs cannot pass Canva's review.
-> A private integration (the normal choice for a single company's deployment) is unaffected. Both
-> spend the connected user's Canva AI credits, so they always require approval and are never
-> auto-approvable.
+> without a version bump, and a public integration that uses them works for development but cannot
+> pass Canva's review to be released to all Canva users. A private integration is reviewed by your
+> own team's admins instead, but Canva offers private integrations only to teams on an
+> [Enterprise plan](https://www.canva.dev/docs/apps/quickstart/#public-and-private-apps). Both
+> features spend the connected user's Canva AI credits, so they always require approval and are
+> never auto-approvable.
 
 This gatekeeper is **not** an authentication provider (`providesAuth: false`) — Canva isn't offered
 as a "Continue with…" sign-in method.
@@ -28,7 +30,9 @@ your own Canva integration in the Developer Portal.
 
 1. Go to the [Canva Developer Portal](https://www.canva.com/developers/integrations) and click
    **Create an integration**.
-2. Give it a name. A **Private** integration is fine for local development.
+2. Give it a name and choose who it is for; this can't be changed later. **Private** (Enterprise
+   teams only) limits it to your team's members. **Public** works for development and is the only
+   choice on other plans, but cannot pass Canva's review while it uses the preview APIs above.
 3. Under **Authentication**, add the redirect URL exactly:
 
    ```
