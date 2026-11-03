@@ -9427,15 +9427,16 @@ class OverseerImpl implements AgentHooks {
           `Available vendors: ${available}.` };
     }
 
-    // Resolve the exact resource this request maps to, using the same precedence the accept modal
-    // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
-    // card that opens a blank "create new connection" picker. The agent is told what to fix.
-    if (!vendor.supportedResources.some(resource => resource.connectable !== false)) {
+    let connectableResources = vendor.supportedResources.filter(resource => resource.connectable !== false);
+    if (connectableResources.length === 0) {
       return { requested: false, message:
           `"${vendor.description.displayName}" offers no existing resources to connect. ` +
           `Call listConnectableResources to see what can be created with createExternalResource.` };
     }
-    let resolved = resolveRequestedResource(vendor.supportedResources, input.resourceUrl);
+    // Resolve the exact resource this request maps to, using the same precedence the accept modal
+    // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
+    // card that opens a blank "create new connection" picker. The agent is told what to fix.
+    let resolved = resolveRequestedResource(connectableResources, input.resourceUrl);
     if (!resolved.ok) {
       return { requested: false, message:
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };

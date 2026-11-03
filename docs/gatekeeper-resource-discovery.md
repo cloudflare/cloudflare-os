@@ -22,6 +22,8 @@ Discovery is for adding resources. It does not replace or invalidate existing wo
 bindings. A gatekeeper continues serving those bindings through its ordinary session API, including
 restoring a suspended external resource if needed. Creating a new resource is not how an existing
 binding is resumed. Ownership, revocation, and resource access remain enforced by the gatekeeper.
+Account consent, grant management, and observer verification still include creation-only types:
+`connectable: false` does not remove the authorization needed to create or verify a resource.
 
 ## Creation
 

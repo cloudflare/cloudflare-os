@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import {
-  resolveRequestedResource, type Gatekeeper, type SupportedResource, type VendorDescription,
+import type {
+  Gatekeeper, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
@@ -172,19 +172,26 @@ describe("agent resource discovery", () => {
       expect(creation).toContain(EXISTING.urlPattern);
     });
   });
-});
 
-describe("connection request resolution", () => {
   it.each([
     { resource: CREATION, url: undefined },
     { resource: CREATION, url: "example://environment/test" },
     { resource: { ...CREATION, urlPattern: "https://*" }, url: "https://example.com" },
-  ])("excludes non-connectable types from URL and fallback selection: $url", ({ resource, url }) => {
-    expect(resolveRequestedResource([resource], url)).toMatchObject({ ok: false });
+  ])("excludes non-connectable types from URL and fallback selection: $url", async ({ resource, url }) => {
+    await withDiscovery([resource], async impl => {
+      expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "ENVIRONMENT",
+        reason: "Run tests", resourceUrl: url })).toMatchObject({ requested: false });
+      expect(impl.consumeCapturedConnectionRequests(1)).toEqual([]);
+    });
   });
 
-  it("ignores creation-only types when choosing the sole existing connection", () => {
-    expect(resolveRequestedResource([CREATION, EXISTING], undefined))
-      .toEqual({ ok: true, resource: EXISTING });
+  it("ignores creation-only types when choosing the sole existing connection", async () => {
+    await withDiscovery([CREATION, EXISTING], async impl => {
+      expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "DOCUMENT",
+        reason: "Read a document" })).toMatchObject({ requested: true });
+      expect(impl.consumeCapturedConnectionRequests(1)).toMatchObject([{
+        type: "connectionRequest", resourceUrlPattern: EXISTING.urlPattern,
+      }]);
+    });
   });
 });

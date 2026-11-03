@@ -433,7 +433,7 @@ export type ResolveRequestedResourceResult =
 
 /**
  * Determines which SupportedResource an agent connection request would pre-select in the accept
- * modal, excluding types marked connectable: false and using the modal's precedence:
+ * modal, using the modal's precedence:
  *   1. the resource whose urlPattern matches `resourceUrl` (ignoring the catch-all), else
  *   2. the whole-instance catch-all ("https://*") if the vendor offers one, else
  *   3. the sole resource, if the vendor offers exactly one.
@@ -445,11 +445,12 @@ export type ResolveRequestedResourceResult =
  *
  * This is the single source of truth shared by the backend (which enforces it at request time)
  * and the frontend (which pre-seeds from the resolved resource), so the two cannot diverge.
+ * Connection discovery callers must first exclude types marked connectable: false. Observer
+ * verification uses the full list, since an already-bound resource still needs its grants.
  */
 export function resolveRequestedResource(
     supportedResources: SupportedResource[],
     resourceUrl: string | undefined): ResolveRequestedResourceResult {
-  supportedResources = supportedResources.filter(resource => resource.connectable !== false);
   if (resourceUrl) {
     const matched = supportedResources.find(
       r => r.urlPattern !== 'https://*' && matchesResourceUrlPattern(r.urlPattern, resourceUrl));
