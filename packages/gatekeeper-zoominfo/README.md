@@ -16,8 +16,10 @@ connected ZoomInfo account's OAuth grant and package entitlements. Through it a 
   and curated company insight signals.
 - **Usage** — read the account's credit/limit counters.
 
-A connected account corresponds to the ZoomInfo user who authorizes the OAuth consent flow. ZoomInfo
-is **not** offered as a "Continue with…" sign-in method (`getAuthenticatedEmail()` returns `null`).
+A connected account corresponds to the ZoomInfo user who authorizes the OAuth consent flow, whom
+the gatekeeper identifies by the `sub` claim of the ID token ZoomInfo's token endpoint returns with
+every grant. ZoomInfo is **not** offered as a "Continue with…" sign-in method
+(`getAuthenticatedEmail()` returns `null`).
 
 ## Creating the OAuth app
 
@@ -71,7 +73,9 @@ Optional overrides read by the Worker:
   queue and spends credits only once a human approves it; results are fetched afterward via
   `getEnrichmentResult(ticket)`. Enrichments are **not** simulated — the action carries
   `awaitDecision`, so the agent turn suspends until the decision rather than reading back
-  un-enriched state.
+  un-enriched state. An approval made while the account can't get a token (or its user isn't
+  known) spends nothing and fails, leaving the enrichment pending to approve again after
+  reconnecting.
 - **Intent/scoop company targeting.** Intent and scoop *search* filter by firmographics only —
   ZoomInfo has no company-identity inputs there. To pull intent or scoops for a specific known
   company, use `enrichIntent` / `enrichScoops` (which take a company identifier). The API surface and
@@ -82,6 +86,22 @@ Optional overrides read by the Worker:
   US/Canada, so pass just one.
 - **Entitlements.** Every call is scoped to the account's package: ZoomInfo returns only the fields
   and datasets the account is entitled to; unentitled fields come back empty.
+- **Sharing.** ZoomInfo data is private to the connection's owner. Every read reports the ZoomInfo
+  user whose token returned its data as the observation subresource `user/<userId>`, where
+  `userId` is the ID token's `sub` (never an email or display name, which can change), and
+  `verifyObserverAccess()` allows no collaborator to read one, not even one connected as the same
+  ZoomInfo user. `addObserver()` still refuses every observer, which keeps what was read before
+  reads reported their user private. Malformed or unsupported subresource IDs fail the whole check.
+- **Identity and reconnects.** A grant whose ID token names no user, or names it for another
+  client, is refused at connect. A connection made before the gatekeeper kept the user's ID learns
+  it from the ID token of its next token refresh, which happens early for that purpose; if ZoomInfo
+  doesn't identify the user there, reads fail and the account asks to be reconnected. A refresh
+  naming a different user than the connection's fails the same way. Reconnecting as another
+  ZoomInfo user is allowed, and new reads then report that user, while what the binding already
+  holds keeps the user it came from: an enrichment result reports the user whose token retrieved
+  it, and a cached lookup is served only to the user it was fetched as. Enrichment results stored
+  before the gatekeeper recorded their user aren't returned (request them again); cached lookups
+  from then are fetched again.
 
 ## Troubleshooting
 
