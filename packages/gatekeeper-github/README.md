@@ -28,9 +28,11 @@ push or force push to the repository's default branch or a protected branch**. A
 the `github.postReview` kind with comment and request-changes reviews, and a gated push shares
 `github.push` or `github.forcePush` with pushes to other branches, but neither is ever
 auto-approvable, so enabling those kinds does not cover them. Whether a branch is gated is read
-when the push is queued: the repository's default branch, or a branch GitHub reports as
-protected. A push that creates a branch is not gated, even if a protection pattern will match the
-new branch. Creating an issue assigned to an app (a login ending in `[bot]`, or `Copilot`) also
+live when the push is queued, and again when an auto-approvable push applies: the repository's
+default branch, a branch GitHub reports as protected, or one a ruleset covers, including a branch
+the push creates. A classic protection pattern is shown only to admins, so a push that creates a
+branch one will match is not gated. GitHub refusing the account the protection or the rulesets
+counts as unprotected; any other failed read gates the push. Creating an issue assigned to an app (a login ending in `[bot]`, or `Copilot`) also
 waits for a person under `github.createIssue`, because an app such as Copilot's coding agent
 starts a run that spends billed credits. A force push has its own kind (`github.forcePush`), so enabling ordinary pushes does
 not let history be rewritten. Excluded actions are still approved by hand as before. Each binding

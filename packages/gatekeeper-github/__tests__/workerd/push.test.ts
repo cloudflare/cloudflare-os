@@ -104,6 +104,10 @@ type ReceivePackExchange = { body: Uint8Array };
 class FakeGitHub {
   readonly branches = new Map<string, string>();  // branch name → head commit id
   readonly protectedBranches = new Set<string>();
+  /** Ruleset rules per branch name, which GitHub reports for a branch that does not exist too. */
+  readonly branchRules = new Map<string, { type: string }[]>();
+  /** When set, the ruleset read answers this status, as GitHub does to an account it refuses. */
+  branchRulesStatus: number | undefined;
   readonly restCommits = new Map<string, { sha: string, message: string }>();  // ref → commit
   readonly receivePackExchanges: ReceivePackExchange[] = [];
   readonly receivePackResponses: Uint8Array[] = [];
@@ -154,6 +158,17 @@ class FakeGitHub {
         return Response.json({ message: "Branch not found" }, { status: 404 });
       }
       return Response.json({ name, commit: { sha: head }, protected: this.protectedBranches.has(name) });
+    }
+
+    if (path.startsWith(`${API_BASE}/rules/branches/`)) {
+      if (this.branchRulesStatus !== undefined) {
+        return Response.json({ message: "Resource not accessible" }, { status: this.branchRulesStatus });
+      }
+      const name = decodeURIComponent(path.slice(`${API_BASE}/rules/branches/`.length));
+      // An enterprise's repository-wide rules come back for every branch, as they do on GitHub.
+      return Response.json([
+        { type: "repository_delete" }, { type: "repository_transfer" }, ...(this.branchRules.get(name) ?? []),
+      ]);
     }
 
     if (path === `${API_BASE}/branches`) {
@@ -469,6 +484,27 @@ describe("auto-approval", () => {
     expect(await verdict(release(), "release", true))
       .toMatchObject({ gatedBranch: true, tag: "github.forcePush", autoApprovable: false });
   });
+
+  it("keeps a push that creates a branch a ruleset covers manual", async () => {
+    const github = repoWith("main");
+    github.branchRules.set("release/1.0", [{ type: "pull_request" }]);
+    expect(await verdict(github, "release/1.0"))
+      .toMatchObject({ gatedBranch: true, tag: "github.push", autoApprovable: false });
+  });
+
+  it("lets a push auto-apply when GitHub refuses this account its branch's rulesets", async () => {
+    const github = repoWith("main", "feature");
+    github.branchRulesStatus = 403;
+    expect(await verdict(github, "feature"))
+      .toMatchObject({ gatedBranch: false, tag: "github.push", autoApprovable: true });
+  });
+
+  it("holds a push for a person when its branch's rulesets cannot be read for another reason", async () => {
+    const github = repoWith("main", "feature");
+    github.branchRulesStatus = 429;
+    expect(await verdict(github, "feature"))
+      .toMatchObject({ gatedBranch: true, tag: "github.push", autoApprovable: false });
+  });
 });
 
 describe("simulation", () => {
@@ -670,6 +706,34 @@ describe("default branch", () => {
 });
 
 describe("apply", () => {
+  /** Queues an auto-approvable push to `feature`, changes the repository, and applies it. */
+  async function applyAfter(change: (github: FakeGitHub) => void) {
+    const github = new FakeGitHub();
+    github.branches.set("main", BASE);
+    github.branches.set("feature", BASE);
+    github.install();
+    const gk = await repoGatekeeper();
+    const cache = new TestGitCache().withAncestry(BASE, HEAD1);
+    const action: PushActionData & { gatedBranch?: boolean } =
+      (await queuePush(gk, cache, new TestApprovalQueue(), "feature", HEAD1))!;
+    expect(action.gatedBranch).toBe(false);
+    change(github);
+    github.respondToPush("unpack ok", "ok refs/heads/feature");
+    return { github, applied: gk.applyAction(action.approvalId, cache) };
+  }
+
+  it("refuses an auto-approvable push whose branch became protected while it waited", async () => {
+    const { github, applied } = await applyAfter(github => github.protectedBranches.add("feature"));
+    await expect(applied).rejects.toThrow(/has become the default or a protected branch/);
+    expect(github.receivePackExchanges).toHaveLength(0);
+  });
+
+  it("refuses an auto-approvable push whose branch became the default while it waited", async () => {
+    const { github, applied } = await applyAfter(github => { github.defaultBranch = "feature"; });
+    await expect(applied).rejects.toThrow(/has become the default or a protected branch/);
+    expect(github.receivePackExchanges).toHaveLength(0);
+  });
+
   it("send-packs the built pack with the queue-time CAS and marks the action applied", async () => {
     const github = new FakeGitHub();
     github.branches.set("main", BASE);
