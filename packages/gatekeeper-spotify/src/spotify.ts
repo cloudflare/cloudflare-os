@@ -1817,9 +1817,11 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
       await queue.submitAction(action.approvalId,
         { ...presentation, ...describeSpotifyAction(action), ...autoApprovalOf(action) });
     } catch (error) {
-      // An auto-approval can apply the action before the reply arrives, so a lost reply on an
-      // applied action proves the overseer received it; failing would invite a repeated write.
-      if (this.#getRecord(action.approvalId)?.state === "approved") return;
+      // An auto-approval can apply the action before the reply arrives, so a record the overseer
+      // has moved past staged (applied, or failed and kept for a retry) proves it received the
+      // action: failing would invite a repeated write, and deleting would strand the retry.
+      const state = this.#getRecord(action.approvalId)?.state;
+      if (state !== undefined && state !== "staged") return;
       this.ctx.storage.kv.delete(this.#actionKey(action.approvalId));
       throw error;
     }

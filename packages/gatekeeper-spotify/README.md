@@ -78,8 +78,9 @@ You can see and manage connected accounts in settings (via the account menu in t
 
 ## Notes & limitations
 
-- **Approvals & simulation.** Reads are logged and writes are queued for human approval; nothing is
-  performed on Spotify until approved. Reads optimistically reflect your own pending edits (e.g. a
+- **Approvals & simulation.** Reads are logged and writes are queued for approval; nothing is
+  performed on Spotify until approved, by a person or by an auto-approval rule the user enabled
+  (below). Reads optimistically reflect your own pending edits (e.g. a
   pending playlist add shows in `listTracks`) so a gadget can keep working before approvals land.
   Playback commands are gated but **not** simulated — `getState()` always shows real device state.
 - **Auto-approval.** A user may let some kinds of write apply without review: saving tracks, albums

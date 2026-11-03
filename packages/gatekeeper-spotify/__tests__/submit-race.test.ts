@@ -77,6 +77,14 @@ describe("submitActionForApproval when the action is applied before the reply", 
     expect(kv.get(`retiredAction:${action.approvalId}`)).toMatchObject({ state: "approved" });
   });
 
+  it("keeps a failed apply for a retry when the reply is lost", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 503 })));
+    const { gk, kv } = gatekeeper();
+    const action = pause(gk);
+    await expect(gk.submitActionForApproval(applyingQueue(gk, "lost"), action, presentation)).resolves.toBeUndefined();
+    expect(kv.get(`action:${action.approvalId}`)).toMatchObject({ state: "failed" });
+  });
+
   it("still drops the record and fails when the submit fails without applying", async () => {
     const { gk, kv } = gatekeeper();
     const action = pause(gk);
