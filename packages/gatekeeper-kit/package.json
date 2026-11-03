@@ -10,6 +10,7 @@
     "./actions": "./src/actions.ts",
     "./auth-retry": "./src/auth-retry.ts",
     "./cache": "./src/cache.ts",
+    "./ci": "./src/ci.ts",
     "./connect-handshake": "./src/connect-handshake.ts",
     "./connect-nonce": "./src/connect-nonce.ts",
     "./connect-pages": "./src/connect-pages.ts",

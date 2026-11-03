@@ -592,7 +592,7 @@ describe("merge requests", () => {
     refusal = 405;
     const blocked = await unwrap(await hooks().queueAction(name, props, "prepareMergeMergeRequest", ["133", {}], DESC));
     await expect(unwrap(await hooks().applyAction(name, props, blocked.approvalId)))
-      .rejects.toThrow(/pipeline has not passed yet; pipeline status is not available through this connection/);
+      .rejects.toThrow(/pipeline has not passed yet; follow it with getDetails\(\)\.ci/);
 
     // It is also the answer for a merge request already merged -- as when this apply retries one
     // whose reply was lost. Merged at the bound head, that merge landed and this apply succeeds;

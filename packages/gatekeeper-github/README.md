@@ -30,6 +30,51 @@ enabling ordinary pushes does not let history be rewritten. Excluded actions are
 by hand as before. Each binding advertises through `getAutoApprovableActions()` only the eligible
 kinds its session can submit (an issue binding, for example, never lists pushes).
 
+## CI status (read-only)
+
+Gadgets can read CI with the `repo` scope connections already have; nothing CI-related is queued
+for approval, and every read is logged as an observation.
+
+- **Checks on a commit.** `repo.getChecks(ref?)` and `pullRequest.getChecks(commitId?)` report
+  the check runs (GitHub Actions jobs and other apps' checks) and commit statuses on a commit,
+  from GraphQL's `statusCheckRollup`: the first 1000 entries, with an overall `state`, `counts` by
+  state over every entry (over the listed ones when GitHub cannot count them), and a `phase`:
+  `active` (queued, running, or on a deployment wait timer: poll again), `blocked` (waits for a
+  person, such as a deployment reviewer or a first-time contributor's approval), `done`, or for a
+  commit nothing has reported on, `notStarted`. A commit reads `notStarted` while a push of it is
+  queued, or for 10 minutes after it became a head when CI is expected (the commit has
+  `.github/workflows/*.yml` or `*.yaml`, or its first parent had CI); otherwise it is `done` with
+  `state: "none"`. The head time is when this gatekeeper applied the push, else GitHub's activity
+  log for the branch (best-effort: if GitHub refuses or fails it, the committer date), else the
+  committer date; for a pull request's head, no earlier than when the pull request was opened,
+  since opening it starts `on: pull_request` CI without a push. A pull request read also marks which entries the base branch requires
+  (`required`) and names required checks that have not reported (`missingRequired`, best-effort
+  from the branch's rulesets and classic protection); while any is missing, the state reads
+  `expected` (unless something failed). An `expected` state, GitHub's own or from
+  `missingRequired`, with nothing else unfinished reads `active` for those same 10 minutes, then
+  `blocked`, since a required check that has not reported by then needs someone to act (a
+  path-filtered workflow, or an app that is not installed). A phase that would end polling
+  (`done`, or that `blocked`) reads `active` instead while a GitHub Actions run of the commit
+  waits on its concurrency group, created under an hour ago: such a run has no check runs, so
+  the rollup cannot show it (one best-effort `status=pending` runs lookup, made only then).
+- **Pull request scope.** A pull request binding reads CI only on the pull request's head (counting
+  queued pushes) and the first 250 commits its listing shows; check runs and workflow runs on any
+  other commit are refused. `GitHubPullRequestDetails.mergeState` carries GitHub's
+  `mergeable_state`.
+- **Check runs.** `getCheckRun(id)` accepts a check run id or an Actions job id (`/runs/<id>` and
+  `/actions/runs/<run>/job/<id>` URLs). `getDetails()` adds output, steps and any deployment
+  hold; `listAnnotations()` pages the file annotations; `readLog()` reads a finished Actions job's
+  log (numbered lines, tail by default, `fromLine`/`maxLines`/`search`), refusing other apps'
+  check runs. GitHub answers the logs endpoint with a redirect to its blob storage, which is
+  fetched without the token. Finished logs are cached (see `storage-schema.md`) and revalidated
+  against the logs endpoint before each use, so a deleted log stops being served.
+- **Workflow runs.** `repo.listWorkflowRuns()` filters by branch, commit, event and state (GitHub's
+  `queued` filter leaves out runs still `pending` on a concurrency group or `requested`);
+  `pullRequest.listWorkflowRuns()` lists the head commit's. `getWorkflowRun(id)` opens one for
+  `getDetails()` and `listJobs({ attempt? })`.
+
+Re-running, cancelling or approving runs, and merging when green, are not supported yet.
+
 ## Setting Up GitHub OAuth Credentials
 
 If you're running this project locally and want to use GitHub integrations, you'll need to create

@@ -32,6 +32,8 @@ export type GitLabUserResponse = {
   web_url: string;
   email?: string | null;
   confirmed_at?: string | null;
+  /** Sent to administrators only, as `true`; absent for everyone else. */
+  is_admin?: boolean;
 };
 
 /** A user as it appears nested in issuables and elsewhere. */
@@ -69,6 +71,12 @@ export type GitLabProjectResponse = {
   namespace: { full_path: string; name: string; path: string };
   archived?: boolean;
   empty_repo?: boolean;
+  /**
+   * Where the project's CI configuration lives, relative to the repository root; empty or absent
+   * for the default `.gitlab-ci.yml`. `path@group/project` names another project's file, and a
+   * URL a remote one.
+   */
+  ci_config_path?: string | null;
 };
 
 /** A label object, as returned with `with_labels_details=true`. */
@@ -146,6 +154,125 @@ export type GitLabMergeRequestResponse = {
   squash?: boolean;
   /** Single-GET only. */
   user?: { can_merge: boolean };
+  /**
+   * Single-GET only: the latest pipeline for the merge request's head (GitLab's `head_pipeline_id`,
+   * updated as pipelines are created, so briefly an older head's after a push). Exposed only when
+   * the user may read the project's pipelines (`Ability.allowed?(user, :read_pipeline, project)`
+   * in `API::Entities::MergeRequest`): the key is *absent* for a user who may not, and `null` when
+   * there is no pipeline.
+   */
+  head_pipeline?: GitLabPipelineResponse | null;
+};
+
+/**
+ * A pipeline as other responses embed it and listings return it (`API::Entities::Ci::PipelineBasic`:
+ * the fields below, all always present -- the docs' examples are abridged).
+ */
+export type GitLabPipelineBasicResponse = {
+  id: number;
+  iid?: number;
+  project_id: number;
+  sha: string;
+  ref: string;
+  status: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+  web_url: string;
+};
+
+/** `GET /projects/:id/pipelines/:pipeline_id`, and the MR's `head_pipeline`. */
+export type GitLabPipelineResponse = GitLabPipelineBasicResponse & {
+  yaml_errors?: string | null;
+  user?: GitLabSimpleUser | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration?: number | null;
+};
+
+/**
+ * A job (`API::Entities::Ci::Job`) or trigger job (`API::Entities::Ci::Bridge`, which adds
+ * `downstream_pipeline`). Both are rows of one table, so their ids share one space with external
+ * commit statuses.
+ */
+export type GitLabJobResponse = {
+  id: number;
+  name: string;
+  stage: string;
+  status: string;
+  ref: string;
+  allow_failure: boolean;
+  failure_reason?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  /** Set once someone erased the job's log and artifacts. */
+  erased_at?: string | null;
+  duration?: number | null;
+  web_url: string;
+  pipeline: GitLabPipelineBasicResponse;
+  commit?: { id: string } | null;
+  runner?: { description?: string | null; name?: string | null } | null;
+  /** Trigger jobs only: the pipeline it started, null until it has. */
+  downstream_pipeline?: GitLabPipelineBasicResponse | null;
+};
+
+/**
+ * One row of `GET …/repository/commits/:sha/statuses` (`API::Entities::CommitStatus`). The listing
+ * holds every status of the commit's pipelines -- jobs and trigger jobs as well as statuses
+ * external systems posted -- without saying which is which.
+ */
+export type GitLabCommitStatusResponse = {
+  id: number;
+  name: string;
+  status: string;
+  description?: string | null;
+  target_url?: string | null;
+  allow_failure: boolean;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  /** Exposed by the entity though the docs omit it; absent on older instances. */
+  pipeline_id?: number | null;
+};
+
+/** `GET /projects/:id/pipelines/:pipeline_id/test_report_summary`. */
+export type GitLabTestReportSummaryResponse = {
+  total: { count: number; failed: number; skipped: number; error: number };
+  test_suites: Array<{ name: string; total_count: number; failed_count: number; error_count: number }>;
+};
+
+/** `GET /projects/:id/pipelines/:pipeline_id/test_report`. */
+export type GitLabTestReportResponse = {
+  test_suites: Array<{
+    name: string;
+    test_cases: Array<{
+      status: string;
+      name: string;
+      classname?: string | null;
+      file?: string | null;
+      execution_time?: number | null;
+      system_output?: string | null;
+      stack_trace?: string | null;
+    }>;
+  }>;
+};
+
+/** One row of `GET …/merge_requests/:iid/versions`: a diff version, made when the head moved. */
+export type GitLabMergeRequestVersionResponse = {
+  id: number;
+  head_commit_sha: string;
+  created_at: string;
+};
+
+/**
+ * One row of `GET /projects/:id/events?action=pushed`: when GitLab recorded a push, and the commit
+ * it left the ref at (`commit_to`: null when the push deleted the ref, and in the one bulk event
+ * GitLab records for a push past the instance's push-event limit).
+ */
+export type GitLabPushEventResponse = {
+  created_at: string;
+  push_data?: { commit_to: string | null } | null;
 };
 
 /**
@@ -246,6 +373,11 @@ export type GitLabCommitResponse = {
   web_url: string;
   /** Single-GET only (or `with_stats` on the list). */
   stats?: { additions: number; deletions: number; total: number };
+  /**
+   * Single-GET only: the latest pipeline for the commit, or null when there is none *or* the user
+   * may not read it (`API::Entities::CommitDetail#can_read_pipeline?`) -- the two are not told apart.
+   */
+  last_pipeline?: GitLabPipelineBasicResponse | null;
 };
 
 export type GitLabBranchResponse = {
@@ -274,7 +406,8 @@ export type GitLabCompareResponse = {
 };
 
 /**
- * A failed GitLab request. `status` is the HTTP status. `isAuthError` marks a 401 that means the
+ * A failed GitLab request. `status` is the HTTP status (502 or 504 for one GitLab never answered,
+ * see `transportError`). `isAuthError` marks a 401 that means the
  * *credentials* were rejected, which the account adjudicates (see `withAccountApi`). GitLab also
  * answers 401 for things that are not credential rejections -- documented for `PUT …/merge` as
  * "this user does not have permission to accept this merge request", and the approvals endpoint
@@ -293,8 +426,8 @@ export class GitLabApiError extends Error {
   movedTo?: string;
 
   constructor(status: number, message: string,
-              options: { details?: unknown; movedTo?: string; isAuthError?: boolean } = {}) {
-    super(message);
+              options: { details?: unknown; movedTo?: string; isAuthError?: boolean; cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "GitLabApiError";
     this.status = status;
     this.details = options.details;
@@ -323,6 +456,8 @@ type Query = Record<string, QueryValue | QueryValue[]>;
 type RequestOptions = {
   query?: Query;
   body?: unknown;
+  /** Overall deadline, body included; defaults to `REQUEST_TIMEOUT_MS`. */
+  timeoutMs?: number;
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
 };
@@ -340,6 +475,8 @@ export const DEFAULT_INSTANCE_URL = "https://gitlab.com";
 const USER_AGENT = "Cloudflare-Gadgets";
 const REQUEST_TIMEOUT_MS = 30_000;
 const GIT_TIMEOUT_MS = 120_000;
+/** Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming a job's whole log. */
+const LOG_TIMEOUT_MS = 120_000;
 /**
  * The most of one REST or OAuth response body the Worker holds. Generous, because a page of diffs
  * or a compare carries whole patches; a larger answer fails with an explicit error rather than
@@ -375,15 +512,27 @@ function isJson(response: Response): boolean {
   return (response.headers.get("content-type") ?? "").includes("application/json");
 }
 
+/**
+ * A request GitLab never answered -- it timed out (504), or could not be reached or broke off
+ * mid-body (502) -- as the `GitLabApiError` of GitLab failing, so callers treat it as one. Never
+ * a credential refusal: those are answers.
+ */
+function transportError(error: unknown): GitLabApiError {
+  const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+  const reason = error instanceof Error ? error.message : String(error);
+  return new GitLabApiError(timedOut ? 504 : 502,
+    timedOut ? "GitLab did not answer in time." : `GitLab could not be reached: ${reason}`, { cause: error });
+}
+
 /** A success body: JSON when GitLab labels it so, text otherwise, `undefined` when empty. */
 async function parseBody(response: Response): Promise<unknown> {
   let text: string;
   try {
     text = await readTextCapped(response, MAX_BODY_BYTES);
   } catch (error) {
-    if (!(error instanceof ResponseTooLargeError)) throw error;
+    if (!(error instanceof ResponseTooLargeError)) throw transportError(error);
     throw new GitLabApiError(502,
-      `GitLab's response was larger than the ${MAX_BODY_BYTES / (1024 * 1024)} MiB the gatekeeper reads.`);
+      `GitLab's response was larger than the ${MAX_BODY_BYTES / (1024 * 1024)} MiB the gatekeeper reads.`, { cause: error });
   }
   if (text === "") return undefined;
   return isJson(response) ? JSON.parse(text) : text;
@@ -520,7 +669,9 @@ async function send(
     // Never follow: a renamed project's 301 points at its numeric-id URL, and following it would
     // silently turn a POST into a GET. Surfaced as a "project moved" error instead.
     redirect: "manual",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
+  }).catch((error: unknown) => {
+    throw transportError(error);
   });
 
   await throwOnRedirect(response, url);
@@ -1142,6 +1293,147 @@ export class GitLabApi {
     }
   }
 
+  /**
+   * Whether a file exists at `ref`: `HEAD …/repository/files/:file_path?ref=`, which answers the
+   * file's metadata headers (200) or 404, never its content.
+   */
+  async fileExists(projectPath: string, filePath: string, ref: string): Promise<boolean> {
+    const response = await send(this.#instance, "HEAD",
+      `/projects/${encodeProjectPath(projectPath)}/repository/files/${encodeURIComponent(filePath)}`,
+      { query: { ref }, okStatuses: [404] }, this.#credentials);
+    await response.body?.cancel().catch(() => {});
+    return response.status !== 404;
+  }
+
+  // -- CI
+
+  /** One page of the project's pipelines, newest first. Child pipelines are not listed. */
+  async listPipelines(projectPath: string, options: {
+    ref?: string;
+    sha?: string;
+    status?: string;
+    source?: string;
+    page: number;
+    perPage: number;
+  }): Promise<GitLabPage<GitLabPipelineBasicResponse>> {
+    return await this.#getPage<GitLabPipelineBasicResponse>(`/projects/${encodeProjectPath(projectPath)}/pipelines`, {
+      ref: options.ref,
+      sha: options.sha,
+      status: options.status,
+      source: options.source,
+    }, options.page, options.perPage);
+  }
+
+  /** A pipeline of this project (child pipelines included), or null on 404. */
+  async getPipeline(projectPath: string, pipelineId: number): Promise<GitLabPipelineResponse | null> {
+    try {
+      return await this.#get<GitLabPipelineResponse>(`/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}`);
+    } catch (error) {
+      if (error instanceof GitLabApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * One page of a merge request's pipelines, newest first: those of the target project and, for
+   * a merge request from a fork, of the source project too (`project_id` tells them apart).
+   */
+  async listMergeRequestPipelines(projectPath: string, iid: number, page: number, perPage: number):
+      Promise<GitLabPage<GitLabPipelineBasicResponse>> {
+    return await this.#getPage<GitLabPipelineBasicResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/pipelines`, {}, page, perPage);
+  }
+
+  /** One page of a merge request's diff versions, newest first. */
+  async listMergeRequestVersions(projectPath: string, iid: number, page: number, perPage: number):
+      Promise<GitLabPage<GitLabMergeRequestVersionResponse>> {
+    return await this.#getPage<GitLabMergeRequestVersionResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/versions`, {}, page, perPage);
+  }
+
+  /**
+   * One page of the project's push events the account may see, newest first (GitLab orders them
+   * by id, which follows creation). GitLab's post-receive job records a push's event just before
+   * it queues the push's pipelines.
+   */
+  async listPushEvents(projectPath: string, page: number, perPage: number): Promise<GitLabPage<GitLabPushEventResponse>> {
+    return await this.#getPage<GitLabPushEventResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/events`, { action: "pushed" }, page, perPage);
+  }
+
+  /** One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only. */
+  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number):
+      Promise<GitLabPage<GitLabJobResponse>> {
+    return await this.#getPage<GitLabJobResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`, {}, page, perPage);
+  }
+
+  /**
+   * One page of a pipeline's trigger jobs, latest attempts only. GitLab 19.2 renamed the route from
+   * `bridges` to `trigger_jobs` and deprecated the old name; the caller picks by version
+   * (`supportsTriggerJobsRoute`).
+   */
+  async listPipelineTriggerJobs(projectPath: string, pipelineId: number, options: {
+    route: "trigger_jobs" | "bridges";
+    page: number;
+    perPage: number;
+  }): Promise<GitLabPage<GitLabJobResponse>> {
+    return await this.#getPage<GitLabJobResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/${options.route}`,
+      {}, options.page, options.perPage);
+  }
+
+  /**
+   * One page of a commit's latest statuses in one pipeline, newest first where the instance
+   * honours `sort`. `pipeline_id` (GitLab 17.9) narrows the listing to that pipeline; an older
+   * instance ignores it, so callers also check each row's own `pipeline_id`.
+   */
+  async listCommitStatuses(projectPath: string, sha: string, options: { pipelineId: number; page: number; perPage: number }):
+      Promise<GitLabPage<GitLabCommitStatusResponse>> {
+    return await this.#getPage<GitLabCommitStatusResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/repository/commits/${encodeURIComponent(sha)}/statuses`,
+      { pipeline_id: options.pipelineId, order_by: "id", sort: "desc" }, options.page, options.perPage);
+  }
+
+  /**
+   * A job of this project, or null on 404. GitLab finds it among the project's jobs run by
+   * runners (`find_build!`), so a trigger job's or external status's id is a 404 too.
+   */
+  async getJob(projectPath: string, jobId: number): Promise<GitLabJobResponse | null> {
+    try {
+      return await this.#get<GitLabJobResponse>(`/projects/${encodeProjectPath(projectPath)}/jobs/${jobId}`);
+    } catch (error) {
+      if (error instanceof GitLabApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * A job's raw log as a byte stream for the caller to read incrementally, or null on 404 ("job
+   * not found or no log file"). An archived log is streamed through Workhorse, not redirected.
+   */
+  async getJobTrace(projectPath: string, jobId: number): Promise<ReadableStream<Uint8Array> | null> {
+    const response = await send(this.#instance, "GET",
+      `/projects/${encodeProjectPath(projectPath)}/jobs/${jobId}/trace`,
+      { okStatuses: [404], timeoutMs: LOG_TIMEOUT_MS }, this.#credentials);
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {});
+      return null;
+    }
+    return response.body ?? new ReadableStream<Uint8Array>({ start: controller => controller.close() });
+  }
+
+  async getPipelineTestReportSummary(projectPath: string, pipelineId: number): Promise<GitLabTestReportSummaryResponse> {
+    return await this.#get<GitLabTestReportSummaryResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/test_report_summary`);
+  }
+
+  /** The whole test report in one body, held to the client's usual body cap (`MAX_BODY_BYTES`). */
+  async getPipelineTestReport(projectPath: string, pipelineId: number): Promise<GitLabTestReportResponse> {
+    return await this.#get<GitLabTestReportResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/test_report`);
+  }
+
   // -- git smart-HTTP
 
   /**
@@ -1224,6 +1516,14 @@ export function gitRepoPath(projectPath: string): string {
   return projectPath.split("/").map(encodeURIComponent).join("/");
 }
 
+/** Whether `version` (from `getVersion()`) is `major.minor` or later; one that does not parse is not. */
+function versionAtLeast(version: string, major: number, minor: number): boolean {
+  const match = /^(\d+)\.(\d+)/.exec(version);
+  if (match === null) return false;
+  const actualMajor = Number(match[1]);
+  return actualMajor > major || (actualMajor === major && Number(match[2]) >= minor);
+}
+
 /**
  * Whether an instance at `version` (from `getVersion()`) honours `bulk_publish`'s
  * `reviewer_state`. GitLab 19.2 added it; earlier versions ignore it without an error, which
@@ -1231,10 +1531,15 @@ export function gitRepoPath(projectPath: string): string {
  * as too old.
  */
 export function supportsReviewerState(version: string): boolean {
-  const match = /^(\d+)\.(\d+)/.exec(version);
-  if (match === null) return false;
-  const major = Number(match[1]);
-  return major > 19 || (major === 19 && Number(match[2]) >= 2);
+  return versionAtLeast(version, 19, 2);
+}
+
+/**
+ * Whether an instance at `version` serves a pipeline's trigger jobs at `…/trigger_jobs` (GitLab
+ * 19.2, which deprecated `…/bridges`). Older or unparseable versions use `bridges`.
+ */
+export function supportsTriggerJobsRoute(version: string): boolean {
+  return versionAtLeast(version, 19, 2);
 }
 
 /** Fields a `PUT` on an issue or merge request may change. */
