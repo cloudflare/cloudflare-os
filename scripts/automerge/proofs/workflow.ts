@@ -340,11 +340,34 @@ function holdsCredential(workflow: Workflow, id: string, job: YamlMap, text: str
   return permissions === undefined || permissionReasons(permissions, `job ${id}`).length > 0;
 }
 
-/** Actions that restore an Actions cache whenever they run, or by default. */
-const CACHE_ACTIONS = /^(actions\/cache|actions\/setup-[a-z]+|ruby\/setup-ruby)(\/|@|$)/;
-const SETUP_VP = /^voidzero-dev\/setup-vp@/;
-/** setup-vp's inputs that restore a cache; both default to false (setup-vp v1.22.0 action.yml). */
-const SETUP_VP_CACHE_INPUTS = ["cache", "cache-toolchain"];
+/** A step's `with:` inputs, by name. */
+type Inputs = Map<string, YamlNode>;
+
+const isFalse = (node: YamlNode | undefined) => node?.kind === "scalar" && node.value === "false";
+
+/**
+ * The only actions a job that holds a credential may use, each known not to restore an Actions
+ * cache with the inputs it is given, and what is wrong with those inputs. Keyed by `owner/repo` (or
+ * `owner/repo/path`) in lower case. Any other action, composite or not, is a reason: what it runs,
+ * or what the actions it calls in turn run, is not read here. Kept to what this repository uses.
+ */
+const NO_CACHE_ACTIONS = new Map<string, (inputs: Inputs) => string[]>([
+  ["actions/checkout", () => []],
+  ["actions/upload-artifact", () => []],
+  ["actions/download-artifact", () => []],
+  ["actions/github-script", () => []],
+  ["actions/create-github-app-token", () => []],
+  ["actions/labeler", () => []],
+  ["contributor-assistant/github-action", () => []],
+  // setup-vp restores the dependency cache with `cache`, Vite+ and Node.js with `cache-toolchain`,
+  // and the sfw binary with `sfw` (v1.22.0: src/index.ts, src/install-sfw.ts). `cache: false` must be
+  // written out, so a later release that turns the default on cannot slip past.
+  ["voidzero-dev/setup-vp", (inputs) => [
+    ...isFalse(inputs.get("cache")) ? [] : ["setup-vp cache is not stated as false"],
+    ...["cache-toolchain", "sfw"].flatMap((name) =>
+      !inputs.has(name) || isFalse(inputs.get(name)) ? [] : [`setup-vp ${name} is not false`]),
+  ]],
+]);
 
 /** Why `step`, in a job that holds a credential, may restore a cache. */
 function stepCacheReasons(step: YamlNode, where: string): string[] {
@@ -352,25 +375,24 @@ function stepCacheReasons(step: YamlNode, where: string): string[] {
   const uses = entry(step.entries, "uses");
   if (uses === undefined) return [];
   if (uses.kind !== "scalar") return [`${where}: a uses that is not a scalar`];
-  const action = uses.value.toLowerCase();
-  if (CACHE_ACTIONS.test(action)) return [`${where}: ${uses.value} restores a cache`];
-  if (!SETUP_VP.test(action)) return [];
-  const inputs = entry(step.entries, "with");
-  if (inputs === undefined) return [];
-  if (inputs.kind !== "map") return [`${where}: setup-vp inputs that are not a block mapping`];
-  return SETUP_VP_CACHE_INPUTS.flatMap((name) => {
-    const value = entry(inputs.entries, name);
-    return value === undefined || (value.kind === "scalar" && value.value === "false")
-      ? [] : [`${where}: setup-vp ${name} is not false`];
-  });
+  const at = uses.value.indexOf("@");
+  const check = at === -1 ? undefined : NO_CACHE_ACTIONS.get(uses.value.slice(0, at).toLowerCase());
+  if (check === undefined) return [`${where}: ${uses.value} is not known to leave the Actions cache alone`];
+  const inputs = entry(step.entries, "with") ?? { kind: "map", entries: new Map(), spans: new Map() };
+  if (inputs.kind !== "map") return [`${where}: ${uses.value} has inputs that are not a block mapping`];
+  // Keys are matched without case elsewhere; here too, so `Cache: true` is not missed.
+  const folded = new Map([...inputs.entries].map(([name, value]) => [name.toLowerCase(), value]));
+  return check(folded).map((reason) => `${where}: ${reason}`);
 }
 
 /**
  * Why `text`, any workflow at the base, breaks the cache rule: a job that holds a credential
  * restores no Actions cache. An entry is written by whatever ran in the job that saved it, so an
  * action bumped in a credential-free workflow on `main` could leave one for a job with secrets.
+ * `workflows` are the paths of every workflow at the base, each checked on its own, so a job may
+ * call one of them as a reusable workflow; any other reusable workflow is a reason.
  */
-export function cacheReasons(text: string): string[] {
+export function cacheReasons(text: string, workflows: ReadonlySet<string>): string[] {
   const workflow = readWorkflow(text);
   if (typeof workflow === "string") return [workflow];
   const reasons: string[] = [];
@@ -380,6 +402,13 @@ export function cacheReasons(text: string): string[] {
       continue;
     }
     if (!holdsCredential(workflow, id, job, jobText)) continue;
+    const called = entry(job.entries, "uses");
+    if (called !== undefined) {
+      const local = called.kind === "scalar" && called.value.startsWith("./") ? called.value.slice(2) : undefined;
+      if (local === undefined || !workflows.has(local)) {
+        reasons.push(`job ${id} holds a credential and calls a workflow this check does not read`);
+      }
+    }
     const steps = entry(job.entries, "steps");
     if (steps === undefined) continue;
     if (steps.kind !== "seq") {
