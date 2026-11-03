@@ -123,15 +123,6 @@ type PendingTurnEvent =
   | { type: "metadata"; chat: AiChatMetadata; latestSequence: number }
   | { type: "message"; entry: AiChatMessage };
 
-type EndedOutcome = Extract<AgentTurnOutcome, { status: "error" | "cancelled" }>;
-
-// How a turn that ended on `message` came out, if it ended on an error or a stop.
-const endedOutcome = (message: AiChatMessage): EndedOutcome | undefined =>
-  message.type !== "error" ? undefined
-  : message.code === "stopped" ? { status: "cancelled", message: "The agent was stopped" }
-  : message.code === undefined ? { status: "error", message: message.message }
-  : { status: "error", message: message.message, code: message.code };
-
 class TurnObserver {
   readonly result: Promise<AgentTurnOutcome>;
   readonly timeoutFailure: Promise<never>;
@@ -149,7 +140,10 @@ class TurnObserver {
   // the chat's idle metadata before or after them.
   #agentReplied = false;
   #idle: boolean | undefined;
-  #error: { outcome: EndedOutcome; sequence: number } | undefined;
+  #error: {
+    outcome: Extract<AgentTurnOutcome, { status: "error" }>;
+    sequence: number;
+  } | undefined;
   #startSequence = -1;
   #endSequence: number | undefined;
   #outcome: AgentTurnOutcome | undefined;
@@ -253,10 +247,12 @@ class TurnObserver {
         entry.sequence > this.#startSequence) {
       this.#agentReplied = true;
     }
-    const ended = endedOutcome(entry);
-    if (ended !== undefined && this.#outcome === undefined &&
+    if (entry.type === "error" && this.#outcome === undefined &&
         !(this.#sawActive && entry.sequence <= this.#startSequence)) {
-      this.#error = { outcome: ended, sequence: entry.sequence };
+      const outcome: Extract<AgentTurnOutcome, { status: "error" }> = entry.code === undefined
+        ? { status: "error", message: entry.message }
+        : { status: "error", message: entry.message, code: entry.code };
+      this.#error = { outcome, sequence: entry.sequence };
     }
     if (this.#idle === true && !this.#sawActive) this.#finishIdle();
   }
@@ -280,8 +276,7 @@ class TurnObserver {
   }
 
   // The chat is idle and this observer never saw it active: finished only if the replay shows the
-  // agent answered (or failed, or was stopped on) the prompt. No end sequence: the snapshot reads
-  // the full history.
+  // agent answered (or failed) the prompt. No end sequence: the snapshot reads the full history.
   #finishIdle(): void {
     if (!this.#promptSeen) return;
     const failed = this.#error !== undefined && this.#error.sequence > this.#startSequence
@@ -898,11 +893,13 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       ? loadedHistory
       : loadedHistory.filter(message => message.sequence <= endSequence);
     const newMessages = history.filter(message => message.sequence > startSequence);
-    const ended = newMessages.map(endedOutcome).find(outcome => outcome !== undefined);
+    const error = newMessages.find(message => message.type === "error");
     let outcome: AgentTurnOutcome = observedOutcome;
-    if (ended !== undefined && observedOutcome.status !== "timedOut" &&
+    if (error !== undefined && observedOutcome.status !== "timedOut" &&
         observedOutcome.status !== "cancelled") {
-      outcome = ended;
+      outcome = error.code === undefined
+        ? { status: "error", message: error.message }
+        : { status: "error", message: error.message, code: error.code };
     }
     let metadata = chats.find(chat => chat.id === chatId);
     if (metadata === undefined) throw new Error(`Chat ${chatId} disappeared`);

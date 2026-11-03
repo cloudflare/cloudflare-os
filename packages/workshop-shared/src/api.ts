@@ -4137,7 +4137,7 @@ export type AiChatMessageBody = {
   resources: AlwaysAvailableResource[];
 } | {
   /**
-   * Indicates that the agent run ended with an error (e.g. LLM API failure, abort, server
+   * Indicates that the agent run ended with an error (e.g. LLM API failure, server
    * restart). This is displayed to the user with a "retry" button, but is NOT included in the
    * chat log sent to the LLM so the agent does not react to it.
    */

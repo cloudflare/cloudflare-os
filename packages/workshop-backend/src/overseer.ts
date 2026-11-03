@@ -7378,9 +7378,10 @@ class OverseerImpl implements AgentHooks {
       });
     } catch (err: unknown) {
       if (!owns()) return;
-      // The user stopped the turn (see cancelAgent): it ended as asked, so it is not reported or
-      // logged as a failure, and the chat marks it as stopped rather than failed.
-      if (liveChat.cancelController.signal.aborted) {
+      // The turn threw the user's stop (see cancelAgent): it ended as asked, so it is not reported
+      // or logged as a failure, and the chat marks it as stopped. Any other error after Stop is a
+      // real failure and is reported as one.
+      if (err === liveChat.cancelController.signal.reason) {
         turnLogger.debug("agent run finished", {
           event: "agent.run.finished", outcome: "stopped",
           durationMs: Date.now() - startedAt,

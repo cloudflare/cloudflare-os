@@ -202,21 +202,6 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
   expect(model.remainingSteps()).toBe(0);
 });
 
-it.concurrent("a session reports a turn stopped from another connection as cancelled", async () => {
-  const model = models.script([{ pending: true }]);
-  await using session = await openAgentSession(harness.url, {
-    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, usernamePrefix: "observedstop",
-  });
-  const turn = session.runTurn("Wait");
-  await waitFor("the pending model request", async () => model.requests.length === 1 || null);
-  await withOwnerWorkspace(harness.url, session.username, async ws => {
-    const [chat] = await ws.listChats();
-    await ws.stopAgent(chat!.id);
-  });
-
-  expect((await turn).outcome).toEqual({ status: "cancelled", message: "The agent was stopped" });
-});
-
 it.concurrent("resubscribing during a running turn replays exactly what history lacks", async () => {
   const model = models.script([
     { text: "First reply." },
