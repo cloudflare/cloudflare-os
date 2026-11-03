@@ -237,6 +237,7 @@ function decodedEscapes(text: string): string {
 
 const SECRETS = /\bsecrets\b/i;
 const WORKFLOW_CALL = /\bworkflow_call\b/i;
+const INPUT_VARIABLE = /\bINPUT_/i;
 
 /** Whether `word` is in `text` as written, with YAML escapes decoded, or after Unicode case mapping. */
 function mentions(word: RegExp, text: string): boolean {
@@ -330,10 +331,12 @@ export function workflowReasons(text: string): string[] {
 
 /**
  * Whether a job holds a credential in workflowReasons' sense: it or the workflow around it names
- * secrets, it runs in an environment or calls a reusable workflow, or its token may write.
+ * secrets, it runs in an environment or calls a reusable workflow, or its token may write. A
+ * workflow other workflows can call holds whatever its callers pass it, a secret through `with:`
+ * included, so every job in one counts.
  */
 function holdsCredential(workflow: Workflow, id: string, job: YamlMap, text: string): boolean {
-  if (mentions(SECRETS, text) || mentions(SECRETS, workflow.outside)) return true;
+  if (mentions(SECRETS, text) || mentions(SECRETS, workflow.outside) || mentions(WORKFLOW_CALL, workflow.outside)) return true;
   if (entry(job.entries, "environment") !== undefined || entry(job.entries, "uses") !== undefined) return true;
   // Without permissions at either level the token gets the repository's default, which may write.
   const permissions = entry(job.entries, "permissions") ?? entry(workflow.root.entries, "permissions");
@@ -408,6 +411,11 @@ export function cacheReasons(text: string, workflows: ReadonlySet<string>): stri
       if (local === undefined || !workflows.has(local)) {
         reasons.push(`job ${id} holds a credential and calls a workflow this check does not read`);
       }
+    }
+    // An action reads its inputs from INPUT_<NAME> variables, so one set in `env:` could stand in
+    // for an input the checks below read from `with:`.
+    if (INPUT_VARIABLE.test(jobText) || INPUT_VARIABLE.test(workflow.outside)) {
+      reasons.push(`job ${id} holds a credential and sets an INPUT_ variable`);
     }
     const steps = entry(job.entries, "steps");
     if (steps === undefined) continue;

@@ -19,7 +19,7 @@ function workflowsIn(dir: URL): Record<string, string> {
     [`.github/workflows/${name}`, readFileSync(new URL(name, dir), "utf8")]));
 }
 const recordedBase = (name: string) => workflowsIn(new URL(`./testdata/actions/${name}/`, import.meta.url));
-/** This checkout's workflows, which the cache rule must hold for. */
+/** This checkout's workflows, which fail the cache rule until ask-bonk passes `no-cache` (see below). */
 const repoWorkflows = workflowsIn(new URL("../../../.github/workflows/", import.meta.url));
 
 function input(diff: string, baseWorkflows: Record<string, string>): ActionsInput {
@@ -177,6 +177,15 @@ describe("proof-actions cache rule", () => {
       unknown(1, "actions/cache@v5")],
     ["a workflow the reader cannot parse", { [EXTRA]: "on: push\njobs: &j\n" },
       `${EXTRA}: cannot be parsed: line 2: an anchor, alias or tag`],
+    ["setup-vp's sfw turned on through an INPUT_ variable",
+      secretJobWith(`      - uses: ${SETUP_VP}\n        with:\n          cache: false\n        env:\n          INPUT_SFW: true\n`),
+      `${EXTRA}: job extra holds a credential and sets an INPUT_ variable`],
+    ["a reusable workflow handed a secret through with:, which restores a cache", {
+      ".github/workflows/caller.yml": "on: push\npermissions: {}\njobs:\n  c:\n    uses: ./.github/workflows/extra.yml\n" +
+        "    with:\n      t: ${{ secrets.T }}\n",
+      [EXTRA]: "on:\n  workflow_call:\n    inputs:\n      t:\n        type: string\npermissions:\n  contents: read\njobs:\n" +
+        "  d:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: oven-sh/setup-bun@v2\n",
+    }, unknown(1, "oven-sh/setup-bun@v2").replace("job extra", "job d")],
   ];
   for (const [name, others, reason] of cases) {
     it(`fails ${name}`, () => {
