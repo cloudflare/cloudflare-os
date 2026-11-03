@@ -10,7 +10,7 @@ import { runCommand } from "./exec.ts";
 /** Test files vitest runs, as opposed to the helpers and fixtures beside them. */
 export const RUNNABLE_TEST = /\.(test|spec)\.[cm]?[jt]sx?$/;
 /** Configs these producers do not run: a browser, provider accounts, models or the full stack. */
-const UNSUPPORTED_CONFIG = /\.(browser|contract|eval|e2e|integration)\.config\.ts$/;
+const UNSUPPORTED_CONFIG = /\.(browser|contract|eval|integration)\.config\.ts$/;
 
 /** The package directory (`packages/<name>`) of a repo-relative path, if it is in one. */
 export function packageOf(path: string): string | undefined {
@@ -120,8 +120,8 @@ export function fileResults(report: JsonObject, root: string): FileResult[] {
   });
 }
 
-/** Runs `files` (repo-relative; none means every file the config includes) under `config` from its package directory. */
-export function runTests(config: string, files: string[], env: NodeJS.ProcessEnv = process.env): TestRun {
+/** Runs `files` (repo-relative) under `config` from its package directory. */
+export function runTests(config: string, files: string[]): TestRun {
   const pkg = packageOf(config);
   if (!pkg) throw new Error(`${config} is not in a package`);
   const dir = mkdtempSync(join(tmpdir(), "automerge-vitest-"));
@@ -130,7 +130,7 @@ export function runTests(config: string, files: string[], env: NodeJS.ProcessEnv
     const result = runCommand("pnpm", [
       "exec", "vitest", "run", "--config", relative(pkg, config), "--reporter=json", `--outputFile=${out}`,
       ...files.map((file) => relative(pkg, file)),
-    ], pkg, env);
+    ], pkg);
     let results: FileResult[] | undefined;
     try {
       results = fileResults(asObject(parseJson(readFileSync(out, "utf8")), "vitest report"), process.cwd());

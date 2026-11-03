@@ -1,24 +1,15 @@
 name: Automerge evidence
 
-# Producers that build or run the pull request's code, and two that hold a secret. Each job writes
-# one `automerge-<name>` artifact (scripts/automerge/proofs/artifact.ts) for the risk-review gate,
-# which binds it to this file, the `pull_request` event, the head SHA and the newest attempt. No
-# job posts a check. The proofs that judge untrusted dependency code run in automerge-proofs.yml,
-# where nothing from the head executes.
+# Producers that build or run the pull request's code. Each job writes one `automerge-<name>`
+# artifact (scripts/automerge/proofs/artifact.ts) for the risk-review gate, which binds it to this
+# file, the `pull_request` event, the head SHA and the newest attempt.
 #
-# What rests on the author being a maintainer (threat model, rule 7):
-# - This file is the head's: `pull_request` runs the merge commit's workflow, so an author can
-#   change any job here, the secret-holding ones included.
-# - equivalence, tests, preview-smoke, deploy-dry-run, red-green and mutation run head code, and
-#   any of them can upload an artifact under any name in this run, the names consumer-build and
-#   preview-e2e use included. A name cannot be uploaded twice, so the real upload then fails, and
-#   its job's continue-on-error keeps the run green. No artifact from this run is worth more than
-#   its author. For a Dependabot pull request the head's scripts are the base's, but its
-#   dependencies run here, and a compromised one could write a false `preview-smoke`.
-# - consumer-build and preview-e2e hold secrets. They start only when the trust job finds a
-#   same-repository branch by a person listed in the base's `.github/maintainers`, check out the
-#   base and run only its scripts here, but what they measure is head code: gadgets-internal
-#   builds the head, and the e2e flows drive the head's preview with the Access token.
+# No job here holds a secret or posts a check. Head code runs in every job, so any job could upload
+# an artifact under any name in this run; that is why the proofs that judge untrusted dependency
+# code run in automerge-proofs.yml, where nothing from the head executes. What this run produces
+# rests on the author being a maintainer (threat model, rule 7). For a Dependabot pull request the
+# head's scripts are the base's, but its dependencies run here, and a compromised one could write a
+# false `preview-smoke`.
 
 on:
   pull_request:
@@ -262,167 +253,6 @@ jobs:
         with:
           name: automerge-evidence-red-green
           path: automerge-out/automerge-evidence-red-green.json
-          if-no-files-found: error
-
-  # Whether the secret-holding jobs may start: a same-repository branch, a person, listed in the
-  # base's `.github/maintainers` and still with write access (scripts/automerge/evidence/trust.ts).
-  # Runs only the base's script; any failure leaves `trusted` unset, so those jobs are skipped.
-  trust:
-    name: Verify the author
-    if: ${{ !github.event.pull_request.draft }}
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      trusted: ${{ steps.trust.outputs.trusted }}
-    steps:
-      - name: Check out the base
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: false
-          run-install: false
-
-      - name: Decide
-        id: trust
-        if: ${{ hashFiles('scripts/automerge/evidence/trust.ts') != '' }}
-        env:
-          AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
-          HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
-          BASE_REPO_ID: ${{ github.event.pull_request.base.repo.id }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/automerge/evidence/trust.ts
-
-  # gadgets-internal builds and tests against the head. This job holds the GitLab tokens and runs
-  # only the base's producer here, but the pipeline it triggers runs the head's code, on
-  # gadgets-internal's unprotected `automerge-consumer-build` branch, never `main`. A base without
-  # the producer (before this lands) uploads nothing, which the gate reads as absent.
-  consumer-build:
-    name: Consumer build
-    needs: trust
-    if: ${{ needs.trust.outputs.trusted == 'true' }}
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 75
-    permissions:
-      contents: read
-    env:
-      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-    steps:
-      - name: Check out the base
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: false
-          run-install: false
-
-      - name: evidence-consumer-build
-        if: ${{ hashFiles('scripts/automerge/evidence/consumer-build.ts') != '' }}
-        env:
-          GITLAB_TRIGGER_TOKEN: ${{ secrets.AUTOMERGE_GITLAB_TRIGGER_TOKEN }}
-          GITLAB_READ_TOKEN: ${{ secrets.AUTOMERGE_GITLAB_READ_TOKEN }}
-        run: node scripts/automerge/evidence/consumer-build.ts
-
-      - name: Upload evidence-consumer-build
-        if: ${{ !cancelled() && hashFiles('scripts/automerge/evidence/consumer-build.ts') != '' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: automerge-evidence-consumer-build
-          path: automerge-out/automerge-evidence-consumer-build.json
-          if-no-files-found: error
-
-  # The head's preview passes the core Workshop flows at desktop and phone sizes. This job holds
-  # the Access token and runs the base's e2e suite and producer, never the head's, against the
-  # head's preview, whose pages run in a sandboxed Chromium. A base without the producer uploads
-  # nothing (absent).
-  preview-e2e:
-    name: Preview end-to-end
-    needs: trust
-    if: ${{ needs.trust.outputs.trusted == 'true' }}
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 70
-    permissions:
-      actions: read
-      contents: read
-    env:
-      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HAS_ACCESS_TOKEN: ${{ secrets.AUTOMERGE_PREVIEW_E2E_ACCESS_TOKEN != '' }}
-    steps:
-      - name: Check out the base
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Enable Corepack
-        run: corepack enable
-
-      - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: false
-          run-install: true
-
-      # Without the token the producer reports `error` straight away and needs no browser.
-      - name: Install Chromium
-        if: ${{ env.HAS_ACCESS_TOKEN == 'true' && hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
-        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
-
-      # The suite launches Chromium with its sandbox on, which needs unprivileged user namespaces;
-      # Ubuntu 24.04's AppArmor policy blocks them by default.
-      - name: Allow Chromium's sandbox
-        if: ${{ env.HAS_ACCESS_TOKEN == 'true' && hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      # The router's preview URL, as preview.yml names it (scripts/preview/staging-config.ts).
-      - name: Find the preview URL
-        id: preview
-        if: ${{ hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
-        env:
-          PREVIEW_NAME: ${{ github.head_ref }}
-          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
-          PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
-        run: |
-          url=$(node --input-type=module -e 'import { resolvePreviewName, routerPreviewUrl } from "./scripts/preview/staging-config.ts"; console.log(routerPreviewUrl(resolvePreviewName(), process.env.PREVIEW_WORKERS_DEV_HOST));')
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: evidence-preview-e2e
-        if: ${{ hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          # The producer downloads the preview run's smoke artifact with `gh run download`.
-          GH_TOKEN: ${{ github.token }}
-          E2E_ACCESS_TOKEN: ${{ secrets.AUTOMERGE_PREVIEW_E2E_ACCESS_TOKEN }}
-          PREVIEW_URL: ${{ steps.preview.outputs.url }}
-          PREVIEW_BRANCH: ${{ github.head_ref }}
-        run: node scripts/automerge/evidence/preview-e2e.ts --base-url "$PREVIEW_URL"
-
-      - name: Upload evidence-preview-e2e
-        if: ${{ !cancelled() && hashFiles('scripts/automerge/evidence/preview-e2e.ts') != '' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: automerge-evidence-preview-e2e
-          path: automerge-out/automerge-evidence-preview-e2e.json
           if-no-files-found: error
 
   # The package's tests kill most mutants on the changed lines. Same Stryker install and budget as

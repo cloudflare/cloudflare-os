@@ -17,11 +17,6 @@ Workshop's browser tests need Chromium installed once with
 `pnpm --filter @gadgets/workshop-frontend exec playwright install chromium`.
 Run them separately with `pnpm --filter @gadgets/workshop-frontend test:run:browser`.
 
-Workshop's end-to-end flows (`packages/workshop-frontend/e2e`) drive a running Workshop at desktop
-and phone sizes and are in no test task. Against `pnpm dev-server` plus `pnpm dev-client`, run
-`E2E_BASE_URL=http://localhost:3000 pnpm --filter @gadgets/workshop-frontend exec vitest run -c vitest.e2e.config.ts`.
-CI runs them against pull request previews through `scripts/automerge/evidence/preview-e2e.ts`.
-
 ## Watchdog policy
 
 Shared test tasks use `scripts/with-timeout.ts`: 60 seconds without output and 600 seconds total.

@@ -9,7 +9,7 @@ import { fileResults, listedFiles, type FileResult, type TestRun } from "./vites
 // `git diff -U0` of real merged commits against their parents, and the vitest JSON reports of
 // #932's changed test file (024caa73b, typed-storage distinct keys) recorded 2026-11-03: at head
 // (63 pass) and with src/index.ts put back to its parent (4 fail). The crash case is a real report
-// whose file failed in a hook before any test ran (the e2e suite, every test skipped).
+// whose only file failed in a hook before any of its ten tests ran, recorded 2026-11-02.
 const DIR = new URL("./testdata/red-green/", import.meta.url);
 const diff = (commit: string) => parseDiff(readFileSync(new URL(`diff-${commit}.diff`, DIR), "utf8"));
 const TEST = "packages/typed-storage/__tests__/index.test.ts";
@@ -23,9 +23,9 @@ function run(side: "head" | "base", files = [TEST]): TestRun {
   return { config: CONFIG, files, results: results(new URL(`pr932-vitest-${side}.json`, DIR)), exitOk: side === "head", seconds: 3, tail: "" };
 }
 
-/** The real crashed e2e report, relabelled as #932's test file so only its statuses matter. */
+/** The real crashed report, relabelled as #932's test file so only its statuses matter. */
 function crashed(): TestRun {
-  const [file] = results(new URL("../e2e/dev-server-suite-error.json", DIR));
+  const [file] = results(new URL("crashed-suite.json", DIR));
   return { config: CONFIG, files: [TEST], results: [{ ...file, path: TEST }], exitOk: false, seconds: 3, tail: "" };
 }
 

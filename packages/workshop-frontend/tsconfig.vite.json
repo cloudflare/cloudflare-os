@@ -10,5 +10,5 @@
     // real config.
     "noEmit": true
   },
-  "include": ["vite.config.ts", "vitest.browser.config.ts", "vitest.e2e.config.ts", "e2e/**/*.ts"]
+  "include": ["vite.config.ts", "vitest.browser.config.ts"]
 }

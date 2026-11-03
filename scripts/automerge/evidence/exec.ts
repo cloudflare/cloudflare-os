@@ -22,10 +22,10 @@ export interface CommandResult {
  * Runs `command` in `cwd`, echoing its output to this process's log, and returns what happened.
  * Throws only when the command could not be started.
  */
-export function runCommand(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env): CommandResult {
+export function runCommand(command: string, args: string[], cwd: string): CommandResult {
   console.log(`running in ${cwd}: ${command} ${args.join(" ")}`);
   const started = performance.now();
-  const result = spawnSync(command, args, { cwd, env, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   if (result.error) throw result.error;
   const output = `${result.stdout}${result.stderr}`;
   process.stdout.write(output);
