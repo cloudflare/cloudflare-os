@@ -34,7 +34,7 @@ function renderTriggerLabel(selectedModel: SelectedModel): string {
       onModelChange={() => {}}
     />,
   ));
-  return container.querySelector('[aria-label="Select model"]')!.textContent!;
+  return container.querySelector('button[aria-haspopup="menu"]')!.textContent!;
 }
 
 describe("ComposerModelSelector", () => {
