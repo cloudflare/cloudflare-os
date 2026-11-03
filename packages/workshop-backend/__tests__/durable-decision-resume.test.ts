@@ -117,7 +117,8 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
 function modelLookup(impl: Impl, lookup: () => Promise<{profile: typeof USER, aiModel: typeof MODEL}>) {
   // Hold/fail the caller-side read, without an unrelated user-DO RPC keeping an eviction alive.
   impl.users = {idFromString: (id: string) => id,
-    get: () => ({getChatContext: lookup, publishNotification: async () => {}})} as
+    get: () => ({getChatContext: lookup, publishNotification: async () => {},
+      getGlobalInstructionsForAgent: async () => ({instructions: "", cacheSalt: ""})})} as
       unknown as typeof impl.users;
 }
 

@@ -9,6 +9,7 @@ import { useAvatar, invalidateAvatarCache } from './useAvatar'
 import { compressAvatar, avatarBlobUrl } from './avatarUtils'
 import UsageSettings from './components/billing/UsageSettings'
 import { NotificationSettings } from './features/notifications/NotificationSettings'
+import { GlobalInstructionsSettings } from './features/global-instructions/GlobalInstructionsSettings'
 import { useDocumentTitle } from './useDocumentTitle'
 import { isImeComposing } from './keyboardEvent'
 
@@ -489,6 +490,8 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+
+        <GlobalInstructionsSettings />
 
         <NotificationSettings />
 

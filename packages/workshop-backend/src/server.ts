@@ -154,6 +154,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   setOwnCommitEmail(email: string | null): Promise<void> {
     return this.#user.setOwnCommitEmail(email);
   }
+  getOwnGlobalInstructions(): Promise<string> {
+    return retryOnDoReset(() => this.#user.getOwnGlobalInstructions());
+  }
+  setOwnGlobalInstructions(instructions: string): Promise<void> {
+    return this.#user.setOwnGlobalInstructions(instructions);
+  }
   async searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]> {
     if (!(await this.#userSearchEnabled())) return [];
     return retryOnDoReset(() => this.ctx.exports.UserDirectoryDurableObject.getByName("")

@@ -25,6 +25,9 @@ import {
   seenAlwaysAvailableResources,
 } from "./agent-catalog";
 import { formatInstanceInstructions } from "./admin-config";
+import {
+  formatGlobalInstructions, globalInstructionsTokenReserve, type PersonalInstructions,
+} from "./global-instructions";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
@@ -1516,7 +1519,8 @@ export async function runAgent(
     author: AiChatAuthorInfo,
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
-    modelConfig: AiModelConfig): Promise<CachedRequest | undefined> {
+    modelConfig: AiModelConfig,
+    globalInstructions?: PersonalInstructions): Promise<CachedRequest | undefined> {
   // Provider retries and compaction reloads are passes of this execution, not new executions.
   const progress: AgentProgress = {
     executionId: crypto.randomUUID(),
@@ -1526,7 +1530,8 @@ export async function runAgent(
   while (true) {
     let history = hooks.loadChatHistory(chatId);
     let outcome = await runAgentPass(
-        hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig, progress);
+        hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig, progress,
+        globalInstructions);
     if (outcome.type === "transientFailure") {
       if (++retries > TRANSIENT_FAILURE_RETRIES) throw outcome.error;
       // The failed request persisted nothing, so the retry starts from the last saved step. What
@@ -1550,7 +1555,8 @@ async function runAgentPass(
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
     modelConfig: AiModelConfig,
-    progress: AgentProgress): Promise<AgentPassOutcome> {
+    progress: AgentProgress,
+    globalInstructions: PersonalInstructions | undefined): Promise<AgentPassOutcome> {
   const progressLogger = logger.with({chatId, executionId: progress.executionId});
 
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
@@ -3184,6 +3190,10 @@ async function runAgentPass(
   if (instanceInstructions) {
     systemPromptSlots[0] += `\n\n${instanceInstructions}`;
   }
+  // Keep personal defaults out of the shared static prefix and persisted workspace prompt.
+  let personalPrompt = formatGlobalInstructions(globalInstructions);
+  if (personalPrompt) systemPromptSlots[1] += `\n\n${personalPrompt}`;
+
   // Prompt caches are shared across the provider account, so anyone on it could probe for a cached
   // prefix. The workspace's random salt leads the project-specific part, so nobody without this
   // prompt can probe that part, or the chat after it.
@@ -3199,6 +3209,7 @@ async function runAgentPass(
   // Some models charge their response to the same window as the prompt, so the reservation is both
   // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
   let {inputBudget, maxOutputTokens} = getModelTokenLimits(modelConfig);
+  let personalTokenReserve = globalInstructionsTokenReserve(personalPrompt, inputBudget);
 
   let projection: CompactionProjectionMessage[] = modelMessages.map((message, index) => ({
     message, ...modelMessageSources[index],
@@ -3208,13 +3219,14 @@ async function runAgentPass(
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
   // (The system prompt is not part of the projection, so the pure estimate adds it separately.)
-  let contextTokens = measuredTokens > 0 && lastMeasuredSequence !== undefined
+  // Reserve the full personal block even when measured usage predates an edit.
+  let contextTokens = personalTokenReserve + (measuredTokens > 0 && lastMeasuredSequence !== undefined
     ? measuredTokens + estimateProjectionTokens(
         projection.filter(({message, sequence}) => sequence !== undefined &&
           (sequence > lastMeasuredSequence ||
            (sequence === lastMeasuredSequence && message.role === "toolResult"))))
     : estimateProjectionTokens(projection) +
-        Math.ceil(getSystemMessageText(systemMessage).length / 4);
+        Math.ceil((getSystemMessageText(systemMessage).length - personalPrompt.length) / 4));
 
   // Wraps a plain-text tool result (the exact text the model sees) with optional recorded notes
   // (see AiToolCall: observedCodeVersion, recorded output) riding along as pi `details` for the
@@ -4225,7 +4237,8 @@ async function runAgentPass(
       emitStreamEvent({type: "compacting"});
       try {
         let written: Pick<CompactionCheckpoint, "summary" | "anthropicCompactionBlock">;
-        if (supportsAnthropicCompaction(handle.model)) {
+        // Native compaction could persist personal defaults in its signed summary.
+        if (supportsAnthropicCompaction(handle.model) && !personalPrompt) {
           // The summarized messages are the prompt up to the boundary; the rest stays verbatim.
           let keptFrom = projection.findIndex(({sequence}) =>
             sequence !== undefined && sequence >= compactedTo);

@@ -212,6 +212,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       quickModel: <string | null>null,
       preferredModel: <string | null>null,
       onboardingCompleted: false,
+      // Private runtime preferences: never copied into workspace state, profiles or exports.
+      globalInstructions: "",
+      globalInstructionsCacheSalt: "",
 
       // Central push subscriptions, keyed by the install-scoped device key the service returns, so a
       // device that registers again replaces its own subscription. Only this installation's signing

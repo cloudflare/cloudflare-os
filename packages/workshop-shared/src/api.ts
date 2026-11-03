@@ -466,6 +466,16 @@ export type DeviceSessionHandoffStart = {
   ticket: string;
 };
 
+/** Maximum length of personal global instructions, measured in UTF-16 code units. */
+export const MAX_GLOBAL_INSTRUCTIONS_LENGTH = 8_000;
+
+/** Reject an oversized document without echoing its potentially private content. */
+export function validateGlobalInstructions(instructions: string): void {
+  if (instructions.length > MAX_GLOBAL_INSTRUCTIONS_LENGTH) {
+    throw new Error(`Global instructions must be at most ${MAX_GLOBAL_INSTRUCTIONS_LENGTH} characters.`);
+  }
+}
+
 /** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
@@ -489,6 +499,15 @@ export interface AuthenticatedApi extends RpcTarget {
    * back to one derived from their user ID. Rejects an address `validateCommitEmail` refuses.
    */
   setOwnCommitEmail(email: string | null): Promise<void>;
+
+  /** Read this user's private global instructions; empty when none are set. */
+  getOwnGlobalInstructions(): Promise<string>;
+
+  /**
+   * Replace this user's defaults for future turns; empty clears them. Rejects text longer than
+   * MAX_GLOBAL_INSTRUCTIONS_LENGTH UTF-16 code units without truncation.
+   */
+  setOwnGlobalInstructions(instructions: string): Promise<void>;
 
   /**
    * Find other users of this deployment by a case-insensitive substring of
