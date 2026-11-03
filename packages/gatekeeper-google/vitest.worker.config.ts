@@ -39,6 +39,7 @@ export default defineConfig({
       "__tests__/workerd/calendar-observers.test.ts",
       "__tests__/workerd/chat-actions.test.ts",
       "__tests__/workerd/chat-hooks.test.ts",
+      "__tests__/workerd/chat-observers.test.ts",
       "__tests__/workerd/configurators.test.ts",
       "__tests__/workerd/gmail-actions.test.ts",
       "__tests__/workerd/gmail-hooks.test.ts",
