@@ -746,6 +746,28 @@ describe("commit and diff", () => {
     expect(diff).toContain("-one\n\\ No newline at end of file\n+one");
   }));
 
+  it("diff() spells paths verbatim, without C-style quoting", () => withImpl(async impl => {
+    // Paths are left as written so an agent can reuse them in a tool call. (jsdiff >= 9 quotes
+    // and octal-escapes non-ASCII, `"` and `\` in its file headers, as git does.)
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, { "notes/café.md": "old\n" });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+    await session.writeFile("notes/café.md", "new\n");
+    await session.writeFile("docs/报告 \"v2\".md", "new\n");
+
+    expect(await session.diff()).toBe([
+      "--- /dev/null",
+      "+++ b/docs/报告 \"v2\".md",
+      "@@ -0,0 +1,1 @@",
+      "+new",
+      "--- a/notes/café.md",
+      "+++ b/notes/café.md",
+      "@@ -1,1 +1,1 @@",
+      "-old",
+      "+new",
+    ].join("\n"));
+  }));
+
   it("diff() notes special entries instead of failing", () => withImpl(async impl => {
     addChat(impl, 1);
     await loadFixtureRepo(impl);

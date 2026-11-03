@@ -18,7 +18,7 @@ import {
   runAgentLoopContinue, type AgentContext, type AgentEvent, type AgentTool,
 } from "@earendil-works/pi-agent-core";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
-import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
+import { createTwoFilesPatch, OMIT_HEADERS } from "diff";
 import { webFetch as webFetchImpl, WebFetchEnv, formatWebFetchResult } from "./web-fetch";
 import {
   findCatalogChanges, formatAlwaysAvailableResourcesPrompt, formatCatalogChange,
@@ -4397,6 +4397,10 @@ async function runAgentPass(
  * Renders one file's before/after as a git-style unified diff (headers only, `a/`\/`b/`
  * prefixes, `/dev/null` for a missing side). Shared by the replay path's user-change
  * observations and the Worktree binding's diff().
+ *
+ * The `---`/`+++` headers are written here, not by jsdiff, to keep the path verbatim: jsdiff
+ * (like git) C-quotes a path containing non-ASCII, `"` or `\`, which an agent reading the diff
+ * would then have to unescape before reusing the path.
  */
 export function formatUnifiedDiff(
     filename: string,
@@ -4404,17 +4408,13 @@ export function formatUnifiedDiff(
     newContent: string,
     oldExists: boolean,
     newExists: boolean): string | undefined {
-  return createTwoFilesPatch(
-      oldExists ? `a/${filename}` : "/dev/null",
-      newExists ? `b/${filename}` : "/dev/null",
-      oldContent,
-      newContent,
-      undefined,
-      undefined,
-      {
-        context: 3,
-        headerOptions: FILE_HEADERS_ONLY,
-      }).trimEnd();
+  let hunks = createTwoFilesPatch("", "", oldContent, newContent, undefined, undefined,
+                                  { context: 3, headerOptions: OMIT_HEADERS });
+  return [
+    `--- ${oldExists ? `a/${filename}` : "/dev/null"}`,
+    `+++ ${newExists ? `b/${filename}` : "/dev/null"}`,
+    hunks,
+  ].join("\n").trimEnd();
 }
 
 // =======================================================================================
