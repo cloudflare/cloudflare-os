@@ -221,8 +221,7 @@ describe('native app bridge', () => {
       subscriber = value
       return Object.assign(Promise.resolve(), {[Symbol.dispose]: dispose})
     })
-    const markChatRead = vi.fn<AuthenticatedApi['markChatRead']>()
-    const api = {...apiWithWhoami(async () => user), subscribeToUnreadState, markChatRead} as unknown as RpcStub<AuthenticatedApi>
+    const api = {...apiWithWhoami(async () => user), subscribeToUnreadState} as unknown as RpcStub<AuthenticatedApi>
     const root = createRoot(document.createElement('div'))
     try {
       await act(async () => root.render(
@@ -244,7 +243,6 @@ describe('native app bridge', () => {
       expect(badge).toHaveBeenLastCalledWith({...state, unreadMessageCount: 0, unreadChatCount: 0, revision: 2})
       expect(document.visibilityState).toBe('hidden')
       expect(document.hasFocus()).toBe(false)
-      expect(markChatRead).not.toHaveBeenCalled()
       expect(subscribeToUnreadState).toHaveBeenCalledOnce()
     } finally {
       act(() => root.unmount())

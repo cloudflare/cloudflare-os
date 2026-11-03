@@ -8,7 +8,6 @@ import {
 } from "../src/notification-service.js";
 import { makeUserStorage } from "../src/storage-schema/user-storage.js";
 import type { UserDurableObject } from "../src/user.js";
-import { OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -163,6 +162,16 @@ describe("notification service", () => {
     const fetcher = stubService();
     await deliverBadge(installEnv, SUBSCRIPTION_ID, 9, 0);
     expect(bodies(fetcher, "/v1/badges")).toEqual([{subscriptionId: SUBSCRIPTION_ID, version: 9, count: 0}]);
+  });
+
+  it.each([202, 503])("releases the badge deadline after a %i response", async status => {
+    vi.useFakeTimers();
+    using _timeout = trackNativeTimeouts();
+    stubService().mockResolvedValueOnce(new Response(null, {status}));
+    const pending = deliverBadge(installEnv, SUBSCRIPTION_ID, 9, 0);
+    if (status === 202) await expect(pending).resolves.toBe(true);
+    else await expect(pending).rejects.toThrow("Badge delivery failed");
+    expect(vi.getTimerCount()).toBe(0);
   });
   it.each([
     ["taskCompleted", "task_completed"],
@@ -426,9 +435,9 @@ describe("UserDurableObject notifications", () => {
   });
 
   it("bounds a stalled badge request, reaches the next device, and retains the retry", async () => {
+    vi.useFakeTimers();
     const fetcher = stubService(), started = Promise.withResolvers<void>();
-    const controller = new AbortController(), stalled = Promise.withResolvers<Response>();
-    using timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(controller.signal);
+    const stalled = Promise.withResolvers<Response>();
     await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
@@ -442,14 +451,13 @@ describe("UserDurableObject notifications", () => {
       const alarm = user.alarm();
       try {
         await started.promise;
-        expect(timeout).toHaveBeenCalledWith(15_000);
-        expect(fetcher.mock.calls[0][1]?.signal).toBe(controller.signal);
-        controller.abort(new Error("Badge request deadline"));
+        expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(15_000);
         await alarm;
+        expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
         expect(bodies(fetcher, "/v1/badges").map(({subscriptionId}) => subscriptionId)).toEqual([ONE, TWO]);
         expect(storage.notificationBadge.get().retryAt).toBeGreaterThan(Date.now());
       } finally { stalled.reject(new Error("Release stalled request")); await alarm; }
-      timeout.mockRestore();
       storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
       await user.alarm();
       expect(storage.notificationBadge.get()).toEqual({version: 1, count: 0});
@@ -461,10 +469,6 @@ describe("UserDurableObject notifications", () => {
     const fetcher = stubService();
     const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
-    using metadata = vi.spyOn(OverseerDurableObject.prototype, "getChatHeadsForUser")
-      .mockRejectedValue(new Error("No metadata reads"));
-    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser")
-      .mockRejectedValue(new Error("No source reads"));
     await runInDurableObject(stub, async (user, ctx) => {
       await user.newWorkspace(workspaceId, "Existing workspace");
       const storage = makeUserStorage(ctx.storage);
@@ -486,15 +490,12 @@ describe("UserDurableObject notifications", () => {
       expect(storage.notificationBadge.get()).toEqual({version: 2, count: 9});
     });
     expect(bodies(fetcher, "/v1/badges").map(({count}) => count)).toEqual([9]);
-    expect(metadata).not.toHaveBeenCalled();
-    expect(recount).not.toHaveBeenCalled();
   });
 
   it.each(["workspaceRemoved", "deleteWorkspace"] as const)("invalidates a cold badge on %s without cached cursors", async removal => {
     const fetcher = stubService();
     const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
-    using _metadata = vi.spyOn(OverseerDurableObject.prototype, "getChatHeadsForUser").mockResolvedValue(null);
     await runInDurableObject(stub, async (user, ctx) => {
       await user.newWorkspace(workspaceId, "Deleted workspace");
       const storage = makeUserStorage(ctx.storage);
@@ -526,10 +527,6 @@ describe("UserDurableObject notifications", () => {
     const fetcher = stubService();
     const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
-    using metadata = vi.spyOn(OverseerDurableObject.prototype, "getChatHeadsForUser")
-      .mockRejectedValue(new Error("Metadata unavailable"));
-    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser")
-      .mockRejectedValue(new Error("Count source unavailable"));
     await runInDurableObject(stub, async (user, ctx) => {
       await user.newWorkspace(workspaceId, "Existing workspace");
       makeUserStorage(ctx.storage).chatReadCursors.put({workspaceId, chatId: 1, readThroughSequence: -1,
@@ -545,7 +542,6 @@ describe("UserDurableObject notifications", () => {
       await user.alarm();
     });
     expect(bodies(fetcher, "/v1/badges").map(({count}) => count)).toEqual([8]);
-    expect(metadata).not.toHaveBeenCalled(); expect(recount).not.toHaveBeenCalled();
   });
 
   it("recovers a pending badge after reset and retries a lost ACK without replaying an alert", async () => {
@@ -596,14 +592,7 @@ describe("UserDurableObject notifications", () => {
     const fetcher = stubService();
     let stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
-    const reading = Promise.withResolvers<void>(), releaseRead = Promise.withResolvers<void>();
     const notifying = Promise.withResolvers<void>(), releaseAlert = Promise.withResolvers<void>();
-    using source = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser")
-      .mockImplementationOnce(async () => {
-        reading.resolve(); await releaseRead.promise;
-        return {readThroughVisibleSequence: 2, latestVisibleSequence: 2,
-          timelineTailSequence: 1, head: undefined, notificationBaseline: -1};
-      });
     try {
       await expect(runInDurableObject(stub, async (user, ctx) => {
         Object.defineProperty(user, "env", {value: installEnv});
@@ -616,18 +605,19 @@ describe("UserDurableObject notifications", () => {
         await user.subscribeToNotifications(new RpcStub(new Subscriber(async () => {
           notifying.resolve(); await releaseAlert.promise;
         })));
-        void user.markChatRead({workspaceId, chatId: 7, throughSequence: 1}).catch(() => {});
-        await reading.promise;
-        await user.messageArrived(workspaceId, 7, {firstMessageSequence: 1,
-          firstVisibleSequence: 2, latestVisibleSequence: 2,
+        await user.applyReadHorizon(workspaceId, 7, {
+          readThroughSequence: 1, readThroughVisibleSequence: 2, latestVisibleSequence: 2,
+          head: {chatTitle: "Read thread", latestSequence: 1}, headUpdatedAt: new Date(), notificationBaseline: -1,
+        }, false);
+        await user.messageArrived(workspaceId, 7, {head: {chatTitle: "Read thread", latestSequence: 1}, headUpdatedAt: new Date(),
+          firstMessageSequence: 1, firstVisibleSequence: 2, latestVisibleSequence: 2,
           notifications: [{...NOTIFICATION, sequence: 1}]});
-        releaseRead.resolve();
         await notifying.promise;
         expect(storage.chatReadCursors.get(`${workspaceId}:7`)).toMatchObject({unreadCount: 0});
         await ctx.storage.sync();
         ctx.abort("Reset during read notification");
       })).rejects.toThrow("Reset during read notification");
-    } finally { releaseRead.resolve(); releaseAlert.resolve(); }
+    } finally { releaseAlert.resolve(); }
     stub = env.TEST_USER.get(stub.id);
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
@@ -636,11 +626,10 @@ describe("UserDurableObject notifications", () => {
       storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
       await user.alarm();
       expect([...storage.notificationOutbox.list()]).toEqual([]);
-      expect(storage.notificationBadge.get()).toEqual({version: 3, count: 0});
+      expect(storage.notificationBadge.get()).toEqual({version: 2, count: 0});
     });
     expect(bodies(fetcher, "/v1/badges").at(-1)?.count).toBe(0);
     expect(pushed(fetcher)).toEqual([]);
-    expect(source).toHaveBeenCalledOnce();
   });
 
   it("does not clear a newer local badge when an older delivery finishes", async () => {
