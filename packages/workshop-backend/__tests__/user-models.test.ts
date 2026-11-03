@@ -218,6 +218,42 @@ describe("UserDurableObject gateway model modes", () => {
     expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
   }));
 
+  it("keeps a gateway model chosen as the quick model, falling back to the deployment's",
+      () => inGatewayUser(async user => {
+    const fallback = (await user.getChatContext(null)).quickModel;
+    expect(fallback?.provider).toBe("cloudflare");
+    expect(await user.getQuickModel()).toBeNull();
+
+    await user.setQuickModel(ENABLED_ID);
+    expect(await user.getQuickModel()).toBe(ENABLED_ID);
+    expect((await user.getChatContext(null)).quickModel)
+        .toMatchObject({ provider: "anthropic", model: ENABLED_ID });
+
+    // A choice that no longer resolves reads back as none, and quick tasks use the deployment's.
+    await user.setQuickModel("no-such-model");
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel).toEqual(fallback);
+  }));
+
+  it("keeps quick tasks on the deployment's quick model where Cloudflare limits apply",
+      () => inGatewayUser(async user => {
+    await user.setQuickModel(ENABLED_ID);
+    const impl = user as unknown as { env: Cloudflare.Env };
+    impl.env = { ...impl.env, ENABLE_CLOUDFLARE_LIMITS: "true" };
+    // Quick tasks count against no limit, so the choice made before limits applied is not used.
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel?.provider).toBe("cloudflare");
+    await expect(user.setQuickModel(ENABLED_ID)).rejects.toThrow("Cloudflare usage limits");
+    await user.setQuickModel(null);
+  }));
+
+  it("falls back to the deployment's quick model when the chosen one is disabled",
+      () => inGatewayUser(async user => {
+    await user.setQuickModel(ENABLED_ID);
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel?.provider).toBe("cloudflare");
+  }, DISABLED));
+
   it("starts a new conversation on the first offered model when the preference is hidden",
       () => inGatewayUser(async user => {
     await user.setPreferredModel(HIDDEN_ID);

@@ -602,11 +602,14 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Set the model to use for simple quick tasks, like generating chat titles. Set null to
-   * disable quick model use (e.g. chats will be titled "New Chat").
+   * disable quick model use (e.g. chats will be titled "New Chat"); in AI Gateway mode, null and
+   * a model that no longer resolves leave quick tasks to the deployment's own quick model.
+   * Throws for a model on a deployment that applies Cloudflare usage limits, whose quick tasks
+   * always run on its own quick model, since they count against no limit.
    */
   setQuickModel(id: string | null): Promise<void>;
 
-  /** Get the quick model setting. */
+  /** Get the quick model setting: null when unset or when the model no longer resolves. */
   getQuickModel(): Promise<null | string>;
 
   /**
@@ -1523,7 +1526,8 @@ export interface AdminApi {
    * A pass says that one model answered once. A 401 or 403 does not tell a provider key the
    * gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models. The request is a
    * quick one that takes none of a model's settings: testGatewayModel() sends a model the
-   * request its chats would.
+   * request its chats would. Auto Router's alone carries a setting, the pool its model picks
+   * from, allowed models included, since that decides which model answers.
    */
   testGatewayProvider(provider: AiModelProvider): Promise<GatewayModelTest>;
 
@@ -4137,7 +4141,7 @@ export type AiChatMessageBody = {
   resources: AlwaysAvailableResource[];
 } | {
   /**
-   * Indicates that the agent run ended with an error (e.g. LLM API failure, abort, server
+   * Indicates that the agent run ended with an error (e.g. LLM API failure, server
    * restart). This is displayed to the user with a "retry" button, but is NOT included in the
    * chat log sent to the LLM so the agent does not react to it.
    */
@@ -4145,7 +4149,8 @@ export type AiChatMessageBody = {
   message: string;
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
-   * the "connect Cloudflare / add credits" modal instead of a generic error + retry).
+   * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
+   * marks a run the user stopped, which is not a failure).
    */
   code?: string;
 } | {

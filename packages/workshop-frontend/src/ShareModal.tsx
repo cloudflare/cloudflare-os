@@ -17,6 +17,7 @@ import {
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
+import { ComposerChip } from './components/ComposerChip'
 import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
@@ -1051,29 +1052,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             </div>
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {staged.map(recipient => (
-                <span
+                <ComposerChip
                   key={recipient.id}
+                  label={recipient.name}
+                  detail={recipient.name !== recipient.id ? recipient.id : undefined}
                   title={recipient.error ?? (recipient.name !== recipient.id ? recipient.id : undefined)}
-                  className={`inline-flex max-w-full items-center gap-1 rounded-full border py-[3px] pl-2.5 pr-1 text-[11px] leading-4 font-medium tracking-[-0.1px] ${
-                    recipient.error
-                      ? 'border-kumo-danger bg-kumo-danger-tint/40 text-kumo-danger'
-                      : 'border-kumo-line bg-kumo-tint/70 text-kumo-default'
-                  }`}
-                >
-                  <span className="truncate">{recipient.name}</span>
-                  {recipient.name !== recipient.id && (
-                    <span className="truncate font-mono text-[10px] text-kumo-subtle">{recipient.id}</span>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={`Remove ${recipientLabel(recipient)}`}
-                    onClick={() => removeStaged(recipient)}
-                    disabled={adding}
-                    className="grid h-4 w-4 shrink-0 cursor-pointer place-items-center rounded-full opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed"
-                  >
-                    <X size={10} weight="bold" />
-                  </button>
-                </span>
+                  error={Boolean(recipient.error)}
+                  removeLabel={`Remove ${recipientLabel(recipient)}`}
+                  disabled={adding}
+                  onRemove={() => removeStaged(recipient)}
+                />
               ))}
               <input
                 ref={peopleInputRef}

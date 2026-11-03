@@ -16,6 +16,7 @@ import {
   REASONING_LEVEL_LABELS,
   builtInReasoningLabel,
   parseTokenLimit,
+  type AllowedModelSuggestion,
 } from './modelForm'
 import { useFieldErrorAlert } from './useFieldErrorAlert'
 import type { GatewayTestState } from './useGatewayTests'
@@ -76,14 +77,16 @@ const settingsWith = (
 
 /** One gateway model in the Models tab: what it is, and the controls that change it. */
 export const GatewayModelRow = ({
-  model, defaultReasoning, behavesLikeName, poolProviders = [], busy, test, onModeChange,
-  onSettingsChange, onTest, onRemove,
+  model, defaultReasoning, behavesLikeName, poolProviders = [], poolSuggestions = [], busy, test,
+  onModeChange, onSettingsChange, onTest, onRemove,
 }: {
   model: AdminModelView
   /** The deployment's default reasoning level, or null while it sets none. */
   defaultReasoning: ReasoningLevel | null
   /** The providers that are on, which the Auto Router model picks among while it lists none. */
   poolProviders?: readonly AiModelProvider[]
+  /** The gateway model names the Auto Router model's allowed-models picker suggests. */
+  poolSuggestions?: readonly AllowedModelSuggestion[]
   /** The catalog's name for the model that `model.behavesLike` names, where the catalog has it. */
   behavesLikeName?: string
   busy: boolean
@@ -339,6 +342,7 @@ export const GatewayModelRow = ({
                   modelName={model.name}
                   allowedModels={model.settings?.allowedModels}
                   providers={poolProviders}
+                  suggestions={poolSuggestions}
                   busy={busy}
                   onChange={(allowedModels) =>
                     onSettingsChange(settingsWith(model, { allowedModels }))}
