@@ -875,7 +875,7 @@ its resource types.
 | **email** | Email Mailbox | **D** | No-op. Synthetic per-gadget inbound address; the gadget's collaborators are the intended audience. |
 | **spotify** | Account / Playlist | **D** | No-op. Personal, low-stakes; no corp-security concern. |
 | **homeassistant** | Instance / Area / Label / Device / Entity | **D** | No-op. Self-hosted personal; the pasted long-lived token is all-or-nothing and HA exposes no per-user/per-entity ACL oracle to check against. |
-| **github** | Repo / Issue / PR | **B** | Check the observer's GitHub identity has read access to the bound repo (public → always pass; private → collaborator/org-team check). Issues/PRs inherit the repo ACL, so the repo is the atomic unit. |
+| **github** | Repo / Issue / PR | **B**, kernel-checked (§10) | Issues/PRs inherit the repo ACL, so the repo is the atomic unit, and the policy is repository readability: no narrower permission some reads need (CI logs, Actions, checks) is checked, and passing doesn't mean GitHub shows every reader all the binding's account read. Every read — each listing page, an empty result, a cache hit or a simulated one, CI, and every hook delivery — reports the repository by GitHub's numeric id as `repo/<repoId>`, the id the binding pinned on first use. Nothing is read until it is pinned, and reads are bound to it — REST addressed as `/repositories/<id>/...`, GraphQL checked against its `databaseId`, issue search asked by the name the id has now — so a rename or transfer keeps the identity and a repository later created under an old name is never read in its place (git objects, fetched by name, are fetched by their hashes). `verifyObserverAccess` allows an observer whose own account GitHub answers for at `GET /repositories/<id>`, denying on 404 or a 403 that isn't a rate limit and failing on anything else; the observer's `UserAccount` reuses a grant for up to 15 minutes and a denial for up to 15 seconds, partitioned by its connection, so a reconnect asks afresh, and only while its credentials are live: a disconnected or confirmed-dead grant fails the check. `addObserver` still asks the same of the pinned id on every open, uncached, for reads made before they reported it. |
 | **google** | Google Doc | **B** | Check the observer's Drive sharing access to the bound document. |
 | **google** | Google Spreadsheet | **B** | Check the observer's Google Sheets access to the bound spreadsheet. Spreadsheet sharing applies to the whole file, so it is the atomic unit. |
 | **google** | Google Slides Presentation | **B** | Check the observer's Google Slides access to the bound presentation. Presentation sharing applies to the whole file, so it is the atomic unit. |
@@ -923,7 +923,7 @@ This is why the broad bindings split the way they do:
   everyone-viewable, or an explicit viewer/editor/owner grant).
 - **Fail criterion 1 → B:** GitHub Repository — issues/PRs/discussions/code all inherit the single
   repo permission, and there is no binding broader than one repo, so the repo is the atomic ACL
-  unit.
+  unit. Its reads report it (`repo/<repoId>`, §10), so each read is checked as well as admission.
 - **Fail criterion 2 → D (or A):** Home Assistant Instance — areas/devices/entities exist but the
   long-lived token is all-or-nothing and HA has no per-user ACL oracle, so there is nothing to
   verify an observer against. (Spotify is moot: ACL enforcement is off entirely under D.)

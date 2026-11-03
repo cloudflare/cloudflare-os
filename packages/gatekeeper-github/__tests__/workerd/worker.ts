@@ -170,6 +170,10 @@ type SeedFacet = { seed(entries: Record<string, unknown>): Promise<void> };
 // return-type inference collapses several of these returns to `never` (its `Serializable`
 // heuristic gives up on them), while the runtime objects are exactly the production ones.
 type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
+  addObserver(id: string, verifier: Fetcher<GitHubVerifierApi>): Promise<void>;
+  verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GitHubVerifierApi> }[], subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }>;
   preparePush(branch: string, commitId: string, force: boolean, cache: RpcStub<GitCache>)
     : Promise<PushActionData | null>;
   prepareCreatePullRequest(options: GitHubCreatePullRequestOptions)
@@ -256,10 +260,30 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /** `GitHubVerifier.hasRepoAccess()` as the account with id `userObjectId`. */
-  async hasRepoAccess(userObjectId: string, owner: string, repo: string): Promise<Outcome<boolean>> {
+  async hasRepoAccess(userObjectId: string, repoId: number): Promise<Outcome<boolean>> {
     const verifier = (this.ctx.exports as unknown as TestExports)
       .GitHubVerifier({ props: { userObjectId } });
-    return await outcome(() => verifier.hasRepoAccess(owner, repo));
+    return await outcome(() => verifier.hasRepoAccess(repoId));
+  }
+
+  /**
+   * `Gatekeeper.verifyObserverAccess()` on the binding, for observers whose verifiers the accounts
+   * named by `userObjectId` mint, as the Workshop passes them.
+   */
+  async verifyObservers(
+    facetName: string, props: GatekeeperProps,
+    observers: { id: string; userObjectId: string }[], subresources: string[],
+  ): Promise<Outcome<{ allowedObserverIds: string[] }>> {
+    const exports = this.ctx.exports as unknown as TestExports;
+    return await outcome(() => this.#gatekeeper(facetName, props).verifyObserverAccess(
+      observers.map(({ id, userObjectId }) => ({ id, verifier: exports.GitHubVerifier({ props: { userObjectId } }) })),
+      subresources));
+  }
+
+  /** `Gatekeeper.addObserver()` on the binding, for the account with id `userObjectId`. */
+  async addObserver(facetName: string, props: GatekeeperProps, userObjectId: string): Promise<Outcome<void>> {
+    const verifier = (this.ctx.exports as unknown as TestExports).GitHubVerifier({ props: { userObjectId } });
+    return await outcome(() => this.#gatekeeper(facetName, props).addObserver("observer", verifier));
   }
 
   /** The `urlPattern` of the resource `GatekeeperUser.getGatekeeperClassFor(url)` resolves. */
@@ -542,6 +566,45 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     });
   }
 
+  /**
+   * Opens the binding's session over `queue` and makes a chain of calls as `sessionRead` does, the
+   * last returning a cursor; then its `next()` results, as `listingPages` records them: a call
+   * that throws is recorded as its message and retried on the same cursor, and a second throw in a
+   * row ends the drain with it. With `rejectOnRefusal`, that action is rejected before each retry.
+   */
+  async sessionPages(
+    facetName: string, props: GatekeeperProps, queue: unknown, calls: SessionCall[],
+    rejectOnRefusal?: number,
+  ): Promise<Outcome<(unknown[] | null | string)[]>> {
+    return await outcome(async () => {
+      type Stub = Record<string, (...args: unknown[]) => Promise<unknown>> & Partial<Disposable>;
+      const opened: Stub[] = [];
+      try {
+        let result = await this.#gatekeeper(facetName, props).startSession(queue);
+        for (const call of calls) {
+          const target = result as Stub;
+          opened.push(target);
+          result = await target[call.method](...(call.args ?? []));
+        }
+        const cursor = result as Cursor<unknown> & Partial<Disposable>;
+        opened.push(cursor as unknown as Stub);
+        const pages: (unknown[] | null | string)[] = [];
+        while (pages.at(-1) !== null) {
+          try {
+            pages.push(await cursor.next());
+          } catch (error) {
+            if (typeof pages.at(-1) === "string") throw error;
+            pages.push(String(error));
+            if (rejectOnRefusal !== undefined) await this.#gatekeeper(facetName, props).rejectAction(rejectOnRefusal);
+          }
+        }
+        return pages;
+      } finally {
+        for (const stub of opened) stub[Symbol.dispose]?.();
+      }
+    });
+  }
+
   /** Restarts the gatekeeper facet: in-memory state is lost, storage (and its caches) kept. */
   async restartGatekeeper(facetName: string): Promise<void> {
     this.ctx.facets.abort(facetName, new Error("test: restart"));
@@ -568,7 +631,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   // RecordingHook over `#firingQueue`.
 
   #hook: HookState = { received: [], failures: 0, admissionFailures: 0 };
-  #firingQueue = new FiringQueue();
+  #firingQueue = new FiringQueue(this.#hook);
 
   /**
    * Subscribe through the binding's session, or one of its issues or pull requests, as
@@ -619,11 +682,17 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
    * Deliver `event` to a firing of this object's hook through the facet's `[restore](params)`
    * target, as a delivery stub minted with any `params` would.
    */
-  async deliverDirectly(facetName: string, props: GatekeeperProps, params: GitHubHookParams, event: unknown) {
+  async deliverDirectly(
+    facetName: string, props: GatekeeperProps, params: GitHubHookParams, event: unknown,
+  ): Promise<Outcome<void>> {
     const { callback, approvalQueue } = this.startHook();
     using callbackStub = new RpcStub(callback);
-    await this.#hookFacet(facetName, props).testDeliver(params, callbackStub, approvalQueue, event);
-    approvalQueue[Symbol.dispose]();
+    try {
+      return await outcome(() =>
+        this.#hookFacet(facetName, props).testDeliver(params, callbackStub, approvalQueue, event));
+    } finally {
+      approvalQueue[Symbol.dispose]();
+    }
   }
 
   /** What a delivery stub the facet minted reaches: the facet's own `[restore]()` target. */
@@ -666,6 +735,8 @@ type HookState = {
   admissionFailures: number;
   /** Queue this comment through each event's issue or pull request. */
   reply?: string;
+  /** Refuse each firing's observations, as the Workshop refusing their audience would. */
+  refuseObservations?: boolean;
 };
 
 /** The facet methods the hook harness calls, two of them installed below for the tests. */
@@ -734,12 +805,20 @@ class RecordingGitCache extends RpcTarget {
 
 /** The approval queue of every firing: records what the deliveries observed, queued and advertised. */
 class FiringQueue extends RpcTarget {
-  #observations: { title: string; description: string }[] = [];
+  #observations: { title: string; description: string; subresources?: string[] }[] = [];
   #submissions: { actionId: number; title: string }[] = [];
   #advertised: string[] = [];
 
-  async authorizeObservation(observation: { title: string; description: string }): Promise<void> {
-    this.#observations.push({ title: observation.title, description: observation.description });
+  constructor(private readonly state: HookState) {
+    super();
+  }
+
+  async authorizeObservation(
+    observation: { title: string; description: string; subresources?: string[] },
+  ): Promise<void> {
+    if (this.state.refuseObservations) throw new Error("The test Workshop refused the observation.");
+    const { title, description, subresources } = observation;
+    this.#observations.push({ title, description, subresources });
   }
 
   async submitAction(actionId: number, description: { title: string }): Promise<void> {

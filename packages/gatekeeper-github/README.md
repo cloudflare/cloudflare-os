@@ -75,6 +75,35 @@ for approval, and every read is logged as an observation.
 
 Re-running, cancelling or approving runs, and merging when green, are not supported yet.
 
+## Sharing with collaborators
+
+A binding is one repository (or one of its issues or pull requests, which share its permissions),
+and the policy for a collaborator is that their own connected GitHub account can read that
+repository. Nothing narrower is checked: not the permissions CI logs, Actions or checks need, and
+passing doesn't mean GitHub shows that account all the binding's account read.
+
+- **Identity.** A binding pins its repository's numeric GitHub id on its first read (read once by
+  name; a renamed or transferred repository's redirect to its id is followed) and reads nothing
+  until it has. From then on every request beneath the repository goes to `/repositories/<id>/...`
+  and follows no redirect, issue search is asked by the name that id has now, and GraphQL reads are
+  checked against it, so a rename or transfer keeps the binding on its repository and a repository
+  later created under an old name is never read in its place: the binding's reads fail instead. A
+  binding that read before ids were pinned is pinned to the repository its name names at its
+  first read since, which may not be the one it read then.
+- **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
+  one served from a cache or from queued actions, and each hook delivery, reports
+  `repo/<repoId>` as its subresource, so the Workshop checks everyone who can see it before it
+  is returned (see [docs/observers.md](../../docs/observers.md) §10). A hook bound by an earlier
+  release reports the id its binding stored.
+- **Checks.** A collaborator's account is asked `GET /repositories/<id>` with its own token: 200
+  allows; 404, or a 403 GitHub doesn't mark as a rate limit (an organization's OAuth app or SAML
+  restrictions), denies; anything else fails the check rather than deny. Their account reuses a
+  grant for up to 15 minutes and a denial for up to 15 seconds, so a revoked grant can still admit
+  them for 15 minutes; it asks afresh after a reconnect, which may sign in as another GitHub user,
+  and reuses nothing once disconnected or once GitHub has confirmed its grant dead: the check fails.
+  Each open also asks the same question, uncached, for what the workspace read before reads
+  reported the repository.
+
 ## Setting Up GitHub OAuth Credentials
 
 If you're running this project locally and want to use GitHub integrations, you'll need to create

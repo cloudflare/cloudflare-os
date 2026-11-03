@@ -17,7 +17,10 @@ import type {
 
 const OWNER = "acme";
 const REPO = "widgets";
-const API_BASE = `https://api.github.com/repos/${OWNER}/${REPO}`;
+/** Where the binding reads the repository once pinned: by its id, 1. */
+const API_BASE = "https://api.github.com/repositories/1";
+/** The repository by name, which the binding reads only to pin its id. */
+const NAME_ROOT = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const RECEIVE_PACK_URL = `https://github.com/${OWNER}/${REPO}.git/git-receive-pack`;
 const BLOB_ORIGIN = "https://blob.example.net";
 
@@ -222,7 +225,7 @@ class FakeGitHub {
     if (path === "https://api.github.com/user") {
       return Response.json({ login: "ada", name: null, html_url: "https://github.com/ada", avatar_url: null });
     }
-    if (path === API_BASE) {
+    if (path === API_BASE || path === NAME_ROOT) {
       return Response.json({ id: 1, description: null, visibility: "public", private: false, default_branch: "main" });
     }
     const rest = path.slice(API_BASE.length);

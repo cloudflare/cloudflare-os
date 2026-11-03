@@ -22,7 +22,10 @@ import type {
 
 const OWNER = "acme";
 const REPO = "widgets";
-const API_BASE = `https://api.github.com/repos/${OWNER}/${REPO}`;
+/** Where the binding reads the repository once pinned: by its id, 1. */
+const API_BASE = "https://api.github.com/repositories/1";
+/** The repository by name, which the binding reads only to pin its id. */
+const NAME_ROOT = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const RECEIVE_PACK_URL = `https://github.com/${OWNER}/${REPO}.git/git-receive-pack`;
 
 /** Deterministic fake full oids. */
@@ -254,10 +257,10 @@ class FakeGitHub {
       });
     }
 
-    if (path === API_BASE) {
-      // Repo metadata: what resolves an omitted ref to the default branch.
+    if (path === API_BASE || path === NAME_ROOT) {
+      // The repository, pinned by its id; its metadata resolves an omitted ref to the default branch.
       return Response.json({
-        description: null, visibility: "public", private: false, default_branch: "main",
+        id: 1, description: null, visibility: "public", private: false, default_branch: "main",
       });
     }
 
