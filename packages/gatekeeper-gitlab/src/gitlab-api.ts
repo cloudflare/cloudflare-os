@@ -1447,7 +1447,8 @@ export class GitLabApi {
    */
   async fetchGitUploadPack(projectPath: string, request: Request): Promise<Response> {
     const path = gitPullPath(request);
-    return await this.#gitPost(projectPath, path, request.method === "POST" ? await readBytesCapped(request) : undefined, {
+    // Negotiation requests stream just like pack responses; JSON response caps do not apply.
+    return await this.#gitPost(projectPath, path, request.method === "POST" ? request.body ?? undefined : undefined, {
       "Content-Type": "application/x-git-upload-pack-request",
       Accept: request.method === "GET" ? "application/x-git-upload-pack-advertisement" : "application/x-git-upload-pack-result",
       "Git-Protocol": "version=2",

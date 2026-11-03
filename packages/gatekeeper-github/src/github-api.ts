@@ -1,6 +1,6 @@
 import { CredentialsExpiredError, isCredentialsExpired, type RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
 import { gitPullPath, validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
-import { readBytesCapped, readTextPrefix } from "@gadgets/gatekeeper-kit/response-body";
+import { readTextPrefix } from "@gadgets/gatekeeper-kit/response-body";
 import {
   isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
 } from "@gadgets/gatekeeper-kit/oauth-client";
@@ -1778,7 +1778,9 @@ export class GitHubApi {
    */
   async fetchGitUploadPack(owner: string, repo: string, request: Request): Promise<Response> {
     const path = gitPullPath(request);
-    const requestBody = request.method === "POST" ? await readBytesCapped(request) : undefined;
+    // A negotiation can name many thousands of objects. Forward it without buffering it or
+    // applying the unrelated JSON response-size cap.
+    const requestBody = request.method === "POST" ? request.body : undefined;
     const url = `${LOGIN_BASE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/${path}`;
     const response = await fetch(url, {
       method: request.method,

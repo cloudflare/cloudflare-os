@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
-import {gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
+import {buildGitFetchRequest, gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import {
   GitLabApi,
   GitLabApiError,
@@ -488,6 +488,17 @@ describe("repository", () => {
 });
 
 describe("git smart-HTTP", () => {
+  it("forwards an upload-pack negotiation larger than the JSON response limit", async () => {
+    const body = buildGitFetchRequest(Array.from({length: 22_000}, (_, i) => i.toString(16).padStart(40, "0")),
+      {type: "blob", commitHistory: {kind: "full"}});
+    expect(body.byteLength).toBeGreaterThan(1024 * 1024);
+    const calls = fakeFetch([new Response("0000", {
+      headers: {"content-type": "application/x-git-upload-pack-result"},
+    })]);
+    expect((await api().fetchGitUploadPack("g/p", gitObjectRequest(body))).ok).toBe(true);
+    expect(new Uint8Array(await new Response(calls[0].init.body).arrayBuffer())).toEqual(body);
+  });
+
   it("POSTs upload-pack with protocol v2, oauth2 basic auth, and the Access headers", async () => {
     const calls = fakeFetch([new Response("0000", {
       status: 200, headers: { "content-type": "application/x-git-upload-pack-result" },
