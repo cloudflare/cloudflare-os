@@ -538,6 +538,17 @@ provider request the entry exists to cache. A disconnected account propagates it
 source that cannot vouch for the credentials bypasses the cache. Compose an authority on the raw
 constructor only where it is genuinely local.
 
+Use `cachedMany` when the provider answers many keys in one request. Fresh entries are served,
+keys another caller is already loading are joined, and the rest reach the loader together; each key
+is then stored and fenced as `cached` stores it, so a later batch of a different shape reuses them.
+The loader still owns provider limits, such as splitting what it is given into request-sized
+chunks.
+
+Either method takes its TTL as a function of the cached value instead of a number when some answers
+deserve trust for longer than others, such as an access check that keeps a grant longer than a
+denial. It is asked each time an entry is consulted, so changing it applies to entries already
+stored.
+
 ## Actions and files
 
 Use `defineActions` and `stageAction` for externally visible side effects. They own the

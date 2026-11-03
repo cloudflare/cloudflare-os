@@ -7,6 +7,11 @@ function makeKv(): CacheKv {
   return fakeKv();
 }
 
+/** Trusts an allowed answer ten times longer than a denial. */
+function accessTtl(allowed: boolean): number {
+  return allowed ? 10_000 : 1000;
+}
+
 function connectedSource() {
   const account = { identity: "id-a", generation: "gen-a", connected: true };
   const getCredentials = vi.fn(async () => {
@@ -65,6 +70,35 @@ describe("KvTtlCache", () => {
     await vi.advanceTimersByTimeAsync(31_000);
     const reload = vi.fn(async () => "reloaded");
     expect(await cache.cached("project", 60_000, reload)).toBe("reloaded");
+  });
+
+  it("dates a batch from when its load started, however long the loader takes", async () => {
+    // A loader that splits its keys into sequential requests learns its first answer long before
+    // it returns. Dating the entries from the return would serve that answer past its TTL.
+    vi.useFakeTimers();
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    const answered = Promise.withResolvers<string[]>();
+    const loading = cache.cachedMany(["a", "b"], 15_000, () => answered.promise);
+    await vi.advanceTimersByTimeAsync(10_000);
+    answered.resolve(["a", "b"]);
+    expect(await loading).toEqual(["a", "b"]);
+
+    const reload = vi.fn(async (keys: string[]) => keys.map(key => `${key} again`));
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(await cache.cachedMany(["a", "b"], 15_000, reload)).toEqual(["a", "b"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await cache.cachedMany(["a", "b"], 15_000, reload)).toEqual(["a again", "b again"]);
+  });
+
+  it("leaves no load claimed when a later key's TTL is refused", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    await cache.cached("existing", 60_000, async () => false);
+
+    // The cached `false` is refused a TTL, after "missing" was found absent.
+    await expect(cache.cachedMany<boolean>(["missing", "existing"], allowed => allowed ? 60_000 : 0,
+      async keys => keys.map(() => true))).rejects.toThrow("ttlMs must be a positive");
+    // A claim stranded by that throw would leave this joining a load that never settles.
+    expect(await cache.cached("missing", 60_000, async () => true)).toBe(true);
   });
 
   it("coalesces one key across instances over the same storage", async () => {
@@ -276,6 +310,84 @@ describe("KvTtlCache", () => {
     await expect(Promise.all([first, second])).resolves.toEqual([1, 1]);
   });
 
+  it("loads only the missing keys of a batch, together, and answers in the order asked", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    await cache.cached("a", 60_000, async () => "cached a");
+    const load = vi.fn(async (keys: string[]) => keys.map(key => `loaded ${key}`));
+
+    expect(await cache.cachedMany(["b", "a", "c", "b"], 60_000, load))
+      .toEqual(["loaded b", "cached a", "loaded c", "loaded b"]);
+    expect(load).toHaveBeenCalledExactlyOnceWith(["b", "c"]);
+
+    // Each key was stored on its own, so a differently shaped batch reuses them.
+    expect(await cache.cachedMany(["c", "b"], 60_000, load)).toEqual(["loaded c", "loaded b"]);
+    expect(load).toHaveBeenCalledOnce();
+  });
+
+  it("joins a key another caller is loading, and lets later callers join its own", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    const single = Promise.withResolvers<string>();
+    const batch = Promise.withResolvers<string[]>();
+    const loadOne = vi.fn(() => single.promise);
+    const loadMany = vi.fn(() => batch.promise);
+
+    const a = cache.cached("a", 60_000, loadOne);
+    await vi.waitFor(() => expect(loadOne).toHaveBeenCalledOnce());
+    const both = cache.cachedMany(["a", "b"], 60_000, loadMany);
+    await vi.waitFor(() => expect(loadMany).toHaveBeenCalledExactlyOnceWith(["b"]));
+    const b = cache.cached("b", 60_000, async () => "b loaded twice");
+
+    single.resolve("a");
+    batch.resolve(["b"]);
+    await expect(Promise.all([a, both, b])).resolves.toEqual(["a", ["a", "b"], "b"]);
+  });
+
+  it("refuses a batch answer of the wrong length, storing none of it", async () => {
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+
+    await expect(cache.cachedMany(["a", "b"], 60_000, async () => ["a"]))
+      .rejects.toThrow("different number of values");
+    expect(await cache.cachedMany(["a", "b"], 60_000, async keys => keys)).toEqual(["a", "b"]);
+  });
+
+  it("does not store a batch whose authority was replaced during the load", async () => {
+    let authority = "a";
+    const cache = new KvTtlCache(makeKv(), () => authority, { name: "access" });
+    const { promise, resolve } = Promise.withResolvers<string[]>();
+
+    const loading = cache.cachedMany(["x", "y"], 60_000, () => promise);
+    authority = "b";
+    resolve(["from a", "from a"]);
+    expect(await loading).toEqual(["from a", "from a"]);
+
+    authority = "a";
+    expect(await cache.cachedMany(["x", "y"], 60_000, async keys => keys.map(() => "fresh a")))
+      .toEqual(["fresh a", "fresh a"]);
+  });
+
+  it("expires each entry by the TTL its value is given", async () => {
+    vi.useFakeTimers();
+    const cache = new KvTtlCache(makeKv(), () => "authority", { name: "access" });
+    const load = vi.fn(async (keys: string[]) => keys.map(key => key === "allowed"));
+
+    expect(await cache.cachedMany(["allowed", "denied"], accessTtl, load)).toEqual([true, false]);
+    vi.advanceTimersByTime(999);
+    await cache.cachedMany(["allowed", "denied"], accessTtl, load);
+    expect(load).toHaveBeenCalledOnce();
+
+    vi.advanceTimersByTime(1);
+    await cache.cachedMany(["allowed", "denied"], accessTtl, load);
+    expect(load).toHaveBeenLastCalledWith(["denied"]);
+
+    vi.advanceTimersByTime(8999);
+    await cache.cachedMany(["allowed"], accessTtl, load);
+    expect(load).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1);
+    await cache.cachedMany(["allowed"], accessTtl, load);
+    expect(load).toHaveBeenLastCalledWith(["allowed"]);
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
   it("refuses a ttl that would silently disable or freeze the entry", async () => {
     const cache = new KvTtlCache(makeKv(), () => "authority", { legacyUnnamed: true });
     const load = vi.fn(async () => 1);
@@ -284,6 +396,9 @@ describe("KvTtlCache", () => {
     await expect(cache.cached("a", Infinity, load)).rejects.toThrow("ttlMs must be a positive");
     await expect(cache.cached("a", NaN, load)).rejects.toThrow("ttlMs must be a positive");
     await expect(cache.cached("a", 0, load)).rejects.toThrow("ttlMs must be a positive");
+    // One chosen by the value is checked for each entry it is asked about.
+    await cache.cached("b", 60_000, async () => 2);
+    await expect(cache.cached("b", () => Infinity, load)).rejects.toThrow("ttlMs must be a positive");
     expect(load).not.toHaveBeenCalled();
   });
 });
