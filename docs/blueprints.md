@@ -39,7 +39,7 @@ Before creating a blueprint, the author can optionally add **blueprint annotatio
 - **Description** -- optional helper text that tells the blueprint consumer what kind of resource to connect.
 - **Suggest value** -- optionally includes the specific resource URL or model name as a suggestion. This is useful when the blueprint author intends all instances to use the same resource, but it remains a suggestion rather than a requirement.
 
-All named bindings are included in the blueprint. Annotations are configured in the **Blueprint** modal, opened with **Publish as blueprint…** in the gadget editor header's Blueprints menu. The annotation is stored on the `GatekeeperRecord` as the `blueprintAnnotation` field.
+All named bindings are included in the blueprint. Annotations are configured in the **Blueprint** modal, opened with the Blueprints button in the gadget editor header. The annotation is stored on the `GatekeeperRecord` as the `blueprintAnnotation` field.
 
 ## Binding Types
 
@@ -245,14 +245,14 @@ The bundled formats currently ship build output (bundled `client.js` and `server
 
 ## Creating and Managing Blueprints
 
-Blueprints are managed through the Blueprints menu in the gadget editor header, whose **Publish as blueprint…** item opens the Blueprint modal. (The menu's other item, **Update from blueprint…**, is the reverse direction: see [Updating a Gadget from a Blueprint](#updating-a-gadget-from-a-blueprint).) The UI allows:
+Blueprints are managed through the Blueprint modal, opened with the Blueprints button in the gadget editor header (**Publish as blueprint…** in the phone layout's menu). A gadget with no blueprints of its own opens straight on the create form, unless the modal also offers **Update from blueprint**, the reverse direction (see [Updating a Gadget from a Blueprint](#updating-a-gadget-from-a-blueprint)). The UI allows:
 
 - **Creating** a new blueprint from the gadget's current committed code, with a title, optional description, and optional screenshot.
 - **Describing** the required connections with optional per-binding helper text and suggested values.
 - **Listing** existing blueprints with their title, description, version, and code version date. A blueprint is marked **Unpublished changes** when the gadget's committed files differ from the ones it last published (`BlueprintGadgetSummary.unpublishedChanges`).
 - **Editing** a blueprint's title, description, screenshot, and connection guidance through the same form used to create a blueprint.
 - **Updating** a blueprint to the gadget's current code. This publishes a new release and increments the version, unless there is nothing new to release.
-- **Copying** the blueprint's share link to the clipboard.
+- **Copying** the blueprint's share link to the clipboard, and **downloading** its `.gadget` archive.
 - **Deleting** a blueprint (with confirmation).
 - **Retrying** a failed publish when the dirty flag is set.
 
@@ -304,8 +304,8 @@ There are no automatic updates.
 
 ### In the UI
 
-- **Update from blueprint…** in the gadget editor's Blueprints menu opens a dialog with two options: update from the blueprint the gadget follows (the default), or, under **Advanced: Switch blueprints**, from another blueprint the user names by pasting its ID or share link. The second explains that the new blueprint must be derived from the same base as the gadget. When the followed blueprint is not known or no longer exists, naming one is the only option. A **Reviewing agent** selector picks the model that reviews a merge, starting on the model a new chat would use, or **No agent** to resolve it by hand. The menu item is not shown for a gadget recorded as built from scratch (see [What `upstream` can say](#what-upstream-can-say)).
-- **Update available** appears on that menu item, and as a dot on the menu's button, when the followed blueprint's current release is not the one the gadget last took. The frontend works this out by comparing `GadgetSummary.upstream.commitId` with `PublicApi.getBlueprint()`, so there is no RPC for it. The blueprint is read when the gadget's upstream changes, not continuously, so a release published while the workspace stays open is noticed later. A followed blueprint with no `commitId` never shows an update. Neither does a gadget whose `upstream` names no release, nor a "use" collaborator's view, which is not told `upstream`.
+- **Update from blueprint**, a card in the Blueprint modal and an item in the phone layout's menu, opens a dialog with two options: update from the blueprint the gadget follows (the default), or, under **Advanced: Switch blueprints**, from another blueprint the user names by pasting its ID or share link. The second explains that the new blueprint must be derived from the same base as the gadget. When the followed blueprint is not known or no longer exists, naming one is the only option. A **Reviewing agent** selector picks the model that reviews a merge, starting on the model a new chat would use, or **No agent** to resolve it by hand. It is not offered for a gadget recorded as built from scratch (see [What `upstream` can say](#what-upstream-can-say)).
+- **Update available** appears on that card and menu item, and as a dot on the header's Blueprints button and the phone menu's button, when the followed blueprint's current release is not the one the gadget last took. The frontend works this out by comparing `GadgetSummary.upstream.commitId` with `PublicApi.getBlueprint()`, so there is no RPC for it. The blueprint is read when the gadget's upstream changes, not continuously, so a release published while the workspace stays open is noticed later. A followed blueprint with no `commitId` never shows an update. Neither does a gadget whose `upstream` names no release, nor a "use" collaborator's view, which is not told `upstream`.
 - On a proposal, the UI opens the new chat. For the other outcomes it says so in the dialog, and when the call fails because the gadget changed meanwhile it offers to try again.
 
 ### What `applyBlueprint` does

@@ -136,7 +136,16 @@ vi.mock('./components/format/FormatVisuals', () => ({ FormatGlyph: () => null })
 vi.mock('./components/GadgetPresence', () => ({ GadgetPresence: () => null }))
 vi.mock('./Activity', () => ({ default: () => null }))
 vi.mock('./ActivityNotifications', () => ({ default: () => null }))
-vi.mock('./BlueprintModal', () => ({ default: () => null }))
+// Stands in for the modal by exposing only what the editor decides: whether it offers an update.
+vi.mock('./BlueprintModal', () => ({
+  default: ({ blueprintUpdate }: { blueprintUpdate?: { onStart: () => void } }) => (
+    <div data-testid="blueprint-modal">
+      {blueprintUpdate && (
+        <button type="button" onClick={blueprintUpdate.onStart}>Update from blueprint…</button>
+      )}
+    </div>
+  ),
+}))
 vi.mock('./Connections', () => ({ default: () => null }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
 vi.mock('./GadgetUI', () => ({ default: () => null }))
@@ -182,8 +191,23 @@ async function click(name: string) {
 const currentView = () =>
   ['Chat', 'Preview', 'Activity'].filter(name => button(name).getAttribute('aria-current') === 'page')
 
-async function proposeUpdate() {
-  await click('Update from blueprint…')
+const blueprintModal = () => container.querySelector('[data-testid="blueprint-modal"]')
+
+/** Opens the Blueprints modal from the toolbar's Blueprints button. */
+async function openBlueprintModal() {
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Blueprints"]')
+  if (!trigger) throw new Error('No Blueprints button')
+  await act(async () => { trigger.click() })
+}
+
+/** Proposes an update from the Blueprints modal on a wider screen, or the phone layout's menu. */
+async function proposeUpdate(from: 'modal' | 'menu') {
+  if (from === 'modal') {
+    await openBlueprintModal()
+    await act(async () => { blueprintModal()!.querySelector('button')!.click() })
+  } else {
+    await click('Update from blueprint…')
+  }
   await click('propose update')
 }
 
@@ -208,15 +232,17 @@ describe('GadgetEditor, offering an update from a blueprint', () => {
   const offers = () => [...container.querySelectorAll('button')]
     .filter(candidate => candidate.textContent === 'Update from blueprint…').length
 
-  // Once in the toolbar's Blueprints menu and once in the phone layout's menu.
+  // Once in the Blueprints modal and once in the phone layout's menu.
   it('offers it for a gadget that follows a blueprint, and for one of unknown origin', async () => {
     await openEditor('desktop')
+    await openBlueprintModal()
     expect(offers()).toBe(2)
 
     act(() => root.unmount())
     root = createRoot(container)
     GADGET.upstream = { blueprintId: 'trip' }
     await openEditor('desktop')
+    await openBlueprintModal()
     expect(offers()).toBe(2)
   })
 
@@ -224,21 +250,24 @@ describe('GadgetEditor, offering an update from a blueprint', () => {
     GADGET.upstream = {}
 
     await openEditor('desktop')
+    await openBlueprintModal()
 
+    expect(blueprintModal()).not.toBeNull()
     expect(offers()).toBe(0)
-    expect(button('Publish as blueprint…')).toBeTruthy()
   })
 })
 
 describe('GadgetEditor, once a blueprint update is proposed', () => {
   it('selects the chat that holds the proposal', async () => {
     await openEditor('desktop')
-    await proposeUpdate()
+    await proposeUpdate('modal')
 
     expect(mocks.navigate).toHaveBeenCalledTimes(1)
     expect(mocks.navigate.mock.calls[0][0].search({ w: 1 }))
       .toEqual({ w: 1, chat: PROPOSAL_CHAT_ID })
     expect(container.textContent).not.toContain('propose update')
+    // The modal gives way to the update dialog rather than staying open behind it.
+    expect(blueprintModal()).toBeNull()
   })
 
   // A phone shows the chat or the pane, never both, so selecting the chat does not show it.
@@ -246,7 +275,7 @@ describe('GadgetEditor, once a blueprint update is proposed', () => {
     await openEditor('phone')
     expect(currentView()).toEqual(['Preview'])
 
-    await proposeUpdate()
+    await proposeUpdate('menu')
 
     expect(currentView()).toEqual(['Chat'])
   })
@@ -256,7 +285,7 @@ describe('GadgetEditor, once a blueprint update is proposed', () => {
     await click('Activity')
     expect(currentView()).toEqual(['Activity'])
 
-    await proposeUpdate()
+    await proposeUpdate('menu')
 
     expect(currentView()).toEqual(['Chat'])
   })
@@ -266,7 +295,7 @@ describe('GadgetEditor, once a blueprint update is proposed', () => {
     await openEditor('desktop')
     expect(currentView()).toEqual(['Preview'])
 
-    await proposeUpdate()
+    await proposeUpdate('modal')
 
     expect(currentView()).toEqual(['Preview'])
   })
