@@ -309,6 +309,15 @@ describe("callService targets", () => {
     expect(verdict(entityCall("switch.hue_plug", "turn_on"), plain)).toEqual(deviceControl);
   });
 
+  it("is false for a helper that forwards to the switch it was configured with", () => {
+    const thermostat = registry({ entities: [{ entity_id: "climate.office", platform: "generic_thermostat" }] });
+    expect(verdict(entityCall("climate.office", "set_hvac_mode"), thermostat)).toEqual(callService);
+    const hygrostat = registry({ entities: [{ entity_id: "humidifier.cellar", platform: "generic_hygrostat" }] });
+    expect(verdict(entityCall("humidifier.cellar", "turn_on"), hygrostat)).toEqual(callService);
+    const plain = registry({ entities: [{ entity_id: "climate.nest", platform: "nest" }] });
+    expect(verdict(entityCall("climate.nest", "set_hvac_mode"), plain)).toEqual(deviceControl);
+  });
+
   it("is false for a script-backed entity reached through its area", () => {
     const scripted = registry({ entities: [{ entity_id: "switch.lobby", area_id: "empty", platform: "template" }] });
     expect(verdict(call("switch", "turn_on", { target: { area_id: "empty" } }), scripted)).toEqual(callService);
