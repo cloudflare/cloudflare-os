@@ -6,6 +6,8 @@
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
+import type { GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GatekeeperProps, SessionCall } from "./worker";
 
@@ -17,6 +19,11 @@ const SUBRESOURCE = `repo/${REPO_ID}`;
 /** A repository that takes the bound one's name once it has left it. */
 const OTHER_ID = 43;
 const HEAD = "a".repeat(40);
+const PULL_OPTIONS = { type: "commit", commitHistory: { kind: "depth", depth: 1 } } as const;
+/** An upload-pack answer carrying a pack of one byte. */
+const uploadPackResponse = () => new Blob([
+  encodePktLine("packfile"), new Uint8Array([0x30, 0x30, 0x30, 0x36, 1, 0x50]), FLUSH_PKT,
+]);
 
 const MINUTE = 60_000;
 
@@ -59,6 +66,10 @@ class FakeGitHub {
   /** The bound repository's open issues. */
   issues: number[] = [];
   readonly requests: { token: string; path: string; query: URLSearchParams }[] = [];
+  /** The repositories git requests reached, by the name they were addressed by. */
+  readonly gitRequests: string[] = [];
+  /** Runs as a git request reaches GitHub, before it is answered. */
+  onGit: (() => void) | undefined;
 
   constructor() {
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => this.#handle(new Request(input, init)));
@@ -73,6 +84,14 @@ class FakeGitHub {
     const url = new URL(request.url);
     const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
     this.requests.push({ token, path: url.pathname, query: url.searchParams });
+    if (url.hostname === "github.com") {
+      // github.com serves git by the name a repository has now, as it does any repository.
+      const named = /^\/([^/]+)\/([^/]+)\.git\/git-upload-pack$/.exec(url.pathname);
+      if (!named || this.#idNamed(`${named[1]}/${named[2]}`) === undefined) return new Response("Not Found", { status: 404 });
+      this.gitRequests.push(`${named[1]}/${named[2]}`);
+      this.onGit?.();
+      return new Response(uploadPackResponse(), { headers: { "Content-Type": "application/x-git-upload-pack-result" } });
+    }
     const notFound = Response.json({ message: "Not Found" }, { status: 404 });
     const canRead = (id: number) => this.repos.has(id) && (this.readable.get(token)?.has(id) ?? false);
 
@@ -182,6 +201,14 @@ async function binding(options: { pinned?: boolean } = {}) {
     read: (calls: SessionCall[], drain = false) =>
       hooks.sessionRead(scenario, props, new RpcStub(queue) as never, calls, drain),
     pages: (calls: SessionCall[]) => hooks.sessionPages(scenario, props, new RpcStub(queue) as never, calls),
+    /** gitPull of HEAD; the transfer's status once drained, or the pull's error. */
+    pull: async (): Promise<{ ok: unknown } | { error: string }> => {
+      const outcome = await hooks.gitPull(scenario, props, [HEAD], PULL_OPTIONS);
+      if ("error" in outcome) return outcome;
+      using transfer = outcome.ok as unknown as RpcStub<GitPullTransfer>;
+      await new Response(await transfer.stream()).arrayBuffer();
+      return { ok: await transfer.status() };
+    },
     /** verifyObserverAccess for observers named by id, each with the account given. */
     verify: (observers: Record<string, string>, subresources = [SUBRESOURCE]) => hooks.verifyObservers(
       scenario, props, Object.entries(observers).map(([id, userObjectId]) => ({ id, userObjectId })), subresources),
@@ -278,6 +305,32 @@ describe("reads", () => {
     // Never asked of the repository the name now names, by that name or its id.
     expect(github.requests.filter(request => request.path !== `/repositories/${REPO_ID}`
       && !request.path.startsWith(`/repositories/${REPO_ID}/`))).toEqual([]);
+  });
+
+  it("pull git by the name the repository's id has now, and never by a name it left", async () => {
+    const github = new FakeGitHub();
+    const gk = await binding({ pinned: true });
+    github.repos.set(REPO_ID, { owner: "acme", name: "renamed" });
+    expect(await gk.pull()).toEqual({ ok: { state: "complete" } });
+    expect(github.gitRequests).toEqual(["acme/renamed"]);
+
+    // Deleted, and its old names taken by another repository: nothing is asked of either.
+    github.repos.delete(REPO_ID);
+    github.repos.set(OTHER_ID, { owner: "acme", name: "renamed" });
+    expect(await gk.pull()).toEqual({ error: expect.any(String) });
+    expect(github.gitRequests).toEqual(["acme/renamed"]);
+  });
+
+  it("refuse a git answer if the repository was renamed before it arrived", async () => {
+    const github = new FakeGitHub();
+    const gk = await binding({ pinned: true });
+    // Renamed as the request reaches GitHub: the name it was sent to may name another repository.
+    github.onGit = () => github.repos.set(REPO_ID, { owner: "acme", name: "renamed" });
+    expect(await gk.pull()).toEqual({ error: expect.stringContaining("was renamed from octo/repo") });
+
+    github.onGit = undefined;
+    expect(await gk.pull()).toEqual({ ok: { state: "complete" } });
+    expect(github.gitRequests).toEqual([`${OWNER}/${REPO}`, "acme/renamed"]);
   });
 
   it("disclose nothing until the repository's id is pinned, then report it", async () => {

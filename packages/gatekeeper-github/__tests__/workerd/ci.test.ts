@@ -226,7 +226,8 @@ class FakeGitHub {
       return Response.json({ login: "ada", name: null, html_url: "https://github.com/ada", avatar_url: null });
     }
     if (path === API_BASE || path === NAME_ROOT) {
-      return Response.json({ id: 1, description: null, visibility: "public", private: false, default_branch: "main" });
+      return Response.json({ id: 1, name: REPO, owner: { login: OWNER }, description: null,
+        visibility: "public", private: false, default_branch: "main" });
     }
     const rest = path.slice(API_BASE.length);
     let match: RegExpMatchArray | null;

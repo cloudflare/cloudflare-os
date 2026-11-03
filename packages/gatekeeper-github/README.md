@@ -84,12 +84,16 @@ passing doesn't mean GitHub shows that account all the binding's account read.
 
 - **Identity.** A binding pins its repository's numeric GitHub id on its first read (read once by
   name; a renamed or transferred repository's redirect to its id is followed) and reads nothing
-  until it has. From then on every request beneath the repository goes to `/repositories/<id>/...`
-  and follows no redirect, issue search is asked by the name that id has now, and GraphQL reads are
-  checked against it, so a rename or transfer keeps the binding on its repository and a repository
-  later created under an old name is never read in its place: the binding's reads fail instead. A
-  binding that read before ids were pinned is pinned to the repository its name names at its
-  first read since, which may not be the one it read then.
+  until it has. From then on every REST request beneath the repository goes to
+  `/repositories/<id>/...` and follows no redirect, and GraphQL reads are checked against it.
+  Issue search and git fetches and pushes, which github.com addresses only by name, are sent to
+  the name that id has now and fail if it changed before GitHub answered. So a rename or transfer
+  keeps the binding on its repository and a repository later created under an old name is never
+  read in its place: the binding's requests fail instead. A push is the exception only when the
+  rename and the name's reuse both land between those two lookups: it then fails as possibly
+  delivered elsewhere, since what GitHub accepted can't be called back. A binding that read
+  before ids were pinned is pinned to the repository its name names at its first read since,
+  which may not be the one it read then.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   one served from a cache or from queued actions, and each hook delivery, reports
   `repo/<repoId>` as its subresource, so the Workshop checks everyone who can see it before it

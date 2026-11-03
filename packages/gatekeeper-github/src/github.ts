@@ -2050,6 +2050,30 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     });
   }
 
+  /**
+   * Sends a git smart-HTTP request to the bound repository. github.com addresses git only by owner
+   * and name, so `send` is given the name the repository has now, read by its id (see
+   * #currentRepoName), and its response is refused if that name changed before GitHub answered:
+   * the name it left may already name another repository, which would then have served or
+   * received the request instead. GitHub has routed the request once its response arrives, so a
+   * pack still streaming after this check comes from the repository checked.
+   */
+  async #gitRequest(send: (owner: string, repo: string) => Promise<Response>): Promise<Response> {
+    const current = await this.#currentRepoName();
+    const response = await send(current.owner, current.repo);
+    const after = await this.#currentRepoName().catch(async (error: unknown) => {
+      await response.body?.cancel();
+      throw error;
+    });
+    if (after.owner !== current.owner || after.repo !== current.repo) {
+      await response.body?.cancel();
+      throw new Error(`The GitHub repository was renamed from ${current.owner}/${current.repo} ` +
+        "during a git request, which may have reached the repository now using its old name. " +
+        "Please retry it.");
+    }
+    return response;
+  }
+
   #counterKey(name: string): string {
     return `counter:${name}`;
   }
@@ -4196,7 +4220,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    */
   async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
     return this.#withApi(api => startGitPull(
-      body => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, body), oids, options));
+      body => this.#gitRequest((owner, repo) => api.fetchGitUploadPack(owner, repo, body)), oids, options));
   }
 
   async applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void> {
@@ -4386,7 +4410,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         try {
           const pack = await cache.buildPack();
           await this.#withApi(api => pushGitRefUpdate(
-            body => api.fetchGitReceivePack(action.owner, action.repo, body),
+            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body)),
             { branch: action.branch, oldSha: action.expectedOldSha, newSha: action.newSha },
             pack));
         } catch (error) {
@@ -4625,7 +4649,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const deleting = action.expectedOldSha === ZERO_OID;
         try {
           await this.#withApi(async api => pushGitRefUpdate(
-            body => api.fetchGitReceivePack(action.owner, action.repo, body),
+            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body)),
             {
               branch: action.branch,
               oldSha: action.newSha,

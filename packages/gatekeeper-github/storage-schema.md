@@ -45,10 +45,11 @@ No per-user SQL tables are used.
 
 - `repoId` -> the bound repository's GitHub id, read once from `/repos/<owner>/<repo>`, whose
   redirect to `/repositories/<id>` (a renamed or transferred repo) is the only one followed. Every
-  request beneath the repository is then sent beneath `/repositories/<repoId>` and follows no
-  redirect, and every read reports `repo/<repoId>` as its subresource. Absent until first use, and
-  nothing is read or written until it is stored. A binding that read before ids were pinned was
-  pinned to whichever repository its name named at its first read since.
+  REST request beneath the repository is then sent beneath `/repositories/<repoId>` and follows no
+  redirect, issue search and git fetches and pushes go to the name that id has now (see
+  `cache:repo-name`), and every read reports `repo/<repoId>` as its subresource. Absent until
+  first use, and nothing is read or written until it is stored. A binding that read before ids
+  were pinned was pinned to whichever repository its name named at its first read since.
 
 ### Action log
 
@@ -175,7 +176,9 @@ Implemented TTL cache families:
   `GitHubIssueSummary` values, under the owner and name the repository had, read by its id, when
   searched (GitHub's search takes only a name)
 - `cache:repo-name:<repoId>` -> the repository's owner and name now, revalidated with its ETag on
-  every use, before and after each issue search
+  every use: before each issue search and each git fetch or push, and again once GitHub answers
+  one, unless the search's answer is a 304 or a cached page, which the name it was cached under
+  already scopes
 - `cache:list-pulls-v2:<encodedQuery>:p<page>` -> `GitHubPullRequestSummary[]`, unfiltered (v2: v1
   dropped rows with pending actions)
 - `cache:search-pulls-v2:<state>:p<page>` -> `GitHubPullRequestSummary & { bodyMarkdown }` rows of

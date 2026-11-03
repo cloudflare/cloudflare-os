@@ -260,7 +260,8 @@ class FakeGitHub {
     if (path === API_BASE || path === NAME_ROOT) {
       // The repository, pinned by its id; its metadata resolves an omitted ref to the default branch.
       return Response.json({
-        id: 1, description: null, visibility: "public", private: false, default_branch: "main",
+        id: 1, name: REPO, owner: { login: OWNER }, description: null, visibility: "public",
+        private: false, default_branch: "main",
       });
     }
 
