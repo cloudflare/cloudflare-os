@@ -627,6 +627,9 @@ const EXPIRED_JOB_ERROR = { code: "expired", message: "The job expired on Canva 
 // Rows per `next()` on a listing cursor. Canva chooses its own provider page size.
 const CURSOR_PAGE_SIZE = 50;
 
+/** The kinds of job that keep running on Canva after their action is applied. */
+type RunningJobKind = Exclude<CanvaJobRecord["kind"], "createDesign">;
+
 /**
  * What a session may ask of its gatekeeper. A plain object of closures rather than the Durable
  * Object itself, so these generic helpers stay off the RPC surface the overseer sees.
@@ -648,8 +651,11 @@ type CanvaSessionHost = {
   pending(): Pending;
   /** The record of an applied action that makes `ref`, if any. Not refreshed. */
   jobForRef(ref: string): CanvaJobRecord | undefined;
-  /** The records of applied actions whose jobs are still running, each polled first. */
-  runningJobs(): Promise<CanvaJobRecord[]>;
+  /**
+   * The records of applied actions of `kind` whose jobs are still running, each polled first. The
+   * records are read before the first await.
+   */
+  runningJobs(kind: RunningJobKind): Promise<CanvaJobRecord[]>;
   getProfile(): Promise<CanvaProfile>;
   getDesign(designId: string): Promise<CanvaDesign>;
   getFolder(folderId: string): Promise<CanvaFolder>;
@@ -688,7 +694,7 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     resolve: id => this.#refs.resolve(id),
     pending: () => this.#journal.listPending(),
     jobForRef: ref => this.#jobForRef(ref),
-    runningJobs: () => this.#runningJobs(),
+    runningJobs: kind => this.#runningJobs(kind),
     getProfile: () => this.#getProfile(),
     getDesign: id => this.#getDesign(id),
     getFolder: id => this.#getFolder(id),
@@ -847,12 +853,12 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   }
 
   /**
-   * The jobs applied actions started that are still running, polled first so one that has finished
-   * gives way to what Canva made. A job that can't be polled is kept as last seen.
+   * The jobs of `kind` applied actions started that are still running, polled first so one that has
+   * finished gives way to what Canva made. A job that can't be polled is kept as last seen.
    */
-  async #runningJobs(): Promise<CanvaJobRecord[]> {
+  async #runningJobs(kind: RunningJobKind): Promise<CanvaJobRecord[]> {
     const running = Array.from(this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX }), ([, record]) => record)
-      .filter(record => record.status === "in_progress");
+      .filter(record => record.kind === kind && record.status === "in_progress");
     const settled = await Promise.all(running.map(record => this.#settleJob(record).catch((error: unknown) => {
       logger.warn("failed to poll a running Canva job", { event: "canva.job.poll.failed", error });
       return record;
@@ -1109,17 +1115,20 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     return row?.type === "image" ? { ...row.image, createdAt: asset.createdAt, updatedAt: asset.updatedAt } : null;
   }
 
-  /** What has no Canva id yet: actions awaiting a decision, and jobs still running after approval. */
-  async #unmade(): Promise<Unmade> {
-    const running = await this.#host.runningJobs();
-    return { pending: this.#host.pending(), running };
+  /**
+   * What has no Canva id yet: actions awaiting a decision, and `kind` jobs still running after
+   * approval. Both are read before the polls, so an action approved meanwhile is in one or the other.
+   */
+  async #unmade(kind: RunningJobKind): Promise<Unmade> {
+    const pending = this.#host.pending();
+    return { pending, running: await this.#host.runningJobs(kind) };
   }
 
   /** A design listing's pending rows, or none for an order a pending row cannot be placed in. */
   async #injectDesigns(sortBy: CanvaDesignSort): Promise<CursorInjection<CanvaDesign> | undefined> {
     const compare = designOrder(sortBy);
     if (compare === undefined) return undefined;
-    const [me, unmade] = await Promise.all([this.#host.identity(), this.#unmade()]);
+    const [me, unmade] = await Promise.all([this.#host.identity(), this.#unmade("generateDesign")]);
     return {
       items: pendingDesigns(unmade, me, id => this.#host.resolve(id)).toSorted(compare),
       compare,
@@ -1136,7 +1145,9 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
                            sortBy: CanvaFolderItemSort): Promise<CursorInjection<CanvaFolderItem> | undefined> {
     const type = folderId === "root" || folderId === "projects" ? "design" : folderId === "uploads" ? "image" : undefined;
     if (type === undefined || (itemTypes !== undefined && !itemTypes.includes(type))) return undefined;
-    const [me, unmade] = await Promise.all([this.#host.identity(), this.#unmade()]);
+    const [me, unmade] = await Promise.all([
+      this.#host.identity(), this.#unmade(type === "design" ? "generateDesign" : "removeBackground"),
+    ]);
     const resolve = (id: string) => this.#host.resolve(id);
     const items: CanvaFolderItem[] = type === "design"
       ? pendingDesigns(unmade, me, resolve).map(design => ({ type: "design", design }))
