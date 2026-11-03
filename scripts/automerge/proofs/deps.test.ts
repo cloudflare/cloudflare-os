@@ -123,8 +123,8 @@ describe("pnpm-workspace.yaml rule", () => {
 });
 
 describe("lockfileNames", () => {
-  it("reads the package names of the workspace lockfile", () => {
-    const names = lockfileNames(readFileSync(new URL("../../../pnpm-lock.yaml", import.meta.url), "utf8"));
+  it("reads package names, not importer paths, from a recorded lockfile excerpt", () => {
+    const names = lockfileNames(readFileSync(new URL("./testdata/deps/lockfile-excerpt.yaml", import.meta.url), "utf8"));
     assert.ok(names.has("@modelcontextprotocol/client"));
     assert.ok(names.has("wrangler"));
     assert.ok(!names.has("packages/mcp-shared"));

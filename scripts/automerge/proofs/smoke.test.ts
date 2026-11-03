@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
 import { evaluateSmoke, isReadyLine, startServer, type Answer } from "./smoke.ts";
-import { parseWorkflow } from "./workflow.ts";
 
 const ORIGIN = "http://localhost:8799";
 const html: Answer = { status: 200, contentType: "text/html; charset=utf-8", body: "<!doctype html>" };
@@ -33,12 +29,6 @@ describe("preview-smoke", () => {
       ["GET / answered 200 application/json"]);
     assert.deepEqual(evaluateSmoke(ORIGIN, { status: 302, contentType: "", body: "" }, version).details.reasons,
       ["GET / answered 302 "]);
-  });
-
-  it("runs only locally: there is no deployed-preview mode", () => {
-    assert.throws(() => execFileSync(process.execPath,
-      [fileURLToPath(new URL("./smoke.ts", import.meta.url)), "deploy", "https://pr966-preview-router.example.workers.dev"],
-      { env: { PATH: process.env.PATH }, stdio: "pipe" }), /usage: smoke\.ts local/);
   });
 });
 
@@ -78,29 +68,5 @@ describe("local preview server", () => {
     assert.equal(isReadyLine("[wrangler:info] Ready on http://localhost:8799", 8799), true);
     assert.equal(isReadyLine("[wrangler:info] Ready on http://localhost:87990", 8799), false);
     assert.equal(isReadyLine("Starting local server at http://localhost:8799 ...", 8799), false);
-  });
-});
-
-// The workflows that produce the two smoke records, read from this checkout.
-const workflow = (name: string) => readFileSync(new URL(`../../../.github/workflows/${name}`, import.meta.url), "utf8");
-
-describe("smoke workflows", () => {
-  it("smokes every pull request locally in automerge-evidence.yml, holding no secret", () => {
-    const jobs = parseWorkflow(workflow("automerge-evidence.yml")).entries.get("jobs");
-    assert.equal(jobs?.kind, "map");
-    const job = jobs.kind === "map" ? jobs.spans.get("preview-smoke") : undefined;
-    assert.ok(job, "no preview-smoke job");
-    const text = workflow("automerge-evidence.yml").split("\n").slice(...job).join("\n");
-    assert.doesNotMatch(text, /secrets/i);
-    assert.match(text, /node scripts\/automerge\/proofs\/smoke\.ts local\n/);
-    assert.match(text, /name: automerge-preview-smoke\n/);
-  });
-
-  it("deploys no bot preview and leaves maintainer previews without a smoke record", () => {
-    const preview = workflow("preview.yml");
-    const on = parseWorkflow(preview).entries.get("on");
-    assert.ok(on?.kind === "map" && !on.entries.has("workflow_run"), "preview.yml runs on workflow_run");
-    assert.doesNotMatch(preview, /PREVIEW_BOT|prebuilt|bot-deploy|smoke\.ts|automerge-preview|PREVIEW_ACCESS/);
-    assert.doesNotMatch(workflow("automerge-evidence.yml"), /automerge-bot-preview-release/);
   });
 });

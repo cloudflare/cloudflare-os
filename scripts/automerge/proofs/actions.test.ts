@@ -19,8 +19,8 @@ function workflowsIn(dir: URL): Record<string, string> {
     [`.github/workflows/${name}`, readFileSync(new URL(name, dir), "utf8")]));
 }
 const recordedBase = (name: string) => workflowsIn(new URL(`./testdata/actions/${name}/`, import.meta.url));
-/** This checkout's workflows, which fail the cache rule until ask-bonk passes `no-cache` (see below). */
-const repoWorkflows = workflowsIn(new URL("../../../.github/workflows/", import.meta.url));
+/** The repository's workflows at 7b0ade2f3, which fail the cache rule until ask-bonk passes `no-cache` (see below). */
+const cacheRuleBase = recordedBase("cache-rule-base");
 
 function input(diff: string, baseWorkflows: Record<string, string>): ActionsInput {
   return {
@@ -42,7 +42,7 @@ function input(diff: string, baseWorkflows: Record<string, string>): ActionsInpu
 
 /**
  * #621's ci.yml bump with `workflow` as ci.yml and `others` as the only other workflows at the base,
- * so each rule is seen apart from this checkout's other workflows (which fail, see below).
+ * so each rule is seen apart from the other recorded workflows (which fail, see below).
  */
 function ciBump(workflow: string, others: Record<string, string> = {}): ActionsInput {
   return input("pr621-ci-only.diff", { [CI]: workflow, ...others });
@@ -62,8 +62,8 @@ describe("proof-actions on recorded Dependabot pull requests", () => {
   // ask-bonk at this pin runs oven-sh/setup-bun@v2 without `no-cache` (github/action.yml:158-162),
   // which restores bun from the Actions cache in jobs that hold the AI Gateway secrets. Until it
   // passes `no-cache: true`, no github-actions bump holds here.
-  it("fails #621's ci.yml bump onto this checkout's workflows, while ask-bonk restores bun from the cache", () => {
-    assert.deepEqual(reasons(input("pr621-ci-only.diff", { ...repoWorkflows, [CI]: ciAtBase })), [
+  it("fails #621's ci.yml bump onto the recorded workflows, while ask-bonk restores bun from the cache", () => {
+    assert.deepEqual(reasons(input("pr621-ci-only.diff", { ...cacheRuleBase, [CI]: ciAtBase })), [
       `.github/workflows/bonk-pr.yml: job bonk holds a credential, step 7: ${BONK} is not known to leave the Actions cache alone`,
       `.github/workflows/bonk.yml: job bonk holds a credential, step 6: ${BONK} is not known to leave the Actions cache alone`,
       `.github/workflows/workshop-evals-pr.yml: job trajectory-review holds a credential, step 11: ${BONK} is not known to leave the Actions cache alone`,
@@ -130,7 +130,7 @@ describe("proof-actions on recorded Dependabot pull requests", () => {
 });
 
 describe("proof-actions cache rule", () => {
-  const preview = repoWorkflows[PREVIEW];
+  const preview = cacheRuleBase[PREVIEW];
   const CACHE_OFF = "          cache: false\n";
   const SECRET_JOB = [
     "name: Extra", "on: push", "permissions:", "  contents: read", "jobs:", "  extra:", "    runs-on: ubuntu-latest",
