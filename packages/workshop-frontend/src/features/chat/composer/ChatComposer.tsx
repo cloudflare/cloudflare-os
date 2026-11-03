@@ -733,7 +733,7 @@ export const ChatComposer = ({
           into the canvas; the lift intensifies a touch on focus. */}
       <div
         ref={promptCardRef}
-        className="relative overflow-visible rounded-2xl bg-kumo-control shadow-md ring ring-kumo-hairline shadow-black/4 transition-shadow duration-150 ease-out focus-within:shadow-lg"
+        className="relative overflow-visible rounded-2xl bg-kumo-control shadow-md ring ring-kumo-hairline shadow-black/4 transition-shadow duration-150 ease-out focus-within:shadow-lg has-[textarea:focus-visible]:outline-2 has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-kumo-contrast"
         onDragEnter={handleAttachmentDragEnter}
         onDragOver={handleAttachmentDragOver}
         onDragLeave={handleAttachmentDragLeave}
@@ -969,7 +969,7 @@ export const ChatComposer = ({
                 render={
                   <button
                     type="button"
-                    className="group flex h-10 w-10 flex-shrink-0 cursor-pointer items-center justify-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-none active:scale-[0.96] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-subtle sm:h-8 sm:w-8"
+                    className="group flex h-10 w-10 flex-shrink-0 cursor-pointer items-center justify-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.96] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-subtle sm:h-8 sm:w-8"
                     aria-label="More chat options"
                   >
                     <DotsThree size={18} weight="bold" />

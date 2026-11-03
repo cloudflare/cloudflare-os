@@ -376,7 +376,7 @@ export default function ComposerAddMenu({
         aria-label="Add to conversation"
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="group flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-none active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:w-8"
+        className="group flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:w-8"
         onClick={() => {
           if (!open) onOpen?.();
           setOpen((current) => !current);

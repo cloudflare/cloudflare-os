@@ -1599,7 +1599,7 @@ const NestedToolCallRow = memo(function NestedToolCallRow({
       <button
         type="button"
         onClick={() => onToggle(key)}
-        className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
+        className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.995]"
         aria-expanded={open}
       >
         <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
@@ -1646,7 +1646,7 @@ const NestedObservationRow = memo(function NestedObservationRow({
       <button
         type="button"
         onClick={() => onToggle(key)}
-        className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
+        className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.995]"
         aria-expanded={open}
       >
         <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
@@ -1717,7 +1717,7 @@ const ToolGroupRow = memo(function ToolGroupRow({
       <button
         type="button"
         onClick={() => onToggle(group.key)}
-        className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
+        className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.995]"
         aria-expanded={open}
       >
         <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
@@ -1788,7 +1788,7 @@ const ToolGroupRow = memo(function ToolGroupRow({
               type="button"
               disabled={footerDisabled}
               onClick={() => onFooterRevert(footerChangeSequence)}
-              className="flex cursor-pointer items-center rounded-md p-1 text-kumo-inactive transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex cursor-pointer items-center rounded-md p-1 text-kumo-inactive transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
               aria-label={footerLabel}
             >
               <ArrowUUpLeft size={15} />
@@ -4952,7 +4952,7 @@ function ChatInterface({
                   type="button"
                   onClick={() => handleDenyConnection(msg.requestId)}
                   disabled={isProc}
-                  className="cursor-pointer rounded-md px-2 py-1 font-medium text-kumo-inactive transition-colors duration-150 ease-out hover:text-kumo-danger focus-visible:text-kumo-danger focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+                  className="cursor-pointer rounded-md px-2 py-1 font-medium text-kumo-inactive transition-colors duration-150 ease-out hover:text-kumo-danger focus-visible:text-kumo-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Deny
                 </button>
@@ -4960,7 +4960,7 @@ function ChatInterface({
                   type="button"
                   onClick={() => handleAcceptConnection(msg)}
                   disabled={isProc}
-                  className="cursor-pointer rounded-md bg-kumo-brand px-3 py-1 font-medium text-white transition-[opacity,transform] duration-150 ease-out hover:opacity-90 focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="cursor-pointer rounded-md bg-kumo-brand px-3 py-1 font-medium text-white transition-[opacity,transform] duration-150 ease-out hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Set up
                 </button>
@@ -5061,7 +5061,7 @@ function ChatInterface({
           <button
             type="button"
             onClick={() => toggleActionExpansion(msg.actionId)}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
+            className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast active:scale-[0.995]"
             aria-expanded={open}
           >
             <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
@@ -5266,7 +5266,7 @@ function ChatInterface({
           <button
             type="button"
             onClick={() => toggleActionExpansion(msg.actionId)}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
+            className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast"
             aria-expanded={open}
           >
             {titleIcon}
@@ -5314,8 +5314,8 @@ function ChatInterface({
             render={
               <button
                 type="button"
-                className="group flex h-8 -ml-1.5 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint/60 focus-visible:bg-kumo-tint/60 focus-visible:outline-none data-[popup-open]:bg-kumo-tint/60"
-                aria-label="Filter conversations"
+                className="group flex h-8 -ml-1.5 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint/60 focus-visible:bg-kumo-tint/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast data-[popup-open]:bg-kumo-tint/60"
+                aria-label={`${CHAT_LIST_SCOPE_LABELS[chatListScope]}, filter conversations`}
               >
                 <span className="text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
                   {CHAT_LIST_SCOPE_LABELS[chatListScope]}
