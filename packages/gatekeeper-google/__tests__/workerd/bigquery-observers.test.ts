@@ -36,8 +36,11 @@ type BigQueryBackendState = {
   datasets: string[];
   /** The datasets each observer token may open, each as `project/dataset`. */
   access: Map<string, string[]>;
-  /** Observer tokens whose dataset lookups fail as an outage would. */
-  failing: Set<string>;
+  /**
+   * Observer dataset lookups, keyed as in `lookups`, that BigQuery refuses with this status and
+   * error reason instead of answering by `access`.
+   */
+  refusals: Map<string, {status: number; reason?: string}>;
   /** Each dataset lookup an observer token made, as `<token> <project>/<dataset>`. */
   lookups: string[];
 };
@@ -49,12 +52,12 @@ type BigQueryBackend = {
 
 /**
  * The BigQuery REST API as far as these reads use it. Dataset lookups always answer the owner, and
- * answer an observer only for the datasets `access` grants its token, failing with 500 for a token
- * in `failing`.
+ * answer an observer only for the datasets `access` grants its token, denying any other with 403
+ * `accessDenied` as BigQuery does, unless `refusals` names the lookup.
  */
 function bigQueryBackend(): BigQueryBackend {
   const state: BigQueryBackendState = {
-    referencedTables: [], datasets: [], access: new Map(), failing: new Set(), lookups: [],
+    referencedTables: [], datasets: [], access: new Map(), refusals: new Map(), lookups: [],
   };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
@@ -82,10 +85,14 @@ function bigQueryBackend(): BigQueryBackend {
     }
     if (rest.length === 2) {
       if (token !== OWNER_TOKEN) {
-        state.lookups.push(`${token} ${projectId}/${datasetId}`);
-        if (state.failing.has(token)) return json({error: {message: "Backend error"}}, 500);
-        if (!state.access.get(token)?.includes(`${projectId}/${datasetId}`)) {
-          return json({error: {message: "Access Denied"}}, 403);
+        const lookup = `${token} ${projectId}/${datasetId}`;
+        state.lookups.push(lookup);
+        const granted = state.access.get(token)?.includes(`${projectId}/${datasetId}`);
+        const refusal = state.refusals.get(lookup) ??
+            (granted ? undefined : {status: 403, reason: "accessDenied"});
+        if (refusal) {
+          const {status, reason} = refusal;
+          return json({error: {code: status, message: "Refused", errors: reason ? [{reason}] : []}}, status);
         }
       }
       return json({datasetReference: {projectId, datasetId}});
@@ -271,8 +278,44 @@ describe("BigQuery verifyObserverAccess", () => {
       {id: "viewer", userObjectId: await bigQuery.observer("viewer-token", ["proj/sales"])},
       {id: "flaky", userObjectId: await bigQuery.observer("flaky-token", ["proj/sales"])},
     ];
-    backend.state.failing.add("flaky-token");
+    backend.state.refusals.set("flaky-token proj/sales", {status: 500});
     await expect(bigQuery.verify(observers, [sales])).rejects.toThrow(/http=500/);
+  });
+
+  it("denies an observer a dataset BigQuery doesn't hold", async () => {
+    const backend = bigQueryBackend();
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "proj"});
+    const observers = [{id: "analyst", userObjectId: await bigQuery.observer("analyst-token", ["proj/sales"])}];
+    backend.state.refusals.set("analyst-token proj/sales", {status: 404, reason: "notFound"});
+    expect(await bigQuery.verify(observers, [sales])).toEqual({allowedObserverIds: []});
+  });
+
+  it("throws for a refusal other than a denial, and asks BigQuery again next time", async () => {
+    const backend = bigQueryBackend();
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "proj"});
+    const observers = [{id: "analyst", userObjectId: await bigQuery.observer("analyst-token", ["proj/sales"])}];
+    // BigQuery answers a rate limit with 403 too, which says nothing about the analyst's access.
+    backend.state.refusals.set("analyst-token proj/sales", {status: 403, reason: "rateLimitExceeded"});
+    await expect(bigQuery.verify(observers, [sales])).rejects.toThrow(/http=403.*rateLimitExceeded/);
+
+    backend.state.refusals.clear();
+    expect(await bigQuery.verify(observers, [sales])).toEqual({allowedObserverIds: ["analyst"]});
+    expect(backend.state.lookups).toEqual(["analyst-token proj/sales", "analyst-token proj/sales"]);
+  });
+
+  it("keeps the answers it got when another dataset's lookup fails", async () => {
+    const backend = bigQueryBackend();
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "proj"});
+    const observers = [
+      {id: "analyst", userObjectId: await bigQuery.observer("analyst-token", ["proj/sales", "proj/web"])},
+    ];
+    backend.state.refusals.set("analyst-token proj/web", {status: 500});
+    await expect(bigQuery.verify(observers, [sales, web])).rejects.toThrow(/http=500/);
+
+    backend.state.refusals.clear();
+    expect(await bigQuery.verify(observers, [sales, web])).toEqual({allowedObserverIds: ["analyst"]});
+    expect(backend.state.lookups.toSorted())
+      .toEqual(["analyst-token proj/sales", "analyst-token proj/web", "analyst-token proj/web"]);
   });
 });
 

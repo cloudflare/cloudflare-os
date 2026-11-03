@@ -56,7 +56,7 @@ import type {
 } from "./drive-types";
 import { ChatApi, isChatNoAccessError } from "./chat-api";
 import type { GoogleVerifierApi } from "./google-verifier-types";
-import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
+import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
   BigQueryQueryOptions, BigQueryQueryResult, BigQuerySession, BigQueryTable,
@@ -1116,16 +1116,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     observer's own token can open the bound spreadsheet.
 //   - Google Slides — strategy B (ACL check, single unit): hasPresentationAccess answers whether the
 //     observer's own token can open the bound presentation.
-//   - Google Calendar — strategy B reporting subresources: every read reports the calendar, events
-//     or free/busy it returned, checked by checkSubresourceAccess, where a calendar or event needs
-//     the role hasCalendarWriterAccess also checks for the bound calendar at admission;
+//   - Google Calendar — strategy B reporting subresources: every read reports the calendar or
+//     free/busy it returned, checked by checkSubresourceAccess, where a calendar needs the role
+//     hasCalendarWriterAccess also checks for the bound calendar at admission;
 //     hasCalendarFreeBusyAccess covers the calendars availability queries recorded before they
 //     reported them. The observer's UserAccount answers both, reusing recent answers.
 //   - BigQuery — strategy C by dataset, kernel-checked: reads report each dataset whose data they
 //     reveal as a `bigquery/project/<projectId>/dataset/<datasetId>` subresource, checked by
 //     checkSubresourceAccess like Calendar's. hasDatasetAccess answers, without reusing answers,
-//     whether the observer's own token has IAM access to a dataset (BigQuery returns 401/403/404
-//     otherwise), for the datasets addObserver still guards from before reads reported them.
+//     whether the observer's own token has IAM access to a dataset (see hasBigQueryDatasetAccess),
+//     for the datasets addObserver still guards from before reads reported them.
 //   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
 //     binding checks that the observer can open its conversation.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
@@ -1164,8 +1164,10 @@ async function hasCalendarDetailAccess(api: GoogleCalendarApi, calendarId: strin
 }
 
 /**
- * Whether `api`'s account can open a BigQuery dataset: false when BigQuery answers 401, 403 or 404,
- * and a throw for any other failure.
+ * Whether `api`'s account can open a BigQuery dataset: false when BigQuery denies it (403
+ * `accessDenied`, which also hides whether it exists) or doesn't hold it (404), and a throw for any
+ * other failure. BigQuery answers other refusals with 403 too (a rate limit, a quota, billing, a
+ * missing scope, a disabled API), and those say nothing about the account's access.
  */
 async function hasBigQueryDatasetAccess(
     api: BigQueryApi, { projectId, datasetId }: BigQueryDatasetRef): Promise<boolean> {
@@ -1173,7 +1175,10 @@ async function hasBigQueryDatasetAccess(
     await api.getDataset(projectId, datasetId);
     return true;
   } catch (error) {
-    if (isNoAccessStatus(httpStatusFromError(error))) return false;
+    if (error instanceof BigQueryApiError &&
+        (error.status === 404 || (error.status === 403 && error.reason === "accessDenied"))) {
+      return false;
+    }
     throw error;
   }
 }
