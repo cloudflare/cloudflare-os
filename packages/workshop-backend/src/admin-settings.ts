@@ -498,6 +498,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       banner: config.banner,
       accentColor: config.accentColor,
       restrictedWebFetchHosts: config.restrictedWebFetchHosts,
+      chatGptSignInEnabled: config.chatGptSignInEnabled,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
       gatewayModels: this.#listGatewayModels(config),
@@ -938,6 +939,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     await this.updateAdminConfig({ modelsDevSuggestions: enabled });
   }
 
+  /** Set whether users may sign in with ChatGPT and run models on their own subscription. */
+  async setChatGptSignInEnabled(enabled: boolean): Promise<void> {
+    await this.updateAdminConfig({ chatGptSignInEnabled: enabled });
+  }
+
   /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
   async setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void> {
     vendorId = vendorId.toLowerCase();
@@ -1202,6 +1208,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setModelsDevSuggestions(enabled: boolean): Promise<void> {
     return this.admin.setModelsDevSuggestions(enabled);
+  }
+
+  setChatGptSignInEnabled(enabled: boolean): Promise<void> {
+    return this.admin.setChatGptSignInEnabled(enabled);
   }
 
   setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void> {

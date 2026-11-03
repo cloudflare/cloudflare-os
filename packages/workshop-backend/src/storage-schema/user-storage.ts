@@ -11,6 +11,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
+import type { ChatGptCredential, PendingChatGptSignIn } from "../chatgpt-oauth.js";
 
 export type ConnectedAccountRecord = {
   id: number;
@@ -228,6 +229,13 @@ export function makeUserStorage(storage: DurableObjectStorage) {
 
       nextAccountId: 0,
       pinnedBlueprints: <string[]>[],
+
+      // The user's Sign in with ChatGPT (see chatgpt-oauth.ts), which their ChatGPT subscription
+      // models run on; the sign-in they started and have yet to complete, single-use; and the UUID
+      // OpenAI identifies this user's agent host by, created at their first sign-in.
+      chatGptCredential: <ChatGptCredential | null>null,
+      pendingChatGptSignIn: <PendingChatGptSignIn | null>null,
+      chatGptAgentHostId: <string | null>null,
 
       // Per-user free-tier daily LLM-call counter (only used when ENABLE_CLOUDFLARE_LIMITS is on).
       // Stores the current UTC day and the calls made that day; a stale `day` implicitly resets the

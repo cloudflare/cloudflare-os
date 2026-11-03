@@ -15,6 +15,8 @@ import {
 import AddModelModal, { type ModelModalMode } from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
+import { ChatGptSignInCard } from '../features/ai-models/ChatGptSignInCard'
+import { useChatGptSignIn } from '../features/ai-models/useChatGptSignIn'
 
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })
 
@@ -192,6 +194,9 @@ function ProvidersPage() {
     }
   }
 
+  // Signing in adds the subscription's models, so the list reloads.
+  const chatGptSignIn = useChatGptSignIn(authenticatedApi, () => void fetchAll())
+
   useEffect(() => { fetchAll() }, [authenticatedApi])
 
   const gatewayMode = aiConfig?.enabled === true
@@ -302,6 +307,12 @@ function ProvidersPage() {
       )}
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
+        {chatGptSignIn.status && chatGptSignIn.status.state !== 'unavailable' && (
+          <div className="px-3 pb-2">
+            <ChatGptSignInCard status={chatGptSignIn.status} signIn={chatGptSignIn} />
+          </div>
+        )}
+
         {/* Notices */}
         {(gatewayMode || (!gatewayMode && hasChatModel)) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
@@ -403,6 +414,7 @@ function ProvidersPage() {
         }}
         authenticatedApi={authenticatedApi}
         aiConfig={aiConfig}
+        chatGptSignIn={chatGptSignIn.status ?? undefined}
       />
       {sourceMode && (
         <AddModelModal
@@ -416,6 +428,7 @@ function ProvidersPage() {
           }}
           authenticatedApi={authenticatedApi}
           aiConfig={aiConfig}
+          chatGptSignIn={chatGptSignIn.status ?? undefined}
         />
       )}
     </div>
