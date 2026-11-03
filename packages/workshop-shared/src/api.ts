@@ -706,8 +706,8 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * Note: A workspace is considered "provisional" until it has some sort of activity, such as a
    *   chat message or code edit. Provisional workspaces do not appear on the home page
-   *   (listWorkspaces() leaves them out, listProvisionalWorkspaces() lists them), and nothing
-   *   deletes them but Overseer.deleteSelf(). Note in particular that calling new*Gatekeeper() will
+   *   (listWorkspaces() leaves them out). They are garbage, meant to be deleted after a while,
+   *   though nothing deletes them yet. Note in particular that calling new*Gatekeeper() will
    *   not clear the provisional bit (as long as the gatekeeper isn't bound into a gadget), so
    *   provisional workspaces are useful to allow the user to write an initial chat message without
    *   explicitly creating a new workspace.
@@ -729,14 +729,6 @@ export interface AuthenticatedApi extends RpcTarget {
    * TODO: Pagination, sort options.
    */
   listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]>;
-
-  /**
-   * List the user's provisional workspaces (see newWorkspace()), which listWorkspaces() hides: one
-   * made and then left, such as by a client that lost the Overseer newWorkspace() returned before
-   * reading its id, is found here by when it was created, to open with openWorkspace() or delete
-   * with Overseer.deleteSelf().
-   */
-  listProvisionalWorkspaces(): Promise<(WorkspaceMetadata & {created: Date})[]>;
 
   /** Pin or unpin this workspace in the user's list. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
