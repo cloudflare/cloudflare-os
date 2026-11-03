@@ -25,9 +25,9 @@
     "capnweb-validate": "catalog:",
     "diff": "catalog:",
     "diff3": "0.0.3",
-    "isomorphic-git": "^1.44.4",
+    "isomorphic-git": "^1.44.5",
     "jose": "^6.2.13",
-    "pako": "^3.0.2",
+    "pako": "^3.0.3",
     "yjs": "^13.6.33",
     "zod": "catalog:"
   },
