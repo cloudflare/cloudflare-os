@@ -145,8 +145,8 @@ it.concurrent("a chat's read admits only collaborators whose own GitHub token ca
     request !== `GET /repos/acme/${repo.name}` && !request.includes(`/repositories/${repo.id}`)))
     .toEqual([]);
 
-  // A collaborator whose own token can read the repository is admitted, checked by its id with
-  // that token.
+  // A collaborator whose own token can read the repository is admitted, checked with that token by
+  // its id, and, for what reads made by name may have read, by its name.
   using carol = await gitHubUser("githubobscarol");
   await ws.addCollaborator(carol.username, "workspace");
   const admitted = await opens(carol, workspaceId);
@@ -154,7 +154,7 @@ it.concurrent("a chat's read admits only collaborators whose own GitHub token ca
   expect(admitted.recorder.calls[0]!.map(need => need.gatekeeperId)).toContain(connectionId);
   const carolChecks = repoRequestsWith(carol.token, repo);
   expect(carolChecks.length).toBeGreaterThan(0);
-  expect(new Set(carolChecks)).toEqual(new Set([`GET /repositories/${repo.id}`]));
+  expect(new Set(carolChecks)).toEqual(new Set([`GET /repositories/${repo.id}`, `GET /repos/acme/${repo.name}`]));
 
   // One whose token can't (GitHub answers it 404) is refused, at this connection.
   using dave = await gitHubUser("githubobsdave");
@@ -167,7 +167,7 @@ it.concurrent("a chat's read admits only collaborators whose own GitHub token ca
   ]);
   const daveChecks = repoRequestsWith(dave.token, repo);
   expect(daveChecks.length).toBeGreaterThan(0);
-  expect(new Set(daveChecks)).toEqual(new Set([`GET /repositories/${repo.id}`]));
+  expect(new Set(daveChecks)).toEqual(new Set([`GET /repositories/${repo.id}`, `GET /repos/acme/${repo.name}`]));
 });
 
 it.concurrent("a chat's read is refused while a collaborator who can't read the repository can see it",

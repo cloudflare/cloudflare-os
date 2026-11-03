@@ -1877,21 +1877,27 @@ type GitHubVerifierProps = {
 };
 
 /**
+ * Whether `error`, GitHub's answer to a request for a repository, denies the account access: 404,
+ * as it answers for a repository the account can't see (not 403, so as not to reveal it exists) or
+ * that is gone, or 403 for a reason other than a rate limit, such as an organization's OAuth app
+ * restrictions or SAML enforcement. Anything else (a rate limit, expired credentials, an outage)
+ * says nothing about the account's access.
+ */
+function deniesRepoAccess(error: unknown): boolean {
+  return error instanceof GitHubApiError && !error.rateLimited && (error.status === 404 || error.status === 403);
+}
+
+/**
  * Whether the account behind `api` can read the repository with GitHub id `repoId`, asked by that
- * id, `GET /repositories/<id>`, which no repository but that one answers to: false when GitHub
- * answers 404, as it does for a repository the account can't see (not 403, so as not to reveal it
- * exists) or that is gone, or 403 for a reason other than a rate limit, such as an organization's
- * OAuth app restrictions or SAML enforcement; a throw for anything else (a rate limit, expired
- * credentials, an outage), which says nothing about the account's access.
+ * id, `GET /repositories/<id>`, which no repository but that one answers to: false when GitHub's
+ * answer denies it (see deniesRepoAccess), and a throw when the answer says nothing either way.
  */
 async function hasRepoIdAccess(api: GitHubApi, repoId: number): Promise<boolean> {
   let result: ConditionalRequestResult<GitHubRepoResponse>;
   try {
     result = await api.getRepoByIdConditional(repoId);
   } catch (error) {
-    if (error instanceof GitHubApiError && !error.rateLimited && (error.status === 404 || error.status === 403)) {
-      return false;
-    }
+    if (deniesRepoAccess(error)) return false;
     throw error;
   }
   if (result.status !== 200 || result.data.id !== repoId) {
@@ -1901,12 +1907,33 @@ async function hasRepoIdAccess(api: GitHubApi, repoId: number): Promise<boolean>
 }
 
 /**
+ * Whether the account behind `api` can read the repository GitHub resolves `owner/repo` to now,
+ * following a rename's or transfer's redirect: the check made before reads were addressed by id,
+ * kept for what they read by name (see GitHubGatekeeperImpl.addObserver). False when GitHub's
+ * answer denies it (see deniesRepoAccess), and a throw when the answer says nothing either way.
+ */
+async function hasRepoNameAccess(api: GitHubApi, owner: string, repo: string): Promise<boolean> {
+  try {
+    await api.getRepo(owner, repo);
+    return true;
+  } catch (error) {
+    if (deniesRepoAccess(error)) return false;
+    throw error;
+  }
+}
+
+/**
  * The non-standard methods the GitHub gatekeeper calls on its own verifier (see addObserver and
  * verifyObserverAccess). Not part of the generic GatekeeperUserVerifier contract.
  */
 export interface GitHubVerifierApi extends GatekeeperUserVerifier {
   /** Whether the observer's account can read the repository with GitHub id `repoId`, asked now. */
   hasRepoAccess(repoId: number): Promise<boolean>;
+  /**
+   * Whether the observer's account can read the repository named `owner/repo` now, asked now (see
+   * hasRepoNameAccess).
+   */
+  hasRepoNameAccess(owner: string, repo: string): Promise<boolean>;
   /**
    * Whether the observer's account can read each repository subresource, in order, reusing recent
    * answers (see UserAccount.checkSubresourceAccess). Throws for an ID it can't check, or when
@@ -1920,6 +1947,11 @@ export class GitHubVerifier extends WorkerEntrypoint<Env, GitHubVerifierProps>
     implements GitHubVerifierApi {
   async hasRepoAccess(repoId: number): Promise<boolean> {
     return await accountReader(this.ctx.exports, this.ctx.props.userObjectId)(api => hasRepoIdAccess(api, repoId));
+  }
+
+  async hasRepoNameAccess(owner: string, repo: string): Promise<boolean> {
+    return await accountReader(this.ctx.exports, this.ctx.props.userObjectId)(
+      api => hasRepoNameAccess(api, owner, repo));
   }
 
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
@@ -1965,6 +1997,29 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * ids, so a restart cannot leak an unfiltered id.
    */
   #servedSimulatedCommitIds = new Set<GitOid>();
+
+  constructor(ctx: DurableObjectState<GitHubGatekeeperImplProps>, env: Env) {
+    super(ctx, env);
+    this.#discardNameAddressedCaches();
+  }
+
+  /**
+   * Discards, once, what the caches held when this binding's reads were addressed by name: a name
+   * the repository left could then have served another repository's data, which a read now
+   * reporting the pinned id must not return. Run before anything can read them. The
+   * generation-checked caches are invalidated by moving the generation; the discussion streams,
+   * which no generation covers, are deleted. Finished CI logs stay: each is revalidated by job id
+   * beneath the pinned repository before use, and dropped if it isn't there.
+   */
+  #discardNameAddressedCaches(): void {
+    const kv = this.ctx.storage.kv;
+    if (kv.get<boolean>("cachesByRepoId")) return;
+    this.#clearCaches();
+    for (const prefix of ["discussionComments:", "pullReviewComments:"]) {
+      for (const [key] of kv.list({ prefix })) kv.delete(key);
+    }
+    kv.put("cachesByRepoId", true);
+  }
 
   #userAccount() {
     return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -6295,19 +6350,22 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * (see the Verifier notes for what that does and doesn't cover).
    *
    * Every read reports that repository by its id (see authorizeRead), which the Workshop checks
-   * through verifyObserverAccess. This check stays for the reads made before they did: it asks
-   * GitHub, with the observer's own token and now, whether they can read the repository the binding
-   * is pinned to, by its id, which a rename doesn't change and no repository that later takes the
-   * name answers to. (A read made before ids were pinned can be tied no more tightly than to the
-   * repository pinned since; see #pinnedRepo.) Nothing else is tracked: no excludeObservers is set,
-   * no observer is remembered, and removeObserver is an idempotent no-op. The overseer re-runs
-   * addObserver on every open, so loss of the observer's repo access is caught promptly.
+   * through verifyObserverAccess. This check stays for the reads made before they did, asking
+   * GitHub with the observer's own token, now, both whether they can read the repository the
+   * binding is pinned to, by its id, and whether they can read the one its name names, as releases
+   * that addressed it by name asked: those releases followed the name, so what they read may have
+   * come from a repository that took it, and nothing stored can tell which bindings read that way.
+   * Nothing else is tracked: no excludeObservers is set, no observer is remembered, and
+   * removeObserver is an idempotent no-op. The overseer re-runs addObserver on every open, so loss
+   * of the observer's repo access is caught promptly.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<GitHubVerifierApi>;
-    const { id } = await this.#pinnedRepo();
-    if (!(await verifier.hasRepoAccess(id))) {
-      const { owner, repo } = this.ctx.props;
+    const { owner, repo, id } = await this.#pinnedRepo();
+    const [byId, byName] = await Promise.all([
+      verifier.hasRepoAccess(id), verifier.hasRepoNameAccess(owner, repo),
+    ]);
+    if (!byId || !byName) {
       throw new Error(
         `This collaborator does not have read access to the GitHub repository ${owner}/${repo}, ` +
         `so they cannot be allowed to observe data this workspace read from it.`);

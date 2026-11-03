@@ -50,6 +50,12 @@ No per-user SQL tables are used.
   `cache:repo-name`), and every read reports `repo/<repoId>` as its subresource. Absent until
   first use, and nothing is read or written until it is stored. A binding that read before ids
   were pinned was pinned to whichever repository its name named at its first read since.
+- `cachesByRepoId` -> `true` once the caches hold only what was read by the pinned id. A binding
+  without it may hold reads a release that addressed the repository by name made, from whichever
+  repository had the name then, so on start the `cache:*` families are invalidated by moving
+  `cacheGeneration`, the `discussionComments:*` and `pullReviewComments:*` streams are deleted,
+  and this is set. `ciLog:*` stays, since each log is revalidated by job id beneath the pinned
+  repository before use.
 
 ### Action log
 

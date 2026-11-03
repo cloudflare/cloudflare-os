@@ -57,6 +57,8 @@ function job(id: number): Row {
 class FakeGitHub {
   /** The repositories that exist, by id, with their owner and name now. */
   readonly repos = new Map<number, { owner: string; name: string }>([[REPO_ID, { owner: OWNER, name: REPO }]]);
+  /** Names repositories have left, by full name, with the id each belonged to. */
+  readonly formerNames = new Map<string, number>();
   /** The repositories each token can read; the binding's own account reads them all. */
   readonly readable = new Map<string, Set<number>>([["owner-token", new Set([REPO_ID, OTHER_ID])]]);
   /** What a token's `GET /repositories/<id>` is answered with instead, as for a rate limit. */
@@ -99,7 +101,13 @@ class FakeGitHub {
     const byName = /^\/repos\/([^/]+)\/([^/]+)$/.exec(url.pathname);
     if (byName) {
       if (this.probeStatus !== undefined) return Response.json({ message: "Server Error" }, { status: this.probeStatus });
-      const id = this.#idNamed(`${byName[1]}/${byName[2]}`);
+      const fullName = `${byName[1]}/${byName[2]}`;
+      const id = this.#idNamed(fullName);
+      // A name a repository left redirects to it by id, until another repository takes the name.
+      const moved = this.formerNames.get(fullName);
+      if (id === undefined && moved !== undefined && this.repos.has(moved)) {
+        return new Response(null, { status: 301, headers: { location: `https://api.github.com/repositories/${moved}` } });
+      }
       return id !== undefined && canRead(id) ? Response.json(this.#repository(id)) : notFound;
     }
     const byId = /^\/repositories\/(\d+)(\/.*)?$/.exec(url.pathname);
@@ -201,6 +209,11 @@ async function binding(options: { pinned?: boolean } = {}) {
     read: (calls: SessionCall[], drain = false) =>
       hooks.sessionRead(scenario, props, new RpcStub(queue) as never, calls, drain),
     pages: (calls: SessionCall[]) => hooks.sessionPages(scenario, props, new RpcStub(queue) as never, calls),
+    /** Writes `entries` into the binding's storage, then restarts it, as an upgrade would. */
+    upgradeFrom: async (entries: Record<string, unknown>) => {
+      await hooks.seedGatekeeper(scenario, props, entries);
+      await hooks.restartGatekeeper(scenario);
+    },
     /** gitPull of HEAD; the transfer's status once drained, or the pull's error. */
     pull: async (): Promise<{ ok: unknown } | { error: string }> => {
       const outcome = await hooks.gitPull(scenario, props, [HEAD], PULL_OPTIONS);
@@ -333,6 +346,20 @@ describe("reads", () => {
     expect(github.gitRequests).toEqual([`${OWNER}/${REPO}`, "acme/renamed"]);
   });
 
+  it("serve nothing cached while the repository was read by name", async () => {
+    const github = new FakeGitHub();
+    github.issues = [1];
+    const gk = await binding({ pinned: true });
+    expect(await gk.read([{ method: "listIssues" }], true)).toMatchObject({ ok: [{ id: "1" }] });
+    github.issues = [2];
+    expect(await gk.read([{ method: "listIssues" }], true)).toMatchObject({ ok: [{ id: "1" }] });
+
+    // As a release that addressed the repository by name left the binding: what it cached may
+    // have come from another repository that had taken the name.
+    await gk.upgradeFrom({ cachesByRepoId: false });
+    expect(await gk.read([{ method: "listIssues" }], true)).toMatchObject({ ok: [{ id: "2" }] });
+  });
+
   it("disclose nothing until the repository's id is pinned, then report it", async () => {
     const github = new FakeGitHub();
     github.probeStatus = 502;
@@ -463,24 +490,35 @@ describe("verifyObserverAccess", () => {
 });
 
 describe("addObserver", () => {
-  it("still requires the pinned repository, asked of GitHub by its id each time", async () => {
+  it("requires the pinned repository by its id, and the one its name names, asked each time", async () => {
     const github = new FakeGitHub();
     const [alice, bob, carol] = await Promise.all([account("alice-token"), account("bob-token"), account("carol-token")]);
     const gk = await binding({ pinned: true });
-    // The repository was renamed, and another took its old name, which bob can read.
-    github.repos.set(REPO_ID, { owner: OWNER, name: "moved" });
-    github.repos.set(OTHER_ID, { owner: OWNER, name: REPO });
     github.readable.set("alice-token", new Set([REPO_ID]));
     github.readable.set("bob-token", new Set([OTHER_ID]));
     github.readable.set("carol-token", new Set([REPO_ID]));
     github.refusals.set("carol-token", rateLimited);
 
+    // Renamed: its old name redirects to it, so reading it is enough.
+    github.repos.set(REPO_ID, { owner: OWNER, name: "moved" });
+    github.formerNames.set(`${OWNER}/${REPO}`, REPO_ID);
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
-    expect(github.requestsWith("alice-token")).toEqual([`/repositories/${REPO_ID}`, `/repositories/${REPO_ID}`]);
+    expect(github.requestsWith("alice-token").toSorted()).toEqual([
+      `/repos/${OWNER}/${REPO}`, `/repos/${OWNER}/${REPO}`, `/repositories/${REPO_ID}`, `/repositories/${REPO_ID}`,
+      `/repositories/${REPO_ID}`, `/repositories/${REPO_ID}`,
+    ]);
     expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
     // An answer that says nothing about access fails admission, as an error rather than a denial.
     expect(await gk.admit(carol)).toEqual({ error: expect.stringContaining("rate limit") });
+
+    // Another repository takes the old name. A release that read by name may have read it, so an
+    // observer must be able to read it too: alice no longer can, bob still can't read the pinned one.
+    github.repos.set(OTHER_ID, { owner: OWNER, name: REPO });
+    expect(await gk.admit(alice)).toEqual({ error: expect.stringContaining("does not have read access") });
+    expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
+    github.readable.set("alice-token", new Set([REPO_ID, OTHER_ID]));
+    expect(await gk.admit(alice)).toEqual({ ok: undefined });
   });
 
   it("admits no one while the repository's id can't be pinned", async () => {

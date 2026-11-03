@@ -105,8 +105,10 @@ passing doesn't mean GitHub shows that account all the binding's account read.
   grant for up to 15 minutes and a denial for up to 15 seconds, so a revoked grant can still admit
   them for 15 minutes; it asks afresh after a reconnect, which may sign in as another GitHub user,
   and reuses nothing once disconnected or once GitHub has confirmed its grant dead: the check fails.
-  Each open also asks the same question, uncached, for what the workspace read before reads
-  reported the repository.
+  Each open also asks, uncached, for what the workspace read before reads reported the
+  repository: the same question, and whether their account can read the repository the binding's
+  name names now, as releases that read by name asked, since what those read may have come from a
+  repository that took the name. Caches those releases filled are discarded on upgrade.
 
 ## Setting Up GitHub OAuth Credentials
 
