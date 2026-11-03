@@ -20,6 +20,7 @@ import {
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
@@ -995,10 +996,6 @@ async function callZoomInfo<T>(account: DurableObjectStub<UserAccount>, fn: () =
 // outcome is small and gated behind a human approval, so this window is generous).
 const MAX_RETAINED_ENRICHMENTS = 100;
 
-// A cached value with the time it was fetched, for TTL expiry, and the ZoomInfo user it was fetched
-// as, which a hit must match (absent from entries cached before reads reported their user).
-type CachedValue<T> = { value: T; fetchedAt: number; userId?: string };
-
 // A submitted-but-not-yet-applied enrichment: enough to replay the ZoomInfo call on approval.
 type PendingEnrichment = {
   kind: EnrichmentKind;
@@ -1133,6 +1130,10 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   #approvalQueue: RpcStub<ApprovalQueue>;
   #apiBaseUrl: string;
   #kv: DurableObjectStorage["kv"];
+  // Partitioned by the ZoomInfo user rather than the connection generation: a lookup is shaped by
+  // that user's entitlements, so a reconnect as the same user may keep serving it, while one as
+  // another user stops their entries matching. Shared across this binding's sessions.
+  #lookups: KvTtlCache;
 
   constructor(
     account: DurableObjectStub<UserAccount>,
@@ -1145,6 +1146,7 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     this.#approvalQueue = approvalQueue;
     this.#apiBaseUrl = apiBaseUrl;
     this.#kv = kv;
+    this.#lookups = new KvTtlCache(kv, () => account.getUserId(), { name: "lookups" });
   }
 
   [Symbol.dispose]() {
@@ -1172,17 +1174,16 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     });
   }
 
-  // Read a cached value if still fresh and fetched as `userId`, else undefined. Cache lives in the
-  // GatekeeperImpl DO's KV, shared across this binding's sessions and scoped to this connected
-  // account; a reconnect as another ZoomInfo user stops its earlier entries matching.
-  #cacheGet<T>(key: string, ttlMs: number, userId: string): T | undefined {
-    const hit = this.#kv.get<CachedValue<T>>(`cache:${key}`);
-    if (!hit || hit.userId !== userId || Date.now() - hit.fetchedAt >= ttlMs) return undefined;
-    return hit.value;
-  }
-
-  #cachePut<T>(key: string, value: T, userId: string): void {
-    this.#kv.put<CachedValue<T>>(`cache:${key}`, { value, fetchedAt: Date.now(), userId });
+  // Read a lookup through the cache, with the ZoomInfo user whose token fetched it: a hit was
+  // fetched as the user the connection acts for now, the cache's partition.
+  async #cachedLookup<T>(key: string, fn: (api: ZoomInfoApi) => Promise<T>):
+      Promise<{ value: T; userId: string; fromCache: boolean }> {
+    let fromCache = true;
+    const { value, userId } = await this.#lookups.cached(key, LOOKUP_CACHE_TTL_MS, () => {
+      fromCache = false;
+      return this.#call(fn);
+    });
+    return { value, userId, fromCache };
   }
 
   // Submit a paid enrichment for approval, disclosing the worst-case credit cost. Stores the request
@@ -1229,27 +1230,19 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   // Lookup
 
   async lookup(fieldName: LookupFieldName, filters?: LookupFilters): Promise<LookupValue[]> {
-    const cacheKey = `lookup:${fieldName}:${JSON.stringify(filters ?? {})}`;
-    // A hit is served only to the user it was fetched as, whose entitlements shaped it.
-    let userId = await this.#account.getUserId();
-    let results = this.#cacheGet<LookupValue[]>(cacheKey, LOOKUP_CACHE_TTL_MS, userId);
-    const fromCache = results !== undefined;
-    if (results === undefined) {
-      const query: QueryParams = clean({
-        "filter[category]": filters?.category,
-        "filter[parentCategory]": filters?.parentCategory,
-        "filter[subCategory]": filters?.subCategory,
-        "filter[vendor]": filters?.vendor,
-      });
-      const read = await this.#call(api => api.get(`/data/v1/lookup/${encodeURIComponent(fieldName)}`, query));
-      userId = read.userId;
-      results = asResources(read.value).map(r => {
+    const query: QueryParams = clean({
+      "filter[category]": filters?.category,
+      "filter[parentCategory]": filters?.parentCategory,
+      "filter[subCategory]": filters?.subCategory,
+      "filter[vendor]": filters?.vendor,
+    });
+    const { value: results, userId, fromCache } = await this.#cachedLookup(
+      `lookup:${fieldName}:${JSON.stringify(filters ?? {})}`,
+      async api => asResources(await api.get(`/data/v1/lookup/${encodeURIComponent(fieldName)}`, query)).map(r => {
         const a = attrs(r);
         const { name, ...rest } = a;
         return { id: r.id ?? "", type: r.type ?? fieldName, name: str(name), attributes: rest } as LookupValue;
-      });
-      this.#cachePut(cacheKey, results, userId);
-    }
+      }));
     await this.#observe(
       userId,
       `Lookup ${fieldName}`,
@@ -1259,15 +1252,11 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   }
 
   async lookupEnrichFields(entity: EnrichEntity, fieldType: "input" | "output"): Promise<EnrichFieldInfo[]> {
-    const cacheKey = `lookupEnrich:${entity}:${fieldType}`;
-    let userId = await this.#account.getUserId();
-    let results = this.#cacheGet<EnrichFieldInfo[]>(cacheKey, LOOKUP_CACHE_TTL_MS, userId);
-    const fromCache = results !== undefined;
-    if (results === undefined) {
-      const read = await this.#call(api =>
-        api.get("/data/v1/lookup/enrich", { "filter[entity]": entity, "filter[fieldType]": fieldType }));
-      userId = read.userId;
-      results = asResources(read.value).map(r => {
+    const { value: results, userId, fromCache } = await this.#cachedLookup(
+      `lookupEnrich:${entity}:${fieldType}`,
+      async api => asResources(
+        await api.get("/data/v1/lookup/enrich", { "filter[entity]": entity, "filter[fieldType]": fieldType }),
+      ).map(r => {
         const a = attrs(r);
         return {
           fieldName: str(a.fieldName) ?? r.id ?? "",
@@ -1275,9 +1264,7 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
           fieldType: str(a.fieldType),
           accessGranted: bool(a.accessGranted),
         } satisfies EnrichFieldInfo;
-      });
-      this.#cachePut(cacheKey, results, userId);
-    }
+      }));
     await this.#observe(
       userId,
       `Lookup ${entity} enrich ${fieldType} fields`,
