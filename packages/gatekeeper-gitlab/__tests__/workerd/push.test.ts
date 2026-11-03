@@ -389,10 +389,18 @@ describe("auto-approval of a push", () => {
     expect([...await verdicts(name), ...await verdicts(empty.name)]).toEqual([["gitlab.push", false], ["gitlab.push", false]]);
   });
 
-  it("queues a push whose new branch's protection cannot be read, for a person to approve", async () => {
+  it("lets a push that creates a branch apply when GitLab refuses this account the rules", async () => {
     const { gitlab, props, name } = await setup();
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), () =>
       json({ message: "403 Forbidden" }, { status: 403 }));
+    expect(await queuePush(name, props, "feature", OTHER, false, root())).toMatchObject({ targetProtected: false });
+    expect(await verdicts(name)).toEqual([["gitlab.push", true]]);
+  });
+
+  it("queues a push whose new branch's protection cannot be read for another reason, for a person to approve", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), () =>
+      json({ message: "500 Internal Server Error" }, { status: 500 }));
     expect(await queuePush(name, props, "feature", OTHER, false, root())).toMatchObject({ targetProtected: true });
     expect(await verdicts(name)).toEqual([["gitlab.push", false]]);
   });
@@ -649,6 +657,19 @@ describe("applying a push", () => {
     const command = pktText(body.slice(4, len)).split("\0")[0];
     return { command, pack: body.slice(len + 4) };  // after the flush-pkt
   }
+
+  it("refuses an auto-approvable push whose branch became protected while it waited", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    const cache = cacheWithChain();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
+    expect(action).toMatchObject({ targetProtected: false });
+    gitlab.protectedBranches.add("feature");
+    gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
+      .rejects.toThrow(/has become the default or a protected branch/);
+    expect(gitlab.receivePackBodies).toHaveLength(0);
+  });
 
   it("streams the overseer-built pack behind the queue-time CAS command", async () => {
     const { gitlab, props, name } = await setup();

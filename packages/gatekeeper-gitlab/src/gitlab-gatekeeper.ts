@@ -54,6 +54,7 @@ import {
   supportsReviewerState,
   supportsTriggerJobsRoute,
   type GitLabApprovalsResponse,
+  type GitLabBranchResponse,
   type GitLabCommitResponse,
   type GitLabDiffResponse,
   type GitLabDiscussionResponse,
@@ -2806,6 +2807,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         break;
       }
       case "push": {
+        // A branch can become the default or protected while the push waits, and the head it
+        // compares against does not change, so a push that could apply without a person is
+        // checked again.
+        if (!action.force && action.targetProtected === false && await this.#isProtectedTarget(
+          action.branch, await this.#withApi(api => api.getBranch(projectPath, action.branch)))) {
+          throw new Error(
+            `Branch "${action.branch}" has become the default or a protected branch since this push was ` +
+            `queued, so it can no longer apply without review. Discard it and push again to have it reviewed.`);
+        }
         // No gatekeeper-side object walk: the overseer composes the pack from the action's
         // pending-push marks (`cache.buildPack()` on the action-scoped stub), and this side
         // contributes only send-pack framing plus the ref-update command. The command's old-sha
@@ -3381,17 +3391,26 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         `${commitId}, so this push is not a fast-forward -- the branch has moved past the head this work ` +
         `was based on. Pull the branch's new head and rebase onto it, or pass force: true to overwrite the branch.`);
     }
-    // Anything but a reported `false` on both reads as protected.
-    const targetProtected = remote === null ? await this.#newBranchProtected(branch)
-      : !(remote.protected === false && remote.default === false);
+    const targetProtected = await this.#isProtectedTarget(branch, remote);
     return { type: "push", ...this.#base(), branch, expectedOldSha, newSha: commitId, force, targetProtected };
+  }
+
+  /**
+   * Whether `branch`, as `remote` reads it (null when GitLab does not have it), is the default or
+   * a protected branch, or would be once a push creates it. Anything but a reported `false` on
+   * both reads as protected.
+   */
+  async #isProtectedTarget(branch: string, remote: GitLabBranchResponse | null): Promise<boolean> {
+    return remote === null ? await this.#newBranchProtected(branch)
+      : !(remote.protected === false && remote.default === false);
   }
 
   /**
    * Whether a branch GitLab does not have would be the default or a protected branch once a push
    * creates it: it is the default branch's name, the repository is empty (its first branch becomes
    * the default), or a protected-branch rule's name or wildcard covers it. Read live, like the
-   * branch itself. A lookup that fails, or rules too many to read, count as protected.
+   * branch itself. GitLab refusing this account the rules (listing them takes Maintainer) counts as
+   * no rule covering it; any other failed lookup, or rules too many to read, count as protected.
    */
   async #newBranchProtected(branch: string): Promise<boolean> {
     const projectPath = this.#projectPath();
@@ -3402,13 +3421,21 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       for (let read = 0; page !== null; read++) {
         if (read === MAX_PROTECTED_BRANCH_PAGES) return true;
         const current: number = page;
-        const rules = await this.#withApi(api => api.listProtectedBranches(projectPath, current, 100));
+        const rules = await this.#withApi(api => api.listProtectedBranches(projectPath, current, 100))
+          .catch(error => {
+            if (error instanceof GitLabApiError && error.status === 403 && !error.isAuthError) return null;
+            throw error;
+          });
+        if (rules === null) return false;
         if (rules.items.some(rule => protectedBranchMatches(rule.name, branch))) return true;
         page = rules.nextPage;
       }
       return false;
     } catch (error) {
-      logger.warn("failed to read whether a new branch is protected", { event: "push.branch.protection.read.failed", error });
+      logger.warn("failed to read whether a new branch is protected", {
+        event: "push.branch.protection.read.failed",
+        ...(error instanceof GitLabApiError ? { status: error.status } : { error }),
+      });
       return true;
     }
   }

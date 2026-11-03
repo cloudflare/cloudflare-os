@@ -41,7 +41,9 @@ always wait for a person, because they pass a gate or drop commits:
 - **a push to the default or a protected branch**, which shares the `gitlab.push` kind with other
   pushes. For a branch the push creates, the gatekeeper reads the project's protected-branch rules,
   wildcards included. A push into an empty repository creates its default branch, so it waits too,
-  and so does any push whose protection could not be read.
+  and so does any push whose protection could not be read, except that GitLab refusing the account
+  the rules (listing them takes Maintainer) counts as no rule covering the branch. An
+  auto-approvable push is checked again when it applies.
 
 An issue or merge request created with a bot or service account among its assignees waits too,
 under the same `gitlab.createIssue` or `gitlab.createMergeRequest` kind as other creates, because
