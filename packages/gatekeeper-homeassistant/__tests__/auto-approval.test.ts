@@ -184,6 +184,8 @@ describe("saveDashboard and fireEvent", () => {
     ["a Jinja statement", { type: "markdown", content: "{% for s in states %}{{ s }}{% endfor %}" }],
     ["a JavaScript template", { type: "entities", entities: [], name: "[[[ return 1 ]]]" }],
     ["a javascript: link", { type: "button", tap_action: { action: "url", url_path: "javascript:fetch('/x')" } }],
+    ["a data: iframe", { type: "iframe", url: "data:text/html;base64,PHNjcmlwdD4=" }],
+    ["a blob: iframe", { type: "iframe", url: "blob:abc-123" }],
     ["a custom card", { type: "custom:button-card", entity: "light.lamp" }],
     ["a URL in a key", { type: "entities", entities: [], "https://attacker.example/": true }],
   ])("asks before saving a dashboard with %s", (_name, card) => {

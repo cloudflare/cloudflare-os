@@ -54,9 +54,11 @@ export function dashboardVerdict(config: unknown): Pick<ActionDescription, "acti
 // - HTML character references (`&#47;`, `&sol;`), which markdown and HTML decode.
 // - Jinja (`{{`, `{%`) and JavaScript (`[[[`) templates, which compute strings at render time.
 // - `javascript:` and `vbscript:` links, which run script when clicked.
+// - `data:` and `blob:` URLs, whose encoded content (a page an iframe card runs, say) can carry
+//   script that reaches any host.
 // - `custom:` cards, strategies and elements, which interpret their configuration however they
 //   like.
-const EXTERNAL_REFERENCE = /\/\/|\\|(https?|ftp|wss?):|&(#|[a-z][a-z0-9]*;)|\{\{|\{%|\[\[\[|script:|^\s*custom:/i;
+const EXTERNAL_REFERENCE = /\/\/|\\|(https?|ftp|wss?|data|blob):|&(#|[a-z][a-z0-9]*;)|\{\{|\{%|\[\[\[|script:|^\s*custom:/i;
 
 // Deeper than any real dashboard; a configuration past it is not checked and so not trusted.
 const MAX_CONFIG_DEPTH = 64;
