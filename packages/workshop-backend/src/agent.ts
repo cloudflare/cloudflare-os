@@ -2462,7 +2462,7 @@ async function runAgentPass(
                     filename: toolCall.input.filename,
                     content: toolCall.input.content,
                   });
-                  toolOutput = {text: jsonToolResultText({success: true, changeId: nextChangeId})};
+                  toolOutput = {text: jsonToolResultText({success: true, changeId: toolCall.output?.changeId ?? nextChangeId})};
                   markFileRead(workpieceId, toolCall.input.filename);
                   break;
                 }
@@ -2477,7 +2477,7 @@ async function runAgentPass(
                     textToReplace: toolCall.input.textToReplace,
                     replacement: toolCall.input.replacement,
                   });
-                  toolOutput = {text: jsonToolResultText({success: true, changeId: nextChangeId})};
+                  toolOutput = {text: jsonToolResultText({success: true, changeId: toolCall.output?.changeId ?? nextChangeId})};
                   // Like writeFile: a successful edit leaves the agent knowing the file's exact
                   // resulting content (the gate guaranteed the before-content, and the edit is
                   // its own), so it counts as session knowledge for further edits.
@@ -3540,7 +3540,8 @@ async function runAgentPass(
           // that it can make further edits without rewriting.
           markFileRead(resolved.workpieceId, filename);
 
-          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}));
+          const output = {changeId: nextChangeId};
+          return toolResult(jsonToolResultText({success: true, ...output}), {output});
         } catch (error) {
           // (The preview of a failed edit is withdrawn centrally at tool_execution_end, which
           // also covers failures that never reach this execute.)
@@ -3642,7 +3643,8 @@ async function runAgentPass(
             codePreviewManager.clearPreview(toolCallId);
           }
 
-          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}));
+          const output = {changeId: nextChangeId};
+          return toolResult(jsonToolResultText({success: true, ...output}), {output});
         } catch (error) {
           // (Failed edits' previews are withdrawn centrally at tool_execution_end.)
           toolCallNotes.set(toolCallId, {

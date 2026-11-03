@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from "vitest";
-import {createFauxCore, fauxAssistantMessage, fauxText} from "@earendil-works/pi-ai";
+import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall} from "@earendil-works/pi-ai";
 import {env} from "cloudflare:workers";
 import {runInDurableObject, abortAllDurableObjects} from "cloudflare:test";
 import {beginReplicaTurn, pauseReplicaTurn} from "./replica-fixtures";
@@ -61,6 +61,60 @@ const gitRequest = (binding = "GIT", stream = false) => new Request("https://git
 });
 
 describe("single-worktree command mount and writeback", () => {
+  it.each(["writeFile", "editFile"] as const)("replays the original %s result after an early replica flush", toolName => within(async (impl, f) => {
+    const user = {type: "user" as const, id: "test-user", name: "Test"};
+    impl.addChatMessages(1, author, [{type: "changes", change: {}, createdWorktrees: [
+      {worktreeId: f.tree.id, title: "Repo", bindingName: "REPO"},
+    ]}]);
+    impl.addChatMessages(1, user, [{type: "message", message: "Edit the files."}]);
+    let access!: WorktreeTurnAccess;
+    const register = impl.registerWorktreeReplicaTurn.bind(impl);
+    const registration = vi.spyOn(impl, "registerWorktreeReplicaTurn").mockImplementation((...args) => {
+      access = args[1]; return register(...args);
+    });
+    const writable = impl.gitCache.assertWorktreePathWritable.bind(impl.gitCache);
+    const paths = vi.spyOn(impl.gitCache, "assertWorktreePathWritable").mockImplementation(async (...args) => {
+      // Flush the first tool's edit before this step's assistant transcript is persisted.
+      if (args[1] === "trigger.txt") expect(await access.flushReplica!({}, access.getRevision!())).toBe(true);
+      return writable(...args);
+    });
+    const mutation = fauxToolCall(toolName, {workpiece: "REPO", filename: "a.txt", ...(toolName === "writeFile"
+      ? {content: "ONE\ntwo\n"} : {textToReplace: "one", replacement: "ONE"})});
+    let liveResult: unknown, replayResult: unknown;
+    const faux = createFauxCore({models: [{id: "test"}]});
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("readFile", {workpiece: "REPO", filename: "a.txt"}), mutation,
+        fauxToolCall("writeFile", {workpiece: "REPO", filename: "trigger.txt", content: "next"}),
+      ], {stopReason: "toolUse"}),
+      context => {
+        const result = context.messages.find(message => message.role === "toolResult" && message.toolCallId === mutation.id);
+        if (result?.role === "toolResult") liveResult = result.content;
+        return fauxAssistantMessage(fauxText("Done."));
+      },
+      context => {
+        const result = context.messages.find(message => message.role === "toolResult" && message.toolCallId === mutation.id);
+        if (result?.role === "toolResult") replayResult = result.content;
+        return fauxAssistantMessage(fauxText("Continued."));
+      },
+    ]);
+    const run = () => runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, author,
+      new AbortController().signal, user, {provider: "cloudflare", model: "test", apiToken: ""});
+    try {
+      await run();
+      const changeCount = [...impl.storage.chatChanges.list()].length;
+      impl.addChatMessages(1, user, [{type: "message", message: "Continue."}]);
+      await run();
+      expect(faux.getPendingResponseCount()).toBe(0);
+      expect(liveResult).toEqual([{type: "text", text: JSON.stringify({success: true, changeId: 1})}]);
+      expect(replayResult).toEqual(liveResult);
+      expect([...impl.storage.chatChanges.list()]).toHaveLength(changeCount);
+      const files = (await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!)).get(f.tree.id)!;
+      expect(files.get("a.txt")).toBe("ONE\ntwo\n");
+      expect(files.get("trigger.txt")).toBe("next");
+    } finally { registration.mockRestore(); paths.mockRestore(); }
+  }));
+
   it("opens raw pack readers lazily and revokes them with final writeback", () => within(async (impl, f) => {
     const blobs = vi.spyOn(impl.gitStore, "readBlob");
     const input = await f.context().export("REPO");

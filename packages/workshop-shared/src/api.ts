@@ -4401,6 +4401,12 @@ export type AiToolCall = {
     filename: string;
     content: string;
   };
+
+  /** Original result, preserved when a mid-step flush advances change IDs before replay. */
+  output?: {
+    /** Change ID returned to the model when this write succeeded. */
+    changeId: number;
+  };
 } | {
   toolName: "editFile";
   input: {
@@ -4408,6 +4414,12 @@ export type AiToolCall = {
     filename: string;
     textToReplace: string;
     replacement: string;
+  };
+
+  /** Original result, preserved when a mid-step flush advances change IDs before replay. */
+  output?: {
+    /** Change ID returned to the model when this edit succeeded, including a no-op edit. */
+    changeId: number;
   };
 } | {
   /**
