@@ -239,7 +239,7 @@ describe("single-worktree command mount and writeback", () => {
     faux.setResponses([async () => {
       const mount = await f.context().export("REPO");
       const reader = (await mount.git!.fetch(gitRequest("GIT", true))).body!.getReader();
-      await reader.read();
+      expect((await reader.read()).value).toEqual(Uint8Array.of(0, 255, 128, 13));
       const next = reader.read().then(result => result.done, () => true);
       const cancel = vi.fn();
       void next.then(cancel);
@@ -248,7 +248,10 @@ describe("single-worktree command mount and writeback", () => {
         expect([...impl.storage.worktreeReplicaLeases.list()][0].released).toBe(true);
         await vi.waitFor(() => expect(cancel).toHaveBeenCalled(), {timeout: 1000});
         expect(await next).toBe(true);
-      } finally { await reader.cancel(); }
+      } finally {
+        // An already-errored stream repeats its expected revocation error during cleanup.
+        await reader.cancel().catch(() => {});
+      }
       return fauxAssistantMessage(fauxText("Done."));
     }]);
     try {

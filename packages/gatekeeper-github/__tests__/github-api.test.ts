@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {deepStrictEqual} from "node:assert";
 import {buildGitFetchRequest, gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import {
   GitHubApi,
@@ -125,7 +124,9 @@ describe("GitHubApi git reads", () => {
       {type: "blob", commitHistory: {kind: "full"}});
     expect(body.byteLength).toBeGreaterThan(1024 * 1024);
     const upstream = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-      deepStrictEqual(new Uint8Array(await new Response(init?.body).arrayBuffer()), body);
+      const actual = new Uint8Array(await new Response(init?.body).arrayBuffer());
+      expect(actual.byteLength).toBe(body.byteLength);
+      expect(actual.every((byte, i) => byte === body[i])).toBe(true);
       return new Response("0000", {headers: {"content-type": "application/x-git-upload-pack-result"}});
     });
     vi.stubGlobal("fetch", upstream);
