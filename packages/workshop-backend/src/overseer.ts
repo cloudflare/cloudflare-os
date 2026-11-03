@@ -6536,9 +6536,14 @@ class OverseerImpl implements AgentHooks {
       } else if (previous.gatekeeperId === gatekeeperId && previous.segmentId === origin.segmentId &&
           previous.version === lease.version &&
           [...this.storage.worktreeReplicaCommits.byLease.get(previous.id, {limit: 1})].length === 0) {
-        // Retrying a lost mount reply can only recapture the identical, untouched view.
-        // The integration still journals shell dispatch separately; mounting never executes it.
-        lease = {...previous, captureId: lease.captureId};
+        // Only an identical frozen input can reuse the old pack readers. In-turn commits can
+        // change the head without advancing the change-stream revision. Retire an untouched
+        // older capture rather than changing what its already-issued readers would serve.
+        const frozen = (value: WorktreeReplicaLease) => JSON.stringify([
+          value.worktree, value.pendingChanges, value.sourcePack, value.gitSources,
+        ]);
+        if (frozen(previous) === frozen(lease)) lease = {...previous, captureId: lease.captureId};
+        else this.storage.worktreeReplicaLeases.put({...previous, released: true});
       } else {
         throw new Error("A worktree command is already active.");
       }

@@ -9,6 +9,7 @@ import type {OverseerDurableObject} from "./test-worker";
 import type {TestReplicaTransfer} from "./replica-transfer-worker";
 import {runAgent, type WorktreeTurnAccess} from "../src/agent";
 import {UserDurableObject} from "../src/user";
+import {WorktreeSessionImpl} from "../src/worktree-session";
 
 const testEnv = env as Cloudflare.Env & {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -261,6 +262,53 @@ describe("single-worktree command mount and writeback", () => {
     await second.writeback.submitChanges("one", [{path: "once.txt", change: {set: "once"}}], false);
     await expect(f.context().export("REPO")).rejects.toThrow(/already active/);
     await second.writeback.submitChanges("final", [], true);
+  }));
+
+  it("exports matching packs after an in-turn commit and binary edit replace an untouched capture", () => within(async (impl, f) => {
+    impl.addChatMessages(1, author, [{type: "changes", change: {}, createdWorktrees: [
+      {worktreeId: f.tree.id, title: "Repo", bindingName: "REPO"},
+    ]}]);
+    impl.addChatMessages(1, {type: "user", id: "test-user", name: "Test"}, [{type: "message", message: "Run the command."}]);
+    let access!: WorktreeTurnAccess;
+    const register = impl.registerWorktreeReplicaTurn.bind(impl);
+    const registration = vi.spyOn(impl, "registerWorktreeReplicaTurn").mockImplementation((...args) => {
+      access = args[1]; return register(...args);
+    });
+    const faux = createFauxCore({models: [{id: "test"}]});
+    faux.setResponses([async () => {
+      const first = await f.context().export("REPO");
+      const version = impl.replicaHistoryRevision(1);
+      const repo = new WorktreeSessionImpl(impl, f.tree.id, access, async () => author);
+      const commit = await repo.commit("In-turn commit");
+      const second = await f.context().export("REPO");
+      expect(impl.replicaHistoryRevision(1)).toBe(version);
+      const objects = [];
+      for (const pack of second.packs) for await (const object of decodePackStream(
+        (await pack.fetch("https://export.invalid/")).body!,
+        {maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024},
+      )) objects.push(object.oid);
+      expect(objects).toContain(commit);
+      expect(second.id).not.toBe(first.id);
+      await expect(first.packs[0].fetch("https://export.invalid/")).rejects.toThrow(/access ended/);
+      await repo.writeBytes("pending.bin", Uint8Array.of(0, 255, 128));
+      const third = await f.context().export("REPO");
+      const pending = third.pendingChanges.find(entry => entry.path === "pending.bin")!.change;
+      if (!("setBytes" in pending)) throw new Error("Expected a pending binary edit");
+      const blobs = [];
+      for await (const object of decodePackStream((await third.packs[0].fetch("https://export.invalid/")).body!,
+        {maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024})) blobs.push(object.oid);
+      expect(blobs).toContain(pending.setBytes.oid);
+      const retry = await f.context().export("REPO");
+      expect(retry.id).toBe(third.id);
+      expect(retry.pendingChanges).toEqual(third.pendingChanges);
+      await retry.writeback.submitChanges("final", [], true);
+      return fauxAssistantMessage(fauxText("Done."));
+    }]);
+    try {
+      await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, author,
+        new AbortController().signal, {type: "user", id: "test-user", name: "Test"},
+        {provider: "cloudflare", model: "test", apiToken: ""});
+    } finally { registration.mockRestore(); }
   }));
 
   it("preserves a successful recapture when an older overlapping export fails", () => within(async (impl, f) => {

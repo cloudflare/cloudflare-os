@@ -144,8 +144,10 @@ imports its fresh mount.
 The export contains persistent pack readers, not live in-memory streams. They can be stored by
 the receiving gatekeeper across an approval pause or DO reset; opening them later streams the
 captured immutable Git objects without materializing the repository in the kernel cache. Each
-reader and writeback call rechecks original authority. Pack transfer is retryable before dispatch;
-a lost shell reply is never permission to execute again. The gatekeeper durably assigns each
+reader and writeback call rechecks original authority. Pack transfer is retryable before dispatch.
+A retry reuses an untouched export only while its frozen input is identical. Changed input gets
+a new identity and closes the unused old capture; a command that has started writeback must seal first.
+A lost shell reply is never permission to execute again. The gatekeeper durably assigns each
 export to one command and rejects reusing it for a later command. Rejection seals its unused
 writeback. Command journals distinguish dispatched, finished and synchronized outcomes.
 
