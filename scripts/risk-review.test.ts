@@ -615,6 +615,19 @@ describe("runRiskReview in shadow mode", () => {
     assert.deepEqual(second.calls.checks, []);
   });
 
+  it("counts nobody as a maintainer when the base has no maintainers file, or an unreadable one", async () => {
+    for (const maintainers of [undefined, "kentonv\n@deregtd\n"]) {
+      const { calls, evaluate } = harness({ policy: { maintainers }, reviews: { 7: [review("deregtd", "APPROVED")] } });
+      await evaluate("workflow_run", producerCompleted());
+      const pull = lastRecord(calls).pulls[0];
+      assert.deepEqual(pull?.approvers, [], String(maintainers));
+      assert.equal(pull?.author.maintainer, false);
+    }
+    const listed = harness({ reviews: { 7: [review("deregtd", "APPROVED")] } });
+    await listed.evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(listed.calls).pulls[0]?.approvers, ["deregtd"]);
+  });
+
   it("leaves the commit to a later run that has created a newer check run", async () => {
     const { calls, evaluate } = harness({ reviewDecision: { 7: "APPROVED" }, newerCheckRun: true });
     await evaluate("workflow_run", producerCompleted());
