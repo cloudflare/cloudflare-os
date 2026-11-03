@@ -916,7 +916,7 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
 `plans/kernel-observer-tracking.md` records why it is shaped this way.
 
 - **Validation.** At most 10,000 IDs per observation, totalling at most 500,000 UTF-16 code
-  units, each a string of 1–512 characters of well-formed Unicode; duplicates are dropped. The
+  units, each a string of 1–2048 characters of well-formed Unicode; duplicates are dropped. The
   total keeps a read's audit record well inside Durable Object storage's 2 MB value limit, so
   every read is exactly one record.
 - **The audit log is the requirement store.** An observation's audit record keeps the

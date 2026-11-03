@@ -1548,7 +1548,7 @@ export type ObservationDescription = {
    *
    * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
    * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)
-   * with a JavaScript `length` of 1–512 (UTF-16 code units), and a single observation may report
+   * with a JavaScript `length` of 1–2048 (UTF-16 code units), and a single observation may report
    * at most 10,000 IDs totalling at most 500,000 code units, before deduplication; report a
    * coarser ID (a containing folder or list, say) for a read that reveals more. `[]` means
    * nothing restricts it. A binding-wide requirement every read relies on (such as tenant

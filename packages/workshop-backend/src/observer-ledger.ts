@@ -35,7 +35,7 @@ import type { WorkshopLogger } from "./observability";
 const MAX_SUBRESOURCES = 10_000;
 
 /** Longest subresource ID accepted. */
-const MAX_SUBRESOURCE_LENGTH = 512;
+const MAX_SUBRESOURCE_LENGTH = 2048;
 
 /**
  * Most UTF-16 code units one observation's subresource IDs may total, so its audit record stays
