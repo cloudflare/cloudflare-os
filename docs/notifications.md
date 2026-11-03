@@ -67,9 +67,11 @@ Data boundaries:
 `authorizeNotificationDevice`, `registerNotificationDevice` and
 `registerAuthorizedNotificationDevice` share one limit per User DO, native and browser alike: 20
 calls per fixed minute-long window, which opens at the first call after the previous window ends.
-Calls past 20 are refused until the window ends, before anything is signed: every such call is a
-signed request that touches records at the central service the whole installation shares, so one
-user's loop would make them hot.
+The count is kept in memory, so a restarted User DO opens a new window early. Calls past 20 are
+refused until the window ends, before anything is signed. Each admitted call sends a signed request
+that touches records at the central service the whole installation shares, so one user's loop
+could make them hot and use up the installation's request limit there, refusing every other user's
+pushes until it resets.
 
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting

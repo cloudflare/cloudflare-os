@@ -36,7 +36,7 @@ const OUTPUTS_BACKFILL_PAGE = 16;
 
 // How many notification-service calls (device authorizations and registrations) one user may make
 // per minute; see #countNotificationServiceCall().
-const NOTIFICATION_REGISTRATIONS_PER_MINUTE = 20;
+const NOTIFICATION_SERVICE_CALLS_PER_MINUTE = 20;
 
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
 export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
@@ -210,9 +210,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
-  // The current minute of notification registrations: when it began, and the calls made in it.
-  #registrationWindowStart = -Infinity;
-  #registrationsInWindow = 0;
+  // The current minute of notification-service calls: when it began, and the calls made in it.
+  #notificationCallWindowStart = -Infinity;
+  #notificationCallsInWindow = 0;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -509,11 +509,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // can't race past the limit. The count is kept in memory, so a reset forgets at most one window.
   #countNotificationServiceCall(): void {
     let now = Date.now();
-    if (now - this.#registrationWindowStart >= 60_000) {
-      this.#registrationWindowStart = now;
-      this.#registrationsInWindow = 0;
+    if (now - this.#notificationCallWindowStart >= 60_000) {
+      this.#notificationCallWindowStart = now;
+      this.#notificationCallsInWindow = 0;
     }
-    if (++this.#registrationsInWindow > NOTIFICATION_REGISTRATIONS_PER_MINUTE) {
+    if (++this.#notificationCallsInWindow > NOTIFICATION_SERVICE_CALLS_PER_MINUTE) {
       throw new Error("Too many notification requests. Try again in a minute.");
     }
   }
