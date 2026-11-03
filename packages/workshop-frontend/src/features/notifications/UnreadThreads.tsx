@@ -46,7 +46,7 @@ export const UnreadThreads = () => {
         <Button size="sm" icon={<Check size={14} />} disabled={!chats.length}
           loading={markingRead} onClick={async () => {
             setMarkingRead(true);
-            try { await unread?.markManyRead(chats); }
+            try { await unread?.markAllRead(); }
             catch { /* The shared unread bridge presents the failure. */ }
             finally { setMarkingRead(false); }
           }}>

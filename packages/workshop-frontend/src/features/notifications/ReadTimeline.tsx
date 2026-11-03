@@ -6,6 +6,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import type { Overseer } from "@gadgets/workshop-shared/api";
 import { Button } from "@cloudflare/kumo";
 import { useUnreadState } from "./UnreadStateBridge";
 import { isChatVisible, subscribeVisibleChat } from "./visibleChat";
@@ -15,6 +16,7 @@ import { TimelineContext } from "./readTimelineContext";
 /** A visit-scoped boundary stays in place as receipts advance; explicit unread moves it again. */
 export const ReadTimeline = ({
   workspaceId,
+  overseer,
   chatId,
   container,
   oldestSequence,
@@ -26,6 +28,7 @@ export const ReadTimeline = ({
   children,
 }: {
   workspaceId?: string;
+  overseer: Pick<Overseer, "markChatRead" | "markChatUnread">;
   chatId: number;
   container: RefObject<HTMLDivElement | null>;
   oldestSequence?: number;
@@ -40,7 +43,7 @@ export const ReadTimeline = ({
   const chat = unread?.state?.chats.find(
     (item) => item.workspaceId === workspaceId && item.chatId === chatId,
   );
-  const [visit, setVisit] = useState<{ horizon: number; divider?: number; paused: boolean }>();
+  const [visit, setVisit] = useState<{ horizon?: number; divider?: number; paused: boolean }>();
   // A new request also retries a failed page when navigation is already pending; zero is idle.
   const [jump, setJump] = useState(1);
   const root = useRef<HTMLDivElement>(null);
@@ -61,8 +64,11 @@ export const ReadTimeline = ({
   })[]>([]);
   const latestAction = useRef<LocalAction | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
-  const latest = useRef({ chat, unread, visit, latestSequence });
-  latest.current = { chat, unread, visit, latestSequence };
+  const latest = useRef({ chat, unread, visit, latestSequence, overseer });
+  latest.current = { chat, unread, visit, latestSequence, overseer };
+
+  // A departed visit must not restore navigation through the parent's shared callback.
+  useLayoutEffect(() => () => { latestAction.current = undefined; }, []);
 
   const createAction = (): LocalAction => ({
     previousAction: latestAction.current,
@@ -97,8 +103,11 @@ export const ReadTimeline = ({
   useLayoutEffect(() => {
     if (!chat) {
       pending.current = -1;
-      // A loaded snapshot with no cursor is a read legacy thread, not a pending entry.
-      if (unread?.state && !visit) setVisit({horizon: -1, paused: false});
+      // A legacy thread is already open, but its first cursor must establish the horizon.
+      // History and unread snapshots arrive independently; the history tail cannot stand in for it.
+      if (unread?.state && !visit && oldestSequence !== undefined) {
+        setVisit({paused: false});
+      }
       return;
     }
     const localIndex = localUnreadRequests.current.findLastIndex(request =>
@@ -108,10 +117,11 @@ export const ReadTimeline = ({
     if (localUnread) {
       for (const request of localUnreadRequests.current.splice(0, localIndex + 1)) {
         const previous = request.rollback.visit;
-        if (previous && chat.readThroughSequence < previous.horizon) {
+        if (previous && (previous.horizon === undefined || chat.readThroughSequence < previous.horizon)) {
           // Even a matching echo is authoritative if the RPC later fails or loses its response.
           request.rollback = {visit: {horizon: chat.readThroughSequence,
             divider: chat.readThroughSequence + 1, paused: true}, jump: 0};
+          request.previousAction = undefined; // Older reads cannot resume this authoritative rewind.
         }
       }
       // An earlier local echo must still leave later commands' markers intact on re-render.
@@ -123,7 +133,7 @@ export const ReadTimeline = ({
       localUnreadRequests.current = localUnreadRequests.current.filter(request =>
         (!request.acknowledgedReplacement || request.acknowledgedReplacement === unread?.replacementSnapshot));
     }
-    if (!visit || chat.readThroughSequence < visit.horizon) {
+    if (!visit || (visit.horizon !== undefined && chat.readThroughSequence < visit.horizon)) {
       // A remote rewind establishes a new visit, not a rollback target for older commands.
       if (visit && !localUnread) latestAction.current = undefined;
       const divider = localUnread && visit ? visit.divider :
@@ -148,7 +158,7 @@ export const ReadTimeline = ({
     } else if (visit.horizon !== chat.readThroughSequence) {
       setVisit({...visit, horizon: chat.readThroughSequence});
     }
-  }, [chat, visit, onUnreadNavigation, unread?.state, unread?.replacementSnapshot]);
+  }, [chat, visit, latestSequence, oldestSequence, onUnreadNavigation, unread?.state, unread?.replacementSnapshot]);
 
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.
@@ -251,7 +261,7 @@ export const ReadTimeline = ({
         through = Math.min(through, current.latestSequence);
         if (through <= current.chat.readThroughSequence || through <= pending.current) return;
         pending.current = through;
-        void current.unread.markRead(current.chat, through).catch(() => {
+        void current.unread.markRead(current.overseer, chatId, through).catch(() => {
           pending.current = -1;
         });
       }, 250);
@@ -289,7 +299,6 @@ export const ReadTimeline = ({
         markUnread: (sequence) => {
           if (!workspaceId || !unread?.state) return;
           // Untouched pre-rollout threads have no cursor until an arrival or explicit command.
-          const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
           const request: (typeof localUnreadRequests.current)[number] = {
             ...createAction(), horizon: sequence - 1, startedSnapshot: chat,
           };
@@ -301,7 +310,7 @@ export const ReadTimeline = ({
           setJump(0);
           setVisit({ horizon: visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
           // Changed boundaries retain markers until an echo or a replacement snapshot arrives.
-          void unread.markUnread(target, sequence).then(changed => {
+          void unread.markUnread(overseer, chatId, sequence).then(changed => {
             if (!changed) {
               // No echo will arrive for a no-op. Keeping its marker could swallow a later
               // remote rewind to this same horizon after the user marks the thread read.
@@ -343,7 +352,7 @@ export const ReadTimeline = ({
               onClick={() => {
                 const action = createAction();
                 latestAction.current = action;
-                void unread?.markRead(chat, latestSequence).then(() => {
+                void unread?.markRead(overseer, chatId, latestSequence).then(() => {
                   action.readSucceeded = true;
                   action.previousAction = undefined;
                   if (latestAction.current !== action) return;

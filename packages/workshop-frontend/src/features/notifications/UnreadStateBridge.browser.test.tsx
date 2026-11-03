@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import type { RpcStub } from "capnweb";
-import type { AuthenticatedApi, ChatReadState } from "@gadgets/workshop-shared/api";
+import type { AuthenticatedApi, Overseer, ChatReadState } from "@gadgets/workshop-shared/api";
 import { UnreadStateBridge, useUnreadState } from "./UnreadStateBridge";
 import "../../styles.css";
 
@@ -16,12 +16,12 @@ const chat: ChatReadState = {
   unreadMessageCount: 1,
 };
 
-const Workspace = () => {
+const Workspace = ({overseer}: {overseer: Pick<Overseer, "markChatRead">}) => {
   const unread = useUnreadState()!;
   return (
     <main className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <button onClick={() => void unread.markRead(chat, 2).catch(() => {})}>Mark read</button>
+        <button onClick={() => void unread.markRead(overseer, chat.chatId, 2).catch(() => {})}>Mark read</button>
       </div>
       <textarea aria-label="Message" className="shrink-0" />
     </main>
@@ -37,7 +37,7 @@ afterEach(async () => {
 
 it.each([1000, 360])("keeps the composer inside a %ipx viewport after a read failure", async (width) => {
   using _ = vi.spyOn(console, "error").mockImplementation(() => {});
-  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>()
+  const markChatRead = vi.fn<Overseer["markChatRead"]>()
     .mockRejectedValueOnce(new Error("read failed"))
     .mockResolvedValue(undefined);
   const api = {
@@ -51,7 +51,7 @@ it.each([1000, 360])("keeps the composer inside a %ipx viewport after a read fai
       {/* The router host is a block, while its routed workspace fills its height. */}
       <div className="h-full min-h-0 flex-1" data-viewport>
         <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
-          <Workspace />
+          <Workspace overseer={api} />
         </UnreadStateBridge>
       </div>
     </div>,

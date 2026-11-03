@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RpcStub } from "capnweb";
 import type {
   AuthenticatedApi,
+  Overseer,
   UnreadStateSubscriber,
   UserUnreadState,
 } from "@gadgets/workshop-shared/api";
@@ -35,9 +36,9 @@ describe("timeline read/unread experience", () => {
   let withdraw: () => void;
   let visibleBottom = 150;
   let shown = true;
-  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
-  const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>().mockResolvedValue(true);
-  const markChatsRead = vi.fn<AuthenticatedApi["markChatsRead"]>().mockResolvedValue(undefined);
+  const markChatRead = vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined);
+  const markChatUnread = vi.fn<Overseer["markChatUnread"]>().mockResolvedValue(true);
+  const markAllRead = vi.fn<AuthenticatedApi["markAllRead"]>().mockResolvedValue(undefined);
   const dispose = vi.fn<() => void>();
   const subscribeToUnreadState = vi.fn<
     (_scope: unknown, value: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable
@@ -45,7 +46,7 @@ describe("timeline read/unread experience", () => {
     subscriber = value;
     return Object.assign(Promise.resolve(), { [Symbol.dispose]: dispose });
   });
-  const api = { subscribeToUnreadState, markChatRead, markChatUnread, markChatsRead };
+  const api = { subscribeToUnreadState, markChatRead, markChatUnread, markAllRead };
   const loadEarlier = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const navigate = vi.fn<() => void>();
 
@@ -55,7 +56,7 @@ describe("timeline read/unread experience", () => {
     const viewport = useRef<HTMLDivElement>(null);
     return (
       <div ref={viewport} data-viewport>
-        <ReadTimeline
+        <ReadTimeline overseer={api}
           workspaceId="workspace"
           chatId={1}
           container={viewport} latestSequence={latestSequence}
@@ -142,21 +143,13 @@ describe("timeline read/unread experience", () => {
     await update(snapshot());
     await settle();
     expect(container.querySelector('[role="separator"]')?.textContent).toContain("New");
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: "workspace",
-      chatId: 1,
-      throughSequence: 0,
-    });
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0);
     visibleBottom = 350;
     await act(async () =>
       container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")),
     );
     await settle();
-    expect(markChatRead).toHaveBeenLastCalledWith({
-      workspaceId: "workspace",
-      chatId: 1,
-      throughSequence: 2,
-    });
+    expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
   });
 
   it("can mark an untouched legacy thread unread without initializing it on open", async () => {
@@ -169,7 +162,7 @@ describe("timeline read/unread experience", () => {
     const trigger = container.querySelector<HTMLButtonElement>('[data-read-start="1"] button')!;
     await act(async () => trigger.click());
     await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
-    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace", 1, 1);
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 1);
     await settle();
     expect(viewport.scrollTop).toBe(40);
     await update(snapshot(1, 0));
@@ -180,16 +173,53 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
-  it("does not treat the first unread event on an already-open legacy thread as entry", async () => {
+  it.each([false, true])("does not treat the first unread event on an already-open legacy thread as a rewind (history first: %s)", async historyFirst => {
     await render();
+    if (historyFirst) await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
     await update({chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
     await settle();
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
     viewport.scrollTop = 40;
     navigate.mockClear();
-    await updateChat(snapshot(1, 0));
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const arrival = snapshot(1, 2);
+    await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
     await settle();
     expect(viewport.scrollTop).toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+    expect(container.textContent).not.toContain("automatic reading paused");
+    visibleBottom = 450;
+    await act(async () => viewport.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
+  });
+
+  it("lets visible receipts consume the first cursor of an already-open legacy thread", async () => {
+    visibleBottom = 350;
+    await render();
+    await update({chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await settle();
+    await updateChat(snapshot(1, 0));
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+  });
+
+  it.each([false, true])("keeps a failed unread command's navigation in its owning visit (reentered: %s)", async reenter => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failed = Promise.withResolvers<never>();
+    markChatUnread.mockReturnValueOnce(failed.promise);
+    await render(<View oldest={2} />);
+    await update(snapshot(1, 0));
+    await settle();
+    await markUnreadFrom(2);
+    await render(<p>Another thread</p>);
+    if (reenter) { await render(); await settle(); }
+    navigate.mockClear();
+    await act(async () => failed.reject(new Error("Unread command failed")));
+    await settle();
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
@@ -293,7 +323,7 @@ describe("timeline read/unread experience", () => {
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
     await settle();
     expect(container.textContent).not.toContain("automatic reading paused");
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 3});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
     const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
     viewport.scrollTop = 40;
     navigate.mockClear();
@@ -323,7 +353,7 @@ describe("timeline read/unread experience", () => {
     const first = Promise.withResolvers<never>();
     if (firstFails) markChatUnread.mockReturnValueOnce(first.promise);
     for (const sequence of sequences) await markUnreadFrom(sequence);
-    expect(markChatUnread.mock.calls).toEqual(sequences.map(sequence => ["workspace", 1, sequence]));
+    expect(markChatUnread.mock.calls).toEqual(sequences.map(sequence => [1, sequence]));
     if (firstFails) await act(async () => first.reject(new Error("First command failed")));
     const horizons = sequences.map(sequence => sequence - 1);
     for (const horizon of coalesced ? horizons.slice(-1) : horizons) {
@@ -353,7 +383,7 @@ describe("timeline read/unread experience", () => {
     await act(async () => ack.resolve());
     await settle();
     expect(container.textContent).toContain("automatic reading paused");
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
   it("preserves a remote rewind when an older mark-read fails", async () => {
@@ -372,7 +402,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(container.textContent).toContain("automatic reading paused");
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
   it.each(["first", "second"])("retains a successful earlier read when a newer read fails (%s settles first)", async order => {
@@ -398,7 +428,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 450;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(markChatRead.mock.calls.map(([request]) => request.throughSequence)).toEqual([2, 3, 3]);
+    expect(markChatRead.mock.calls.map(([, through]) => through)).toEqual([2, 3, 3]);
   });
 
   it.each([
@@ -425,7 +455,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 450;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(markChatRead.mock.calls.map(([request]) => request.throughSequence)).toEqual([2, 3]);
+    expect(markChatRead.mock.calls.map(([, through]) => through)).toEqual([2, 3]);
   });
 
   it.each([0, 1])("pauses for a later remote rewind after a no-op unread and completed read (remote horizon: %s)", async horizon => {
@@ -441,14 +471,23 @@ describe("timeline read/unread experience", () => {
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
     expect(container.textContent).toContain("automatic reading paused");
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
-  it.each([false, true])("preserves an authoritative rewind matching a failed local request (update first: %s)", async updateFirst => {
+  it.each([
+    {updateFirst: false, earlierRead: false, legacy: false}, {updateFirst: true, earlierRead: false, legacy: false},
+    {updateFirst: false, earlierRead: true, legacy: false}, {updateFirst: true, earlierRead: true, legacy: false},
+    {updateFirst: true, earlierRead: false, legacy: true},
+  ])("preserves an authoritative rewind matching a failed local request (update first: $updateFirst, earlier read: $earlierRead, legacy: $legacy)", async ({updateFirst, earlierRead, legacy}) => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     await render();
-    await update(snapshot(1, 2));
+    await update(legacy ? {chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0} : snapshot(1, earlierRead ? 1 : 2));
     await settle();
+    if (earlierRead) {
+      await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+      await updateChat(snapshot(2, 2));
+      markChatRead.mockClear();
+    }
     const failed = Promise.withResolvers<never>();
     markChatUnread.mockReturnValueOnce(failed.promise);
     await markUnreadFrom(1);
@@ -499,7 +538,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 350;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
   it.each([
@@ -532,7 +571,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 550;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 4});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 4);
   });
 
   it.each(["foreground", "reset"])("waits for fresh unread state after %s before sending receipts", async reason => {
@@ -610,7 +649,7 @@ describe("timeline read/unread experience", () => {
     await render(<View latestSequence={2} />);
     await update(snapshot(3, 1));
     await settle();
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
   it("does not acknowledge hidden documents, unfocused windows or a zero-size pane", async () => {
@@ -644,8 +683,7 @@ describe("timeline read/unread experience", () => {
     await render();
     await update(snapshot());
     await settle();
-    expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1,
-      throughSequence: 2});
+    expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
     await update(snapshot());
     await settle();
     await update(snapshot(2, 0));
@@ -673,9 +711,7 @@ describe("timeline read/unread experience", () => {
           vi.advanceTimersByTime(50);
         });
       }
-      expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-        workspaceId: "workspace", chatId: 1, throughSequence: 0,
-      });
+      expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0);
     } finally {
       vi.useRealTimers();
     }
@@ -715,7 +751,7 @@ describe("timeline read/unread experience", () => {
     markChatRead.mockReturnValueOnce(ack.promise);
     const button = [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!;
     await act(async () => button.click());
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 1});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1);
     await render(<View oldest={oldest} latestSequence={2} />);
     await update(snapshot(2, 1)); // Message 2 arrives while the receipt for message 1 is pending.
     await act(async () => ack.resolve());
@@ -725,7 +761,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 350;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+    expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
   });
 
   it("loads older history before acknowledging a newer page, without endlessly retrying a failed page", async () => {
@@ -749,9 +785,7 @@ describe("timeline read/unread experience", () => {
     await render(<View oldest={0} />);
     await settle();
     expect(navigate).toHaveBeenCalled();
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: "workspace", chatId: 1, throughSequence: 2,
-    });
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
   it("restores pending history navigation when a manual unread command fails", async () => {
@@ -772,7 +806,7 @@ describe("timeline read/unread experience", () => {
     await render(<View oldest={0} />);
     await settle();
     expect(navigate).toHaveBeenLastCalledWith(false);
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
   it("allows explicit mark-read to release a failed history jump", async () => {

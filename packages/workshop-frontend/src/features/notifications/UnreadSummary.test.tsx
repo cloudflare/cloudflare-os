@@ -22,7 +22,7 @@ vi.mock("./UnreadStateBridge", async () => {
   }, () => mock.unread) };
 });
 let container: HTMLDivElement, root: Root;
-const markManyRead = vi.fn<Unread["markManyRead"]>().mockResolvedValue(undefined);
+const markAllRead = vi.fn<Unread["markAllRead"]>().mockResolvedValue(undefined);
 const chats = [
   { workspaceId: "workspace-1", chatId: 3, chatTitle: "Unread elsewhere",
     latestSequence: 8, readThroughSequence: 2, unreadMessageCount: 1,
@@ -32,8 +32,7 @@ const chats = [
     latestMessagePreview: "Old message", latestActivityAt: new Date("2026-10-14T01:00:00Z") },
 ];
 const getUnreadThreads = vi.fn<AuthenticatedApi["getUnreadThreads"]>();
-const getChatHeads = vi.fn<AuthenticatedApi["getChatHeads"]>();
-const api = {getUnreadThreads, getChatHeads};
+const api = {getUnreadThreads};
 vi.mock("../../AuthContext", () => ({useAuthenticatedApi: () => ({authenticatedApi: api})}));
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -42,7 +41,7 @@ beforeEach(() => {
     (mock.unread?.state?.chats ?? []).filter(chat => chat.unreadMessageCount > 0)
       .map(chat => ({...chats.find(item => item.workspaceId === chat.workspaceId && item.chatId === chat.chatId)!, ...chat})));
   vi.stubGlobal("scrollTo", vi.fn<() => void>());
-  mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markManyRead,
+  mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markAllRead,
     markWorkspaceRead: vi.fn<Unread["markWorkspaceRead"]>().mockResolvedValue(undefined),
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
     markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(true) };
@@ -83,7 +82,7 @@ it("lists previews of only unread threads and opens the exact conversation", asy
   const router = await render();
   expect(container.textContent).not.toContain("Already read");
   expect(container.textContent).toContain("The deployment is ready.");
-  expect(markManyRead).not.toHaveBeenCalled();
+  expect(markAllRead).not.toHaveBeenCalled();
   expect(mock.unread!.markRead).not.toHaveBeenCalled();
   const link = container.querySelector<HTMLAnchorElement>('ul a')!;
   await act(async () => link.click());
@@ -100,10 +99,10 @@ it("uses the User DO inbox order and refreshes when read state changes", async (
   expect(container.textContent).toContain("You’re all caught up");
 });
 
-it("marks only the currently observed unread boundaries read", async () => {
+it("marks all locally known unread heads read", async () => {
   await render();
   await act(async () => action("Mark all read").click());
-  expect(markManyRead).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({workspaceId: chats[0].workspaceId, chatId: chats[0].chatId})]);
+  expect(markAllRead).toHaveBeenCalledExactlyOnceWith();
 });
 
 it("does not show all caught up while local state is loading", async () => {
@@ -115,7 +114,6 @@ it("does not show all caught up while local state is loading", async () => {
 });
 it("loads the whole inbox without workspace metadata calls, retaining rows on a failed refresh", async () => {
   await render();
-  expect(getChatHeads).not.toHaveBeenCalled();
   getUnreadThreads.mockRejectedValueOnce(new Error("Unavailable"));
   mock.unread = {...mock.unread!, state: {...mock.unread!.state!}};
   await act(async () => mock.listeners.forEach(listener => listener()));

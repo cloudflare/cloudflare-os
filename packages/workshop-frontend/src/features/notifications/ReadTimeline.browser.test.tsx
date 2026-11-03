@@ -6,6 +6,7 @@ import { page, userEvent } from "vitest/browser";
 import type { RpcStub } from "capnweb";
 import type {
   AuthenticatedApi,
+  Overseer,
   UnreadStateSubscriber,
   UserUnreadState,
 } from "@gadgets/workshop-shared/api";
@@ -26,11 +27,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const View = ({sequences = [0, 1, 2]}: {sequences?: number[]}) => {
+const View = ({sequences = [0, 1, 2], overseer}: {sequences?: number[]; overseer: Pick<Overseer, "markChatRead" | "markChatUnread">}) => {
   const viewport = useRef<HTMLDivElement>(null);
   return (
     <div ref={viewport} data-viewport style={{ height: 220, width: 440, maxWidth: "100%", overflowY: "auto" }}>
-      <ReadTimeline
+      <ReadTimeline overseer={overseer}
         workspaceId="workspace"
         chatId={1}
         container={viewport} latestSequence={sequences.at(-1) ?? -1}
@@ -69,17 +70,17 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
       },
     ],
   };
-  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>(async (receipt) => {
+  const markChatRead = vi.fn<Overseer["markChatRead"]>(async (_chatId, throughSequence = -1) => {
     state = {
       ...state,
 
-      unreadChatCount: receipt.throughSequence === 2 ? 0 : 1, unreadMessageCount: receipt.throughSequence === 2 ? 0 : 1,
-      chats: [{ ...state.chats[0], readThroughSequence: receipt.throughSequence, unreadMessageCount: receipt.throughSequence < 2 ? 1 : 0 }],
+      unreadChatCount: throughSequence === 2 ? 0 : 1, unreadMessageCount: throughSequence === 2 ? 0 : 1,
+      chats: [{ ...state.chats[0], readThroughSequence: throughSequence, unreadMessageCount: throughSequence < 2 ? 1 : 0 }],
     };
     await subscriber!.updated(state);
   });
-  const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>(
-    async (_workspace, _chat, from) => {
+  const markChatUnread = vi.fn<Overseer["markChatUnread"]>(
+    async (_chat, from = 0) => {
       state = {
         ...state,
 
@@ -93,7 +94,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
   const api = {
     markChatRead,
     markChatUnread,
-    markChatsRead: async () => {},
+    markAllRead: async () => {},
     subscribeToUnreadState: (_scope: unknown, next: RpcStub<UnreadStateSubscriber>) => {
       subscriber = next;
       void next.updated(state);
@@ -110,7 +111,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
       </UnreadStateBridge>,
     ),
   );
-  await render(<View />);
+  await render(<View overseer={api} />);
   await act(async () => userEvent.click(page.getByRole("button", { name: "Focus chat" })));
   expect(document.hasFocus()).toBe(true);
   expect(markChatRead).not.toHaveBeenCalled(); // The item's bottom is still below the viewport.
@@ -125,11 +126,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
     viewport.dispatchEvent(new Event("scroll"));
   });
   await vi.waitFor(() =>
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: "workspace",
-      chatId: 1,
-      throughSequence: 0,
-    }),
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0),
   );
 
   // The first item's actions are now visible at the viewport edge. Open them as a real pointer user.
@@ -140,7 +137,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
   await act(async () =>
     userEvent.click(page.getByRole("menuitem", { name: "Mark unread from here" })),
   );
-  expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace", 1, 0);
+  expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 0);
   if (ackFirst) await act(async () => subscriber!.updated(state));
   await expect.element(page.getByText(/automatic reading paused/)).toBeVisible();
   const calls = markChatRead.mock.calls.length;
@@ -156,7 +153,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
 
   // Returning starts a fresh visit at the same durable unread boundary, without acknowledging
   // anything until its bottom edge is actually visible.
-  await render(<View />);
+  await render(<View overseer={api} />);
   withdraw = reportVisibleChat(() => ({ workspaceId: "workspace", chatId: 1 }));
   await act(async () => userEvent.click(page.getByRole("button", { name: "Focus chat" })));
   await expect.element(page.getByText(/Unread activity/)).toBeVisible();
@@ -174,19 +171,11 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
     returnedViewport.dispatchEvent(new Event("scroll"));
   });
   await vi.waitFor(() =>
-    expect(markChatRead).toHaveBeenLastCalledWith({
-      workspaceId: "workspace",
-      chatId: 1,
-      throughSequence: 0,
-    }),
+    expect(markChatRead).toHaveBeenLastCalledWith(1, 0),
   );
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
   await act(async () => userEvent.click(page.getByRole("button", { name: "Mark thread read" })));
-  expect(markChatRead).toHaveBeenLastCalledWith({
-    workspaceId: "workspace",
-    chatId: 1,
-    throughSequence: 2,
-  });
+  expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
 });
 
 it.each(["delta", "replacement", "reconnect"])("preserves real scroll geometry on a live %s", async change => {
@@ -195,7 +184,7 @@ it.each(["delta", "replacement", "reconnect"])("preserves real scroll geometry o
   let state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 1,
     chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 1, unreadMessageCount: 1}]};
   const api = {
-    markChatRead: vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined),
+    markChatRead: vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined),
     subscribeToUnreadState: (_scope: unknown, next: RpcStub<UnreadStateSubscriber>) => {
       subscriber = next;
       void next.updated(state);
@@ -207,7 +196,7 @@ it.each(["delta", "replacement", "reconnect"])("preserves real scroll geometry o
   root = createRoot(host);
   await act(async () => root!.render(
     <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
-      <View />
+      <View overseer={{markChatUnread: async () => false, ...api}} />
     </UnreadStateBridge>,
   ));
   await vi.waitFor(() => expect(navigate).toHaveBeenLastCalledWith(false));
@@ -235,7 +224,7 @@ it.each(["delta", "replacement", "reconnect"])("preserves real scroll geometry o
 
 it("keeps unread navigation pending until replay renders its target", async () => {
   navigate.mockClear();
-  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
+  const markChatRead = vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined);
   const state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 2,
     chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 2, unreadMessageCount: 2}]};
   const api = {markChatRead, subscribeToUnreadState: (_scope: unknown, subscriber: RpcStub<UnreadStateSubscriber>) => {
@@ -247,7 +236,7 @@ it("keeps unread navigation pending until replay renders its target", async () =
   root = createRoot(host);
   const render = (sequences: number[]) => act(async () => root!.render(
     <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
-      <View sequences={sequences} />
+      <View overseer={{markChatUnread: async () => false, ...api}} sequences={sequences} />
     </UnreadStateBridge>,
   ));
   await render([0, 1, 2]);
@@ -270,7 +259,7 @@ it.each([
   {short: false, hidden: true},
 ])("completes unread navigation with real scroll geometry (short: $short, initially hidden: $hidden)", async ({short, hidden}) => {
   navigate.mockClear();
-  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
+  const markChatRead = vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined);
   const state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 1,
     chats: [{workspaceId: "workspace", chatId: 1,
       readThroughSequence: short ? -1 : 0, unreadMessageCount: 1}]};
@@ -291,7 +280,7 @@ it.each([
   const NavigationView = () => {
     const viewport = useRef<HTMLDivElement>(null);
     return <div ref={viewport} data-viewport style={{height: 220, width: 440, maxWidth: "100%", overflowY: "auto"}}>
-      <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
+      <ReadTimeline overseer={{...api, markChatUnread: async () => false}} workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
         loadingEarlier={false} loadEarlier={async () => {}} onUnreadNavigation={navigate} className="">
         {ranges.map(range => range && <TimelineReadItem key={range.start} {...range}>
           <div style={{height: short ? 20 : 300}}>Message {range.start}<button>Focus chat</button></div>
@@ -325,7 +314,7 @@ it.each([
 });
 
 it("jumps below the sticky toolbar and does not acknowledge a message hidden underneath it", async () => {
-  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
+  const markChatRead = vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined);
   let subscriber: RpcStub<UnreadStateSubscriber> | undefined;
   const state: UserUnreadState = {workspaces: [], unreadChatCount: 1, unreadMessageCount: 3,
     chats: [{workspaceId: "workspace", chatId: 1,
@@ -338,7 +327,7 @@ it("jumps below the sticky toolbar and does not acknowledge a message hidden und
   const StickyView = () => {
     const viewport = useRef<HTMLDivElement>(null);
     return <div ref={viewport} data-viewport style={{height: 220, width: 440, maxWidth: "100%", overflowY: "auto"}}>
-      <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
+      <ReadTimeline overseer={{...api, markChatUnread: async () => false}} workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
         loadingEarlier={false} loadEarlier={async () => {}} onUnreadNavigation={navigate} className="">
         {[0, 1, 2].map(sequence => <TimelineReadItem key={sequence} start={sequence} end={sequence}>
           <div style={{height: sequence === 1 ? 20 : 300}}>Message {sequence}</div>
@@ -374,7 +363,5 @@ it("jumps below the sticky toolbar and does not acknowledge a message hidden und
     viewport.scrollTop -= toolbar.getBoundingClientRect().height;
     viewport.dispatchEvent(new Event("scroll"));
   });
-  await vi.waitFor(() => expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-    workspaceId: "workspace", chatId: 1, throughSequence: 1,
-  }));
+  await vi.waitFor(() => expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1));
 });

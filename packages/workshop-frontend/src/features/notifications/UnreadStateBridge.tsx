@@ -3,9 +3,7 @@ import { Button } from "@cloudflare/kumo";
 import { RpcStub, RpcTarget } from "capnweb";
 import type {
   AuthenticatedApi,
-  ChatReadReceipt,
-  ChatReadState,
-  ChatTimelineHead,
+  Overseer,
   UnreadStateScope,
   UnreadStateSubscriber,
   UnreadSummaryUpdate,
@@ -36,30 +34,19 @@ class UnreadSubscriber extends RpcTarget implements UnreadStateSubscriber {
   }
 }
 
-type ObservedChat = ChatReadState & Partial<Pick<ChatTimelineHead, "latestSequence">>;
-
 type UnreadContextValue = {
   state?: UserUnreadState;
   /** Last full replacement, retaining its identity across deltas so visits can recognize reconnects. */
   replacementSnapshot?: UserUnreadState;
-  markRead: (chat: ChatReadState, throughSequence?: number) => Promise<void>;
-  markManyRead: (chats: ObservedChat[]) => Promise<void>;
+  markRead: (overseer: Pick<Overseer, "markChatRead">, chatId: number, throughSequence?: number) => Promise<void>;
+  markAllRead: () => Promise<void>;
   markWorkspaceRead: (workspaceId: string) => Promise<void>;
-  markUnread: (chat: ChatReadState, fromSequence?: number) => Promise<boolean>;
+  markUnread: (overseer: Pick<Overseer, "markChatUnread">, chatId: number, fromSequence?: number) => Promise<boolean>;
 };
 const UnreadContext = createContext<UnreadContextValue | null>(null);
 
 /** Returns badge rollups and this view's scoped rows; absent on unauthenticated surfaces. */
 export const useUnreadState = () => useContext(UnreadContext);
-
-const receiptFor = (
-  chat: ChatReadState,
-  throughSequence: number,
-): ChatReadReceipt => ({
-  workspaceId: chat.workspaceId,
-  chatId: chat.chatId,
-  throughSequence,
-});
 
 const applySummary = (state: UserUnreadState, update: UnreadSummaryUpdate): UserUnreadState => {
   const workspaces = state.workspaces.filter(item => item.workspaceId !== update.workspace.workspaceId);
@@ -196,55 +183,18 @@ export const UnreadStateBridge = ({
     }
   };
 
-  // Explicit menu/bulk actions need an observed boundary. Badges and subscriptions don't.
-  const observedReceipts = async (chats: ObservedChat[]) => {
-    const needsHead = (chat: ObservedChat) => chat.latestSequence === undefined || chat.latestSequence < 0;
-    const heads = new Map(await Promise.all([...new Set(chats.filter(needsHead).map(chat => chat.workspaceId))]
-      .map(async workspaceId => [workspaceId, await authenticatedApi.getChatHeads(workspaceId).catch(() => null)] as const)));
-    const receipts: ChatReadReceipt[] = [];
-    let unavailable = false;
-    for (const chat of chats) {
-      const sequence = needsHead(chat)
-        ? heads.get(chat.workspaceId)?.find(item => item.chatId === chat.chatId)?.latestSequence : chat.latestSequence;
-      if (sequence !== undefined) receipts.push(receiptFor(chat, sequence));
-      else unavailable = true;
-    }
-    return {receipts, unavailable};
-  };
-  const observedReceipt = async (chat: ChatReadState) => {
-    const {receipts} = await observedReceipts([chat]);
-    if (!receipts.length) throw new Error("Thread is no longer available.");
-    return receipts[0];
-  };
-  const markObservedRead = async (chats: ObservedChat[]) => {
-    const {receipts, unavailable} = await observedReceipts(chats);
-    if (receipts.length) await authenticatedApi.markChatsRead(receipts);
-    if (unavailable) throw new Error("Some threads are no longer available; other read receipts were submitted.");
-  };
-
   return (
     <UnreadContext.Provider
       value={{
         state,
         replacementSnapshot: state ? snapshot?.replacement : undefined,
-        markRead: (chat, through) =>
-          perform((async () => {
-            const receipt = through === undefined ? await observedReceipt(chat) : receiptFor(chat, through);
-            await authenticatedApi.markChatRead(receipt);
-          })()),
-        markManyRead: (chats) => perform(markObservedRead(chats)),
-        markWorkspaceRead: (workspaceId) =>
-          perform((async () => {
-            const chats = (await authenticatedApi.getWorkspaceUnreadState(workspaceId))
-              .filter(chat => chat.unreadMessageCount > 0);
-            await markObservedRead(chats);
-          })()),
-        markUnread: (chat, from) =>
+        markRead: (overseer, chatId, through) => perform(overseer.markChatRead(chatId, through)),
+        markAllRead: () => perform(authenticatedApi.markAllRead()),
+        markWorkspaceRead: (workspaceId) => perform(authenticatedApi.markWorkspaceRead(workspaceId)),
+        markUnread: (overseer, chatId, from) =>
           perform((async () => {
             const refresh = refreshAfterReconnect.current;
-            const sequence = from ?? (await observedReceipt(chat)).throughSequence;
-            if (sequence < 0) return false;
-            const changed = await authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, sequence);
+            const changed = await overseer.markChatUnread(chatId, from);
             refresh?.();
             return changed;
           })()),

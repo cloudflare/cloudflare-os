@@ -5523,13 +5523,11 @@ function ChatInterface({
                           onClick={(event) => event.stopPropagation()}
                           className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
                         >
-                          <DropdownMenu.Item disabled={!readStateFor(chat.id)} onClick={() => {
-                            const state = readStateFor(chat.id);
-                            if (state) void unread?.markRead(state).catch(() => {});
+                          <DropdownMenu.Item disabled={!unread} onClick={() => {
+                            void unread?.markRead(overseer, chat.id).catch(() => {});
                           }}>Mark thread read</DropdownMenu.Item>
-                          <DropdownMenu.Item disabled={!readStateFor(chat.id)} onClick={() => {
-                            const state = readStateFor(chat.id);
-                            if (state) void unread?.markUnread(state).catch(() => {});
+                          <DropdownMenu.Item disabled={!unread} onClick={() => {
+                            void unread?.markUnread(overseer, chat.id).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
                           <DropdownMenu.Item
                             icon={<Pencil className="size-3" />}
@@ -5748,6 +5746,7 @@ function ChatInterface({
                   <ReadTimeline
                     key={`${workspaceId}:${selectedChatId}`}
                     workspaceId={workspaceId}
+                    overseer={overseer}
                     chatId={selectedChatId}
                     container={messagesContainerRef}
                     oldestSequence={oldestLoadedSequence}

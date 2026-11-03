@@ -13,10 +13,10 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 - Unread threads opens a live, newest-first inbox with a one-line latest-message preview, direct
   thread links, an empty state and Mark all read. Browsing it does not read threads. Previews arrive
   from `getUnreadThreads()` on the User DO, refreshed by live count/title updates. Loading the inbox
-  never queries Workspace DOs. Its observed latest positions also avoid another metadata fetch for
-  Mark all read; the read command still authorizes/translates the boundary at the source.
-- Thread menus offer Mark thread read/unread; workspace menus offer Mark workspace read. The latter
-  fetches that workspace's statuses only when invoked, then submits observed unread boundaries.
+  never queries Workspace DOs. Mark all read updates only the User DO's locally replicated horizons.
+- Thread menus offer Mark thread read/unread through the already-authorized workspace session,
+  which translates the boundary locally and pushes it to the User DO. Workspace menus offer Mark
+  workspace read, which updates the User DO's local rows without fetching workspace metadata.
 - Each rendered timeline item offers Mark unread from here. The new-items divider moves there.
   A local mark-unread keeps the viewed item in place rather than initiating a history jump.
 - Opening an unread thread loads checkpoint history back to its first unread item and positions
@@ -26,6 +26,8 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   positioning happens only on thread entry, and subsequent jumps require the explicit button.
 - Automatic reads require a visible document, focused window, visible chat pane and an item's
   bottom edge in the scroll viewport. Fetching/opening a history page alone never reads it.
+  An already-open legacy thread's first cursor establishes its read baseline; normal viewport
+  receipts then apply. The independently streamed history tail is never a substitute for that horizon.
   Bookkeeping can extend an item's receipt range, but divider placement and first-unread navigation
   use its countable text/attachment boundary, not trailing observations or checkpoints.
 - The visit's divider stays after reading, showing where new activity began. Explicit mark-unread
