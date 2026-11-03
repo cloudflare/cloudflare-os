@@ -182,26 +182,6 @@ jobs:
               --input output/preview-comment.json
           fi
 
-      # The maintainer preview's record, `automerge-preview-deploy-<head sha>`, which
-      # evidence-preview-e2e reads `backend_version` from (scripts/automerge/proofs/smoke.ts).
-      # Without the Access service token it records status `error`.
-      - name: Smoke the preview
-        id: smoke
-        env:
-          AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PREVIEW_ACCESS_CLIENT_ID: ${{ secrets.PREVIEW_ACCESS_CLIENT_ID }}
-          PREVIEW_ACCESS_CLIENT_SECRET: ${{ secrets.PREVIEW_ACCESS_CLIENT_SECRET }}
-        run: node scripts/automerge/proofs/smoke.ts deploy "$(cat output/preview-url)"
-
-      - name: Upload the preview record
-        if: ${{ !cancelled() && steps.smoke.conclusion == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: automerge-preview-deploy-${{ github.event.pull_request.head.sha }}
-          path: automerge-out/automerge-preview-deploy.json
-          if-no-files-found: error
-
   cleanup:
     name: Delete preview
     if: >-

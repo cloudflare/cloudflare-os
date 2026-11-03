@@ -125,8 +125,6 @@ interface FetchedPullRequest {
 const USAGE = "Usage: preview.ts <config|deploy|delete|sweep> [--dry-run]";
 const OUTPUT_DIR = join(ROOT, "output");
 const PREVIEW_COMMENT = join(OUTPUT_DIR, "preview-comment.md");
-// The router preview's origin, for the smoke step (scripts/automerge/proofs/smoke.ts).
-const PREVIEW_URL = join(OUTPUT_DIR, "preview-url");
 const GATEKEEPER_CONCURRENCY = 8;
 // How many of the sweep's read-only API requests — one preview list per worker, one pull request per
 // number — are in flight at once.
@@ -651,7 +649,6 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
     console.log(`\nPreview "${previewName}" is live at ${routerPreview.url}`);
     writePreviewComment(routerPreview.url, routerPreview.slug,
         readConfig(router.dir).account_id);
-    writeFileSync(PREVIEW_URL, routerPreview.url + "\n");
   } finally {
     wrangler.cleanup();
   }
