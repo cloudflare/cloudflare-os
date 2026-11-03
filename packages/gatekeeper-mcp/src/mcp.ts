@@ -458,6 +458,14 @@ export class McpGatekeeperImpl
     return this.ctx.props.serverName;
   }
 
+  /**
+   * None: reads stay with the inherited `addObserver`, which refuses every observer. A pasted
+   * endpoint names no resource whose access a collaborator could be checked against.
+   */
+  get observationSubresources(): undefined {
+    return undefined;
+  }
+
   async describe(): Promise<ResourceDescription> {
     const tools = await this.tools();
     const reads = tools.filter(entry => entry.mode === "read").length;

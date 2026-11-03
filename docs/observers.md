@@ -830,13 +830,16 @@ Strategy is chosen **per resource type** (per `Gatekeeper` DO class / binding), 
 gatekeeper package — a single package (e.g. `gatekeeper-google`) may use several strategies across
 its resource types.
 
-- **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
+- **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws,
+  or admits only an observer whose verifier stands for the very account the binding reads with,
+  whose holder sees nothing new (MCP Server Portals).
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
   mode (web fetches reach only admin-trusted hosts, and every action requires manual approval —
   auto-approval rules are suspended — the approver checking the action text for restricted data) is
   available separately; combined with strategy A it makes the workspace effectively private once
   sensitive data is observed.
-  `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
+  `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted,
+  except to name the account in that variant.
 
 - **B — ACL check (single unit).** The resource is treated as one atomic unit.
   `getVerifier()` mints a verifier exposing the observer's vendor identity (via the
@@ -898,6 +901,7 @@ its resource types.
 | **microsoft** | Outlook Mailbox / Folder / Conversation / Sender | **C** | Track the mailbox, folders and messages each read revealed (`outlook-observers.ts`); verify each by a probe `GET` as the observer: the whole mailbox needs access to all of it (someone shared one folder gets 404), a folder or message needs that folder or message. |
 | **microsoft** | Outlook Calendar / Availability | **C** | Track calendar units at the detail level each read revealed (`calendar-observers.ts`): a calendar unit admits an observer only when the owner's `calendarPermissions` give them a role that sees that level (`calendar-acl.ts`, where a group entry can only lower the organization default), which only the owner can read, so a unit of someone else's calendar admits that owner alone; an `availability:<address>` unit only when `getSchedule` as the observer answers for that address; the all-calendars unit admits nobody but the owner. |
 | **x** | Profile | **C** | As Account: a public profile needs only an X account, and the `owner` collection covers a protected user's posts. Accepted over-permissiveness for every X binding: an author who has blocked the observer is still readable through the gadget, since checking each author per observer per read would cost a read each and what leaks is public. |
+| **mcp-portal** | Upstream server behind the MCP Server Portal (whole server or selected tools) | **A**, kernel-checked (§10) | Admit only an observer whose verifier stands for the binding's own `McpAccount` (`props.accountObjectId`): every read through the binding was made with that account's credentials, so its holder, such as a collaborator who added the connection, sees nothing new. Refuse everyone else, another account of the same person or portal user included; no portal user identity exists to compare (`none`/`token` auth share one credential, OAuth access tokens are opaque). Every read — catalog, lookup, search, read-only call, approved-call result — reports `server/<upstreamServerId>`, the grant's `scope.serverId` (not the portal's own `serverId`), with no endpoint, account or tool in it: requirements are recorded per connection, and each connection's facet is pinned to one endpoint and account. `verifyObserverAccess` applies the same account rule to it and fails the whole call for any other ID. |
 
 ### 9.3 The "broad binding" lens
 
@@ -952,6 +956,8 @@ runs first). The Context Library is the first shipping gatekeeper to report subr
 Google Calendar reports `calendar/calendar/<calendarId>` for its metadata and event listings, and
 `calendar/freeBusy/<calendarId>` for each calendar an availability check reads; Google BigQuery
 reports the datasets each read reveals. Scheduled Tasks and Web Search report `[]` on every read.
+MCP Server Portals bindings report `server/<upstreamServerId>` on every read, which their
+`verifyObserverAccess()` grants only to the account the binding reads with.
 The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAccess()` answers, what
 `addObserver()` must still enforce) is documented on those members in
 `workshop-shared/src/gatekeeper.ts`, and
