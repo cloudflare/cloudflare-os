@@ -463,10 +463,10 @@ export class UserAccount extends DurableObject<Env> {
   // The last mint that failed permanently — revoked credentials, or a scope an admin has blocked.
   #mintFailure: { error: Error; at: number } | undefined;
 
-  // This account's answers about its own access to subresources, keyed by subresource ID.
-  // Bypassed while the account holds no credentials, so an answer can't outlive a disconnect that
-  // left storage behind, and invalidated whenever credentials are installed, since a reconnect may
-  // sign in as another Google account.
+  // This account's answers about its own access to subresources, keyed by the subresource ID each
+  // answer is cached under (see calendarAccessCheck). Bypassed while the account holds no
+  // credentials, so an answer can't outlive a disconnect that left storage behind, and invalidated
+  // whenever credentials are installed, since a reconnect may sign in as another Google account.
   #access = new KvTtlCache(this.ctx.storage.kv,
       () => this.ctx.storage.kv.get<string>("refreshToken") ? "connected" : undefined,
       { name: "access" });
@@ -622,29 +622,41 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
-   * Whether this account can read each subresource, in order: the `calendar/freeBusy/<calendarId>`
-   * IDs Google Calendar reports. Only Google's answer for a calendar is a verdict; an allowed one is
-   * reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
+   * Whether this account passes each access check, in order: each the subresource ID naming a
+   * check (see calendarAccessCheck), a calendar's for whether its role on the calendar sees private
+   * event details, or a calendar's free/busy for Google's answer to a free/busy query. An allowed
+   * answer is reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
    * SUBRESOURCE_ACCESS_DENIED_TTL_MS, until credentials are next installed. Throws for any other
-   * ID, or when access can't be determined, which is never reused.
+   * ID, an event's included, or when access can't be determined, which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before the cache is consulted, so an ID this account can't check is refused outright.
-    let calendarIds = new Map(subresources.map(id => [id, freeBusySubresourceCalendarId(id)]));
+    let checks = new Map(subresources.map((subresource): [string, CalendarAccessCheck] => {
+      let check = calendarAccessCheck(subresource);
+      if (check.key !== subresource) throw new Error("Not a Google Calendar access check.");
+      return [subresource, check];
+    }));
     return this.#access.cachedMany<boolean>(subresources,
       allowed => allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS,
       async missing => {
         let api = new GoogleCalendarApi(async opts => (await this.getAccessToken(opts)).token);
-        let access: boolean[] = [];
+        let access = new Map<string, boolean>();
         // One query at a time, so a long list doesn't trip Google's per-user rate limit. A query
         // Google refuses outright (expired credentials, a missing scope, a rate limit) says
         // nothing about the account's access, so it throws rather than reading as a denial.
-        for (let start = 0; start < missing.length; start += MAX_FREE_BUSY_CALENDARS) {
-          let chunk = missing.slice(start, start + MAX_FREE_BUSY_CALENDARS)
-              .map(id => calendarIds.get(id)!);
-          access.push(...await api.hasFreeBusyAccess(chunk));
+        let freeBusy = missing.filter(key => checks.get(key)!.kind === "freeBusy");
+        for (let start = 0; start < freeBusy.length; start += MAX_FREE_BUSY_CALENDARS) {
+          let chunk = freeBusy.slice(start, start + MAX_FREE_BUSY_CALENDARS);
+          let answers = await api.hasFreeBusyAccess(chunk.map(key => checks.get(key)!.calendarId));
+          chunk.forEach((key, index) => access.set(key, answers[index]));
         }
-        return access;
+        for (let key of missing) {
+          let check = checks.get(key)!;
+          if (check.kind === "details") {
+            access.set(key, await hasCalendarDetailAccess(api, check.calendarId));
+          }
+        }
+        return missing.map(key => access.get(key)!);
       });
   }
 
@@ -1061,11 +1073,11 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     observer's own token can open the bound spreadsheet.
 //   - Google Slides — strategy B (ACL check, single unit): hasPresentationAccess answers whether the
 //     observer's own token can open the bound presentation.
-//   - Google Calendar — strategy B plus kernel-checked subresources: hasCalendarWriterAccess covers
-//     the bound calendar. An all-visible availability query reports each foreign calendar it read
-//     as a `calendar/freeBusy/<id>` subresource, checked by checkSubresourceAccess;
-//     hasCalendarFreeBusyAccess covers the calendars such queries recorded before they reported them.
-//     Both are answered by the observer's UserAccount, which reuses recent answers.
+//   - Google Calendar — strategy B reporting subresources: every read reports the calendar, events
+//     or free/busy it returned, checked by checkSubresourceAccess, where a calendar or event needs
+//     the role hasCalendarWriterAccess also checks for the bound calendar at admission;
+//     hasCalendarFreeBusyAccess covers the calendars availability queries recorded before they
+//     reported them. The observer's UserAccount answers both, reusing recent answers.
 //   - BigQuery — strategy C (data-set tracking by dataset): hasDatasetAccess answers whether the
 //     observer's own token has IAM access to a dataset (BigQuery returns 401/403/404 otherwise).
 //   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
@@ -1090,6 +1102,18 @@ function httpStatusFromError(error: unknown): number | undefined {
 // transient failure, which is rethrown so the open fails loudly rather than silently denying).
 function isNoAccessStatus(status: number | undefined): boolean {
   return status === 401 || status === 403 || status === 404;
+}
+
+// Whether the account behind `api` holds a role on the calendar that sees private event details,
+// not merely write access (see hasCalendarPrivateAccessRole): false when Google says it can't see
+// the calendar (401/403/404), and a throw for any other failure.
+async function hasCalendarDetailAccess(api: GoogleCalendarApi, calendarId: string): Promise<boolean> {
+  try {
+    return hasCalendarPrivateAccessRole(await api.getCalendar(calendarId));
+  } catch (error) {
+    if (isNoAccessStatus(httpStatusFromError(error))) return false;
+    throw error;
+  }
 }
 
 /**
@@ -1146,16 +1170,10 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
 
   /**
    * Observers need the roles that see private event details, not merely write access; see
-   * `hasCalendarPrivateAccessRole` and the observer notes on GoogleCalendarGatekeeperImpl.
+   * `hasCalendarDetailAccess` and the observer notes on GoogleCalendarGatekeeperImpl.
    */
   async hasCalendarWriterAccess(calendarId: string): Promise<boolean> {
-    let api = new GoogleCalendarApi(opts => this.#getToken(opts));
-    try {
-      return hasCalendarPrivateAccessRole(await api.getCalendar(calendarId));
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasCalendarDetailAccess(new GoogleCalendarApi(opts => this.#getToken(opts)), calendarId);
   }
 
   async hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean> {
@@ -2621,12 +2639,23 @@ function summarizePeople(people: string[]): string {
   return `${people.slice(0, 5).join(", ")}, and ${people.length - 5} more`;
 }
 
-// The one kind of resource Calendar reports as a subresource, `calendar/freeBusy/<calendarId>`: a
-// foreign calendar's free/busy information, which Google shares separately from, and more widely
-// than, its events ("See only free/busy"), so it never shares an ID with anything needing event
-// access. freeBusySubresourceId formats it; freeBusySubresourceCalendarId reads it back.
+// What Calendar reports as subresources, each something a read returned from Google: a calendar
+// (`calendar/calendar/<calendarId>`) for its metadata, an event on one
+// (`calendar/calendar/<calendarId>/event/<eventId>`) for its details, and a calendar's free/busy
+// information (`calendar/freeBusy/<calendarId>`), which Google shares separately from, and more
+// widely than, its events ("See only free/busy"). Access to a calendar or its events is checked
+// calendar-wide (see calendarAccessCheck).
 const CALENDAR_SUBRESOURCE_NAMESPACE = "calendar";
+const CALENDAR_FRAGMENT = "calendar";
+const EVENT_FRAGMENT = "event";
 const FREE_BUSY_FRAGMENT = "freeBusy";
+
+/** The subresource ID of a calendar, or of one event on it. */
+function calendarSubresourceId(calendarId: string, eventId?: string): string {
+  let fragments = [{name: CALENDAR_FRAGMENT, id: calendarId}];
+  if (eventId !== undefined) fragments.push({name: EVENT_FRAGMENT, id: eventId});
+  return formatSubresourceId({namespace: CALENDAR_SUBRESOURCE_NAMESPACE, fragments});
+}
 
 /** The subresource ID of a calendar's free/busy information. */
 function freeBusySubresourceId(calendarId: string): string {
@@ -2636,19 +2665,46 @@ function freeBusySubresourceId(calendarId: string): string {
   });
 }
 
-/** The calendar a free/busy subresource ID names. Throws for any other ID. */
-function freeBusySubresourceCalendarId(subresource: string): string {
+/** What answers whether an account can read a subresource (see calendarAccessCheck). */
+type CalendarAccessCheck = {
+  /**
+   * `freeBusy`: Google answers a free/busy query for the calendar. `details`: the account holds a
+   * role on the calendar that sees every event's details.
+   */
+  kind: "freeBusy" | "details";
+  calendarId: string;
+  /**
+   * The subresource ID naming this check: what verifyObserverAccess() asks the observer's account
+   * about in place of every subresource the check answers, and what that account caches the answer
+   * under.
+   */
+  key: string;
+};
+
+/**
+ * What answers whether an account can read `subresource`: a free/busy query for a calendar's
+ * free/busy, and for a calendar or an event on it, the account's role on that calendar, as
+ * addObserver() has always checked it, so every event on one calendar shares one check. Throws
+ * for an ID Calendar doesn't report.
+ */
+function calendarAccessCheck(subresource: string): CalendarAccessCheck {
   let {namespace, fragments} = parseSubresourceId(subresource);
-  if (namespace !== CALENDAR_SUBRESOURCE_NAMESPACE || fragments.length !== 1 ||
-      fragments[0].name !== FREE_BUSY_FRAGMENT) {
-    throw new Error("Not a Google Calendar free/busy subresource.");
+  let [first, second] = fragments;
+  if (namespace === CALENDAR_SUBRESOURCE_NAMESPACE) {
+    if (fragments.length === 1 && first.name === FREE_BUSY_FRAGMENT) {
+      return {kind: "freeBusy", calendarId: first.id, key: subresource};
+    }
+    if (first.name === CALENDAR_FRAGMENT &&
+        (fragments.length === 1 || (fragments.length === 2 && second.name === EVENT_FRAGMENT))) {
+      return {kind: "details", calendarId: first.id, key: calendarSubresourceId(first.id)};
+    }
   }
-  return fragments[0].id;
+  throw new Error("Not a Google Calendar subresource.");
 }
 
-// Admits an observer only if their own account can see every calendar's free/busy, as its
-// UserAccount last learned (see UserAccount.checkSubresourceAccess for how long it reuses answers).
-const verifyFreeBusyAccess = observerAccessVerifier({
+// Admits an observer only if their own account can read every subresource, as its UserAccount
+// last learned (see UserAccount.checkSubresourceAccess for how long it reuses answers).
+const verifyCalendarAccess = observerAccessVerifier({
   hasCollectionAccess: (verifier: Fetcher<GoogleVerifierApi>, subresources: readonly string[]) =>
     verifier.checkSubresourceAccess([...subresources]),
 });
@@ -2789,12 +2845,13 @@ export class GoogleCalendarGatekeeperImpl
     // No hooks for Google Calendar.
   }
 
-  // Observers: strategy B for the selected calendar, plus kernel-checked subresources for the
-  // optional all-visible availability scope. Full event reads can include private event details,
-  // which Google hides from readers, so addObserver() requires every observer to be a writer or
-  // owner of the bound calendar, and those reads report no subresources. An availability check
-  // reports each foreign calendar whose free/busy it read, which the Workshop checks through
-  // verifyObserverAccess().
+  // Observers: every read reports what it returned from Google as subresources, which the
+  // Workshop checks through verifyObserverAccess(): the bound calendar for its metadata, each event
+  // a listing returns, and the free/busy of each calendar an availability check read. A calendar
+  // and its events need a writer or owner role on it, since Google hides private event details
+  // from readers; free/busy needs only Google answering for the calendar. addObserver() keeps
+  // requiring that role on the bound calendar for the event reads made before reads reported
+  // subresources.
   // TODO: Let the binding owner choose whether private events are included. A public-only mode
   // could admit readers instead of requiring writer access from every collaborator.
 
@@ -2830,13 +2887,16 @@ export class GoogleCalendarGatekeeperImpl
   }
 
   /**
-   * Checks the `calendar/freeBusy/<calendarId>` subresources availability checks report. Each
-   * observer's UserAccount refuses any other ID, which fails the whole call.
+   * Checks the subresources this binding's reads report. Each is replaced by the check that
+   * answers it (see calendarAccessCheck) before anything is asked, so each observer's account is
+   * asked once per check, and once per calendar for its metadata and all its events. Any other ID
+   * fails the whole call.
    */
   async verifyObserverAccess(
       observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
       subresources: string[]): Promise<{allowedObserverIds: string[]}> {
-    return verifyFreeBusyAccess(observers, subresources);
+    let checks = new Set(subresources.map(subresource => calendarAccessCheck(subresource).key));
+    return verifyCalendarAccess(observers, [...checks]);
   }
 }
 
@@ -2862,9 +2922,8 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     this.#pendingActions = pendingActions;
   }
 
-  // Every read authorizes through here, which makes `subresources` required: a read that omitted
-  // them would leave the foreign calendars it read unchecked, since nothing records them for
-  // addObserver() anymore.
+  // Every read authorizes through here, which makes `subresources` required: each read must name
+  // everything it returned from Google, since addObserver() covers only reads made before they did.
   #authorizeObservation(
       description: ObservationDescription & {subresources: string[]}): Promise<void> {
     return this.#approvalQueue.authorizeObservation(description);
@@ -2879,7 +2938,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     await this.#authorizeObservation({
       title: "Read Google Calendar metadata",
       description: `Read metadata for Google Calendar ${calendar.summary} (${calendar.id}).`,
-      subresources: [],
+      subresources: [calendarSubresourceId(this.#calendarId)],
     });
     return calendar;
   }
@@ -2888,6 +2947,12 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     validateCalendarTimeWindow(opts.timeMin, opts.timeMax, 366);
     let events = await this.#api.listEvents(this.#calendarId, opts);
     let simulated = applyPendingCalendarActions(events, this.#pendingActions.list(), opts);
+    // The events read from Google that this returns, edited or not: not a pending creation, which
+    // Google doesn't hold yet, nor an event a pending edit moves out of the window.
+    let read = new Set(events.map(event => event.id));
+    let subresources = simulated
+        .filter(event => read.has(event.id))
+        .map(event => calendarSubresourceId(this.#calendarId, event.id));
 
     await this.#authorizeObservation({
       title: "List Google Calendar events",
@@ -2895,7 +2960,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           `List ${simulated.length} event(s) on calendar ${this.#calendarId} from ` +
           `${opts.timeMin.toISOString()} to ${opts.timeMax.toISOString()}.` +
           (opts.includeDescriptions ? " Event descriptions are included." : ""),
-      subresources: [],
+      subresources,
     });
 
     return simulated;
@@ -2916,18 +2981,17 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
         "account-relative \"primary\" alias.");
     }
 
-    let foreign = people.filter(id => id !== this.#calendarId);
-    if (foreign.length > 0 && this.#availabilityMode === "thisCalendar") {
+    if (this.#availabilityMode === "thisCalendar" && people.some(id => id !== this.#calendarId)) {
       throw new Error(
           "This connection only allows availability for the bound calendar. Reconnect with " +
           "\"All calendars visible to me\" to check other calendars' availability.");
     }
 
     let availability = await this.#api.freeBusy({...opts, people});
-    // The foreign calendars whose free/busy this reveals, each once since `people` is deduplicated:
-    // not the bound calendar, which addObserver() covers, nor a failed lookup, which returns none.
+    // The calendars whose free/busy this reveals, bound or not, each once since `people` is
+    // deduplicated: not a failed lookup, which returns none.
     let subresources = availability
-        .filter(result => foreign.includes(result.email) && !result.error)
+        .filter(result => !result.error)
         .map(result => freeBusySubresourceId(result.email));
 
     await this.#authorizeObservation({

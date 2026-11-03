@@ -24,8 +24,13 @@ const BOUND = "team@group.calendar.google.com";
 const ALICE = "alice@example.com";
 const HOLIDAYS = "en.usa#holiday@group.v.calendar.google.com";
 const BOB = "bob@example.com";
+const BOUND_FREE_BUSY = "calendar/freeBusy/team%40group.calendar.google.com";
 const ALICE_FREE_BUSY = "calendar/freeBusy/alice%40example.com";
 const HOLIDAYS_FREE_BUSY = "calendar/freeBusy/en.usa%23holiday%40group.v.calendar.google.com";
+const BOUND_CALENDAR = "calendar/calendar/team%40group.calendar.google.com";
+const STANDUP = `${BOUND_CALENDAR}/event/standup`;
+const RETRO = `${BOUND_CALENDAR}/event/retro`;
+const ALICE_EVENT = "calendar/calendar/alice%40example.com/event/offsite";
 
 const timeMin = new Date("2026-11-03T00:00:00Z");
 const timeMax = new Date("2026-11-04T00:00:00Z");
@@ -38,10 +43,16 @@ type CalendarBackend = {
   freeBusy: Record<string, (calendarId: string) => boolean | string>;
   /** HTTP status a token's free/busy queries fail with. */
   freeBusyStatus: Record<string, number>;
-  /** Each token's role on the bound calendar; absent when it is not on the account's list. */
+  /** Each token's role on every calendar; absent when none is on the account's list. */
   roles: Record<string, string>;
+  /** HTTP status a token's calendar lookups fail with. */
+  roleStatus: Record<string, number>;
+  /** The events Google lists on the bound calendar. */
+  events: Array<{id: string; summary: string; start: {dateTime: string}; end: {dateTime: string}}>;
   /** The calendars each free/busy query named. */
   queries: Array<{token: string; calendarIds: string[]}>;
+  /** The calendars each token looked up its role on. */
+  lookups: Array<{token: string; calendarId: string}>;
 };
 
 /** Seeds an account holding `token`, once: later calls reuse whatever it holds by then. */
@@ -60,7 +71,13 @@ function calendarHarness(availabilityMode: GoogleCalendarGatekeeperImplProps["av
     freeBusy: {owner: id => [BOUND, ALICE, HOLIDAYS].includes(id)},
     freeBusyStatus: {},
     roles: {owner: "owner"},
+    roleStatus: {},
+    events: [
+      {id: "standup", summary: "Standup", start: {dateTime: "2026-11-03T09:00:00Z"}, end: {dateTime: "2026-11-03T09:15:00Z"}},
+      {id: "retro", summary: "Retro", start: {dateTime: "2026-11-03T16:00:00Z"}, end: {dateTime: "2026-11-03T17:00:00Z"}},
+    ],
     queries: [],
+    lookups: [],
   };
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
@@ -82,12 +99,18 @@ function calendarHarness(availabilityMode: GoogleCalendarGatekeeperImplProps["av
     }
     const listed = url.pathname.match(/^\/calendar\/v3\/users\/me\/calendarList\/([^/]+)$/);
     if (listed) {
+      const calendarId = decodeURIComponent(listed[1]);
+      backend.lookups.push({token, calendarId});
+      const status = backend.roleStatus[token];
+      if (status) return json({error: {code: status}}, status);
       const role = backend.roles[token];
       return role
-        ? json({id: decodeURIComponent(listed[1]), summary: "Team", accessRole: role})
+        ? json({id: calendarId, summary: "Team", accessRole: role})
         : json({error: {code: 404}}, 404);
     }
-    if (url.pathname === `/calendar/v3/calendars/${encodeURIComponent(BOUND)}/events`) return json({items: []});
+    if (url.pathname === `/calendar/v3/calendars/${encodeURIComponent(BOUND)}/events`) {
+      return json({items: backend.events});
+    }
     return json({error: {code: 404}}, 404);
   });
 
@@ -151,7 +174,7 @@ afterEach(() => {
 });
 
 describe("Google Calendar subresources", () => {
-  it("reports each foreign calendar an availability check read, and nothing for addObserver to track", async () => {
+  it("reports the free/busy of each calendar an availability check read, and nothing for addObserver to track", async () => {
     const calendar = calendarHarness();
     calendar.backend.roles.writer = "writer";
     // Admitted before the read and unable to see Alice's free/busy: tracking availability itself,
@@ -167,32 +190,65 @@ describe("Google Calendar subresources", () => {
       [BOUND, undefined], [ALICE, undefined], [HOLIDAYS, undefined], [BOB, "notFound"],
     ]);
     const [observation] = await calendar.observations();
-    expect(observation.subresources).toEqual([ALICE_FREE_BUSY, HOLIDAYS_FREE_BUSY]);
+    expect(observation.subresources).toEqual([BOUND_FREE_BUSY, ALICE_FREE_BUSY, HOLIDAYS_FREE_BUSY]);
     expect(observation).not.toHaveProperty("excludeObservers");
     // The Workshop checks those calendars now, so admission no longer does.
     await calendar.addObserver("late", "writer");
   });
 
-  it("reports no subresources for event reads, the bound calendar, or a failed lookup", async () => {
+  it("reports the calendar its metadata came from and each event a listing returned", async () => {
     const calendar = calendarHarness();
     using session = await calendar.session();
 
     await session.getCalendar();
     await session.listEvents({timeMin, timeMax});
-    await session.checkAvailability({people: [BOUND], timeMin, timeMax});
+
+    expect((await calendar.observations()).map(observation => observation.subresources))
+      .toEqual([[BOUND_CALENDAR], [STANDUP, RETRO]]);
+  });
+
+  it("reports the events it returns that Google listed, edited or not, but no pending creation", async () => {
+    const calendar = calendarHarness();
+    using session = await calendar.session();
+    await session.createEvent({
+      title: "Lunch",
+      start: {kind: "dateTime", dateTime: new Date("2026-11-03T12:00:00Z")},
+      end: {kind: "dateTime", dateTime: new Date("2026-11-03T13:00:00Z")},
+    });
+    await session.updateEvent("standup", {title: "Standup (moved)"});
+    await session.updateEvent("retro", {
+      start: {kind: "dateTime", dateTime: new Date("2026-11-05T16:00:00Z")},
+      end: {kind: "dateTime", dateTime: new Date("2026-11-05T17:00:00Z")},
+    });
+
+    const events = await session.listEvents({timeMin, timeMax});
+
+    // The pending lunch is returned but Google doesn't hold it; the retro's edit moves it out.
+    expect(events.map(event => event.title)).toEqual(["Standup (moved)", "Lunch"]);
+    expect((await calendar.observations()).map(observation => observation.subresources))
+      .toEqual([[STANDUP]]);
+  });
+
+  it("reports nothing for a failed lookup or a listing with no events", async () => {
+    const calendar = calendarHarness();
+    calendar.backend.events = [];
+    using session = await calendar.session();
+
+    await session.listEvents({timeMin, timeMax});
     await session.checkAvailability({people: [BOB], timeMin, timeMax});
 
     expect((await calendar.observations()).map(observation => observation.subresources))
-      .toEqual([[], [], [], []]);
+      .toEqual([[], []]);
   });
 
-  it("reports no subresources for a binding limited to its own calendar", async () => {
+  it("reports the bound calendar's free/busy on a binding limited to it", async () => {
     const calendar = calendarHarness("thisCalendar");
     using session = await calendar.session();
 
     await session.checkAvailability({people: [BOUND], timeMin, timeMax});
 
-    expect((await calendar.observations()).map(observation => observation.subresources)).toEqual([[]]);
+    expect((await calendar.observations()).map(observation => observation.subresources))
+      .toEqual([[BOUND_FREE_BUSY]]);
   });
 });
 
@@ -223,12 +279,57 @@ describe("Google Calendar verifyObserverAccess", () => {
     expect(asked.flatMap(query => query.calendarIds).toSorted()).toEqual(people.toSorted());
   });
 
+  it("checks a calendar and its events by the observer's role on that calendar, once per calendar", async () => {
+    const calendar = calendarHarness();
+    calendar.backend.roles.writer = "writer";
+    calendar.backend.roles.limited = "writerWithoutPrivateAccess";
+    calendar.backend.roles.reader = "reader";
+    const observers = {writer: "writer", limited: "limited", reader: "reader", absent: "absent"};
+
+    await expect(calendar.verify(observers, [BOUND_CALENDAR, STANDUP, RETRO, ALICE_EVENT]))
+      .resolves.toEqual({allowedObserverIds: ["writer"]});
+    expect(calendar.backend.lookups.filter(lookup => lookup.token === "writer")
+      .map(lookup => lookup.calendarId)).toEqual([BOUND, ALICE]);
+    expect(calendar.backend.queries).toEqual([]);
+  });
+
+  it("keeps each answer of a mixed check under its own ID", async () => {
+    const calendar = calendarHarness();
+    calendar.backend.roles.alice = "reader";
+    calendar.backend.freeBusy.alice = id => id === ALICE;
+
+    // Alice sees Alice's free/busy, but not the event details on the bound calendar.
+    await expect(calendar.verify({alice: "alice"}, [STANDUP, ALICE_FREE_BUSY]))
+      .resolves.toEqual({allowedObserverIds: []});
+    // Both answers are reused, each for the ID it answered.
+    await expect(calendar.verify({alice: "alice"}, [ALICE_FREE_BUSY]))
+      .resolves.toEqual({allowedObserverIds: ["alice"]});
+    await expect(calendar.verify({alice: "alice"}, [BOUND_CALENDAR]))
+      .resolves.toEqual({allowedObserverIds: []});
+    expect(calendar.backend.queries).toHaveLength(1);
+    expect(calendar.backend.lookups).toHaveLength(1);
+  });
+
+  it("throws when Google fails an observer's calendar lookup, and asks again next time", async () => {
+    const calendar = calendarHarness();
+    calendar.backend.roles.writer = "writer";
+    // Neither a refusal of access nor a status the client retries.
+    calendar.backend.roleStatus.writer = 400;
+
+    await expect(calendar.verify({writer: "writer"}, [STANDUP])).rejects.toThrow(/400/);
+    delete calendar.backend.roleStatus.writer;
+    await expect(calendar.verify({writer: "writer"}, [STANDUP]))
+      .resolves.toEqual({allowedObserverIds: ["writer"]});
+  });
+
   it.each([
     ["a non-canonical spelling", "calendar/freeBusy/alice@example.com"],
-    ["event access to a calendar", "calendar/calendar/alice%40example.com"],
     ["another product's namespace", "gmail/freeBusy/alice%40example.com"],
     ["no namespace", "freeBusy/alice%40example.com"],
     ["more than one resource", "calendar/freeBusy/alice%40example.com/freeBusy/bob%40example.com"],
+    ["an event outside a calendar", "calendar/event/standup"],
+    ["a resource within an event", `${STANDUP}/attachment/agenda`],
+    ["an unknown kind of calendar resource", "calendar/acl/alice%40example.com"],
   ])("denies everyone for an ID with %s", async (_, subresource) => {
     const calendar = calendarHarness();
     calendar.backend.freeBusy.both = () => true;

@@ -37,9 +37,9 @@ export function hasCalendarWriteRole(calendar: GoogleCalendarInfo): boolean {
 }
 
 /**
- * Whether the account also sees private event details. A collaborator observing a bound calendar
- * must hold one of these roles, because the workspace may already hold private details read
- * through the owner's account; a limited writer could not see them on their own.
+ * Whether the account also sees private event details. A collaborator observing a calendar's
+ * metadata or events must hold one of these roles, because what the workspace read through the
+ * owner's account may include private details; a limited writer could not see them on their own.
  */
 export function hasCalendarPrivateAccessRole(calendar: GoogleCalendarInfo): boolean {
   return calendar.accessRole === "owner" || calendar.accessRole === "writer";
