@@ -284,7 +284,7 @@ export function lockfileNames(lockfile: string): Set<string> {
 export async function fetchPublishTimes(entries: PackageVersion[]): Promise<Record<string, string>> {
   const times: Record<string, string> = {};
   for (const name of new Set(entries.map((entry) => entry.name))) {
-    const response = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2f")}`);
+    const response = await fetch(`https://registry.npmjs.org/${name.replaceAll("/", "%2f")}`);
     if (!response.ok) throw new Error(`registry.npmjs.org answered ${response.status} for ${name}`);
     const time = asObject(asObject(parseJson(await response.text()), name).time, `${name} time`);
     for (const entry of entries) {
