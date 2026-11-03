@@ -48,6 +48,32 @@ describe("sanitizePastedHtml", () => {
     )).toBe("<ul><li>One<ul><li>Nested <b>bold</b></li></ul></li><li>Two</li></ul><p>Between</p><ol><li>First</li><li>Second</li></ol>");
   });
 
+  // Word for the web makes each item a list of its own, its depth in data-aria-level and its list in
+  // data-listid, and ends every paragraph with a non-breaking space in an EOP span.
+  it("rebuilds Word for the web's one-item lists as nested lists, keeping their numbering", () => {
+    const item = (tag: "ul" | "ol", listId: number, level: number, text: string, start = 1) =>
+      `<div class="ListContainerWrapper"><${tag} role="list"${tag === "ol" ? ` start="${start}"` : ""}>` +
+      `<li data-listid="${listId}" data-aria-level="${level}" role="listitem"><p class="Paragraph"><span class="TextRun">${text}</span><span class="EOP">&nbsp;</span></p></li></${tag}></div>`;
+    expect(paste(
+      `<div>${item("ul", 1, 1, "One")}${item("ol", 1, 2, "Nested")}${item("ul", 1, 1, "Two")}` +
+      `${item("ol", 2, 1, "Seventh", 7)}${item("ol", 2, 1, "Eighth", 8)}${item("ol", 3, 1, "Restarted")}</div>`,
+    )).toBe('<ul><li>One<ol><li>Nested</li></ol></li><li>Two</li></ul><ol start="7"><li>Seventh</li><li>Eighth</li></ol><ol><li>Restarted</li></ol>');
+  });
+
+  it("skips an empty Word for the web list after a filled one", () => {
+    expect(paste(
+      '<div><div class="ListContainerWrapper"><ol start="1"><li data-listid="1" data-aria-level="1"><p>One</p></li></ol></div>' +
+      '<div class="ListContainerWrapper"><ol start="1"></ol></div><p>After</p></div>',
+    )).toBe("<ol><li>One</li></ol><p>After</p>");
+  });
+
+  it("pastes Word for the web's heading paragraphs as headings", () => {
+    expect(paste(
+      '<div><p role="heading" aria-level="1" style="font-weight: bold"><span style="font-weight: bold">Title</span><span class="EOP">&nbsp;</span></p>' +
+      '<p role="heading" aria-level="4"><span>Deep</span></p><p class="Paragraph"><span>Body</span><span class="EOP">&nbsp;</span></p></div>',
+    )).toBe("<h1>Title</h1><h3>Deep</h3><p>Body</p>");
+  });
+
   it("splits a quote of several blocks, and a definition list into lines", () => {
     expect(paste("<blockquote><p>Para one</p><ul><li>a</li></ul><pre>x\ny</pre><p>Para <i>two</i></p></blockquote><dl><dt>Term</dt><dd>Definition</dd></dl>"))
       .toBe("<blockquote>Para one</blockquote><ul><li>a</li></ul><pre>x\ny</pre><blockquote>Para <i>two</i></blockquote><p><b>Term</b></p><p>Definition</p>");

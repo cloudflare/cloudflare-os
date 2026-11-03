@@ -177,13 +177,32 @@ const SKIP = new Set(["STYLE", "SCRIPT", "META", "TITLE", "HEAD", "LINK", "TEMPL
 const holdsBlocks = (node: Element): boolean => Array.from(node.children).some((c) => BLOCKS.has(c.tagName) || holdsBlocks(c) && !SKIP.has(c.tagName));
 const hasContent = (n: Element) => !!n.textContent?.trim() || !!n.querySelector("img");
 
+/** A Word list item: its content, depth and kind, the number its list starts at, and which list it is in. */
+interface WordListItem {
+  node: Element;
+  level: number;
+  ordered: boolean;
+  start?: number;
+  listId?: string | null;
+}
+
 // Word's list paragraph: `style="mso-list:l0 level2 lfo1"`, its marker ("·",
 // "o", "1.") in a `mso-list:Ignore` span that only Word's own renderer hides.
+// Word for the web instead makes each item a list of its own in a
+// ListContainerWrapper, its depth in data-aria-level and its list in data-listid.
 const WORD_LIST = /mso-list:\s*l\d+\s+level(\d+)/i;
 const WORD_LIST_TAGS = /^(P|DIV|LI)$/;
 const ORDERED_MARKER = /^\(?([0-9]+|[a-z]|[ivxlcdm]+)[.)]$/i;
-function wordListItem(node: Node): { level: number; ordered: boolean } | null {
-  if (!isElement(node) || !WORD_LIST_TAGS.test(node.tagName)) return null;
+function wordListItems(node: Node): WordListItem[] | null {
+  if (!isElement(node)) return null;
+  if (node.classList.contains("ListContainerWrapper")) {
+    const items = Array.from(node.querySelectorAll(":scope > ul > li, :scope > ol > li"), (li) => ({
+      node: li, level: Number(li.getAttribute("data-aria-level")) || 1, ordered: li.parentElement!.tagName === "OL",
+      start: Number(li.parentElement!.getAttribute("start")) || 1, listId: li.getAttribute("data-listid"),
+    }));
+    return items.length ? items : null;
+  }
+  if (!WORD_LIST_TAGS.test(node.tagName)) return null;
   const m = WORD_LIST.exec(node.getAttribute("style") || "");
   if (!m) return null;
   const marker = node.querySelector('[style*="mso-list:ignore" i], [style*="mso-list: ignore" i]');
@@ -192,15 +211,25 @@ function wordListItem(node: Node): { level: number; ordered: boolean } | null {
   else {
     // No marker span: strip a leading marker from the text itself.
     const first = document.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode() as Text | null;
-    const lead = first && /^[\s ]*(\S{1,5})[\s ]+/.exec(first.data);
+    const lead = first && /^[\s\u00a0]*(\S{1,5})[\s\u00a0]+/.exec(first.data);
     if (first && lead && (ORDERED_MARKER.test(lead[1]) || /^[·•▪◦§o\-–*]$/.test(lead[1]))) { text = lead[1]; first.data = first.data.slice(lead[0].length); }
   }
-  return { level: Math.max(1, Number(m[1])), ordered: ORDERED_MARKER.test(text.replace(/[\s ]+/g, "")) };
+  return [{ node, level: Math.max(1, Number(m[1])), ordered: ORDERED_MARKER.test(text.replace(/[\s\u00a0]+/g, "")) }];
+}
+
+// A line's tag: h1–h3 for a heading (deeper ones are h3), Word for the web's
+// `<p role="heading" aria-level>` included; else a quote or a paragraph.
+function lineTag(node: Element): string {
+  const level = /^H([1-6])$/.exec(node.tagName)?.[1] ?? (node.getAttribute("role") === "heading" ? node.getAttribute("aria-level") ?? "2" : null);
+  if (level) return `h${Math.min(3, Math.max(1, Number(level) || 1))}`;
+  return node.tagName === "BLOCKQUOTE" ? "blockquote" : "p";
 }
 
 /** Pasted HTML rebuilt as the editor's own markup. */
 export function sanitizePastedHtml(html: string, pc: PasteContext): string {
   const parsed = new DOMParser().parseFromString(html, "text/html");
+  // Word for the web ends every paragraph with a non-breaking space in an EOP span.
+  parsed.querySelectorAll("span.EOP").forEach((mark) => mark.remove());
   const result = document.createElement("div");
   function appendInline(src: Node, target: Node, ctx: InlineFormat) {
     src.childNodes.forEach((child) => appendInlineNode(child, target, ctx));
@@ -280,14 +309,15 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
     });
     return list;
   }
-  // Consecutive Word list paragraphs, nested by their level.
-  function wordList(paras: { node: Element; level: number; ordered: boolean }[], ctx: InlineFormat, out: Node) {
+  // Consecutive Word list items, nested by their level.
+  function wordList(items: WordListItem[], ctx: InlineFormat, out: Node) {
     const stack: { level: number; ordered: boolean; list: HTMLElement }[] = [];
-    for (const { node, level, ordered } of paras) {
+    for (const { node, level, ordered, start = 1 } of items) {
       while (stack.length && stack.at(-1)!.level > level) stack.pop();
       if (stack.length && stack.at(-1)!.level === level && stack.at(-1)!.ordered !== ordered) stack.pop();
       if (!stack.length || stack.at(-1)!.level < level) {
         const list = document.createElement(ordered ? "ol" : "ul");
+        if (ordered && start > 1) list.setAttribute("start", String(start));
         if (stack.length) {
           const parent = stack.at(-1)!.list;
           ((parent.lastElementChild as HTMLElement | null) ?? parent.appendChild(document.createElement("li"))).appendChild(list);
@@ -385,23 +415,24 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
       flush();
       if (!isElement(node) || SKIP.has(node.tagName)) continue;
       const tag = node.tagName;
-      // (Only an element Word lists are made of starts one: a heading styled as a list item doesn't.)
-      if (WORD_LIST_TAGS.test(tag) && WORD_LIST.test(node.getAttribute("style") || "")) {
-        const paras: { node: Element; level: number; ordered: boolean }[] = [];
-        for (; i < nodes.length; i++) {
+      const items = wordListItems(node);
+      if (items) {
+        // One list, until a top-level item of another list.
+        for (i++; i < nodes.length; i++) {
           const n = nodes[i];
           if (isText(n) && !n.data.trim() || n.nodeType === 8) continue;
-          const item = wordListItem(n);
-          if (!item) break;
-          paras.push({ node: n as Element, ...item });
+          const next = wordListItems(n);
+          const top = items.findLast((item) => item.level === 1);
+          if (!next || top && next[0].level === 1 && next[0].listId !== top.listId) break;
+          items.push(...next);
         }
         i--;
-        wordList(paras, ctx, out);
+        wordList(items, ctx, out);
         continue;
       }
       if (tag === "TABLE") { const t = cleanTable(node as HTMLTableElement, fmtOf(node, ctx, pc)); if (t) out.appendChild(t); continue; }
       if (tag === "HR") { out.appendChild(document.createElement("hr")); continue; }
-      if (tag === "UL" || tag === "OL") { out.appendChild(processList(node, ctx)); continue; }
+      if (tag === "UL" || tag === "OL") { const list = processList(node, ctx); if (list.children.length) out.appendChild(list); continue; }
       if (tag === "PRE") {
         const pre = document.createElement("pre");
         pre.textContent = preText(node).replace(/\n$/, "");
@@ -412,10 +443,12 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
       // A line: a paragraph, heading or quote, or a <div> of inline content
       // (an empty one, <div><br></div>, is a blank line in Apple Notes).
       if (tag === "BLOCKQUOTE" || (LINE_BLOCKS.has(tag) || tag === "DIV") && !holdsBlocks(node)) {
-        const block = document.createElement(/^H[1-3]$/.test(tag) ? tag.toLowerCase() : /^H[4-6]$/.test(tag) ? "h3" : tag === "BLOCKQUOTE" ? "blockquote" : "p");
+        const block = document.createElement(lineTag(node));
         const next = fmtOf(node, ctx, pc);
         appendInline(node, block, tag === "DT" ? { ...next, bold: true } : next);
         while (block.lastChild?.nodeName === "BR" && block.childNodes.length > 1) block.lastChild.remove();
+        // Word for the web writes a heading's weight on every run; the heading's style has it.
+        if (node.getAttribute("role") === "heading") block.querySelectorAll("b").forEach((b) => b.replaceWith(...b.childNodes));
         if (hasContent(block) || block.querySelector("br")) out.appendChild(block);
         continue;
       }

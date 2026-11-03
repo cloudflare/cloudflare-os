@@ -216,6 +216,14 @@ describe("Word export", () => {
     expect(Number(geometry?.[1])).toBe(Math.round(6 / 700 * 9360 * 635 / Number(attr(document, /<wp:extent cx="\d+" cy="(\d+)"/)) * 100000));
   });
 
+  // Word shows "The picture can't be displayed" for every kind of WebP.
+  it("writes a WebP image as its alt text, which Word cannot display", async () => {
+    const webp = "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=";
+    const { entries, document } = await exportDocx([`<p><img class="doc-image" src="${webp}" alt="Chart"></p>`]);
+    expect([...entries.keys()].filter((name) => name.startsWith("word/media/"))).toEqual([]);
+    expect(textOf(paragraph(document, "[Chart]"))).toBe("[Chart]");
+  });
+
   it("links safe URLs as external hyperlinks and leaves unsafe ones as plain text", async () => {
     const { document, part } = await exportDocx([
       '<p><a href="https://example.com/a?b=1&amp;c=2">safe</a> <a href="javascript:alert(1)">unsafe</a> <a href="mailto:a@b.c">mail</a></p>',

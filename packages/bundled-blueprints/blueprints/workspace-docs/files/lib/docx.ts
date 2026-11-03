@@ -507,25 +507,16 @@ function bytesFromBase64(base64: string): Uint8Array {
   return bytes;
 }
 
-type ImageType = "png" | "jpeg" | "gif" | "webp";
+type ImageType = "png" | "jpeg" | "gif";
 
-// Intrinsic pixel size of a PNG / JPEG / GIF / WebP, read from its header.
+// Intrinsic pixel size of a PNG / JPEG / GIF, read from its header.
 function imageSize(bytes: Uint8Array, type: ImageType): { w: number; h: number } | null {
   const at = (i: number): number => bytes[i] ?? 0;
   const u16be = (i: number): number => (at(i) << 8) | at(i + 1);
   const u16le = (i: number): number => at(i) | (at(i + 1) << 8);
-  const u24le = (i: number): number => at(i) | (at(i + 1) << 8) | (at(i + 2) << 16);
   const u32be = (i: number): number => ((at(i) << 24) | (at(i + 1) << 16) | (at(i + 2) << 8) | at(i + 3)) >>> 0;
   if (type === "png" && bytes.length > 24) return { w: u32be(16), h: u32be(20) };
   if (type === "gif" && bytes.length > 10) return { w: u16le(6), h: u16le(8) };
-  if (type === "webp" && bytes.length > 30) {
-    const chunk = String.fromCharCode(at(12), at(13), at(14), at(15));
-    if (chunk === "VP8 ") return { w: u16le(26) & 0x3fff, h: u16le(28) & 0x3fff };
-    if (chunk === "VP8L") {
-      return { w: 1 + (((at(22) & 0x3f) << 8) | at(21)), h: 1 + (((at(24) & 0xf) << 10) | (at(23) << 2) | ((at(22) & 0xc0) >> 6)) };
-    }
-    if (chunk === "VP8X") return { w: 1 + u24le(24), h: 1 + u24le(27) };
-  }
   if (type === "jpeg") {
     let i = 2;
     while (i + 9 < bytes.length) {
@@ -742,11 +733,11 @@ class DocxWriter {
   }
 
   // ── Images ─────────────────────────────────────────────────────────────────
-  // An embedded (data URL) PNG / JPEG / GIF / WebP as an inline picture; null
-  // for anything that can't be embedded.
+  // An embedded (data URL) PNG / JPEG / GIF as an inline picture; null for
+  // anything that can't be embedded, WebP included: Word can't display it.
   #imageDrawing(node: ElementNode, maxTwips: number): string | null {
     const src = node.attrs.src ?? "";
-    const m = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=\s]+)$/i.exec(src);
+    const m = /^data:image\/(png|jpe?g|gif);base64,([A-Za-z0-9+/=\s]+)$/i.exec(src);
     if (!m) return null;
     let entry = this.#mediaByUrl.get(src);
     if (!entry) {
