@@ -148,7 +148,7 @@ it.concurrent("a chat's read admits only collaborators whose own GitHub token ca
   // A collaborator whose own token can read the repository is admitted, checked by its id with
   // that token.
   using carol = await gitHubUser("githubobscarol");
-  await ws.addCollaborator(carol.username, "build");
+  await ws.addCollaborator(carol.username, "workspace");
   const admitted = await opens(carol, workspaceId);
   expect(admitted.error).toBeUndefined();
   expect(admitted.recorder.calls[0]!.map(need => need.gatekeeperId)).toContain(connectionId);
@@ -159,7 +159,7 @@ it.concurrent("a chat's read admits only collaborators whose own GitHub token ca
   // One whose token can't (GitHub answers it 404) is refused, at this connection.
   using dave = await gitHubUser("githubobsdave");
   github.setVisibleTo(repo.name, dave.token, false);
-  await ws.addCollaborator(dave.username, "build");
+  await ws.addCollaborator(dave.username, "workspace");
   const refused = await opens(dave, workspaceId);
   expect(refused.error).toBeDefined();
   expect(refused.recorder.calls.at(-1)!.filter(need => need.failure)).toEqual([
@@ -180,9 +180,9 @@ it.concurrent("a chat's read is refused while a collaborator who can't read the 
   // yet, so only the connection's own live check of each token runs.
   using bob = await gitHubUser("githubobsreadbob");
   using carol = await gitHubUser("githubobsreadcarol");
-  const bobInfo = await ws.addCollaborator(bob.username, "build");
+  const bobInfo = await ws.addCollaborator(bob.username, "workspace");
   if (!bobInfo) throw new Error(`Failed to share the workspace with ${bob.username}`);
-  await ws.addCollaborator(carol.username, "build");
+  await ws.addCollaborator(carol.username, "workspace");
   expect((await opens(bob, workspaceId)).error).toBeUndefined();
   expect((await opens(carol, workspaceId)).error).toBeUndefined();
 
