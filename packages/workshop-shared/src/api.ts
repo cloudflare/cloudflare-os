@@ -1062,8 +1062,8 @@ export type AdminResourceVendor = {
 );
 
 /**
- * A connectable third-party service: its vendor id, display metadata, and the resource types it
- * offers (empty for an auto-provisioning gatekeeper like the Context Library). Returned by both
+ * A third-party service: its vendor id, display metadata, and resource types with connection and
+ * creation flags (empty for an auto-provisioning gatekeeper like the Context Library). Returned by both
  * listGatekeeperVendors and listAddableGatekeepers so the connect UI treats both uniformly.
  */
 export type GatekeeperVendorInfo = {

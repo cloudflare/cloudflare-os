@@ -141,7 +141,8 @@ async function renderModal() {
     listGatekeeperVendors: async () => [{
       id: 'google',
       description: { displayName: 'Google' },
-      supportedResources: [{ urlPattern: PATTERN, creatable: true, creationConfigurator: true }],
+      supportedResources: [{ urlPattern: PATTERN, connectable: false, creatable: true,
+        creationConfigurator: true }],
     }],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
       testState.subscriber = subscriber

@@ -131,12 +131,12 @@ const api = vi.hoisted(() => ({
 }))
 
 function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], granted }: {
-  resource?: SupportedResource
+  resource?: SupportedResource | null
   otherResources?: SupportedResource[]
   accountIds?: number[]
   granted?: string[]
 } = {}): RpcStub<AuthenticatedApi> {
-  const resources = [resource, ...otherResources]
+  const resources = [...(resource ? [resource] : []), ...otherResources]
   api.startResourceConfigurator.mockImplementation(async () => ({
     iframeHtml: '<!doctype html>',
     ui: { [Symbol.dispose]() {} },
@@ -203,6 +203,13 @@ async function renderModal(props: {
 }
 
 describe('GatekeeperModal configurator readiness', () => {
+  it('does not offer a creation-only type as an existing-resource picker', async () => {
+    await renderModal({}, { resource: { ...RESOURCE, connectable: false, creatable: true } })
+    expect(document.body.querySelector('[aria-controls="connection-group-panel-vendor:catalog"]'))
+      .toBeNull()
+    expect(api.startResourceConfigurator).not.toHaveBeenCalled()
+  })
+
   it('keeps Add connection disabled for a lifecycle null readiness event', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}

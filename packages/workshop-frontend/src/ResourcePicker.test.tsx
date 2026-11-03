@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -62,7 +62,12 @@ describe('ResourcePicker', () => {
   const renderPicker = async (
     vendor: GatekeeperVendorInfo,
     searchText: string,
-    { accounts = [], onSelectAccount = () => {} }: { accounts?: AccountDescription[]; onSelectAccount?: () => void } = {},
+    { accounts = [], onSelectAccount = () => {}, onItems, onRefine }: {
+      accounts?: AccountDescription[]
+      onSelectAccount?: () => void
+      onItems?: ComponentProps<typeof ResourcePicker>['onItems']
+      onRefine?: ComponentProps<typeof ResourcePicker>['onRefine']
+    } = {},
   ) => {
     const authenticatedApi = {
       subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
@@ -78,10 +83,27 @@ describe('ResourcePicker', () => {
     document.body.append(container)
     root = createRoot(container)
     await act(async () => root!.render(
-      <ResourcePicker authenticatedApi={authenticatedApi} searchText={searchText} onSelectAccount={onSelectAccount} />,
+      <ResourcePicker authenticatedApi={authenticatedApi} searchText={searchText} onSelectAccount={onSelectAccount} onItems={onItems} onRefine={onRefine} />,
     ))
     return container
   }
+
+  it.each(['', 'Environment', 'https://example.com/environments/123', 'https://example.com/environments/'])(
+    'excludes creation-only resources from account, connection and refinement choices for %j', async searchText => {
+      const resource: SupportedResource = {
+        urlPattern: 'https://example.com/environments/:id', title: 'Environment', description: '',
+        connectable: false, creatable: true,
+      }
+      const vendor = { id: 'example', description: { displayName: 'Example', url: 'https://example.com' }, supportedResources: [resource] }
+      const onItems = vi.fn<NonNullable<ComponentProps<typeof ResourcePicker>['onItems']>>()
+      const picker = await renderPicker(vendor, searchText, {
+        accounts: [{ displayName: 'alice', avatar: { url: '' } }], onItems, onRefine: () => {},
+      })
+
+      expect(picker.textContent).toContain('No matching resources.')
+      expect(onItems).toHaveBeenLastCalledWith([])
+    },
+  )
 
   it('names the placeholder still blocking an account, rather than offering to grant access', async () => {
     const thread: SupportedResource = {

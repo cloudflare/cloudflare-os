@@ -193,7 +193,7 @@ export default function ResourcePicker({
   const lowerSearch = trimmedSearch.toLowerCase()
 
   const allResourceItems = allVendors.flatMap(v =>
-    v.supportedResources.map(r => ({ resource: r, vendor: v }))
+    v.supportedResources.filter(r => r.connectable !== false).map(r => ({ resource: r, vendor: v }))
   )
 
   // The first placeholder (:name or *) still in the search URL, which blocks choosing an account.

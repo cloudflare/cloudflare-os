@@ -357,8 +357,15 @@ export type SupportedResource = {
   grantable?: boolean;
 
   /**
+   * Whether to offer this type in existing-resource connection pickers and requestConnection.
+   * Omitted means true. Set false for types that can only be created; existing bindings are
+   * unaffected.
+   */
+  connectable?: boolean;
+
+  /**
    * If true, an agent may create a new resource of this type with the createExternalResource tool
-   * (see GatekeeperVendor.createResource()).
+   * (see GatekeeperVendor.createResource()). Omitted means false.
    */
   creatable?: boolean;
 
@@ -428,7 +435,7 @@ export type ResolveRequestedResourceResult =
 
 /**
  * Determines which SupportedResource an agent connection request would pre-select in the accept
- * modal, using the exact same precedence the modal uses:
+ * modal, using the modal's precedence:
  *   1. the resource whose urlPattern matches `resourceUrl` (ignoring the catch-all), else
  *   2. the whole-instance catch-all ("https://*") if the vendor offers one, else
  *   3. the sole resource, if the vendor offers exactly one.
@@ -440,6 +447,8 @@ export type ResolveRequestedResourceResult =
  *
  * This is the single source of truth shared by the backend (which enforces it at request time)
  * and the frontend (which pre-seeds from the resolved resource), so the two cannot diverge.
+ * Connection discovery callers must first exclude types marked connectable: false. Observer
+ * verification uses the full list, since an already-bound resource still needs its grants.
  */
 export function resolveRequestedResource(
     supportedResources: SupportedResource[],
@@ -653,7 +662,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 
   /**
    * Get the list of resource types this vendor supports. Each entry describes a category of
-   * resource the vendor can provide access to, along with a URL pattern for matching.
+   * resource the vendor can provide access to, along with a URL pattern for matching. Each type's
+   * connectable (default true) and creatable (default false) flags control which flows offer it.
    *
    * `options.userId` specifies the user ID (usually, email address) of the user who is driving the
    * query, which the gatekeeper can consider in deciding what resources are available. If it
