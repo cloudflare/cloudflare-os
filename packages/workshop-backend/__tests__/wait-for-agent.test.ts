@@ -5,9 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import {
-  getWaitForAgentErrorCode, WAIT_FOR_AGENT_ERROR_CODES, type AiChatAuthorInfo, type Overseer,
-} from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, Overseer } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
@@ -24,7 +22,6 @@ const AI_MODEL = {
 };
 
 interface Workspace {
-  instance: OverseerDurableObject;
   impl: any;
   client: Overseer;
 }
@@ -54,7 +51,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
     impl.users = { idFromString: (id: string) => id, get: () => owner };
     using notifyClosed = new NativeRpcStub<() => void>(() => {});
     using client = await instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
-    await fn({ instance, impl, client });
+    await fn({ impl, client });
   });
 }
 
@@ -178,45 +175,6 @@ describe("waitForAgent", () => {
       author: AGENT, type: "changes",
     });
     expect(await client.waitForAgent(chatId)).toMatchObject({ author: AGENT, type: "message", message: "Done." });
-  }));
-
-  it("fails with a coded error when timeoutMs runs out with the agent still running", () =>
-      withWorkspace(async ({ client }) => {
-    let chatId = await client.newChat("Start", "some-model");
-    for (let timeoutMs of [0, 30]) {
-      let error = await client.waitForAgent(chatId, timeoutMs).catch((err: unknown) => err);
-      expect(getWaitForAgentErrorCode(error)).toBe(WAIT_FOR_AGENT_ERROR_CODES.timedOut);
-    }
-    await expect(client.waitForAgent(chatId, -1)).rejects.toThrow("timeoutMs");
-  }));
-
-  it("counts the wait for a pipelined sendChatMessage() toward timeoutMs", () =>
-      withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Hello", null);
-    let owner = impl.users.get();
-    let { promise: answered, resolve: answer } = Promise.withResolvers<void>();
-    let getChatContext = owner.getChatContext;
-    owner.getChatContext = async (modelId: string | null) => {
-      await answered;
-      return getChatContext(modelId);
-    };
-    let sent = client.sendChatMessage(chatId, "What is 17 times 23?", "some-model");
-    let error = await client.waitForAgent(chatId, 30).catch((err: unknown) => err);
-    expect(getWaitForAgentErrorCode(error)).toBe(WAIT_FOR_AGENT_ERROR_CODES.timedOut);
-    answer();
-    await sent;
-  }));
-
-  it("ends when its session is closed", () => withWorkspace(async ({ instance, client }) => {
-    let chatId = await client.newChat("Start", "some-model");
-    let notifyClosed = new NativeRpcStub<() => void>(() => {});
-    let other = await instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
-    notifyClosed[Symbol.dispose]();
-    let waiting = other.waitForAgent(chatId);
-    expect(await isPending(waiting)).toBe(true);
-
-    other[Symbol.dispose]();
-    await expect(waiting).rejects.toThrow("The workspace session was closed.");
   }));
 
   it("fails for a chat that does not exist, or is deleted while waited on", () =>

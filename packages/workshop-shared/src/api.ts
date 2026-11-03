@@ -447,26 +447,6 @@ export const createAuthError = authErrors.create;
 /** Reads the machine-readable code from an authentication failure. */
 export const getAuthErrorCode = authErrors.getCode;
 
-/** Stable error codes attached to expected failures from `Overseer.waitForAgent()`. */
-export const WAIT_FOR_AGENT_ERROR_CODES = {
-  timedOut: "AGENT_WAIT_TIMED_OUT",
-} as const;
-
-/** An expected failure code from `Overseer.waitForAgent()`. */
-export type WaitForAgentErrorCode =
-    typeof WAIT_FOR_AGENT_ERROR_CODES[keyof typeof WAIT_FOR_AGENT_ERROR_CODES];
-
-const waitForAgentErrors = codedErrorFamily<WaitForAgentErrorCode>({
-  [WAIT_FOR_AGENT_ERROR_CODES.timedOut]:
-      "The agent was still running when the wait timed out. Wait again, or stop it.",
-});
-
-/** Creates an expected `waitForAgent()` error with a machine-readable code. */
-export const createWaitForAgentError = waitForAgentErrors.create;
-
-/** Reads the machine-readable code from an expected `waitForAgent()` error. */
-export const getWaitForAgentErrorCode = waitForAgentErrors.getCode;
-
 /**
  * One user as listed in the deployment-wide user directory (see
  * `AuthenticatedApi.searchUsers`).
@@ -3445,15 +3425,14 @@ export interface Overseer extends RpcTarget {
    * arguments (an `uploadBlob()` result, say) is delivered when the promise resolves, which may
    * be after this one, so await such a call before waiting.
    *
-   * `timeoutMs` bounds the wait: at most ten minutes, which is also the default, and 0 checks
-   * without waiting. If it runs out with the agent still running, this throws an error whose code
-   * is `WAIT_FOR_AGENT_ERROR_CODES.timedOut`; wait again for a longer turn. The wait is held in the
+   * It waits as long as the turn runs. A client that wants a bound times out on its own side,
+   * which leaves the turn running; it can wait again, or stop the agent. The wait is held in the
    * workspace's memory, so if the workspace restarts meanwhile the call fails as the connection
    * does; the turn resumes by itself, and a new connection can wait again. A client that
    * disconnects or lets the workspace go while waiting still counts as present in the workspace
-   * until the wait ends. Requires the same access as `getChatHistory()`.
+   * until the turn ends. Requires the same access as `getChatHistory()`.
    */
-  waitForAgent(chatId: number, timeoutMs?: number): Promise<AiChatMessage | null>;
+  waitForAgent(chatId: number): Promise<AiChatMessage | null>;
 
   /**
    * Subscribe to the gadget worker's console logs. This allows the user to observe console logs
