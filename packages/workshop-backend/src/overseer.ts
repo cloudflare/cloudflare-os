@@ -6599,7 +6599,8 @@ class OverseerImpl implements AgentHooks {
     const stream = source ? await this.#worktreeSourcePack(lease) : await replicaCommitPack(this.gitCache,
       lease.sourcePack ? lease.worktree : {...lease.worktree, baseCommit: null},
       () => { this.requireReplicaLease(id); }, lease.pendingChanges ?? []);
-    return new Response(stream, {headers: {"content-type": "application/x-git-packed-objects"}});
+    return new Response(source ? stream : this.#commandGitStream(id, stream),
+      {headers: {"content-type": "application/x-git-packed-objects"}});
   }
 
   requireReplicaLease(id: string, receiptOnly = false): WorktreeReplicaLease {
@@ -6764,8 +6765,35 @@ class OverseerImpl implements AgentHooks {
     requests.add(abort);
     return {signal: abort.signal, forget: () => {
       requests.delete(abort);
-      if (!requests.size) this.#commandGitRequests.delete(id);
+      if (!requests.size && this.#commandGitRequests.get(id) === requests) this.#commandGitRequests.delete(id);
     }};
+  }
+
+  // Fence every chunk, including headers/payloads emitted separately by the local pack builder.
+  #commandGitStream(id: string, body: ReadableStream<Uint8Array>,
+      check: () => void = () => { this.requireReplicaLease(id); },
+      request = this.#commandGitRequest(id)): ReadableStream<Uint8Array> {
+    const {signal, forget} = request;
+    const reader = body.getReader();
+    const cancel = () => { void reader.cancel().catch(() => {}); };
+    const done = () => { signal.removeEventListener("abort", cancel); forget(); };
+    try { check(); signal.throwIfAborted(); }
+    catch (error) { done(); void reader.cancel(error).catch(() => {}); throw error; }
+    signal.addEventListener("abort", cancel, {once: true});
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          check(); signal.throwIfAborted();
+          const chunk = await reader.read();
+          check(); signal.throwIfAborted();
+          if (chunk.done) { done(); controller.close(); }
+          else controller.enqueue(chunk.value);
+        } catch (error) {
+          done(); controller.error(error); await reader.cancel(error).catch(() => {});
+        }
+      },
+      async cancel(reason) { done(); await reader.cancel(reason); },
+    }, {highWaterMark: 0});
   }
 
   async commandGitPull(id: string, binding: string, request: Request): Promise<Response> {
@@ -6799,24 +6827,7 @@ class OverseerImpl implements AgentHooks {
       const init = {status: response.status, statusText: response.statusText,
         headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"}};
       if (!response.body) { forget(); return new Response(null, init); }
-      const reader = response.body.getReader();
-      const cancel = () => { void reader.cancel().catch(() => {}); };
-      signal.addEventListener("abort", cancel, {once: true});
-      const done = () => { signal.removeEventListener("abort", cancel); forget(); };
-      return new Response(new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          try {
-            check(); signal.throwIfAborted();
-            const chunk = await reader.read();
-            check(); signal.throwIfAborted();
-            if (chunk.done) { done(); controller.close(); }
-            else controller.enqueue(chunk.value);
-          } catch (error) {
-            done(); controller.error(error); await reader.cancel(error).catch(() => {});
-          }
-        },
-        async cancel(reason) { done(); await reader.cancel(reason); },
-      }, {highWaterMark: 0}), init);
+      return new Response(this.#commandGitStream(id, response.body, check, {signal, forget}), init);
     } catch (error) { forget(); throw error; }
   }
 

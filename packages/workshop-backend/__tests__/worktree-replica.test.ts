@@ -327,6 +327,55 @@ describe("single-worktree command mount and writeback", () => {
     await mount.writeback.submitChanges("final", [], true);
     expect(await next).toBe(true);
   }));
+  it.each(["live", "final", "grant"])("fences local object payloads between pack chunks (%s)", edge => within(async (impl, f) => {
+    const mount = await f.context().export("REPO");
+    const reader = (await impl.exportWorktreePack(mount.id, false)).body!.getReader();
+    try {
+      const header = (await reader.read()).value!;
+      expect(new TextDecoder().decode(header.subarray(0, 4))).toBe("PACK");
+      const count = new DataView(header.buffer, header.byteOffset).getUint32(8);
+      let foundBlob = false;
+      for (let i = 0; i < count; ++i) {
+        const entry = (await reader.read()).value!;
+        if (((entry[0] >> 4) & 7) === 3) { foundBlob = true; break; }
+        expect((await reader.read()).done).toBe(false);
+      }
+      expect(foundBlob).toBe(true);
+      if (edge === "final") await mount.writeback.submitChanges("final", [], true);
+      if (edge === "grant") impl.env.AGENT_INTEGRATION_GRANTS = "{}";
+      const payload = await reader.read().then(chunk => chunk, () => ({done: true as const}));
+      if (edge === "live") {
+        expect(payload.done).toBe(false);
+        while (!(await reader.read()).done) {}
+      } else expect(payload.done).toBe(true);
+    } finally {
+      await reader.cancel().catch(() => {});
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"container":{"worktreeReplica":true}}';
+      await mount.writeback.submitChanges("final", [], true);
+    }
+  }));
+  it("retains cancellation for a new Git read when an older read closes twice", () => within(async (impl, f) => {
+    bindGit(impl);
+    const mount = await f.context().export("REPO");
+    const old = (await impl.commandGitPull(mount.id, "GIT", gitRequest("GIT", true))).body!.getReader();
+    expect((await old.read()).done).toBe(false);
+    const pending = old.read().catch(() => ({done: true}));
+    await Promise.resolve();
+    // cancel() forgets the old request before its in-flight pull resumes and forgets it again.
+    const closing = old.cancel();
+    const replacement = impl.commandGitPull(mount.id, "GIT", gitRequest("GIT", true));
+    await closing;
+    await pending;
+    const reader = (await replacement).body!.getReader();
+    let settled = false;
+    try {
+      expect((await reader.read()).done).toBe(false);
+      const next = reader.read().then(chunk => {settled = true; return chunk.done;}, () => {settled = true; return true;});
+      await mount.writeback.submitChanges("final", [], true);
+      await vi.waitFor(() => expect(settled).toBe(true), {timeout: 1000});
+      expect(await next).toBe(true);
+    } finally { await reader.cancel().catch(() => {}); }
+  }));
   it("reuses paused binding replay and invalidates it on history and context changes", () => within(async (impl, f) => {
     bindGit(impl);
     const mount = await f.context().export("REPO");
