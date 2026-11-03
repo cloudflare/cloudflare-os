@@ -80,7 +80,9 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   google.main = main;
   // update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so
   // that reload can still be running either one's earlier build, with another to come. Every
-  // Worker carries this upgrade's mark, and it is done once each reports it.
+  // Worker carries this upgrade's mark, and it is done once each reports it. Reading the env asks
+  // the runtime again after each reload, so a read that meets a later reload loses its
+  // connection: that Worker has not reported yet.
   const upgrade = randomUUID();
   const workers: string[] = [];
   await harness.server.update(current => ({
@@ -94,10 +96,24 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   }));
   await waitFor("every Worker to run the upgrade", async () => {
     for (const name of workers) {
-      if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
+      try {
+        if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
+      } catch (error) {
+        if (isReloadDisconnect(error)) return null;
+        throw error;
+      }
     }
     return true;
   });
+}
+
+/**
+ * Miniflare reads the env with a synchronous fetch on a worker thread and rethrows its failure
+ * here, which drops the cause's `code`, so the cause is matched by its message.
+ */
+function isReloadDisconnect(error: unknown): boolean {
+  return error instanceof TypeError && error.message === "fetch failed" &&
+    error.cause instanceof Error && /\bECONN(RESET|REFUSED)\b/.test(error.cause.message);
 }
 
 type Row = Record<string, unknown>;
