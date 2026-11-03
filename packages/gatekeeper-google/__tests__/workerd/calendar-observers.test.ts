@@ -312,6 +312,7 @@ describe("Google Calendar verifyObserverAccess", () => {
   it.each([
     ["a non-canonical spelling", "calendar/freeBusy/alice@example.com"],
     ["another product's namespace", "gmail/freeBusy/alice%40example.com"],
+    ["another Google gatekeeper's subresource", "bigquery/project/proj/dataset/sales"],
     ["no namespace", "freeBusy/alice%40example.com"],
     ["more than one resource", "calendar/freeBusy/alice%40example.com/freeBusy/bob%40example.com"],
     ["an event", STANDUP],

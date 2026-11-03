@@ -840,7 +840,7 @@ its resource types.
 | **google** | Gmail Mailbox | **A** | Always throw. (Future: allow observers who independently have access, e.g. mailing-list members — explicitly out of scope now.) |
 | **google** | Google Chat Conversation / Thread | **B** | Check the observer's own account can open the bound space (`spaces.get`); for a conversation binding, also that it can list the space's members (`members.list`), since a space can restrict its member list to managers and the binding lists members. Everything else the binding reads — including the other participant's name on a direct message — comes from Chat's own space-scoped responses. |
 | **google** | Google Chat Account | **A** | Always throw. The binding spans the owner's direct messages and every conversation they belong to, so there is no one a collaborator could be verified against. Bind a single conversation to share. |
-| **google** | BigQuery | **C** | Track accessed datasets; verify the observer's IAM access to each. Dataset granularity for now (tables/columns later). |
+| **google** | BigQuery | **C**, kernel-checked (§10) | Every read reports each dataset whose data it revealed as a `subresources` ID, `bigquery/project/<projectId>/dataset/<datasetId>`: a query or dry run the datasets of its referenced tables, a dataset listing every dataset it lists (only the bound one on a dataset binding), a table listing or description its dataset; `getProject` reports `[]`. `verifyObserverAccess` allows an observer only if their own token has IAM access to every one, answered by their `UserAccount` under the same reuse rules as Calendar's availability checks above, so a revoked dataset grant can still admit the observer for up to 15 minutes. Dataset granularity on every binding, table-scoped ones included (tables/columns later). `addObserver` keeps the tracker, which reads no longer feed, so it enforces only the datasets reads revealed before they reported them, asking BigQuery about each on every admission. |
 | **linear** | Team / Issue | **B** | Check the observer's workspace/team membership, honoring team privacy. |
 | **linear** | Workspace | **C** | Track accessed teams; verify the observer against each (reusing the Team B check). |
 | **notion** | Page / Database | **B** | Check the observer's Notion access to the bound page/database. |
@@ -910,8 +910,8 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
 runs first). The Context Library is the first shipping gatekeeper to report subresources (§9.2).
 Google Calendar reports `calendar/calendar/<calendarId>` for its metadata and event listings, and
-`calendar/freeBusy/<calendarId>` for each calendar an availability check reads. Scheduled Tasks
-and Web Search report `[]` on every read.
+`calendar/freeBusy/<calendarId>` for each calendar an availability check reads; Google BigQuery
+reports the datasets each read reveals. Scheduled Tasks and Web Search report `[]` on every read.
 The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAccess()` answers, what
 `addObserver()` must still enforce) is documented on those members in
 `workshop-shared/src/gatekeeper.ts`, and
