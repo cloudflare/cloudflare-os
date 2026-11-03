@@ -6,10 +6,12 @@
 // Holds when Dependabot opened it and wrote every commit; every change is a `uses:` line in a
 // workflow that swaps one full 40-character SHA pin of the same action for another, with a
 // `# <tag>` comment; the publisher is on PUBLISHERS; the tag resolves to that SHA in the action's
-// own repository (so the pin cannot name a commit that exists only in a fork); and every touched
-// workflow, as it stands at the base, holds no credential and is not a reusable workflow
-// (workflow.ts). A pinned action then runs with a read-only token and no secret, whatever its new
-// release does.
+// own repository (so the pin cannot name a commit that exists only in a fork); every touched
+// workflow, as it stands at the base, holds no credential, is not a reusable workflow and runs on
+// GitHub-hosted runners; and no job in any workflow at the base both holds a credential and
+// restores an Actions cache (workflow.ts). A pinned action then runs with a read-only token and no
+// secret, whatever its new release does, and cannot pass code through the cache to a job that holds
+// one.
 //
 // Which workflows are producers or the gate, and so always go to a person, is the gate's list,
 // not this proof's.
@@ -21,9 +23,9 @@ import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts";
 import type { FileDiff } from "./diff.ts";
-import { commitAuthors, fileAt, mergeBase, pullRequestDiff } from "./git.ts";
+import { commitAuthors, git, mergeBase, pullRequestDiff } from "./git.ts";
 import { DEPENDABOT_EMAIL, DEPENDABOT_LOGIN } from "./deps.ts";
-import { workflowReasons } from "./workflow.ts";
+import { cacheReasons, workflowReasons } from "./workflow.ts";
 
 const ACTIONS_BRANCH_PREFIX = "dependabot/github_actions/";
 
@@ -49,8 +51,8 @@ export interface ActionsInput {
   files: FileDiff[];
   /** What each `owner/repo@tag` resolves to in that repository: the tag object and the commit. */
   tagTargets: Record<string, string[]>;
-  /** Each touched workflow's text at the base; missing means it is not there. */
-  baseWorkflows: Record<string, string | undefined>;
+  /** Every workflow file at the base, by path. */
+  baseWorkflows: Record<string, string>;
 }
 
 /** The pin moves a diff makes, and every rule its lines break. */
@@ -109,9 +111,17 @@ export function evaluateActions(input: ActionsInput): Outcome {
     if (text === undefined) reasons.push(`${path}: not at the base`);
     else for (const reason of workflowReasons(text)) reasons.push(`${path}: ${reason}`);
   }
+  // Every workflow, not only the touched ones: a bumped action in a workflow with no credential can
+  // still write a cache entry that a job holding one restores.
+  const all = Object.keys(input.baseWorkflows).toSorted();
+  if (all.length === 0) reasons.push("no workflows at the base");
+  for (const path of all) {
+    for (const reason of cacheReasons(input.baseWorkflows[path])) reasons.push(`${path}: ${reason}`);
+  }
   return decide(reasons, {
     moves: moves.map((move) => `${move.repo}@${move.sha} # ${move.tag}`),
     workflows_checked: workflows,
+    cache_rule_checked: all,
   });
 }
 
@@ -139,7 +149,9 @@ async function main(): Promise<void> {
       commitEmails: commitAuthors(from, head),
       files,
       tagTargets,
-      baseWorkflows: Object.fromEntries(files.map((file) => [file.path, fileAt(base, file.path)])),
+      baseWorkflows: Object.fromEntries(git(["ls-tree", "--name-only", base, "--", ".github/workflows/"]).split("\n")
+        .filter((path) => WORKFLOW.test(path))
+        .map((path) => [path, git(["show", `${base}:${path}`])])),
     });
   });
 }

@@ -9,10 +9,12 @@ name: Automerge evidence
 # What rests on the author being a maintainer (threat model, rule 7):
 # - This file is the head's: `pull_request` runs the merge commit's workflow, so an author can
 #   change any job here, the secret-holding ones included.
-# - equivalence, tests, deploy-dry-run, red-green and mutation run head code, and any of them can
-#   upload an artifact under any name in this run, the names consumer-build and preview-e2e use
-#   included. A name cannot be uploaded twice, so the real upload then fails, and its job's
-#   continue-on-error keeps the run green. No artifact from this run is worth more than its author.
+# - equivalence, tests, preview-smoke, deploy-dry-run, red-green and mutation run head code, and
+#   any of them can upload an artifact under any name in this run, the names consumer-build and
+#   preview-e2e use included. A name cannot be uploaded twice, so the real upload then fails, and
+#   its job's continue-on-error keeps the run green. No artifact from this run is worth more than
+#   its author. For a Dependabot pull request the head's scripts are the base's, but its
+#   dependencies run here, and a compromised one could write a false `preview-smoke`.
 # - consumer-build and preview-e2e hold secrets. They start only when the trust job finds a
 #   same-repository branch by a person listed in the base's `.github/maintainers`, check out the
 #   base and run only its scripts here, but what they measure is head code: gadgets-internal
@@ -33,8 +35,7 @@ env:
 
 jobs:
   # Builds the release (scripts/release/build-release.ts) at the merge base and at head and
-  # compares the manifests. A Dependabot pull request's head build is also the bundle preview.yml's
-  # bot path deploys, so it is uploaded for that.
+  # compares the manifests.
   equivalence:
     name: Release equivalence
     if: ${{ !github.event.pull_request.draft }}
@@ -93,15 +94,6 @@ jobs:
           path: automerge-out/automerge-proof-equivalence.json
           if-no-files-found: error
 
-      - name: Upload the bot-preview bundle
-        if: ${{ !cancelled() && github.event.pull_request.user.login == 'dependabot[bot]' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: automerge-bot-preview-release
-          path: ${{ runner.temp }}/release-head
-          if-no-files-found: error
-          retention-days: 7
-
   # A test-only pull request's tests kill at least the mutants the base tests killed. The proof
   # stops itself at AUTOMERGE_MUTATION_BUDGET_MINUTES with status `error`; the job timeout leaves
   # room for setup and the upload after it.
@@ -143,6 +135,47 @@ jobs:
         with:
           name: automerge-proof-tests
           path: automerge-out/automerge-proof-tests.json
+          if-no-files-found: error
+
+  # The pull request's workers, built and run on the runner in workerd (scripts/run-local.ts), answer
+  # on `/` and `/api/version`. Nothing is deployed and no secret is held, so it runs for every pull
+  # request, Dependabot's included.
+  preview-smoke:
+    name: Local preview smoke
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out the head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      - name: preview-smoke
+        run: node scripts/automerge/proofs/smoke.ts local
+
+      - name: Upload preview-smoke
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: automerge-preview-smoke
+          path: automerge-out/automerge-preview-smoke.json
           if-no-files-found: error
 
   # Band evidence. Each job writes one `automerge-evidence-<name>` artifact. The gate reads no
@@ -255,6 +288,7 @@ jobs:
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: false
           run-install: false
 
       - name: Decide
@@ -296,6 +330,7 @@ jobs:
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: false
           run-install: false
 
       - name: evidence-consumer-build

@@ -12,19 +12,9 @@ name: Preview
 # so `secrets.CLOUDFLARE_API_TOKEN` interpolates to the empty string there and no fork PR can
 # deploy anything. That is the same guarantee workers-sdk's deploy-previews.yml relies on.
 #
-# Therefore the maintainer path is `pull_request` only. Never `pull_request_target`, never
-# `issue_comment` — each of those runs privileged with the secret available while the code, the PR
-# number, or the artifact naming it comes from an untrusted contributor.
-#
-# The one `workflow_run` job, `bot-deploy`, is built so that none of that applies. It deploys
-# Dependabot pull requests with its own preview-only token, PREVIEW_BOT_CLOUDFLARE_API_TOKEN, never
-# CLOUDFLARE_API_TOKEN, and fails when that secret is absent. It runs no code from the pull
-# request: it checks out `main`, runs main's scripts, and deploys only when the pull request's
-# worker configs equal main's, so it deploys with the configs the bundle was built against. The
-# pull request's code arrives only as the release bundle Automerge evidence built with no secrets,
-# and is uploaded, not executed; prebuilt.ts checks every file in it against the hash its manifest
-# names. The pull request number comes from the event and is re-checked against the API, never
-# read from the artifact.
+# Therefore: `pull_request` only. Never `pull_request_target`, never `workflow_run`, never
+# `issue_comment` — each of those runs privileged with the secret available while the code, the
+# PR number, or the artifact naming it comes from an untrusted contributor.
 #
 # The `if:` conditions and the in-job guard are defence in depth, each fail-closed, and exist so
 # that a future edit which weakens the trigger still does not leak the token. They are not what
@@ -38,15 +28,14 @@ name: Preview
 # pushing a branch into this repository already requires write access, and the first step of each
 # job re-checks the author's permission against the API and fails closed.
 #
-# The setup-vp `cache: true` below is deliberate and is not a poisoning path: a fork PR's Actions
-# cache is scoped to `refs/pull/<n>/merge` and cannot be read from another PR or from `main`.
+# No job here restores an Actions cache (setup-vp `cache: false`, its default, set explicitly). Each
+# job holds a Cloudflare token, and a cache entry is written by whatever ran in the job that saved
+# it: an action or dependency in a credential-free workflow on `main` could leave an entry that a
+# job here restores and runs. proof-actions checks this at the base (scripts/automerge/proofs).
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
-  workflow_run:
-    workflows: ["Automerge evidence"]
-    types: [completed]
   schedule:
     # Nightly, off the hour. GitHub has no equivalent of GitLab's `environment.auto_stop_in`, so
     # this is what stops abandoned previews from leaking a KV pair and an R2 bucket each.
@@ -112,7 +101,7 @@ jobs:
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: true
+          cache: false
           run-install: true
 
       - name: Deploy preview
@@ -193,9 +182,9 @@ jobs:
               --input output/preview-comment.json
           fi
 
-      # The smoke result is an `automerge-preview-smoke-<head sha>` artifact for the risk-review
-      # gate (scripts/automerge/proofs/smoke.ts). Without the Access service token it records
-      # status `error`, which sends the pull request to a person.
+      # The maintainer preview's record, `automerge-preview-deploy-<head sha>`, which
+      # evidence-preview-e2e reads `backend_version` from (scripts/automerge/proofs/smoke.ts).
+      # Without the Access service token it records status `error`.
       - name: Smoke the preview
         id: smoke
         env:
@@ -203,144 +192,14 @@ jobs:
           AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PREVIEW_ACCESS_CLIENT_ID: ${{ secrets.PREVIEW_ACCESS_CLIENT_ID }}
           PREVIEW_ACCESS_CLIENT_SECRET: ${{ secrets.PREVIEW_ACCESS_CLIENT_SECRET }}
-        run: node scripts/automerge/proofs/smoke.ts "$(cat output/preview-url)"
+        run: node scripts/automerge/proofs/smoke.ts deploy "$(cat output/preview-url)"
 
-      - name: Upload the smoke result
+      - name: Upload the preview record
         if: ${{ !cancelled() && steps.smoke.conclusion == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: automerge-preview-smoke-${{ github.event.pull_request.head.sha }}
-          path: automerge-out/automerge-preview-smoke.json
-          if-no-files-found: error
-
-  # Dependabot pull requests get no maintainer preview (the `deploy` job skips bots). This job
-  # deploys the release bundle that Automerge evidence built for one, then smokes it. See the
-  # SECURITY note at the top for why this `workflow_run` job is safe.
-  bot-deploy:
-    name: Deploy bot preview
-    if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.path == '.github/workflows/automerge-evidence.yml' &&
-      github.event.workflow_run.head_repository.id == github.event.repository.id &&
-      startsWith(github.event.workflow_run.head_branch, 'dependabot/') &&
-      github.repository_owner == 'cloudflare'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    concurrency:
-      group: preview-bot-${{ github.event.workflow_run.head_branch }}
-      cancel-in-progress: false
-    permissions:
-      actions: read
-      contents: read
-      pull-requests: read
-    env:
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-    steps:
-      # Before anything else: the pull request this run built is open, from this repository,
-      # opened by Dependabot, and still at the SHA the run built.
-      - name: Verify the pull request
-        id: pr
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          REPO_ID: ${{ github.event.repository.id }}
-        run: |
-          pr=$(gh api "repos/$GH_REPO/pulls?state=open&head=${GH_REPO%%/*}:$HEAD_BRANCH" --jq '
-            [.[] | select(.user.login == "dependabot[bot]"
-                          and .head.sha == env.HEAD_SHA
-                          and (.head.repo.id | tostring) == env.REPO_ID)]
-            | if length == 1 then .[0] | "\(.number) \(.base.sha)" else "" end')
-          if [[ -z "$pr" ]]; then
-            echo "::error::no single open Dependabot pull request from $HEAD_BRANCH at $HEAD_SHA"
-            exit 1
-          fi
-          read -r number base <<< "$pr"
-          echo "number=$number" >> "$GITHUB_OUTPUT"
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-
-      - name: Require the bot preview token
-        env:
-          PREVIEW_BOT_CLOUDFLARE_API_TOKEN: ${{ secrets.PREVIEW_BOT_CLOUDFLARE_API_TOKEN }}
-        run: |
-          if [[ -z "$PREVIEW_BOT_CLOUDFLARE_API_TOKEN" ]]; then
-            echo "::error::PREVIEW_BOT_CLOUDFLARE_API_TOKEN is not configured; no bot preview, so no smoke result"
-            exit 1
-          fi
-
-      - name: Check out main
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      # Objects only: the head's worker configs are compared, never checked out. A branch behind a
-      # config change on main has to be rebased (`@dependabot rebase`) before it gets a preview.
-      - name: Check the pull request's worker configs match main
-        env:
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
-        run: |
-          git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
-          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
-          if ! git diff --quiet HEAD "$HEAD_SHA" -- cloudflare.config.ts \
-              'packages/*/cloudflare.config.ts' 'packages/*/wrangler.jsonc'; then
-            echo "::error::worker configs differ between main and $HEAD_SHA; rebase the pull request"
-            exit 1
-          fi
-
-      - name: Enable Corepack
-        run: corepack enable
-
-      # No cache: this job holds a deploy token, and the cache is shared with pull request runs.
-      - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: false
-          run-install: true
-
-      - name: Download the release bundle
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: automerge-bot-preview-release
-          path: ${{ runner.temp }}/release
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-
-      - name: Check the bundle names the pull request's head
-        run: test "$(jq -r .commit "$RUNNER_TEMP/release/manifest.json")" = "$HEAD_SHA"
-
-      - name: Deploy preview
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.PREVIEW_BOT_CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
-          PREVIEW_ADMINS: ${{ secrets.PREVIEW_ADMINS }}
-          CF_ACCESS_AUD: ${{ secrets.CF_ACCESS_AUD }}
-          CF_ACCESS_ISS: ${{ secrets.CF_ACCESS_ISS }}
-          PREVIEW_NAME: ${{ github.event.workflow_run.head_branch }}
-          PREVIEW_PR_NUMBER: ${{ steps.pr.outputs.number }}
-        run: node scripts/preview/preview.ts deploy --prebuilt "$RUNNER_TEMP/release"
-
-      # Bound to the evidence run whose bundle this deployed (smoke.ts `trigger`).
-      - name: Smoke the preview
-        id: smoke
-        env:
-          AUTOMERGE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          AUTOMERGE_BASE_SHA: ${{ steps.pr.outputs.base }}
-          AUTOMERGE_TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
-          AUTOMERGE_TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          PREVIEW_ACCESS_CLIENT_ID: ${{ secrets.PREVIEW_ACCESS_CLIENT_ID }}
-          PREVIEW_ACCESS_CLIENT_SECRET: ${{ secrets.PREVIEW_ACCESS_CLIENT_SECRET }}
-        run: node scripts/automerge/proofs/smoke.ts "$(cat output/preview-url)"
-
-      - name: Upload the smoke result
-        if: ${{ !cancelled() && steps.smoke.conclusion == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: automerge-preview-smoke-${{ github.event.workflow_run.head_sha }}
-          path: automerge-out/automerge-preview-smoke.json
+          name: automerge-preview-deploy-${{ github.event.pull_request.head.sha }}
+          path: automerge-out/automerge-preview-deploy.json
           if-no-files-found: error
 
   cleanup:
@@ -393,7 +252,7 @@ jobs:
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: true
+          cache: false
           run-install: true
 
       - name: Delete preview
@@ -438,7 +297,7 @@ jobs:
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: true
+          cache: false
           run-install: true
 
       - name: Sweep previews whose PR is closed, or older than 7 days

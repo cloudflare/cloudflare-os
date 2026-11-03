@@ -1,11 +1,13 @@
-// Whether a GitHub Actions workflow can hold a credential or run inside another workflow, for
-// proof-actions.
+// What proof-actions reads from a GitHub Actions workflow: whether it can hold a credential, run
+// inside another workflow or off a GitHub-hosted runner (workflowReasons), and whether a job that
+// holds a credential restores an Actions cache (cacheReasons).
 //
 // A workflow holds no credential when it names no secret, passes none to a reusable workflow, runs
 // no job in an environment (environment secrets reach any step of such a job), calls no reusable
 // workflow (whose jobs may name an environment), and grants its token nothing beyond `read`. It
 // must also not be a reusable workflow itself (`workflow_call`), since it would then run inside
-// whatever workflow calls it.
+// whatever workflow calls it, and every job must name one GitHub-hosted runner label, since a
+// self-hosted or larger runner can carry credentials of its own.
 //
 // The structure is read by a deliberately small YAML reader: block mappings, block sequences, block
 // scalars, single-line quoted and plain scalars, and single-line flow collections. Anything else,
@@ -14,7 +16,8 @@
 // the proof. GitHub reads anchors and aliases, so a reader that skipped them could be shown a
 // different permissions block than GitHub runs with.
 
-type YamlMap = { kind: "map"; entries: Map<string, YamlNode> };
+/** A block mapping, and the source lines (start inclusive, end exclusive) of each entry. */
+type YamlMap = { kind: "map"; entries: Map<string, YamlNode>; spans: Map<string, [number, number]> };
 
 /** A YAML node as this reader sees it. Flow collections stay as their source text. */
 export type YamlNode =
@@ -160,6 +163,7 @@ function nestedValue(reader: Reader, owner: number): YamlNode {
 
 function parseMap(reader: Reader, indent: number): YamlMap {
   const entries = new Map<string, YamlNode>();
+  const spans = new Map<string, [number, number]>();
   while (reader.peek() === indent && !isSeqItem(reader.text(indent))) {
     const line = reader.index;
     const match = KEY.exec(reader.text(indent));
@@ -175,10 +179,11 @@ function parseMap(reader: Reader, indent: number): YamlMap {
     } else {
       entries.set(key, inlineValue(reader, rest, indent));
     }
+    spans.set(key, [line, reader.index]);
   }
   const next = reader.peek();
   if (next > indent) reader.fail("unexpected indentation");
-  return { kind: "map", entries };
+  return { kind: "map", entries, spans };
 }
 
 function parseSeq(reader: Reader, indent: number): YamlNode {
@@ -206,13 +211,13 @@ function parseSeq(reader: Reader, indent: number): YamlNode {
 }
 
 /** Parses a workflow file into its root mapping, or throws naming the line it cannot read. */
-export function parseWorkflow(text: string): Map<string, YamlNode> {
+export function parseWorkflow(text: string): YamlMap {
   const reader = new Reader(text);
   const first = reader.peek();
   if (first !== 0) reader.fail("the document does not start with a mapping at column 0");
   const root = parseMap(reader, 0);
   if (reader.peek() !== -1) reader.fail("text after the root mapping");
-  return root.entries;
+  return root;
 }
 
 /** The entry for `key`, compared without case (keys are unique that way, see parseMap). */
@@ -254,9 +259,43 @@ function permissionReasons(node: YamlNode, where: string): string[] {
   return reasons;
 }
 
+/** GitHub-hosted runner labels. A self-hosted or larger runner may carry credentials of its own. */
+const HOSTED_RUNNERS = new Set([
+  "ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "ubuntu-24.04-arm", "ubuntu-22.04-arm",
+  "windows-latest", "windows-2025", "windows-2022", "macos-latest", "macos-15", "macos-14",
+]);
+
+/** A parsed workflow: the root mapping and each job's source lines. */
+interface Workflow {
+  root: YamlMap;
+  jobs: { id: string; job: YamlNode; text: string }[];
+  /** Every line outside the jobs, where workflow-level `env:` and triggers live. */
+  outside: string;
+}
+
+function readWorkflow(text: string): Workflow | string {
+  let root: YamlMap;
+  try {
+    root = parseWorkflow(text);
+  } catch (error) {
+    return `cannot be parsed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const jobsKey = [...root.entries.keys()].find((key) => key.toLowerCase() === "jobs");
+  const jobs = jobsKey === undefined ? undefined : root.entries.get(jobsKey);
+  if (jobs?.kind !== "map") return "has no jobs mapping";
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const owned = new Set<number>();
+  const parsed = [...jobs.entries].map(([id, job]) => {
+    const [start, end] = jobs.spans.get(id) ?? [0, lines.length];
+    for (let i = start; i < end; i++) owned.add(i);
+    return { id, job, text: lines.slice(start, end).join("\n") };
+  });
+  return { root, jobs: parsed, outside: lines.filter((_, i) => !owned.has(i)).join("\n") };
+}
+
 /**
- * Every way `text` (a workflow at the pull request's base) could hold a credential or run inside
- * another workflow, or could not be read. Empty means none.
+ * Every way `text` (a workflow at the pull request's base) could hold a credential, run inside
+ * another workflow, or run off a GitHub-hosted runner, or could not be read. Empty means none.
  */
 export function workflowReasons(text: string): string[] {
   const reasons: string[] = [];
@@ -266,18 +305,12 @@ export function workflowReasons(text: string): string[] {
   // A reusable workflow runs inside its callers, producers among them, and the gate knows
   // workflows only by path.
   if (mentions(WORKFLOW_CALL, text)) reasons.push("can be called by another workflow (workflow_call)");
-  let root: Map<string, YamlNode>;
-  try {
-    root = parseWorkflow(text);
-  } catch (error) {
-    return [...reasons, `cannot be parsed: ${error instanceof Error ? error.message : String(error)}`];
-  }
-  const top = entry(root, "permissions");
+  const workflow = readWorkflow(text);
+  if (typeof workflow === "string") return [...reasons, workflow];
+  const top = entry(workflow.root.entries, "permissions");
   if (top === undefined) reasons.push("has no top-level permissions");
   else reasons.push(...permissionReasons(top, "top-level"));
-  const jobs = entry(root, "jobs");
-  if (jobs?.kind !== "map") return [...reasons, "has no jobs mapping"];
-  for (const [id, job] of jobs.entries) {
+  for (const { id, job } of workflow.jobs) {
     if (job.kind !== "map") {
       reasons.push(`job ${id} is not a block mapping`);
       continue;
@@ -287,6 +320,73 @@ export function workflowReasons(text: string): string[] {
     if (entry(job.entries, "secrets") !== undefined) reasons.push(`job ${id} passes secrets`);
     const permissions = entry(job.entries, "permissions");
     if (permissions !== undefined) reasons.push(...permissionReasons(permissions, `job ${id}`));
+    const runsOn = entry(job.entries, "runs-on");
+    if (runsOn?.kind !== "scalar" || !HOSTED_RUNNERS.has(runsOn.value)) {
+      reasons.push(`job ${id} runs-on is not one GitHub-hosted runner label`);
+    }
+  }
+  return reasons;
+}
+
+/**
+ * Whether a job holds a credential in workflowReasons' sense: it or the workflow around it names
+ * secrets, it runs in an environment or calls a reusable workflow, or its token may write.
+ */
+function holdsCredential(workflow: Workflow, id: string, job: YamlMap, text: string): boolean {
+  if (mentions(SECRETS, text) || mentions(SECRETS, workflow.outside)) return true;
+  if (entry(job.entries, "environment") !== undefined || entry(job.entries, "uses") !== undefined) return true;
+  // Without permissions at either level the token gets the repository's default, which may write.
+  const permissions = entry(job.entries, "permissions") ?? entry(workflow.root.entries, "permissions");
+  return permissions === undefined || permissionReasons(permissions, `job ${id}`).length > 0;
+}
+
+/** Actions that restore an Actions cache whenever they run, or by default. */
+const CACHE_ACTIONS = /^(actions\/cache|actions\/setup-[a-z]+|ruby\/setup-ruby)(\/|@|$)/;
+const SETUP_VP = /^voidzero-dev\/setup-vp@/;
+/** setup-vp's inputs that restore a cache; both default to false (setup-vp v1.22.0 action.yml). */
+const SETUP_VP_CACHE_INPUTS = ["cache", "cache-toolchain"];
+
+/** Why `step`, in a job that holds a credential, may restore a cache. */
+function stepCacheReasons(step: YamlNode, where: string): string[] {
+  if (step.kind !== "map") return [`${where}: a step that is not a block mapping`];
+  const uses = entry(step.entries, "uses");
+  if (uses === undefined) return [];
+  if (uses.kind !== "scalar") return [`${where}: a uses that is not a scalar`];
+  const action = uses.value.toLowerCase();
+  if (CACHE_ACTIONS.test(action)) return [`${where}: ${uses.value} restores a cache`];
+  if (!SETUP_VP.test(action)) return [];
+  const inputs = entry(step.entries, "with");
+  if (inputs === undefined) return [];
+  if (inputs.kind !== "map") return [`${where}: setup-vp inputs that are not a block mapping`];
+  return SETUP_VP_CACHE_INPUTS.flatMap((name) => {
+    const value = entry(inputs.entries, name);
+    return value === undefined || (value.kind === "scalar" && value.value === "false")
+      ? [] : [`${where}: setup-vp ${name} is not false`];
+  });
+}
+
+/**
+ * Why `text`, any workflow at the base, breaks the cache rule: a job that holds a credential
+ * restores no Actions cache. An entry is written by whatever ran in the job that saved it, so an
+ * action bumped in a credential-free workflow on `main` could leave one for a job with secrets.
+ */
+export function cacheReasons(text: string): string[] {
+  const workflow = readWorkflow(text);
+  if (typeof workflow === "string") return [workflow];
+  const reasons: string[] = [];
+  for (const { id, job, text: jobText } of workflow.jobs) {
+    if (job.kind !== "map") {
+      reasons.push(`job ${id} is not a block mapping`);
+      continue;
+    }
+    if (!holdsCredential(workflow, id, job, jobText)) continue;
+    const steps = entry(job.entries, "steps");
+    if (steps === undefined) continue;
+    if (steps.kind !== "seq") {
+      reasons.push(`job ${id} holds a credential and its steps are not a block sequence`);
+      continue;
+    }
+    steps.items.forEach((step, i) => reasons.push(...stepCacheReasons(step, `job ${id} holds a credential, step ${i + 1}`)));
   }
   return reasons;
 }
