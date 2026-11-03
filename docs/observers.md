@@ -836,7 +836,7 @@ its resource types.
 | **google** | Google Spreadsheet | **B** | Check the observer's Google Sheets access to the bound spreadsheet. Spreadsheet sharing applies to the whole file, so it is the atomic unit. |
 | **google** | Google Slides Presentation | **B** | Check the observer's Google Slides access to the bound presentation. Presentation sharing applies to the whole file, so it is the atomic unit. |
 | **google** | Google Calendar (selected calendar) | **B** | Require `writer` or `owner` access to the bound calendar, since `reader` access hides private-event details. Future: let the binding owner exclude private events so readers can collaborate. |
-| **google** | Google Calendar (`allVisible` availability) | **C** | In addition to the selected-calendar check, track foreign calendars whose free/busy data was successfully read and verify each observer can independently query their availability. |
+| **google** | Google Calendar (`allVisible` availability) | **C**, kernel-checked (§10) | In addition to the selected-calendar check, an availability check reports each foreign calendar whose free/busy it read successfully as a `calendar/freeBusy/<calendarId>` subresource (the bound calendar and failed lookups report nothing, and event reads report `[]`); `verifyObserverAccess` allows an observer only if their own account can query every one's free/busy. Only Google's answer for a calendar is a verdict: any error, including Google refusing the query itself, fails the check. The observer's `UserAccount` reuses an allowed verdict for up to 15 minutes and a denial for up to 15 seconds, counted from when it asked Google and only until its credentials are next installed, so a share revoked in Google can still admit the observer for up to 15 minutes and a new share is noticed within 15 seconds. `addObserver` still checks the calendars recorded before reads reported them. |
 | **google** | Gmail Mailbox | **A** | Always throw. (Future: allow observers who independently have access, e.g. mailing-list members — explicitly out of scope now.) |
 | **google** | Google Chat Conversation / Thread | **B** | Check the observer's own account can open the bound space (`spaces.get`); for a conversation binding, also that it can list the space's members (`members.list`), since a space can restrict its member list to managers and the binding lists members. Everything else the binding reads — including the other participant's name on a direct message — comes from Chat's own space-scoped responses. |
 | **google** | Google Chat Account | **A** | Always throw. The binding spans the owner's direct messages and every conversation they belong to, so there is no one a collaborator could be verified against. Bind a single conversation to share. |
@@ -909,7 +909,9 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
 runs first). The Context Library is the first shipping gatekeeper to report subresources (§9.2).
-Scheduled Tasks and Web Search report `[]` on every read.
+Google Calendar reports `[]` for its event reads and `calendar/freeBusy/<calendarId>` for each
+foreign calendar an all-visible availability check reads. Scheduled Tasks and Web Search report
+`[]` on every read.
 The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAccess()` answers, what
 `addObserver()` must still enforce) is documented on those members in
 `workshop-shared/src/gatekeeper.ts`, and
