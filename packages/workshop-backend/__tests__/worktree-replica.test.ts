@@ -29,7 +29,11 @@ async function setup(impl: Impl) {
     overseerId: impl.ctx.id.toString(), config: {displayName: "Test", modelId: null, env: {}},
   }}), creationSpec: {type: "ambient", vendorId: "container"}});
   await beginReplicaTurn(impl, 1);
-  const context = () => impl.agentContext(31, impl.captureIntegrationOrigin({from: "agent", chatId: 1}, 31)!)!;
+  const context = () => {
+    const origin = impl.captureIntegrationOrigin({from: "agent", chatId: 1}, 31)!;
+    return {export: (binding: string) => impl.exportWorktree(31, origin, binding),
+      check: () => impl.checkWorktreeExportOrigin(31, origin)};
+  };
   const step = (change: CodeChange) => impl.commitAgentStep(1, author, [], {
     changes: [{change}], createdGadgets: [], createdWorktrees: [], addedBindings: [],
     worktreeCommits: [], blueprintMerges: [],
@@ -56,13 +60,36 @@ const gitRequest = (binding = "GIT", stream = false) => new Request("https://git
 });
 
 describe("single-worktree command mount and writeback", () => {
+  it("opens raw pack readers lazily and revokes them with final writeback", () => within(async (impl, f) => {
+    const blobs = vi.spyOn(impl.gitStore, "readBlob");
+    const input = await f.context().export("REPO");
+    expect(blobs).not.toHaveBeenCalled();
+    const response = await input.packs[0].fetch("https://export.invalid/");
+    expect(response.headers.get("content-type")).toBe("application/x-git-packed-objects");
+    expect(new Uint8Array(await response.arrayBuffer()).slice(0, 4)).toEqual(new TextEncoder().encode("PACK"));
+    await input.writeback.submitChanges("final", [], true);
+    await expect((async () => await input.packs[0].fetch("https://export.invalid/"))()).rejects.toThrow("access ended");
+    blobs.mockRestore();
+  }));
+
+  it("keeps the frozen pack plan if Git provenance is learned while approval is pending", () => within(async (impl, f) => {
+    const input = await f.context().export("REPO");
+    expect(input.packs).toHaveLength(1);
+    bindGit(impl);
+    impl.storage.gitObjectMetadata.put({oid: f.commit, type: "commit", onRemote: [40], pullableFrom: [], pendingPush: []});
+    const response = await input.packs[0].fetch("https://export.invalid/");
+    const objects = [];
+    for await (const object of decodePackStream(response.body!, {maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024})) objects.push(object.oid);
+    expect(objects).toContain(f.commit);
+    await input.writeback.submitChanges("final", [], true);
+  }));
+
   it("revokes writeback when the worktree source is removed, but still recognizes its final receipt", () => within(async (impl, f) => {
     bindGit(impl);
     const piece = impl.storage.gadgets.get(f.tree.id)!;
     if (piece.type !== "worktree") throw new Error("Expected a worktree");
     impl.storage.gadgets.put({...piece, sourceGatekeeperId: 40});
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     impl.removeGatekeeper(40);
     await expect((async () => { await mount.writeback.submitChanges("removed", [{path: "bad.txt", change: {set: "bad"}}], true); })())
       .rejects.toThrow(/connection|access ended/i);
@@ -111,8 +138,7 @@ describe("single-worktree command mount and writeback", () => {
     });
     const faux = createFauxCore({models: [{id: "test"}]});
     faux.setResponses([async () => {
-      const mount = await f.context().mountWorktree("REPO");
-      for (const pack of mount.packs) await pack.cancel();
+      const mount = await f.context().export("REPO");
       const result = (async () => { await mount.writeback.submitChanges("batch", [
         {path: "container.txt", change: {set: "container"}},
         ...(conflict === "validation" ? [{path: "a.txt", change: {edit: [[1, "O"], 7]}}] : []),
@@ -156,8 +182,7 @@ describe("single-worktree command mount and writeback", () => {
     });
     const faux = createFauxCore({models: [{id: "test"}]});
     faux.setResponses([async () => {
-      const mount = await f.context().mountWorktree("REPO");
-      for (const pack of mount.packs) await pack.cancel();
+      const mount = await f.context().export("REPO");
       const reader = (await mount.git!.fetch(gitRequest("GIT", true))).body!.getReader();
       await reader.read();
       const next = reader.read().then(result => result.done, () => true);
@@ -180,8 +205,7 @@ describe("single-worktree command mount and writeback", () => {
 
   it("captures Git bindings, observes runtime reads, and expires Git with final writeback", () => within(async (impl, f) => {
     const context = bindGit(impl);
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     expect(mount.gitRepositories).toEqual([{binding: "GIT", url: "https://github.com/fixture/repo.git", source: false}]);
     const response = await mount.git!.fetch(gitRequest());
     expect(response.headers.get("content-type")).toBe("application/x-git-upload-pack-advertisement");
@@ -199,8 +223,7 @@ describe("single-worktree command mount and writeback", () => {
   }));
   it("cancels an unfinished Git stream when final writeback closes the command", () => within(async (impl, f) => {
     bindGit(impl);
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     const reader = (await mount.git!.fetch(gitRequest("GIT", true))).body!.getReader();
     expect((await reader.read()).value).toEqual(Uint8Array.of(0, 255, 128, 13));
     // Native HTTP may report cancellation as EOF rather than an RPC stream error. Either
@@ -211,8 +234,7 @@ describe("single-worktree command mount and writeback", () => {
   }));
   it.each(["integration", "repository", "binding", "turn"])("fences Git after %s revocation", edge => within(async (impl, f) => {
     bindGit(impl);
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     if (edge === "integration") impl.env.AGENT_INTEGRATION_GRANTS = "{}";
     if (edge === "repository") impl.storage.gatekeepers.delete(40);
     if (edge === "binding") {
@@ -223,8 +245,7 @@ describe("single-worktree command mount and writeback", () => {
     await expect(mount.git!.fetch(gitRequest())).rejects.toThrow();
   }));
   it("deduplicates overlapping retries of the same batch", () => within(async (impl, f) => {
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     const changes = [{path: "a.txt", change: {edit: [[3, "ONE"], 5]}}];
     await Promise.all([mount.writeback.submitChanges("same", changes, false),
       mount.writeback.submitChanges("same", changes, false)]);
@@ -234,28 +255,63 @@ describe("single-worktree command mount and writeback", () => {
       .get(f.tree.id)?.get("a.txt")).toBe("ONE\ntwo\n");
   }));
   it("recaptures a lost mount reply only before any writeback starts", () => within(async (impl, f) => {
-    const first = await f.context().mountWorktree("REPO");
-    for (const pack of first.packs) await pack.cancel();
-    const second = await f.context().mountWorktree("REPO");
-    for (const pack of second.packs) await pack.cancel();
+    await f.context().export("REPO");
+    const second = await f.context().export("REPO");
     expect([...impl.storage.worktreeReplicaLeases.list()]).toHaveLength(1);
     await second.writeback.submitChanges("one", [{path: "once.txt", change: {set: "once"}}], false);
-    await expect(f.context().mountWorktree("REPO")).rejects.toThrow(/already active/);
+    await expect(f.context().export("REPO")).rejects.toThrow(/already active/);
     await second.writeback.submitChanges("final", [], true);
   }));
+
+  it("preserves a successful recapture when an older overlapping export fails", () => within(async (impl, f) => {
+    bindGit(impl);
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    const getFacet = impl.getGatekeeperFacet.bind(impl);
+    const lookup = vi.spyOn(impl, "getGatekeeperFacet").mockImplementationOnce(async id => {
+      entered.resolve();
+      await resume.promise;
+      return getFacet(id);
+    });
+    const first = f.context().export("REPO");
+    const failure = expect(first).rejects.toThrow("Workspace changed during worktree capture");
+    try {
+      await entered.promise;
+      const second = await f.context().export("REPO");
+      await second.writeback.submitChanges("streamed", [{path: "new.txt", change: {set: "retained"}}], false);
+      resume.resolve();
+      await failure;
+      await second.writeback.submitChanges("final", [], true);
+      expect((await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!))
+        .get(f.tree.id)?.get("new.txt")).toBe("retained");
+      expect([...impl.storage.worktreeReplicaCommits.list()]).toHaveLength(2);
+    } finally {
+      resume.resolve();
+      lookup.mockRestore();
+    }
+  }));
+
+  it("retains the provider error when no authorized source can supply the base pack", () => within(async (impl, f) => {
+    bindGit(impl);
+    impl.storage.gitObjectMetadata.put({oid: f.commit, type: "commit", onRemote: [40], pullableFrom: [], pendingPush: []});
+    const input = await f.context().export("REPO");
+    await expect(impl.exportWorktreePack(input.id, true)).rejects.toMatchObject({
+      message: "No authorized source can hydrate this Git commit.",
+      cause: {message: expect.stringContaining("Unknown remote commit")},
+    });
+    await input.writeback.submitChanges("final", [], true);
+  }));
+
   it("retains command writeback across segment rotation without reviving an ephemeral context", () => within(async (impl, f) => {
     const context = f.context();
-    const first = await context.mountWorktree("REPO");
-    for (const pack of first.packs) await pack.cancel();
+    const first = await context.export("REPO");
     const row = impl.storage.activeAgents.get(1)!;
     impl.storage.activeAgents.put({...row, integration: {...row.integration!, segmentId: crypto.randomUUID()}});
-    await expect(context.getTurn()).rejects.toThrow();
+    expect(() => context.check()).toThrow();
     await first.writeback.submitChanges("resumed", [{path: "resumed.txt", change: {set: "same command"}}], false);
-    await expect(f.context().mountWorktree("REPO")).rejects.toThrow(/already active/);
+    await expect(f.context().export("REPO")).rejects.toThrow(/already active/);
     await first.writeback.submitChanges("after-rejected-mount", [], false);
     await first.writeback.submitChanges("final", [], true);
-    const second = await f.context().mountWorktree("REPO");
-    for (const pack of second.packs) await pack.cancel();
+    const second = await f.context().export("REPO");
     expect([...impl.storage.worktreeReplicaLeases.list()].filter(lease => !lease.released)).toHaveLength(1);
     await second.writeback.submitChanges("final", [], true);
   }));
@@ -265,8 +321,7 @@ describe("single-worktree command mount and writeback", () => {
       {worktreeId: f.tree.id, title: "Repo", bindingName: "REPO"},
     ]}]);
     impl.addChatMessages(1, {type: "user", id: "test-user", name: "Test"}, [{type: "message", message: "Run the command."}]);
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     const prefetch = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
     let access!: WorktreeTurnAccess;
     let observed: string | null | undefined;
@@ -313,8 +368,7 @@ describe("single-worktree command mount and writeback", () => {
         const impl = instance["impl"], f = await setup(impl);
         const row = impl.storage.activeAgents.get(1)!;
         impl.storage.activeAgents.put({...row, initiatorUserId: impl.users.idFromName(name).toString()});
-        const mount = await f.context().mountWorktree("REPO");
-        for (const pack of mount.packs) await pack.cancel();
+        const mount = await f.context().export("REPO");
         await mount.writeback.submitChanges("first", [{path: "once.txt", change: {set: "once"}}], false);
         return {leaseId: [...impl.storage.worktreeReplicaLeases.list()][0].id,
           segmentId: row.integration!.segmentId, treeId: f.tree.id};
@@ -337,8 +391,7 @@ describe("single-worktree command mount and writeback", () => {
     } finally { gate.resolve(); lookup.mockRestore(); }
   });
   it("keeps all receipts for delayed reconciliation without scanning completed commands on mount", () => within(async (impl, f) => {
-    const first = await f.context().mountWorktree("REPO");
-    for (const pack of first.packs) await pack.cancel();
+    const first = await f.context().export("REPO");
     await first.writeback.submitChanges("part", [{path: "once.txt", change: {set: "once"}}], false);
     await first.writeback.submitChanges("final", [], true);
     const receipts = [...impl.storage.worktreeReplicaCommits.list()];
@@ -347,8 +400,7 @@ describe("single-worktree command mount and writeback", () => {
       throw new Error("Mount must not scan completed command history.");
     });
     try {
-      const next = await f.context().mountWorktree("REPO");
-      for (const pack of next.packs) await pack.cancel();
+      const next = await f.context().export("REPO");
       await next.writeback.submitChanges("final", [], true);
     } finally { fullScan.mockRestore(); }
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -365,11 +417,11 @@ describe("single-worktree command mount and writeback", () => {
     const change = diffFiles(new Map([[f.tree.id, new Map([["a.txt", "one\ntwo\n"]])]]),
       new Map([[f.tree.id, new Map([["a.txt", "ONE\ntwo\n"]])]]));
     await f.step(change);
-    const mount = await f.context().mountWorktree("REPO");
+    const mount = await f.context().export("REPO");
     expect(mount.head).toBe(f.commit);
     expect(mount.pendingChanges).toEqual(change[f.tree.id].map(([path, change]) => ({path, change})));
     const objects = [];
-    for (const pack of mount.packs) for await (const object of decodePackStream(pack, {
+    for (const pack of mount.packs) for await (const object of decodePackStream((await pack.fetch("https://export.invalid/")).body!, {
       maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024,
     })) objects.push(object);
     expect(objects.some(object => object.oid === f.commit && object.type === "commit")).toBe(true);
@@ -380,8 +432,7 @@ describe("single-worktree command mount and writeback", () => {
   }));
 
   it("streams multiple small OTs, deduplicates lost replies and closes atomically with the final batch", () => within(async (impl, f) => {
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     const a = [{path: "a.txt", change: {edit: [[3, "ONE"], 5]}}];
     await mount.writeback.submitChanges("one", a, false);
     await mount.writeback.submitChanges("one", a, false);
@@ -394,28 +445,24 @@ describe("single-worktree command mount and writeback", () => {
     expect(files.get("a.txt")).toBe("ONE\nTWO\n");
     expect(files.get("new.txt")).toBe("created");
     expect([...impl.storage.worktreeReplicaCommits.list()]).toHaveLength(3);
-    const next = await f.context().mountWorktree("REPO");
+    const next = await f.context().export("REPO");
     expect(next.pendingChanges).toHaveLength(2);
-    for (const pack of next.packs) await pack.cancel();
     await next.writeback.submitChanges("done", [], true);
   }));
 
   it("rejects concurrent DO edits rather than reconciling or polling", () => within(async (_impl, f) => {
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     await f.step({[f.tree.id]: [["a.txt", {set: "DO changed"}]]});
     await expect((async () => { await mount.writeback.submitChanges("stale", [{path: "a.txt", change: {set: "container"}}], false); })())
       .rejects.toThrow(/concurrent writers/);
-    const next = await f.context().mountWorktree("REPO");
-    for (const pack of next.packs) await pack.cancel();
+    const next = await f.context().export("REPO");
     await expect((async () => {await mount.writeback.submitChanges("late", [], false);})())
       .rejects.toThrow(/access ended/);
     await next.writeback.submitChanges("final", [], true);
   }));
 
   it("fails closed on revoked integration access and keeps the final receipt retryable", () => within(async (impl, f) => {
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     await mount.writeback.submitChanges("authority", [], false);
     impl.env.AGENT_INTEGRATION_GRANTS = "{}";
     await expect((async () => { await mount.writeback.submitChanges("authority", [], false); })()).rejects.toThrow(/access ended/);
@@ -426,17 +473,15 @@ describe("single-worktree command mount and writeback", () => {
   }));
 
   it.each(["../escape", ".git/config", "a//b", "/root", "a\\b"])("rejects unsafe write path %s", path => within(async (_impl, f) => {
-    const mount = await f.context().mountWorktree("REPO");
-    for (const pack of mount.packs) await pack.cancel();
+    const mount = await f.context().export("REPO");
     await expect((async () => { await mount.writeback.submitChanges("bad", [{path, change: {set: "bad"}}], false); })())
       .rejects.toThrow(/path|file|Path/);
     await mount.writeback.submitChanges("final", [], true);
   }));
 
   it("rejects an unknown binding and scopes writes to only the selected worktree", () => within(async (impl, f) => {
-    await expect(f.context().mountWorktree("UNKNOWN")).rejects.toThrow(/binding/);
-    const mount = await f.context().mountWorktree("OTHER");
-    for (const pack of mount.packs) await pack.cancel();
+    await expect(f.context().export("UNKNOWN")).rejects.toThrow(/binding/);
+    const mount = await f.context().export("OTHER");
     await mount.writeback.submitChanges("done", [{path: "new.txt", change: {set: "other"}}], true);
     const content = await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!);
     expect(content.get(f.tree.id)?.has("new.txt") ?? false).toBe(false);
@@ -447,8 +492,7 @@ describe("single-worktree command mount and writeback", () => {
     const name = crypto.randomUUID();
     const leaseId = await runInDurableObject(testEnv.TEST_OVERSEER.getByName(name), async instance => {
       const impl = instance["impl"], f = await setup(impl);
-      const mount = await f.context().mountWorktree("REPO");
-      for (const pack of mount.packs) await pack.cancel();
+      const mount = await f.context().export("REPO");
       await mount.writeback.submitChanges("final", [{path: "once.txt", change: {set: "once"}}], true);
       pauseReplicaTurn(impl, 1);
       delete impl.env.AGENT_INTEGRATION_GRANTS;

@@ -55,8 +55,8 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     } });
   }
   testMountWorktree(gatekeeperId: number,
-      origin: Parameters<RealOverseerDurableObject["impl"]["mountWorktree"]>[1], binding: string) {
-    return this.impl.mountWorktree(gatekeeperId, origin, binding);
+      origin: Parameters<RealOverseerDurableObject["impl"]["exportWorktree"]>[1], binding: string) {
+    return this.impl.exportWorktree(gatekeeperId, origin, binding);
   }
 }
 /**
@@ -68,7 +68,7 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
-export { WorktreeWritebackEndpoint, CommandGitEndpoint } from "../src/server.js";
+export { WorktreeWritebackEndpoint, WorktreeExportEndpoint, CommandGitEndpoint } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather

@@ -107,7 +107,6 @@ function disposeRpc(value: unknown): void {
 }
 
 class TestApprovalQueue extends RpcTarget {
-  async getAgentContext() { return null; }
   #submissions: Array<{actionId: number; description: unknown}> = [];
   #observations: unknown[] = [];
   #rejection?: string;

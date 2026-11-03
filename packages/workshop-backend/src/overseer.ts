@@ -68,8 +68,8 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import { AgentContextImpl, agentIntegrationReplicaGrant } from "./agent-integration";
-import type { AgentContext, AgentTurnInfo, CommandGitRepository, WorktreeMount, WorktreeWriteback, FileChangeByPath }
+import { agentIntegrationReplicaGrant } from "./agent-integration";
+import type { CommandGitRepository, WorktreeExport, WorktreeWriteback, FileChangeByPath }
   from "@gadgets/workshop-shared/agent-integration";
 import type { WorktreeBase } from "./storage-schema/overseer-storage";
 import { ReplicaChangedError, WorktreeWritebackSession, requireReplicaPath, type WorktreeWritebackHost,
@@ -2623,7 +2623,6 @@ class OverseerImpl implements AgentHooks {
       overseerId: this.ctx.id.toString(),
       target,
       caller,
-      integrationOrigin: target.type === "gatekeeper" ? this.captureIntegrationOrigin(caller, target.id) : undefined,
     };
     return this.ctx.exports.GatekeeperLoopback({props});
   }
@@ -5231,8 +5230,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Open the session behind a binding loopback.
-  startGatekeeperSession(target: BindingLoopbackTarget, caller: GatekeeperCaller,
-      integrationOrigin?: AgentIntegrationOrigin): Promise<any> {
+  startGatekeeperSession(target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
     switch (target.type) {
       case "gadget": {
         if (caller.from === "agent") {
@@ -5244,7 +5242,7 @@ class OverseerImpl implements AgentHooks {
 
       case "gatekeeper":
         return this.getGatekeeperFacet(target.id).then(facet =>
-            this.openGatekeeperSession(target.id, facet, caller, target.executionId, integrationOrigin));
+            this.openGatekeeperSession(target.id, facet, caller, target.executionId));
 
       case "worktree": {
         // The programmatic Worktree binding (worktree-session.ts). A worktree's uncommitted
@@ -5272,7 +5270,19 @@ class OverseerImpl implements AgentHooks {
         // profile.
         let initiator = execution.initiator;
         return Promise.resolve(
-            new WorktreeSessionImpl(this, target.id, execution.worktree, async () => initiator));
+            new WorktreeSessionImpl(this, target.id, execution.worktree, async () => initiator,
+              integration => {
+                const live = this.#activeExecutions.get(caller.chatId);
+                if (live?.executionId !== target.executionId) throw new Error("Worktree session expired.");
+                const recipient = this.#integrationBindings(caller.chatId).get(integration);
+                if (recipient?.type !== "workpiece" || !this.storage.gatekeepers.get(recipient.id))
+                  throw new Error("Integration binding is unavailable.");
+                const origin = this.captureIntegrationOrigin(caller, recipient.id);
+                if (!origin) throw new Error("Worktree export requires an explicit integration grant.");
+                const binding = origin.worktrees?.find(tree => tree.checkoutId === target.id)?.binding;
+                if (!binding) throw new Error("Worktree binding is unavailable.");
+                return this.exportWorktree(recipient.id, origin, binding);
+              }));
       }
 
       case "exports":
@@ -6436,16 +6446,17 @@ class OverseerImpl implements AgentHooks {
   // loopbacks carry the execution their authorizers belong to.
   openGatekeeperSession<Session extends RpcCompatible<Session>>(
       id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller,
-      executionId?: string,
-      integrationOrigin?: AgentIntegrationOrigin)
+      executionId?: string)
       : Promise<RpcStub<Session>> {
-    if (integrationOrigin) this.checkAgentContext(id, integrationOrigin);
     this.assertGatekeeperUsable(id);
     let queue = this.storage.gatekeepers.get(id)?.creationSpec?.type === "agentSpawner"
-        ? new AgentSpawnerQueueImpl(this, id, caller, undefined, executionId, integrationOrigin)
-        : new ApprovalQueueImpl(this, id, caller, undefined, executionId, integrationOrigin);
+        ? new AgentSpawnerQueueImpl(this, id, caller, undefined, executionId)
+        : new ApprovalQueueImpl(this, id, caller, undefined, executionId);
+    const session = caller.from === "agent" && this.replicaGrant(id)
+      ? facet.startSession(queue, {chatId: `${this.ctx.id.toString()}:${caller.chatId}`})
+      : facet.startSession(queue);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
-    return facet.startSession(queue);
+    return session;
   }
 
   // Freeze names and immutable bases at the capability-minting boundary. The live agent map
@@ -6489,9 +6500,9 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  async mountWorktree(gatekeeperId: number, origin: AgentIntegrationOrigin,
-      binding: string): Promise<WorktreeMount> {
-    this.checkAgentContext(gatekeeperId, origin);
+  async exportWorktree(gatekeeperId: number, origin: AgentIntegrationOrigin,
+      binding: string): Promise<WorktreeExport> {
+    this.checkWorktreeExportOrigin(gatekeeperId, origin);
     const selected = origin.worktrees?.find(tree => tree.binding === binding);
     const current = this.replicaSelection(origin.chatId).find(tree => tree.binding === binding);
     if (!selected || !current || current.checkoutId !== selected.checkoutId ||
@@ -6501,7 +6512,7 @@ class OverseerImpl implements AgentHooks {
     const active = this.#worktreeReplicaTurns.get(origin.chatId)?.access;
     if (active?.flushReplica && !await active.flushReplica({}, active.getRevision?.() ?? 0))
       throw new Error("Workspace changed during worktree capture; retry.");
-    this.checkAgentContext(gatekeeperId, origin);
+    this.checkWorktreeExportOrigin(gatekeeperId, origin);
     const piece = this.storage.gadgets.get(selected.checkoutId);
     if (piece?.type !== "worktree") throw new Error("Expected a worktree.");
     const worktree = {...selected, acceptedCommit: piece.pinBase, headCommit: piece.headCommit};
@@ -6509,9 +6520,13 @@ class OverseerImpl implements AgentHooks {
       .map(([path, change]) => ({path, change}));
     if (codeChangeSerializedSize({[selected.checkoutId]: pendingChanges.map(({path, change}) => [path, change])}) >
         1024 * 1024) throw new Error("Worktree capture exceeds its transform budget.");
+    const remote = worktree.source === "repository" && worktree.baseCommit &&
+      this.storage.gitObjectMetadata.get(worktree.baseCommit);
+    const sourcePack = !!remote && [...remote.onRemote, ...remote.pullableFrom]
+      .some(id => this.storage.gatekeepers.get(id));
     let lease: WorktreeReplicaLease = {id: crypto.randomUUID(), gatekeeperId, chatId: origin.chatId,
       turnId: origin.turnId, segmentId: origin.segmentId, worktree, version: this.replicaHistoryRevision(origin.chatId),
-      gitSources: origin.gitSources};
+      gitSources: origin.gitSources, pendingChanges, sourcePack, captureId: crypto.randomUUID()};
     const previousLeases = [...this.storage.worktreeReplicaLeases.activeByWorktree.get(`${lease.chatId}:${worktree.checkoutId}`)];
     for (const previous of previousLeases) {
       if (previous.turnId !== lease.turnId || previous.version !== lease.version) {
@@ -6523,24 +6538,17 @@ class OverseerImpl implements AgentHooks {
           [...this.storage.worktreeReplicaCommits.byLease.get(previous.id, {limit: 1})].length === 0) {
         // Retrying a lost mount reply can only recapture the identical, untouched view.
         // The integration still journals shell dispatch separately; mounting never executes it.
-        lease = previous;
+        lease = {...previous, captureId: lease.captureId};
       } else {
         throw new Error("A worktree command is already active.");
       }
     }
     this.storage.worktreeReplicaLeases.put(lease);
-    const packs: ReadableStream<Uint8Array>[] = [];
     try {
-      const remote = worktree.source === "repository" && worktree.baseCommit &&
-        this.storage.gitObjectMetadata.get(worktree.baseCommit);
-      const hasSource = !!remote && [...remote.onRemote, ...remote.pullableFrom]
-        .some(id => this.storage.gatekeepers.get(id));
-      if (hasSource) packs.push(await this.#worktreeSourcePack(lease));
-      packs.push(await replicaCommitPack(this.gitCache,
-        hasSource ? worktree : {...worktree, baseCommit: null}, () => { this.requireReplicaLease(lease.id); },
-        pendingChanges));
-      this.requireReplicaLease(lease.id);
-      if (this.replicaVersion(lease) !== lease.version) throw new Error("Workspace changed during worktree capture; retry.");
+      const pack = (source: boolean) => this.ctx.exports.WorktreeExportEndpoint({props: {
+        overseerId: this.ctx.id.toString(), leaseId: lease.id, source,
+      }});
+      const packs = [...lease.sourcePack ? [pack(true)] : [], pack(false)];
       const gitRepositories: CommandGitRepository[] = [];
       for (const [binding, id] of Object.entries(lease.gitSources ?? {})) {
         // Optional remotes must not make mounting a worktree depend on an unrelated connector
@@ -6553,16 +6561,26 @@ class OverseerImpl implements AgentHooks {
       }
       this.requireReplicaLease(lease.id);
       if (this.replicaVersion(lease) !== lease.version) throw new Error("Workspace changed during worktree capture; retry.");
-      return {head: worktree.acceptedCommit ?? null, packs, pendingChanges, gitRepositories,
+      return {id: lease.id, binding, head: worktree.acceptedCommit ?? null, packs, pendingChanges, gitRepositories,
         git: this.ctx.exports.CommandGitEndpoint({props: {overseerId: this.ctx.id.toString(), leaseId: lease.id}}),
         writeback: this.ctx.exports.WorktreeWritebackEndpoint({
           props: {overseerId: this.ctx.id.toString(), leaseId: lease.id},
         })};
     } catch (error) {
-      this.storage.worktreeReplicaLeases.put({...lease, released: true});
-      await Promise.all(packs.map(pack => pack.cancel().catch(() => {})));
+      const current = this.storage.worktreeReplicaLeases.get(lease.id);
+      if (current && current.captureId === lease.captureId && current.version === lease.version &&
+          [...this.storage.worktreeReplicaCommits.byLease.get(lease.id, {limit: 1})].length === 0)
+        this.storage.worktreeReplicaLeases.put({...current, released: true});
       throw error;
     }
+  }
+
+  async exportWorktreePack(id: string, source: boolean): Promise<Response> {
+    const lease = this.requireReplicaLease(id);
+    const stream = source ? await this.#worktreeSourcePack(lease) : await replicaCommitPack(this.gitCache,
+      lease.sourcePack ? lease.worktree : {...lease.worktree, baseCommit: null},
+      () => { this.requireReplicaLease(id); }, lease.pendingChanges ?? []);
+    return new Response(stream, {headers: {"content-type": "application/x-git-packed-objects"}});
   }
 
   requireReplicaLease(id: string, receiptOnly = false): WorktreeReplicaLease {
@@ -6605,11 +6623,13 @@ class OverseerImpl implements AgentHooks {
   async #worktreeSourcePack(lease: WorktreeReplicaLease): Promise<ReadableStream<Uint8Array>> {
     const commit = lease.worktree.baseCommit!;
     const metadata = this.storage.gitObjectMetadata.get(commit);
+    let cause: unknown;
     for (const source of new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])) {
       if (!this.storage.gatekeepers.get(source)) continue;
-      const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
-        Required<Pick<Gatekeeper<any>, "gitPull">>>;
       try {
+        this.requireReplicaLease(lease.id);
+        const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
+          Required<Pick<Gatekeeper<any>, "gitPull">>>;
         const transfer = await startGitPull(body => facet.gitPull(gitObjectRequest(body)),
           [commit], {type: "commit", commitHistory: {kind: "depth", depth: 1}});
         let reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -6639,9 +6659,12 @@ class OverseerImpl implements AgentHooks {
             finally { transfer[Symbol.dispose](); }
           },
         });
-      } catch { /* Never fall back to an arbitrary URL or unscoped credentials. */ }
+      } catch (error) {
+        this.requireReplicaLease(lease.id);
+        cause = error;
+      }
     }
-    throw new Error("No authorized source can hydrate this Git commit.");
+    throw new Error("No authorized source can hydrate this Git commit.", {cause});
   }
 
   getWorktreeWritebackSession(id: string): WorktreeWritebackSession {
@@ -6778,7 +6801,7 @@ class OverseerImpl implements AgentHooks {
         entry.type === "workpiece" && this.storage.gatekeepers.get(entry.id) ? [[name, entry.id]] : []))};
   }
 
-  checkAgentContext(gatekeeperId: number, origin: AgentIntegrationOrigin): AgentTurnInfo {
+  checkWorktreeExportOrigin(gatekeeperId: number, origin: AgentIntegrationOrigin): void {
     this.assertGatekeeperUsable(gatekeeperId);
     if (!this.replicaGrant(gatekeeperId)) throw new Error("Agent integration grant revoked.");
     const row = this.storage.activeAgents.get(origin.chatId);
@@ -6786,13 +6809,6 @@ class OverseerImpl implements AgentHooks {
         !this.storage.chatMeta.get(origin.chatId)?.activeAgent) {
       throw new Error("Agent integration context expired.");
     }
-    return {turnId: origin.turnId, segmentId: origin.segmentId, chatId: String(origin.chatId), phase: "running"};
-  }
-
-  agentContext(gatekeeperId: number, origin: AgentIntegrationOrigin | undefined): AgentContext | null {
-    if (!origin) return null;
-    this.checkAgentContext(gatekeeperId, origin);
-    return new AgentContextImpl(this, gatekeeperId, origin);
   }
 
   // Sessions are authorized and verified only at open(), so widening what a live session's holder
@@ -10832,6 +10848,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /** Re-enter the original command's authority for each read, including after a DO reset. */
+  exportWorktreePack(leaseId: string, source: boolean): Promise<Response> {
+    return this.impl.exportWorktreePack(leaseId, source);
+  }
+
   commandGitPull(leaseId: string, binding: string, request: Request): Promise<Response> {
     return this.impl.commandGitPull(leaseId, binding, request);
   }
@@ -11242,9 +11262,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async startGatekeeperSession(
-      target: BindingLoopbackTarget, caller: GatekeeperCaller,
-      integrationOrigin?: AgentIntegrationOrigin): Promise<any> {
-    return this.impl.startGatekeeperSession(target, caller, integrationOrigin);
+      target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
+    return this.impl.startGatekeeperSession(target, caller);
   }
 
   startGatekeeperHook(id: number): NativeRpcStub<RpcTarget> {
@@ -11318,7 +11337,6 @@ type GatekeeperLoopbackProps = {
   target: BindingLoopbackTarget;
 
   caller: GatekeeperCaller;
-  integrationOrigin?: AgentIntegrationOrigin;
 };
 
 type BindingLoopbackTarget = {
@@ -11369,7 +11387,7 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
 
     // @ts-ignore: LSP-only RPC types bug, "type instantiation is excessively deep"
     let session = stub.startGatekeeperSession(
-        this.ctx.props.target, this.ctx.props.caller, this.ctx.props.integrationOrigin);
+        this.ctx.props.target, this.ctx.props.caller);
 
     return new Proxy(session, {
       get(target, prop, receiver) {
@@ -13924,6 +13942,18 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
   }));
 }
 
+/** Persistable raw pack reader for a frozen export; never exposes chat or turn APIs. */
+@validateRpc()
+export class WorktreeExportEndpoint extends WorkerEntrypoint<Cloudflare.Env,
+    {overseerId: string; leaseId: string; source: boolean}> {
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "GET") return new Response(null, {status: 405});
+    return this.ctx.exports.OverseerDurableObject.get(
+      this.ctx.exports.OverseerDurableObject.idFromString(this.ctx.props.overseerId))
+      .exportWorktreePack(this.ctx.props.leaseId, this.ctx.props.source);
+  }
+}
+
 /** Persistent, command-scoped write-only capability. Each call re-enters its owning DO. */
 @validateRpc()
 export class WorktreeWritebackEndpoint extends WorkerEntrypoint<Cloudflare.Env,
@@ -13963,18 +13993,12 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   // `executionId` is the agent execution an agent caller's session was minted for.
   constructor(protected impl: OverseerImpl, protected gatekeeperId: number,
               private caller: GatekeeperCaller, private hookId?: number,
-              private executionId?: string,
-              private integrationOrigin?: AgentIntegrationOrigin) {
+              private executionId?: string) {
     super();
-  }
-
-  async getAgentContext(): Promise<AgentContext | null> {
-    return this.impl.agentContext(this.gatekeeperId, this.integrationOrigin);
   }
 
   #checkAuthority() {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
-    if (this.integrationOrigin) this.impl.checkAgentContext(this.gatekeeperId, this.integrationOrigin);
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {

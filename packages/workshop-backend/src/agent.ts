@@ -3097,9 +3097,10 @@ async function runAgentPass(
   };
 
   // commit() head advancements buffered this step (see WorktreeTurnAccess.appendCommit),
-  // drained into the barrier's `worktreeCommits` alongside the change buffer: an advancement is
-  // durable iff the executeCode call that made it is, and an aborted or crashed step simply
-  // drops it (the commit objects it named stay -- dangling and harmless).
+  // drained with the change buffer at the step barrier or an earlier replica flush. A replica
+  // export must persist the head before handing out its frozen pack readers, so those advancements
+  // can survive an aborted step. Otherwise an aborted step drops the buffer (the commit objects
+  // it named stay -- dangling and harmless).
   let pendingWorktreeCommits:
       {worktreeId: WorkpieceId, commit: string, previousHead: string}[] = [];
 

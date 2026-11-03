@@ -1,31 +1,12 @@
-import type { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import type { WorkerEntrypoint } from "cloudflare:workers";
 import type { FileChange } from "./code-change";
 
-/** Ephemeral context of an explicitly granted integration in the original agent session. */
-export interface AgentContext extends RpcTarget {
-  /** Read this session's identity; throws after the session expires or access is revoked. */
-  getTurn(): Promise<AgentTurnInfo>;
-  /**
-   * Capture one agent-visible worktree for a command. Import the raw Git packs in order,
-   * check out head, then apply pendingChanges. No subsequent DO changes are delivered.
-   */
-  mountWorktree(binding: string): Promise<WorktreeMount>;
-}
-
-/** Identity of the existing agent execution, not a separate lifecycle subscription. */
-export interface AgentTurnInfo {
-  /** Stable through approval pauses and Durable Object resets. */
-  turnId: string;
-  /** Opaque workspace-local chat identity. */
-  chatId: string;
-  /** Changes on resumption; contexts from earlier invocations expire. */
-  segmentId: string;
-  /** Only a live agent session may start a command. */
-  phase: "running";
-}
-
 /** One worktree's frozen contents and command-scoped, write-only return capability. */
-export interface WorktreeMount {
+export interface WorktreeExport {
+  /** Opaque identity of this command export, also used to recover a lost mount reply. */
+  id: string;
+  /** Agent-visible name of the exported worktree. */
+  binding: string;
   /**
    * Command-scoped smart HTTP. Send the canonical /info/refs or /git-upload-pack request
    * with x-workshop-git-binding naming a captured repository binding. Credentials stay upstream.
@@ -35,9 +16,9 @@ export interface WorktreeMount {
   gitRepositories?: CommandGitRepository[];
   /** Commit to check out after importing packs; null for an empty worktree. */
   head: string | null;
-  /** Raw, shallow Git packs, including source objects and any DO-local commits. */
-  packs: ReadableStream<Uint8Array>[];
-  /** Uncommitted transforms above head, captured once at mount time. */
+  /** Raw, shallow Git pack readers. Fetch each once, in order, when preparing the command. */
+  packs: Fetcher[];
+  /** Uncommitted transforms above head, captured once at export time. */
   pendingChanges: FileChangeByPath[];
   /** Persistable capability for this command only; never reused by a later command. */
   writeback: Fetcher<WorktreeWriteback>;

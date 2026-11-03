@@ -20,7 +20,6 @@ import {
 } from "../sheets-fixture";
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
-  async getAgentContext() { return null; }
   readonly observations: ObservationDescription[] = [];
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {

@@ -13,7 +13,6 @@ import type { QueuedChange } from "../../src/slides-simulation";
 import { presentation, shape, slide, text } from "../slides-fixture";
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
-  async getAgentContext() { return null; }
   readonly observations: ObservationDescription[] = [];
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {

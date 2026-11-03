@@ -27,6 +27,7 @@ import {
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
+import type { FileChangeByPath } from "@gadgets/workshop-shared/agent-integration";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
@@ -46,8 +47,14 @@ export type WorktreeBase = {
 export type WorktreeReplicaLease = {
   id: string; gatekeeperId: number; chatId: number; turnId: string; segmentId: string;
   worktree: WorktreeBase; version: string;
+  /** Fences failed export cleanup from a newer retry of an untouched command. */
+  captureId?: string;
   /** Frozen binding IDs; later connections cannot widen a running command. */
   gitSources?: Record<string, number>;
+  /** Frozen transforms needed when the pack reader is opened after approval. */
+  pendingChanges?: FileChangeByPath[];
+  /** Whether the frozen export includes a separate remote-source pack. */
+  sourcePack?: boolean;
   released?: boolean;
 };
 

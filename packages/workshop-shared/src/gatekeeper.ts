@@ -17,7 +17,6 @@
 // `Adapter` type is the root interface implemented by the service binding.
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
-import type { AgentContext } from "./agent-integration";
 
 /**
  * A pagination cursor.
@@ -1032,8 +1031,11 @@ export interface Gatekeeper<Session> extends DurableObject {
    * dependent actions. That said, there is no strict requirement that a gatekeeper does such
    * simulation -- it is really up to the gatekeeper author to decide what is appropriate for the
    * particular API.
+   *
+   * The kernel supplies context only for agent sessions of explicitly granted worktree
+   * integrations. It is caller metadata, not a turn API or continuing execution authority.
    */
-  startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<Session>;
+  startSession(approvalQueue: RpcStub<ApprovalQueue>, context?: GatekeeperSessionContext): Promise<Session>;
 
   /**
    * Bounded, user-specific metadata the agent uses to discover entries reachable through this
@@ -1332,6 +1334,12 @@ export interface SlashCommandProvider extends RpcTarget {
   ): Promise<SlashCommandResult>;
 }
 
+/** Trusted caller metadata supplied when the kernel opens an agent session. */
+export interface GatekeeperSessionContext {
+  /** Stable opaque chat identity, namespaced by workspace. */
+  chatId: string;
+}
+
 /**
  * Used by a gatekeeper to request an action that has side effects (is not read-only). Any such
  * action may be subject to human-in-the-loop approval and audit logging. Whether or not review is
@@ -1339,8 +1347,6 @@ export interface SlashCommandProvider extends RpcTarget {
  * called before applying them.
  */
 export interface ApprovalQueue extends ObservationAuthorizer {
-  /** Original agent context for an explicitly granted integration; null for other callers. */
-  getAgentContext(): Promise<AgentContext | null>;
   // TODO: Method to indicate that the gadget tried to perform an action that the gatekeeper itself
   //   hasn't been authorized to do (e.g. the user hasn't authorized the right OAuth scopes). The
   //   system should direct the user to the right UI to authorize the action.

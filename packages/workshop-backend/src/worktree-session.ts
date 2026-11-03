@@ -61,8 +61,15 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
    * that never commits never pays for resolving it (env.GIT's may need an RPC to the owner's DO).
    */
   constructor(private host: WorktreeSessionHost, private worktreeId: WorkpieceId,
-              private turn: WorktreeTurnAccess, private author: () => Promise<AiChatAuthorInfo>) {
+              private turn: WorktreeTurnAccess, private author: () => Promise<AiChatAuthorInfo>,
+              private exportWorktree?: (integration: string) => Promise<unknown>) {
     super();
+  }
+
+  async exportTo(integration: string): Promise<unknown> {
+    this.#pinBase();
+    if (!this.exportWorktree) throw new Error("Only workspace worktrees can be exported.");
+    return this.exportWorktree(integration);
   }
 
   // The base commit the overlay is expressed against: the chat pin's base while the worktree is

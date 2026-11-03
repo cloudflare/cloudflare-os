@@ -8,17 +8,23 @@ network policy belong to the integration.
 ## API
 
 ```ts
-AgentContext.mountWorktree(binding: string): Promise<WorktreeMount>;
+// Agent code: container operations belong to the integration session.
+await env.CONTAINER.mountWorktree(await env.REPO.exportTo("CONTAINER"));
+const executionId = await env.CONTAINER.executePosix("pnpm test");
+// Return from executeCode for approval, then read CONTAINER.getExecution(executionId).
 
-interface WorktreeMount {
+// Kernel: one frozen input, and one write-only callback.
+Worktree.exportTo(integration: string): Promise<unknown>; // opaque WorktreeExport
+interface WorktreeExport {
+  id: string;
+  binding: string;
   head: string | null;
-  packs: ReadableStream<Uint8Array>[];
+  packs: Fetcher[]; // GET returns raw binary Git packs, consumed in order
   pendingChanges: FileChangeByPath[];
   writeback: Fetcher<WorktreeWriteback>;
   git?: Fetcher;
   gitRepositories?: {binding: string; url: string; source: boolean}[];
 }
-
 WorktreeWriteback.submitChanges(
   batchId: string, changes: FileChangeByPath[], final: boolean
 ): Promise<void>;
@@ -30,10 +36,11 @@ entire workspace. It is a command-scoped capability, not an arbitrary Git-object
 
 ## Scenarios and why these functions exist
 
-- **Run tests against current DO edits:** `ApprovalQueue.getAgentContext()` supplies only an
-  explicitly granted integration with its original agent context. `getTurn()` identifies that
-  execution; it is not a lifecycle subscription. `mountWorktree("REPO")` captures that one
-  worktree, including actual DO-only commits and pending OTs, before the command starts.
+- **Run tests against current DO edits:** the agent exports its selected worktree to an explicitly
+  granted integration binding, then passes the opaque export to that container's `mountWorktree`.
+  The gatekeeper stores the input for one command; ordinary approval still gates guest launch and
+  shell dispatch. It materializes the supplied Git objects, DO-only commits and pending OTs before
+  running. It never calls back to discover a turn or select a worktree.
 - **Work on an uploaded CSV/image:** mount the shared scratch worktree instead. Raw Git packs
   preserve attachment bytes, including non-UTF-8 blobs. Export does not require a remote repo.
 - **Fetch fixtures/history during a test:** the mount includes captured whole-repository bindings
@@ -64,7 +71,7 @@ access. Issue/PR-only bindings remain valid sources for their previously observe
 but do not become arbitrary repository readers. Missing/unreachable optional remotes are not
 advertised and do not block an otherwise valid mount.
 
-The repository binding IDs are frozen with the originating session; connections added later
+The repository binding IDs are frozen when the agent exports the worktree; connections added later
 cannot widen the command. Every request and response-stream read rechecks its original command,
 integration grant and source connection. Final writeback closes Git access as well as writes
 and cancels open streams. A pending provider RPC cannot be force-aborted on this runtime, but
@@ -97,12 +104,15 @@ writeback is a separate extension.
 
 Trusted deployment configuration `AGENT_INTEGRATION_GRANTS` grants a vendor
 `worktreeReplica: true`; absence denies access. Ambient provisioning remains independently
-controlled by the user/admin. Ordinary agent approval queues supply an ephemeral
-`AgentContext` with the original execution/chat identity. No lifecycle subscriptions,
-contextual action redelivery or end-of-turn cleanup barriers are added.
+controlled by the user/admin. The agent chooses the integration recipient by binding name;
+export verifies that binding and captures the original authority internally. When opening an
+explicitly granted integration's agent session, the kernel supplies a stable opaque chat identifier
+as `startSession(queue, {chatId})` metadata. It carries no turn ID or execution authority. The
+container uses it for its own per-chat instance ownership. No `AgentContext`, `getTurn`, lifecycle
+subscriptions, contextual redelivery or end-of-turn cleanup barriers are added.
 
 Every transfer/write rechecks the grant, connection, original execution and selected worktree.
-Resumption invalidates old ephemeral contexts. Persisted command writeback survives DO reset
+The gatekeeper cannot inspect the agent turn. Persisted command writeback survives DO reset
 only within its original active execution; a later prompt cannot adopt it.
 
 Stream ordered batches while the command runs. Each batch is at most 128 paths/1 MiB and uses
@@ -131,11 +141,13 @@ tools/caches. There is no background synchronization while idle. A gatekeeper-ow
 five-minute idle timer snapshots/stops the guest; a later command transparently restores it and
 imports its fresh mount.
 
-Mount streams are one-shot, not persistable. If the integration resets before shell dispatch
-and loses them, it fails that bootstrap and requires a new command rather than replaying a
-shell. An untouched mount may be recaptured after a lost mount reply, before any batch was
-accepted. Once execution begins, its own durable command journal must distinguish dispatched,
-finished and synchronized; a lost reply never proves the shell did not run.
+The export contains persistent pack readers, not live in-memory streams. They can be stored by
+the receiving gatekeeper across an approval pause or DO reset; opening them later streams the
+captured immutable Git objects without materializing the repository in the kernel cache. Each
+reader and writeback call rechecks original authority. Pack transfer is retryable before dispatch;
+a lost shell reply is never permission to execute again. The gatekeeper durably assigns each
+export to one command and rejects reusing it for a later command. Rejection seals its unused
+writeback. Command journals distinguish dispatched, finished and synchronized outcomes.
 
 Symlink/mode mutations, submodules and binary writeback must fail rather than be described as
 synchronized. Concurrent writers have no preservation guarantee. This does not change general DO OT semantics.
@@ -154,5 +166,6 @@ synchronized. Concurrent writers have no preservation guarantee. This does not c
   guest-private and need not survive the next fresh mount; snapshots are not canonical backups.
 - Binary attachments/bootstrap work; binary mutation submission, chmod, symlink/gitlink changes,
   large-file support, guest Git ref publication, and submodules are separate work.
-- Initial streams are one-shot. A lost pre-dispatch mount can be recaptured only while untouched;
-  the integration must never interpret a lost shell reply as permission to re-execute it.
+- The agent explicitly exports and mounts before every command. It must return from code mode
+  for approval, then poll the durable receipt. An expired export needs a fresh request; approval
+  never revives an old command's authority.
