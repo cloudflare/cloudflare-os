@@ -948,15 +948,13 @@ draining; query `status()` on failure for the adapter's demultiplexing error, pr
 consumer's own error otherwise. RPC may still replace an upstream transport failure with a
 generic disconnect. Cancel unfinished streams and dispose the transfer when done.
 
-The transfer also supports a native container consumer, but container hydration is not enabled
-by this capability alone; it requires the separate kernel worktree-replica bootstrap support.
-That consumer must bind its bootstrap capability to an authorized immutable commit, request depth
-one with no tree/blob filters, stream directly to native Git using its own limits rather than
-the DO cache's, and close the bootstrap capability after hydration. No guest-supplied Git
-commands, ref discovery, arbitrary URLs, or provider credentials belong in that bootstrap
-interface. Packs are self-contained (no `have` negotiation or thin-pack dependencies). Native
-consumers must record their shallow boundary because the raw pack does not carry Git protocol
-shallow-info.
+Container hydration consumes the kernel's frozen `WorktreeExport`, explicitly passed from
+`Worktree.exportTo(integration)` to the integration's mount method. Import its raw `packs` into
+native Git in the supplied order, check out `head` (or start empty when null), then apply
+`pendingChanges` before executing. The export supplies the shallow remote base and DO-local
+objects; consumers do not mint or close a separate bootstrap capability. The command's final
+writeback ACK closes export authority, not the end of hydration. See the
+[mount contract](../../docs/agent-worktree-replicas.md) for bootstrap and recovery details.
 
 Subsequent native Git fetches use the separate command-scoped smart-HTTP capability described in
 [`agent-worktree-replicas.md`](../../docs/agent-worktree-replicas.md). They always require an
