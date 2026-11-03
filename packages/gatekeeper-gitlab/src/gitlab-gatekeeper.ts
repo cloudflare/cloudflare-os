@@ -2549,7 +2549,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       if (!user) throw new Error(`No GitLab user named "${username}" exists on this instance.`);
       return user.id;
     });
-    const bots = await Promise.all(assigneeIds.map(id => this.#withApi(api => api.isBotUser(id))));
+    // A lookup that fails counts as a bot, so the create waits for a person rather than failing.
+    const bots = await Promise.all(assigneeIds.map(id => this.#withApi(api => api.isBotUser(id)).catch(error => {
+      logger.warn("failed to read whether an assignee is a bot; holding the create for a person", {
+        event: "assignee.bot.read.failed",
+        ...(error instanceof GitLabApiError ? { status: error.status } : { error }),
+      });
+      return true;
+    })));
     return { assigneeIds, assigneeIsBot: bots.includes(true) };
   }
 

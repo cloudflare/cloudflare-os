@@ -58,6 +58,16 @@ type IssueJson = Omit<typeof fx.issueResponse.data, "state"> & { state: "opened"
 const issue = (over: Partial<IssueJson> = {}): IssueJson => ({ ...fx.issueResponse.data, iid: 1, state: "opened", ...over });
 
 describe("issue creation", () => {
+  it("holds an issue for a person when whether an assignee is a bot cannot be read", async () => {
+    const { gitlab, props, name } = await setup("create-issue-bot-unreadable");
+    gitlab.on("GET", /^\/api\/v4\/users\?username=lennie/, () => json(fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" }))));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ message: "403 Forbidden" }, { status: 403 }));
+    gitlab.install();
+    const action = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue",
+      [{ title: "New thing", assignees: ["lennie"] }], DESC));
+    expect(action).toMatchObject({ type: "createIssue", assigneeIds: [9], assigneeIsBot: true });
+  });
+
   it("queues with a provisional id, reads back simulated, applies, then resolves the real id", async () => {
     const { gitlab, props, name } = await setup("create-issue");
     gitlab.on("GET", /^\/api\/v4\/users\?username=lennie/, () => json(fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" }))));
