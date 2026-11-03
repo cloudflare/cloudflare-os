@@ -164,11 +164,13 @@ export class KvTtlCache {
     const authority = await this.#authority();
     if (authority === undefined) {
       const unique = [...new Set(keys)];
-      const values: T[] = [];
+      const loaded = new Map<string, T>();
       for (let start = 0; start < unique.length; start += batchSize) {
-        values.push(...await loadExactly(load, unique.slice(start, start + batchSize)));
+        const batch = unique.slice(start, start + batchSize);
+        const values = await loadExactly(load, batch);
+        batch.forEach((key, index) => loaded.set(key, values[index]));
       }
-      return keys.map(key => values[unique.indexOf(key)]);
+      return keys.map(key => loaded.get(key) as T);
     }
 
     const generation = this.#generation();
