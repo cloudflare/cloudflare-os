@@ -83,6 +83,8 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   // Worker carries this upgrade's mark, and it is done once each reports it.
   const upgrade = randomUUID();
   const workers: string[] = [];
+  const diagStart = Date.now();
+  const diag = (message: string) => console.error(`[upgrade-diag] +${Date.now() - diagStart}ms ${message}`);
   await harness.server.update(current => ({
     ...current,
     workers: current.workers.map(worker => {
@@ -92,10 +94,25 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
       return { config: { ...config, vars: { ...config.vars, TEST_UPGRADE: upgrade } } };
     }),
   }));
+  diag(`update() resolved; workers=${workers.join(",")}`);
+  let attempt = 0;
   await waitFor("every Worker to run the upgrade", async () => {
+    attempt++;
     for (const name of workers) {
-      if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
+      let mark: unknown;
+      try {
+        mark = (await harness.server.getWorker(name).getEnv()).TEST_UPGRADE;
+      } catch (error) {
+        const cause = (error as Error).cause as Error | undefined;
+        diag(`attempt ${attempt} ${name} threw ${String(error)} cause=${String(cause?.message ?? cause)}`);
+        throw error;
+      }
+      if (mark !== upgrade) {
+        if (attempt === 1 || attempt % 20 === 0) diag(`attempt ${attempt} ${name} not upgraded yet`);
+        return null;
+      }
     }
+    diag(`attempt ${attempt} all upgraded`);
     return true;
   });
 }
