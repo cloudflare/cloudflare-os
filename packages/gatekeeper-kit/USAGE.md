@@ -867,6 +867,29 @@ kernel change marks them, every failure takes the fail-closed unknown-outcome pa
 `abandon` latches the binding unshareable for good, so a refused owner-only read costs the
 workspace its sharing until the kernel distinguishes the two.
 
+### Subresource IDs name resources
+
+Build every `ObservationDescription.subresources` ID with `formatSubresourceId()` from
+`./subresource-ids`, and read them back in `verifyObserverAccess()` with `parseSubresourceId()`:
+
+```ts
+formatSubresourceId({ namespace: "drive", fragments: [{ name: "file", id: fileId }] });
+// "drive/file/<escaped fileId>"
+```
+
+Each fragment names a resource: a kind and the provider's id for it. It never names a predicate or
+a policy. A mailbox no collaborator may see is still `gmail/inbox/<address>`, not a `private`
+marker; the verifier knows what access each kind of resource requires, including that one is never
+shared. Set `namespace` only when the gatekeeper exposes distinct product families with their own
+resources, as Google does with Gmail, Drive and BigQuery. A single-product gatekeeper omits it
+instead of repeating its own name.
+
+`parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
+resource always reports one string. That string is what the Workshop deduplicates and indexes. The
+Workshop refuses IDs over 512 UTF-16 code units, and escaping can lengthen a component up to ninefold
+(a three-byte UTF-8 character becomes nine), so a resource whose provider id approaches that limit
+needs a shorter identity.
+
 ## Bounds
 
 Every cap must be a positive safe integer. Constructors reject zero, fractional, and unsafe values
