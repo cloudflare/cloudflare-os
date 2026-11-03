@@ -28,6 +28,8 @@ class CalendarModel {
   afterRead?: (event: GoogleEvent) => void;
   /** Refuses every creation, as Google does a request it rejects. */
   failCreates = false;
+  /** Serves events without an etag, which Google's API does not promise to send. */
+  omitEtags = false;
 
   /** Changes an event the way a collaborator editing it in Google would, giving it a new etag. */
   edit(id: string, change: Partial<GoogleEvent>): void {
@@ -72,7 +74,7 @@ class CalendarModel {
         this.edit(eventId, body);
         return Response.json({ ...event, etag: etag() });
       }
-      let read = { ...event, etag: etag() };
+      let read = this.omitEtags ? { ...event } : { ...event, etag: etag() };
       this.afterRead?.(event);
       return Response.json(read);
     }));
@@ -190,6 +192,19 @@ describe("Google Calendar auto-approval", () => {
 
     expect(await hooks().applyAction("recheck", call.actionId!))
       .toMatch(/now has other people on it.*Nothing was changed/);
+    expect(calendar.patches).toEqual([]);
+  });
+
+  it("refuses an auto-approvable update of an event Google sends without an etag", async () => {
+    let calendar = new CalendarModel();
+    calendar.add("own");
+    calendar.install();
+
+    let call = await hooks().updateEvent("no-etag", "own", { title: "Deep work" });
+    expect(call.action).toMatchObject({ autoApprovable: true });
+    calendar.omitEtags = true;
+
+    expect(await hooks().applyAction("no-etag", call.actionId!)).toMatch(/Nothing was changed/);
     expect(calendar.patches).toEqual([]);
   });
 

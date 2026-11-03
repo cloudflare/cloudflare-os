@@ -2878,7 +2878,10 @@ export class GoogleCalendarGatekeeperImpl
           "The event has changed in Google Calendar since this was proposed: it now has other " +
           "people on it, or this change would widen who can see it. Nothing was changed. Reject " +
           "this and ask the agent to read the event again.");
-        if (action.autoApprovable && !updateEventVerdict(oldEvent, action.patch).autoApprovable) {
+        // The write below is conditional on the etag, so an event Google sent without one cannot
+        // be updated without a person.
+        if (action.autoApprovable &&
+            (!oldEvent.etag || !updateEventVerdict(oldEvent, action.patch).autoApprovable)) {
           throw changedError;
         }
         let previous = priorCalendarPatch(oldEvent, action.patch);
