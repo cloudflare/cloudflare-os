@@ -5,6 +5,7 @@
 // documentation-derived fixtures.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {deepStrictEqual} from "node:assert";
 import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
 import {buildGitFetchRequest, gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import {
@@ -496,7 +497,7 @@ describe("git smart-HTTP", () => {
       headers: {"content-type": "application/x-git-upload-pack-result"},
     })]);
     expect((await api().fetchGitUploadPack("g/p", gitObjectRequest(body))).ok).toBe(true);
-    expect(new Uint8Array(await new Response(calls[0].init.body).arrayBuffer())).toEqual(body);
+    deepStrictEqual(new Uint8Array(await new Response(calls[0].init.body).arrayBuffer()), body);
   });
 
   it("POSTs upload-pack with protocol v2, oauth2 basic auth, and the Access headers", async () => {
