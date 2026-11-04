@@ -77,8 +77,16 @@ The limit covers device calls only; deliveries aren't counted. A notification is
 each device the User DO stores, and it stores only the 20 most recently registered: the service
 keeps at most 10 browsers and 10 phones per user, but the User DO drops a device the service
 evicted only once a delivery to it fails, so without the cap a registration loop could pile up
-devices for one notification to reach. The cap counts browsers and phones together, so a phone
-still live behind 20 newer browser registrations is dropped as well, until it next registers.
+devices for one notification to reach.
+
+Unlike the service, the cap counts browsers and phones together, so it can drop a device that is
+still live: a phone behind 20 newer registrations gets no push until its app next registers. An
+honest user doesn't get there. A page load registers its browser's endpoint again, which refreshes
+that entry instead of adding one; the service keeps at most 10 live browsers; and each delivery
+drops the entries the service no longer holds. Dropping a live phone therefore takes 10 live
+browsers plus about 10 new endpoints between two deliveries, or a user with 10 phones and 10
+browsers adding another browser. If users do hit it, cap browsers and phones separately at 10
+each, as the service does.
 
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting

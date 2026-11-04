@@ -39,8 +39,8 @@ const OUTPUTS_BACKFILL_PAGE = 16;
 const NOTIFICATION_SERVICE_CALLS_PER_MINUTE = 20;
 
 // The most devices a user's notifications go to, bounding each notification's fan-out (the service
-// keeps at most 10 browsers and 10 phones per user). A live device behind 20 newer registrations is
-// dropped too, and gets notifications again once it next registers.
+// keeps at most 10 browsers and 10 phones per user). Unlike the service it counts both together, so
+// it can drop a live device; docs/notifications.md says why that's rare and when to revisit it.
 const NOTIFICATION_DEVICES = 20;
 
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
