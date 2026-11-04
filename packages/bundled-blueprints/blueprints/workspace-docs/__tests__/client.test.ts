@@ -178,6 +178,39 @@ describe("a save in flight", () => {
     reply();
     await vi.waitFor(() => expect(editor().querySelector('[data-block-id="r1"]')?.textContent).toBe("bar A"));
   });
+
+  // The server applied the save but its reply was lost with the connection, and an agent edited
+  // the block: after the failure, or while the save was in flight (its event then held for the
+  // reply). On reconnect the snapshot names the save as this page's last: the saved words are not
+  // merged in a second time.
+  it.each([[false, 23], [true, 26]])("takes a save whose reply was lost as applied, once the reconnect's snapshot says so (agent's edit seen first: %s)", async (heldFirst, rev) => {
+    const { gadget } = globalThis as unknown as { gadget: GadgetStub };
+    const id = `lr${rev}`, ids = () => Array.from(editor().children, (n) => n.getAttribute("data-block-id")!);
+    const agentEdit = { id, html: "<p>bar A</p>", version: 3 };
+    subscriber.operation({ type: "operation", senderId: "someone", revision: rev, title: "Doc", lastModified: 0, upserts: [{ id, html: "<p>foo</p>", version: 1 }], deletedIds: [], order: [...ids(), id] });
+    const block = editor().querySelector(`[data-block-id="${id}"]`)!;
+    let seq: number | undefined;
+    vi.mocked(gadget.applyOperation).mockImplementationOnce(async (operation) => {
+      seq = operation.seq;
+      if (heldFirst) subscriber.operation({ type: "operation", senderId: "agent", revision: rev + 1, title: "Doc", lastModified: 0, upserts: [agentEdit], deletedIds: [], order: ids() });
+      (subscriber as SubscriberCallbacks & Disposable)[Symbol.dispose]();
+      throw new Error("connection lost");
+    });
+    vi.mocked(gadget.subscribe).mockImplementationOnce(async (callbacks) => {
+      subscriber = callbacks;
+      // The other blocks as the page has them; the saved one as the agent left it.
+      const blocks = ids().map((b) => b === id ? agentEdit : { id: b, html: editor().querySelector(`[data-block-id="${b}"]`)!.outerHTML, version: 50 });
+      return { revision: rev + 2, title: "Doc", lastModified: 0, settings: { font: "sans", wide: false }, lastSave: { seq: seq!, versions: [[id, 2]] }, blocks };
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      block.textContent = "foo A";
+      window.dispatchEvent(new Event("pagehide"));
+      await vi.waitFor(() => expect(vi.mocked(gadget.subscribe).mock.results.at(-1)?.type).toBe("return"));
+      await vi.waitFor(() => expect(editor().querySelector(`[data-block-id="${id}"]`)?.textContent).toBe("bar A"));
+      expect(seq).toBeTypeOf("number");
+    } finally { error.mockRestore(); }
+  });
 });
 
 describe("menus", () => {
@@ -295,8 +328,9 @@ describe("more edits", () => {
   });
 
   // A change that fails to save drops out of what the page shows, whatever else is pending:
-  // otherwise this page alone would show it, until its next reconnect.
-  it("shows the saved settings with only the pending changes on top", async () => {
+  // otherwise this page alone would show it, until its next reconnect. Of the saved settings,
+  // the newest wins, whether a reply or a collaborator's broadcast arrives first.
+  it("shows the newest saved settings with only the pending changes on top", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     // The mock gadget beforeAll installed.
     const { gadget } = globalThis as unknown as { gadget: GadgetStub };
@@ -321,11 +355,17 @@ describe("more edits", () => {
       replies[2]!.reject(new Error("offline"));
       replies[3]!.resolve({ font: "sans", wide: true });
       await vi.waitFor(() => expect(shown()).toEqual(["sans", true]));
+      // A collaborator's newer change arrives before the reply to this page's older one.
+      pick("Serif");
+      subscriber.operation({ type: "settings", senderId: "someone", settings: { font: "mono", wide: true, revision: 11 } });
+      replies[4]!.resolve({ font: "serif", wide: true, revision: 10 });
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(shown()).toEqual(["mono", true]);
     } finally {
       menu.click();
       error.mockRestore();
       // Back to the settings the other tests start from.
-      subscriber.operation({ type: "settings", senderId: "someone", settings: { font: "sans", wide: false } });
+      subscriber.operation({ type: "settings", senderId: "someone", settings: { font: "sans", wide: false, revision: 12 } });
     }
   });
 

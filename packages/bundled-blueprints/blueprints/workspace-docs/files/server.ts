@@ -25,6 +25,7 @@ import type {
   DocumentInit,
   DocumentSnapshot,
   GadgetStub,
+  LastSave,
   MissingBlock,
   Operation,
   OperationEvent,
@@ -61,6 +62,9 @@ import { expandImageRefs, htmlToMarkdown } from "./lib/markdown.ts";
 
 const DEFAULT_TITLE = "Untitled document";
 const MAX_TITLE_LENGTH = 500;
+// The editors whose last save is kept (see applyOperationLocked).
+const MAX_LAST_SAVES = 20;
+type StoredSave = LastSave & { senderId: string };
 
 /**
  * The document the block API edits: the stored one, or -- for a legacy document with no content --
@@ -266,7 +270,14 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
       blocks: order.map((id) => byId.get(id)!),
       lastModified: Date.now(),
     };
-    await this.ctx.storage.put("document:v2", doc);
+    // The sender's save is noted (for the most recent editors), so one whose reply is lost learns
+    // on reconnect which blocks it wrote, and at what version (see subscribe).
+    const entries: Record<string, unknown> = { "document:v2": doc };
+    if (typeof operation.senderId === "string" && Number.isSafeInteger(operation.seq)) {
+      const saves = (await this.ctx.storage.get<StoredSave[]>("lastSaves") ?? []).filter((s) => s.senderId !== operation.senderId);
+      entries.lastSaves = [...saves.slice(1 - MAX_LAST_SAVES), { senderId: operation.senderId, seq: operation.seq!, versions: accepted.map((b) => [b.id, b.version]) }];
+    }
+    await this.ctx.storage.put(entries);
 
     const event: OperationEvent = {
       type: "operation",
@@ -286,11 +297,13 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
     };
   }
 
-  // `_client` is what an older editor said about itself; with no presence it is not kept.
-  async subscribe(callback: SubscriberCallbacks, _client: unknown = {}): Promise<SubscribeSnapshot> {
+  // `client.clientId` names the editor, which is told its own last save; an older editor sent its
+  // presence here instead, and gets none.
+  async subscribe(callback: SubscriberCallbacks, client: unknown = {}): Promise<SubscribeSnapshot> {
     this.subscribers.add(callback);
-    const [doc, settings] = await Promise.all([this.loadDocument(), this.getSettings()]);
-    return { ...doc, settings };
+    const [doc, settings, saves] = await Promise.all([this.loadDocument(), this.getSettings(), this.ctx.storage.get<StoredSave[]>("lastSaves")]);
+    const mine = isRecord(client) ? saves?.find((s) => s.senderId === client.clientId) : undefined;
+    return { ...doc, settings, ...mine && { lastSave: { seq: mine.seq, versions: mine.versions } } };
   }
 
   // No presence (see README). An editor page from before that, still open
@@ -307,7 +320,7 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
     return this.mutations.run(async () => {
       // An invalid field keeps the stored value.
       const current = await this.getSettings(), p = isRecord(patch) ? patch : {};
-      const next: DocSettings = { font: isFont(p.font) ? p.font : current.font, wide: typeof p.wide === "boolean" ? p.wide : current.wide };
+      const next: DocSettings = { font: isFont(p.font) ? p.font : current.font, wide: typeof p.wide === "boolean" ? p.wide : current.wide, revision: (current.revision ?? 0) + 1 };
       await this.ctx.storage.put("settings", next);
       this.broadcast({ type: "settings", senderId: isRecord(patch) ? patch.senderId : undefined, settings: next });
       return next;
@@ -542,7 +555,7 @@ function cleanDocumentTitle(title: unknown): string {
 
 function cleanSettings(value: unknown): DocSettings {
   const settings = isRecord(value) ? value : {};
-  return { font: isFont(settings.font) ? settings.font : "sans", wide: settings.wide === true };
+  return { font: isFont(settings.font) ? settings.font : "sans", wide: settings.wide === true, revision: Number.isSafeInteger(settings.revision) ? settings.revision as number : 0 };
 }
 
 // The blocks of an incoming document or operation, as far as they can be

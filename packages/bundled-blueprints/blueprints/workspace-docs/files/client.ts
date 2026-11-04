@@ -21,6 +21,7 @@ import type {
   DocumentEvent,
   DocumentSnapshot,
   GadgetStub,
+  LastSave,
   MissingBlock,
   OperationEvent,
   StoredBlock,
@@ -1986,17 +1987,21 @@ function applySettings(next: Partial<DocSettings> | null | undefined) {
 let confirmedSettings: Partial<DocSettings> = settings;
 const pendingSettings: Partial<DocSettings>[] = [];
 function showSettings() { applySettings(pendingSettings.reduce((shown, patch) => ({ ...shown, ...patch }), confirmedSettings)); }
-function receiveSettings(confirmed: Partial<DocSettings>) {
-  confirmedSettings = confirmed;
+// A save's reply and a collaborator's broadcast can cross on the way: the newer
+// revision is kept (settings from before the server counted them are 0).
+function confirmSettings(next: Partial<DocSettings>) {
+  if ((next.revision ?? 0) >= (confirmedSettings.revision ?? 0)) confirmedSettings = next;
+}
+function receiveSettings(next: Partial<DocSettings>) {
+  confirmSettings(next);
   showSettings();
 }
 function updateSettings(patch: Partial<DocSettings>) {
   const change = { ...patch };
   pendingSettings.push(change);
   showSettings();
-  // Replies come in the order sent, each with the server's settings after its own change.
   gadget.setSettings({ ...change, senderId: clientId })
-    .then((saved) => { confirmedSettings = saved; }, (error) => console.error(error))
+    .then(confirmSettings, (error) => console.error(error))
     .finally(() => { pendingSettings.splice(pendingSettings.indexOf(change), 1); showSettings(); });
 }
 function typeMenu(owner: HTMLElement) {
@@ -5838,10 +5843,11 @@ function confirmOrder(order: string[], rev: number) {
   ackOrderRevision = rev;
 }
 const pendingByBlock = new Map<string, PendingChange>(); // id -> remote change held back from a block being edited
-// id -> the draft last sent for a block and the version it rested on, until the
-// reply comes. If the reply is lost, the server's copy of that very draft is
-// recognized as this page's own when it comes back, rather than merged.
-const sentDrafts = new Map<string, { baseVersion: number; html: string }>();
+// The save last sent, numbered, and its drafts, until the reply comes. If the
+// reply is lost, the reconnect's snapshot says which of these blocks the server
+// wrote (its `lastSave`): they rest on the drafts, which aren't merged in again.
+let saveSeq = 0;
+let unconfirmedSave: { seq: number; drafts: Map<string, string> } | null = null;
 // The blocks whose save (or deletion) is in flight, and the remote changes to
 // them that came meanwhile (null for a deletion). A remote version may already
 // include that save, so it is applied only once the reply has said which
@@ -5927,17 +5933,16 @@ async function sendChanges(failures = 0): Promise<SaveOutcome> {
   const { blocks, upserts, deletes, reordered, dirty } = computeChanges();
   if (!dirty) return "saved";
   const sentOrder = blocks.map((b) => b.id);
-  // If this times out, a late reply is simply dropped and the page reconnects.
-  // Should the server have applied it after all, the reconnect's snapshot
-  // carries this very text at the next version, and sentDrafts recognizes it
-  // as this page's own: nothing is merged or written twice.
-  const sent = upserts.map((b) => { const draft = { baseVersion: b.baseVersion, html: b.html }; sentDrafts.set(b.id, draft); return [b.id, draft] as const; });
-  savingIds = new Set([...sent.map(([id]) => id), ...deletes.map((d) => d.id)]);
+  // If this times out, a late reply is simply dropped and the page reconnects;
+  // should the server have applied it after all, the snapshot then says so.
+  const save = { seq: ++saveSeq, drafts: new Map(upserts.map((b) => [b.id, b.html])) };
+  unconfirmedSave = save;
+  savingIds = new Set([...save.drafts.keys(), ...deletes.map((d) => d.id)]);
   savingOrder = reordered ? sentOrder : null;
   let result: ApplyOperationResult;
   try {
-    result = await withTimeout(gadget.applyOperation({ senderId: clientId, baseRevision: revision, upserts, deletes, order: sentOrder }), saveTimeoutMs(failures));
-    for (const [id, draft] of sent) if (sentDrafts.get(id) === draft) sentDrafts.delete(id);
+    result = await withTimeout(gadget.applyOperation({ senderId: clientId, seq: save.seq, baseRevision: revision, upserts, deletes, order: sentOrder }), saveTimeoutMs(failures));
+    if (unconfirmedSave === save) unconfirmedSave = null;
     revision = Math.max(revision, result.revision || 0);
     confirmOrder(Array.isArray(result.order) ? result.order : sentOrder, result.revision || 0);
     // A newer version may already have arrived as a live event while this reply
@@ -5953,8 +5958,11 @@ async function sendChanges(failures = 0): Promise<SaveOutcome> {
     for (const id of result.deletedIds || []) acknowledged.delete(id);
   } catch (error) {
     // A move that failed is sent again as it stands, over any order held meanwhile.
+    // The remote changes held for its blocks stay held: the save may have been
+    // applied with its reply lost, and merged against the old baseline its words
+    // would repeat. The next save's reply, or the reconnect's snapshot, settles them.
     savingIds = savingOrder = null;
-    applyHeldChanges();
+    orderHeld = false;
     throw error;
   }
   savingIds = null;
@@ -6038,14 +6046,9 @@ function remoteUpsert(block: StoredBlock, activeId: string | null) {
   // Already have this version (or a newer one): nothing to do. (An unknown
   // block's missing version compares false.)
   if (acknowledged.get(block.id)?.version! >= block.version) return;
-  let baseHtml = pendingBaseline(block.id);
+  const baseHtml = pendingBaseline(block.id);
   const next = parseBlock(block);
   const html = canonicalBlockHtml(next);
-  // This page's own save, whose reply never came: the draft already rests on it.
-  // (A created block's version is the revision that made it, unknown here.)
-  const sent = sentDrafts.get(block.id);
-  if (sent && sent.html === html && !pendingByBlock.has(block.id) && (!sent.baseVersion || sent.baseVersion + 1 === block.version)) baseHtml = html;
-  sentDrafts.delete(block.id);
   acknowledged.set(block.id, { html, version: block.version });
   const old = findBlock(block.id);
   // The DOM under an IME composition can't be rewritten: wait for compositionend.
@@ -6138,6 +6141,8 @@ function applyRemoteOperation(event: OperationEvent) {
   const activeId = editingBlockId();
   const live = event.senderId === "agent" && liveEffectsOn() ? captureLiveEdit(event) : null;
   keepSelection(() => applyRemote(() => {
+    // Newer than a change still held from a save that failed (see sendChanges).
+    for (const id of [...(event.upserts || []).map((b) => b.id), ...(event.deletedIds || [])]) if (!savingIds?.has(id)) heldWhileSaving.delete(id);
     for (const b of event.upserts || []) remoteUpsert(b, activeId);
     for (const id of event.deletedIds || []) remoteDelete(id, activeId);
     if (Array.isArray(event.order)) remoteOrder(event.order, event.revision || 0);
@@ -6154,7 +6159,7 @@ function applySnapshot(doc: DocumentSnapshot) {
     lastEventRevision = revision;
     acknowledged.clear();
     pendingByBlock.clear();
-    sentDrafts.clear();
+    unconfirmedSave = null;
     heldWhileSaving.clear();
     editor.replaceChildren(...(doc.blocks || []).map(parseBlock));
     normalize();
@@ -6169,7 +6174,19 @@ function applySnapshot(doc: DocumentSnapshot) {
 }
 // After a reconnect, or when someone replaces the document wholesale: bring in
 // what changed on the server without discarding anything typed locally.
-function reconcileSnapshot(doc: DocumentSnapshot) {
+function reconcileSnapshot(doc: DocumentSnapshot, lastSave?: LastSave) {
+  // The snapshot is newer than any change held for a save.
+  heldWhileSaving.clear();
+  // This page's save whose reply was lost, which the server applied: the blocks
+  // it wrote rest on its drafts, so the drafts aren't merged in a second time.
+  const save = unconfirmedSave;
+  if (save && lastSave?.seq === save.seq) {
+    for (const [id, version] of lastSave.versions) {
+      const html = save.drafts.get(id);
+      if (html !== undefined && !(acknowledged.get(id)?.version! >= version)) acknowledged.set(id, { html, version });
+    }
+    unconfirmedSave = null;
+  }
   revision = Math.max(revision, doc.revision || 0);
   lastEventRevision = Math.max(lastEventRevision, doc.revision || 0);
   const activeId = editingBlockId();
@@ -6376,15 +6393,15 @@ if (isExport) {
 
 let connectedOnce = false, connecting: Promise<void> | null = null;
 async function loadFromServer() {
-  let doc: SubscribeSnapshot | StoredDocument = await gadget.subscribe(subscriber);
-  // Still the subscribe() snapshot here; only it carries the settings.
-  const docSettings = (doc as SubscribeSnapshot).settings;
+  let doc: SubscribeSnapshot | StoredDocument = await gadget.subscribe(subscriber, { clientId });
+  // Still the subscribe() snapshot here; only it carries the settings and this page's last save.
+  const { settings: docSettings, lastSave } = doc as SubscribeSnapshot;
   if (!doc.blocks) {
     loadLegacyContent(doc.legacyContent || "");
     // loadLegacyContent() normalizes, which gives every block its id.
     doc = await gadget.initializeBlocks({ blocks: Array.from(editor.children, (n) => ({ id: blockId(n)!, html: canonicalBlockHtml(n) })), title: doc.title, senderId: clientId });
   }
-  return { doc, settings: docSettings };
+  return { doc, settings: docSettings, lastSave };
 }
 // Waiting between attempts can be cut short: wakeConnect() ends a pause
 // (network back, tab visible again); kickConnect() also abandons an attempt
@@ -6404,10 +6421,10 @@ async function connect(settleMs = 0) {
   if (settleMs) await sleep(settleMs);
   for (let attempt = 0; ; attempt++) {
     try {
-      const { doc, settings: docSettings } = await withTimeout(loadFromServer(), isExport ? 6e4 : connectTimeoutMs(attempt), isExport ? null : nextKick());
+      const { doc, settings: docSettings, lastSave } = await withTimeout(loadFromServer(), isExport ? 6e4 : connectTimeoutMs(attempt), isExport ? null : nextKick());
       if (docSettings) receiveSettings(docSettings);
       const firstLoad = !connectedOnce;
-      if (connectedOnce) reconcileSnapshot(doc);
+      if (connectedOnce) reconcileSnapshot(doc, lastSave);
       else applySnapshot(doc);
       ready = true;
       if (!connectedOnce) {

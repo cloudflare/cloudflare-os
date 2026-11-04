@@ -73,8 +73,9 @@ Every write runs in the Durable Object's mutation queue. One that changes the do
 
 - Stored under `document:v2`: `{ revision, title, blocks: [{ id, html, version }], lastModified }`. Each top-level element in the editor is one block with a stable `data-block-id`; a whole list or table is one block.
 - Clients send only changed blocks with the version they rest on; the server accepts non-conflicting changes and returns the authoritative block for stale ones, which the client merges word by word with its draft and resends. Two people changing different words of one paragraph both keep their changes; where both changed the same words, the later save's words win.
+- Each editor numbers its saves. Under `lastSaves` the server keeps the last applied save of the 20 most recent editors (`{ senderId, seq, versions: [[id, version]] }`) and tells a reconnecting editor its own, so a save whose reply was lost isn't merged in a second time.
 - `title` exists in storage but isn't shown or edited (the gadget has its own title; the browser tab shows the first non-empty line).
-- Shared presentation settings, stored under `settings`: `{ font: "sans" | "serif" | "mono", wide: boolean }` (`wide` widens the page from 700px to 980px). Read and write them with `getSettings()` / `setSettings({ font?, wide? })`. There is deliberately no per-run font or size; text styles come from the block type.
+- Shared presentation settings, stored under `settings`: `{ font: "sans" | "serif" | "mono", wide: boolean, revision }` (`wide` widens the page from 700px to 980px; `revision` counts changes, so editors keep the newest when a reply and a broadcast cross). Read and write them with `getSettings()` / `setSettings({ font?, wide? })`. There is deliberately no per-run font or size; text styles come from the block type.
 - Documents from before blocks (a legacy `content` HTML key) are converted to blocks on first load.
 
 ## Export formats

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { ExportHandler, Gadget, upgradeStoredDocument } from "../files/server.ts";
-import type { DocumentEvent, GadgetStub, StoredDocument, SubscriberCallbacks } from "../files/lib/protocol.ts";
+import type { BlockUpsert, DocumentEvent, GadgetStub, StoredDocument, SubscriberCallbacks } from "../files/lib/protocol.ts";
 
 // The Doc's Durable Object over in-memory storage: a real instance, over a state that is only the
 // storage the gadget reads and writes -- the `cloudflare:workers` stub vitest.config.ts aliases in
@@ -13,7 +13,11 @@ function inMemoryGadget(entries: Record<string, unknown> | Map<string, unknown> 
   const state = {
     storage: {
       get: async (key: string) => structuredClone(stored.get(key)),
-      put: async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); },
+      // As the runtime's: one key and value, or an object of entries written together.
+      put: async (key: string | Record<string, unknown>, value?: unknown) => {
+        const entries: [string, unknown][] = typeof key === "string" ? [[key, value]] : Object.entries(key);
+        for (const [k, v] of entries) stored.set(k, structuredClone(v));
+      },
     },
     blockConcurrencyWhile: (fn: () => Promise<unknown>) => (ready = fn()),
   } as unknown as DurableObjectState;
@@ -176,17 +180,34 @@ describe("editor protocol", () => {
     expect(await gadget.applyOperation({ senderId: "c1", deletes, order: ["a", "b"] })).toMatchObject({ status: "unchanged" });
   });
 
-  it("keeps shared settings clean, an invalid field keeping the stored value, and tells the other editors", async () => {
+  it("keeps shared settings clean, counting their changes, an invalid field keeping the stored value, and tells the other editors", async () => {
     const { gadget } = inMemoryGadget();
     const { callbacks, events } = subscriber();
     await gadget.subscribe(callbacks);
-    expect(await gadget.setSettings({ font: "serif", senderId: "c1" })).toEqual({ font: "serif", wide: false });
-    expect(await gadget.setSettings({ font: "comic" as "sans", wide: true })).toEqual({ font: "serif", wide: true });
+    expect(await gadget.setSettings({ font: "serif", senderId: "c1" })).toEqual({ font: "serif", wide: false, revision: 1 });
+    expect(await gadget.setSettings({ font: "comic" as "sans", wide: true })).toEqual({ font: "serif", wide: true, revision: 2 });
     expect(events).toEqual([
-      { type: "settings", senderId: "c1", settings: { font: "serif", wide: false } },
-      { type: "settings", senderId: undefined, settings: { font: "serif", wide: true } },
+      { type: "settings", senderId: "c1", settings: { font: "serif", wide: false, revision: 1 } },
+      { type: "settings", senderId: undefined, settings: { font: "serif", wide: true, revision: 2 } },
     ]);
-    expect(await gadget.getSettings()).toEqual({ font: "serif", wide: true });
+    expect(await gadget.getSettings()).toEqual({ font: "serif", wide: true, revision: 2 });
+  });
+
+  // An editor whose reply was lost learns on reconnect which of its blocks the save wrote.
+  it("tells a subscribing editor its own last applied save: the blocks it wrote and their versions", async () => {
+    const { gadget } = inMemoryGadget();
+    await gadget.initializeBlocks(init);
+    const save = (senderId: string, seq: number | undefined, upserts: BlockUpsert[]) => gadget.applyOperation({ senderId, seq, upserts, order: ["a", "b", "c"] });
+    await save("c1", 1, [{ id: "a", html: "<p>A</p>", baseVersion: 1 }]);
+    // The stale edit of b is not written; c is created at the revision the save makes.
+    await save("c1", 2, [{ id: "a", html: "<p>A2</p>", baseVersion: 2 }, { id: "b", html: "<p>B</p>", baseVersion: 0 }, { id: "c", html: "<p>C</p>", baseVersion: 0 }]);
+    await save("agent", undefined, [{ id: "a", html: "<p>agent</p>", baseVersion: 3 }]);
+    await save("c2", 1, [{ id: "b", html: "<p>other</p>", baseVersion: 1 }]);
+    const lastSave = async (client?: unknown) => (await gadget.subscribe(subscriber().callbacks, client)).lastSave;
+    expect(await lastSave({ clientId: "c1" })).toEqual({ seq: 2, versions: [["a", 3], ["c", 3]] });
+    expect(await lastSave({ clientId: "c2" })).toEqual({ seq: 1, versions: [["b", 2]] });
+    expect(await lastSave({ clientId: "c3" })).toBeUndefined();
+    expect(await lastSave()).toBeUndefined();
   });
 
   // No presence (README); an editor from before that keeps calling it and must not fail.

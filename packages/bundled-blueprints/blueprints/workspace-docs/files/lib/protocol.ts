@@ -66,13 +66,25 @@ export interface DocSettings {
   font: DocFont;
   /** Full width: the page's measure widens from 700px to 980px. */
   wide: boolean;
+  /** Counts the changes, so a reply and a broadcast that cross on the way can be told apart. The server always sets it. */
+  revision?: number;
 }
 
 /** The three typefaces a document can be set in. */
 export type DocFont = "sans" | "serif" | "mono";
 
-/** What `subscribe` returns: the document as `getDocument` would, with the shared settings. */
-export type SubscribeSnapshot = DocumentSnapshot & { settings: DocSettings };
+/**
+ * An editor's last applied save, as `subscribe` tells that editor: the `seq` it was sent with, and
+ * the version each block it wrote took. An editor whose reply was lost learns from it, on
+ * reconnect, which of its drafts the server holds.
+ */
+export interface LastSave {
+  seq: number;
+  versions: [id: string, version: number][];
+}
+
+/** What `subscribe` returns: the document as `getDocument` would, with the shared settings, and the subscriber's own last save. */
+export type SubscribeSnapshot = DocumentSnapshot & { settings: DocSettings; lastSave?: LastSave };
 
 /** The arguments of `initializeBlocks` and `setDocument`: a whole document as unversioned blocks. */
 export interface DocumentInit {
@@ -90,6 +102,8 @@ export type SettingsPatch = Partial<DocSettings> & { senderId?: string };
 /** One client's batch of block changes, as `applyOperation` receives it. */
 export interface Operation {
   senderId: string;
+  /** The sender's count of its saves, reported back as its `lastSave` (see {@link LastSave}). */
+  seq?: number;
   /** The revision the client last saw. Carried for diagnostics; blocks are checked by version, not by revision. */
   baseRevision?: number;
   upserts?: BlockUpsert[];
@@ -213,7 +227,7 @@ export interface GadgetStub {
   initializeBlocks(args: DocumentInit): Promise<StoredDocument>;
   setDocument(args: DocumentInit): Promise<StoredDocument>;
   applyOperation(operation: Operation): Promise<ApplyOperationResult>;
-  subscribe(callback: SubscriberCallbacks): Promise<SubscribeSnapshot>;
+  subscribe(callback: SubscriberCallbacks, client?: { clientId: string }): Promise<SubscribeSnapshot>;
   updatePresence(): Promise<void>;
   leavePresence(): Promise<void>;
   getSettings(): Promise<DocSettings>;
