@@ -565,13 +565,14 @@ ${paletteCss.classes}
 .type-pop { width: 252px; }
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 2px; }
 .tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 4px 9px; border: 0; border-radius: 9px; background: transparent; cursor: pointer; transition: background-color .12s; }
-.tile:hover { background: var(--hover); }
+.tile:hover, .tile:focus-visible { background: var(--hover); }
 .tile .ag { font-size: 25px; line-height: 1; color: var(--text); transition: color .15s; }
 .tile .tl { font-size: 11.5px; color: var(--muted); }
 .tile.on .ag { color: var(--accent); }
 .tile.on .tl { color: var(--text); font-weight: 550; }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 0 10px; border-radius: 7px; cursor: pointer; user-select: none; }
-.toggle-row:hover { background: var(--hover); }
+.toggle-row:hover, .toggle-row:focus-visible { background: var(--hover); }
+.tile:focus, .toggle-row:focus { outline: none; }
 .switch { width: 28px; height: 16px; border-radius: 8px; background: var(--line-strong); position: relative; flex: 0 0 auto; transition: background-color .2s var(--ease); }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .2s var(--ease); }
 .switch.on { background: var(--accent); }
@@ -1328,14 +1329,18 @@ function mergeChecklists(ul: Element, saved: SavedSelection | null) {
   return ul;
 }
 const TEXT_BLOCK = /^(P|DIV|H[1-6])$/;
+/** The top blocks a range runs through. */
+function topBlocksIn(range: Range | null): HTMLElement[] {
+  const first = range && topBlockOf(range.startContainer), last = range && topBlockOf(range.endContainer) || first;
+  const blocks: HTMLElement[] = [];
+  for (let n = first; n; n = n.nextElementSibling as HTMLElement | null) { blocks.push(n); if (n === last) break; }
+  return blocks;
+}
 // Turn the selected paragraphs (and any plain lists among them) into one to-do list.
 function makeChecklist() {
-  const range = getRange();
-  const first = range && topBlockOf(range.startContainer);
+  let blocks: Element[] = topBlocksIn(getRange());
+  const first = blocks[0];
   if (!first) return null;
-  const last = topBlockOf(range.endContainer) || first;
-  let blocks: Element[] = [];
-  for (let n: Element | null = first; n; n = n.nextElementSibling) { blocks.push(n); if (n === last) break; }
   const convertible = (b: Element) => TEXT_BLOCK.test(b.tagName) || b.tagName === "UL" || b.tagName === "OL";
   if (!blocks.every(convertible)) blocks = [first];
   if (!convertible(first)) return null;
@@ -1363,14 +1368,16 @@ function makeChecklist() {
 }
 // Turn one existing list item into a to-do (used by the "- [ ] " shortcut).
 function itemToTodo(li: Element, checked: boolean) {
-  const saved = saveSelection();
-  const list = li.parentElement!;
-  let ul: Element;
-  if (list.children.length === 1) ul = list.tagName === "UL" ? (list.classList.add("checklist"), list) : retagList(list, "ul", true, saved);
-  else ul = splitItem(li, "ul", true, saved);
-  if (ul.parentElement === editor) mergeChecklists(ul, saved);
-  if (checked) li.setAttribute("data-checked", "true");
-  restoreOrPlace(saved, li);
+  editBlocks([li], () => {
+    const saved = saveSelection();
+    const list = li.parentElement!;
+    let ul: Element;
+    if (list.children.length === 1) ul = list.tagName === "UL" ? (list.classList.add("checklist"), list) : retagList(list, "ul", true, saved);
+    else ul = splitItem(li, "ul", true, saved);
+    if (ul.parentElement === editor) mergeChecklists(ul, saved);
+    if (checked) li.setAttribute("data-checked", "true");
+    restoreOrPlace(saved, li);
+  });
 }
 function setList(kind: ListKind) {
   ensureSelection();
@@ -1385,24 +1392,27 @@ function setList(kind: ListKind) {
       exec("formatBlock", "<p>");
     }
   }
-  const root = list && list.closest("ul.checklist");
   if (current === kind) {
     // Toggle off: the item goes back to being a paragraph.
     exec(kind === "ol" ? "insertOrderedList" : "insertUnorderedList");
-  } else if (kind === "todo") {
-    if (!list) makeChecklist();
-    else {
-      const saved = saveSelection();
-      const li = closestEl(caretNode(), "li");
-      const ul = list.tagName === "UL" ? (list.classList.add("checklist"), list) : retagList(list, "ul", true, saved);
-      const merged = ul.parentElement === editor ? mergeChecklists(ul, saved) : ul;
-      restoreOrPlace(saved, merged, li || merged.lastElementChild);
-    }
-  } else if (current === "todo") {
-    const saved = saveSelection();
-    if (kind === "ul") stripChecks(root);
-    else retagList(root!, "ol", false, saved);
-    restoreSelection(saved);
+  } else if (kind === "todo" || current === "todo") {
+    // To-do lists are built directly, so ⌘Z undoes them as a block action.
+    editBlocks(topBlocksIn(getRange()), () => {
+      const list = currentList(), saved = saveSelection();
+      if (kind !== "todo") {
+        const root = list!.closest("ul.checklist")!;
+        if (kind === "ul") stripChecks(root);
+        else retagList(root, "ol", false, saved);
+        restoreSelection(saved);
+      } else if (!list) makeChecklist();
+      else {
+        const li = closestEl(caretNode(), "li");
+        const ul = list.tagName === "UL" ? (list.classList.add("checklist"), list) : retagList(list, "ul", true, saved);
+        const merged = ul.parentElement === editor ? mergeChecklists(ul, saved) : ul;
+        restoreOrPlace(saved, merged, li || merged.lastElementChild);
+      }
+    });
+    return;
   } else {
     exec(kind === "ol" ? "insertOrderedList" : "insertUnorderedList");
     // A new bulleted item can be merged into a to-do list sitting right next
@@ -1625,13 +1635,22 @@ function clearFormatting() {
 function insertDivider() {
   ensureSelection();
   const top = currentTopBlock();
-  const hr = document.createElement("hr");
-  if (top && top.tagName === "P" && !top.textContent.replace(/\u200B/g, "").trim() && !top.querySelector("img")) top.replaceWith(hr);
-  else if (top) top.after(hr);
-  else editor.appendChild(hr);
-  let next = hr.nextElementSibling;
-  if (!next || !/^(P|H[1-6]|DIV)$/.test(next.tagName)) { next = emptyParagraph(); hr.after(next); }
-  placeCaret(next, 0);
+  editBlocks([], () => {
+    const hr = document.createElement("hr");
+    if (top && top.tagName === "P" && !top.textContent.replace(/\u200B/g, "").trim() && !top.querySelector("img")) top.replaceWith(hr);
+    else if (top) top.after(hr);
+    else editor.appendChild(hr);
+    let next = hr.nextElementSibling;
+    if (!next || !/^(P|H[1-6]|DIV)$/.test(next.tagName)) { next = emptyParagraph(); hr.after(next); }
+    placeCaret(next, 0);
+  });
+}
+// Indenting is for lines: in a table it would put a quote in the cells.
+function indentLines(outdent: boolean) {
+  ensureSelection();
+  const range = getRange();
+  if (!range || closestEl(range.commonAncestorContainer, "table") || range.cloneContents().querySelector("table")) return;
+  exec(outdent ? "outdent" : "indent");
   changed();
 }
 
@@ -1851,22 +1870,28 @@ document.addEventListener("keydown", (e) => {
   }
 });
 // A menu works from the keyboard: the arrows, from the button that opened it or
-// inside it, move through its rows, and Enter or Space picks one. Its action
-// puts back the editor selection the menu was opened from (toggleMenu).
+// inside it, move through its items (rows, swatches, tiles), and Enter or Space
+// picks one. Its action puts back the editor selection the menu was opened from
+// (toggleMenu).
 document.addEventListener("keydown", (e) => {
   if (openPop?.kind !== "menu") return;
   const { pop, owner } = openPop;
   const inPop = pop.contains(document.activeElement);
   if (!inPop && document.activeElement !== owner) return;
-  const rows = Array.from(pop.querySelectorAll<HTMLElement>(".mi"));
+  const items = () => Array.from(pop.querySelectorAll<HTMLElement>('[role^="menuitem"]'));
+  const rows = items();
   if (!rows.length) return;
   const i = rows.indexOf(document.activeElement as HTMLElement);
   const move = (to: number) => rows[(to + rows.length) % rows.length].focus();
-  if (e.key === "ArrowDown") move(i + 1);
-  else if (e.key === "ArrowUp") move(i < 0 ? -1 : i - 1);
+  if (e.key === "ArrowDown" || e.key === "ArrowRight" && inPop) move(i + 1);
+  else if (e.key === "ArrowUp" || e.key === "ArrowLeft" && inPop) move(i < 0 ? -1 : i - 1);
   else if (e.key === "Home" && inPop) move(0);
   else if (e.key === "End" && inPop) move(-1);
-  else if ((e.key === "Enter" || e.key === " ") && i >= 0) rows[i].click();
+  else if ((e.key === "Enter" || e.key === " ") && i >= 0) {
+    rows[i].click();
+    // A pop that redraws itself (the typeface's) keeps the focus where it was.
+    if (openPop?.pop === pop && !rows[i].isConnected) items()[i]?.focus();
+  }
   else if (e.key === "Tab" && inPop) { closePop(); owner?.focus(); }
   else return;
   e.preventDefault();
@@ -1921,8 +1946,8 @@ function alignMenu(owner: HTMLElement) {
 function moreMenu(owner: HTMLElement) {
   showPop([
     menuItem({ icon: "divider", label: "Divider", onSelect: insertDivider }),
-    menuItem({ icon: "indent", label: "Indent", keys: combo("Tab"), onSelect: () => { exec("indent"); changed(); } }),
-    menuItem({ icon: "outdent", label: "Outdent", keys: combo("shift", "Tab"), onSelect: () => { exec("outdent"); changed(); } }),
+    menuItem({ icon: "indent", label: "Indent", keys: combo("Tab"), onSelect: () => indentLines(false) }),
+    menuItem({ icon: "outdent", label: "Outdent", keys: combo("shift", "Tab"), onSelect: () => indentLines(true) }),
     menuItem({ icon: "clear", label: "Clear formatting", keys: combo("mod", "\\"), onSelect: clearFormatting }),
     el("div", { class: "msep" }),
     menuItem({ icon: "keyboard", label: "Keyboard shortcuts", keys: combo("mod", "/"), onSelect: openShortcuts })
@@ -1931,7 +1956,7 @@ function moreMenu(owner: HTMLElement) {
 function colorMenu(owner: HTMLElement) {
   const now = currentColors();
   const swatches = (kind: ColorKind) => el("div", { class: "swatches" }, COLORS.map((c, i) => {
-    const s = el("button", { type: "button", class: "sw" + (now[kind] === c.key ? " on" : "") + (kind === "hl" && c.key === "default" ? " none" : ""), title: kind === "hl" && c.key === "default" ? "No highlight" : c.label, "aria-label": (kind === "hl" ? "Highlight " : "Text ") + c.label });
+    const s = el("button", { type: "button", class: "sw" + (now[kind] === c.key ? " on" : "") + (kind === "hl" && c.key === "default" ? " none" : ""), title: kind === "hl" && c.key === "default" ? "No highlight" : c.label, "aria-label": (kind === "hl" ? "Highlight " : "Text ") + c.label, role: "menuitemradio", "aria-checked": String(now[kind] === c.key), tabindex: "-1" });
     if (kind === "tc") {
       s.textContent = "A";
       s.style.color = c.key === "default" ? "var(--text)" : `var(--tc-${c.key})`;
@@ -1962,7 +1987,7 @@ function updateSettings(patch: Partial<DocSettings>) {
 function typeMenu(owner: HTMLElement) {
   const render = () => [
     el("div", { class: "tiles" }, FONTS.map((f) => {
-      const t = el("button", { type: "button", class: "tile" + (settings.font === f.key ? " on" : "") }, [
+      const t = el("button", { type: "button", class: "tile" + (settings.font === f.key ? " on" : ""), role: "menuitemradio", "aria-checked": String(settings.font === f.key), "aria-label": f.label, tabindex: "-1" }, [
         el("span", { class: "ag", style: { fontFamily: f.stack } }, "Ag"), el("span", { class: "tl" }, f.label)
       ]);
       t.addEventListener("click", () => { updateSettings({ font: f.key }); openPop?.pop.replaceChildren(...render()); });
@@ -1970,7 +1995,7 @@ function typeMenu(owner: HTMLElement) {
     })),
     el("div", { class: "msep" }),
     (() => {
-      const row = el("div", { class: "toggle-row" }, [el("span", {}, "Full width"), el("span", { class: "switch" + (settings.wide ? " on" : "") })]);
+      const row = el("div", { class: "toggle-row", role: "menuitemcheckbox", "aria-checked": String(settings.wide), tabindex: "-1" }, [el("span", {}, "Full width"), el("span", { class: "switch" + (settings.wide ? " on" : "") })]);
       row.addEventListener("click", () => { updateSettings({ wide: !settings.wide }); openPop?.pop.replaceChildren(...render()); });
       return row;
     })()
@@ -2178,8 +2203,7 @@ function updateLinkView() {
     tb("pencil", "Edit link", combo("mod", "K"), () => { closePop(true); openLinkEditor(); }),
     tb("unlink", "Remove link", null, () => {
       closePop(true);
-      keepSelection(() => unwrap(a));
-      changed();
+      editBlocks([a], () => keepSelection(() => unwrap(a)));
     })
   ]);
   showPop(card, a.getBoundingClientRect(), { kind: "link-view", className: "link-pop", reposition: () => a.isConnected ? a.getBoundingClientRect() : null, onClose: () => { linkViewAnchor = null; } });
@@ -2251,18 +2275,21 @@ function encodeImage(image: HTMLImageElement): { src: string; width: number } {
   }
   throw new Error("That image is too large to embed.");
 }
+// A GIF within these limits keeps its animation; anything else is re-encoded.
+const keepsGif = (src: string, image: HTMLImageElement) =>
+  /^data:image\/gif/i.test(src) && src.length <= IMAGE_MAX_GIF && Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height) <= IMAGE_MAX_DIMENSION;
 async function prepareImage(file: File) {
   const original = await readFileAsDataURL(file);
   const image = await loadImage(original);
-  const w0 = image.naturalWidth || image.width, h0 = image.naturalHeight || image.height;
   const alt = (file.name || "").replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").trim() || "Image";
-  if (file.type === "image/gif" && original.length <= IMAGE_MAX_GIF && Math.max(w0, h0) <= IMAGE_MAX_DIMENSION) return { src: original, alt, width: w0 };
+  if (keepsGif(original, image)) return { src: original, alt, width: image.naturalWidth || image.width };
   return { ...encodeImage(image), alt };
 }
-// Pasted or dropped HTML can carry a WebP (or an oversized) data URL. It goes
-// in as it is, marked, and is re-encoded right after (changed() calls this);
-// the mark is never saved. Images already in the document are left alone.
-const needsReencode = (src: string) => /^data:image\/webp/i.test(src) || src.length > IMAGE_MAX_LENGTH && !/^data:image\/gif/i.test(src);
+// Pasted or dropped HTML can carry a WebP, a GIF or an oversized data URL. It
+// goes in as it is, marked, and is re-encoded right after (changed() calls
+// this) unless it is a GIF within the limits; the mark is never saved. Images
+// already in the document are left alone.
+const needsReencode = (src: string) => /^data:image\/(webp|gif)/i.test(src) || src.length > IMAGE_MAX_LENGTH;
 let reencoding = false;
 async function reencodeMarkedImages() {
   if (reencoding || !editor.querySelector("img[data-reencode]")) return;
@@ -2271,7 +2298,7 @@ async function reencodeMarkedImages() {
     for (let img; (img = editor.querySelector("img[data-reencode]")); ) {
       const from = img.getAttribute("src") || "";
       let src = null;
-      try { src = encodeImage(await loadImage(from)).src; } catch {}
+      try { const image = await loadImage(from); src = keepsGif(from, image) ? from : encodeImage(image).src; } catch {}
       if (!img.isConnected) continue;
       img.removeAttribute("data-reencode");
       if (src && img.getAttribute("src") === from) img.setAttribute("src", src);
@@ -2418,19 +2445,18 @@ editor.addEventListener("drop", (e) => {
     draggedImage = null;
     setCaretFromPoint(e.clientX, e.clientY);
     const range = getRange();
-    if (range) {
+    if (range) editBlocks([img, range.startContainer], () => {
       range.insertNode(img);
       const after = document.createRange();
       after.setStartAfter(img);
       after.collapse(true);
       setRange(after);
-    }
+    });
     selectImage(img);
-    changed();
     return;
   }
   const files = imageFilesFrom(e.dataTransfer);
-  if (files.length) {
+  if (pastesFiles(files, e.dataTransfer?.getData("text/html"))) {
     e.preventDefault();
     setCaretFromPoint(e.clientX, e.clientY);
     insertImageFiles(files);
@@ -2471,6 +2497,11 @@ const sanitizePastedHtml = (html: string) => sanitizeHtml(html, pasteContext);
 // its text, syntax-coloured, so the text is pasted (and read as Markdown).
 const clipboardHtml = (html: string | undefined, text: string | undefined) =>
   html?.trim() && !isCodeEditorHtml(html) ? sanitizePastedHtml(html) : textToHtml(text);
+// Excel and Word put a picture of the copied content beside its HTML, and a
+// web page a copied image's file beside HTML of just that <img>: the files go
+// in only when the HTML has no text.
+const pastesFiles = (files: File[], html: string | undefined) =>
+  files.length > 0 && !(html?.trim() && new DOMParser().parseFromString(sanitizePastedHtml(html), "text/html").body.textContent?.trim());
 // There is always a line after a table, so a pasted table at the end of the
 // document can be typed after.
 function insertPasted(html: string) {
@@ -2489,8 +2520,9 @@ function insertIntoCode(range: Range, text: string): boolean {
 editor.addEventListener("paste", (e) => {
   const cb = e.clipboardData;
   if (!cb) return;
+  const html = cb.getData("text/html");
   const images = imageFilesFrom(cb);
-  if (images.length) {
+  if (pastesFiles(images, html)) {
     e.preventDefault();
     insertImageFiles(images);
     return;
@@ -2498,7 +2530,6 @@ editor.addEventListener("paste", (e) => {
   e.preventDefault();
   const range = getRange();
   const text = cb.getData("text/plain") || "";
-  const html = cb.getData("text/html");
   if (range && insertIntoCode(range, text)) return;
   // Pasting a URL over selected text turns the text into a link.
   if (range && !range.collapsed && looksLikeUrl(text) && !/\n/.test(range.toString())) { exec("createLink", normalizeHref(text)); return; }
@@ -2525,34 +2556,35 @@ function atBlockStart(block: Node, range: Range) {
 const isNestedItem = (li: Element) => /^(LI|UL|OL)$/.test(li.parentElement?.parentElement?.tagName || "");
 function leaveListItem(li: HTMLElement) {
   if (isNestedItem(li)) { exec("outdent"); changed(); return; }
-  const list = li.parentElement!;
-  const p = document.createElement("p");
-  if (li.style.textAlign) p.style.textAlign = li.style.textAlign;
-  const nested: HTMLElement[] = [];
-  for (const c of Array.from(li.childNodes)) {
-    if (isElement(c) && (c.tagName === "UL" || c.tagName === "OL")) nested.push(c);
-    else if (isElement(c) && LINE_TAGS.test(c.tagName)) { while (c.firstChild) p.appendChild(c.firstChild); c.remove(); }
-    else p.appendChild(c);
-  }
-  if (!hasContent(p) && !p.querySelector("br")) p.appendChild(document.createElement("br"));
-  // Items under it come out one level too, keeping their own list type.
-  const isTodo = list.classList.contains("checklist");
-  for (const n of nested) if (isTodo && n.tagName === "UL") n.classList.add("checklist");
-  const tail = list.cloneNode(false) as HTMLElement;
-  tail.removeAttribute("data-block-id");
-  while (li.nextSibling) tail.appendChild(li.nextSibling);
-  li.remove();
-  list.after(p);
-  let last: HTMLElement = p;
-  for (const n of nested) { last.after(n); last = n; }
-  if (tail.querySelector("li")) last.after(tail);
-  if (!list.querySelector("li")) {
-    if (list.hasAttribute("data-block-id")) p.setAttribute("data-block-id", list.getAttribute("data-block-id")!);
-    list.remove();
-  }
-  const [node, offset] = startPoint(p);
-  placeCaret(node, offset);
-  changed();
+  editBlocks([li], () => {
+    const list = li.parentElement!;
+    const p = document.createElement("p");
+    if (li.style.textAlign) p.style.textAlign = li.style.textAlign;
+    const nested: HTMLElement[] = [];
+    for (const c of Array.from(li.childNodes)) {
+      if (isElement(c) && (c.tagName === "UL" || c.tagName === "OL")) nested.push(c);
+      else if (isElement(c) && LINE_TAGS.test(c.tagName)) { while (c.firstChild) p.appendChild(c.firstChild); c.remove(); }
+      else p.appendChild(c);
+    }
+    if (!hasContent(p) && !p.querySelector("br")) p.appendChild(document.createElement("br"));
+    // Items under it come out one level too, keeping their own list type.
+    const isTodo = list.classList.contains("checklist");
+    for (const n of nested) if (isTodo && n.tagName === "UL") n.classList.add("checklist");
+    const tail = list.cloneNode(false) as HTMLElement;
+    tail.removeAttribute("data-block-id");
+    while (li.nextSibling) tail.appendChild(li.nextSibling);
+    li.remove();
+    list.after(p);
+    let last: HTMLElement = p;
+    for (const n of nested) { last.after(n); last = n; }
+    if (tail.querySelector("li")) last.after(tail);
+    if (!list.querySelector("li")) {
+      if (list.hasAttribute("data-block-id")) p.setAttribute("data-block-id", list.getAttribute("data-block-id")!);
+      list.remove();
+    }
+    const [node, offset] = startPoint(p);
+    placeCaret(node, offset);
+  });
 }
 function handlePreEnter(e: KeyboardEvent, pre: HTMLElement) {
   e.preventDefault();
@@ -2630,11 +2662,13 @@ editor.addEventListener("keydown", (e) => {
   const mod = isMac ? e.metaKey : e.ctrlKey;
   if (selectedImage && (e.key === "Backspace" || e.key === "Delete")) {
     e.preventDefault();
-    const parent = selectedImage.parentElement;
-    selectedImage.remove();
+    const img = selectedImage;
     hideImageControls();
-    if (parent && parent !== editor && !parent.textContent.trim() && !parent.querySelector("img, br")) parent.appendChild(document.createElement("br"));
-    changed();
+    editBlocks([img], () => {
+      const parent = img.parentElement;
+      img.remove();
+      if (parent && parent !== editor && !parent.textContent.trim() && !parent.querySelector("img, br")) parent.appendChild(document.createElement("br"));
+    });
     return;
   }
   if (selectedImage && !["Shift", "Meta", "Control", "Alt"].includes(e.key)) hideImageControls();
@@ -2656,7 +2690,9 @@ editor.addEventListener("keydown", (e) => {
       return;
     }
   }
-  if (mod && e.altKey && /^Digit[0-3]$/.test(e.code)) {
+  // Off a Mac, Ctrl+Alt is also AltGr, which types "@" or "}" on many layouts:
+  // an AltGr press is the shortcut only on a key that types its own digit.
+  if (mod && e.altKey && /^Digit[0-3]$/.test(e.code) && (isMac || e.key === e.code.slice(5) || !e.getModifierState("AltGraph"))) {
     e.preventDefault();
     setBlockType((["p", "h1", "h2", "h3"] as const)[Number(e.code.slice(5))]);
     return;
@@ -2668,8 +2704,7 @@ editor.addEventListener("keydown", (e) => {
     e.preventDefault();
     const li = closestEl(range.startContainer, "li");
     if (e.shiftKey && li && !isNestedItem(li) && range.collapsed) { leaveListItem(li); return; }
-    exec(e.shiftKey ? "outdent" : "indent");
-    changed();
+    indentLines(e.shiftKey);
     return;
   }
   if (e.key === "Enter" && !e.shiftKey && !mod && !e.altKey) {
@@ -2685,10 +2720,11 @@ editor.addEventListener("keydown", (e) => {
       rest.setStart(range.endContainer, range.endOffset);
       if (!rest.toString().replace(/\u200B/g, "").length) {
         e.preventDefault();
-        const p = emptyParagraph();
-        quote.after(p);
-        placeCaret(p, 0);
-        changed();
+        editBlocks([], () => {
+          const p = emptyParagraph();
+          quote.after(p);
+          placeCaret(p, 0);
+        });
         return;
       }
     }
@@ -2719,10 +2755,11 @@ editor.addEventListener("keydown", (e) => {
     const next = top?.nextElementSibling;
     if (top && next && top.tagName === "P" && !hasContent(top) && !closestEl(range.startContainer, "li")) {
       e.preventDefault();
-      top.remove();
-      const [node, offset] = startPoint(next);
-      placeCaret(node, offset);
-      changed();
+      editBlocks([], () => {
+        top.remove();
+        const [node, offset] = startPoint(next);
+        placeCaret(node, offset);
+      });
       return;
     }
   }
@@ -2757,6 +2794,9 @@ let deletedSelection = false;
 editor.addEventListener("beforeinput", (e) => { deletedSelection = e.inputType.startsWith("delete") && getRange()?.collapsed === false; });
 editor.addEventListener("input", (e) => {
   if (e.isComposing || composing) { scheduleSave(); return; }
+  // Typing hands undo back to the browser. A block action an input rule makes
+  // of it (a divider, a to-do list) is then undone on its own.
+  clearBlockHistory();
   normalize();
   // Deleting a selection that spans a table (⌘A, ⌫) leaves Chrome's merge of
   // two empty lines, <p><br><br></p>: an empty line that is two lines tall.
@@ -2771,7 +2811,7 @@ editor.addEventListener("input", (e) => {
     if (e.inputType === "insertText" && e.data) runInputRules(e.data);
     if (e.inputType === "insertParagraph") afterParagraph();
   }
-  changed({ typing: true });
+  blockChanged({ typing: true });
 });
 
 function afterParagraph() {
@@ -2820,7 +2860,6 @@ function runInputRules(data: string) {
         selectBetween(li, 0, node, offset);
         exec("delete");
         itemToTodo(closestEl(caretNode(), "li") || li, /x/i.test(m[1]));
-        changed();
         return;
       }
     }
@@ -3366,9 +3405,46 @@ function stepBlockHistory(redo: boolean) {
 }
 function undoAny() { if (!stepBlockHistory(false)) exec("undo"); }
 function redoAny() { if (!stepBlockHistory(true)) exec("redo"); }
-function blockChanged() {
+function blockChanged(options?: { typing?: boolean }) {
   blockOpDepth++;
-  try { changed(); } finally { blockOpDepth--; }
+  try { changed(options); } finally { blockOpDepth--; }
+}
+/**
+ * An edit the browser's own undo doesn't see (the editor's DOM surgery),
+ * undone by ⌘Z as a block action. The edit is made in the live blocks, so the
+ * browser's history of typing in them stays valid; the undo step holds deep
+ * copies of the top blocks holding `touched` (taken before the edit) in their
+ * place, and undo swaps those back in.
+ */
+function editBlocks<T>(touched: Node[], fn: () => T): T {
+  recordBlockStep();
+  const step = blockHistory.undo.at(-1)!;
+  const copies = new Map<Node, HTMLElement>();
+  for (const b of touched.map(topBlockOf)) if (b && !copies.has(b)) copies.set(b, b.cloneNode(true) as HTMLElement);
+  // A node's counterpart in the copies (itself outside them).
+  const copyOf = <N extends Node>(node: N): N => {
+    const path: number[] = [];
+    let n: Node = node;
+    while (!copies.has(n)) {
+      const parent = n.parentNode;
+      if (!parent) return node;
+      path.push(Array.prototype.indexOf.call(parent.childNodes, n));
+      n = parent;
+    }
+    return path.reduceRight<Node>((c, i) => c.childNodes[i], copies.get(n)!) as N;
+  };
+  if (copies.size) {
+    step.structure = step.structure.map(({ node, kids }) => {
+      const copy = copies.get(node);
+      return copy ? { node: copy, kids: kids && Array.from(copy.childNodes) } : { node, kids };
+    });
+    step.checked = step.checked.map(copyOf);
+    if (step.sel) step.sel = { anchor: copyOf(step.sel.anchor), focus: copyOf(step.sel.focus) };
+    for (const p of step.caret ? [step.caret.a, step.caret.f] : []) if (p.node) p.node = copyOf(p.node); else if (p.ref) p.ref = copyOf(p.ref);
+  }
+  const out = fn();
+  blockChanged();
+  return out;
 }
 
 // ── Rearranging ──────────────────────────────────────────────────────────
@@ -3945,12 +4021,20 @@ gripBtn.addEventListener("pointerdown", (e) => {
   window.addEventListener("pointermove", onPressMove);
   window.addEventListener("pointerup", onPressUp);
   window.addEventListener("pointercancel", onPressCancel);
+  // A release outside the frame never reaches it.
+  window.addEventListener("blur", onPressCancel);
+  try {
+    gripBtn.setPointerCapture(e.pointerId);
+    gripBtn.addEventListener("lostpointercapture", onPressCancel);
+  } catch {}
 });
 function endPress() {
   press = null;
   window.removeEventListener("pointermove", onPressMove);
   window.removeEventListener("pointerup", onPressUp);
   window.removeEventListener("pointercancel", onPressCancel);
+  window.removeEventListener("blur", onPressCancel);
+  gripBtn.removeEventListener("lostpointercapture", onPressCancel);
 }
 function onPressMove(e: PointerEvent) {
   if (drag) { dragMove(e); return; }
@@ -4164,11 +4248,13 @@ canvas.addEventListener("mousedown", (e) => {
   sweep = { y0: e.clientY + canvas.scrollTop, x: e.clientX, y: e.clientY, moved: false, inEditor: t === editor, raf: 0, done: false };
   window.addEventListener("mousemove", onSweepMove);
   window.addEventListener("mouseup", onSweepUp);
+  // A release outside the frame never reaches it.
+  window.addEventListener("blur", endSweep);
 }, true);
 function onSweepMove(e: MouseEvent) {
-
   const s = sweep;
   if (!s) return;
+  if (!(e.buttons & 1)) { endSweep(); return; } // released outside the frame
   s.x = e.clientX;
   s.y = e.clientY;
   if (!s.moved) {
@@ -4197,19 +4283,24 @@ function updateSweep() {
   else selectBlocks(all[b], all[a]);
 }
 function onSweepUp(e: MouseEvent) {
+  const s = endSweep();
+  if (s && !s.moved && s.inEditor) {
+    const cb = contentBox();
+    setCaretFromPoint(clamp(e.clientX, cb.left + 1, cb.right - 1), e.clientY);
+  }
+}
+function endSweep() {
   const s = sweep;
   sweep = null;
   window.removeEventListener("mousemove", onSweepMove);
   window.removeEventListener("mouseup", onSweepUp);
-  if (!s) return;
+  window.removeEventListener("blur", endSweep);
+  if (!s) return null;
   s.done = true;
   cancelAnimationFrame(s.raf);
   document.body.classList.remove("blk-sweeping");
-  if (!s.moved && s.inEditor) {
-    const cb = contentBox();
-    setCaretFromPoint(clamp(e.clientX, cb.left + 1, cb.right - 1), e.clientY);
-  }
   queueHover();
+  return s;
 }
 
 /* ═════════════════════════════ 8¾. Tables ═══════════════════════════════ */
@@ -4740,7 +4831,7 @@ attachTip(tblAddRow, "Add row");
 attachTip(tblAddCol, "Add column");
 for (const b of tblButtons) b.addEventListener("mousedown", (e) => e.preventDefault());
 
-/** A column resize in progress: the table as it was, the copy being resized, and the boundary. */
+/** A column resize in progress: the table as it was, the copy being resized, the boundary, and the redo steps its undo step cleared. */
 interface ColumnResize {
   original: HTMLTableElement;
   t: HTMLTableElement;
@@ -4748,6 +4839,7 @@ interface ColumnResize {
   x0: number;
   widths: number[];
   moved: boolean;
+  redo: BlockState[];
 }
 let tblHover: { table: HTMLTableElement; r: number; c: number } | null = null, tblMenu = false, tblEdge: number | null = null, tblResizing: ColumnResize | null = null, ringTable: HTMLTableElement | null = null;
 function hideTableUi(force = false) {
@@ -4920,13 +5012,14 @@ editor.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   hideTip();
   const spot = caretSpot(table);
+  const redo = blockHistory.redo.slice();
   recordBlockStep();
   const t = table.cloneNode(true) as HTMLTableElement;
   table.replaceWith(t);
   setColWidths(t, widths);
   if (spot) restoreSpot(t, spot);
   tblHover.table = t;
-  tblResizing = { original: table, t, i: tblEdge, x0: e.clientX, widths, moved: false };
+  tblResizing = { original: table, t, i: tblEdge, x0: e.clientX, widths, moved: false, redo };
   document.body.classList.add("tbl-resizing");
   window.addEventListener("pointermove", onResizeMove);
   window.addEventListener("pointerup", onResizeEnd);
@@ -4962,6 +5055,7 @@ function onResizeEnd() {
     const spot = caretSpot(s.t);
     s.t.replaceWith(s.original);
     blockHistory.undo.pop();
+    blockHistory.redo.push(...s.redo);
     if (tblHover) tblHover.table = s.original;
     if (spot) restoreSpot(s.original, spot);
   } else blockChanged();
@@ -5705,7 +5799,8 @@ function retryNow() {
 /** A remote change held back from a block the user is editing, and the HTML that block was based on before it. */
 type PendingChange =
   | { type: "upsert"; block: StoredBlock; baseHtml: string | undefined }
-  | { type: "delete"; baseHtml: string | undefined };
+  // `kept`: settled as a draft the next save re-creates (see settlePendingBlock).
+  | { type: "delete"; baseHtml: string | undefined; kept?: boolean };
 let ready = false, buffered: DocumentEvent[] = [], revision = 0, applyingRemote = false;
 const acknowledged = new Map<string, { html: string; version: number }>(); // id -> { html, version } the server has confirmed
 let ackOrder: string[] = []; // block order the server has confirmed
@@ -5726,10 +5821,18 @@ const sentDrafts = new Map<string, { baseVersion: number; html: string }>();
 // them that came meanwhile (null for a deletion). A remote version may already
 // include that save, so it is applied only once the reply has said which
 // version the draft became: merged against the older one, the saved text would
-// be added twice. A block re-created meanwhile starts again at version 1, so
-// it is told apart from the deleted one only once the deletion is confirmed.
+// be added twice. A block re-created while its deletion is in flight waits for
+// the deletion's reply, which would forget it again. Only the last change to a
+// block is kept: a re-created block's versions are above the deleted one's, so
+// it supersedes the deletion as any newer version does.
 let savingIds: Set<string> | null = null;
 const heldWhileSaving = new Map<string, StoredBlock | null>();
+// The page's order as a move in flight left it (with blocks placed since, see
+// remoteOrder), and whether a remote order came meanwhile: it may be older than
+// the move, which the reply's order then includes, so it waits for the reply
+// too (see applyHeldChanges).
+let savingOrder: string[] | null = null, orderHeld = false;
+const pageOrder = () => Array.from(editor.children, (n) => blockId(n)!);
 
 const saver = new SaveScheduler({
   save: sendChanges, isDirty, onStatus: setSync,
@@ -5776,13 +5879,14 @@ function computeChanges() {
     .filter((b) => acknowledged.get(b.id)?.html !== b.html && !heldBack(b.id, b.html))
     .map((b) => ({ ...b, baseVersion: acknowledged.get(b.id)?.version || 0 }));
   const deletes: BlockDeletion[] = Array.from(acknowledged.entries()).filter(([id]) => !ids.has(id)).map(([id, b]) => ({ id, baseVersion: b.version }));
-  // A pure rearrangement changes no block's HTML, only their order: compare
-  // the relative order of the blocks both sides know about.
-  const ackSet = new Set(ackOrder);
-  const localOrder = blocks.map((b) => b.id).filter((id) => ackSet.has(id)).join("\n");
-  const serverOrder = ackOrder.filter((id) => ids.has(id)).join("\n");
-  const reordered = localOrder !== serverOrder;
-  return { blocks, upserts, deletes, dirty: upserts.length > 0 || deletes.length > 0 || reordered };
+  // A pure rearrangement changes no block's HTML, only their order.
+  const reordered = !sameRelativeOrder(blocks.map((b) => b.id), ackOrder);
+  return { blocks, upserts, deletes, reordered, dirty: upserts.length > 0 || deletes.length > 0 || reordered };
+}
+// Whether two orders agree on the blocks both hold.
+function sameRelativeOrder(a: string[], b: string[]) {
+  const inA = new Set(a), inB = new Set(b);
+  return a.filter((id) => inB.has(id)).join("\n") === b.filter((id) => inA.has(id)).join("\n");
 }
 function isDirty() {
   return ready && computeChanges().dirty;
@@ -5790,7 +5894,7 @@ function isDirty() {
 async function sendChanges(failures = 0): Promise<SaveOutcome> {
   if (!ready) return "deferred";
   settlePendingBlocks();
-  const { blocks, upserts, deletes, dirty } = computeChanges();
+  const { blocks, upserts, deletes, reordered, dirty } = computeChanges();
   if (!dirty) return "saved";
   const sentOrder = blocks.map((b) => b.id);
   // If this times out, a late reply is simply dropped and the page reconnects.
@@ -5799,6 +5903,7 @@ async function sendChanges(failures = 0): Promise<SaveOutcome> {
   // as this page's own: nothing is merged or written twice.
   const sent = upserts.map((b) => { const draft = { baseVersion: b.baseVersion, html: b.html }; sentDrafts.set(b.id, draft); return [b.id, draft] as const; });
   savingIds = new Set([...sent.map(([id]) => id), ...deletes.map((d) => d.id)]);
+  savingOrder = reordered ? sentOrder : null;
   let result: ApplyOperationResult;
   try {
     result = await withTimeout(gadget.applyOperation({ senderId: clientId, baseRevision: revision, upserts, deletes, order: sentOrder }), saveTimeoutMs(failures));
@@ -5817,7 +5922,8 @@ async function sendChanges(failures = 0): Promise<SaveOutcome> {
     }
     for (const id of result.deletedIds || []) acknowledged.delete(id);
   } catch (error) {
-    savingIds = null;
+    // A move that failed is sent again as it stands, over any order held meanwhile.
+    savingIds = savingOrder = null;
     applyHeldChanges();
     throw error;
   }
@@ -5832,23 +5938,21 @@ async function sendChanges(failures = 0): Promise<SaveOutcome> {
 }
 function mergeConflicts(result: ApplyOperationResult): SaveOutcome {
   if (!result.conflicts?.length) return "saved";
-  // A stale block is merged with the server's newer version, exactly as if
-  // that version had arrived as a live event; the next send saves the merge.
-  const stale: StoredBlock[] = [];
-  for (const b of result.conflicts) {
-    if ((b as MissingBlock).missing) acknowledged.delete(b.id);
-    else stale.push(b as StoredBlock);
-  }
-  if (stale.length) {
-    const activeId = editingBlockId();
-    keepSelection(() => {
-      applyingRemote = true;
-      for (const b of stale) remoteUpsert(b, activeId);
-      applyingRemote = false;
-    });
-    mergedDrafts = false; // the scheduler sends again after a conflict anyway
-    afterRemoteChange();
-  }
+  // A rejected block is taken in exactly as if the server's side had arrived as
+  // a live event: a stale one is merged with the newer version, a missing one
+  // is deleted -- an edited one stays, as a pending deletion whose baseline a
+  // concurrent re-creation still merges against. The next send saves the rest.
+  const activeId = editingBlockId();
+  keepSelection(() => {
+    applyingRemote = true;
+    for (const b of result.conflicts) {
+      if ((b as MissingBlock).missing) remoteDelete(b.id, activeId);
+      else remoteUpsert(b as StoredBlock, activeId);
+    }
+    applyingRemote = false;
+  });
+  mergedDrafts = false; // the scheduler sends again after a conflict anyway
+  afterRemoteChange();
   return "conflict";
 }
 
@@ -5881,7 +5985,13 @@ function pendingBaseline(id: string) {
   return existing ? existing.baseHtml : acknowledged.get(id)?.html;
 }
 function applyHeldChanges() {
-  if (!heldWhileSaving.size) return;
+  // A remote order that came during a move goes on as the newest confirmed one
+  // -- the reply's, which includes the move, or a later event's -- unless the
+  // page was rearranged again meanwhile: that newer move is saved next.
+  const order = orderHeld && savingOrder && sameRelativeOrder(pageOrder(), savingOrder) ? ackOrder : null;
+  savingOrder = null;
+  orderHeld = false;
+  if (!heldWhileSaving.size && !order) return;
   const held = Array.from(heldWhileSaving);
   heldWhileSaving.clear();
   const activeId = editingBlockId();
@@ -5891,6 +6001,7 @@ function applyHeldChanges() {
       if (block) remoteUpsert(block, activeId);
       else remoteDelete(id, activeId);
     }
+    if (order) applyOrder(order);
     applyingRemote = false;
   });
   afterRemoteChange();
@@ -5905,8 +6016,9 @@ function remoteUpsert(block: StoredBlock, activeId: string | null) {
   const next = parseBlock(block);
   const html = canonicalBlockHtml(next);
   // This page's own save, whose reply never came: the draft already rests on it.
+  // (A created block's version is the revision that made it, unknown here.)
   const sent = sentDrafts.get(block.id);
-  if (sent && sent.baseVersion + 1 === block.version && sent.html === html && !pendingByBlock.has(block.id)) baseHtml = html;
+  if (sent && sent.html === html && !pendingByBlock.has(block.id) && (!sent.baseVersion || sent.baseVersion + 1 === block.version)) baseHtml = html;
   sentDrafts.delete(block.id);
   acknowledged.set(block.id, { html, version: block.version });
   const old = findBlock(block.id);
@@ -5968,6 +6080,22 @@ function staleEvent(rev: number | undefined) {
   lastEventRevision = rev;
   return false;
 }
+// A remote order waits while a move of this page's is in flight (see savingOrder).
+// Blocks the move didn't include can't wait: they go where the server has them
+// now, so a later move here, or a failed save, doesn't send them to the end.
+// They join the order the move left, unless the page has moved again since.
+function remoteOrder(order: string[], rev: number) {
+  confirmOrder(order, rev);
+  if (!savingOrder) return applyOrder(order);
+  orderHeld = true;
+  const unmoved = sameRelativeOrder(pageOrder(), savingOrder);
+  const sent = new Set(savingOrder);
+  for (const id of ackOrder) {
+    const node = sent.has(id) ? null : findBlock(id);
+    if (node) insertByServerOrder(node);
+  }
+  if (unmoved) savingOrder = pageOrder();
+}
 function applyRemoteOperation(event: OperationEvent) {
   if (!event || staleEvent(event.revision) || event.senderId === clientId) return;
   revision = Math.max(revision, event.revision || 0);
@@ -5977,8 +6105,7 @@ function applyRemoteOperation(event: OperationEvent) {
     applyingRemote = true;
     for (const b of event.upserts || []) remoteUpsert(b, activeId);
     for (const id of event.deletedIds || []) remoteDelete(id, activeId);
-    applyOrder(event.order);
-    if (Array.isArray(event.order)) confirmOrder(event.order, event.revision || 0);
+    if (Array.isArray(event.order)) remoteOrder(event.order, event.revision || 0);
     applyingRemote = false;
   });
   afterRemoteChange();
@@ -6023,8 +6150,7 @@ function reconcileSnapshot(doc: DocumentSnapshot) {
       remoteUpsert(block, activeId);
     }
     for (const id of Array.from(acknowledged.keys())) if (!serverIds.has(id)) remoteDelete(id, activeId);
-    applyOrder((doc.blocks || []).map((b: StoredBlock) => b.id));
-    confirmOrder((doc.blocks || []).map((b: StoredBlock) => b.id), doc.revision || 0);
+    remoteOrder((doc.blocks || []).map((b: StoredBlock) => b.id), doc.revision || 0);
     applyingRemote = false;
   });
   afterRemoteChange();
@@ -6034,9 +6160,16 @@ function reconcileSnapshot(doc: DocumentSnapshot) {
 function settlePendingBlock(id: string) {
   const pending = pendingByBlock.get(id);
   if (!pending) return false;
-  pendingByBlock.delete(id);
   const local = findBlock(id);
-  if (pending.type === "delete" && local && canonicalBlockHtml(local) !== pending.baseHtml) return true;
+  // A deleted block with edits is re-created by the next save. Until then it
+  // stays pending, for a concurrent re-creation to merge against its baseline;
+  // only the first settling asks for that save.
+  if (pending.type === "delete" && local && canonicalBlockHtml(local) !== pending.baseHtml) {
+    const first = !pending.kept;
+    pending.kept = true;
+    return first;
+  }
+  pendingByBlock.delete(id);
   applyingRemote = true;
   if (pending.type === "delete") local?.remove();
   else {

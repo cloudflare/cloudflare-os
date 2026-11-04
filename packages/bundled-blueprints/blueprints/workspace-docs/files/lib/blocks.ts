@@ -334,11 +334,14 @@ function inlineMarkdown(text: unknown): string {
   const keep = (html: string) => "\0" + (stash.push(html) - 1) + "\0";
   let s = String(text ?? "").replace(/\0/g, "");
   s = codeSpans(s, keep);
-  s = s.replace(/!\[((?:\\.|[^\]\\\n])*)\]\(<?([^)\s>]+)>?\)/g, (m, alt: string, url: string) => {
+  // An escaped "!" (`Wow\![link](…)`) opens no image.
+  s = s.replace(/\\[\s\S]|!\[((?:\\.|[^\]\\\n])*)\]\(<?([^)\s>]+)>?\)/g, (m, alt: string | undefined, url: string) => {
+    if (alt === undefined) return m;
     const src = url.includes("\0") ? null : safeUrl(url, { image: true });
     return src ? keep('<img class="doc-image" src="' + escapeHtml(src) + '" alt="' + escapeHtml(alt.replace(/\\([\\[\]])/g, "$1")) + '">') : m;
   });
-  s = s.replace(/\\([!-/:-@[-`{-~])/g, (_, c: string) => keep(escapeHtml(c)));
+  // A backslash ending a line is a line break.
+  s = s.replace(/\\([!-/:-@[-`{-~]|\n)/g, (_, c: string) => c === "\n" ? c : keep(escapeHtml(c)));
   // A label may hold a line break (but not a blank line), and a URL in it is
   // its text, not another link.
   s = s.replace(/\[((?:[^\]\n]|\n(?!\s*\n))+)\]\(([^)\s]+)\)/g, (m, label: string, url: string) => {
@@ -347,7 +350,8 @@ function inlineMarkdown(text: unknown): string {
     const text = label.replace(/https?:\/\/[^\s<\0*~]*[^\s<\0.,;:!?)\]'"*_~]/g, (u) => keep(escapeHtml(u)));
     return href ? keep('<a href="' + escapeHtml(href) + '">') + text + keep("</a>") : m;
   });
-  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<\0]+[^\s<\0.,;:!?)\]'"])/g, (_, pre: string, url: string) => pre + keep('<a href="' + escapeHtml(url) + '">' + escapeHtml(url) + "</a>"));
+  // As in GFM, a URL's trailing punctuation, closing emphasis included, is not part of it.
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<\0]+[^\s<\0.,;:!?)\]'"*_~])/g, (_, pre: string, url: string) => pre + keep('<a href="' + escapeHtml(url) + '">' + escapeHtml(url) + "</a>"));
   s = escapeHtml(s).replace(/&lt;(\/?)(strong|em|del)&gt;/g, (_, close: string, tag: string) => `<${close}${{ strong: "b", em: "i", del: "s" }[tag]}>`);
   s = s.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<b>$1</b>").replace(/__(?=\S)([\s\S]*?\S)__/g, "<b>$1</b>");
   s = s.replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<s>$1</s>");
@@ -544,7 +548,7 @@ export function specHtml(input: unknown): string {
     case "table": return tableHtml(spec);
     case "image": {
       const src = safeUrl(spec.src ?? spec.url, { image: true });
-      if (!src) throw new Error("An image needs an https:// or data:image src.");
+      if (!src) throw new Error("An image needs an http(s):// or data:image src.");
       const width = Number(spec.width) > 0 ? ` style="width:${Math.round(Number(spec.width))}px;height:auto;"` : "";
       return `<p><img class="doc-image" draggable="true" src="${escapeHtml(src)}" alt="${escapeHtml(spec.alt ?? "Image")}"${width}></p>`;
     }
@@ -555,15 +559,15 @@ export function specHtml(input: unknown): string {
     default: {
       // { type: "ul", text: "a\nb" } is a list of two items.
       const items = spec.items ?? (spec.text !== undefined ? String(spec.text).split("\n").map((text) => ({ text, checked: spec.checked })) : []);
-      return listHtml(kind, items, false);
+      return listHtml(kind, items, false, spec.start);
     }
   }
 }
 
 const isListKind = (kind: unknown): kind is "ul" | "ol" | "todo" => kind === "ul" || kind === "ol" || kind === "todo";
-function listHtml(kind: BlockKind, items: unknown, inChecklist: boolean): string {
+function listHtml(kind: BlockKind, items: unknown, inChecklist: boolean, start: unknown = 1): string {
   const tag = kind === "ol" ? "ol" : "ul";
-  const cls = kind === "todo" && !inChecklist ? ' class="checklist"' : "";
+  const attributes = kind === "todo" && !inChecklist ? ' class="checklist"' : kind === "ol" && Number.isSafeInteger(start) && start !== 1 ? ` start="${start}"` : "";
   const rows = (Array.isArray(items) && items.length ? items : [""]).map((raw: unknown) => {
     const item: BlockSpec = typeof raw === "string" ? { text: raw } : isRecord(raw) ? raw : { text: raw === null || raw === undefined ? "" : String(raw) };
     const checked = (kind === "todo" || inChecklist) && item.checked ? ' data-checked="true"' : "";
@@ -580,7 +584,7 @@ function listHtml(kind: BlockKind, items: unknown, inChecklist: boolean): string
     const content = inlineContent(body);
     return `<li${checked}>${content === "<br>" && nested ? "" : content}${nested}</li>`;
   });
-  return `<${tag}${cls}>${rows.join("")}</${tag}>`;
+  return `<${tag}${attributes}>${rows.join("")}</${tag}>`;
 }
 
 /** One item of a Markdown list, with the items nested under it. */
@@ -623,7 +627,9 @@ export function markdownToSpecs(markdown: unknown): BlockSpec[] {
       const rows = [pipeCells(line)];
       for (i += 2; i < lines.length && lines[i].trim() && lines[i].includes("|"); i++) rows.push(pipeCells(lines[i]));
       i--;
-      specs.push({ type: "table", rows, header: true });
+      // An empty header row is how a table without one is written (see htmlToMarkdown).
+      const header = rows.length === 1 || rows[0].some(Boolean);
+      specs.push({ type: "table", rows: header ? rows : rows.slice(1), header });
       continue;
     }
     // A closing run of #s needs a space before it: "Learn C#" keeps its #.
@@ -635,7 +641,8 @@ export function markdownToSpecs(markdown: unknown): BlockSpec[] {
     if (/^\s{0,3}>/.test(line)) {
       flush();
       const quote: string[] = [];
-      for (; i < lines.length && /^\s{0,3}>/.test(lines[i]); i++) quote.push(lines[i].replace(/^\s{0,3}>\s?/, ""));
+      // Trimmed as a paragraph's lines are: two spaces ending one are a line break.
+      for (; i < lines.length && /^\s{0,3}>/.test(lines[i]); i++) quote.push(lines[i].replace(/^\s{0,3}>/, "").trim());
       i--;
       specs.push({ type: "quote", text: quote.join("\n") });
       continue;
@@ -682,7 +689,8 @@ export function markdownToSpecs(markdown: unknown): BlockSpec[] {
         }
         if (!level || levels.length === 1 && block && (block.type !== kind || block.marker !== marker)) {
           block = { type: kind, items: [], marker };
-          specs.push({ type: kind, items: block.items });
+          const start = parseInt(m[2], 10);
+          specs.push({ type: kind, items: block.items, ...(kind === "ol" && start !== 1 && { start }) });
           levels = [{ indent, items: block.items }];
           level = levels[0];
         }

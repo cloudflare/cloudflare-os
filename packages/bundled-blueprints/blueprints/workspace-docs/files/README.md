@@ -35,7 +35,7 @@ for (const spec of [{ type: "h2", text: "Risks" }, { type: "ul", items: ["Legal 
 
 ## Block API
 
-Every write runs in the Durable Object's mutation queue. One that changes the document bumps the version of each block whose HTML changed, persists, and broadcasts an `operation` event with `senderId: "agent"` (which is what the editor animates). The first write to a document never saved before broadcasts a `snapshot` instead. Writes return `{ status: "applied" | "unchanged", revision, ids }`, where `ids` are the blocks created or changed: the moved ones for `moveBlocks`, every block of the new document for `setMarkdown`, and none for `deleteBlocks`. Errors throw with a readable message, e.g. `Unknown block id: …`.
+Every write runs in the Durable Object's mutation queue. One that changes the document bumps the version of each block whose HTML changed, persists, and broadcasts an `operation` event with `senderId: "agent"` (which is what the editor animates). The first write to a document never saved before broadcasts a `snapshot` instead. Writes return `{ status: "applied" | "unchanged", revision, ids }`, where `ids` are the blocks the call wrote, whether or not their content changed: the created or updated ones, the moved ones for `moveBlocks`, every block of the new document for `setMarkdown`, and none for `deleteBlocks`. Errors throw with a readable message, e.g. `Unknown block id: …`.
 
 | Method | Notes |
 | --- | --- |
@@ -59,13 +59,13 @@ Every write runs in the Durable Object's mutation queue. One that changes the do
 - `{ type: "p" | "h1" | "h2" | "h3" | "quote", text }` — `text` is inline Markdown: `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `[link](https://…)`, bare URLs, `![alt](src)` images. Alternatively pass inline `html` instead of `text`.
 - `{ type: "code", text }` (or `code`) — plain text, line breaks kept.
 - `{ type: "divider" }`.
-- `{ type: "image", src, alt?, width? }` — `src` must be `https://` or a PNG, JPEG, GIF, WebP or AVIF `data:` URI; `width` in px.
-- `{ type: "ul" | "ol" | "todo", items }` — each item a string or `{ text, checked?, items?, listType? }` (nested `items` make a sub-list, of the same kind unless `listType` says otherwise). Or `text` with one item per line.
+- `{ type: "image", src, alt?, width? }` — `src` must be `http(s)://` or a PNG, JPEG, GIF, WebP or AVIF `data:` URI; `width` in px.
+- `{ type: "ul" | "ol" | "todo", items, start? }` — each item a string or `{ text, checked?, items?, listType? }` (nested `items` make a sub-list, of the same kind unless `listType` says otherwise). Or `text` with one item per line. `start` is the number an `ol` counts from.
 - `{ type: "table", rows: [[cell, …], …], header?, widths? }` — cells are inline Markdown, `"\n"` is a line break. The first row is the header unless `header: false`. Short rows are padded. `widths` are relative numbers, one per column.
 - `{ type: "html", html }` — the editor holds one element per block, so several top-level elements become several blocks, and loose text or inline tags are wrapped in `<p>`. Scripts, styles, frames, forms, `svg`/`math`, event handlers, `id`/`name` and `javascript:` URLs are removed (the server filters all stored HTML this way).
 - Type aliases are accepted (`text`, `heading` → h2, `bullets`, `numbered`, `checklist`, `tasks`, `hr`, `img`, `grid`, …). An unknown type throws with the list of valid ones.
 
-**Markdown** (`markdown` arguments) supports headings (h4+ become h3), paragraphs (line breaks kept), nested `-` / `1.` / `- [ ]` lists (one block per run of the same kind), `>` quotes, fenced code, `---`, `![alt](https://…)` images and GFM pipe tables.
+**Markdown** (`markdown` arguments) supports headings (h4+ become h3), paragraphs (line breaks kept; reads write one as a `\` ending the line), nested `-` / `1.` / `- [ ]` lists (one block per run of the same kind; a numbered list counts from its first number), `>` quotes, fenced code, `---`, `![alt](src)` images and GFM pipe tables. GFM has no table without a header row, so one is written with an empty header row, and a pipe table whose header row is empty reads as having none.
 
 **Editor markup**, if you write `html` directly: bold `<b>`, italic `<i>`, `<u>`, `<s>`, `<code>`; to-do lists `<ul class="checklist"><li data-checked="true">…`; images `<p><img class="doc-image" src="…" alt="…"></p>`; tables `<table>[<colgroup><col style="width:30%">…</colgroup>]<thead><tr><th>…</th></tr></thead><tbody><tr><td>…</td></tr></tbody></table>` with inline content and `<br>` only in cells. Colours are classes, never hex, so they adapt to dark mode: text `<span class="tc-blue">`, highlight `<span class="hl-yellow">`, with `gray`, `brown`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `red`.
 
@@ -81,7 +81,7 @@ Every write runs in the Durable Object's mutation queue. One that changes the do
 
 - **Markdown** (server): the stored blocks, including `- [ ]` checklists and GFM tables (column alignment kept). Underline, colour, size and alignment become plain text. Full image data URIs are kept.
 - **HTML** and **PDF** (browser): the print layout, light palette, no chrome; trailing empty lines are hidden; table rows don't split across pages.
-- **Word** (`.docx`, server): converted from the block HTML to native Word: Heading 1–3 styles (usable for Word's navigation and table of contents), Quote style, native numbered/bulleted lists, clickable to-do checkboxes, code in a shaded monospace box, native tables (header row repeats across pages), palette colours, embedded images at their page width, `http(s)`/`mailto:`/`tel:` links. The document font follows the shared typeface (Arial / Georgia / Courier New) on US Letter. Remote, SVG, AVIF or WebP images (which Word can't display) export as their alt text. Limits: 64 MB of HTML, 20,000 blocks, 400,000 nodes, nesting 200 deep, 400,000 table cells, 500 images (16 MB each, 96 MB total).
+- **Word** (`.docx`, server): converted from the block HTML to native Word: Heading 1–3 styles (usable for Word's navigation and table of contents), Quote style, native numbered/bulleted lists, clickable to-do checkboxes, code in a shaded monospace box, native tables (header row repeats across pages), palette colours, embedded images at their page width, `http(s)`/`mailto:`/`tel:` links. The document font follows the shared typeface (Arial / Georgia / Courier New) on US Letter. Remote, SVG, AVIF or WebP images (which Word can't display) export as their alt text. Limits: 64 MB of HTML, 20,000 blocks, 400,000 nodes, nesting 200 deep and 400,000 table cells, past which the export fails with a message; images past 500 (16 MB each, 96 MB total) export as their alt text.
 
 ## Limitations
 

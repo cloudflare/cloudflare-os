@@ -129,6 +129,32 @@ describe("sanitizePastedHtml", () => {
     expect(paste('<table><thead><tr><th align="center">a</th><th style="text-align: right">b</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>'))
       .toBe('<table><thead><tr><th style="text-align: center;">a</th><th style="text-align: right;">b</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>');
   });
+
+  // Excel writes a title cell spanning far past the table's own columns.
+  it("keeps a pasted table to the columns its cells start in", () => {
+    expect(paste('<table><tr><td colspan="100">Title</td></tr><tr><td>a</td><td>b</td></tr></table>'))
+      .toBe("<table><tbody><tr><td>Title</td><td><br></td></tr><tr><td>a</td><td>b</td></tr></tbody></table>");
+  });
+
+  it("keeps a pasted numbered list's start", () => {
+    expect(paste('<ol start="3"><li>c</li><li>d</li></ol>')).toBe('<ol start="3"><li>c</li><li>d</li></ol>');
+  });
+
+  // A chart's labels and styles, and a formula's TeX source, aren't the document's text.
+  it("drops inline SVG and MathML", () => {
+    expect(paste('<p>a<svg><title>x</title><style>.c{fill:red}</style><text>label</text></svg>b <math><mi>E</mi><annotation encoding="application/x-tex">E</annotation></math>c</p>'))
+      .toBe("<p>ab c</p>");
+    expect(paste("<div><svg><text>Revenue</text></svg></div><p>after</p>")).toBe("<p>after</p>");
+  });
+
+  it("keeps only safe markup from hostile HTML", () => {
+    expect(paste(
+      '<p onclick="alert(1)" style="position:fixed;background:url(javascript:alert(1))">x<img src="x" onerror="alert(1)">' +
+      '<a href="javascript:alert(1)">l</a><a href=" java\tscript:alert(1)">m</a><a href="https://ok.example" onmouseover="alert(1)">ok</a></p>' +
+      '<iframe srcdoc="<script>alert(1)</script>"></iframe><object data="x">obj</object><embed src="x.swf">' +
+      "<p>a<svg><script>alert(1)</script></svg>b<script>alert(1)</script></p>",
+    )).toBe('<p>xlm<a href="https://ok.example">ok</a></p><p>ab</p>');
+  });
 });
 
 describe("isCodeEditorHtml", () => {

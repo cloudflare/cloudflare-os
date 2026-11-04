@@ -2,7 +2,7 @@
 // agent's) reach the DOM only through the editor's scrubbing. client.ts is a gadget entry with
 // top-level effects, so it is loaded once against a fake `gadget` stub and driven through it.
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { DocumentEvent, GadgetStub, SubscribeSnapshot, SubscriberCallbacks } from "../files/lib/protocol.ts";
+import type { ApplyOperationResult, BlockUpsert, DocumentEvent, GadgetStub, Operation, StoredBlock, SubscribeSnapshot, SubscriberCallbacks } from "../files/lib/protocol.ts";
 
 const HOSTILE = '<p id="addEventListener" name="createElement">Hi<img name="getElementById" src="data:image/png;base64,AA" data-reencode="" onerror="alert(1)"><noscript>&lt;img src=x onerror=alert(1)&gt;</noscript><template><b>t</b></template></p>';
 
@@ -339,8 +339,8 @@ describe("more edits", () => {
     await vi.waitFor(() => expect(editor().querySelector('[data-block-id="d1"]')?.textContent).toBe("bar A"));
   });
 
-  // Another editor re-creates a block (at version 1) while this page's deletion of it is in
-  // flight: once the deletion's reply comes, the re-created block shows.
+  // Another editor re-creates a block while this page's deletion of it is in flight: once the
+  // deletion's reply comes, the re-created block shows.
   it("shows a block re-created while this page's deletion of it was saving", async () => {
     send([{ id: "r1", html: "<p>one</p>", version: 1 }, { id: "r2", html: "<p>keep</p>", version: 1 }]);
     send([{ id: "r1", html: "<p>one more</p>", version: 3 }]);
@@ -374,5 +374,284 @@ describe("more edits", () => {
     await vi.waitFor(() => expect(applyOperation().mock.results.at(-1)?.type).toBe("return"));
     await new Promise((r) => setTimeout(r, 20));
     expect(editor().querySelector('[data-block-id="k1"]')).toBeNull();
+  });
+});
+
+describe("sync through deletions and moves", () => {
+  let revision = 100;
+  const ids = () => Array.from(editor().children, (n) => n.getAttribute("data-block-id")!);
+  const block = (id: string) => editor().querySelector<HTMLElement>(`[data-block-id="${id}"]`)!;
+  const send = (upserts: StoredBlock[], order = [...ids(), ...upserts.map((b) => b.id).filter((id) => !ids().includes(id))]) =>
+    subscriber.operation({ type: "operation", senderId: "someone", revision: ++revision, title: "Doc", lastModified: 0, upserts, deletedIds: [], order });
+  // The server: what `scene` answers, and everything else applied as sent.
+  const serve = (scene: (op: Operation) => Promise<ApplyOperationResult | undefined>) =>
+    vi.mocked((globalThis as unknown as { gadget: GadgetStub }).gadget.applyOperation).mockImplementation(async (op) => (await scene(op)) ?? {
+      status: "applied", revision: ++revision, conflicts: [], order: op.order,
+      upserts: (op.upserts ?? []).map((b) => ({ id: b.id, html: b.html, version: b.baseVersion + 1 })),
+      deletedIds: (op.deletes ?? []).map((d) => d.id),
+    });
+
+  // Someone deletes a block while this page's edit of it is saving, and another page re-creates it
+  // with its own edit before this page's re-creation lands: the two edits are merged.
+  it("merges a block deleted under its save with a concurrent re-creation", async () => {
+    getSelection()!.removeAllRanges();
+    editor().blur();
+    send([{ id: "m1", html: "<p>alpha beta</p>", version: 1 }]);
+    const tries: BlockUpsert[] = [];
+    serve(async (op) => {
+      const mine = op.upserts?.find((b) => b.id === "m1");
+      if (!mine) return;
+      tries.push(mine);
+      if (tries.length === 1) return { status: "conflict", revision, conflicts: [{ id: "m1", html: null, version: 0, missing: true }] };
+      if (tries.length === 2) return { status: "conflict", revision: ++revision, conflicts: [{ id: "m1", html: "<p>Their alpha beta</p>", version: revision }] };
+    });
+    block("m1").textContent = "alpha beta mine";
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(tries).toHaveLength(3));
+    expect(tries[1]!.baseVersion).toBe(0);
+    expect(tries[2]!.html).toContain("Their alpha beta mine");
+    expect(block("m1").textContent).toBe("Their alpha beta mine");
+  });
+
+  // A collaborator's edit the server took just before this page's move arrives while the move is
+  // saving, with the order from before the move: the move stays, here and in what is saved next.
+  it("keeps a move when an older event arrives during its save", async () => {
+    send(["o1", "o2", "o3"].map((id) => ({ id, html: `<p>${id}</p>`, version: 1 })));
+    const before = ids();
+    const reply = Promise.withResolvers<void>();
+    let moved: string[] | undefined;
+    const later: string[][] = [];
+    serve(async (op) => {
+      const order = op.order ?? [];
+      if (moved) { later.push(order); return; }
+      if (order.indexOf("o3") > order.indexOf("o1")) return;
+      moved = order;
+      await reply.promise;
+      return { status: "applied", revision: ++revision, conflicts: [], upserts: [], deletedIds: [], order };
+    });
+    block("o1").before(block("o3"));
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(moved).toBeDefined());
+    send([{ id: "o1", html: "<p>o1 typed</p>", version: 2 }], before);
+    reply.resolve();
+    await new Promise((r) => setTimeout(r, 20));
+    window.dispatchEvent(new Event("pagehide"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(block("o1").textContent).toBe("o1 typed");
+    expect(ids().indexOf("o3")).toBeLessThan(ids().indexOf("o1"));
+    for (const order of later) expect(order.indexOf("o3")).toBeLessThan(order.indexOf("o1"));
+  });
+
+  // A collaborator inserts a block while this page's move is saving, and the page moves again
+  // before the reply: the new block stays where the collaborator put it in what is saved next.
+  it("keeps a block inserted during a move's save in place through a second move", async () => {
+    send(["q1", "q2", "q3", "q4"].map((id) => ({ id, html: `<p>${id}</p>`, version: 1 })));
+    const withNew = (order: string[]) => order.flatMap((id) => (id === "q1" ? ["q1", "qn"] : [id]));
+    const before = ids();
+    const reply = Promise.withResolvers<void>();
+    let moved: string[] | undefined;
+    const later: string[][] = [];
+    serve(async (op) => {
+      const order = op.order ?? [];
+      if (moved) { later.push(order); return; }
+      moved = order;
+      await reply.promise;
+      return { status: "applied", revision: ++revision, conflicts: [], upserts: [], deletedIds: [], order: withNew(order) };
+    });
+    block("q3").before(block("q4"));
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(moved).toBeDefined());
+    send([{ id: "qn", html: "<p>new</p>", version: 1 }], withNew(before));
+    block("q1").before(block("q2"));
+    reply.resolve();
+    await vi.waitFor(() => expect(later).toHaveLength(1));
+    const saved = later[0]!;
+    expect(saved.indexOf("qn")).toBe(saved.indexOf("q1") + 1);
+    expect(saved.indexOf("q2")).toBeLessThan(saved.indexOf("q1"));
+    expect(saved.indexOf("q4")).toBeLessThan(saved.indexOf("q3"));
+  });
+});
+
+describe("editor keys, menus and undo", () => {
+  beforeAll(() => {
+    Element.prototype.animate ??= () => ({ finished: Promise.resolve(), cancel() {} }) as unknown as Animation;
+    Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
+    Range.prototype.getBoundingClientRect ??= () => new DOMRect();
+  });
+  let revision = 200;
+  const ids = () => Array.from(editor().children, (n) => n.getAttribute("data-block-id")!);
+  const show = (id: string, html: string) => {
+    subscriber.operation({ type: "operation", senderId: "someone", revision: ++revision, title: "Doc", lastModified: 0, upserts: [{ id, html, version: 1 }], deletedIds: [], order: [...ids().filter((x) => x !== id), id] });
+    return editor().querySelector<HTMLElement>(`[data-block-id="${id}"]`)!;
+  };
+  const caretIn = (node: Node, start: number, endNode = node, end = start) => {
+    if (editor().tabIndex < 0) editor().tabIndex = 0;
+    editor().focus();
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(endNode, end);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+  };
+  const key = (init: KeyboardEventInit, target: EventTarget = editor()) =>
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  const undo = () => key({ key: "z", ctrlKey: true, metaKey: true });
+  const redo = () => key({ key: "z", ctrlKey: true, metaKey: true, shiftKey: true });
+  // The document as saved: without the placeholder hint on the empty line.
+  const doc = () => editor().innerHTML.replace(/ data-ph="[^"]*"/g, "");
+  // Runs `fn` with the browser's editing commands stubbed out; returns the stub.
+  const withExec = (fn: () => void) => {
+    const execCommand = vi.fn(() => true);
+    Object.assign(document, { execCommand });
+    try { fn(); } finally { delete (document as { execCommand?: unknown }).execCommand; }
+    return execCommand;
+  };
+  // A row of the open menu (a closing one may still be fading out).
+  const menuRow = (label: string) => Array.from(document.querySelectorAll<HTMLElement>(".pop:not(.closing) .mi")).find((r) => r.textContent!.startsWith(label))!;
+
+  // Ctrl+Alt is AltGr off a Mac: AltGr+0 that types "@" is typing, not "Paragraph". Ctrl+Alt+2 is
+  // the shortcut, also where the key types "é" unshifted (French).
+  it("types AltGr characters on the digit keys, and keeps Ctrl+Alt+digit as the heading shortcut", () => {
+    const block = show("ag", "<p>Mail</p>");
+    caretIn(block.firstChild!, 4);
+    let typed = false;
+    expect(withExec(() => { typed = key({ key: "@", code: "Digit0", ctrlKey: true, altKey: true, modifierAltGraph: true }); })).not.toHaveBeenCalled();
+    expect(typed).toBe(true);
+    expect(withExec(() => key({ key: "2", code: "Digit2", ctrlKey: true, altKey: true }))).toHaveBeenCalledWith("formatBlock", false, "<h2>");
+    expect(withExec(() => key({ key: "é", code: "Digit2", ctrlKey: true, altKey: true }))).toHaveBeenCalledWith("formatBlock", false, "<h2>");
+  });
+
+  it("undoes and redoes deleting a selected image", () => {
+    const block = show("im", '<p>a<img class="doc-image" src="data:image/png;base64,AA" alt="x">b</p>');
+    caretIn(block.firstChild!, 1);
+    const before = doc();
+    block.querySelector("img")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    key({ key: "Backspace" });
+    const after = doc();
+    expect(editor().querySelector('[data-block-id="im"] img')).toBeNull();
+    undo();
+    expect(doc()).toBe(before);
+    redo();
+    expect(doc()).toBe(after);
+  });
+
+  it("undoes and redoes inserting a divider", () => {
+    const block = show("dv", "<p>Above</p>");
+    caretIn(block.firstChild!, 5);
+    const before = doc();
+    document.querySelector<HTMLButtonElement>('button[aria-label="More"]')!.click();
+    menuRow("Divider").click();
+    const after = doc();
+    expect(block.nextElementSibling?.tagName).toBe("HR");
+    undo();
+    expect(doc()).toBe(before);
+    redo();
+    expect(doc()).toBe(after);
+  });
+
+  it("undoes and redoes making a to-do list", () => {
+    const block = show("td", "<p>One</p>");
+    caretIn(block.firstChild!, 3);
+    const before = doc();
+    key({ key: "(", code: "Digit9", ctrlKey: true, metaKey: true, shiftKey: true });
+    const after = doc();
+    expect(editor().querySelector('[data-block-id="td"]')!.matches("ul.checklist")).toBe(true);
+    undo();
+    expect(doc()).toBe(before);
+    redo();
+    expect(doc()).toBe(after);
+  });
+
+  it("undoes and redoes taking an item out of its list", () => {
+    show("lp", "<p>Before</p>");
+    const list = show("ll", "<ul><li>One</li><li>Two</li><li>Three</li></ul>");
+    caretIn(list.children[1]!.firstChild!, 0);
+    const before = doc();
+    key({ key: "Backspace" });
+    const after = doc();
+    expect(Array.from(editor().children).slice(-3).map((n) => n.tagName)).toEqual(["UL", "P", "UL"]);
+    undo();
+    expect(doc()).toBe(before);
+    redo();
+    expect(doc()).toBe(after);
+  });
+
+  // Indenting wraps the line in a quote: in a table that would put a quote in the cells.
+  it("doesn't indent inside a table", () => {
+    const table = show("ti", "<table><tbody><tr><td>A1</td><td>B1</td></tr></tbody></table>");
+    const cells = table.querySelectorAll("td");
+    const execCommand = withExec(() => {
+      caretIn(cells[0]!.firstChild!, 1, cells[1]!.firstChild!, 1);
+      key({ key: "Tab" });
+      caretIn(cells[0]!.firstChild!, 1);
+      document.querySelector<HTMLButtonElement>('button[aria-label="More"]')!.click();
+      menuRow("Indent").click();
+    });
+    expect(execCommand).not.toHaveBeenCalledWith("indent", false, null);
+    expect(editor().querySelector('[data-block-id="ti"] blockquote')).toBeNull();
+  });
+
+  const paste = (html: string, files: File[]) => editor().dispatchEvent(Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+    clipboardData: { items: [], files, getData: (type: string) => (type === "text/html" ? html : "") },
+  }));
+  const png = () => new File([new Uint8Array([137, 80, 78, 71])], "cells.png", { type: "image/png" });
+
+  // Excel and Word put a picture of the copied cells beside their HTML: the cells are pasted.
+  it("pastes copied cells, not the picture of them beside", () => {
+    caretIn(show("px", "<p>Here</p>").firstChild!, 4);
+    expect(withExec(() => paste("<table><tr><td>1</td><td>2</td></tr></table>", [png()])))
+      .toHaveBeenCalledWith("insertHTML", false, expect.stringContaining("<table>"));
+  });
+
+  // A copied web image comes as its file beside HTML of just the <img>: the file is pasted.
+  it("pastes a copied image's file over HTML holding only the image", () => {
+    caretIn(show("pi", "<p>Here</p>").firstChild!, 4);
+    expect(withExec(() => paste('<meta charset="utf-8"><img src="https://example.com/cat.png">', [png()])))
+      .not.toHaveBeenCalledWith("insertHTML", false, expect.anything());
+    expect(document.querySelector(".status")!.textContent).toContain("Adding image");
+  });
+
+  it("picks a colour from the keyboard", () => {
+    caretIn(show("co", "<p>Paint</p>").firstChild!, 0, undefined, 5);
+    const owner = document.querySelector<HTMLButtonElement>(".tb.color")!;
+    owner.focus();
+    owner.click();
+    key({ key: "ArrowDown" }, owner);
+    key({ key: "ArrowRight" }, document.activeElement!);
+    const swatch = document.activeElement!;
+    expect(swatch.getAttribute("aria-label")).toMatch(/^Text /);
+    expect(swatch.previousElementSibling?.getAttribute("role")).toBe("menuitemradio");
+    expect(withExec(() => key({ key: "Enter" }, swatch))).toHaveBeenCalledWith("foreColor", false, expect.anything());
+  });
+
+  it("turns full width on from the keyboard, keeping the focus on the switch", () => {
+    Object.assign((globalThis as unknown as { gadget: GadgetStub }).gadget, { setSettings: vi.fn(async () => ({})) });
+    const owner = document.querySelector<HTMLButtonElement>(".tb.aa")!;
+    owner.focus();
+    owner.click();
+    key({ key: "ArrowDown" }, owner);
+    key({ key: "End" }, document.activeElement!);
+    const toggle = document.activeElement!;
+    expect([toggle.getAttribute("role"), toggle.getAttribute("aria-checked")]).toEqual(["menuitemcheckbox", "false"]);
+    key({ key: "Enter" }, toggle);
+    expect(document.querySelector(".page")!.classList.contains("wide")).toBe(true);
+    expect([document.activeElement!.getAttribute("role"), document.activeElement!.getAttribute("aria-checked")]).toEqual(["menuitemcheckbox", "true"]);
+    key({ key: "Enter" }, document.activeElement!);
+    key({ key: "Escape" }, document.activeElement!);
+  });
+
+  // A release outside the frame never reaches it: a margin sweep can't stay live and select on.
+  it("ends a margin sweep released outside the frame", () => {
+    const canvas = document.querySelector<HTMLElement>("main.canvas")!;
+    const press = () => canvas.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: -1, clientY: 0 }));
+    const move = (buttons: number) => window.dispatchEvent(new MouseEvent("mousemove", { clientX: -1, clientY: 40, buttons }));
+    press();
+    window.dispatchEvent(new Event("blur"));
+    move(1);
+    expect(document.body.classList.contains("blk-sweeping")).toBe(false);
+    press();
+    move(0);
+    move(1);
+    expect(document.body.classList.contains("blk-sweeping")).toBe(false);
   });
 });

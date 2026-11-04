@@ -24,7 +24,11 @@ import { type ZipEntry, createZip } from "@gadgets/bundled-blueprints/libraries/
 
 /* ═══════════════════════ 1. Limits, units & XML ════════════════════════════ */
 
-/** What one export may hold; past these it fails with a message rather than exhausting memory. */
+/**
+ * What one export may hold. Past the image and hyperlink limits the extra images export as their
+ * alt text and the extra links as plain text; past the others it fails with a message rather
+ * than exhausting memory.
+ */
 export const DOCX_LIMITS = Object.freeze({
   blocks: 20000,
   htmlCharacters: 64 * 1024 * 1024,
@@ -1534,7 +1538,7 @@ function documentTitle(fragments: string[]): string {
 
 /**
  * Builds the .docx package for a stored document and its shared settings, as a
- * stream. Throws if the document exceeds {@link DOCX_LIMITS}.
+ * stream. Throws if the document exceeds a {@link DOCX_LIMITS} limit other than the image and link ones.
  */
 export function documentToDocx(source: DocxSource, settings: DocxSettings = {}): ReadableStream<Uint8Array> {
   const fragments = source.blocks ? source.blocks.map((b) => b.html) : [source.legacyContent ?? ""];

@@ -59,7 +59,7 @@ describe("specHtml", () => {
   it("writes an image only from an https or data:image source", () => {
     expect(specHtml({ type: "image", src: "https://x/y.png", alt: "Y", width: 300.4 }))
       .toBe('<p><img class="doc-image" draggable="true" src="https://x/y.png" alt="Y" style="width:300px;height:auto;"></p>');
-    expect(() => specHtml({ type: "image", src: "javascript:x" })).toThrow("An image needs an https:// or data:image src.");
+    expect(() => specHtml({ type: "image", src: "javascript:x" })).toThrow("An image needs an http(s):// or data:image src.");
   });
 
   it("judges an untyped spec by its fields", () => {
@@ -133,9 +133,9 @@ describe("list items through Markdown", () => {
   // A line break in an item is an indented continuation, so editing another word keeps the list whole.
   it("keeps a list item's line break", () => {
     const md = htmlToMarkdown("<ul><li>First<br>Second</li><li>Third</li></ul>");
-    expect(md).toBe("- First  \n  Second\n- Third\n");
+    expect(md).toBe("- First\\\n  Second\n- Third\n");
     expect(markdownToSpecs(md.replace("Third", "THIRD")).map(specHtml)).toEqual(["<ul><li>First<br>Second</li><li>THIRD</li></ul>"]);
-    expect(htmlToMarkdown("<ol><li>a<ul><li>b<br>c</li></ul></li></ol>")).toBe("1. a\n  - b  \n    c\n");
+    expect(htmlToMarkdown("<ol><li>a<ul><li>b<br>c</li></ul></li></ol>")).toBe("1. a\n   - b\\\n     c\n");
   });
 
   // An empty item reads back as an item, so editing another one keeps the list whole.

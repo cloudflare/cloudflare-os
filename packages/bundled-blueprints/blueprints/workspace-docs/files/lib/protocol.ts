@@ -16,6 +16,11 @@ export interface BlockContent {
 
 /** A block as the server stores and broadcasts it: content plus the version of that content. */
 export interface StoredBlock extends BlockContent {
+  /**
+   * Bumped by every accepted change. A block created by an editor or `setDocument` starts at the
+   * revision that creates it, so an id re-created after a deletion never repeats a version it had:
+   * an id and a version always name one content.
+   */
   version: number;
 }
 

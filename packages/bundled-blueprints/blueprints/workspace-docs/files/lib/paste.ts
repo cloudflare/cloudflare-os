@@ -174,7 +174,9 @@ const BLOCKS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "
 // Blocks written as one line of text. A <dt> is the term, so it is bold.
 const LINE_BLOCKS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "DT", "DD", "FIGCAPTION", "SUMMARY", "ADDRESS"]);
 const SKIP = new Set(["STYLE", "SCRIPT", "META", "TITLE", "HEAD", "LINK", "TEMPLATE", "NOSCRIPT", "SVG", "MATH", "IFRAME", "OBJECT", "BUTTON", "SELECT", "TEXTAREA"]);
-const holdsBlocks = (node: Element): boolean => Array.from(node.children).some((c) => BLOCKS.has(c.tagName) || holdsBlocks(c) && !SKIP.has(c.tagName));
+// An SVG or MathML element's tagName is lowercase.
+const skipped = (el: Element) => SKIP.has(el.tagName.toUpperCase());
+const holdsBlocks = (node: Element): boolean => Array.from(node.children).some((c) => BLOCKS.has(c.tagName) || holdsBlocks(c) && !skipped(c));
 const hasContent = (n: Element) => !!n.textContent?.trim() || !!n.querySelector("img");
 
 /** A Word list item: its content, depth and kind, the number its list starts at, and which list it is in. */
@@ -240,7 +242,7 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
       const tag = child.tagName;
       if (tag === "BR") target.appendChild(document.createElement("br"));
       else if (tag === "IMG") { const img = pc.image(child); if (img) target.appendChild(img); }
-      else if (tag === "HR" || SKIP.has(tag)) return;
+      else if (tag === "HR" || skipped(child)) return;
       else appendInline(child, target, fmtOf(child, ctx, pc));
     }
   }
@@ -249,7 +251,7 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
   function inlineLines(src: Node, target: Node, ctx: InlineFormat, skip: (el: Element) => boolean = () => false) {
     src.childNodes.forEach((child) => {
       if (isText(child)) { if (child.data.trim() || target.childNodes.length) target.appendChild(wrapInline(child.data, ctx)); return; }
-      if (!isElement(child) || SKIP.has(child.tagName) || skip(child)) return;
+      if (!isElement(child) || skipped(child) || skip(child)) return;
       const tag = child.tagName;
       if (tag === "BR") { target.appendChild(document.createElement("br")); return; }
       if (tag === "IMG") { const img = pc.image(child); if (img) target.appendChild(img); return; }
@@ -274,6 +276,8 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
   }
   function processList(src: Element, ctx: InlineFormat): HTMLElement {
     const list = document.createElement(src.tagName === "OL" ? "ol" : "ul");
+    const start = parseInt(src.getAttribute("start") || "", 10);
+    if (list.tagName === "OL" && start > 1) list.setAttribute("start", String(start));
     const items = Array.from(src.children).filter((c) => c.tagName === "LI");
     const checks = items.map(checkboxOf);
     const checklist = src.classList.contains("checklist") || items.length > 0 && checks.every((c) => c !== null);
@@ -339,23 +343,23 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
     if (!rows.length) return null;
     const first = rows[0];
     const header = first.parentElement?.tagName === "THEAD" || first.cells.length > 0 && Array.from(first.cells).every((c) => c.tagName === "TH");
-    // Per column, the rows below that a cell above still spans into: they get
-    // an empty cell there, so the row's own cells stay in their columns.
+    const tagOf = (i: number) => header && i === 0 ? "th" : "td";
+    // Per column, the rows below that a cell above still spans into. A spanned
+    // place is null in the grid, so the row's own cells stay in their columns.
     const covered: number[] = [];
     const grid = rows.map((row, i) => {
-      const tag = header && i === 0 ? "th" : "td";
-      const out: HTMLElement[] = [];
-      const skipCovered = () => { while (covered[out.length]! > 0) out.push(document.createElement(tag)); };
+      const out: (HTMLElement | null)[] = [];
+      const skipCovered = () => { while (covered[out.length]! > 0) out.push(null); };
       for (const cell of row.cells) {
         skipCovered();
         const at = out.length;
-        const n = document.createElement(tag);
+        const n = document.createElement(tagOf(i));
         inlineLines(cell, n, fmtOf(cell, ctx, pc));
         while (n.lastChild?.nodeName === "BR" && n.childNodes.length > 1) n.lastChild.remove();
         const align = (/text-align:\s*(center|right)/i.exec(cell.getAttribute("style") || "")?.[1] ?? cell.getAttribute("align") ?? "").toLowerCase();
         if (align === "center" || align === "right") n.style.textAlign = align;
         out.push(n);
-        for (let k = 1; k < Math.min(cell.colSpan || 1, 20); k++) out.push(document.createElement(tag));
+        for (let k = 1; k < Math.min(cell.colSpan || 1, 20); k++) out.push(null);
         const down = Math.min(cell.rowSpan || 1, rows.length - i);
         for (let k = at; k < out.length; k++) covered[k] = down;
       }
@@ -363,13 +367,14 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
       for (let k = 0; k < covered.length; k++) if (covered[k]! > 0) covered[k] = covered[k]! - 1;
       return out;
     });
-    const cols = Math.max(...grid.map((r) => r.length));
-    if (!cols) return null;
+    // A column no cell starts in only carries a span (Excel's colspan="100"
+    // title above a narrow table): it is dropped.
+    const columns = Array.from({ length: Math.max(...grid.map((r) => r.length)) }, (_, k) => k).filter((k) => grid.some((r) => r[k]));
+    if (!columns.length) return null;
     const table = document.createElement("table");
     const body = document.createElement("tbody");
-    grid.forEach((cells, i) => {
-      const tag = header && i === 0 ? "th" : "td";
-      while (cells.length < cols) cells.push(document.createElement(tag));
+    grid.forEach((row, i) => {
+      const cells = columns.map((k) => row[k] ?? document.createElement(tagOf(i)));
       for (const c of cells) if (!c.firstChild) c.appendChild(document.createElement("br"));
       const tr = document.createElement("tr");
       tr.append(...cells);
@@ -378,7 +383,7 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
     });
     if (!body.rows.length) {
       const tr = document.createElement("tr");
-      for (let c = 0; c < cols; c++) tr.appendChild(document.createElement("td")).appendChild(document.createElement("br"));
+      for (let c = 0; c < columns.length; c++) tr.appendChild(document.createElement("td")).appendChild(document.createElement("br"));
       body.appendChild(tr);
     }
     table.appendChild(body);
@@ -411,9 +416,9 @@ export function sanitizePastedHtml(html: string, pc: PasteContext): string {
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
       if (node.nodeType === 8) continue;
-      if (isText(node) || isElement(node) && !BLOCKS.has(node.tagName) && !SKIP.has(node.tagName) && !holdsBlocks(node)) { run.push(node); continue; }
+      if (isText(node) || isElement(node) && !BLOCKS.has(node.tagName) && !skipped(node) && !holdsBlocks(node)) { run.push(node); continue; }
       flush();
-      if (!isElement(node) || SKIP.has(node.tagName)) continue;
+      if (!isElement(node) || skipped(node)) continue;
       const tag = node.tagName;
       const items = wordListItems(node);
       if (items) {
@@ -506,7 +511,8 @@ export function inlineMarkdown(s: string): string {
 }
 const LIST_LINE = /^(\s*)([-*+]|\d+[.)])\s+(?:\[( |x|X)\]\s+)?(.*)$/;
 function looksLikeMarkdown(text: string) {
-  return /^(#{1,6}\s|\s*[-*+]\s|\s*\d+[.)]\s|>\s?|```|\s*[-*_]{3,}\s*$)/m.test(text) || /\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^)\s]+\)|`[^`\n]+`/.test(text) || /\|.*\n\s*\|?\s*:?-+:?\s*\|/.test(text);
+  return /^(#{1,6}\s|[^\S\n]*[-*+]\s|[^\S\n]*\d+[.)]\s|>\s?|```|[^\S\n]*[-*_]{3,}[^\S\n]*$)/m.test(text) || /\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^)\s]+\)|`[^`\n]+`/.test(text) ||
+    text.split("\n").some((_, i, lines) => startsPipeTable(lines, i));
 }
 // Markdown tables: "| a | b |" rows under a "| --- | :-: |" delimiter row,
 // whose colons set each column's alignment.
@@ -531,7 +537,8 @@ export function tableHtmlFrom(head: string[] | null, body: string[][], raw = fal
 // Tab-separated text (a spreadsheet copied as plain text): every line has
 // the same number of columns, at least two.
 export function parseTsv(text: string): string[][] | null {
-  const t = String(text || "").replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+  // (Only a run's first newline tries the trailing match: linear in blank lines.)
+  const t = String(text || "").replace(/\r\n?/g, "\n").replace(/(?<!\n)\n+$/, "");
   if (!t.includes("\t")) return null;
   const rows = t.split("\n").map((l) => l.split("\t"));
   const n = rows[0].length;

@@ -80,6 +80,21 @@ describe("editor protocol", () => {
     expect(result).toMatchObject({ status: "applied", upserts: [{ id: "a", version: 2 }] });
   });
 
+  // ⌘Z after deleting a block re-creates its id. A page that missed the deletion still holds the
+  // old block's version; its edit of that must be stale, not saved over the re-created block.
+  it("rejects an edit of a deleted block's old version once its id is re-created", async () => {
+    const { gadget, stored: map } = inMemoryGadget();
+    await gadget.initializeBlocks(init);
+    await gadget.applyOperation({ senderId: "p", upserts: [{ id: "a", html: "<p>one!</p>", baseVersion: 1 }] });
+    await gadget.applyOperation({ senderId: "p", deletes: [{ id: "a", baseVersion: 2 }], order: ["b"] });
+    const recreated = await gadget.applyOperation({ senderId: "p", upserts: [{ id: "a", html: "<p>one!</p>", baseVersion: 0 }], order: ["a", "b"] });
+    await gadget.applyOperation({ senderId: "p", upserts: [{ id: "a", html: "<p>one! P</p>", baseVersion: recreated.upserts![0].version }] });
+    // The page that saw version 2 before the deletion saves its edit of it.
+    const offline = await gadget.applyOperation({ senderId: "q", upserts: [{ id: "a", html: "<p>one! Q</p>", baseVersion: 2 }] });
+    expect(offline).toMatchObject({ status: "conflict", conflicts: [{ id: "a", html: "<p>one! P</p>" }] });
+    expect(stored(map).blocks[0]).toMatchObject({ id: "a", html: "<p>one! P</p>" });
+  });
+
   // A block another collaborator added a moment ago keeps its place after the block it followed,
   // rather than falling to the end of the order the sender asked for.
   it("keeps blocks the sender didn't know about where they were", async () => {
@@ -98,7 +113,7 @@ describe("editor protocol", () => {
     await gadget.initializeBlocks({ blocks: [{ id: "a", html: unsafe }], title: "Doc", senderId: "c1" });
     expect(stored(map).blocks[0].html).toBe(clean);
     const applied = await gadget.applyOperation({ senderId: "c1", upserts: [{ id: "b", html: '<p><a href="javascript:x()">l</a></p>', baseVersion: 0 }], order: ["a", "b"] });
-    expect(applied).toMatchObject({ upserts: [{ id: "b", html: "<p><a>l</a></p>", version: 1 }] });
+    expect(applied).toMatchObject({ upserts: [{ id: "b", html: "<p><a>l</a></p>", version: 2 }] });
     await gadget.setDocument({ blocks: [{ id: "a", html: unsafe }], title: "Doc", senderId: "c1" });
     expect(stored(map).blocks).toEqual([{ id: "a", html: clean, version: 2 }]);
   });
@@ -124,7 +139,8 @@ describe("editor protocol", () => {
       title: "",
       senderId: "agent",
     });
-    expect(document).toMatchObject({ revision: 2, title: "Untitled document", blocks: [{ id: "a", html: "<p>A</p>", version: 2 }, { id: "c", version: 1 }] });
+    // A block new to the document starts at the revision that adds it.
+    expect(document).toMatchObject({ revision: 2, title: "Untitled document", blocks: [{ id: "a", html: "<p>A</p>", version: 2 }, { id: "c", version: 2 }] });
   });
 
   it("caps the title of a whole document, and ignores deletions that are not a list", async () => {
@@ -267,6 +283,15 @@ describe("block API", () => {
     expect(result).toMatchObject({ status: "applied", ids: after.map((block) => block.id) });
     expect((await gadget.getDocument()).title).toBe("New");
     expect(await gadget.setMarkdown({ markdown: "a\n\nB\n\nc" })).toMatchObject({ status: "unchanged" });
+  });
+
+  // The Markdown the block API reads out, handed back as it is, changes nothing: setMarkdown doesn't refuse it.
+  it("takes back its own Markdown as no change", async () => {
+    const htmls = ["<blockquote>x<br>y</blockquote>", "<p>a<br><br>b</p>", "<table><tbody><tr><td>1</td><td>2</td></tr></tbody></table>", "<pre>a\n\n\nb  </pre>", '<ol start="3"><li>c</li></ol>'];
+    const { gadget, ready } = inMemoryGadget({ "document:v2": { revision: 1, title: "", lastModified: 0, blocks: htmls.map((html, i) => ({ id: "b" + i, html, version: 1 })) } });
+    await ready;
+    expect(await gadget.setMarkdown({ markdown: await gadget.getMarkdown() })).toMatchObject({ status: "unchanged" });
+    for (const { id, markdown } of (await gadget.listBlocks()).blocks) expect(await gadget.updateBlock({ id, markdown })).toMatchObject({ status: "unchanged" });
   });
 
   // No editor can undo an agent's edit, so one call must not silently replace a document's content.
@@ -428,7 +453,7 @@ describe("documents from earlier editors", () => {
     const { gadget, stored: map, ready } = inMemoryGadget(legacy);
     await ready;
     expect((await gadget.listBlocks()).blocks.map((b) => b.markdown)).toEqual([
-      "# Legacy doc", "Old **bold** text  \nsecond line", "text at root", "- one", `![](${PNG})`,
+      "# Legacy doc", "Old **bold** text\\\nsecond line", "text at root", "- one", `![](${PNG})`,
     ]);
     expect(map.get("content")).toBe(legacy.content);
     expect(map.get("title")).toBe("Legacy Title");

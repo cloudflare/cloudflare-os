@@ -1,10 +1,11 @@
 // @vitest-environment node
 import { HtmlRenderer, Parser } from "commonmark";
 import { describe, expect, it } from "vitest";
-import { decodeHtml, htmlToMarkdown, readHtmlAttribute } from "../files/lib/markdown.ts";
+import { codeFence, decodeHtml, htmlToMarkdown, readHtmlAttribute } from "../files/lib/markdown.ts";
+import { specHtml, specsFrom } from "../files/lib/blocks.ts";
 
-// A hard line break: two spaces and a newline.
-const BR = "  \n";
+// A hard line break: a backslash ending the line.
+const BR = "\\\n";
 
 describe("htmlToMarkdown", () => {
   // The markup Chrome's execCommand writes under styleWithCSS -- what older documents and pasted
@@ -98,7 +99,7 @@ describe("htmlToMarkdown", () => {
     )).toBe(
       "- [x] Ship\n  - [ ] sub\n- [ ] Tell\n\n" +
       "| **Name** | Role   |\n| -------- | ------ |\n| A\\|b     | x<br>y |\n\n" +
-      "ab `c`\n\n> q1  \n> q2\n\n---\n\n![Pic \\[1\\]](https://x/y.png)\n\n1. one\n2. two\n",
+      "ab `c`\n\n> q1\\\n> q2\n\n---\n\n![Pic \\[1\\]](https://x/y.png)\n\n1. one\n2. two\n",
     );
   });
 
@@ -136,9 +137,10 @@ describe("htmlToMarkdown", () => {
     expect(htmlToMarkdown("<p>-5 degrees, 3.5 stars</p>")).toBe("-5 degrees, 3.5 stars\n");
   });
 
+  // A table without a header row gets an empty one: GFM has no table without.
   it("writes a table cell's lines as <br> and pads its columns", () => {
     expect(htmlToMarkdown("<table><tbody><tr><td>a</td><td>longer</td></tr><tr><td>b<br>c</td></tr></tbody></table>"))
-      .toBe("| a      | longer |\n| ------ | ------ |\n| b<br>c |        |\n");
+      .toBe("|        |        |\n| ------ | ------ |\n| a      | longer |\n| b<br>c |        |\n");
   });
 
   it("marks a column's alignment when all its cells share it", () => {
@@ -171,6 +173,85 @@ describe("htmlToMarkdown", () => {
     const long = "data:image/png;base64," + "A".repeat(400);
     expect(htmlToMarkdown(`<p><img src="${long}" alt="p"></p>`)).toBe(`![p](${long})\n`);
     expect(htmlToMarkdown(`<p><img src="${long}" alt="p"></p>`, { abbreviateImages: true })).toMatch(/^!\[p\]\(data:image\/png;… 300 B #[0-9a-f]{8}\)\n$/);
+  });
+});
+
+// Agents edit through the Markdown the block API reads out, so every shape the editor (or a paste,
+// or an agent's spec) writes must read back as it was: alone, as updateBlock reads a block's
+// Markdown, and as a whole document, as setMarkdown reads getMarkdown's.
+describe("Markdown round trips", () => {
+  const readBack = (markdown: string) => specsFrom({ markdown }).map(specHtml);
+  const corpus = [
+    "<p>one<br>two</p>", "<p>one<br><br>two</p>", "<p><br>after a break</p>",
+    "<ul><li>one<br><br>two</li><li>three</li></ul>", "<ol><li>a<br>b</li><li>c</li></ol>", '<ol start="3"><li>three</li><li>four</li></ol>',
+    // A nested list sits under its item's content: past "1. " or "10. ", but only past a to-do's "- ".
+    "<ol><li>a<ol><li>nested</li></ol></li></ol>", '<ol start="9"><li>a</li><li>b<ul><li>nested<br>line</li></ul></li></ol>',
+    '<ul class="checklist"><li data-checked="true">a<ul><li>sub<ul><li>deep</li></ul></li></ul></li><li>b</li></ul>',
+    "<ul><li>a<ol><li>n1</li><li>n2<ul><li>deep</li></ul></li></ol></li><li>b</li></ul>",
+    "<blockquote>x<br>y</blockquote>", "<blockquote>q1<br><br>q2</blockquote>",
+    "<pre>def a():\n    pass  \n\n\ndef b():\n\treturn 1\t</pre>",
+    "<h2>Learn C #</h2>", "<h3>Item ##</h3>",
+    '<p>Wow!<a href="https://example.com/a.png">see this</a></p>',
+    "<p>&gt;5ms latency</p>", "<p>&gt;=5 users</p>", "<p>a<br>&gt;b</p>",
+    '<p>see <a href="https://example.com/a_b_c">https://example.com/a_b_c</a> now</p>',
+    // A URL the reader won't link (after emphasis, an image, code or a link) keeps its escapes.
+    "<p><b>https://x.com/__init__.py</b></p>", "<p><b>https://a.com/_y_</b></p>", "<p><i>https://a.com/a__b__c</i></p>",
+    "<p><b>Docs:</b>https://x.com/__init__.py</p>", '<p><img class="doc-image" src="https://x.com/i.png" alt="i">https://x.com/__a__</p>',
+    "<p><code>c</code>https://x.com/_a_</p>", '<p><a href="https://t.example/">l</a>https://x.com/_a_</p>',
+    // The editor's new table (an empty header row), a pasted spreadsheet (none), and agent specs.
+    "<table><thead><tr><th><br></th><th><br></th></tr></thead><tbody><tr><td><br></td><td><br></td></tr></tbody></table>",
+    "<table><tbody><tr><td>Q1</td><td>10</td></tr><tr><td>Q2</td><td><br></td></tr></tbody></table>",
+    specHtml({ type: "table", rows: [["Name", "Role"], ["Ada", "Engineer"]] }),
+    specHtml({ type: "table", rows: [["a", "b"], ["c", "d"]], header: false }),
+  ];
+
+  it("reads every block back as it was", () => {
+    for (const html of corpus) expect(readBack(htmlToMarkdown(html, { abbreviateImages: true }).trim()), html).toEqual([html]);
+    expect(readBack(htmlToMarkdown(corpus.join(""), { abbreviateImages: true }))).toEqual(corpus);
+  });
+
+  it("writes Markdown that CommonMark shows as the editor does", () => {
+    const render = (html: string) => new HtmlRenderer().render(new Parser().parse(htmlToMarkdown(html)));
+    expect(render("<p>one<br><br>two</p>")).toBe("<p>one<br />\n<br />\ntwo</p>\n");
+    expect(render("<ul><li>one<br><br>two</li></ul>")).toBe("<ul>\n<li>one<br />\n<br />\ntwo</li>\n</ul>\n");
+    expect(render("<pre>a  \n\n\nb</pre>")).toBe("<pre><code>a  \n\n\nb\n</code></pre>\n");
+    expect(render("<h2>Learn C #</h2>")).toBe("<h2>Learn C #</h2>\n");
+    expect(render('<p>Wow!<a href="https://e.com/">this</a></p>')).toBe('<p>Wow!<a href="https://e.com/">this</a></p>\n');
+    expect(render("<p>&gt;5ms latency</p><p>a<br>&gt;b</p>")).toBe("<p>&gt;5ms latency</p>\n<p>a<br />\n&gt;b</p>\n");
+    expect(render('<ol start="3"><li>c</li></ol>')).toBe('<ol start="3">\n<li>c</li>\n</ol>\n');
+    expect(render("<ol><li>a<ol><li>nested</li></ol></li></ol>")).toBe("<ol>\n<li>a\n<ol>\n<li>nested</li>\n</ol>\n</li>\n</ol>\n");
+    expect(render('<ol start="10"><li>a<ul><li>nested</li></ul></li></ol>')).toBe('<ol start="10">\n<li>a\n<ul>\n<li>nested</li>\n</ul>\n</li>\n</ol>\n');
+    expect(render('<ul class="checklist"><li>a<ul><li>sub</li></ul></li></ul>')).toBe("<ul>\n<li>[ ] a\n<ul>\n<li>[ ] sub</li>\n</ul>\n</li>\n</ul>\n");
+  });
+
+  // GFM links a bare URL as written: `a\_b` would link to `a%5C_b`.
+  it("leaves a bare URL unescaped, and reads it back as a link to all of it", () => {
+    expect(htmlToMarkdown("<p>see https://example.com/a_b_c now</p>")).toBe("see https://example.com/a_b_c now\n");
+    expect(readBack("see https://example.com/a_b_c now")).toEqual(['<p>see <a href="https://example.com/a_b_c">https://example.com/a_b_c</a> now</p>']);
+    // Ending an emphasized phrase, it stops before the closing delimiter.
+    for (const [tag, rest] of [["b", ""], ["i", " ok"], ["s", ""]]) {
+      expect(readBack(htmlToMarkdown(`<p><${tag}>visit https://x.com/a_b_c</${tag}>${rest}</p>`)))
+        .toEqual([`<p><${tag}>visit <a href="https://x.com/a_b_c">https://x.com/a_b_c</a></${tag}>${rest}</p>`]);
+    }
+  });
+
+  // Agents number steps around a code block: the list after it carries on counting.
+  it("keeps the number a list starts from", () => {
+    expect(readBack("1. Install\n\n```\nnpm i\n```\n\n2. Run\n3. Test")).toEqual(["<ol><li>Install</li></ol>", "<pre>npm i</pre>", '<ol start="2"><li>Run</li><li>Test</li></ol>']);
+  });
+
+  it("reads an empty header row as no header, unless it is all there is", () => {
+    expect(readBack("|   |   |\n|---|---|\n| a | b |")).toEqual(["<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>"]);
+    expect(readBack("|   |\n|---|")).toEqual(["<table><thead><tr><th><br></th></tr></thead><tbody><tr><td><br></td></tr></tbody></table>"]);
+  });
+
+  it("reads a quote's two-space line break as a paragraph's", () => {
+    expect(readBack("> a  \n> b")).toEqual(["<blockquote>a<br>b</blockquote>"]);
+  });
+
+  // Spreading every run of backticks into Math.max overflowed the stack.
+  it("fences code holding any number of backtick runs", () => {
+    expect(codeFence("`a".repeat(500_000))).toBe("```");
   });
 });
 

@@ -30,13 +30,22 @@ interface OpenList {
   bullet: Bullet;
   /** Spaces that put a line under the current item's text, after a hard break. */
   indent?: string;
+  /** Spaces that put a list nested in the current item under its content. */
+  nest?: string;
 }
 interface OpenTable {
-  rows: string[][];
-  /** Each cell's alignment ("center", "right", or "" for the default), by row. */
-  aligns: string[][];
+  rows: OpenRow[];
+  /** Whether the rows being read are in a <thead>. */
+  inHead: boolean;
   /** Where the open cell's Markdown begins, or null between cells. */
   cellStart: number | null;
+}
+interface OpenRow {
+  cells: string[];
+  /** Each cell's alignment: "center", "right", or "" for the default. */
+  aligns: string[];
+  /** A header row: in a <thead>, or of <th>s only. */
+  head: boolean;
 }
 
 const EMPHASIS_MARKERS: EmphasisMarker[] = ["**", "*", "~~"];
@@ -53,9 +62,9 @@ const MD_BLOCK_TAGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "
 // A second top-level list right after another switches to the other marker of its kind.
 const OTHER_BULLET: Record<Bullet, Bullet> = { "-": "*", "*": "-", ".": ")", ")": "." };
 
-// "1. x", "- x", "# x", "> x" and "+ x" would otherwise start a list, heading or quote.
+// "1. x", "- x", "# x", "+ x" and any ">" would otherwise start a list, heading or quote.
 function escapeLineStart(text: string): string {
-  return text.replace(/^(\d{1,9})([.)])(?=\s|$)/, "$1\\$2").replace(/^([#>+-])(?=[\s#>+-]|$)/, "\\$1");
+  return text.replace(/^(\d{1,9})([.)])(?=\s|$)/, "$1\\$2").replace(/^(>|[#+-](?=[\s#>+-]|$))/, "\\$1");
 }
 
 /**
@@ -98,10 +107,11 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
     let kept = 0;
     while (kept < written.length && wanted.includes(written[kept])) kept++;
     closeTo(kept);
-    // A hard break is "  \n", marked \u0001 so the trailing-space cleanup
-    // below can't strip it, and indented under a list item's text so the item
-    // continues. Table cells take a plain "\n" (written as <br>).
-    inline += breaks ? (inCell() ? "\n" : "\u0001\n" + (lists.at(-1)?.indent ?? "")).repeat(breaks) : space ? " " : "";
+    // A hard break is a backslash ending the line (after two spaces, a second
+    // break in a row would leave a blank line, ending the paragraph), indented
+    // under a list item's text so the item continues. Table cells take a plain
+    // "\n" (written as <br>).
+    inline += breaks ? (inCell() ? "\n" : "\\\n" + (lists.at(-1)?.indent ?? "")).repeat(breaks) : space ? " " : "";
     space = false;
     breaks = 0;
     for (const marker of wanted) {
@@ -123,7 +133,9 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
     if (inCode) closeCode();
     lastCode.end = -1;
     closeTo(0);
-    markdown += spellEmphasis(inline, changes);
+    // A closing run of #s would be read as the heading's closing sequence, not its text.
+    const spelled = spellEmphasis(inline, changes);
+    markdown += inHeading ? spelled.replace(/ (#+)$/, " \\$1") : spelled;
     inline = "";
     changes = [];
     space = false;
@@ -137,15 +149,24 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
       // Backslash escapes are literal inside a code span, so none there.
       else if (inCode) inline += text.replace(/\s+/g, " ");
       else {
-        // (Doubled tildes would read as strikethrough; a lone one is left as it is.)
-        const words = text.replace(/\s+/g, " ").replace(/([\\*_[\]<`])/g, "\\$1").replace(/~(?=~)|(?<=~)~/g, "\\~");
-        space ||= words.startsWith(" ");
-        if (words.trim()) {
+        const flat = text.replace(/\s+/g, " ");
+        space ||= flat.startsWith(" ");
+        if (flat.trim()) {
           // At the start of a line, text that reads as a heading, quote, list or rule marker is escaped.
           const lineStart = !inline || breaks > 0;
           beginInline();
-          inline += lineStart ? escapeLineStart(words.trim()) : words.trim();
-          space = words.endsWith(" ");
+          // A bare URL keeps its _ and * as written, which GFM links whole
+          // (`a\_b` would link to `a%5C_b`) -- where the reader links it too:
+          // after a space, "(" or the line's start in the Markdown written, not
+          // after emphasis or an image, and not in a link's label.
+          const bareAtStart = /(?:^|[\s(])$/.test(inline) && changes.at(-1)?.at !== inline.length;
+          // (Doubled tildes would read as strikethrough; a lone one is left as it is.)
+          const words = flat.trim()
+            .replace(/(?<![^\s(])(https?:\/\/[^\s<]+)|[\\*_[\]<`]/g, (m, url: string | undefined, at: number) =>
+              m.replace(url && links.at(-1) == null && (at > 0 || bareAtStart) ? /[\\[\]`]/g : /[\\*_[\]<`]/g, "\\$&"))
+            .replace(/~(?=~)|(?<=~)~/g, "\\~");
+          inline += lineStart ? escapeLineStart(words) : words;
+          space = flat.endsWith(" ");
         }
       }
       continue;
@@ -185,8 +206,9 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
           if (!inPre && inCode) closeCode();
           break;
         case "pre": {
+          // Each code line ends in \u0001, so the cleanup below keeps its trailing space and blank lines.
           const code = markdown.slice(preStart), fence = codeFence(code);
-          markdown = markdown.slice(0, preStart) + fence + "\n" + code + "\n" + fence + "\n\n";
+          markdown = markdown.slice(0, preStart) + fence + "\n" + (code + "\n").replace(/\n/g, "\u0001\n") + fence + "\n\n";
           inPre = false;
           break;
         }
@@ -208,6 +230,11 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
           lists.pop();
           if (!lists.length) { markdown += "\n\n"; lastList.end = markdown.length; }
           break;
+        case "thead": {
+          const table = tables.at(-1);
+          if (table) table.inHead = false;
+          break;
+        }
         case "td": case "th": {
           // A cell's Markdown is cut out of the stream and kept for its row.
           const table = tables.at(-1);
@@ -215,29 +242,30 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
           const text = markdown.slice(table.cellStart).trim().replace(/\s*\n+\s*/g, "<br>").replace(/(?<!\\)(<br>)+$/, "").replace(/\|/g, "\\|");
           markdown = markdown.slice(0, table.cellStart);
           table.cellStart = null;
-          if (!table.rows.length) { table.rows.push([]); table.aligns.push([]); }
-          table.rows[table.rows.length - 1].push(text);
+          table.rows.at(-1)!.cells.push(text);
           break;
         }
         case "table": {
-          const table = tables.pop();
-          if (!table) break;
-          const kept = table.rows.flatMap((r, i) => r.length ? [i] : []);
-          const rows = kept.map((i) => table.rows[i]);
-          const aligns = kept.map((i) => table.aligns[i] ?? []);
+          const rows = tables.pop()?.rows.filter((r) => r.cells.length) ?? [];
           if (!rows.length) break;
-          const cols = Math.max(...rows.map((r) => r.length));
+          // GFM has no table without a header row: one without gets an empty
+          // header row, which is how it reads back, so an empty header row of
+          // its own keeps a <br>.
+          const cells = rows.map((r) => r.cells);
+          if (!rows[0].head) cells.unshift([]);
+          else if (cells[0].every((c) => !c)) cells[0][0] = "<br>";
+          const cols = Math.max(...cells.map((r) => r.length));
           // Columns are padded to line up, but only up to a point: a long
           // cell (an image's data URI, say) runs on rather than padding the rest.
-          const widths = Array.from({ length: cols }, (_, i) => Math.max(3, Math.min(40, Math.max(...rows.map((r) => (r[i] || "").length)))));
+          const widths = Array.from({ length: cols }, (_, i) => Math.max(3, Math.min(40, Math.max(...cells.map((r) => (r[i] || "").length)))));
           const line = (r: string[]) => "| " + widths.map((w, i) => (r[i] || "").padEnd(w)).join(" | ") + " |";
           // Markdown aligns whole columns: a column takes an alignment its cells all share.
           const delimiter = (w: number, i: number) => {
-            const column = new Set(aligns.map((a) => a[i] ?? ""));
+            const column = new Set(rows.map((r) => r.aligns[i] ?? ""));
             const align = column.size === 1 ? [...column][0] : "";
             return align === "center" ? ":" + "-".repeat(w - 2) + ":" : align === "right" ? "-".repeat(w - 1) + ":" : "-".repeat(w);
           };
-          markdown += "\n\n" + [line(rows[0]), "| " + widths.map(delimiter).join(" | ") + " |", ...rows.slice(1).map(line)].join("\n") + "\n\n";
+          markdown += "\n\n" + [line(cells[0]), "| " + widths.map(delimiter).join(" | ") + " |", ...cells.slice(1).map(line)].join("\n") + "\n\n";
           break;
         }
       }
@@ -282,19 +310,25 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
         markdown += "\n\n---\n\n";
         break;
       case "table":
-        tables.push({ rows: [], aligns: [], cellStart: null });
+        tables.push({ rows: [], inHead: false, cellStart: null });
         break;
+      case "thead": {
+        const table = tables.at(-1);
+        if (table) table.inHead = true;
+        break;
+      }
       case "tr":
-        tables.at(-1)?.rows.push([]);
-        tables.at(-1)?.aligns.push([]);
+        tables.at(-1)?.rows.push({ cells: [], aligns: [], head: true });
         break;
       case "td": case "th": {
         const table = tables.at(-1);
         if (table) {
           table.cellStart = markdown.length;
           const align = (/text-align:\s*(center|right)/i.exec(readHtmlAttribute(attributes, "style"))?.[1] ?? readHtmlAttribute(attributes, "align")).toLowerCase();
-          if (!table.aligns.length) table.aligns.push([]);
-          table.aligns[table.aligns.length - 1].push(align === "center" || align === "right" ? align : "");
+          if (!table.rows.length) table.rows.push({ cells: [], aligns: [], head: true });
+          const row = table.rows.at(-1)!;
+          row.aligns.push(align === "center" || align === "right" ? align : "");
+          if (tag === "td" && !table.inHead) row.head = false;
         }
         break;
       }
@@ -308,7 +342,9 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
           if (lastList.bullet !== null && lastList.end === markdown.length && (tag === "ol") === (lastList.bullet === "." || lastList.bullet === ")")) bullet = OTHER_BULLET[lastList.bullet];
           lastList.bullet = bullet;
         }
-        lists.push({ type: isChecklist ? "check" : tag, count: 0, bullet });
+        // A numbered list may start past 1 (`<ol start="3">`).
+        const start = /^\s*(\d{1,9})\s*$/.exec(readHtmlAttribute(attributes, "start"))?.[1];
+        lists.push({ type: isChecklist ? "check" : tag, count: start ? Number(start) - 1 : 0, bullet });
         break;
       }
       case "li": {
@@ -316,8 +352,10 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
         list.count += 1;
         const b = list.bullet;
         const marker = list.type === "ol" ? list.count + b + " " : list.type === "check" ? (readHtmlAttribute(attributes, "data-checked") === "true" ? b + " [x] " : b + " [ ] ") : b + " ";
-        const lead = "  ".repeat(Math.max(0, lists.length - 1));
+        const lead = lists.at(-2)?.nest ?? "";
         list.indent = lead + " ".repeat(marker.length);
+        // A to-do's "[ ] " is its content, and four spaces past that would be code.
+        list.nest = lead + " ".repeat(list.type === "check" ? b.length + 1 : marker.length);
         markdown += (markdown.endsWith("\n") ? "" : "\n") + lead + marker;
         break;
       }
@@ -325,10 +363,14 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
         // A link with no URL, or a script URL (which stripUnsafe removes), keeps only its label.
         const href = readHtmlAttribute(attributes, "href");
         const destination = !href.trim() || isScriptUrl(href) ? null : markdownDestination(href);
-        if (destination !== null) beginInline([]);
+        if (destination !== null) {
+          beginInline([]);
+          // A "!" right before the label would make the link an image.
+          if (!inCode && inline.endsWith("!") && changes.at(-1)?.at !== inline.length) inline = inline.slice(0, -1) + "\\!";
+          inline += "[";
+        }
         frames.push(styleEmphasis(attributes));
         links.push(destination);
-        if (destination !== null) inline += "[";
         break;
       }
       case "img": {
@@ -344,7 +386,7 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
     }
   }
   endBlock();
-  const clean = markdown.replace(/[ \t]+\n/g, "\n").replace(/\u0001/g, "  ").replace(/\n{3,}/g, "\n\n").trim();
+  const clean = markdown.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/\u0001/g, "").trim();
   return clean ? clean + "\n" : "";
 }
 
@@ -451,7 +493,7 @@ function charClass(char: string | undefined): "space" | "punctuation" | "word" {
 // A code fence (or, with `min` 1, a code span's delimiter) longer than any
 // run of backticks in `code`, so none of them can close it early.
 export function codeFence(code: string, min = 3): string {
-  return "`".repeat(Math.max(min - 1, ...(code.match(/`+/g) ?? []).map((run) => run.length)) + 1);
+  return "`".repeat((code.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), min - 1) + 1);
 }
 // Whether `line` closes the fence `open` began: the same character, at least
 // as many, and nothing else.

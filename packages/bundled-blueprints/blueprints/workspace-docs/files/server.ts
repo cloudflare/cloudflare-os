@@ -175,14 +175,15 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
     const previous = await this.ctx.storage.get<StoredDocument>("document:v2");
     const previousById = new Map((previous?.blocks || []).map((block) => [block.id, block]));
     const cleanBlocks = sanitizeBlocks(blocks);
+    const revision = (previous?.revision || 0) + 1;
     const document: StoredDocument = {
-      revision: (previous?.revision || 0) + 1,
+      revision,
       title: cleanDocumentTitle(title),
-      blocks: cleanBlocks.map((block) => ({
-        id: block.id,
-        html: block.html,
-        version: (previousById.get(block.id)?.version || 0) + 1,
-      })),
+      blocks: cleanBlocks.map(({ id, html }) => {
+        const old = previousById.get(id);
+        // A block new to the document starts at this revision, as in applyOperation.
+        return { id, html, version: old ? old.version + 1 : revision };
+      }),
       lastModified: Date.now(),
     };
     await this.ctx.storage.put("document:v2", document);
@@ -212,6 +213,11 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
       // its draft now rests on, and a block left out of it would keep looking
       // unsaved to the sender.
       isUnchanged: () => false,
+      // A block created now -- an undone deletion re-creates the old id -- starts at the revision
+      // this operation makes, above every version the id had before (no version exceeds the
+      // revision that made it): a page that missed the deletion then sees the new block as newer,
+      // and its edit of the old one is stale instead of saved over the new one.
+      createdVersion: doc.revision + 1,
     });
     const byId = outcome.items;
     const { accepted, deletedIds } = outcome;
