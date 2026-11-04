@@ -73,9 +73,10 @@ Optional overrides read by the Worker:
   queue and spends credits only once a human approves it; results are fetched afterward via
   `getEnrichmentResult(ticket)`. Enrichments are **not** simulated — the action carries
   `awaitDecision`, so the agent turn suspends until the decision rather than reading back
-  un-enriched state. An approval made while the account can't get a token (or its user isn't
-  known) spends nothing and fails, leaving the enrichment pending to approve again after
-  reconnecting.
+  un-enriched state. If the account can't get a token or identify its user, approval fails before
+  spending credits and leaves the enrichment pending. Retry approval after a transient token
+  failure clears or the client configuration is repaired; reconnect if the grant has expired or
+  been revoked, or the user's identity could not be recovered.
 - **Intent/scoop company targeting.** Intent and scoop *search* filter by firmographics only —
   ZoomInfo has no company-identity inputs there. To pull intent or scoops for a specific known
   company, use `enrichIntent` / `enrichScoops` (which take a company identifier). The API surface and
