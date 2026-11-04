@@ -73,11 +73,11 @@ that touches records at the central service the whole installation shares, so on
 could make them hot and use up the installation's request limit there, refusing every other user's
 pushes until it resets.
 
-The limit covers device calls only; deliveries aren't counted. A notification is signed once for
-each device the User DO stores, and it stores only the 20 most recently registered: the service
-keeps at most 10 browsers and 10 phones per user, but the User DO drops a device the service
-evicted only once a delivery to it fails, so without the cap a registration loop could pile up
-devices for one notification to reach.
+The limit covers device calls only; deliveries aren't counted. A notification no open tab
+acknowledges is signed once for each device the User DO stores, and it stores only the 20 most
+recently registered: the service keeps at most 10 browsers and 10 phones per user, but the User DO
+drops a device the service evicted only once a delivery to it fails, so without the cap a
+registration loop could pile up devices for one notification to reach.
 
 Unlike the service, the cap counts browsers and phones together, so it can drop a device that is
 still live: a phone behind 20 newer registrations gets no push until its app next registers. That
