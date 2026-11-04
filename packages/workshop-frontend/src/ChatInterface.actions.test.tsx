@@ -1,17 +1,27 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act } from 'react'
+import { act, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
   ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatSubscriber, Overseer,
 } from '@gadgets/workshop-shared/api'
 
+// Each observed element's callbacks, so a test can report a resize jsdom never lays out.
+const resizeCallbacks = new Map<Element, Array<() => void>>()
 vi.stubGlobal('ResizeObserver', class {
-  observe() {}
+  constructor(private callback: () => void) {}
+  observe(el: Element) { resizeCallbacks.set(el, [...(resizeCallbacks.get(el) ?? []), this.callback]) }
   disconnect() {}
 })
+// Reports `el` as `height` tall to whatever observes it.
+function reportHeight(el: Element, height: number) {
+  act(() => {
+    Object.defineProperty(el, 'offsetHeight', { value: height, configurable: true })
+    for (const callback of resizeCallbacks.get(el) ?? []) callback()
+  })
+}
 // jsdom lays nothing out; the message list scrolls itself to the bottom on every render.
 Element.prototype.scrollTo = () => {}
 
@@ -87,16 +97,37 @@ function withChatApi(
   }
 }
 
-function renderChat(
-  overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
-) {
-  return testRoot.render(
+type ChatProps = {
+  restricted?: boolean, selectedChatId?: number,
+  revealActionId?: number | null, onActionRevealed?: () => void,
+  composerAccessory?: React.ReactNode,
+}
+
+function renderChat(overseer: RpcStub<Overseer>, props: ChatProps = {}) {
+  return testRoot.render(chatElement(overseer, props))
+}
+
+// Holds the request to reveal and clears it once revealed, as the Workshop does. `reveal` asks
+// for another.
+let reveal: (actionId: number) => void
+function RevealingChat({ overseer, initial }: { overseer: RpcStub<Overseer>, initial: number }) {
+  const [revealActionId, setRevealActionId] = useState<number | null>(initial)
+  reveal = setRevealActionId
+  return chatElement(overseer, {
+    selectedChatId: 1, revealActionId, onActionRevealed: () => setRevealActionId(null),
+  })
+}
+
+function chatElement(overseer: RpcStub<Overseer>, props: ChatProps) {
+  return (
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
       restricted={props.restricted}
       selectedChatId={props.selectedChatId ?? null}
+      revealActionId={props.revealActionId}
+      onActionRevealed={props.onActionRevealed}
+      composerAccessory={props.composerAccessory}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
       consoleLogPreview=""
@@ -105,7 +136,7 @@ function renderChat(
       onDiscardConsoleLogs={() => {}}
       onOpenGadget={() => {}}
       outputOfWorkpiece={() => undefined}
-    />,
+    />
   )
 }
 
@@ -182,9 +213,17 @@ async function renderPendingCard(log: ActionLogEntry, props: { restricted?: bool
   await server.resolveSubscription()
   await server.resolvePendingQuery({ entries: [log] })
   chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+  return server
 }
 
 const clampedDescription = () => document.querySelector('[class*="max-h-[200px]"]')
+
+// Opens a pending card's details, which start collapsed to a one-line summary.
+async function openDetails() {
+  const toggle = document.querySelector('button[aria-expanded="false"]')
+  if (!(toggle instanceof HTMLButtonElement)) throw new Error('No collapsed details to open')
+  await act(async () => toggle.click())
+}
 
 // The text a screen reader announces as the Approve button's description.
 function approveDescribedBy(): string | null {
@@ -249,12 +288,223 @@ describe('restricted approval', () => {
     })
   }
 
+  it('collapses the request to its first line until opened when not restricted', async () => {
+    await renderPendingCard(pendingLog())
+
+    expect(document.body.textContent).toContain('Send the following email to alice@example.com:')
+    expect(document.body.textContent).not.toContain('Regards, the workspace.')
+    // Approving does not need the details open.
+    expect([...document.querySelectorAll('button')].some(b => b.textContent === 'Approve')).toBe(true)
+
+    await openDetails()
+    expect(document.body.textContent).toContain('Regards, the workspace.')
+  })
+
   it('keeps the scrolling description and no notice when not restricted', async () => {
     await renderPendingCard(pendingLog())
+    await openDetails()
 
     expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
     expect(clampedDescription()).not.toBeNull()
     expect(approveDescribedBy()).toBeNull()
+  })
+})
+
+describe('revealing a request', () => {
+  // jsdom implements no scrolling.
+  const scrollIntoView = vi.fn<(options?: ScrollIntoViewOptions) => void>()
+  beforeEach(() => {
+    scrollIntoView.mockClear()
+    Element.prototype.scrollIntoView = scrollIntoView
+  })
+  afterEach(() => {
+    delete (Element.prototype as Partial<Element>).scrollIntoView
+  })
+
+  it('scrolls to the card it names, then reports it revealed', async () => {
+    const server = await renderPendingCard(pendingLog())
+    const onActionRevealed = vi.fn<() => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 1, onActionRevealed })
+
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+    expect(scrollIntoView.mock.contexts[0]).toBe(document.querySelector('[data-action-id="1"]'))
+    expect(onActionRevealed).toHaveBeenCalled()
+  })
+
+  it('waits for the chat history to load before looking for the card', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    let loadHistory!: (page: { messages: AiChatMessage[] }) => void
+    Object.assign(server.overseer as object, {
+      getChatHistory: () => new Promise(resolve => { loadHistory = resolve }),
+    })
+    const onActionRevealed = vi.fn<() => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 1, onActionRevealed })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    expect(onActionRevealed).not.toHaveBeenCalled()
+
+    await act(async () => loadHistory({ messages: [{ ...actionMessage, actionLog: pendingLog() } as AiChatMessage] }))
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+    expect(onActionRevealed).toHaveBeenCalled()
+  })
+
+  it('asks for an earlier page once and gives up when it fails', async () => {
+    // Taller than its viewport, so the list's own fill-the-screen paging stays out of it.
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1000)
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    // The loaded page starts mid-thread, so there is earlier history to look through.
+    const latest = { ...actionMessage, sequence: 5, actionLog: pendingLog() } as AiChatMessage
+    const earlier = vi.fn<() => Promise<never>>(async () => { throw new Error('offline') })
+    Object.assign(server.overseer as object, {
+      getChatHistory: (_chatId: number, before?: number) =>
+        before === undefined ? Promise.resolve({ messages: [latest] }) : earlier(),
+    })
+    const onActionRevealed = vi.fn<() => void>()
+    addToast.mockClear()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 99, onActionRevealed })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    for (let i = 0; i < 5; i++) await act(async () => {})
+
+    expect(earlier).toHaveBeenCalledOnce()
+    expect(addToast).toHaveBeenCalledOnce()
+    expect(onActionRevealed).toHaveBeenCalledOnce()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('lets a newer reveal finish when an older one\'s page fails', async () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1000)
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    const latest = { ...actionMessage, sequence: 5, actionLog: pendingLog() } as AiChatMessage
+    let failEarlier!: (err: Error) => void
+    Object.assign(server.overseer as object, {
+      getChatHistory: (_chatId: number, before?: number) => before === undefined
+        ? Promise.resolve({ messages: [latest] })
+        : new Promise((_resolve, reject) => { failEarlier = reject }),
+    })
+    // Request 99 is not on screen, so its reveal asks for the page before.
+    await testRoot.render(<RevealingChat overseer={server.overseer} initial={99} />)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    expect(failEarlier).toBeDefined()
+
+    // The approver moves on to request 1, which is on screen, before that page fails.
+    act(() => reveal(1))
+    await act(async () => failEarlier(new Error('offline')))
+    for (let i = 0; i < 3; i++) await act(async () => {})
+
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+    expect(scrollIntoView.mock.contexts[0]).toBe(document.querySelector('[data-action-id="1"]'))
+  })
+
+  it('leaves the next workspace\'s reveal alone when an earlier page fails after a switch', async () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1000)
+    const chats = [{ id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }]
+    // Workspace A: its page before request 5 fails, but only once B is on screen.
+    const a = makeOverseer()
+    withChatApi(a, undefined, chats)
+    let failEarlier!: (err: Error) => void
+    Object.assign(a.overseer as object, {
+      getChatHistory: (_chatId: number, before?: number) => before === undefined
+        ? Promise.resolve({ messages: [{ ...actionMessage, sequence: 5, actionLog: pendingLog() }] })
+        : new Promise((_resolve, reject) => { failEarlier = reject }),
+    })
+    // Workspace B: its history arrives last, holding the request it reveals.
+    const b = makeOverseer()
+    withChatApi(b, undefined, chats)
+    let loadB!: (page: { messages: AiChatMessage[] }) => void
+    Object.assign(b.overseer as object, {
+      getChatHistory: () => new Promise(resolve => { loadB = resolve }),
+    })
+
+    // As the Workshop does, the reveal outlives the chat, which is keyed by workspace.
+    let switchToB!: () => void
+    function Workspaces() {
+      const [onB, setOnB] = useState(false)
+      const [revealActionId, setRevealActionId] = useState<number | null>(99)
+      switchToB = () => { setOnB(true); setRevealActionId(1) }
+      return <div key={onB ? 'b' : 'a'}>{chatElement(onB ? b.overseer : a.overseer, {
+        selectedChatId: 1, revealActionId, onActionRevealed: () => setRevealActionId(null),
+      })}</div>
+    }
+    await testRoot.render(<Workspaces />)
+    await a.resolveSubscription()
+    await a.resolvePendingQuery({ entries: [pendingLog()] })
+    expect(failEarlier).toBeDefined()
+
+    act(() => switchToB())
+    await b.resolveSubscription()
+    await b.resolvePendingQuery({ entries: [pendingLog()] })
+    await act(async () => failEarlier(new Error('offline')))
+    await act(async () => loadB({ messages: [{ ...actionMessage, actionLog: pendingLog() } as AiChatMessage] }))
+    for (let i = 0; i < 3; i++) await act(async () => {})
+
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+  })
+
+  it('gives up once the whole thread is loaded without the card', async () => {
+    const server = await renderPendingCard(pendingLog())
+    const onActionRevealed = vi.fn<() => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 9, onActionRevealed })
+
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    expect(onActionRevealed).toHaveBeenCalled()
+  })
+})
+
+// Renders chat 1 with an accessory, with a resize() that reports it
+// `height` tall.
+async function renderWithAccessory() {
+  const server = await renderPendingCard(pendingLog())
+  await renderChat(server.overseer, { selectedChatId: 1, composerAccessory: <div id="accessory" /> })
+  const floating = document.getElementById('accessory')!.parentElement!.parentElement!
+  const list = document.querySelector('.chat-panel')!
+  return { list, resize: (height: number) => reportHeight(floating, height) }
+}
+
+describe('composer accessory', () => {
+  it('leaves room for the accessory and keeps a reader at the bottom there as it grows', async () => {
+    const scrollTo = vi.spyOn(Element.prototype, 'scrollTo')
+    const { list, resize } = await renderWithAccessory()
+    scrollTo.mockClear()
+    resize(300)
+    expect((list.firstElementChild as HTMLElement).style.paddingBottom).toBe('344px')
+    // A card scrolled into view lands above it.
+    expect((list as HTMLElement).style.scrollPaddingBottom).toBe('312px')
+    expect(scrollTo).toHaveBeenCalled()
+  })
+
+  it('leaves room for the accessory below the chat list too', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { composerAccessory: <div id="accessory" /> })
+    reportHeight(document.getElementById('accessory')!.parentElement!.parentElement!, 300)
+    expect((document.querySelector('.chat-panel') as HTMLElement).style.paddingBottom).toBe('324px')
+  })
+
+  it('leaves a reader who scrolled up where they are', async () => {
+    const scrollTo = vi.spyOn(Element.prototype, 'scrollTo')
+    const { list, resize } = await renderWithAccessory()
+    Object.defineProperties(list, {
+      scrollHeight: { value: 2000, configurable: true },
+      clientHeight: { value: 500, configurable: true },
+      scrollTop: { value: 600, configurable: true, writable: true },
+    })
+    list.dispatchEvent(new Event('scroll'))
+    scrollTo.mockClear()
+    resize(300)
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 })
 
@@ -273,6 +523,7 @@ describe('incomplete description notice', () => {
 
   it('shows no notice when the description is complete', async () => {
     await renderPendingCard(pendingLog({ descriptionIsComplete: true }))
+    await openDetails()
 
     expect(document.body.textContent).toContain('Regards, the workspace.')
     expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
@@ -286,6 +537,7 @@ describe('action fields', () => {
   for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
     it(`shows a ${name} action's fields as literal text after the description`, async () => {
       await renderPendingCard(pendingLog({ ...over, fields }))
+      await openDetails()
 
       const pre = [...document.body.querySelectorAll('pre')].find(el => el.textContent === body)
       expect(pre).toBeDefined()

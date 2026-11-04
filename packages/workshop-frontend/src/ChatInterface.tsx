@@ -15,6 +15,7 @@ import {
 } from "react";
 import { reportIssue } from './errorReporting'
 import {
+  Button,
   Dialog,
   DropdownMenu,
   Popover,
@@ -101,7 +102,7 @@ import { IncompleteDescriptionNotice, isDescriptionIncomplete } from "./componen
 import { ActionFields, entryFields } from "./components/ActionFields";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
-import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
+import { alwaysApproveTarget } from "./features/approvals/alwaysApproveTarget";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { actionLogResumed, useActionEntries } from "./useActions";
@@ -2515,10 +2516,21 @@ interface ChatInterfaceProps {
   onConsumeConsoleLogs: () => string;
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
+  // The ids of the workspace's chats, once listed and whenever one is added or deleted.
+  onChatIdsChange?: (chatIds: ReadonlySet<number>) => void;
   onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
   // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
   // Auto-approval list reflects it without a reload.
   onAutoApproveChange?: () => void;
+  // Floats above the composer, centred, whether a conversation or the chat list is shown (the
+  // approval dock when no workspace pane is open); a conversation's messages are padded so it never
+  // hides the last one.
+  composerAccessory?: React.ReactNode;
+  // A pending request in the selected chat to scroll to and highlight, paging in earlier history
+  // until its card is found or the thread's start is loaded; onActionRevealed is then called
+  // either way, so the caller can clear it.
+  revealActionId?: number | null;
+  onActionRevealed?: () => void;
   sidebarMode?: boolean;
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
@@ -2712,8 +2724,12 @@ function ChatInterface({
   onConsumeConsoleLogs,
   onDiscardConsoleLogs,
   onChatCountChange,
+  onChatIdsChange,
   onAgentActiveChange,
   onAutoApproveChange,
+  composerAccessory,
+  revealActionId = null,
+  onActionRevealed,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -3047,6 +3063,16 @@ function ChatInterface({
       ],
     };
   }, [chatList, chatListScope]);
+
+  // Notify parent which chats exist, on the same gate as the count below.
+  const onChatIdsChangeRef = useRef(onChatIdsChange);
+  onChatIdsChangeRef.current = onChatIdsChange;
+  const chatIdsKey = chatList.map((chat) => chat.id).toSorted((a, b) => a - b).join(",");
+  useEffect(() => {
+    if (chatListReady) {
+      onChatIdsChangeRef.current?.(new Set(chatIdsKey ? chatIdsKey.split(",").map(Number) : []));
+    }
+  }, [chatIdsKey, chatListReady]);
 
   // Notify parent when chat list changes. Gated on chatListReady so that we
   // don't report 0 from the empty initial cache before listChats() has completed.
@@ -3384,6 +3410,24 @@ function ChatInterface({
     isScrolledToBottomRef.current = true;
     scrollMessagesToBottom();
   }, [selectedChatId, scrollMessagesToBottom]);
+
+  // Height of the floating composer accessory, which the message list leaves room for below its
+  // last message: 0 while there is none, and on a phone, where it is hidden.
+  const [accessoryHeight, setAccessoryHeight] = useState(0);
+  const measureAccessory = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const observer = new ResizeObserver(() => setAccessoryHeight(el.offsetHeight));
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      setAccessoryHeight(0);
+    };
+  }, []);
+  // That room appearing or growing (the dock shown, or its details opened) would otherwise lift a
+  // reader at the bottom off it; one scrolled up stays where they are.
+  useLayoutEffect(() => {
+    if (isScrolledToBottomRef.current) scrollMessagesToBottom();
+  }, [accessoryHeight, scrollMessagesToBottom]);
   useEffect(() => {
     setDiscardChangesTarget(null);
     setStaleAcceptChatId(null);
@@ -4015,9 +4059,10 @@ function ChatInterface({
   const hasEarlierMessages = oldestLoadedSequence !== undefined && oldestLoadedSequence > 0;
 
   // Load the page before the oldest message on screen. Those messages are all older than anything
-  // the subscription delivers, so lastMessageTimestamp is left alone.
-  const handleShowEarlierMessages = async () => {
-    if (selectedChatId === null || !hasEarlierMessages || isLoadingEarlier) return;
+  // the subscription delivers, so lastMessageTimestamp is left alone. Resolves to whether a page
+  // loaded, or "skipped" when there was none to ask for or one is already loading.
+  const handleShowEarlierMessages = async (): Promise<"loaded" | "failed" | "skipped"> => {
+    if (selectedChatId === null || !hasEarlierMessages || isLoadingEarlier) return "skipped";
 
     setIsLoadingEarlier(true);
     try {
@@ -4028,15 +4073,77 @@ function ChatInterface({
       // The page's own change-affecting messages now stand in for the boundary's merged update.
       setProposedChangesVersion((prev) => prev + 1);
       forceUpdate();
+      return "loaded";
     } catch (err) {
       console.error("Failed to load earlier messages:", err);
       toasts.add({ title: "Failed to load earlier messages", variant: "error" });
+      return "failed";
     } finally {
       setIsLoadingEarlier(false);
     }
   };
 
   loadEarlierRef.current = () => { void handleShowEarlierMessages(); };
+
+  // Reveal revealActionId's card once the chat's history has loaded (see the prop). Runs after every
+  // render, since each page of history that loads may be the one holding the card.
+  const [highlightedActionId, setHighlightedActionId] = useState<number | null>(null);
+  const onActionRevealedRef = useRef(onActionRevealed);
+  onActionRevealedRef.current = onActionRevealed;
+  // The request last revealed (or given up on), so it is handled once until the prop changes.
+  const revealedActionIdRef = useRef<number | null>(null);
+  // Whether the reveal is waiting on a page of earlier history it asked for.
+  const revealPagingRef = useRef(false);
+  // The chat and request being revealed, for a page that arrives after either has changed.
+  const revealTargetRef = useRef("");
+  revealTargetRef.current = `${selectedChatId}:${revealActionId}`;
+  // Set once unmounted (another workspace's chat replaces this one), so a page that settles after
+  // that neither ends nor restarts a reveal the parent now holds for the new chat.
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => { unmountedRef.current = true; };
+  }, []);
+  useEffect(() => {
+    if (revealActionId === null) revealedActionIdRef.current = null;
+    if (revealActionId === null || revealActionId === revealedActionIdRef.current) return;
+    if (revealPagingRef.current) return;
+    if (selectedChatId === null || !cacheRef.current.messages.has(selectedChatId) || isLoading) return;
+    const card = messagesContainerRef.current?.querySelector(`[data-action-id="${revealActionId}"]`);
+    if (!card && hasEarlierMessages) {
+      // One page at a time. A failed page ends the reveal (its toast says why) rather than asking
+      // again on the next render; a loaded one re-renders so the next look sees it. A skipped one
+      // means a page is already loading, whose arrival re-renders.
+      revealPagingRef.current = true;
+      const target = revealTargetRef.current;
+      void handleShowEarlierMessages().then((result) => {
+        revealPagingRef.current = false;
+        if (unmountedRef.current) return;
+        if (revealTargetRef.current !== target) {
+          // Superseded: let the current reveal look again rather than ending it.
+          forceUpdate();
+        } else if (result === "failed") {
+          revealedActionIdRef.current = revealActionId;
+          onActionRevealedRef.current?.();
+        } else if (result === "loaded") {
+          forceUpdate();
+        }
+      });
+      return;
+    }
+    if (card) {
+      isScrolledToBottomRef.current = false;
+      card.scrollIntoView({ block: "center", behavior: "smooth" });
+      setHighlightedActionId(revealActionId);
+    }
+    revealedActionIdRef.current = revealActionId;
+    onActionRevealedRef.current?.();
+  });
+  useEffect(() => {
+    if (highlightedActionId === null) return;
+    const timer = setTimeout(() => setHighlightedActionId(null), 2000);
+    return () => clearTimeout(timer);
+  }, [highlightedActionId]);
 
   // Handle sending a message (always called from ChatComposer with explicit messageText)
   const handleSend = async (
@@ -4973,6 +5080,16 @@ function ChatInterface({
     );
   };
 
+  // Above whichever composer is on screen: the selected chat's, or the chat list's.
+  const floatingComposerAccessory = composerAccessory && (
+    <div
+      ref={measureAccessory}
+      className="pointer-events-none absolute inset-x-0 bottom-full z-20 mb-3 flex justify-center px-4 max-md:hidden"
+    >
+      <div className="w-full max-w-[640px]">{composerAccessory}</div>
+    </div>
+  );
+
   const renderActionCard = (msg: ActionChatMessage) => {
     const log = msg.actionLog;
     if (!log) return null;
@@ -5098,13 +5215,8 @@ function ChatInterface({
     const isApproved = state === "approved";
     const isRejected = state === "rejected";
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
-    // present it as a prominent callout with its details expanded by default.
+    // its card is outlined in the brand colour.
     const isBlocking = isPending && log.description.awaitDecision === true;
-    // A pending request is never collapsed: its description is the thing the user has to read in
-    // order to answer it, so hiding it behind a disclosure would just add a step before every
-    // decision. Resolved actions are history, and collapse so a long thread stays scannable.
-    const showDescription = isPending || open;
-    const metadata = log.resourceTitle;
     const stateLabel = isApproved
       ? "Approved"
       : isRejected
@@ -5113,23 +5225,7 @@ function ChatInterface({
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
-    // Auto-approval target: offer "Always approve this type" only when enabling a rule would
-    // actually apply this action -- a tagged action on a connection that the gatekeeper marked
-    // auto-approvable. (A non-auto-approvable action stays a manual gate even with a rule; an
-    // auto-approvable action with an existing rule wouldn't still be pending.) Not offered while
-    // restricted.
-    const autoApproveTarget =
-      !restricted &&
-      log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true
-        ? {
-            actionId: msg.actionId,
-            gatekeeperId: log.gatekeeperId,
-            resourceTitle: log.resourceTitle,
-            actionKind: log.description.actionKind,
-            actionLabel: log.description.title,
-          }
-        : undefined;
+    const autoApproveTarget = isPending ? alwaysApproveTarget(log, restricted === true) : undefined;
 
     // While restricted the notices and the request follow the controls in DOM order, so the
     // approve/deny buttons name them as their description. Ids derive from the action id: this is
@@ -5155,150 +5251,157 @@ function ChatInterface({
         {autoApproveTarget &&
           !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag) && (
           <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>
-            <span className="flex">
-              <AlwaysApproveButton
-                onClick={() => setAutoApproveConfirm(autoApproveTarget)}
-                disabled={isProc}
-              />
-            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<ShieldCheck size={14} />}
+              onClick={() => setAutoApproveConfirm(autoApproveTarget)}
+              disabled={isProc}
+            >
+              Always approve
+            </Button>
           </Tooltip>
         )}
-        <ResolveButton
-          tone="deny"
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => void resolveAction(log, "deny")}
           disabled={isProc}
-          describedBy={describedBy}
-        />
-        <ResolveButton
-          tone="approve"
-          variant={isBlocking ? "filled" : "quiet"}
+          aria-describedby={describedBy}
+        >
+          Deny
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => void resolveAction(log, "approve")}
           disabled={isProc}
-          describedBy={describedBy}
-        />
+          aria-describedby={describedBy}
+        >
+          Approve
+        </Button>
       </>
     ) : null;
 
-    // Resource label, shown at the top of the blocking callout and at the bottom of the subtle
-    // inline row.
-    const resourceMeta = metadata ? (
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] leading-4 text-kumo-inactive">
-        {log.resourceTitle && (
-          <span className="min-w-0 truncate">
-            {safeResourceUrl ? (
-              <a
-                href={safeResourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:underline"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {log.resourceTitle}
-              </a>
-            ) : (
-              log.resourceTitle
-            )}
-          </span>
-        )}
-      </div>
-    ) : null;
+    const resourceLabel = log.resourceTitle && (safeResourceUrl ? (
+      <a
+        href={safeResourceUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="hover:underline"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {log.resourceTitle}
+      </a>
+    ) : (
+      log.resourceTitle
+    ));
 
-    // A blocking (awaitDecision) action suspends the agent turn, so present it as a prominent
-    // callout laid out like the connection-request card: a permissions icon, title + resource +
-    // details, and the approve/deny actions.
-    if (isBlocking) {
+    const details = (
+      <>
+        {restrictedReview && <RestrictedApprovalNotice id={noticeId} />}
+        <div id={requestId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
+          <MarkdownMessage message={log.description.description} />
+        </div>
+        {hasFields && (
+          <div id={fieldsId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[360px] overflow-y-auto"}`}>
+            <ActionFields fields={entryFields(log)} uncapped={restrictedReview} />
+          </div>
+        )}
+      </>
+    );
+
+    // A pending request is a card: what it does and where, its decision, and a one-line summary
+    // that opens to the full request. While restricted the approver has to read all of it, so it
+    // is never collapsed; and an incomplete description is flagged whether or not it is open.
+    if (isPending) {
+      const summary = log.description.description.split("\n").find(line => line.trim() !== "")?.trim();
       return (
         <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-          <div className="rounded-2xl border border-kumo-brand/40 bg-kumo-brand/10 px-4 py-3">
-            <div className="flex items-start gap-3">
-              <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-kumo-tint text-kumo-brand" aria-hidden="true">
-                <ShieldCheck size={20} weight="fill" />
+          <div className={`overflow-hidden rounded-2xl border bg-kumo-base transition-shadow duration-300 ${isBlocking ? "border-kumo-brand/50" : "border-kumo-line"} ${highlightedActionId === msg.actionId ? "ring-2 ring-kumo-brand/50" : ""}`}>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 pl-3.5 pr-2">
+              <span className="min-w-[10rem] flex-1 truncate text-kumo-default">
+                {log.description.title}
+                {resourceLabel && (
+                  <>
+                    <span className="text-kumo-inactive">: </span>
+                    <span className="font-medium">{resourceLabel}</span>
+                  </>
+                )}
               </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                  <span className="min-w-0 truncate font-medium text-kumo-default">
-                    {log.description.title}
+              <div className="ml-auto flex flex-shrink-0 items-center gap-1.5">{actionControls}</div>
+            </div>
+            {restrictedReview ? (
+              <div className="themed-surface-inset space-y-1.5 border-t border-kumo-line/70 bg-kumo-elevated/45 px-3.5 py-2.5 text-[13px] leading-[19px]">
+                {details}
+              </div>
+            ) : (summary || hasFields) && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => toggleActionExpansion(msg.actionId)}
+                  aria-expanded={open}
+                  className="themed-surface-inset flex w-full cursor-pointer items-center gap-2 border-t border-kumo-line/70 bg-kumo-elevated/45 px-3.5 py-2 text-left text-[13px] leading-[18px] text-kumo-subtle transition-colors hover:text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-kumo-ring"
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {open ? "Hide details" : (summary ?? "Show details")}
                   </span>
-                  {resourceMeta}
-                </div>
-                {restricted && <RestrictedApprovalNotice id={noticeId} className="mt-2" />}
-                <div id={requestId} className={`chat-panel mt-1 pr-1 text-[13px] leading-[18px] text-kumo-subtle ${restricted ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
-                  <MarkdownMessage message={log.description.description} />
-                </div>
-                {hasFields && (
-                  <div id={fieldsId} className={`chat-panel mt-2 pr-1 ${restricted ? "" : "max-h-[360px] overflow-y-auto"}`}>
-                    <ActionFields fields={entryFields(log)} uncapped={restricted} />
+                  <CaretDown
+                    size={11}
+                    weight="bold"
+                    className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+                  />
+                </button>
+                {open && (
+                  <div className="themed-surface-inset space-y-1.5 bg-kumo-elevated/45 px-3.5 pb-3 text-[13px] leading-[19px]">
+                    {details}
                   </div>
                 )}
-                {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
+              </>
+            )}
+            {incomplete && (
+              <div className="border-t border-kumo-line/70 p-2">
+                <IncompleteDescriptionNotice id={incompleteId} />
               </div>
-              <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
-                {actionControls}
-              </div>
-            </div>
+            )}
           </div>
         </div>
       );
     }
 
-    const titleIcon = (
-      <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
-        {isPending ? (
-          <span className="h-1.5 w-1.5 rounded-full bg-kumo-brand" />
-        ) : (
-          <WorkIcon Icon={LinkSimple} />
-        )}
-      </span>
-    );
-
     return (
       <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-        {isPending ? (
-          <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-1.5 py-1">
-            <div className="flex min-w-[8rem] flex-1 items-center gap-3">
-              {titleIcon}
-              <span className="min-w-0 flex-1 truncate text-kumo-default">
-                {log.description.title}
+        <button
+          type="button"
+          onClick={() => toggleActionExpansion(msg.actionId)}
+          className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
+          aria-expanded={open}
+        >
+          <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
+            <WorkIcon Icon={LinkSimple} />
+          </span>
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="min-w-0 truncate">{log.description.title}</span>
+            {stateLabel && (
+              <span className={`flex-shrink-0 text-[12px] font-medium ${stateLabelCls}`}>
+                {stateLabel}
               </span>
-            </div>
-            <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">{actionControls}</div>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => toggleActionExpansion(msg.actionId)}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
-            aria-expanded={open}
-          >
-            {titleIcon}
-            <span className="flex min-w-0 flex-1 items-center gap-2">
-              <span className="min-w-0 truncate">{log.description.title}</span>
-              {stateLabel && (
-                <span className={`flex-shrink-0 text-[12px] font-medium ${stateLabelCls}`}>
-                  {stateLabel}
-                </span>
-              )}
-              <CaretRight
-                size={13}
-                weight="bold"
-                className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${open ? "rotate-90" : ""}`}
-              />
-            </span>
-          </button>
-        )}
-        {showDescription && (
+            )}
+            <CaretRight
+              size={13}
+              weight="bold"
+              className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${open ? "rotate-90" : ""}`}
+            />
+          </span>
+        </button>
+        {open && (
           <div className="themed-surface-inset ml-8 mt-1 space-y-1.5 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
-            {restrictedReview && <RestrictedApprovalNotice id={noticeId} />}
-            <div id={requestId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
-              <MarkdownMessage message={log.description.description} />
-            </div>
-            {hasFields && (
-              <div id={fieldsId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[360px] overflow-y-auto"}`}>
-                <ActionFields fields={entryFields(log)} uncapped={restrictedReview} />
+            {details}
+            {resourceLabel && (
+              <div className="min-w-0 truncate text-[12px] leading-4 text-kumo-inactive">
+                {resourceLabel}
               </div>
             )}
-            {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
-            {resourceMeta}
           </div>
         )}
       </div>
@@ -5352,7 +5455,14 @@ function ChatInterface({
         </DropdownMenu>
       </div>
       {/* Chat list */}
-      <div className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3">
+      <div
+        className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3"
+        // With no chat selected the accessory floats over the end of this list instead, 12px (mb-3)
+        // above the new-chat composer.
+        style={selectedChatId === null && accessoryHeight > 0
+          ? { paddingBottom: accessoryHeight + 12 + 12 }
+          : undefined}
+      >
         {!chatListReady ? (
           <div className="flex items-center justify-center py-10">
             <div className="w-5 h-5 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
@@ -5526,7 +5636,8 @@ function ChatInterface({
           horizontal padding, so the wrapper just adds the top divider; no
           extra p-4 (which would shrink the input vs. the in-chat composer). */}
       <div className="flex-shrink-0 border-t border-kumo-line">
-        <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+        <div className={`relative ${useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}`}>
+          {floatingComposerAccessory}
           {/* Attachments and pending resource operations belong to this workspace's composer. */}
           <ChatComposer
             key={workspaceId}
@@ -5699,6 +5810,8 @@ function ChatInterface({
                 ref={messagesContainerRef}
                 onScroll={handleMessagesScroll}
                 className="chat-panel min-h-0 flex-1 overscroll-contain overflow-y-auto"
+                // Scrolling a card into view (a reveal) aims at the part the accessory leaves visible.
+                style={accessoryHeight > 0 ? { scrollPaddingBottom: accessoryHeight + 12 } : undefined}
               >
                 {isLoading ? (
                   <div className="flex items-center justify-center py-10">
@@ -5707,6 +5820,10 @@ function ChatInterface({
                 ) : (
                   <div
                     className={`flex flex-col px-3 pt-5 sm:px-6 sm:pt-8 ${pendingConsoleLogCount > 0 ? "pb-16" : "pb-8"} ${useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}`}
+                    // The accessory floats 12px (mb-3) above the composer, over the end of the list.
+                    style={accessoryHeight > 0
+                      ? { paddingBottom: accessoryHeight + 12 + (pendingConsoleLogCount > 0 ? 64 : 32) }
+                      : undefined}
                   >
                     {isLoadingEarlier && (
                       <div className="mx-auto mb-6 text-[12px] leading-4 font-medium text-kumo-inactive">
@@ -5971,7 +6088,11 @@ function ChatInterface({
                       const endsUserGroup = !continuesUserGroup(entry, displayEntries[entryIndex + 1]);
 
                       return (
-                        <div key={entry.key} className={entryTopClass}>
+                        <div
+                          key={entry.key}
+                          className={entryTopClass}
+                          data-action-id={msg.type === "action" ? msg.actionId : undefined}
+                        >
                         {/* ── user / AI text message ── */}
                         {msg.type === "slashCommand" && (
                           <div className="group/message relative flex flex-col items-end">
@@ -6560,7 +6681,8 @@ function ChatInterface({
 
               {/* ── Bottom: input, update state, and cost ──────────────── */}
               <div className={`flex-shrink-0 bg-kumo-base ${sidebarMode ? "" : "border-t border-kumo-line"}`}>
-                <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+                <div className={`relative ${useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}`}>
+                  {floatingComposerAccessory}
                   {/* Remount all transient composer state when the conversation changes. */}
                   <ChatComposer
                     key={`${workspaceId}:${selectedChatId}`}

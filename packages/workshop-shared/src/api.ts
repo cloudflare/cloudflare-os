@@ -2853,6 +2853,13 @@ export type ActionLogEntry = {
    */
   gatekeeperId?: WorkpieceId;
 
+  /**
+   * The chat that shows this entry: the chat whose agent made the call, the chat a gadget was
+   * running in, or the chat a slash command was run in. Omitted when no chat did (e.g. a hook
+   * firing). The chat may have been deleted since.
+   */
+  chatId?: number;
+
   resourceTitle: string;
   resourceUrl?: string;
 

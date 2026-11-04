@@ -34,6 +34,7 @@ import {
   BlueprintOutput,
   WorkpiecesSubscriber,
   NotificationMute,
+  type ActionLogEntry,
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
@@ -43,7 +44,9 @@ import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
 import { CountBadge } from './components/CountBadge'
-import ActivityNotifications from './ActivityNotifications'
+import { ApprovalDock } from './features/approvals/ApprovalDock'
+import { ApprovalsButton } from './features/approvals/ApprovalsButton'
+import { useApprovalDockVisibility } from './features/approvals/useApprovalDockVisibility'
 import WorkpiecePicker, {
   WORKPIECE_RAIL_COLLAPSED_WIDTH,
   WORKPIECE_RAIL_EXPANDED_WIDTH,
@@ -879,6 +882,7 @@ export default function GadgetEditor() {
     return () => { cancelled = true; setHookedGadgetIds(NO_GADGETS) }
   }, [overseer, hookSignature, metadata !== null, isUseOnly])
   const pendingActionCount = pendingActions.length
+  const approvalDock = useApprovalDockVisibility(pendingActions, id!)
 
   // Whether the *selected* gadget has code. When none is selected, the code interface is either
   // unmounted or showing a worktree, whose code doesn't bear on the layout mode.
@@ -1025,6 +1029,54 @@ export default function GadgetEditor() {
     setWorkspaceView({ mode: 'activity' })
   }, [workspaceView])
 
+  // The request the dock is paged to, kept here since the dock remounts as it moves between the
+  // composer and the gadget pane.
+  const [dockActionId, setDockActionId] = useState<number | null>(null)
+  // The workspace's chats, so the dock only links a request to a chat that still exists.
+  const [chatIds, setChatIds] = useState<ReadonlySet<number>>(new Set())
+  // The pending request the dock asked to show in its chat, until the chat has revealed it.
+  const [revealRequest, setRevealRequest] = useState<{ chatId: number, actionId: number } | null>(null)
+  // Full-screen preview covers the chat: paging there only changes the dock, and clicking a
+  // request leaves full screen to show it.
+  const showRequestInChat = (action: ActionLogEntry, how: 'paged' | 'clicked') => {
+    if (action.chatId === undefined) return
+    if (isGadgetFullscreen) {
+      if (how === 'paged') return
+      exitGadgetFullscreen()
+    }
+    if (action.chatId !== effectiveSelectedChatId) navigateToChat(action.chatId)
+    setRevealRequest({ chatId: action.chatId, actionId: action.id })
+  }
+
+  // Floats over the gadget pane when it is open, and otherwise above the chat's composer. The
+  // Activity pane lists every request with its own controls, and phones reach them through the
+  // Activity tab, so neither gets a dock.
+  const approvalDockElement = overseer && layoutModeReady && !paneShowsActivity && approvalDock.shown && (
+    <ApprovalDock
+      overseer={overseer.stub}
+      restricted={metadata?.containsRestrictedData === true}
+      onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
+      onHide={approvalDock.hide}
+      onViewAll={() => openActivity('review')}
+      onShowInChat={showRequestInChat}
+      inChat={action => action.chatId !== undefined && chatIds.has(action.chatId)}
+      selectedActionId={dockActionId}
+      onSelect={setDockActionId}
+    />
+  )
+
+  // The header's Activity button toggles the dock while requests are pending, and otherwise (or
+  // with the Activity pane already open) opens Activity.
+  const handleApprovalsButtonClick = () => {
+    if (pendingActionCount === 0 || paneShowsActivity) {
+      openActivity(pendingActionCount > 0 ? 'review' : 'history')
+    } else if (approvalDock.shown) {
+      approvalDock.hide()
+    } else {
+      approvalDock.show()
+    }
+  }
+
   const closeWorkspacePane = useCallback(() => {
     if (workspaceView?.mode !== 'activity') {
       setWorkspaceVisibility('closed')
@@ -1168,6 +1220,9 @@ export default function GadgetEditor() {
     knownWorkpieceIdsRef.current = null
     turnOutputRef.current = null
     setUserNavigatedToList(false)
+    setDockActionId(null)
+    setRevealRequest(null)
+    setChatIds(new Set())
   }, [id])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
@@ -1721,10 +1776,10 @@ export default function GadgetEditor() {
             </span>
           )}
 
-          <ActivityNotifications
-            overseer={overseer.stub}
-            onViewActivity={openActivity}
-            restricted={metadata?.containsRestrictedData === true}
+          <ApprovalsButton
+            pendingCount={pendingActionCount}
+            dockShown={approvalDock.shown}
+            onClick={handleApprovalsButtonClick}
           />
 
           {showReconnecting && <ReconnectingChip />}
@@ -2007,12 +2062,16 @@ export default function GadgetEditor() {
                   onDiscardConsoleLogs={discardConsoleLogs}
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
+                  onChatIdsChange={setChatIds}
                   onAgentActiveChange={handleAgentActiveChange}
                   onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
                   outputOfWorkpiece={outputOfWorkpiece}
+                  composerAccessory={!showFullEditor && approvalDock.shown ? approvalDockElement : undefined}
+                  revealActionId={revealRequest?.chatId === effectiveSelectedChatId ? revealRequest.actionId : null}
+                  onActionRevealed={() => setRevealRequest(null)}
                 />
               </div>
 
@@ -2274,6 +2333,15 @@ export default function GadgetEditor() {
               pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />
+          </div>
+        )}
+
+        {approvalDockElement && showFullEditor && (
+          <div
+            className="pointer-events-none absolute bottom-4 right-0 z-20 flex justify-center px-4 max-md:hidden"
+            style={{ left: chatWidth + 1 }}
+          >
+            <div className="w-full max-w-[720px]">{approvalDockElement}</div>
           </div>
         )}
       </div>
