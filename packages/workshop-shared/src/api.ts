@@ -3491,7 +3491,7 @@ export interface Overseer extends RpcTarget {
   listCollaborators(): Promise<CollaboratorInfo[]>;
 
   /**
-   * Share this workspace, or one of its gadgets (see CollaboratorGrant), with another user: add
+   * Share this workspace, or one of its gadgets (see CollaboratorGrant), with another user: invite
    * them as a collaborator by username/email, or grant an existing one more access. The caller must
    * be the owner or a "build" collaborator, since only their grants confer anything.
    * A grant the caller already gave them covers (e.g. a gadget, after "build") changes nothing but
