@@ -438,7 +438,7 @@ export class CloudflareObservabilityApi {
   ): Promise<QueryResult> {
     const limit = validatedLimit(options?.limit);
     const includeSeries = options?.includeSeries ?? options?.granularity !== undefined;
-    const result = await this.#request("query", {
+    const body = {
       queryId: `gadgets-${view}`,
       view,
       // Keeps this query out of the user's saved-query history; it is a read, not a saved view.
@@ -475,7 +475,17 @@ export class CloudflareObservabilityApi {
         },
         limit,
       },
-    });
+    };
+    // A Worker with no versions yet has emitted nothing this binding may read, so once the query
+    // has been validated like any other it is answered empty without asking Cloudflare, which also
+    // keeps an empty `in` condition, whose meaning the provider doesn't document, off the wire.
+    if (scope?.versionIds.size === 0) {
+      return {
+        statistics: { elapsed: 0, rowsRead: 0, bytesRead: 0 },
+        events: { count: 0, events: [] },
+      };
+    }
+    const result = await this.#request("query", body);
     if (!isRecord(result)) throw invalidResponse();
     return {
       statistics: parseStatistics(result.statistics),

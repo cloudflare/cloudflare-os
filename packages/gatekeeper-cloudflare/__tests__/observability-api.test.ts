@@ -590,6 +590,25 @@ describe("CloudflareObservabilityApi", () => {
     ]);
   });
 
+  it("reads nothing for a bound Worker with no versions, without querying", async () => {
+    // A Worker created but never deployed has emitted nothing, and what the provider makes of an
+    // empty `in` condition is undocumented, so no read of it reaches Cloudflare.
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID,
+      async () => ({ ...WORKER, versionIds: new Set<string>() }));
+
+    await expect(api.listEvents()).resolves.toMatchObject({ events: [], count: 0 });
+    await expect(api.listInvocations()).resolves.toMatchObject({ invocations: [] });
+    await expect(api.calculate({ calculations: [{ operator: "count" }] }))
+      .resolves.toMatchObject({ calculations: [] });
+    await expect(api.listKeys()).resolves.toEqual([]);
+    await expect(api.getTrace("trace-id")).rejects.toMatchObject({ status: 404 });
+    // A query refused for any other Worker is still refused rather than answered empty.
+    await expect(api.listEvents({ limit: 0 })).rejects.toThrow("limit");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("keeps reporting the provider count for an account-scoped binding", async () => {
     // No Worker scope means no filter to ignore, so there is nothing to distrust.
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({

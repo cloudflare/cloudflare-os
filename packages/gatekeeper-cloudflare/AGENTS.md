@@ -35,9 +35,9 @@ boundary is the *binding*, not the grant.
   is re-checked by version, since a version belongs to one Worker for good; nothing else proves an
   event's Worker. The version list is walked by ID, and the ID is looked up again afterwards
   because the Workers API also resolves the path segment as a *name*. A deleted Worker leaves the
-  binding reading nothing, whoever takes the name. A binding stored before Worker IDs (a
-  `workerName` without `workerId`) refuses every session, since nothing records which Worker it
-  was granted.
+  binding reading nothing, whoever takes the name, and one with no versions yet is answered empty
+  without a query. A binding stored before Worker IDs (a `workerName` without `workerId`) refuses
+  every session, since nothing records which Worker it was granted.
 - A dropped event proves the provider did not apply the scope filter, so the provider's own `count`
   is then withheld rather than reported (it would count the whole account) and the drop is logged at
   `error`; `statistics` is kept, since it describes what the query cost rather than how much

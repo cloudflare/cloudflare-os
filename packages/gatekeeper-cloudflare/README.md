@@ -67,11 +67,12 @@ The query requires both, and every event that comes back is re-checked against t
 from another Worker that held or took the name is dropped; telemetry the Worker recorded under a
 name it no longer has is not asked for, since the query names the current one (though the version
 re-check would keep any the provider returned anyway, as the Worker's own); and once the Worker is
-deleted the binding reads nothing, whoever takes its name. A Worker binding created before bindings
-recorded the Worker ID cannot tell its Worker from a later one, so it refuses to read until the
-connection is removed and the Worker connected again; its collaborators must still be able to read
-the whole account's telemetry, since its earlier reads went to whichever Worker had the name at the
-time.
+deleted the binding reads nothing, whoever takes its name. A Worker with no versions yet has emitted
+nothing, so every read is answered empty without querying Cloudflare. A Worker binding created
+before bindings recorded the Worker ID cannot tell its Worker from a later one, so it refuses to
+read until the connection is removed and the Worker connected again; its collaborators must still
+be able to read the whole account's telemetry, since its earlier reads went to whichever Worker had
+the name at the time.
 
 The scope filter is prepended to every query, but a filter the provider *accepted* is not evidence it
 *applied* it — three separate behaviours here return wrong-but-plausible data with no error. So events
