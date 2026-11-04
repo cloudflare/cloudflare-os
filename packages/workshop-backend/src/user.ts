@@ -66,7 +66,7 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
  */
 export type ChatMessageProgress = {
   /** The chat's current title and latest-message preview, for the inbox. */
-  head: Omit<ChatTimelineHead, "chatId">;
+  head: ChatTimelineHead;
   /**
    * The chat's `lastActive` time in the workspace. Decides which of two updates with the same latest
    * message (e.g. from before and after a rename) is newer.
@@ -94,7 +94,16 @@ export type ChatMessageProgress = {
    * Notifications for this user that this update covers. The User DO queues them for delivery; the
    * workspace won't send them again once this call succeeds.
    */
-  notifications: (Pick<UserNotification, "id" | "kind" | "chatTitle"> & {sequence: number})[];
+  notifications: {
+    /** Stable event ID shared by retries and delivery attempts. */
+    id: string;
+    /** Whether the task finished or needs permission. */
+    kind: UserNotification["kind"];
+    /** Chat title included in this update. */
+    chatTitle: string;
+    /** Timeline sequence where the event happened. */
+    sequence: number;
+  }[];
 };
 
 /**
@@ -103,7 +112,13 @@ export type ChatMessageProgress = {
  * the client's sequence number into a visible sequence. "Sequence" and "visible sequence" are as
  * described on `ChatReadCursor`.
  */
-export type ChatReadPosition = Pick<ChatMessageProgress, "head" | "headUpdatedAt" | "latestVisibleSequence"> & {
+export type ChatReadPosition = {
+  /** The chat's current title and latest-message preview. */
+  head: ChatTimelineHead;
+  /** Workspace metadata time used to order otherwise identical heads. */
+  headUpdatedAt: Date;
+  /** Visible sequence of the chat's latest message. */
+  latestVisibleSequence: number;
   /** Sequence of the last record to count as read, inclusive. */
   readThroughSequence: number;
   /** The same read position, as a visible sequence. */
@@ -114,6 +129,20 @@ export type ChatReadPosition = Pick<ChatMessageProgress, "head" | "headUpdatedAt
    * never sent.
    */
   notificationBaseline: number;
+};
+
+/** Captured chat state sent on shared-workspace admission to initialize read and alert horizons. */
+export type ChatAdmissionBaseline = {
+  /** The chat's ID within the workspace. */
+  chatId: number;
+  /** Earlier notifications, through this timeline sequence, are already handled. */
+  notifiedThroughSequence: number;
+  /** Visible position to count as read on first admission. */
+  readThroughVisibleSequence?: number;
+  /** Captured title and latest-message preview, if the chat still exists. */
+  head?: ChatTimelineHead;
+  /** Workspace metadata time used to order this captured head. */
+  headUpdatedAt?: Date;
 };
 
 /**
@@ -719,7 +748,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return true;
   }
 
-  #mergeHead(current: ChatReadCursor, incoming: Pick<ChatReadCursor, "head" | "headUpdatedAt">) {
+  #mergeHead(current: ChatReadCursor, incoming: {head?: ChatTimelineHead; headUpdatedAt?: Date}) {
     let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
     let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
       (incoming.head.latestSequence === current.head.latestSequence &&
@@ -1143,7 +1172,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
-      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence" | "readThroughVisibleSequence" | "head" | "headUpdatedAt">[]
+      notificationBaselines: ChatAdmissionBaseline[]
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {

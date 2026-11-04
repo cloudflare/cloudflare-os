@@ -112,10 +112,10 @@ function isCountableChatMessage(message: StoredChatMessage): boolean {
 }
 
 function headForMessage(meta: AiChatMetadata, message?: StoredChatMessage): ChatTimelineHead {
-  return message && isCountableChatMessage(message) ? {chatId: meta.id, chatTitle: meta.title, latestSequence: message.sequence,
+  return message && isCountableChatMessage(message) ? {chatTitle: meta.title, latestSequence: message.sequence,
     latestActivityAt: message.timestamp, latestMessagePreview: message.type === "message"
       ? message.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240) || "Attachment" : ""}
-    : {chatId: meta.id, chatTitle: meta.title, latestSequence: -1, latestMessagePreview: ""};
+    : {chatTitle: meta.title, latestSequence: -1, latestMessagePreview: ""};
 }
 
 function mergeChatFanoutStarts(left: ChatFanoutStart | undefined, right: ChatFanoutStart): ChatFanoutStart {

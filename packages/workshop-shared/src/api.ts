@@ -261,8 +261,6 @@ export type ChatReadState = {
  * the unread inbox. It's the same for every user, regardless of what they've read.
  */
 export type ChatTimelineHead = {
-  /** The chat's ID within its workspace. */
-  chatId: number;
   /** The chat's current title. */
   chatTitle: string;
   /** Sequence of the chat's latest visible message, or -1 if the chat has none. */
@@ -284,7 +282,7 @@ export type ChatTimelineHead = {
  * One row of the user's unread inbox: a chat with unread messages, plus what's needed to display it.
  * Returned by `AuthenticatedApi.getUnreadThreads()`.
  */
-export type UnreadThread = ChatReadState & ChatTimelineHead;
+export interface UnreadThread extends ChatReadState, ChatTimelineHead {}
 
 /** Unread totals for one workspace, e.g. for a badge next to it in the workspace list. */
 export type WorkspaceUnreadSummary = {
@@ -313,7 +311,11 @@ export type UserUnreadSummary = {
  * Updated unread totals, sent to live subscribers when something changes. To keep updates small,
  * this has the new overall totals but only the one workspace whose totals changed, not all of them.
  */
-export type UnreadSummaryUpdate = Pick<UserUnreadSummary, "unreadChatCount" | "unreadMessageCount"> & {
+export type UnreadSummaryUpdate = {
+  /** Number of chats with unread messages across all of the user's workspaces. */
+  unreadChatCount: number;
+  /** Total unread messages across all of the user's workspaces. */
+  unreadMessageCount: number;
   /**
    * New totals for the workspace that changed; replace your copy of that workspace's totals with
    * these. If the counts are zero, the workspace now has nothing unread and should be dropped from
@@ -337,14 +339,14 @@ export type UnreadStateScope = "summary" | "unread" | {
 };
 
 /** A full snapshot for an unread-state subscription: the totals, plus the chats its scope asks for. */
-export type UserUnreadState = UserUnreadSummary & {
+export interface UserUnreadState extends UserUnreadSummary {
   /**
    * The chats in the subscription's scope (see `UnreadStateScope`): none for `"summary"`, chats
    * with unread messages for `"unread"`, or one workspace's chats for a workspace scope. Chats in
    * that workspace that aren't listed have nothing unread.
    */
   chats: ChatReadState[];
-};
+}
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
 export interface UnreadStateSubscriber extends RpcTarget {

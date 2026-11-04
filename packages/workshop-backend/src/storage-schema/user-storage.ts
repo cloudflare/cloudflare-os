@@ -166,7 +166,7 @@ export type ChatReadCursor = {
    * The chat's title and latest-message preview, copied from the workspace so the inbox can show it
    * without asking the workspace. Always present, except on rows for deleted chats.
    */
-  head?: Omit<ChatTimelineHead, "chatId">;
+  head?: ChatTimelineHead;
   /**
    * The chat's `lastActive` time in the workspace when `head` was produced. Decides which of two
    * heads with the same latest message (e.g. from before and after a rename) is newer.
