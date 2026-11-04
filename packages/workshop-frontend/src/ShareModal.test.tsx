@@ -1461,7 +1461,7 @@ describe('ShareModal', () => {
       expect(copyToClipboard).toHaveBeenCalledWith(`${GADGET_URL}#share=fresh`)
     })
 
-    it('lists workspace and legacy links in the workspace dialog but cannot copy a legacy one', async () => {
+    it('lists and copies workspace and legacy links in the workspace dialog', async () => {
       const rendered = await render(fakeOverseer({ shareLinks: ALL_LINKS }))
 
       const links = sectionFor(rendered, 'links-heading')
@@ -1470,7 +1470,7 @@ describe('ShareModal', () => {
       expect(links.textContent).not.toContain('Itinerary link')
       expect(links.textContent).not.toContain('Budget link')
       expect(links.querySelector('button[aria-label="Copy Team link"]')).not.toBeNull()
-      expect(links.querySelector('button[aria-label="Copy Old link"]')).toBeNull()
+      expect(links.querySelector('button[aria-label="Copy Old link"]')).not.toBeNull()
       expect(links.querySelector('button[aria-label="Revoke Old link"]')).not.toBeNull()
     })
   })

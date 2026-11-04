@@ -238,30 +238,33 @@ describe("redeemShareKey", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
-  it("gives a newcomer nothing through a legacy all-gadget link", async () => {
+  it("grants a newcomer every gadget, including later ones, through a legacy all-gadget link", async () => {
     let { storage, mgr } = makeManager();
-    let { key } = await legacyAllUseLink(storage, mgr);
+    let { key, linkId } = await legacyAllUseLink(storage, mgr);
 
-    let fetched = 0;
     await mgr.redeemShareKey({
       rawKey: key, profileId: "newbie",
-      fetchProfile: async () => { fetched++; return profile("newbie"); },
+      fetchProfile: async () => profile("newbie"),
     });
 
-    expect(fetched).toBe(0);
-    expect(storage.collaborators.get("newbie")).toBeUndefined();
-    expect(mgr.getEffectiveAccess("newbie")).toBeUndefined();
+    expect(edgesOf(storage, "newbie")).toEqual([
+      expect.objectContaining({ type: "shareKey", keyId: linkId, role: "use" }),
+    ]);
+    expect(edgesOf(storage, "newbie")[0]).not.toHaveProperty("gadgetId");
+    let access = mgr.getEffectiveAccess("newbie")!;
+    expect(access).toEqual(ALL);
+    expect(accessIncludesGadget(access, 99)).toBe(true);
   });
 
-  it("adds no edge to an existing collaborator through a legacy all-gadget link", async () => {
+  it("widens an existing gadget collaborator through a legacy all-gadget link", async () => {
     let { storage, mgr } = makeManager();
     let { key } = await legacyAllUseLink(storage, mgr);
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
 
     await mgr.redeemShareKey({ rawKey: key, profileId: "a", fetchProfile: async () => profile("a") });
 
-    expect(edgesOf(storage, "a")).toEqual([expect.objectContaining({ type: "user", gadgetId: 1 })]);
-    expect(mgr.getEffectiveAccess("a")).toEqual(only(1));
+    expect(edgesOf(storage, "a")).toHaveLength(2);
+    expect(mgr.getEffectiveAccess("a")).toEqual(ALL);
   });
 
   it("treats a link to a gadget that can no longer be shared as unknown", async () => {
@@ -875,11 +878,15 @@ describe("newShareLinkKey", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
-  it("refuses to copy a legacy all-gadget link", async () => {
+  it("copies a legacy all-gadget link to a key that redeems to every gadget", async () => {
     let { storage, mgr } = makeManager();
     let { linkId } = await legacyAllUseLink(storage, mgr);
-    await expect(mgr.newShareLinkKey({ caller: owner, linkId })).rejects.toThrow(/every gadget/);
-    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual([linkId]);
+    let { key } = await mgr.newShareLinkKey({ caller: owner, linkId });
+
+    await mgr.redeemShareKey({ rawKey: key, profileId: "a", fetchProfile: async () => profile("a") });
+
+    expect(edgesOf(storage, "a")).toEqual([expect.objectContaining({ type: "shareKey", keyId: linkId })]);
+    expect(mgr.getEffectiveAccess("a")).toEqual(ALL);
   });
 
   it("refuses to copy a link to a gadget that can no longer be shared", async () => {

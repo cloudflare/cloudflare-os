@@ -5917,8 +5917,8 @@ export type ShareLinkInfo = {
 
   /**
    * The one gadget a "use" link grants. A "use" link without one grants every gadget, as links
-   * did before gadgets were shared individually; it can no longer be copied, and redeeming it
-   * adds no one new.
+   * did before gadgets were shared individually; such a link can no longer be created, but it
+   * can still be copied and redeemed.
    */
   gadgetId?: WorkpieceId;
 };

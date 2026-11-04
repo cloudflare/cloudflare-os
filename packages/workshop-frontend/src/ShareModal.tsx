@@ -1294,7 +1294,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 {visibleShareLinks.map((sk, index) => {
                   const isRevoking = revokeTarget?.linkId === sk.linkId
                   const isRenaming = editingShareLinkId === sk.linkId
-                  // A legacy link grants every gadget, which links no longer may, so it can't be copied.
+                  // A legacy link grants every gadget; it can still be copied, though no new one can be made.
                   const isLegacyLink = sk.role === 'use' && sk.gadgetId === undefined
                   return (
                     <div key={sk.linkId} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedShareLinkId === sk.linkId ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
@@ -1344,7 +1344,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                             {isLegacyLink && (
                               <span className="px-2 text-[12px] text-kumo-subtle">{LEGACY_ACCESS_LABEL}</span>
                             )}
-                            {canUseShareLinks && !isLegacyLink && (
+                            {canUseShareLinks && (
                               <WorkshopIconButton
                                 className="!h-7 !w-7"
                                 onClick={() => handleCopyShareLink(sk)}
