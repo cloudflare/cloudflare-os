@@ -9,7 +9,7 @@
 // - Every check fails closed, and no permission is cached between operations.
 // - Each decision is confirmed synchronously before its caller publishes it: an observation's
 //   audience before the audit record is written (authorizeObservation), and an admission's
-//   scope before the observer record is (OverseerImpl.ensureObserver, via observerScope()).
+//   scope before its account choices are (OverseerImpl.ensureObserver, via observerScope()).
 // - These checks add to the legacy addObserver()/removeObserver()/excludeObservers protocol and
 //   never replace it: an observation omitting `subresources` is checked by nothing here, and
 //   admission runs every connection's addObserver() as well as the checks here.

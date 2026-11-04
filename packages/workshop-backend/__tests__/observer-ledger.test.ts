@@ -465,7 +465,7 @@ describe("hook observations", () => {
         if (role === "build") {
           await expect(impl.ensureObserver("carol", world.clientUser("carol"), grantOf(role),
               configureAll)).rejects.toThrow(/could not confirm/);
-          expect(impl.storage.observers.get("carol")).toBeUndefined();
+          expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
         } else {
           await impl.ensureObserver("carol", world.clientUser("carol"), grantOf(role), configureAll);
           expect(world.checks).toEqual([]);
@@ -771,7 +771,7 @@ describe("observations reporting subresources", () => {
     } else {
       expect(authorized).toBe(true);
       expect(rows(impl, WORKSPACE)).toEqual(["2:x"]);
-      expect(impl.storage.observers.get("carol")).toBeUndefined();
+      expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
     }
     expect(world.checks).toContainEqual({ profileId: "carol", ids: ["x"] });
   }));
@@ -918,6 +918,44 @@ describe("admission against recorded requirements", () => {
     expect(callsTo(calls, "removeObserver")).toEqual([]);
     await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, configureAll);
     expect(world.checks.at(-1)).toEqual({ profileId: "carol", ids: ["a"] });
+  }));
+
+  it("keeps the choices a concurrent admission to another gadget published", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    let other = CONN + 1;
+    seedConnection(impl);
+    seedConnection(impl, other);
+    seedGadget(impl, GADGET, { C: CONN });
+    seedGadget(impl, GADGET + 1, { D: other });
+    world.roles.set("carol", { role: "use", gadgetIds: [GADGET, GADGET + 1] });
+    // Her account can read nothing B reads from here on.
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+
+    // Her admission to A waits on its account prompt while another tab admits her to B.
+    let release!: () => void;
+    let parked = new Promise<void>(resolve => { release = resolve; });
+    let prompted!: () => void;
+    let promptOpen = new Promise<void>(resolve => { prompted = resolve; });
+    let admitA = impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, {
+      configure: async (needs: { gatekeeperId: number }[]) => {
+        prompted();
+        await parked;
+        return configureAll.configure(needs);
+      },
+    });
+    await promptOpen;
+    await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET + 1 },
+        configureAll);
+    release();
+    await admitA;
+
+    // Finishing A keeps the choice B's admission published, so B's reads still check her.
+    expect(impl.storage.observers.get("carol").accountChoices)
+        .toEqual({ [CONN]: 20, [other]: 30 });
+    await expect(impl.authorizeObservation(other, withSubresources(["secret"]),
+        { from: "gadget", gadgetId: GADGET + 1 })).rejects.toThrow(/could not be confirmed/);
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["secret"] }]);
   }));
 
   it("does not require a connection only another gadget binds", () =>
@@ -1141,8 +1179,7 @@ describe("admission against recorded requirements", () => {
     seedConnection(impl);
     addRows(impl, WORKSPACE, CONN, ["a"]);
     let registrations = 0;
-    // What the connection tracks itself grows during her first check: say, a read omitting
-    // subresources that excluded her but was admitted because she is not yet published.
+    // What the connection tracks itself grows during her first check.
     fakeFacets(impl, {
       addObserver: () => {
         if (++registrations > 1) throw new Error("can't read the tracked history");
@@ -1158,7 +1195,7 @@ describe("admission against recorded requirements", () => {
     let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
     await expect(admission).rejects.toThrow(/could not confirm/);
     await expect(admission).rejects.toThrow(/can't read the tracked history/);
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
   }));
 
   it("blocks an in-flight observation that a newly admitted collaborator cannot access", () =>
@@ -1266,7 +1303,7 @@ describe("admission against recorded requirements", () => {
         "carol", world.clientUser("carol"), grantOf("use"), configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks).toContainEqual({ profileId: "carol", ids: ["secret"] });
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
   }));
 
   it("admits against live requirements when an observed connection is removed during its prompt",
@@ -1326,7 +1363,7 @@ describe("admission against recorded requirements", () => {
     await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks).toContainEqual({ profileId: "carol", ids: required.slice(10_000) });
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
 
     world.verifiers.delete("carol");
     await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
@@ -1349,7 +1386,7 @@ describe("admission against recorded requirements", () => {
     await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks.some(check => check.ids.includes(second))).toBe(true);
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
     expect(rows(impl, WORKSPACE)).toEqual([`2:${first}`, `3:${second}`]);
 
     world.verifiers.delete("carol");
@@ -1384,7 +1421,7 @@ describe("additive admission", () => {
         .rejects.toThrow(/Connection 2 .*can't read the sheet/);
     expect(callsTo(calls, "addObserver")).toContain(CONN);
     expect(callsTo(calls, "verifyObserverAccess")).toEqual([]);
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
   }));
 
   it("denies a recorded requirement the account can't read even though addObserver accepted",
@@ -1408,31 +1445,6 @@ describe("additive admission", () => {
     expect(callsTo(calls, "removeObserver")).toEqual([]);
     expect(impl.storage.observers.get("carol"))
         .toEqual({ profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
-  }));
-
-  it("removes a first-time observer's registrations when the requirement check refuses her", () =>
-      withWorld(async world => {
-    let { impl } = world;
-    let unrecorded = CONN - 1;
-    seedConnection(impl, unrecorded);
-    seedConnection(impl);
-    addRows(impl, WORKSPACE, CONN, ["a"]);
-    let calls: FacetCall[] = [];
-    fakeFacets(impl, { calls });
-    world.roles.set("carol", "build");
-    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
-
-    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
-        .rejects.toThrow(/can't access some of the data/);
-    // Both connections' addObserver() accepted her, but every registration this call made is
-    // removed under the observer ID it registered, and nothing persists.
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
-    let added = calls.filter(call => call.method === "addObserver");
-    let removed = calls.filter(call => call.method === "removeObserver");
-    expect([...new Set(callsTo(calls, "addObserver"))].toSorted()).toEqual([unrecorded, CONN]);
-    expect(callsTo(calls, "removeObserver").toSorted()).toEqual([unrecorded, CONN]);
-    expect(new Set(removed.flatMap(call => call.observerIds)))
-        .toEqual(new Set(added.flatMap(call => call.observerIds)));
   }));
 
   it("asks verifyObserverAccess only of connections with recorded requirements", () =>

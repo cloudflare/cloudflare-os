@@ -293,7 +293,11 @@ Logic:
    - A `creationSpec` with a `vendorId` requires an account; other specs need no verifier or account
      choice.
 
-2. **Load the observer record** for `profileId` (may be absent) and build a working copy of its
+2. **Load the observer record** for `profileId`, reserving it if absent: a fresh random
+   `observerId` and no `accountChoices`, written before anything awaits. Concurrent admissions by
+   the profile (other tabs or devices) therefore share one id, and Step 5 can resolve it before any
+   gatekeeper can name it. A reserved record admits nothing, since an observation checks only
+   observers with a choice for its connection (§10). Build a working copy of its
    `accountChoices`. An out-of-scope entry is simply not consulted: nothing is verified against a
    gatekeeper outside what is being opened, so the choice sits there unread until the connection
    is back in scope (or another gadget reaches it) and the entry saves the collaborator from being
@@ -311,9 +315,8 @@ Logic:
 
 5. **Re-verify all in-scope bindings** (covered + newly chosen). For each, resolve the chosen
    account's verifier via `clientUser.getVerifier(accountId, bindingVendorId)` and call
-   `this.getGatekeeperFacet(gk.id).addObserver(record.observerId, verifier)`. Generate
-   `observerId` (random) if the record is new. Run these with `Promise.all` + pipelining where
-   possible.
+   `this.getGatekeeperFacet(gk.id).addObserver(record.observerId, verifier)`. Run these with
+   `Promise.all` + pipelining where possible.
    - The User DO compares `bindingVendorId` with the chosen connected account's stored vendor and
      **throws** on a mismatch. This server-side check is what guarantees a gatekeeper only receives
      a verifier minted by its own vendor; filtering account choices in the client is only a
@@ -322,26 +325,26 @@ Logic:
      for a disconnected account), the user is not (or no longer) allowed. Every such failure goes
      through one `fail()` path, and the user is offered a bounded number of re-prompts to repair
      (e.g. re-authenticate an expired account). On terminal failure the open is denied with a
-     message naming each refused binding, and the registrations this call added are
-     best-effort-removed while no record is persisted. The persisted `accountChoices` are left as
-     they are: an entry records the choice the user made so they are not asked again, and asserts
-     nothing about whether the gatekeeper still admits them.
-   - Only a *first-ever* verification rolls anything back (fully — nothing referenced its
-     registrations before the call, and the minted id would otherwise linger unresolvable). A
-     returning observer's registrations are **all** kept, including ones this call added: their
-     persisted `observerId` is shared with concurrent opens, so a rollback could delete a
-     registration a concurrent successful open just made and persisted. De-registering is the
-     fail-open direction (the gatekeeper stops naming them in `excludeObservers`); a spurious
-     registration only blocks fail-closed until the lazy cleanup at exclusion time or a later
-     open re-verifies it, and the next successful `addObserver` overwrites its verifier.
+     message naming each refused binding, and none of its choices is published. The persisted
+     `accountChoices` are left as they are: an entry records the choice the user made so they are
+     not asked again, and asserts nothing about whether the gatekeeper still admits them.
+   - A failure rolls nothing back: every registration is kept, including ones this call added,
+     since the `observerId` is shared with concurrent admissions and removing one could delete a
+     registration another admission just made and published. De-registering is the fail-open
+     direction (the gatekeeper stops naming them in `excludeObservers`). A registration left by a
+     failed admission therefore keeps blocking the reads its connection excludes them from for as
+     long as they hold access reaching it, even if no admission ever succeeds: exclusion drops it
+     only once they lose access or no longer reach the connection, and the next successful
+     `addObserver` overwrites its verifier.
    - A denial ends only this open. Sessions the collaborator already holds are untouched, and keep
      the access their own opens verified until they next re-open — the lazy-revocation residual
      described under "Known gaps" below.
 
-6. **Persist the observer record** (with merged `accountChoices` and `observerId`) only after all
-   `addObserver` calls succeed. Storing/creating the record is the canonical moment the user
-   becomes a configured observer; its later deletion is what triggers `removeObserver` (Steps 5
-   and 6).
+6. **Publish the verified choices** only after every in-scope binding verified: they are merged
+   into the record as it stands then, so concurrent admissions keep each other's choices. A record
+   deleted or replaced meanwhile, because the profile lost access, refuses the admission rather
+   than reviving it. Publishing a choice is the moment the user becomes a configured observer of
+   that connection; deleting the record is what triggers `removeObserver` (Steps 5 and 6).
 
 Then in `open()`:
 
@@ -579,13 +582,9 @@ or the connection that produced it is outside their access's forward reach.
 For each id in `description.excludeObservers`:
 
 1. Map the opaque `observerId` → `profileId` via the `observers.byObserverId` index. If there is
-   no record, the id is not an active observer → ignore it.
-   **Known gap: "no record" does not yet imply "not an active observer".** A first-time
-   `ensureObserver` registers a freshly minted id with the gatekeepers *before* the record (and
-   so `byObserverId`) is persisted, so an id named during that window — the fan-out, which can
-   park on the config modal — reads as unknown here and the observation is admitted to the very
-   collaborator it names. The required fix is an in-memory map of pending ids consulted here,
-   failing closed; it lands with `observer-verification-fixes`.
+   no record, the id is not an active observer → ignore it. Admission reserves the record before
+   registering its id with any gatekeeper (Step 3), so a named id resolves until the record is
+   torn down.
 2. Check sharing-graph reachability for that `profileId`
    (`SharingManager.getEffectiveAccess` / `computeEffectiveAccess`).
    - **Still authorized, and the producing gatekeeper is in that access's forward reach → throw**,
@@ -783,9 +782,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
   - build = all gatekeepers in scope; use = named bindings only.
   - first open invokes the `configure` callback with all account-requiring bindings; subsequent
     opens do not (record covers them) but still re-run `addObserver`.
-  - a thrown `addObserver` denies the open without persisting the record; a first-ever
-    verification also best-effort `removeObserver`s everything it registered, while a returning
-    observer's registrations are all kept.
+  - a thrown `addObserver` denies the open without publishing its choices, and keeps every
+    registration, a first open's included.
+  - concurrent admissions by one profile share its `observerId` and keep each other's choices.
   - missing account → binding reported as a need to the callback; callback rejection denies open.
 - **`authorizeObservation` exclusion:** observation naming a still-authorized observer throws;
   observation naming an observer who lost access proceeds and deletes that observer record (+
@@ -1061,11 +1060,12 @@ Revocations and role changes take effect within seconds -- the revocation restar
 ~100ms -- and read-side races inside that envelope are accepted by design: a guard earns its
 place here only if its failure mode is *persistent* wrong state that outlives the window.
 
-The observer-side deferrals are ledgered in `plans/restricted-data-sharing.md`, each marked at
-its site in the code by a matching `TODO` comment:
+Concurrent admissions by one collaborator that choose different accounts for the same connection
+keep the choice of whichever finishes last, while the connection keeps the verifier of whichever
+registered last, which may come from an admission whose requirement check then failed. Until the
+next admission re-registers the remembered account, the connection's `excludeObservers` answers
+for a different account than the kernel's checks. Each check uses an account of the
+collaborator's that the connection accepted in `addObserver`, so the mismatch can deny reads the
+remembered account could see but admits none against an account the connection refused.
 
-- Observer verification is not serialized per profile, so concurrent opens by one collaborator
-  can overwrite each other's records.
-- A mid-registration observer named in `excludeObservers` is read as unknown and the observation
-  admitted; persistent, since it lands in chat history (Step 5, item 1). Fix: a pending-id map,
-  `observer-verification-fixes`.
+The remaining observer-side deferrals are ledgered in `plans/restricted-data-sharing.md`.

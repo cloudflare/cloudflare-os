@@ -6221,7 +6221,8 @@ class OverseerImpl implements AgentHooks {
   // Enforce an observation's `excludeObservers`, named by the gatekeeper `gatekeeperId` produced
   // it. For each named opaque observerId:
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
-  //     observer (e.g. already torn down), so it is ignored.
+  //     observer -- admission reserves the record before registering its id, so it was torn
+  //     down -- and is ignored.
   //   - If that profileId is still authorized in the sharing graph *and* this gatekeeper is in
   //     their access's forward reach, we cannot guarantee they won't see the observation (v1 has
   //     no per-thread hiding, and a legacy connection's observations are not attributed to a
@@ -6249,10 +6250,6 @@ class OverseerImpl implements AgentHooks {
     let unreached: string[] = [];
     for (let observerId of observerIds) {
       let observer = this.storage.observers.byObserverId.get(observerId);
-      // TODO(observer-races): a first-time ensureObserver registers its observerId with the
-      // gatekeepers before the record is persisted, so an id named here in that window reads as
-      // unknown and the observation is admitted. Fix: an in-memory pending-id map consulted
-      // here, failing closed.
       if (!observer) continue;  // not an active observer -> ignore
       let access = sharing.getEffectiveAccess(observer.profileId);
       if (!access) {
@@ -10504,11 +10501,19 @@ class OverseerImpl implements AgentHooks {
   // `verifyObserverAccess()` for the requirements the grant reaches (see observer-ledger.ts).
   // Returns when fully verified; throws to deny access.
   //
-  // See observers-implementation-plan.md §5 Step 3.
+  // Concurrent admissions by one profile -- other tabs or devices, each possibly parked on its own
+  // account prompt -- run independently and share the profile's one observer record: its
+  // observerId is reserved before anything registers it, and each admission publishes only the
+  // choices it verified. A failure denies only that admission and de-registers nothing, since
+  // another admission may share the registration and de-registering is the fail-open direction
+  // (the gatekeeper stops naming the observer in `excludeObservers`). A registration a failed
+  // admission leaves keeps blocking the reads its connection excludes the observer from for as
+  // long as they hold access reaching that connection: #enforceExcludeObservers drops it only once
+  // they don't, and a later successful admission replaces its verifier. Sessions the collaborator
+  // already holds keep what their own admissions verified until they re-open: the lazy-revocation
+  // residual documented in docs/observers.md.
   //
-  // TODO: Concurrent opens by the same profile race this method -- two calls mint two observerIds
-  //   and the last-written record forgets the other's gatekeeper registrations -- so verification
-  //   needs to be serialized per profile.
+  // See observers-implementation-plan.md §5 Step 3.
   async ensureObserver(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
@@ -10520,19 +10525,17 @@ class OverseerImpl implements AgentHooks {
     let scope = this.#observerScope(grant);
     if (scope.gatekeepers.length === 0) return;
 
-    // 2. Load any existing observer record, and build a working copy of its account choices.
+    // 2. Load the observer record, reserving it on a first admission (nothing awaits between the
+    //    read and the write), and build a working copy of its account choices. A reserved record
+    //    has no choices, so no observation checks it (see ObserverLedger), but its id resolves
+    //    for #enforceExcludeObservers before any connection can name it.
     let record = this.storage.observers.get(profileId);
-    let accountChoices: {[gatekeeperId: number]: number} = {...record?.accountChoices};
-
-    let observerId = record?.observerId ?? crypto.randomUUID();
-    // Whether this collaborator was already an admitted observer when the call began. A returning
-    // observer's `observerId` is already persisted, so it stays resolvable no matter how this call
-    // ends -- which is what makes keeping their registrations on a failure safe (see the catch).
-    let returningObserver = record !== undefined;
-    // Gatekeepers this call tried to register the observer with, for a *first-time* observer's
-    // rollback only (see the catch): a refused addObserver, or one whose recorded requirements
-    // were then denied, may still have registered them.
-    let attempted = new Set<number>();
+    if (!record) {
+      record = {profileId, observerId: crypto.randomUUID(), accountChoices: {}};
+      this.storage.observers.put(record);
+    }
+    let {observerId} = record;
+    let accountChoices: {[gatekeeperId: number]: number} = {...record.accountChoices};
 
     // Failures from the previous pass, keyed by gatekeeper id: an already-configured binding whose
     // chosen account was disconnected, or which refused it.
@@ -10548,192 +10551,178 @@ class OverseerImpl implements AgentHooks {
     // Requirement IDs earlier passes of this call checked, by gatekeeper id, so a pass re-run after
     // a scope change asks verifyObserverAccess() only about the rest. Registration is never
     // skipped: addObserver() also enforces history the gatekeeper tracks itself, which can grow
-    // while this call awaits (until this observer is published, a read excluding them is admitted;
-    // see #enforceExcludeObservers). Cleared after a configuration prompt, so no check made before
-    // a wait on the user admits anyone.
+    // while this call awaits. Cleared after a configuration prompt, so no check made before a wait
+    // on the user admits anyone.
     let checked = new Map<number, Set<string>>();
 
-    try {
-      while (true) {
-        let inScope = scope.gatekeepers;
+    while (true) {
+      let inScope = scope.gatekeepers;
 
-        // 3. Determine uncovered bindings: in-scope gatekeepers with no account choice yet. Ambient
-        //    bindings use the collaborator's matching provided account automatically; unlike an
-        //    ordinary connection, there is no meaningful account choice when one already exists.
-        //    On a re-prompt, leave a failed ambient binding uncovered so the client can explain the
-        //    failure rather than silently retrying the same account.
-        let uncovered = inScope.filter(gk => !(gk.id in accountChoices));
-        let ambientNeeds = uncovered.flatMap(gk => {
-          let spec = gk.creationSpec;
-          return spec?.type === "ambient" && !passFailures.has(gk.id)
-              ? [{gatekeeperId: gk.id, vendorId: spec.vendorId}]
-              : [];
-        });
-        if (ambientNeeds.length > 0) {
-          let accountsByVendor = new Map<string, number>();
-          for (let account of await clientUser.listProvidedAccounts()) {
-            if (account.description.singleton && !accountsByVendor.has(account.vendorId)) {
-              accountsByVendor.set(account.vendorId, account.accountId);
-            }
-          }
-          for (let need of ambientNeeds) {
-            let accountId = accountsByVendor.get(need.vendorId);
-            if (accountId !== undefined) accountChoices[need.gatekeeperId] = accountId;
-          }
-          uncovered = inScope.filter(gk => !(gk.id in accountChoices));
-        }
-
-        // 4. If there are uncovered bindings, ask the client to choose accounts for them.
-        if (uncovered.length > 0) {
-          if (!configureCb) {
-            // Non-interactive open (e.g. no UI). We can't configure, so deny.
-            throw new Error(
-                "To open this workspace, you must choose connected accounts for the services it " +
-                "uses, but no configuration channel was provided.");
-          }
-
-          let needs: ObserverBindingNeed[] = uncovered.map(gk => ({
-            ...observerBindingNeed(gk),
-            // Present only for bindings we're re-prompting because they just failed, so the client
-            // can explain what went wrong and aim its re-authenticate affordance at that account.
-            failure: passFailures.get(gk.id),
-          }));
-
-          let choices = await configureCb.configure(needs);
-          // The prompt may wait on the user indefinitely; check everything again after it.
-          checked.clear();
-          let uncoveredIds = new Set(uncovered.map(gk => gk.id));
-          for (let choice of choices) {
-            // Validate the choice.
-            if (!uncoveredIds.has(choice.gatekeeperId) || !Number.isSafeInteger(choice.accountId)) {
-              throw new Error(
-                  "The account choices returned by the client were invalid. Please try again.");
-            }
-
-            accountChoices[choice.gatekeeperId] = choice.accountId;
-          }
-
-          // The client must have supplied a choice for every uncovered binding.
-          let stillUncovered = uncovered.filter(gk => !(gk.id in accountChoices));
-          if (stillUncovered.length > 0) {
-            throw new Error(
-                "You must connect an account for every service this workspace uses in order to open " +
-                "it.");
+      // 3. Determine uncovered bindings: in-scope gatekeepers with no account choice yet. Ambient
+      //    bindings use the collaborator's matching provided account automatically; unlike an
+      //    ordinary connection, there is no meaningful account choice when one already exists.
+      //    On a re-prompt, leave a failed ambient binding uncovered so the client can explain the
+      //    failure rather than silently retrying the same account.
+      let uncovered = inScope.filter(gk => !(gk.id in accountChoices));
+      let ambientNeeds = uncovered.flatMap(gk => {
+        let spec = gk.creationSpec;
+        return spec?.type === "ambient" && !passFailures.has(gk.id)
+            ? [{gatekeeperId: gk.id, vendorId: spec.vendorId}]
+            : [];
+      });
+      if (ambientNeeds.length > 0) {
+        let accountsByVendor = new Map<string, number>();
+        for (let account of await clientUser.listProvidedAccounts()) {
+          if (account.description.singleton && !accountsByVendor.has(account.vendorId)) {
+            accountsByVendor.set(account.vendorId, account.accountId);
           }
         }
+        for (let need of ambientNeeds) {
+          let accountId = accountsByVendor.get(need.vendorId);
+          if (accountId !== undefined) accountChoices[need.gatekeeperId] = accountId;
+        }
+        uncovered = inScope.filter(gk => !(gk.id in accountChoices));
+      }
 
-        // 5. Verify all in-scope bindings (covered + newly chosen) with the chosen accounts: hand
-        //    each account's verifier to the connection's addObserver(), then, if its observations
-        //    recorded requirements the grant reaches, ask it to check those with the same verifier.
-        //    It is asked only about requirements no earlier pass checked (see `checked`). Collect
-        //    *every* failure rather than just the first, so a re-prompt can present them all at
-        //    once.
-        let failures = new Map<number, ObserverBindingFailure>();
+      // 4. If there are uncovered bindings, ask the client to choose accounts for them.
+      if (uncovered.length > 0) {
+        if (!configureCb) {
+          // Non-interactive open (e.g. no UI). We can't configure, so deny.
+          throw new Error(
+              "To open this workspace, you must choose connected accounts for the services it " +
+              "uses, but no configuration channel was provided.");
+        }
 
-        await Promise.all(inScope.map(async gk => {
-          // Removed while this open awaited: step 6 re-runs the pass without it.
-          if (!this.storage.gatekeepers.get(gk.id)) return;
-          let accountId = accountChoices[gk.id];
-          let vendorId = observerVendorId(gk);
-          if (!vendorId) {
-            throw new Error("An observer account was requested for a non-gatekeeper binding.");
-          }
-
-          try {
-            attempted.add(gk.id);
-            let verifier = await requireVerifier(clientUser, accountId, vendorId);
-            // Serialized per (observer, gatekeeper) so this registration can't land while an
-            // exclusion teardown's removeObserver for the same pair is still in flight (which
-            // would delete it moments later); see #withObserverGatekeeperLock.
-            await this.#withObserverGatekeeperLock(observerId, gk.id,
-                async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
-            let done = checked.get(gk.id) ?? new Set<string>();
-            let unchecked = (scope.requirements.get(gk.id) ?? []).filter(id => !done.has(id));
-            if (unchecked.length > 0) {
-              await this.observerLedger.checkAccess(verifier, observerId, gk, unchecked);
-              for (let id of unchecked) done.add(id);
-              checked.set(gk.id, done);
-            }
-          } catch (err) {
-            // Either a settled denial or an operational failure (expired credentials, upstream
-            // outage). Treat every failure as repairable and let the user try again.
-            failures.set(gk.id, {accountId, reason: stringifyError(err)});
-            this.logger.warn("observer verification failed", {
-              event: "gatekeeper.observer.verify.failed",
-              gatekeeperId: gk.id, vendorId, accountId, observerId, error: err,
-            });
-          }
+        let needs: ObserverBindingNeed[] = uncovered.map(gk => ({
+          ...observerBindingNeed(gk),
+          // Present only for bindings we're re-prompting because they just failed, so the client
+          // can explain what went wrong and aim its re-authenticate affordance at that account.
+          failure: passFailures.get(gk.id),
         }));
 
-        // 6. What this open must verify can change while it awaits: a requirement recorded, a
-        //    connection added, removed, or approved, or a gadget newly reached or no longer
-        //    reached. Successes and failures alike may be stale, so re-run the pass rather than
-        //    admit or refuse against them. This check and the publication below share one
-        //    synchronous block, so nothing recorded after it can be missed: an observation checks
-        //    every published observer.
-        let current = this.#observerScope(grant);
-        if (!sameObserverScope(scope, current)) {
-          if (++scopePasses > MAX_VERIFICATION_PASSES) {
+        let choices = await configureCb.configure(needs);
+        // The prompt may wait on the user indefinitely; check everything again after it.
+        checked.clear();
+        let uncoveredIds = new Set(uncovered.map(gk => gk.id));
+        for (let choice of choices) {
+          // Validate the choice.
+          if (!uncoveredIds.has(choice.gatekeeperId) || !Number.isSafeInteger(choice.accountId)) {
             throw new Error(
-                "What this workspace must verify kept changing while you were being verified. " +
-                "Please try again.");
+                "The account choices returned by the client were invalid. Please try again.");
           }
-          scope = current;
+
+          accountChoices[choice.gatekeeperId] = choice.accountId;
+        }
+
+        // The client must have supplied a choice for every uncovered binding.
+        let stillUncovered = uncovered.filter(gk => !(gk.id in accountChoices));
+        if (stillUncovered.length > 0) {
+          throw new Error(
+              "You must connect an account for every service this workspace uses in order to open " +
+              "it.");
+        }
+      }
+
+      // 5. Verify all in-scope bindings (covered + newly chosen) with the chosen accounts: hand
+      //    each account's verifier to the connection's addObserver(), then, if its observations
+      //    recorded requirements the grant reaches, ask it to check those with the same verifier.
+      //    It is asked only about requirements no earlier pass checked (see `checked`). Collect
+      //    *every* failure rather than just the first, so a re-prompt can present them all at
+      //    once.
+      let failures = new Map<number, ObserverBindingFailure>();
+
+      await Promise.all(inScope.map(async gk => {
+        // Removed while this open awaited: step 6 re-runs the pass without it.
+        if (!this.storage.gatekeepers.get(gk.id)) return;
+        let accountId = accountChoices[gk.id];
+        let vendorId = observerVendorId(gk);
+        if (!vendorId) {
+          throw new Error("An observer account was requested for a non-gatekeeper binding.");
+        }
+
+        try {
+          let verifier = await requireVerifier(clientUser, accountId, vendorId);
+          // Serialized per (observer, gatekeeper) so this registration can't land while an
+          // exclusion teardown's removeObserver for the same pair is still in flight (which
+          // would delete it moments later); see #withObserverGatekeeperLock.
+          await this.#withObserverGatekeeperLock(observerId, gk.id,
+              async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
+          let done = checked.get(gk.id) ?? new Set<string>();
+          let unchecked = (scope.requirements.get(gk.id) ?? []).filter(id => !done.has(id));
+          if (unchecked.length > 0) {
+            await this.observerLedger.checkAccess(verifier, observerId, gk, unchecked);
+            for (let id of unchecked) done.add(id);
+            checked.set(gk.id, done);
+          }
+        } catch (err) {
+          // Either a settled denial or an operational failure (expired credentials, upstream
+          // outage). Treat every failure as repairable and let the user try again.
+          failures.set(gk.id, {accountId, reason: stringifyError(err)});
+          this.logger.warn("observer verification failed", {
+            event: "gatekeeper.observer.verify.failed",
+            gatekeeperId: gk.id, vendorId, accountId, observerId, error: err,
+          });
+        }
+      }));
+
+      // 6. What this open must verify can change while it awaits: a requirement recorded, a
+      //    connection added, removed, or approved, or a gadget newly reached or no longer
+      //    reached. Successes and failures alike may be stale, so re-run the pass rather than
+      //    admit or refuse against them. This check and the publication below share one
+      //    synchronous block, so nothing recorded after it can be missed: an observation checks
+      //    every published account choice.
+      let current = this.#observerScope(grant);
+      if (!sameObserverScope(scope, current)) {
+        if (++scopePasses > MAX_VERIFICATION_PASSES) {
+          throw new Error(
+              "What this workspace must verify kept changing while you were being verified. " +
+              "Please try again.");
+        }
+        scope = current;
+        continue;
+      }
+
+      if (failures.size > 0) {
+        // Drop the failed choices so the re-prompt asks about exactly these bindings. A failed
+        // binding's unpersisted account choice self-corrects on the next open (re-verification
+        // fails the stale persisted choice and re-prompts).
+        for (let id of failures.keys()) {
+          delete accountChoices[id];
+        }
+
+        // Offer the user a chance to repair (typically re-authenticate the expired account),
+        // unless we have no way to prompt or have already spent the budget.
+        if (configureCb && reprompts < MAX_CONFIG_REPROMPTS) {
+          reprompts++;
+          passFailures = failures;
           continue;
         }
 
-        if (failures.size > 0) {
-          // Drop the failed choices so the re-prompt asks about exactly these bindings. A failed
-          // binding's unpersisted account choice self-corrects on the next open (re-verification
-          // fails the stale persisted choice and re-prompts).
-          for (let id of failures.keys()) {
-            delete accountChoices[id];
-          }
-
-          // Offer the user a chance to repair (typically re-authenticate the expired account),
-          // unless we have no way to prompt or have already spent the budget.
-          if (configureCb && reprompts < MAX_CONFIG_REPROMPTS) {
-            reprompts++;
-            passFailures = failures;
-            continue;
-          }
-
-          // Terminal. Name each failed connection and account so the user knows what to fix, rather
-          // than reporting an anonymous refusal.
-          throw new Error(
-              "This workspace could not confirm that you are permitted to observe all of the data it " +
-              "has accessed:\n" +
-              await this.#describeObserverFailures(clientUser, inScope, failures));
-        }
-
-        // All in-scope bindings verified successfully.
-        break;
-      }
-    } catch (err) {
-      // Best-effort remove everything a *first-ever* verification registered: nothing referenced
-      // those registrations before this call, and the freshly-minted observerId is discarded with
-      // the unpersisted record, so anything left behind would linger unresolvable.
-      //
-      // A *returning* observer's registrations are all kept -- including the ones this call added.
-      // Their persisted observerId is shared with concurrent opens, so a rollback here could
-      // delete a registration that a concurrent successful open just made and persisted.
-      // De-registering is the fail-open direction: the gatekeeper stops naming that observer in
-      // `excludeObservers`, so an observation it should have excluded them from is admitted with
-      // nothing left to block it. A spurious registration merely blocks fail-closed until it is
-      // lazily cleaned up (see #enforceExcludeObservers) or a later open re-verifies it.
-      if (!returningObserver) {
-        await this.#removeObserverFromGatekeepers(observerId, [...attempted]);
+        // Terminal. Name each failed connection and account so the user knows what to fix, rather
+        // than reporting an anonymous refusal.
+        throw new Error(
+            "This workspace could not confirm that you are permitted to observe all of the data it " +
+            "has accessed:\n" +
+            await this.#describeObserverFailures(clientUser, inScope, failures));
       }
 
-      // Only this open is denied. Sessions the collaborator already holds are left alone: they
-      // keep whatever access their own open verified until they next re-open, which is the
-      // lazy-revocation residual documented in docs/observers.md.
-      throw err;
+      // All in-scope bindings verified successfully.
+      break;
     }
 
-    // 7. Persist the observer record only after every binding verified. Creating/updating the
-    //    record is the canonical moment the user becomes a configured observer.
-    this.storage.observers.put({profileId, observerId, accountChoices});
+    // 7. Publish the choices this admission verified onto the record as it stands now, keeping
+    //    those another admission by this profile published while this one awaited. A record
+    //    deleted or replaced meanwhile means the profile lost access (see tearDownLostObservers):
+    //    this admission's registrations were made under an id nothing resolves any more, so it is
+    //    refused rather than reviving the record.
+    let latest = this.storage.observers.get(profileId);
+    if (latest?.observerId !== observerId) {
+      throw new Error(
+          "Your access to this workspace changed while you were being verified. Please try again.");
+    }
+    let published = {...latest.accountChoices};
+    for (let gk of scope.gatekeepers) published[gk.id] = accountChoices[gk.id];
+    this.storage.observers.put({...latest, accountChoices: published});
   }
 
   // Everything a collaborator holding `grant` is verified against (see
