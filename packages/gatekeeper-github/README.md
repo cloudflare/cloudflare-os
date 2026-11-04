@@ -33,8 +33,8 @@ live when the push is queued, and again when an auto-approvable push applies: th
 default branch, a branch GitHub reports as protected, or one a ruleset covers, including a branch
 the push creates, and the first push into an empty repository, which makes its default branch. A
 classic protection pattern is shown only to admins, so a push that creates a
-branch one will match is not gated. GitHub refusing the account the protection or the rulesets
-counts as unprotected; any other failed read gates the push. An issue assigned to an app (a login
+branch one will match is not gated. If GitHub denies the account access to the branch protection
+or ruleset details, the branch counts as unprotected; any other failed read gates the push. An issue assigned to an app (a login
 ending in `[bot]`, or `Copilot`) shares `github.createIssue` with other issues but always waits,
 because an app such as Copilot's coding agent starts a run that spends billed credits. A force push has its own kind (`github.forcePush`), so enabling ordinary pushes does
 not let history be rewritten. Excluded actions are still approved by hand as before. Each binding
