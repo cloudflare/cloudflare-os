@@ -216,17 +216,25 @@ describe("a binding that fails verification", () => {
     });
   });
 
-  it.each(["deleted", "replaced"])(
-      "refuses an admission whose record was %s while it waited, de-registering its id",
-      async mode => {
-    let stub = env.TEST_OVERSEER.getByName(`observer-verify-stale-${mode}`);
+  it.each([
+    { mode: "deleted", outcome: "verifies" },
+    { mode: "replaced", outcome: "verifies" },
+    { mode: "deleted", outcome: "fails" },
+    { mode: "replaced", outcome: "fails" },
+  ])("de-registers the id of an admission that $outcome after its record was $mode",
+      async ({ mode, outcome }) => {
+    let stub = env.TEST_OVERSEER.getByName(`observer-verify-stale-${mode}-${outcome}`);
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = instance["impl"];
       seedOwner(impl);
-      seedGatekeepers(impl, [1]);
+      seedGatekeepers(impl);
       let registrations = new Set<string>();
       setObserverFacets(impl, {
-        addObserver: async (id, observerId) => { registrations.add(`${id}:${observerId}`); },
+        addObserver: async (id, observerId) => {
+          // A failing admission is refused by connection 2 after connection 1 registered her.
+          if (outcome === "fails" && id === 2) throw new Error("no access");
+          registrations.add(`${id}:${observerId}`);
+        },
         removeObserver: async (id, observerId) => { registrations.delete(`${id}:${observerId}`); },
       });
 
@@ -250,7 +258,8 @@ describe("a binding that fails verification", () => {
       if (mode === "replaced") impl.storage.observers.put(replacement);
       release();
 
-      await expect(admission).rejects.toThrow(/access to this workspace changed/);
+      await expect(admission).rejects.toThrow(
+          outcome === "fails" ? /could not confirm/ : /access to this workspace changed/);
       expect(impl.storage.observers.get("alice"))
           .toEqual(mode === "replaced" ? replacement : undefined);
       expect(registrations).toEqual(new Set());

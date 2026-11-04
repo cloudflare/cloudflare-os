@@ -337,7 +337,8 @@ Logic:
      failed admission therefore keeps blocking the reads its connection excludes them from for as
      long as they hold access reaching it, even if no admission ever succeeds: exclusion drops it
      only once they lose access or no longer reach the connection, and the next successful
-     `addObserver` overwrites its verifier.
+     `addObserver` overwrites its verifier. An admission whose record was deleted or replaced
+     meanwhile is the exception: it de-registers its id as Step 6 describes.
    - A denial ends only this open. Sessions the collaborator already holds are untouched, and keep
      the access their own opens verified until they next re-open — the lazy-revocation residual
      described under "Known gaps" below.
@@ -345,7 +346,8 @@ Logic:
 6. **Publish the verified choices** only after every in-scope binding verified: they are merged
    into the record as it stands then, so concurrent admissions keep each other's choices. A record
    deleted or replaced meanwhile, because the profile lost access, refuses the admission rather
-   than reviving it, and de-registers its id from every connection as the teardown does.
+   than reviving it. An admission that outlives its record this way, whether it verified or
+   failed, de-registers its id from every connection as the teardown does.
    Publishing a choice is the moment the user becomes a configured observer of that connection;
    deleting the record is what triggers `removeObserver` (Steps 5 and 6).
 
@@ -641,14 +643,14 @@ This is the runtime counterpart of `addObserver`: `addObserver` covers observers
 *after* data was read; `excludeObservers` covers data read *after* observers were configured.
 Persisting the observation record itself is unchanged; we only gate it.
 
-> Why not also worry about authorized-but-not-yet-configured users here? A user with no
-> registration in flight cannot be named in `excludeObservers` because no gatekeeper knows their
-> id yet. The invariant still holds from the other direction: when such a user later opens and
-> configures, `addObserver` re-checks them against *all* past observations (including any
-> restricted one) and throws, denying them. So forward exclusion only needs to handle
-> already-configured observers — plus the one case in between: a user *mid*-registration is
-> already known to every gatekeeper whose `addObserver` has returned. Their record is reserved
-> before any of those calls, so item 1 resolves them like any other observer.
+> Why not also worry about authorized-but-not-yet-configured users here? A user not yet registered
+> with a gatekeeper cannot be named in its `excludeObservers` because it does not know their id
+> yet. When that user later opens and configures, `addObserver` re-checks them against *all* past
+> observations (including restricted ones) and denies the open if they cannot observe that data.
+> Forward exclusion handles already-configured observers, users *mid*-registration, and users
+> whose failed admissions kept their registrations. Their record is reserved before any
+> `addObserver` call, so item 1 resolves them while that record remains current, even if no
+> admission ever succeeded.
 
 ### Step 6 — Overseer: remove observers on sharing changes
 
