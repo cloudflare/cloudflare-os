@@ -237,11 +237,15 @@ describe("Word export", () => {
   });
 
   // A picture is a paragraph of its own: the text before and after it, and the picture, all link.
+  // The picture carries its link itself, as Word writes it: Word for the web shows the URL beside
+  // a picture inside a hyperlink once the document has a content control (a to-do's checkbox).
   it("keeps a link around a picture on every part of it", async () => {
     const { document } = await exportDocx([`<p><a href="https://example.com/">Before<img class="doc-image" src="${PNG}" alt="Dot">After</a></p>`]);
     const hyperlinks = [...document.matchAll(/<w:hyperlink r:id="([^"]+)"[^>]*>([\s\S]*?)<\/w:hyperlink>/g)];
-    expect(hyperlinks.map((m) => [textOf(m[2]), m[2].includes("<w:drawing>")])).toEqual([["Before", false], ["", true], ["After", false]]);
-    expect(new Set(hyperlinks.map((m) => m[1])).size).toBe(1);
+    expect(hyperlinks.map((m) => textOf(m[2]))).toEqual(["Before", "After"]);
+    expect(hyperlinks.some((m) => m[2].includes("<w:drawing>"))).toBe(false);
+    const pictureLink = attr(document, /<wp:docPr [^>]*descr="Dot"><a:hlinkClick [^>]*r:id="([^"]+)"\/><\/wp:docPr>/);
+    expect(new Set([...hyperlinks.map((m) => m[1]), pictureLink])).toEqual(new Set([hyperlinks[0][1]]));
   });
 
   it("styles quotes, code, dividers and the document's typeface", async () => {

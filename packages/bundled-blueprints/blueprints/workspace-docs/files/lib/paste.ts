@@ -47,9 +47,9 @@ export function normalizeHref(url: string | null | undefined): string {
   if (!href) return "";
   // Script and data links (pasted, or typed) aren't links at all.
   if (/^(javascript|vbscript|data|file):/i.test(href.replace(/[\s\u0000-\u001f]+/g, ""))) return "";
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(href)) return "mailto:" + href;
-  if (!/^(https?:|mailto:|tel:|#|\/)/i.test(href)) href = "https://" + href;
-  return href;
+  if (/^(https?:|mailto:|tel:|#|\/)/i.test(href)) return href;
+  // A bare address: an email, or a site.
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(href) ? "mailto:" + href : "https://" + href;
 }
 
 // ── Colours ──────────────────────────────────────────────────────────────

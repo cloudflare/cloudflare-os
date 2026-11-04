@@ -737,7 +737,10 @@ class DocxWriter {
   // ── Images ─────────────────────────────────────────────────────────────────
   // An embedded (data URL) PNG / JPEG / GIF as an inline picture; null for
   // anything that can't be embedded, WebP included: Word can't display it.
-  #imageDrawing(node: ElementNode, maxTwips: number): string | null {
+  // A link goes on the picture itself (hlinkClick), as Word writes one: Word
+  // for the web shows the URL beside a picture wrapped in a hyperlink when the
+  // document has a content control, such as a to-do's checkbox.
+  #imageDrawing(node: ElementNode, maxTwips: number, href: string | undefined): string | null {
     const src = node.attrs.src ?? "";
     const m = /^data:image\/(png|jpe?g|gif);base64,([A-Za-z0-9+/=\s]+)$/i.exec(src);
     if (!m) return null;
@@ -789,7 +792,9 @@ class DocxWriter {
     const corner = Math.min(50000, Math.round(radius / Math.min(cx, cy) * 100000));
     const id = this.#nextDrawing++;
     const alt = xmlAttr((node.attrs.alt ?? "").slice(0, 1000));
-    return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${id}" name="Picture ${id}" descr="${alt}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${id}" name="Picture ${id}" descr="${alt}"/><pic:cNvPicPr><a:picLocks noChangeAspect="1" noChangeArrowheads="1"/></pic:cNvPicPr></pic:nvPicPr><pic:blipFill><a:blip r:embed="${entry.rel}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr bwMode="auto"><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val ${corner}"/></a:avLst></a:prstGeom><a:ln w="6350"><a:solidFill><a:srgbClr val="${LINE}"/></a:solidFill></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+    const link = href && this.#linkId(href);
+    const docPr = `<wp:docPr id="${id}" name="Picture ${id}" descr="${alt}"` + (link ? `><a:hlinkClick xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:id="${link}"/></wp:docPr>` : "/>");
+    return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>${docPr}<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${id}" name="Picture ${id}" descr="${alt}"/><pic:cNvPicPr><a:picLocks noChangeAspect="1" noChangeArrowheads="1"/></pic:cNvPicPr></pic:nvPicPr><pic:blipFill><a:blip r:embed="${entry.rel}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr bwMode="auto"><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val ${corner}"/></a:avLst></a:prstGeom><a:ln w="6350"><a:solidFill><a:srgbClr val="${LINE}"/></a:solidFill></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
   }
 
   // Wraps the runs written since the current link began in a hyperlink.
@@ -810,15 +815,14 @@ class DocxWriter {
   }
 
   #image(node: ElementNode, ctx: InlineContext): void {
-    const drawing = this.#imageDrawing(node, ctx.maxTwips);
+    const drawing = this.#imageDrawing(node, ctx.maxTwips, ctx.link?.href);
     if (drawing) {
       // Block-level in the editor (img.doc-image is display: block): the
       // picture gets a paragraph of its own, between the text around it. A
       // link around it carries on into that paragraph and the one after.
       this.#closeLink(ctx);
       if (ctx.runs.length) ctx.flush();
-      const id = ctx.link && this.#linkId(ctx.link.href);
-      ctx.flushImage(id ? `<w:hyperlink r:id="${id}" w:history="1">${drawing}</w:hyperlink>` : drawing);
+      ctx.flushImage(drawing);
       if (ctx.link) ctx.link.start = 0;
       return;
     }

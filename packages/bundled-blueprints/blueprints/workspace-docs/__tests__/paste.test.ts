@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inlineMarkdown, isCodeEditorHtml, markdownToHtml, paletteColorOf, sanitizePastedHtml, textToHtml, type PasteContext } from "../files/lib/paste.ts";
+import { inlineMarkdown, isCodeEditorHtml, markdownToHtml, normalizeHref, paletteColorOf, sanitizePastedHtml, textToHtml, type PasteContext } from "../files/lib/paste.ts";
 
 const context: PasteContext = {
   colorKeys: new Set(["default", "gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red"]),
@@ -171,6 +171,16 @@ describe("sanitizePastedHtml", () => {
       '<iframe srcdoc="<script>alert(1)</script>"></iframe><object data="x">obj</object><embed src="x.swf">' +
       "<p>a<svg><script>alert(1)</script></svg>b<script>alert(1)</script></p>",
     )).toBe('<p>xlm<a href="https://ok.example">ok</a></p><p>ab</p>');
+  });
+});
+
+describe("normalizeHref", () => {
+  // Word's clipboard carries a mail link as `mailto:` plus an address, which also reads as one.
+  it("keeps a link's own scheme, and gives a bare address mailto: or https://", () => {
+    expect(normalizeHref("mailto:someone@example.com?subject=Hi%20there")).toBe("mailto:someone@example.com?subject=Hi%20there");
+    expect(normalizeHref(" someone@example.com ")).toBe("mailto:someone@example.com");
+    expect(normalizeHref("example.com/a")).toBe("https://example.com/a");
+    expect(normalizeHref("java\tscript:alert(1)")).toBe("");
   });
 });
 
