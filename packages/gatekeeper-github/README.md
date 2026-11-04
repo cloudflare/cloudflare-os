@@ -87,13 +87,13 @@ passing doesn't mean GitHub shows that account all the binding's account read.
   until it has. From then on every REST request beneath the repository goes to
   `/repositories/<id>/...` and follows no redirect, and GraphQL reads are checked against it.
   Issue search and git fetches and pushes, which github.com addresses only by name, are sent to
-  the name that id has now and fail if it changed before GitHub answered. So a rename or transfer
-  keeps the binding on its repository and a repository later created under an old name is never
-  read in its place: the binding's requests fail instead. A push is the exception only when the
-  rename and the name's reuse both land between those two lookups: it then fails as possibly
-  delivered elsewhere, since what GitHub accepted can't be called back. A binding that read
-  before ids were pinned is pinned to the repository its name names at its first read since,
-  which may not be the one it read then.
+  the name that id has now, and a search or fetch fails if it changed before GitHub answered. So a
+  rename or transfer keeps the binding on its repository and a repository later created under an
+  old name is never read in its place: the binding's requests fail instead. A push is not checked
+  again once GitHub has answered, since what GitHub accepted can't be called back: only a rename
+  and the name's reuse both landing between the lookup and the push could deliver it elsewhere. A
+  binding that read before ids were pinned is pinned to the repository its name names at its first
+  read since, which may not be the one it read then.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   one served from a cache or from queued actions, and each hook delivery, reports
   `repo/<repoId>` as its subresource, so the Workshop checks everyone who can see it before it
@@ -105,10 +105,12 @@ passing doesn't mean GitHub shows that account all the binding's account read.
   grant for up to 15 minutes and a denial for up to 15 seconds, so a revoked grant can still admit
   them for 15 minutes; it asks afresh after a reconnect, which may sign in as another GitHub user,
   and reuses nothing once disconnected or once GitHub has confirmed its grant dead: the check fails.
-  Each open also asks, uncached, for what the workspace read before reads reported the
-  repository: the same question, and whether their account can read the repository the binding's
-  name names now, as releases that read by name asked, since what those read may have come from a
-  repository that took the name. Caches those releases filled are discarded on upgrade.
+  Each open also asks, uncached and never with the binding owner's token, for what the workspace
+  read before reads reported the repository: whether their account can read the repository the
+  binding's name names now, as releases that read by name asked, and, once the binding has pinned
+  an id, the same question of that id, since what those releases read may have come from a
+  repository that took the name. A binding with no id yet has read nothing by id, so the name is
+  all it is checked by. Caches those releases filled are discarded on upgrade.
 
 ## Setting Up GitHub OAuth Credentials
 

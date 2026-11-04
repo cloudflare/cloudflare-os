@@ -205,6 +205,8 @@ async function binding(options: { pinned?: boolean } = {}) {
   if (options.pinned) await hooks.seedGatekeeper(scenario, props, { repoId: REPO_ID });
   const queue = new RecordingQueue();
   return {
+    /** The binding owner's account. */
+    owner: props.userObjectId,
     queue,
     read: (calls: SessionCall[], drain = false) =>
       hooks.sessionRead(scenario, props, new RpcStub(queue) as never, calls, drain),
@@ -521,14 +523,19 @@ describe("addObserver", () => {
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
   });
 
-  it("admits no one while the repository's id can't be pinned", async () => {
+  it("admits an observer on their own access by name while no id is stored, never asking the owner", async () => {
+    // A binding not read since ids were pinned has read nothing by id, and its owner's grant may
+    // have lapsed since; that must not keep out collaborators who can read the repository themselves.
     const github = new FakeGitHub();
-    const alice = await account("alice-token");
+    const [alice, bob] = await Promise.all([account("alice-token"), account("bob-token")]);
     github.readable.set("alice-token", new Set([REPO_ID]));
-    github.probeStatus = 502;
     const gk = await binding();
+    const owner = env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(gk.owner));
+    expect(await owner.reportTokenRejected("owner-token")).toBe("expired");
 
-    expect(await gk.admit(alice)).toEqual({ error: expect.any(String) });
-    expect(github.requestsWith("alice-token")).toEqual([]);
+    expect(await gk.admit(alice)).toEqual({ ok: undefined });
+    expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
+    expect(github.requestsWith("alice-token")).toEqual([`/repos/${OWNER}/${REPO}`]);
+    expect(github.requestsWith("owner-token")).toEqual([]);
   });
 });

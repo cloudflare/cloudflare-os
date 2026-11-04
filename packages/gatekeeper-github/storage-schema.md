@@ -48,8 +48,10 @@ No per-user SQL tables are used.
   REST request beneath the repository is then sent beneath `/repositories/<repoId>` and follows no
   redirect, issue search and git fetches and pushes go to the name that id has now (see
   `cache:repo-name`), and every read reports `repo/<repoId>` as its subresource. Absent until
-  first use, and nothing is read or written until it is stored. A binding that read before ids
-  were pinned was pinned to whichever repository its name named at its first read since.
+  first use, and nothing is read or written until it is stored. `addObserver` reads it as stored
+  and never stores it: without it, the binding has read nothing by id, and admission checks the
+  name alone. A binding that read before ids were pinned was pinned to whichever repository its
+  name named at its first read since.
 - `cachesByRepoId` -> `true` once the caches hold only what was read by the pinned id. A binding
   without it may hold reads a release that addressed the repository by name made, from whichever
   repository had the name then, so on start the `cache:*` families are invalidated by moving
@@ -182,9 +184,10 @@ Implemented TTL cache families:
   `GitHubIssueSummary` values, under the owner and name the repository had, read by its id, when
   searched (GitHub's search takes only a name)
 - `cache:repo-name:<repoId>` -> the repository's owner and name now, revalidated with its ETag on
-  every use: before each issue search and each git fetch or push, and again once GitHub answers
-  one, unless the search's answer is a 304 or a cached page, which the name it was cached under
-  already scopes
+  every use: before each issue search and each git fetch or push, and again once GitHub answers a
+  search or fetch, unless the search's answer is a 304 or a cached page, which the name it was
+  cached under already scopes; a push, which GitHub has applied once it answers, is not checked
+  again
 - `cache:list-pulls-v2:<encodedQuery>:p<page>` -> `GitHubPullRequestSummary[]`, unfiltered (v2: v1
   dropped rows with pending actions)
 - `cache:search-pulls-v2:<state>:p<page>` -> `GitHubPullRequestSummary & { bodyMarkdown }` rows of

@@ -2108,14 +2108,19 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * Sends a git smart-HTTP request to the bound repository. github.com addresses git only by owner
    * and name, so `send` is given the name the repository has now, read by its id (see
-   * #currentRepoName), and its response is refused if that name changed before GitHub answered:
-   * the name it left may already name another repository, which would then have served or
-   * received the request instead. GitHub has routed the request once its response arrives, so a
-   * pack still streaming after this check comes from the repository checked.
+   * #currentRepoName). With `confirm`, as for a fetch, the response is refused if that name changed
+   * before GitHub answered: the name it left may already name another repository, which would then
+   * have served the request instead. GitHub has routed the request once its response arrives, so a
+   * pack still streaming after this check comes from the repository checked. A push is sent
+   * unconfirmed: GitHub has applied it by the time it answers, so a check then could only report,
+   * not prevent, its delivery to a repository that took the name between the lookup and the push.
    */
-  async #gitRequest(send: (owner: string, repo: string) => Promise<Response>): Promise<Response> {
+  async #gitRequest(
+    send: (owner: string, repo: string) => Promise<Response>, options: { confirm: boolean },
+  ): Promise<Response> {
     const current = await this.#currentRepoName();
     const response = await send(current.owner, current.repo);
+    if (!options.confirm) return response;
     const after = await this.#currentRepoName().catch(async (error: unknown) => {
       await response.body?.cancel();
       throw error;
@@ -4275,7 +4280,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    */
   async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
     return this.#withApi(api => startGitPull(
-      body => this.#gitRequest((owner, repo) => api.fetchGitUploadPack(owner, repo, body)), oids, options));
+      body => this.#gitRequest((owner, repo) => api.fetchGitUploadPack(owner, repo, body), { confirm: true }),
+      oids, options));
   }
 
   async applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void> {
@@ -4465,7 +4471,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         try {
           const pack = await cache.buildPack();
           await this.#withApi(api => pushGitRefUpdate(
-            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body)),
+            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body), { confirm: false }),
             { branch: action.branch, oldSha: action.expectedOldSha, newSha: action.newSha },
             pack));
         } catch (error) {
@@ -4704,7 +4710,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const deleting = action.expectedOldSha === ZERO_OID;
         try {
           await this.#withApi(async api => pushGitRefUpdate(
-            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body)),
+            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body), { confirm: false }),
             {
               branch: action.branch,
               oldSha: action.newSha,
@@ -6351,19 +6357,23 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    *
    * Every read reports that repository by its id (see authorizeRead), which the Workshop checks
    * through verifyObserverAccess. This check stays for the reads made before they did, asking
-   * GitHub with the observer's own token, now, both whether they can read the repository the
-   * binding is pinned to, by its id, and whether they can read the one its name names, as releases
-   * that addressed it by name asked: those releases followed the name, so what they read may have
-   * come from a repository that took it, and nothing stored can tell which bindings read that way.
-   * Nothing else is tracked: no excludeObservers is set, no observer is remembered, and
+   * GitHub with the observer's own token, now, whether they can read the repository the binding's
+   * name names, as releases that addressed it by name asked, and the one it is pinned to, by its
+   * stored id, when it has one: those releases followed the name, so what they read may have come
+   * from a repository that took it, and nothing stored can tell which bindings read that way.
+   * Admission never pins the repository, which would ask with the binding owner's token, so a
+   * binding whose owner's grant has lapsed still admits observers on their own; a binding with no
+   * stored id has read nothing by id (every read pins it first), so the name is all its reads
+   * followed. Nothing else is tracked: no excludeObservers is set, no observer is remembered, and
    * removeObserver is an idempotent no-op. The overseer re-runs addObserver on every open, so loss
    * of the observer's repo access is caught promptly.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<GitHubVerifierApi>;
-    const { owner, repo, id } = await this.#pinnedRepo();
+    const { owner, repo } = this.ctx.props;
+    const id = this.ctx.storage.kv.get<number>("repoId");
     const [byId, byName] = await Promise.all([
-      verifier.hasRepoAccess(id), verifier.hasRepoNameAccess(owner, repo),
+      id === undefined || verifier.hasRepoAccess(id), verifier.hasRepoNameAccess(owner, repo),
     ]);
     if (!byId || !byName) {
       throw new Error(
