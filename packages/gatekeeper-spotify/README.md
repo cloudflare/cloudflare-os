@@ -88,7 +88,9 @@ You can see and manage connected accounts in settings (via the account menu in t
   reordering playlist tracks, editing playlist names and descriptions, and playback control (which
   takes effect on the device at once and cannot be reverted). Skipping to the next or previous track
   and adding to the queue always wait, since an apply retried after its result was lost would skip
-  or queue twice. Removing anything from the library or
+  or queue twice. Adding and reordering playlist tracks stay auto-approvable although such a retry
+  can add the tracks again or move them twice, since the result stays in the playlist to undo.
+  Removing anything from the library or
   a playlist, unfollowing or deleting a playlist, replacing a playlist's contents, and any change
   that makes a playlist public or collaborative, or undoes that, always need a manual approval.
 - **Non-owned playlists.** Spotify withholds track contents for playlists you don't own/collaborate
