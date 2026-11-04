@@ -330,6 +330,33 @@ describe('revealing a request', () => {
     expect(onActionRevealed).toHaveBeenCalled()
   })
 
+  it('asks for an earlier page once and gives up when it fails', async () => {
+    // Taller than its viewport, so the list's own fill-the-screen paging stays out of it.
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1000)
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    // The loaded page starts mid-thread, so there is earlier history to look through.
+    const latest = { ...actionMessage, sequence: 5, actionLog: pendingLog() } as AiChatMessage
+    const earlier = vi.fn<() => Promise<never>>(async () => { throw new Error('offline') })
+    Object.assign(server.overseer as object, {
+      getChatHistory: (_chatId: number, before?: number) =>
+        before === undefined ? Promise.resolve({ messages: [latest] }) : earlier(),
+    })
+    const onActionRevealed = vi.fn<() => void>()
+    addToast.mockClear()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 99, onActionRevealed })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    for (let i = 0; i < 5; i++) await act(async () => {})
+
+    expect(earlier).toHaveBeenCalledOnce()
+    expect(addToast).toHaveBeenCalledOnce()
+    expect(onActionRevealed).toHaveBeenCalledOnce()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
   it('gives up once the whole thread is loaded without the card', async () => {
     const server = await renderPendingCard(pendingLog())
     const onActionRevealed = vi.fn<() => void>()

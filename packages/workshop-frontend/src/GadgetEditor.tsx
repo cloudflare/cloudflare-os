@@ -882,7 +882,7 @@ export default function GadgetEditor() {
     return () => { cancelled = true; setHookedGadgetIds(NO_GADGETS) }
   }, [overseer, hookSignature, metadata !== null, isUseOnly])
   const pendingActionCount = pendingActions.length
-  const approvalDock = useApprovalDockVisibility(pendingActions)
+  const approvalDock = useApprovalDockVisibility(pendingActions, id!)
 
   // Whether the *selected* gadget has code. When none is selected, the code interface is either
   // unmounted or showing a worktree, whose code doesn't bear on the layout mode.
@@ -1211,6 +1211,8 @@ export default function GadgetEditor() {
     knownWorkpieceIdsRef.current = null
     turnOutputRef.current = null
     setUserNavigatedToList(false)
+    setDockActionId(null)
+    setRevealRequest(null)
   }, [id])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen

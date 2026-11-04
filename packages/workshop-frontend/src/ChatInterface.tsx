@@ -4046,9 +4046,10 @@ function ChatInterface({
   const hasEarlierMessages = oldestLoadedSequence !== undefined && oldestLoadedSequence > 0;
 
   // Load the page before the oldest message on screen. Those messages are all older than anything
-  // the subscription delivers, so lastMessageTimestamp is left alone.
-  const handleShowEarlierMessages = async () => {
-    if (selectedChatId === null || !hasEarlierMessages || isLoadingEarlier) return;
+  // the subscription delivers, so lastMessageTimestamp is left alone. Resolves to whether a page
+  // loaded, or "skipped" when there was none to ask for or one is already loading.
+  const handleShowEarlierMessages = async (): Promise<"loaded" | "failed" | "skipped"> => {
+    if (selectedChatId === null || !hasEarlierMessages || isLoadingEarlier) return "skipped";
 
     setIsLoadingEarlier(true);
     try {
@@ -4059,9 +4060,11 @@ function ChatInterface({
       // The page's own change-affecting messages now stand in for the boundary's merged update.
       setProposedChangesVersion((prev) => prev + 1);
       forceUpdate();
+      return "loaded";
     } catch (err) {
       console.error("Failed to load earlier messages:", err);
       toasts.add({ title: "Failed to load earlier messages", variant: "error" });
+      return "failed";
     } finally {
       setIsLoadingEarlier(false);
     }
@@ -4076,13 +4079,28 @@ function ChatInterface({
   onActionRevealedRef.current = onActionRevealed;
   // The request last revealed (or given up on), so it is handled once until the prop changes.
   const revealedActionIdRef = useRef<number | null>(null);
+  // Whether the reveal is waiting on a page of earlier history it asked for.
+  const revealPagingRef = useRef(false);
   useEffect(() => {
     if (revealActionId === null) revealedActionIdRef.current = null;
     if (revealActionId === null || revealActionId === revealedActionIdRef.current) return;
+    if (revealPagingRef.current) return;
     if (selectedChatId === null || !cacheRef.current.messages.has(selectedChatId) || isLoading) return;
     const card = messagesContainerRef.current?.querySelector(`[data-action-id="${revealActionId}"]`);
     if (!card && hasEarlierMessages) {
-      loadEarlierRef.current();
+      // One page at a time. A failed page ends the reveal (its toast says why) rather than asking
+      // again on the next render; a loaded one re-renders so the next look sees it. A skipped one
+      // means a page is already loading, whose arrival re-renders.
+      revealPagingRef.current = true;
+      void handleShowEarlierMessages().then((result) => {
+        revealPagingRef.current = false;
+        if (result === "failed") {
+          revealedActionIdRef.current = revealActionId;
+          onActionRevealedRef.current?.();
+        } else if (result === "loaded") {
+          forceUpdate();
+        }
+      });
       return;
     }
     if (card) {
