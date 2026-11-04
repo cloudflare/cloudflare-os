@@ -8,13 +8,20 @@ import type {
   ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatSubscriber, Overseer,
 } from '@gadgets/workshop-shared/api'
 
-// Each observer's callback, so a test can report a resize jsdom never lays out.
-const resizeCallbacks: Array<() => void> = []
+// Each observed element's callbacks, so a test can report a resize jsdom never lays out.
+const resizeCallbacks = new Map<Element, Array<() => void>>()
 vi.stubGlobal('ResizeObserver', class {
-  constructor(callback: () => void) { resizeCallbacks.push(callback) }
-  observe() {}
+  constructor(private callback: () => void) {}
+  observe(el: Element) { resizeCallbacks.set(el, [...(resizeCallbacks.get(el) ?? []), this.callback]) }
   disconnect() {}
 })
+// Reports `el` as `height` tall to whatever observes it.
+function reportHeight(el: Element, height: number) {
+  act(() => {
+    Object.defineProperty(el, 'offsetHeight', { value: height, configurable: true })
+    for (const callback of resizeCallbacks.get(el) ?? []) callback()
+  })
+}
 // jsdom lays nothing out; the message list scrolls itself to the bottom on every render.
 Element.prototype.scrollTo = () => {}
 
@@ -413,17 +420,10 @@ describe('revealing a request', () => {
 // `height` tall.
 async function renderWithAccessory() {
   const server = await renderPendingCard(pendingLog())
-  resizeCallbacks.length = 0
   await renderChat(server.overseer, { selectedChatId: 1, composerAccessory: <div id="accessory" /> })
   const floating = document.getElementById('accessory')!.parentElement!.parentElement!
   const list = document.querySelector('.chat-panel')!
-  return {
-    list,
-    resize: (height: number) => act(() => {
-      Object.defineProperty(floating, 'offsetHeight', { value: height, configurable: true })
-      for (const callback of resizeCallbacks) callback()
-    }),
-  }
+  return { list, resize: (height: number) => reportHeight(floating, height) }
 }
 
 describe('composer accessory', () => {
@@ -431,9 +431,19 @@ describe('composer accessory', () => {
     const scrollTo = vi.spyOn(Element.prototype, 'scrollTo')
     const { list, resize } = await renderWithAccessory()
     scrollTo.mockClear()
-    await resize(300)
+    resize(300)
     expect((list.firstElementChild as HTMLElement).style.paddingBottom).toBe('344px')
     expect(scrollTo).toHaveBeenCalled()
+  })
+
+  it('leaves room for the accessory below the chat list too', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { composerAccessory: <div id="accessory" /> })
+    reportHeight(document.getElementById('accessory')!.parentElement!.parentElement!, 300)
+    expect((document.querySelector('.chat-panel') as HTMLElement).style.paddingBottom).toBe('324px')
   })
 
   it('leaves a reader who scrolled up where they are', async () => {
@@ -446,7 +456,7 @@ describe('composer accessory', () => {
     })
     list.dispatchEvent(new Event('scroll'))
     scrollTo.mockClear()
-    await resize(300)
+    resize(300)
     expect(scrollTo).not.toHaveBeenCalled()
   })
 })

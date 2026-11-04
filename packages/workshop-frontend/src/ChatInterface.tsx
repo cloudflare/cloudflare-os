@@ -5447,7 +5447,14 @@ function ChatInterface({
         </DropdownMenu>
       </div>
       {/* Chat list */}
-      <div className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3">
+      <div
+        className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3"
+        // With no chat selected the accessory floats over the end of this list instead, 12px (mb-3)
+        // above the new-chat composer.
+        style={selectedChatId === null && accessoryHeight > 0
+          ? { paddingBottom: accessoryHeight + 12 + 12 }
+          : undefined}
+      >
         {!chatListReady ? (
           <div className="flex items-center justify-center py-10">
             <div className="w-5 h-5 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
