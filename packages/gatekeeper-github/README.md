@@ -23,8 +23,9 @@ This package provides GitHub OAuth integration for Gadgets. It serves two purpos
 Every queued action carries a stable kind (`github.<action>`, e.g. `github.push`), and the user may
 opt in to approving a kind automatically on a connection. Every action is eligible, including
 closing and reopening, `requestChanges` reviews and force pushes, except those that pass a review
-gate, which always wait for a person: **merging a pull request**, **an approving review**, and **a
-push or force push to the repository's default branch or a protected branch**. An approval shares
+gate or can start a billed run, which always wait for a person: **merging a pull request**, **an
+approving review**, **a push or force push to the repository's default branch or a protected
+branch**, and **creating an issue assigned to an app**. An approval shares
 the `github.postReview` kind with comment and request-changes reviews, and a gated push shares
 `github.push` or `github.forcePush` with pushes to other branches, but neither is ever
 auto-approvable, so enabling those kinds does not cover them. Whether a branch is gated is read
@@ -33,9 +34,9 @@ default branch, a branch GitHub reports as protected, or one a ruleset covers, i
 the push creates, and the first push into an empty repository, which makes its default branch. A
 classic protection pattern is shown only to admins, so a push that creates a
 branch one will match is not gated. GitHub refusing the account the protection or the rulesets
-counts as unprotected; any other failed read gates the push. Creating an issue assigned to an app (a login ending in `[bot]`, or `Copilot`) also
-waits for a person under `github.createIssue`, because an app such as Copilot's coding agent
-starts a run that spends billed credits. A force push has its own kind (`github.forcePush`), so enabling ordinary pushes does
+counts as unprotected; any other failed read gates the push. An issue assigned to an app (a login
+ending in `[bot]`, or `Copilot`) shares `github.createIssue` with other issues but always waits,
+because an app such as Copilot's coding agent starts a run that spends billed credits. A force push has its own kind (`github.forcePush`), so enabling ordinary pushes does
 not let history be rewritten. Excluded actions are still approved by hand as before. Each binding
 advertises through `getAutoApprovableActions()` only the eligible kinds its session can submit (an
 issue binding, for example, never lists pushes).
