@@ -25,11 +25,13 @@ export const ChatOrganizerMenuItems = ({ chatId, organizer }: {
   const currentFolder = folderOfChat(organization, chatId);
 
   // Moving a chat to another section re-creates its row, so the menu's own trigger is gone by the
-  // time it would return focus there. Give it to the moved row's actions button instead, if shown.
+  // time it would return focus there. Give it to the moved row's actions button instead, or to
+  // Other's toggle when the row went into a hidden Other.
   const move = (change: () => void) => {
     change();
     requestAnimationFrame(() =>
-      document.querySelector<HTMLElement>(`[data-chat-actions="${chatId}"]`)?.focus());
+      (document.querySelector<HTMLElement>(`[data-chat-actions="${chatId}"]`)
+        ?? document.querySelector<HTMLElement>("[data-chat-other-toggle]"))?.focus());
   };
 
   return (

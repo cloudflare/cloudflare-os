@@ -3,7 +3,8 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { Toasty, useKumoToastManager } from "@cloudflare/kumo";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { organizeChats } from "./chatOrganization";
 import { chatOrganizerStorageKey } from "./chatOrganizerStore";
 import { useChatOrganizer, type ChatOrganizer } from "./useChatOrganizer";
@@ -13,22 +14,27 @@ import { useChatOrganizer, type ChatOrganizer } from "./useChatOrganizer";
 const chats = [1, 2, 3].map((id) => ({ id }));
 const roots: Root[] = [];
 
+let toastTitles: string[] = [];
+
 // Mounts the hook and returns a getter for its latest value.
 const mount = (storageKey: string | null) => {
   let latest: ChatOrganizer | undefined;
   const Probe = () => {
     latest = useChatOrganizer(storageKey);
+    toastTitles = useKumoToastManager().toasts.map((toast) => String(toast.title));
     return null;
   };
   const root = createRoot(document.createElement("div"));
   roots.push(root);
-  act(() => root.render(<Probe />));
+  act(() => root.render(<Toasty><Probe /></Toasty>));
   return () => latest!;
 };
 
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
   localStorage.clear();
+  vi.restoreAllMocks();
+  toastTitles = [];
 });
 
 describe("useChatOrganizer", () => {
@@ -76,6 +82,30 @@ describe("useChatOrganizer", () => {
     const key = chatOrganizerStorageKey("user-1", "workspace-1");
     localStorage.setItem(key, "{not json");
     expect(organizeChats(chats, mount(key)().organization)).toBeNull();
+  });
+
+  it("drops stored folders it can't read and keeps the rest", () => {
+    const key = chatOrganizerStorageKey("user-1", "workspace-1");
+    localStorage.setItem(key, JSON.stringify({
+      folders: [null, { id: 7 }, { id: "board", name: "Board deck" }],
+      places: [1, 2],
+    }));
+    const { organization } = mount(key)();
+    expect(organization.folders).toEqual([{ id: "board", name: "Board deck" }]);
+    expect(organization.places).toEqual({});
+  });
+
+  it("says so when a change can't be saved, and doesn't start naming a folder that wasn't made", () => {
+    const organizer = mount(chatOrganizerStorageKey("user-1", "workspace-1"));
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+
+    act(() => organizer().createFolder(2));
+
+    expect(organizer().organization.folders).toEqual([]);
+    expect(organizer().renamingFolderId).toBeNull();
+    expect(toastTitles).toEqual(["Couldn't save that change"]);
   });
 
   it("ignores changes until it knows whose list it is", () => {

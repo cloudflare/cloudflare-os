@@ -1,4 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
+import { useKumoToastManager } from "@cloudflare/kumo";
 import {
   EMPTY_ORGANIZATION,
   PINNED,
@@ -27,9 +28,23 @@ export const useChatOrganizer = (storageKey: string | null) => {
   );
   // The folder whose name is being edited; a new folder starts here.
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const toasts = useKumoToastManager();
 
+  // Returns whether the change was saved. Saving fails only when this browser's storage is full or
+  // blocked, and every change comes from a click, so say so rather than let the click do nothing.
   const update = (change: (current: ChatOrganization) => ChatOrganization) => {
-    if (storageKey !== null) writeChatOrganization(storageKey, change(readChatOrganization(storageKey)));
+    if (storageKey === null) return false;
+    try {
+      writeChatOrganization(storageKey, change(readChatOrganization(storageKey)));
+      return true;
+    } catch {
+      toasts.add({
+        title: "Couldn't save that change",
+        description: "This browser's storage may be full.",
+        variant: "error",
+      });
+      return false;
+    }
   };
 
   return {
@@ -43,13 +58,12 @@ export const useChatOrganizer = (storageKey: string | null) => {
     moveToOther: (chatId: number) => update((o) => placeChat(o, chatId, null)),
     /** Creates a folder, optionally moving a chat into it, and starts naming it. */
     createFolder: (chatId?: number) => {
-      if (storageKey === null) return;
       const id = crypto.randomUUID();
-      update((o) => {
+      const saved = update((o) => {
         const added = addFolder(o, { id, name: NEW_FOLDER_NAME });
         return chatId === undefined ? added : placeChat(added, chatId, id);
       });
-      setRenamingFolderId(id);
+      if (saved) setRenamingFolderId(id);
     },
     startRenamingFolder: (folderId: string) => setRenamingFolderId(folderId),
     /** Ends naming; a null or blank name keeps the current one. */

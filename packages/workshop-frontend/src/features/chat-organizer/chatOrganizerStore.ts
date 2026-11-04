@@ -1,4 +1,4 @@
-import { EMPTY_ORGANIZATION, type ChatOrganization } from "./chatOrganization";
+import { EMPTY_ORGANIZATION, type ChatFolder, type ChatOrganization } from "./chatOrganization";
 
 // Pins and folders live in this browser only, per user and workspace, so the feature needs nothing
 // from the kernel. Moving them server-side means replacing this module.
@@ -13,13 +13,21 @@ const listeners = new Set<() => void>();
 // changes.
 const snapshots = new Map<string, { raw: string | null; organization: ChatOrganization }>();
 
+// Stored data may be hand-edited or from another version, and one bad folder would break every
+// render of the list, so each folder is checked.
+const isFolder = (value: unknown): value is ChatFolder =>
+  typeof value === "object" && value !== null
+  && typeof (value as ChatFolder).id === "string" && typeof (value as ChatFolder).name === "string";
+
 const parse = (raw: string | null): ChatOrganization => {
   if (raw === null) return EMPTY_ORGANIZATION;
   try {
     const value = JSON.parse(raw) as Partial<ChatOrganization> | null;
     return {
-      folders: Array.isArray(value?.folders) ? value.folders : [],
-      places: value?.places && typeof value.places === "object" ? value.places : {},
+      folders: Array.isArray(value?.folders) ? value.folders.filter(isFolder) : [],
+      places: value?.places && typeof value.places === "object" && !Array.isArray(value.places)
+        ? value.places
+        : {},
       otherHidden: value?.otherHidden === true,
     };
   } catch {

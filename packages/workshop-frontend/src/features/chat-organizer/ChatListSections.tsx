@@ -48,6 +48,7 @@ export const ChatListSections = ({ sections, organizer, filtered, renderChat, re
         <button
           type="button"
           aria-expanded={!otherHidden}
+          data-chat-other-toggle
           onClick={() => organizer.setOtherHidden(!otherHidden)}
           className="group flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1 text-left text-[11px] font-medium uppercase tracking-[0.08em] text-kumo-inactive transition-colors duration-150 ease-out hover:text-kumo-subtle focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast"
         >
