@@ -73,6 +73,12 @@ that touches records at the central service the whole installation shares, so on
 could make them hot and use up the installation's request limit there, refusing every other user's
 pushes until it resets.
 
+The limit covers device calls only; deliveries aren't counted. A notification is signed once for
+each device the User DO stores, and it stores only the 20 most recently registered: the service
+keeps at most 10 browsers and 10 phones per user, but the User DO drops a device the service
+evicted only once a delivery to it fails, so without the cap a registration loop could pile up
+devices for one notification to reach.
+
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting
 `window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a

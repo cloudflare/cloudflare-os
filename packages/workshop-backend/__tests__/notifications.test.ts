@@ -46,7 +46,7 @@ const base64urlBytes = (value: string) => Uint8Array.from(
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 // Stands in for the central service. Each registration mints the next subscription id for the
-// device whose key repeats the registration id's first character, or a browser endpoint's last;
+// device whose key is the registration id, or a browser endpoint's last character repeated;
 // deliveries are accepted, except that `refuse` answers those to one subscription with the
 // service's error.
 function stubService(refuse?: { subscriptionId: string; status: string; code: number }) {
@@ -59,7 +59,7 @@ function stubService(refuse?: { subscriptionId: string; status: string; code: nu
     }
     if (path === "/v1/subscriptions" || path === "/v2/subscriptions") {
       return Response.json({
-        deviceKey: (body.deviceRegistrationId ?? body.webPush.endpoint.at(-1))[0].repeat(64),
+        deviceKey: body.deviceRegistrationId ?? body.webPush.endpoint.at(-1).repeat(64),
         subscriptionId: mintedId(++minted),
       }, { status: 201 });
     }
@@ -385,10 +385,29 @@ describe("UserDurableObject notifications", () => {
     let fetcher = stubService();
     await inUser(async user => {
       for (let i = 0; i < 20; i++) await user.registerNotificationDevice("a".repeat(64));
+      // Refused halfway through the minute, which must not restart it.
+      vi.advanceTimersByTime(30_000);
       await expect(user.registerNotificationDevice("a".repeat(64))).rejects.toThrow("Too many");
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(30_000);
       await user.registerNotificationDevice("b".repeat(64));
     });
     expect(bodies(fetcher, "/v1/subscriptions")).toHaveLength(21);
+  });
+
+  // The service drops a user's devices past 10 browsers and 10 phones, but the User DO keeps an
+  // entry until a delivery to it fails, so a registration loop could pile up entries for one
+  // notification to fan out to.
+  it("pushes only to the 20 most recently registered devices", async () => {
+    vi.useFakeTimers();
+    let fetcher = stubService();
+    await inUser(async user => {
+      for (let n = 1; n <= 20; n++) await user.registerNotificationDevice(mintedId(n));
+      vi.advanceTimersByTime(60_000);
+      // The first device registers again, leaving the second the stalest.
+      await user.registerNotificationDevice(mintedId(1));
+      await user.registerNotificationDevice(mintedId(21));
+      await user.publishNotification(NOTIFICATION);
+    });
+    expect(pushed(fetcher)).toEqual(Array.from({ length: 20 }, (_, i) => mintedId(i + 3)));
   });
 });

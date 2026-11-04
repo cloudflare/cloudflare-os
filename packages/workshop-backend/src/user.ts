@@ -38,6 +38,10 @@ const OUTPUTS_BACKFILL_PAGE = 16;
 // per minute; see #countNotificationServiceCall().
 const NOTIFICATION_SERVICE_CALLS_PER_MINUTE = 20;
 
+// How many devices a user's notifications go to: the service keeps at most 10 browsers and 10
+// phones per user, so an older device stored here is dead.
+const NOTIFICATION_DEVICES = 20;
+
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
 export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
 
@@ -502,11 +506,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         this.env, deviceRegistrationId, this.#notificationSubject));
   }
 
-  // Counts one signed request to the notification service, throwing past 20 in a minute-long
-  // window so the caller signs and sends nothing. Each request touches this installation's records
-  // at the central service, which all its users share, so one user's loop would make them hot for
-  // the whole installation. The check and the increment run before any await, so concurrent calls
-  // can't race past the limit. The count is kept in memory, so a reset forgets at most one window.
+  // Counts one signed request to the notification service, throwing past
+  // NOTIFICATION_SERVICE_CALLS_PER_MINUTE in a minute-long window so the caller signs and sends
+  // nothing. Each request touches this installation's records at the central service, which all its
+  // users share, so one user's loop would make them hot for the whole installation. The check and
+  // the increment run before any await, so concurrent calls can't race past the limit. The count is
+  // kept in memory, so a reset forgets at most one window.
   #countNotificationServiceCall(): void {
     let now = Date.now();
     if (now - this.#notificationCallWindowStart >= 60_000) {
@@ -522,10 +527,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.ctx.id.toString();
   }
 
+  // Keeps the latest NOTIFICATION_DEVICES registrations. A device the service evicted would
+  // otherwise stay until a delivery to it failed, so a registration loop could pile up devices for
+  // one notification to fan out to.
   #storeNotificationSubscription(
       { deviceKey, subscriptionId }: Awaited<ReturnType<typeof registerDevice>>): void {
-    this.storage.notificationSubscriptions.put(
-        { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
+    let others = Object.entries(this.storage.notificationSubscriptions.get())
+        .filter(([key]) => key !== deviceKey);
+    this.storage.notificationSubscriptions.put(Object.fromEntries(
+        [...others, [deviceKey, subscriptionId]].slice(-NOTIFICATION_DEVICES)));
   }
 
   /** Subscribe a visible authenticated client to live user notifications. */
