@@ -310,6 +310,12 @@ This section is **only for existing gatekeepers**, not an alternative new-author
 
 Implement a complete, deduplicated `getHistoricalSubresources()` export of resources actually observed under legacy tracking and not already reported. `verifyObserverAccess()` must accept and enforce every exported resource kind. Do not export a binding requirement merely because a connection exists; export the bound resource only if its data was observed. Keep the legacy records the export reads, make the export read-only and repeatable, and return a complete list or throw—never truncate or discard history. Connections with no legacy observations return `[]`.
 
+The current kernel does not call this export; its importer is still deferred in
+[`plans/kernel-observer-tracking.md`](../../../plans/kernel-observer-tracking.md#deferred). Retain
+legacy enforcement until every affected read reports complete requirements and a shipped kernel
+importer has committed the complete historical requirements to the observer ledger. Implementing
+the exporter alone does not replace enforcement of past disclosures.
+
 Existing migrations must preserve/export historical access requirements, including membership requirements that governed past disclosures. If the old state cannot prove a complete export, resolve that migration explicitly; an empty export or a no-op admission method is not a safe substitute. `docs/observers.md` documents the deployed protocol.
 
 ## Hooks (push notifications)

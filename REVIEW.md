@@ -63,9 +63,10 @@ gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
 For **new gatekeepers**, enforce that checklist's "Observer protocol" items, including a read-only
 `getHistoricalSubresources()` returning `[]`. The current `Gatekeeper` interface enforces none of
 them, so code that type-checks can still violate them. For **existing migrations**,
-preserve old enforcement until replaced and export complete historical requirements through
-`getHistoricalSubresources()`; do not apply the new-gatekeeper empty-history/no-op rule to
-existing data.
+preserve old enforcement until every affected read reports complete requirements and a shipped
+kernel importer has committed the complete historical requirements exported through
+`getHistoricalSubresources()` to the observer ledger. The current kernel does not consume this
+export yet; do not apply the new-gatekeeper empty-history/no-op rule to existing data.
 
 ## Logging, errors and secrets
 

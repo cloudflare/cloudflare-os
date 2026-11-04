@@ -14,10 +14,11 @@ interface does not declare it, so type-checking will not catch its absence. Impl
 compatibility-only no-ops.
 
 **Do not copy the empty history export or no-op admission methods into an existing gatekeeper.**
-An existing migration must preserve its old checks until their requirements are fully represented,
-and export its actual historical access requirements through `getHistoricalSubresources()`, not a
-blind `[]`. This template needs no observer roster, observed-set log, `excludeObservers`, or
-legacy tracker.
+An existing migration must export its actual historical access requirements through
+`getHistoricalSubresources()`, not a blind `[]`, and preserve its old checks until all affected reads
+report complete requirements and a shipped kernel importer has committed the history to the
+observer ledger. The current kernel does not consume the export yet. This template needs no
+observer roster, observed-set log, `excludeObservers`, or legacy tracker.
 
 `subresources: []` means **no observer-access restriction**, never "the binding already checked".
 Private-only reads must still report a real resource ID and deny collaborators in

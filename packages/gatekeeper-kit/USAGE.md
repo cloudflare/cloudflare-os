@@ -740,10 +740,13 @@ one of the legacy strategies below, and the typed helper above does the same job
 
 Do not apply the new-gatekeeper empty-history/no-op admission recipe to an existing binding.
 Preserve old binding-wide checks, private restrictions, observed sets, stored verifiers, and
-admission enforcement until every affected read is converted and its actual historical access
-requirements can be exported by `getHistoricalSubresources(): Promise<string[]>`. Export those
-real requirements, not a blind `[]`; if historical state cannot yet express them, retain the old
-enforcement. Converting a read does not erase earlier disclosures or justify neutralizing admission.
+admission enforcement until every affected read is converted **and a shipped kernel importer has
+committed all actual historical access requirements to the observer ledger**. Export those real
+requirements through `getHistoricalSubresources(): Promise<string[]>`, not a blind `[]`; if
+historical state cannot yet express them, retain the old enforcement. The current kernel does not
+call this export; the importer is still deferred in
+[`plans/kernel-observer-tracking.md`](../../plans/kernel-observer-tracking.md#deferred). Implementing
+a complete exporter alone does not protect past disclosures or justify retiring legacy checks.
 
 Legacy `privateObservers`, `aclObservers`, `trackedCollectionObservers`, and `openObservers`, and
 the `baseline`, `collections`, and `withholdFromObservers` scopes, exist for maintaining and
