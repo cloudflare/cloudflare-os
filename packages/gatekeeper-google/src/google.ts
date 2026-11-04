@@ -56,7 +56,7 @@ import type {
 } from "./drive-types";
 import { ChatApi, isChatNoAccessError } from "./chat-api";
 import type { GoogleVerifierApi } from "./google-verifier-types";
-import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
+import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
   BigQueryQueryOptions, BigQueryQueryResult, BigQuerySession, BigQueryTable,
@@ -111,7 +111,9 @@ import {
   beginStoredOAuthFlow, claimStoredOAuthFlow, mergeGrantedResources, prepareOAuthFlow,
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "./oauth-flow";
-import { type ObserverBatchResult, type ObserverCheck, ObserverTracker } from "./observers";
+import {
+  type ObserverBatchResult, type ObserverCheck, ObserverTracker,
+} from "./observers";
 import type {Pager} from "./cursor";
 import {
   getBasePath,
@@ -453,6 +455,26 @@ type StagedGoogleCredentials = {
 const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
 const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
 
+/** A subresource whose access a UserAccount checks for itself (see parseAccountSubresource). */
+type AccountSubresource =
+  | { kind: "calendar" | "freeBusy"; calendarId: string }
+  | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef };
+
+/**
+ * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
+ * (see parseCalendarSubresource), or a BigQuery dataset. Throws for any other ID.
+ */
+function parseAccountSubresource(subresource: string): AccountSubresource {
+  switch (parseSubresourceId(subresource).namespace) {
+    case CALENDAR_SUBRESOURCE_NAMESPACE:
+      return parseCalendarSubresource(subresource);
+    case BIGQUERY_SUBRESOURCE_NAMESPACE:
+      return { kind: "bigQueryDataset", dataset: parseBigQueryDatasetSubresource(subresource) };
+    default:
+      throw new Error("Not a Google subresource.");
+  }
+}
+
 export class UserAccount extends DurableObject<Env> {
   // Serialize minting, reconnect, and revoke against each other. Minting is a network round trip, so
   // without this a single invalidated token has every concurrent caller mint its own — a burst
@@ -643,8 +665,16 @@ export class UserAccount extends DurableObject<Env> {
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
     let parsed = new Map(subresources.map(subresource =>
-        [subresource, parseCalendarSubresource(subresource)] as const));
-    let api = new GoogleCalendarApi(async opts => (await this.getAccessToken(opts)).token);
+        [subresource, parseAccountSubresource(subresource)] as const));
+    let getToken = async (opts?: AccessTokenRequest) => (await this.getAccessToken(opts)).token;
+    let freeBusy = new Map<string, string>();
+    let calendars = new Map<string, string>();
+    let datasets = new Map<string, BigQueryDatasetRef>();
+    for (let [subresource, resource] of parsed) {
+      if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
+      else (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
+    }
+    let api = new GoogleCalendarApi(getToken);
     let ttl = (allowed: boolean) =>
         allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
     let access = new Map<string, boolean>();
@@ -653,15 +683,20 @@ export class UserAccount extends DurableObject<Env> {
     // time, so a long list doesn't trip Google's per-user rate limit. A query Google refuses
     // outright (expired credentials, a missing scope, a rate limit) says nothing about the
     // account's access, so it throws rather than reading as a denial.
-    let freeBusy = [...parsed].filter(([, {kind}]) => kind === "freeBusy").map(([id]) => id);
-    let answers = await this.#access.cachedMany(freeBusy, ttl, missing =>
-        api.hasFreeBusyAccess(missing.map(subresource => parsed.get(subresource)!.calendarId)),
+    let freeBusyIds = [...freeBusy.keys()];
+    let freeBusyAnswers = await this.#access.cachedMany(freeBusyIds, ttl, missing =>
+        api.hasFreeBusyAccess(missing.map(subresource => freeBusy.get(subresource)!)),
         {batchSize: MAX_FREE_BUSY_CALENDARS});
-    freeBusy.forEach((subresource, index) => access.set(subresource, answers[index]));
-    for (let [subresource, {kind, calendarId}] of parsed) {
-      if (kind === "calendar") {
+    freeBusyIds.forEach((subresource, index) => access.set(subresource, freeBusyAnswers[index]));
+    for (let [subresource, calendarId] of calendars) {
+      access.set(subresource, await this.#access.cached(subresource, ttl,
+          () => hasCalendarDetailAccess(api, calendarId)));
+    }
+    if (datasets.size > 0) {
+      let bigQuery = new BigQueryApi(getToken);
+      for (let [subresource, dataset] of datasets) {
         access.set(subresource, await this.#access.cached(subresource, ttl,
-            () => hasCalendarDetailAccess(api, calendarId)));
+            () => hasBigQueryDatasetAccess(bigQuery, dataset)));
       }
     }
     return subresources.map(subresource => access.get(subresource)!);
@@ -1080,13 +1115,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     observer's own token can open the bound spreadsheet.
 //   - Google Slides — strategy B (ACL check, single unit): hasPresentationAccess answers whether the
 //     observer's own token can open the bound presentation.
-//   - Google Calendar — strategy B reporting subresources: every read reports the calendar, events
-//     or free/busy it returned, checked by checkSubresourceAccess, where a calendar or event needs
-//     the role hasCalendarWriterAccess also checks for the bound calendar at admission;
+//   - Google Calendar — strategy B reporting subresources: every read reports the calendar or
+//     free/busy it returned, checked by checkSubresourceAccess, where a calendar needs the role
+//     hasCalendarWriterAccess also checks for the bound calendar at admission;
 //     hasCalendarFreeBusyAccess covers the calendars availability queries recorded before they
 //     reported them. The observer's UserAccount answers both, reusing recent answers.
-//   - BigQuery — strategy C (data-set tracking by dataset): hasDatasetAccess answers whether the
-//     observer's own token has IAM access to a dataset (BigQuery returns 401/403/404 otherwise).
+//   - BigQuery — strategy C by dataset, kernel-checked: reads report each dataset whose data they
+//     reveal as a `bigquery/project/<projectId>/dataset/<datasetId>` subresource, checked by
+//     checkSubresourceAccess like Calendar's. hasDatasetAccess answers, without reusing answers,
+//     whether the observer's own token has IAM access to a dataset (see hasBigQueryDatasetAccess),
+//     for the datasets addObserver still guards from before reads reported them.
 //   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
 //     binding checks that the observer can open its conversation.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
@@ -1120,6 +1158,26 @@ async function hasCalendarDetailAccess(api: GoogleCalendarApi, calendarId: strin
     return hasCalendarPrivateAccessRole(await api.getCalendar(calendarId));
   } catch (error) {
     if (httpStatusFromError(error) === 404) return false;
+    throw error;
+  }
+}
+
+/**
+ * Whether `api`'s account can open a BigQuery dataset: false when BigQuery denies it (403
+ * `accessDenied`, which also hides whether it exists) or doesn't hold it (404), and a throw for any
+ * other failure. BigQuery answers other refusals with 403 too (a rate limit, a quota, billing, a
+ * missing scope, a disabled API), and those say nothing about the account's access.
+ */
+async function hasBigQueryDatasetAccess(
+    api: BigQueryApi, { projectId, datasetId }: BigQueryDatasetRef): Promise<boolean> {
+  try {
+    await api.getDataset(projectId, datasetId);
+    return true;
+  } catch (error) {
+    if (error instanceof BigQueryApiError &&
+        (error.status === 404 || (error.status === 403 && error.reason === "accessDenied"))) {
+      return false;
+    }
     throw error;
   }
 }
@@ -1196,14 +1254,7 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
   }
 
   async hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean> {
-    let api = new BigQueryApi(opts => this.#getToken(opts));
-    try {
-      await api.getDataset(projectId, datasetId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasBigQueryDatasetAccess(new BigQueryApi(opts => this.#getToken(opts)), { projectId, datasetId });
   }
 
   async hasChatSpaceAccess(spaceName: string, options: { members?: boolean } = {}): Promise<boolean> {
@@ -1240,6 +1291,15 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
     return this.ctx.props.userObjectId;
   }
 }
+
+// Google's verifyObserverAccess(): admits an observer only if their own account can read every
+// subresource, as its UserAccount last learned (see UserAccount.checkSubresourceAccess for how long
+// it reuses answers). The account checks every Google gatekeeper's subresources, so each gatekeeper
+// first refuses those it doesn't report.
+const verifyGoogleSubresourceAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<GoogleVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkSubresourceAccess([...subresources]),
+});
 
 class PendingActionStore<Action> {
   #kv: DurableObjectStorage["kv"];
@@ -2687,13 +2747,6 @@ function parseCalendarSubresource(subresource: string)
   throw new Error("Not a Google Calendar subresource.");
 }
 
-// Admits an observer only if their own account can read every subresource, as its UserAccount
-// last learned (see UserAccount.checkSubresourceAccess for how long it reuses answers).
-const verifyCalendarAccess = observerAccessVerifier({
-  hasCollectionAccess: (verifier: Fetcher<GoogleVerifierApi>, subresources: readonly string[]) =>
-    verifier.checkSubresourceAccess([...subresources]),
-});
-
 export class GoogleCalendarGatekeeperImpl
     extends DurableObject<Env, GoogleCalendarGatekeeperImplProps>
     implements Gatekeeper<GoogleCalendarSession> {
@@ -2878,7 +2931,10 @@ export class GoogleCalendarGatekeeperImpl
   async verifyObserverAccess(
       observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
       subresources: string[]): Promise<{allowedObserverIds: string[]}> {
-    return verifyCalendarAccess(observers, subresources);
+    // Refused here rather than by the account, which also checks other Google gatekeepers'
+    // subresources.
+    for (let subresource of subresources) parseCalendarSubresource(subresource);
+    return verifyGoogleSubresourceAccess(observers, subresources);
   }
 }
 
@@ -3494,12 +3550,36 @@ export class GoogleDriveSessionImpl extends RpcTarget
 // `maximumBytesBilled` before actually executing — defense in depth, since BigQuery will also
 // enforce maximumBytesBilled server-side.
 
-/** One BigQuery dataset, the unit at which observer access is tracked. */
+/** One BigQuery dataset, the unit at which observer access is checked. */
 type BigQueryDatasetRef = { projectId: string; datasetId: string };
 
-type BigQueryGatekeeperImplProps = {
+const BIGQUERY_SUBRESOURCE_NAMESPACE = "bigquery";
+
+/**
+ * The subresource ID a read reports for a dataset whose data it reveals:
+ * `bigquery/project/<projectId>/dataset/<datasetId>`, each component escaped. A dataset ID is
+ * unique only within its project, so the ID names both.
+ */
+function bigQueryDatasetSubresource({ projectId, datasetId }: BigQueryDatasetRef): string {
+  return formatSubresourceId({
+    namespace: BIGQUERY_SUBRESOURCE_NAMESPACE,
+    fragments: [{ name: "project", id: projectId }, { name: "dataset", id: datasetId }],
+  });
+}
+
+/** The dataset a {@link bigQueryDatasetSubresource} ID names; throws for any other ID. */
+function parseBigQueryDatasetSubresource(id: string): BigQueryDatasetRef {
+  let { namespace, fragments } = parseSubresourceId(id);
+  if (namespace !== BIGQUERY_SUBRESOURCE_NAMESPACE || fragments.length !== 2 ||
+      fragments[0].name !== "project" || fragments[1].name !== "dataset") {
+    throw new Error("Not a BigQuery dataset subresource ID.");
+  }
+  return { projectId: fragments[0].id, datasetId: fragments[1].id };
+}
+
+export type BigQueryGatekeeperImplProps = {
   userObjectId: string;
-  // When set, narrows the session's authority. Project is required for any narrower scope.
+  /** When set, narrows the session's authority. Project is required for any narrower scope. */
   scopedProjectId?: string;
   scopedDatasetId?: string;
   scopedTableId?: string;
@@ -3554,7 +3634,6 @@ export class BigQueryGatekeeperImpl
       this.ctx.props.scopedProjectId,
       this.ctx.props.scopedDatasetId,
       this.ctx.props.scopedTableId,
-      datasets => this.#observers.prepareObservation(datasets),
     );
   }
 
@@ -3566,9 +3645,14 @@ export class BigQueryGatekeeperImpl
   }
 
   // -------------------------------------------------------------------------
-  // Observer tracking — strategy C, by dataset. Even a project- or table-scoped binding is tracked
-  // at dataset granularity: users may have IAM access to different datasets, so we record which
-  // datasets' data the gadget has actually read and verify each observer against them.
+  // Observer tracking — strategy C, by dataset. Even a project- or table-scoped binding is checked
+  // at dataset granularity: users may have IAM access to different datasets. Reads report each
+  // dataset they reveal as a subresource, which the Workshop checks through verifyObserverAccess().
+  //
+  // This tracker now guards only legacy history: the datasets reads recorded before they reported
+  // subresources, or that a read still running that code records. Reads no longer feed it, so
+  // addObserver() verifies each observer against that history alone, through hasDatasetAccess,
+  // which reuses no answers.
 
   get #observers(): ObserverTracker<BigQueryDatasetRef, Fetcher<GoogleVerifierApi>> {
     return new ObserverTracker(this.ctx.storage.kv, {
@@ -3595,6 +3679,19 @@ export class BigQueryGatekeeperImpl
   async removeObserver(id: string): Promise<void> {
     this.#observers.removeObserver(id);
   }
+
+  /**
+   * Checks the dataset subresources reads report, failing the whole call for any other ID. Each
+   * observer's UserAccount answers whether its own token has IAM access to every dataset, reusing
+   * recent answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    for (let id of subresources) parseBigQueryDatasetSubresource(id);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 @validateRpc()
@@ -3604,8 +3701,6 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   #scopedProjectId?: string;
   #scopedDatasetId?: string;
   #scopedTableId?: string;
-  // Records the datasets an observation reveals and returns observers to exclude.
-  #observe: (datasets: BigQueryDatasetRef[]) => Promise<ObserverCheck<BigQueryDatasetRef>>;
 
   constructor(
     api: BigQueryApi,
@@ -3613,7 +3708,6 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     scopedProjectId: string | undefined,
     scopedDatasetId: string | undefined,
     scopedTableId: string | undefined,
-    observe: (datasets: BigQueryDatasetRef[]) => Promise<ObserverCheck<BigQueryDatasetRef>>,
   ) {
     super();
     this.#api = api;
@@ -3621,21 +3715,19 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     this.#scopedProjectId = scopedProjectId;
     this.#scopedDatasetId = scopedDatasetId;
     this.#scopedTableId = scopedTableId;
-    this.#observe = observe;
   }
 
-  // Authorize an observation that reveals data belonging to specific dataset(s), tracking them and
-  // excluding observers who lack access to a newly-seen one. Use for every read that exposes dataset
-  // data; pass an empty `datasets` for reads that reveal none (e.g. echoing the scoped project id).
+  // Authorize an observation, reporting as subresources the datasets whose data it reveals, which
+  // the Workshop checks every collaborator who can see the read against. Use for every read; pass
+  // an empty `datasets` for reads that reveal none (e.g. echoing the scoped project id).
   async #authorizeDatasets(
     datasets: { projectId: string; datasetId: string }[],
     description: ObservationDescription,
   ): Promise<void> {
-    let check = datasets.length > 0 ? await this.#observe(datasets) : {pendingSets: [], commit() {}};
     await this.#approvalQueue.authorizeObservation({
-      ...description, excludeObservers: check.excludeObservers,
+      ...description,
+      subresources: [...new Set(datasets.map(bigQueryDatasetSubresource))],
     });
-    check.commit();
   }
 
   // The unique datasets referenced by a dry-run's `referencedTables` (format "project.dataset.table",

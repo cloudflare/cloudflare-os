@@ -31,6 +31,7 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
    * access can't be determined (expired credentials, a missing scope, a rate limit).
    */
   checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
+  /** Whether the observer's own token can open one BigQuery dataset, asking BigQuery every time. */
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
   /** Whether the observer's own account can open one Google Chat space, and with `members`, list its members. */
   hasChatSpaceAccess(spaceName: string, options?: { members?: boolean }): Promise<boolean>;

@@ -3,9 +3,10 @@ import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
 import {
-  GoogleCalendarGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
-  type GoogleCalendarGatekeeperImplProps, type HookDriverRef,
+  BigQueryGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
+  type BigQueryGatekeeperImplProps, type GoogleCalendarGatekeeperImplProps, type HookDriverRef,
 } from "../../src/google";
+import type { BigQuerySession } from "../../src/bigquery-types";
 import type {
   ActionKind, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -27,7 +28,9 @@ import { GmailHookDriver as GoogleGmailHookDriver, type GmailHookParams } from "
 export { default } from "../../src/google";
 export { ChatHookController } from "../../src/chat-hooks";
 export { GmailHookController } from "../../src/gmail-hooks";
-export { GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl, GoogleVerifier };
+export {
+  BigQueryGatekeeperImpl, GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl, GoogleVerifier,
+};
 
 const UNREACHABLE = "The test hook driver can't be reached.";
 
@@ -660,6 +663,68 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     await calendar.applyTestStorage(operations);
   }
 
+  // ── BigQuery ────────────────────────────────────────────────────────
+
+  #bigQuery(facetName: string, id: string, props: BigQueryGatekeeperImplProps) {
+    const exports = this.ctx.exports as unknown as {
+      BigQueryGatekeeperImpl(options: {props: BigQueryGatekeeperImplProps}):
+        DurableObjectClass<BigQueryGatekeeperImpl>;
+    };
+    return this.ctx.facets.get<BigQueryGatekeeperImpl>(facetName, () => ({
+      id, class: exports.BigQueryGatekeeperImpl({props}),
+    }));
+  }
+
+  async bigQueryStartSession(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
+  ): Promise<void> {
+    this.#queues.set(queueId, new TestApprovalQueue());
+    this.#bigQuery(facetName, id, props);
+  }
+
+  /** The test approval queue a BigQuery binding's sessions and observers share. */
+  #bigQueryQueue(queueId: string): TestApprovalQueue {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    return queue;
+  }
+
+  async openBigQuerySession(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
+  ): Promise<BigQuerySession> {
+    using queueStub = new RpcStub(this.#bigQueryQueue(queueId));
+    return await this.#bigQuery(facetName, id, props).startSession(queueStub);
+  }
+
+  /** Admit an observer as the Overseer does, then let the queue refuse what excludes them. */
+  async bigQueryAddObserver(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
+      observerId: string, userObjectId: string,
+  ): Promise<void> {
+    await this.#bigQuery(facetName, id, props).addObserver(observerId,
+      this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+    this.#bigQueryQueue(queueId).addObserver(observerId);
+  }
+
+  async bigQueryVerifyObserverAccess(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+      observers: Array<{ id: string; userObjectId: string }>, subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return this.#bigQuery(facetName, id, props).verifyObserverAccess(
+      observers.map(({ id: observerId, userObjectId }) =>
+        ({ id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }) })),
+      subresources);
+  }
+
+  async bigQueryApplyStorage(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+      operations: StorageOperation[],
+  ): Promise<void> {
+    // Installed on the prototype below; the facet's own type lacks it.
+    const bigQuery = this.#bigQuery(facetName, id, props) as unknown as TestBigQuery;
+    await bigQuery.applyTestStorage(operations);
+  }
+
   // ── Google Chat and Gmail hooks, with these hooks standing in for the Overseer ──
 
   #hookQueue = new TestApprovalQueue();
@@ -797,6 +862,13 @@ const testCalendarPrototype = GoogleCalendarGatekeeperImpl.prototype as TestCale
 
 /** The same storage writes, for a Calendar facet, to seed what an earlier version recorded. */
 testCalendarPrototype.applyTestStorage = testGmailPrototype.applyTestStorage;
+
+type TestBigQuery = BigQueryGatekeeperImpl & {
+  applyTestStorage(operations: StorageOperation[]): void;
+};
+
+/** The same storage writes, for a BigQuery facet. */
+(BigQueryGatekeeperImpl.prototype as TestBigQuery).applyTestStorage = testGmailPrototype.applyTestStorage;
 
 /** Deliver through the target the facet's `[restore]()` returns for a hook's delivery stub. */
 testGmailPrototype.testGmailDeliver = function(params, callback, queue, messageId) {
