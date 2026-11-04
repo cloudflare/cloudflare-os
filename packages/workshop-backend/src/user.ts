@@ -979,7 +979,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // This version belongs to the existing push-service replacement protocol, not read state.
   #queueBadge(force = false): void {
     if (!this.env.NOTIFICATION_SERVICE_URL ||
-        !Object.keys(this.storage.notificationSubscriptions.get()).length) return;
+        (!Object.keys(this.storage.phoneNotificationSubscriptions.get()).length &&
+          !Object.keys(this.storage.browserNotificationSubscriptions.get()).length)) return;
     let previous = this.storage.notificationBadge.get();
     let {unreadMessageCount} = this.#unreadCounts();
     if (!force && previous.count === unreadMessageCount) return;
@@ -991,7 +992,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async #flushBadge(): Promise<void> {
     let pending = this.storage.notificationBadge.get();
     if (pending.retryAt === undefined || pending.retryAt > Date.now()) return;
-    if (!Object.keys(this.storage.notificationSubscriptions.get()).length) {
+    if ((!Object.keys(this.storage.phoneNotificationSubscriptions.get()).length &&
+          !Object.keys(this.storage.browserNotificationSubscriptions.get()).length)) {
       this.storage.notificationBadge.put({version: pending.version, count: pending.count});
       return;
     }
@@ -1004,15 +1006,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       return;
     }
     let failed = false;
-    for (let [deviceKey, subscriptionId] of Object.entries(this.storage.notificationSubscriptions.get())) {
+    let stores = [this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions];
+    for (let store of stores) for (let [deviceKey, subscriptionId] of Object.entries(store.get())) {
       let currentBadge = this.storage.notificationBadge.get();
       if (currentBadge.version !== pending.version || currentBadge.count !== pending.count) return;
       try {
         if (!await deliverBadge(this.env, subscriptionId, pending.version, pending.count)) {
-          let current = this.storage.notificationSubscriptions.get();
+          let current = store.get();
           if (current[deviceKey] === subscriptionId) {
             delete current[deviceKey];
-            this.storage.notificationSubscriptions.put(current);
+            store.put(current);
           }
         }
       } catch {

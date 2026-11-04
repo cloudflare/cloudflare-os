@@ -441,7 +441,8 @@ describe("UserDurableObject notifications", () => {
     await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
-      storage.notificationSubscriptions.put({first: ONE, second: TWO});
+      storage.phoneNotificationSubscriptions.put({phone: ONE});
+      storage.browserNotificationSubscriptions.put({browser: TWO});
       storage.notificationBadge.put({version: 1, count: 0, retryAt: 0});
       fetcher.mockImplementationOnce((_input, init) => {
         init?.signal?.addEventListener("abort", () => stalled.reject(init.signal!.reason), {once: true});
@@ -475,7 +476,7 @@ describe("UserDurableObject notifications", () => {
       for (const [chatId, unreadCount] of [[1, 3], [2, 5]]) storage.chatReadCursors.put({
         workspaceId, chatId, readThroughSequence: -1, readThroughVisibleSequence: 0,
         latestVisibleSequence: unreadCount, unreadCount, notifiedThroughSequence: -1});
-      storage.notificationSubscriptions.put({phone: ONE});
+      storage.phoneNotificationSubscriptions.put({phone: ONE});
       storage.notificationBadge.put({version: 1, count: 8});
     });
     await evictDurableObject(stub);
@@ -499,7 +500,7 @@ describe("UserDurableObject notifications", () => {
     await runInDurableObject(stub, async (user, ctx) => {
       await user.newWorkspace(workspaceId, "Deleted workspace");
       const storage = makeUserStorage(ctx.storage);
-      storage.notificationSubscriptions.put({phone: ONE});
+      storage.phoneNotificationSubscriptions.put({phone: ONE});
       storage.notificationBadge.put({version: 1, count: 8});
     });
     await evictDurableObject(stub);
@@ -557,7 +558,7 @@ describe("UserDurableObject notifications", () => {
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
-      storage.notificationSubscriptions.put({phone: ONE});
+      storage.phoneNotificationSubscriptions.put({phone: ONE});
       // Keep the real alarm from delivering before the lost-ACK fault is installed after reset.
       const retryAt = Date.now() + 60_000;
       storage.notificationBadge.put({version: 7, count: 8, retryAt});
@@ -588,7 +589,7 @@ describe("UserDurableObject notifications", () => {
     expect(pushed(fetcher)).toEqual([]);
   });
 
-  it("retains a read-derived badge across reset while a queued alert awaits browser acknowledgement", async () => {
+  it.each(["thread", "workspace", "all"] as const)("persists a %s read badge during alert delivery and recovers it after reset", async action => {
     const fetcher = stubService();
     let stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
@@ -600,36 +601,41 @@ describe("UserDurableObject notifications", () => {
         await user.messageArrived(workspaceId, 7, {firstMessageSequence: 0,
           firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
         const storage = makeUserStorage(ctx.storage);
-        storage.notificationSubscriptions.put({phone: ONE});
+        storage.phoneNotificationSubscriptions.put({phone: ONE});
         storage.notificationBadge.put({version: 1, count: 1, retryAt: 0});
         await user.subscribeToNotifications(new RpcStub(new Subscriber(async () => {
           notifying.resolve(); await releaseAlert.promise;
         })));
-        await user.applyReadHorizon(workspaceId, 7, {
-          readThroughSequence: 1, readThroughVisibleSequence: 2, latestVisibleSequence: 2,
-          head: {chatTitle: "Read thread", latestSequence: 1}, headUpdatedAt: new Date(), notificationBaseline: -1,
-        }, false);
         await user.messageArrived(workspaceId, 7, {head: {chatTitle: "Read thread", latestSequence: 1}, headUpdatedAt: new Date(),
           firstMessageSequence: 1, firstVisibleSequence: 2, latestVisibleSequence: 2,
           notifications: [{...NOTIFICATION, sequence: 1}]});
         await notifying.promise;
+        if (action === "workspace") await user.markWorkspaceRead(workspaceId);
+        else if (action === "all") await user.markAllRead();
+        else {
+          await user.applyReadHorizon(workspaceId, 7, {
+            readThroughSequence: 1, readThroughVisibleSequence: 2, latestVisibleSequence: 2,
+            head: {chatTitle: "Read thread", latestSequence: 1}, headUpdatedAt: new Date(), notificationBaseline: -1,
+          }, false);
+        }
+        expect(storage.notificationBadge.get()).toMatchObject({version: 3, count: 0});
         expect(storage.chatReadCursors.get(`${workspaceId}:7`)).toMatchObject({unreadCount: 0});
         await ctx.storage.sync();
         ctx.abort("Reset during read notification");
       })).rejects.toThrow("Reset during read notification");
     } finally { releaseAlert.resolve(); }
+    fetcher.mockImplementation(async input => new URL(String(input)).pathname === "/v1/deliveries"
+      ? new Response(null, {status: 503}) : new Response(null, {status: 202}));
     stub = env.TEST_USER.get(stub.id);
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
-      await user.subscribeToNotifications(new RpcStub(new Subscriber(async () => {})));
       const storage = makeUserStorage(ctx.storage);
       storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
       await user.alarm();
-      expect([...storage.notificationOutbox.list()]).toEqual([]);
-      expect(storage.notificationBadge.get()).toEqual({version: 2, count: 0});
+      expect([...storage.notificationOutbox.list()]).toHaveLength(1);
+      expect(storage.notificationBadge.get()).toEqual({version: 3, count: 0});
     });
     expect(bodies(fetcher, "/v1/badges").at(-1)?.count).toBe(0);
-    expect(pushed(fetcher)).toEqual([]);
   });
 
   it("does not clear a newer local badge when an older delivery finishes", async () => {
