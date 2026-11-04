@@ -42,6 +42,7 @@ beforeEach(() => {
       .map(chat => ({...chats.find(item => item.workspaceId === chat.workspaceId && item.chatId === chat.chatId)!, ...chat})));
   vi.stubGlobal("scrollTo", vi.fn<() => void>());
   mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markAllRead,
+    subscribeToUpdates: () => () => {},
     markWorkspaceRead: vi.fn<Unread["markWorkspaceRead"]>().mockResolvedValue(undefined),
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
     markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(true) };
