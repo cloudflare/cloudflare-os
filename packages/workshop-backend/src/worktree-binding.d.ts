@@ -97,6 +97,14 @@ export type CommitSignature = {
  * this API.)
  */
 export interface Worktree {
+  /**
+   * Export a frozen view for one command in an explicitly permitted integration binding. Pass
+   * the opaque result to that integration, e.g. CONTAINER.mountWorktree(await REPO.exportTo("CONTAINER")).
+   * Export again before each command. Available only on this chat's workspace worktrees, not
+   * GIT.newWorktree(). It does not launch a container or execute a command.
+   */
+  exportTo(integration: string): Promise<unknown>;
+
   // ---------------------------------------------------------------------------
   // File operations
 

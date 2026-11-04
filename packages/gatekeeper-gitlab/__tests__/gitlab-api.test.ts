@@ -6,6 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
+import {buildGitFetchRequest, gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import {
   GitLabApi,
   GitLabApiError,
@@ -187,7 +188,7 @@ describe("error bodies", () => {
     expect((await api().mergeMergeRequest("g/p", 1, {}).catch(e => e)).isAuthError).toBe(false);
     expect((await api().approveMergeRequest("g/p", 1, "abc").catch(e => e)).isAuthError).toBe(false);
     // The git endpoints authenticate nothing but the bearer.
-    const git = await api().fetchGitUploadPack("g/p", new Uint8Array()).catch(e => e);
+    const git = await api().fetchGitUploadPack("g/p", gitObjectRequest(new Uint8Array())).catch(e => e);
     expect(git.isAuthError).toBe(true);
   });
 
@@ -487,12 +488,25 @@ describe("repository", () => {
 });
 
 describe("git smart-HTTP", () => {
+  it("forwards an upload-pack negotiation larger than the JSON response limit", async () => {
+    const body = buildGitFetchRequest(Array.from({length: 22_000}, (_, i) => i.toString(16).padStart(40, "0")),
+      {type: "blob", commitHistory: {kind: "full"}});
+    expect(body.byteLength).toBeGreaterThan(1024 * 1024);
+    const calls = fakeFetch([new Response("0000", {
+      headers: {"content-type": "application/x-git-upload-pack-result"},
+    })]);
+    expect((await api().fetchGitUploadPack("g/p", gitObjectRequest(body))).ok).toBe(true);
+    const actual = new Uint8Array(await new Response(calls[0].init.body).arrayBuffer());
+    expect(actual.byteLength).toBe(body.byteLength);
+    expect(actual.every((byte, i) => byte === body[i])).toBe(true);
+  });
+
   it("POSTs upload-pack with protocol v2, oauth2 basic auth, and the Access headers", async () => {
     const calls = fakeFetch([new Response("0000", {
       status: 200, headers: { "content-type": "application/x-git-upload-pack-result" },
     })]);
     const body = new TextEncoder().encode("0014command=fetch0000");
-    const response = await api(ACCESS_INSTANCE).fetchGitUploadPack("group/sub/project", body);
+    const response = await api(ACCESS_INSTANCE).fetchGitUploadPack("group/sub/project", gitObjectRequest(body));
     expect(response.ok).toBe(true);
     const [call] = calls;
     expect(call.url.toString()).toBe("https://gitlab-access.example.com/group/sub/project.git/git-upload-pack");
@@ -516,14 +530,14 @@ describe("git smart-HTTP", () => {
 
   it("reports a redirect on the git endpoint as an Access-policy problem rather than a parse error", async () => {
     fakeFetch([new Response(null, { status: 302, headers: { location: "https://team.cloudflareaccess.com/login" } })]);
-    const error = await api().fetchGitUploadPack("g/p", new Uint8Array()).catch(e => e);
+    const error = await api().fetchGitUploadPack("g/p", gitObjectRequest(new Uint8Array())).catch(e => e);
     expect(error).toBeInstanceOf(GitLabApiError);
     expect(error.message).toMatch(/Access application must admit the service token/);
   });
 
   it("rejects a non-git content type (a login page) before streaming", async () => {
     fakeFetch([new Response("<html>login</html>", { status: 200, headers: { "content-type": "text/html" } })]);
-    const error = await api().fetchGitUploadPack("g/p", new Uint8Array()).catch(e => e);
+    const error = await api().fetchGitUploadPack("g/p", gitObjectRequest(new Uint8Array())).catch(e => e);
     expect(error.status).toBe(502);
     expect(error.message).toMatch(/expected application\/x-git-upload-pack-result/);
   });

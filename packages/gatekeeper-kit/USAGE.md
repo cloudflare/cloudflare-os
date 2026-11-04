@@ -969,28 +969,33 @@ pushes)`, the gatekeeper filtering the pushes to that branch; the same call give
 `parseUnifiedPatch`, one file's patch at a time, which shares `diffTextLines`'s hunk shape, so a
 simulated diff and a provider diff read alike.
 
-Lazy DO reads use `Gatekeeper.gitPull(oids, options)`. This is a kernel-facing method, not part
-of a gadget's session API. The kernel routes pulls through recorded object provenance
+`Gatekeeper.gitPull(request, observer?)` is a kernel-facing, authenticated smart-HTTP transport,
+not a gadget session method. Providers use `gitPullPath` to allow only protocol-v2 ref discovery
+and upload-pack, choose their own bound repository/credentials, and return raw protocol bytes.
+With an observer they must require whole-repository access and authorize this new observation.
+The kernel omits the observer only for objects already covered by recorded provenance
 (advertised commits, their referents, or objects previously populated by that gatekeeper).
-The shared composer checks oid syntax and composes typed options; it does not check
-advertisement history.
-The provider composes a typed fetch with `git-pull-transfer.startGitPull()` and returns a transfer
-capability. Claim its backpressured raw PACK stream once with `stream()`, without buffering or
-base64 encoding. The DO feeds it to its bounded cache decoder. Workers RPC can replace a stream
-exception with a generic disconnect. If consuming the stream fails, query `status()` to recover
-the producer's error; if the status has not failed, preserve the consumer's own error. After
-draining the stream, require `complete` before accepting the transfer. Cancel an unfinished stream
-and dispose the capability when done.
 
-The transfer also supports a native container consumer, but container hydration is not enabled
-by this capability alone; it requires the separate kernel worktree-replica bootstrap support.
-That consumer must bind its bootstrap capability to an authorized immutable commit, request depth
-one with no tree/blob filters, stream directly to native Git using its own limits rather than
-the DO cache's, and close the bootstrap capability after hydration. No guest-supplied Git
-commands, ref discovery, arbitrary URLs, or provider credentials belong in that bootstrap
-interface. Packs are self-contained (no `have` negotiation or thin-pack dependencies). Native
-consumers must record their shallow boundary because the raw pack does not carry Git protocol
-shallow-info.
+For lazy DO reads, the kernel composes exact-OID requests with `gitObjectRequest` and
+`git-pull-transfer.startGitPull()`, then feeds the backpressured raw PACK stream into its bounded
+cache decoder. The shared composer checks oid syntax and typed options, not advertisement
+history. Claim `stream()` once, without whole-pack buffering or base64. Require `complete` after
+draining; query `status()` on failure for the adapter's demultiplexing error, preserving the
+consumer's own error otherwise. RPC may still replace an upstream transport failure with a
+generic disconnect. Cancel unfinished streams and dispose the transfer when done.
+
+Container hydration consumes the kernel's frozen `WorktreeExport`, explicitly passed from
+`Worktree.exportTo(integration)` to the integration's mount method. Import its raw `packs` into
+native Git in the supplied order, check out `head` (or start empty when null), then apply
+`pendingChanges` before executing. The export supplies the shallow remote base and DO-local
+objects; consumers do not mint or close a separate bootstrap capability. The command's final
+writeback ACK closes export authority, not the end of hydration. See the
+[mount contract](../../docs/agent-worktree-replicas.md) for bootstrap and recovery details.
+
+Subsequent native Git fetches use the separate command-scoped smart-HTTP capability described in
+[`agent-worktree-replicas.md`](../../docs/agent-worktree-replicas.md). They always require an
+observer and whole-repository scope. They do not populate the DO cache or inherit the
+known-object bootstrap exception, and they end with the command's final writeback.
 
 ## Other module boundaries
 

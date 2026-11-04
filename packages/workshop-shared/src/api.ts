@@ -4474,6 +4474,9 @@ export function isTextLikeAttachmentMimeType(mimeType: string): boolean {
  * is assumed, and it is an error for it to be omitted when there is no default.
  */
 export type AiToolCall = {
+  /** This file edit was durably flushed before its assistant transcript; do not replay it again. */
+  effectsPersisted?: true;
+
   /** ID of the original tool call, useful to reproduce the model messages. */
   toolCallId: string;
 
@@ -4519,6 +4522,9 @@ export type AiToolCall = {
    */
   observedOid?: string;
 
+  /** Exact bounded read result when a mid-step replica flush prevents reconstruction in log order. */
+  output?: string;
+
   /**
    * No longer written; honored when read. Before reads were stamped with the blob's oid
    * (`observedOid`), an unpinned read recorded the commit it read at; replay resolves the file's
@@ -4548,6 +4554,12 @@ export type AiToolCall = {
     filename: string;
     content: string;
   };
+
+  /** Original result, preserved when a mid-step flush advances change IDs before replay. */
+  output?: {
+    /** Change ID returned to the model when this write succeeded. */
+    changeId: number;
+  };
 } | {
   toolName: "editFile";
   input: {
@@ -4555,6 +4567,12 @@ export type AiToolCall = {
     filename: string;
     textToReplace: string;
     replacement: string;
+  };
+
+  /** Original result, preserved when a mid-step flush advances change IDs before replay. */
+  output?: {
+    /** Change ID returned to the model when this edit succeeded, including a no-op edit. */
+    changeId: number;
   };
 } | {
   /**

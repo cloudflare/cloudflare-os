@@ -6,7 +6,7 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "ES2024.Promise", "DOM", "DOM.Iterable"],
+    "lib": ["ES2023", "ES2024.Promise", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "allowImportingTsExtensions": true,
     // No ambient @types: the runtime runs in a browser frame, so Node's globals must not type-check.

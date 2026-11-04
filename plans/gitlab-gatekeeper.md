@@ -372,7 +372,7 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   `pendingAction:` where the code uses `action:`; the GitLab one will be written from the code).
 - **Git contract** (`workshop-shared/src/gatekeeper.ts`): `GitOid`, `GitObjectType`,
   `GitCache` (`get`/`has`/`stat`/`put`/`advertiseCommit`/`buildPack`/`consumePack`/`isAncestor`),
-  `GitPullHints`, `GitPullTransfer`, `Gatekeeper.gitPull?(oids, options)`, `Gatekeeper.applyAction(action,
+  `GitPullHints`, `Gatekeeper.gitPull?(request, observer?)`, `Gatekeeper.applyAction(action,
   cache)`, `ActionDescription.pushedCommits`, `ObservationAuthorizer.getGitCache()`. The
   overseer tries sources recorded in `meta.onRemote` and `meta.pullableFrom`, i.e.
   gatekeepers that advertised or proved the object, or populated an object that references it —
@@ -387,7 +387,8 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   composer (`buildRefUpdateRequest`, `report-status` only, no
   side-band), `pushGitRefUpdate(fetchReceivePack, update, pack)`, `GitRefUpdateRejectedError`,
   `emptyPackBytes`; git commit/tree object parsers; `diffGitTrees`/`diffTextLines` over a
-  `TreeDiffSource`. Only their doc comments mention GitHub.
+  `TreeDiffSource`. `GitPullTransfer` is a kit-side helper, not the provider RPC return type.
+  Only their doc comments mention GitHub.
 - **Kit** (`packages/gatekeeper-kit`): leaf modules with explicit subpath exports, JSDoc on every
   public symbol, README inventory, node tests for pure logic (`AGENTS.md` there). No git code
   today. Dependencies: `backend-utils`, `workshop-shared`, `jose`.
@@ -840,16 +841,15 @@ substitutes transport endpoints and REST lookups:
   `getCommit`, `listCommits`, MR `getDetails` (`sha`, `diff_refs.*`), `readDiff` (revision shas),
   `getMergeBase`, MR `listCommits`, `listMergeRequests`/`searchMergeRequests` (source/target
   shas) all advertise, with the cache-served / simulated carve-out via `isSimulatedCommitId`.
-- **`gitPull(oids, options): Promise<GitPullTransfer>`**: `startGitPull(body => api.fetchGitUploadPack(
-  projectPath, body), oids, options)`; the provider only strips protocol framing. The overseer
-  claims the stream, ingests it with the DO cache's pack/object limits, checks terminal status
-  (recovering producer errors across Workers RPC), and verifies requested-object presence.
-  Native hydration requires a separate kernel consumer, bound to an authorized immutable commit
-  and using its own limits; this provider capability alone does not enable containers.
-  `fetchGitUploadPack` POSTs to
-  `{apiOrigin}/{path}.git/git-upload-pack` with `Git-Protocol: version=2`, Basic `oauth2:<token>`,
-  the upstream Access headers, and the 120s budget. The token is fetched immediately before the
-  request (it may be minutes from expiry; the pack streams well within the 2-hour window).
+- **`gitPull(request, observer?): Promise<Response>`**: repository-bound protocol-v2 smart HTTP
+  for discovery and upload-pack only. With an observer, the provider requires a whole-project
+  binding and authorizes the new native Git read. Without one, the kernel requests known objects
+  using recorded provenance. The kernel's `startGitPull()` strips protocol framing and retains
+  terminal status; lazy cache reads apply pack/object limits and verify requested objects, while
+  container bootstrap imports the complete shallow base without DO cache ingestion. Native Git
+  can fetch again during a command; the final writeback closes that command's Git capability.
+  `fetchGitUploadPack` chooses the bound project's upstream and supplies protocol headers,
+  OAuth and optional Access credentials. Guest URLs and credentials cannot select its upstream.
 - **`push(branch, commitId, {force?})`**: `preparePush` reads the live branch head (`GET
   …/repository/branches/:name`, 404 → `ZERO_OID`), overlays queued pushes via
   `#simulateBranchHead` (the kit's `simulateBranchHead` over the queued pushes), no-ops when already at `commitId`, checks `isAncestor` unless `force` or
