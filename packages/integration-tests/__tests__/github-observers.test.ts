@@ -186,6 +186,10 @@ it.concurrent("a chat's read is refused while a collaborator who can't read the 
   expect((await opens(bob, workspaceId)).error).toBeUndefined();
   expect((await opens(carol, workspaceId)).error).toBeUndefined();
 
+  // End Bob's entire RPC connection, not just his workspace stub. His persisted account choice
+  // still participates in authorization while he is offline.
+  bob[Symbol.dispose]();
+
   // Bob loses access on GitHub. The agent's read is refused: the kernel checked the repository
   // it reported against every collaborator who can see the chat, each with their own token.
   github.setVisibleTo(repo.name, bob.token, false);

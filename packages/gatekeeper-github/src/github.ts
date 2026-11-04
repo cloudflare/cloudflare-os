@@ -765,6 +765,12 @@ function repoRef(owner: string, repo: string): GitHubRepoRef {
   };
 }
 
+/** GitHub's returned URL carries the current repository name, unlike the binding's props. */
+function repoRefFromUrl(url: string): GitHubRepoRef {
+  const [, owner, repo] = new URL(url).pathname.split("/");
+  return repoRef(owner, repo);
+}
+
 /**
  * The compare response's merge base. GitHub documents `merge_base_commit` as always present; a
  * response without one is treated as malformed rather than approximated -- the base tip
@@ -861,11 +867,11 @@ function reviewDecisionFromState(state: string): GitHubReviewDecision {
   }
 }
 
-function normalizeIssueSummary(owner: string, repo: string, response: GitHubIssueResponse): GitHubIssueSummary {
+function normalizeIssueSummary(response: GitHubIssueResponse): GitHubIssueSummary {
   return {
-    repo: repoRef(owner, repo),
+    repo: repoRefFromUrl(response.html_url),
     id: String(response.number),
-    url: issueUrl(owner, repo, String(response.number)),
+    url: response.html_url,
     title: response.title,
     state: response.state,
     labels: response.labels.map(labelFromResponse),
@@ -878,9 +884,9 @@ function normalizeIssueSummary(owner: string, repo: string, response: GitHubIssu
   };
 }
 
-function normalizeIssueDetails(owner: string, repo: string, response: GitHubIssueResponse): GitHubIssueDetails {
+function normalizeIssueDetails(response: GitHubIssueResponse): GitHubIssueDetails {
   return {
-    ...normalizeIssueSummary(owner, repo, response),
+    ...normalizeIssueSummary(response),
     bodyMarkdown: response.body ?? "",
   };
 }
@@ -918,28 +924,22 @@ function awaitingRequiredPhase(since: number | undefined, now: number): "active"
   return withinCiStartWindow(since, now) ? "active" : "blocked";
 }
 
-function normalizePullSummary(
-  owner: string,
-  repo: string,
-  response: GitHubPullRequestResponse,
-): GitHubPullRequestSummary {
+function normalizePullSummary(response: GitHubPullRequestResponse): GitHubPullRequestSummary {
+  const summary = normalizeIssueSummary(response);
   return {
-    ...normalizeIssueSummary(owner, repo, response),
+    ...summary,
     draft: response.draft,
     merged: !!response.merged_at,
-    head: normalizePullBranchRef(owner, repo, response.head),
-    base: normalizePullBranchRef(owner, repo, response.base),
+    head: normalizePullBranchRef(summary.repo.owner, summary.repo.name, response.head),
+    base: normalizePullBranchRef(summary.repo.owner, summary.repo.name, response.base),
   };
 }
 
-function normalizePullDetails(
-  owner: string,
-  repo: string,
-  response: GitHubPullRequestResponse,
-): GitHubPullRequestDetails {
+function normalizePullDetails(response: GitHubPullRequestResponse): GitHubPullRequestDetails {
   return {
-    ...normalizeIssueDetails(owner, repo, response),
-    ...normalizePullSummary(owner, repo, response),
+    ...normalizePullSummary(response),
+    commentCount: response.comments,
+    bodyMarkdown: response.body ?? "",
     mergeable: response.mergeable ?? undefined,
     mergeState: mergeStateOf(response.mergeable_state),
     requestedReviewers: actorsFromUsers(response.requested_reviewers),
@@ -2937,7 +2937,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         status: 200,
         headers: result.headers,
         data: {
-          ...repoRef(this.ctx.props.owner, this.ctx.props.repo),
+          ...repoRef(result.data.owner.login, result.data.name),
           description: result.data.description ?? undefined,
           visibility: result.data.visibility ?? (result.data.private ? "private" : "public"),
           defaultBranch: result.data.default_branch,
@@ -3119,7 +3119,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       return {
         status: 200,
         headers: result.headers,
-        data: normalizeIssueDetails(this.ctx.props.owner, this.ctx.props.repo, result.data),
+        data: normalizeIssueDetails(result.data),
       };
     });
     this.#ensureDiscussionCommentState(realId, details.commentCount);
@@ -3143,7 +3143,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         return {
           status: 200,
           headers: result.headers,
-          data: normalizePullDetails(this.ctx.props.owner, this.ctx.props.repo, result.data),
+          data: normalizePullDetails(result.data),
         };
       },
     );
@@ -3167,10 +3167,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   async #buildProvisionalIssueDetails(action: CreateIssueAction): Promise<GitHubIssueDetails> {
     const viewer = await this.#getViewerActor();
+    const { owner, name: repo } = await this.#getRepoMetadata();
     return {
-      repo: repoRef(this.ctx.props.owner, this.ctx.props.repo),
+      repo: repoRef(owner, repo),
       id: action.provisionalId,
-      url: issueUrl(this.ctx.props.owner, this.ctx.props.repo, action.provisionalId),
+      url: issueUrl(owner, repo, action.provisionalId),
       title: action.options.title,
       state: "open",
       labels: (action.options.labels ?? []).map(name => ({ name })),
@@ -3188,6 +3189,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     gitCache?: RpcStub<GitCache>,
   ): Promise<GitHubPullRequestDetails> {
     const viewer = await this.#getViewerActor();
+    const { owner, name: repo } = await this.#getRepoMetadata();
     let baseSha = "";
     let headSha = "";
     let commits = 0;
@@ -3230,9 +3232,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
 
     return {
-      repo: repoRef(this.ctx.props.owner, this.ctx.props.repo),
+      repo: repoRef(owner, repo),
       id: action.provisionalId,
-      url: pullUrl(this.ctx.props.owner, this.ctx.props.repo, action.provisionalId),
+      url: pullUrl(owner, repo, action.provisionalId),
       title: action.options.title,
       state: "open",
       labels: [],
@@ -3247,12 +3249,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       head: {
         ref: action.options.head,
         sha: headSha,
-        repo: repoRef(this.ctx.props.owner, this.ctx.props.repo),
+        repo: repoRef(owner, repo),
       },
       base: {
         ref: action.options.base,
         sha: baseSha,
-        repo: repoRef(this.ctx.props.owner, this.ctx.props.repo),
+        repo: repoRef(owner, repo),
       },
       mergeable: undefined,
       mergeState: "unknown",
@@ -3392,7 +3394,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           return {
             status: 200,
             headers: raw.headers,
-            data: raw.data.map(item => item.pull_request ? null : normalizeIssueSummary(owner, repo, item)),
+            data: raw.data.map(item => item.pull_request ? null : normalizeIssueSummary(item)),
           };
         });
       },
@@ -3418,8 +3420,6 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       .filter(item => issueMatchesSearch(item, query))
       .toSorted(compare);
 
-    const owner = this.ctx.props.owner;
-    const repo = this.ctx.props.repo;
     return new StreamingCursor<GitHubIssueSummary>({
       fetchPage: async (page, perPage) => {
         // GitHub's search names a repository only by its name, so it is asked by the one the
@@ -3448,7 +3448,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             headers: raw.headers,
             data: raw.data.items.map(item => ({
               html_url: item.html_url,
-              summary: normalizeIssueSummary(owner, repo, item),
+              summary: normalizeIssueSummary(item),
             })),
           };
         });
@@ -3509,7 +3509,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           return {
             status: 200,
             headers: raw.headers,
-            data: raw.data.map(item => normalizePullSummary(owner, repo, item)),
+            data: raw.data.map(item => normalizePullSummary(item)),
           };
         });
       },
@@ -3560,7 +3560,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           return {
             status: 200,
             headers: raw.headers,
-            data: raw.data.map(item => ({ ...normalizePullSummary(owner, repo, item), bodyMarkdown: item.body ?? "" })),
+            data: raw.data.map(item => ({ ...normalizePullSummary(item), bodyMarkdown: item.body ?? "" })),
           };
         });
       },
@@ -3645,6 +3645,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const viewer = await this.#getViewerActor();
     const provisionals: GitHubDiscussionEntry[] = [];
     for (const action of this.#pendingActionsForEntity(kind, logicalId)) {
+      if (action.type !== "postComment" && action.type !== "postReview") continue;
+      const { owner, name: repo } = await this.#getRepoMetadata();
       if (action.type === "postComment") {
         provisionals.push({
           kind: "comment",
@@ -3652,7 +3654,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           author: viewer,
           bodyMarkdown: this.#rewriteKnownReferences(action.bodyMarkdown, false),
           createdAt: new Date(action.submittedAt),
-          url: `${kind === "issue" ? issueUrl(this.ctx.props.owner, this.ctx.props.repo, logicalId) : pullUrl(this.ctx.props.owner, this.ctx.props.repo, logicalId)}#comment-${action.provisionalCommentId}`,
+          url: `${kind === "issue" ? issueUrl(owner, repo, logicalId) : pullUrl(owner, repo, logicalId)}#comment-${action.provisionalCommentId}`,
         });
       } else if (action.type === "postReview") {
         provisionals.push({
@@ -3661,7 +3663,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           author: viewer,
           bodyMarkdown: this.#rewriteKnownReferences(action.review.bodyMarkdown ?? "", false),
           createdAt: new Date(action.submittedAt),
-          url: `${pullUrl(this.ctx.props.owner, this.ctx.props.repo, logicalId)}#review-${action.provisionalReviewId}`,
+          url: `${pullUrl(owner, repo, logicalId)}#review-${action.provisionalReviewId}`,
           decision: action.review.decision,
           diffComments: (action.review.diffComments ?? []).map(comment => ({
             id: comment.provisionalCommentId,
@@ -3670,7 +3672,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             author: viewer,
             bodyMarkdown: this.#rewriteKnownReferences(comment.bodyMarkdown, false),
             createdAt: new Date(action.submittedAt),
-            url: `${pullUrl(this.ctx.props.owner, this.ctx.props.repo, logicalId)}#discussion-${comment.provisionalCommentId}`,
+            url: `${pullUrl(owner, repo, logicalId)}#discussion-${comment.provisionalCommentId}`,
           })),
         });
       }
@@ -3882,6 +3884,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const threads = new Map<string, GitHubDiffThread>(base.map(thread => [thread.id, structuredClone(thread)]));
     const viewer = await this.#getViewerActor();
     for (const action of this.#pendingActionsForEntity("pull", logicalId)) {
+      if (action.type !== "postReview" && action.type !== "replyToDiffComment") continue;
+      const { owner, name: repo } = await this.#getRepoMetadata();
       if (action.type === "postReview") {
         for (const comment of action.review.diffComments ?? []) {
           threads.set(comment.provisionalCommentId, {
@@ -3894,7 +3898,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
               author: viewer,
               bodyMarkdown: this.#rewriteKnownReferences(comment.bodyMarkdown, false),
               createdAt: new Date(action.submittedAt),
-              url: `${pullUrl(this.ctx.props.owner, this.ctx.props.repo, logicalId)}#discussion-${comment.provisionalCommentId}`,
+              url: `${pullUrl(owner, repo, logicalId)}#discussion-${comment.provisionalCommentId}`,
             }],
           });
         }
@@ -3908,7 +3912,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             author: viewer,
             bodyMarkdown: this.#rewriteKnownReferences(action.bodyMarkdown, false),
             createdAt: new Date(action.submittedAt),
-            url: `${pullUrl(this.ctx.props.owner, this.ctx.props.repo, logicalId)}#discussion-${action.provisionalCommentId}`,
+            url: `${pullUrl(owner, repo, logicalId)}#discussion-${action.provisionalCommentId}`,
           });
         }
       }
@@ -4120,16 +4124,14 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       || (stored.kind === "comment" && stored.subject.pullRequest);
     if (resourceKind === "issue" && onPullRequest) return;
     if (resourceKind === "pull" && !onPullRequest) return;
+    let current: { owner: string; repo: string };
     try {
       // The webhook outlives the account's access to the repository, and its connection, so every
       // delivery asks GitHub afresh, never the cache: a revoked account is refused even moments
       // after a delivery that succeeded. Asked by the repository's id, not its name, which a
       // repository renamed since may have left to another; and with the last answer's ETag, so an
       // unchanged repository answers 304, which costs no rate limit.
-      await this.#loadCachedWithEtag(this.#cacheKey("repo-access", String(pin.id)), 0, async etag => {
-        const result = await this.#withApi(api => api.getRepoByIdConditional(pin.id, { ifNoneMatch: etag }));
-        return result.status === 304 ? result : { ...result, data: true };
-      });
+      current = await this.#currentRepoName();
     } catch (error) {
       if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
       // Nothing to retry, and nothing else would tell why the hook went quiet.
@@ -4144,7 +4146,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const gitCache = new SessionGitCache(approvalQueue, { withhold: commit => this.isSimulatedCommitId(commit) });
     let event: GitHubEvent;
     try {
-      const built = this.#hookEvent(stored, approvalQueue, capabilities);
+      const built = this.#hookEvent(stored, approvalQueue, capabilities, current);
       event = built.event;
       await this.authorizeRead(approvalQueue, built.observation);
       if (built.commitIds.length > 0) await gitCache.advertise(built.commitIds);
@@ -4161,9 +4163,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * The event a hook receives for `stored`, with capabilities on `approvalQueue` (each also
    * pushed to `capabilities`), the observation delivering it makes, and the commits it names.
    */
-  #hookEvent(stored: GitHubWebhookEvent, approvalQueue: RpcStub<ApprovalQueue>, capabilities: Disposable[]):
-      { event: GitHubEvent; observation: Omit<ObservationDescription, "subresources">; commitIds: GitOid[] } {
-    const { owner, repo } = this.ctx.props;
+  #hookEvent(
+    stored: GitHubWebhookEvent, approvalQueue: RpcStub<ApprovalQueue>, capabilities: Disposable[],
+    { owner, repo }: { owner: string; repo: string },
+  ): { event: GitHubEvent; observation: Omit<ObservationDescription, "subresources">; commitIds: GitOid[] } {
     const where = `${owner}/${repo}`;
     const { id, actor } = stored;
     const by = actor ? ` by ${codeSpan(`@${actor.login}`)}` : "";
@@ -4174,7 +4177,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       held(new GitHubPullRequestImpl(this, approvalQueue.dup(), String(number)));
     switch (stored.kind) {
       case "issue": {
-        const info = normalizeIssueDetails(owner, repo, stored.issue as GitHubIssueResponse);
+        const info = normalizeIssueDetails(stored.issue as GitHubIssueResponse);
         return {
           event: { kind: "issue", id, actor, action: stored.action, info, issue: issue(stored.number) },
           observation: {
@@ -4186,7 +4189,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         };
       }
       case "pullRequest": {
-        const info = normalizePullDetails(owner, repo, stored.pullRequest as GitHubPullRequestResponse);
+        const info = normalizePullDetails(stored.pullRequest as GitHubPullRequestResponse);
         const action = PULL_REQUEST_ACTION_WORDS[stored.action];
         return {
           event: {
@@ -4202,7 +4205,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         };
       }
       case "comment": {
-        const subject = this.#eventSubject(stored.number, stored.subject);
+        const subject = this.#eventSubject(owner, repo, stored.number, stored.subject);
         const comment = "comment" in stored
           ? discussionCommentFromResponse(stored.comment as GitHubIssueCommentResponse)
           : submittedDiffCommentFromResponse(stored.diffComment as GitHubPullRequestReviewCommentResponse);
@@ -4223,7 +4226,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         };
       }
       case "review": {
-        const subject = this.#eventSubject(stored.number, stored.subject);
+        const subject = this.#eventSubject(owner, repo, stored.number, stored.subject);
         const review = eventReview(stored.review as GitHubPullRequestReviewResponse);
         return {
           event: { kind: "review", id, actor, subject, review, pullRequest: pullRequest(stored.number) },
@@ -4267,8 +4270,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
   }
 
-  #eventSubject(number: number, { title, pullRequest }: { title: string; pullRequest: boolean }) {
-    const { owner, repo } = this.ctx.props;
+  #eventSubject(owner: string, repo: string, number: number, { title, pullRequest }: { title: string; pullRequest: boolean }) {
     const id = String(number);
     return { repo: repoRef(owner, repo), id, url: (pullRequest ? pullUrl : issueUrl)(owner, repo, id), title };
   }

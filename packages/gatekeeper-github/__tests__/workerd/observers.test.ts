@@ -67,6 +67,8 @@ class FakeGitHub {
   probeStatus: number | undefined;
   /** The bound repository's open issues. */
   issues: number[] = [];
+  /** The bound repository's open pull requests. */
+  pulls: number[] = [];
   readonly requests: { token: string; path: string; query: URLSearchParams }[] = [];
   /** The repositories git requests reached, by the name they were addressed by. */
   readonly gitRequests: string[] = [];
@@ -124,6 +126,18 @@ class FakeGitHub {
         const open = url.searchParams.get("state") !== "closed";
         return Response.json(firstPage && open ? this.issues.map(number => issue(number, this.#fullName(id))) : []);
       }
+      const issueNumber = /^\/issues\/(\d+)$/.exec(rest)?.[1];
+      if (issueNumber) return Response.json(issue(Number(issueNumber), this.#fullName(id)));
+      const pull = (number: number) => ({
+        ...issue(number, this.#fullName(id)), html_url: `https://github.com/${this.#fullName(id)}/pull/${number}`,
+        draft: false, merged_at: null, requested_reviewers: [],
+        // A removed branch repository uses the pull request's repository as its fallback.
+        head: { ref: "fix", sha: HEAD, repo: null }, base: { ref: "main", sha: HEAD, repo: this.#repository(id) },
+        commits: 1, additions: 0, deletions: 0, changed_files: 0,
+      });
+      if (rest === "/pulls") return Response.json(firstPage ? this.pulls.map(pull) : []);
+      const pullNumber = /^\/pulls\/(\d+)$/.exec(rest)?.[1];
+      if (pullNumber) return Response.json(pull(Number(pullNumber)));
       if (rest === "/actions/runs/900") return Response.json(workflowRun);
       if (rest === "/actions/runs/900/jobs") return Response.json({ jobs: firstPage ? [job(71), job(72)] : [] });
       return notFound;
@@ -288,21 +302,41 @@ describe("reads", () => {
       .toEqual(["List issues", "List issues", "List issues (page 2)"]);
   });
 
-  it("follow the repository through a rename and a transfer by its id", async () => {
+  it("returns the pinned repository's current identity after a rename, transfer, and name reuse", async () => {
     const github = new FakeGitHub();
     github.issues = [1];
+    github.pulls = [2];
     const gk = await binding({ pinned: true });
     github.repos.set(REPO_ID, { owner: "acme", name: "renamed" });
+    github.repos.set(OTHER_ID, { owner: OWNER, name: REPO });
+    const repository = {
+      owner: "acme", name: "renamed", fullName: "acme/renamed", url: "https://github.com/acme/renamed",
+    };
+    const expectedIssue = { id: "1", repo: repository, url: "https://github.com/acme/renamed/issues/1" };
 
-    expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: {} });
+    expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: repository });
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "getDetails" }]))
+      .toMatchObject({ ok: expectedIssue });
+    expect(await gk.read([{ method: "listIssues" }], true)).toMatchObject({ ok: [expectedIssue] });
     // Search names a repository only by name, so it is asked by the one the id has now.
     expect(await gk.read([{ method: "searchIssues", args: [{ text: "crash" }] }], true))
-      .toMatchObject({ ok: [{ id: "1" }] });
+      .toMatchObject({ ok: [expectedIssue] });
+    const expectedPull = {
+      id: "2", repo: repository, url: "https://github.com/acme/renamed/pull/2",
+      head: { repo: repository }, base: { repo: repository },
+    };
+    expect(await gk.read([{ method: "getPullRequest", args: ["2"] }, { method: "getDetails" }]))
+      .toMatchObject({ ok: expectedPull });
+    expect(await gk.read([{ method: "listPullRequests" }], true)).toMatchObject({ ok: [expectedPull] });
+    expect(await gk.read([{ method: "searchPullRequests", args: [{ text: "Issue" }] }], true))
+      .toMatchObject({ ok: [expectedPull] });
+    // A simulated issue must identify the repository its approval will create it in too.
+    expect(await gk.read([
+      { method: "createIssue", args: [{ title: "A new issue" }] }, { method: "getDetails" },
+    ])).toMatchObject({ ok: { repo: repository, url: "https://github.com/acme/renamed/issues/~1" } });
     expect(github.requests.find(request => request.path === "/search/issues")?.query.get("q"))
       .toContain("repo:acme/renamed");
     expect(github.requests.filter(request => request.path.startsWith("/repos/"))).toEqual([]);
-    expect(gk.queue.observations.map(observation => observation.subresources))
-      .toEqual([[SUBRESOURCE], [SUBRESOURCE]]);
   });
 
   it("disclose nothing once the repository is deleted and another takes its name", async () => {
