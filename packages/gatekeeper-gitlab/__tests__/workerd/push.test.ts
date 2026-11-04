@@ -17,7 +17,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const P = "group%2Fsub%2Fproject";
+/** The project's path, which the binding reads only to pin its id. */
+const PATH = "group%2Fsub%2Fproject";
+/** Where the binding reads the project once pinned: by its id, the documented project's 3. */
+const P = String(fx.projectResponse.data.id);
 const PROJECT = "group/sub/project";
 const BASE = "a".repeat(40);   // the branch head on GitLab
 const HEAD1 = "b".repeat(40);  // agent-authored, child of BASE
@@ -139,7 +142,7 @@ class GitFake extends FakeGitLab {
 
   constructor() {
     super();
-    this.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json({
+    this.on("GET", new RegExp(`^/api/v4/projects/(?:${PATH}|${P})$`), () => json({
       ...fx.projectResponse.data, path_with_namespace: PROJECT, default_branch: "main",
       web_url: `https://gitlab.example.com/${PROJECT}`, namespace: { ...fx.projectResponse.data.namespace, full_path: "group/sub" },
     }));

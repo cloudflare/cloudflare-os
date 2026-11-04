@@ -20,6 +20,7 @@ import {
   type GitOid,
   type GitPullHints,
   type GitPullTransfer,
+  type ObservationDescription,
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -45,7 +46,7 @@ import {
   isCommitOid,
   parseGitCommitPayload,
 } from "@gadgets/gatekeeper-kit/git-objects";
-import { ObservationGate, trackedCollectionObservers, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
+import { observerAccessVerifier, trackedCollectionObservers, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import {
   GitRefUpdateRejectedError,
   ZERO_OID,
@@ -73,6 +74,7 @@ import {
   type GitLabPositionRequest,
   type GitLabProjectResponse,
   type GitLabSimpleUser,
+  type PinnedProject,
 } from "./gitlab-api";
 import {
   apiKind,
@@ -105,6 +107,8 @@ import {
 } from "./gitlab-action-types";
 import { describeGitLabAction } from "./gitlab-descriptions";
 import {
+  DEVELOPER_ACCESS_LEVEL,
+  MAINTAINER_ACCESS_LEVEL,
   VENDOR_ID,
   hasProjectMembership,
   projectMembershipLevel,
@@ -167,6 +171,7 @@ import {
 import { StreamingCursor, mapPage } from "./gitlab-cursors";
 import type { GitLabVerifierApi } from "./gitlab";
 import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
+import { parseProjectSubresource, projectSubresourceId } from "./project-subresources";
 import type {
   GitLabActor,
   GitLabBranchFilter,
@@ -241,28 +246,23 @@ const MAX_CI_ROWS = 1000;
  */
 const PUSH_EVENTS_SEARCHED = 100;
 /**
- * The observed-set markers of the CI-data gate (see `#observers`). Their prefix keeps them clear of
- * the kit's reserved `observer*` families.
+ * The observed-set markers of the CI-data gate reads made before they reported subresources left
+ * (see `#observers`). Their prefix keeps them clear of the kit's reserved `observer*` families.
  */
 const OBSERVED_SET_PREFIX = "observedSet:";
-/** GitLab's Developer role, below which a member cannot read debug-trace job logs. */
-const DEVELOPER_ACCESS_LEVEL = 30;
-/** GitLab's Maintainer role, below which a member cannot read artifacts a job restricts to it. */
-const MAINTAINER_ACCESS_LEVEL = 40;
-/** A set the CI-data gate tracks: what a job-log or test-report read discloses. */
-export type CiDataSet = "ci-logs" | "ci-test-reports";
+/** A set those reads marked: what a job-log or test-report read disclosed. */
+type CiDataSet = "ci-logs" | "ci-test-reports";
 /** The role an observer needs on the project for each set; see `#observers`. */
 const CI_DATA_ACCESS_LEVELS: Record<CiDataSet, number> = {
   "ci-logs": DEVELOPER_ACCESS_LEVEL,
   "ci-test-reports": MAINTAINER_ACCESS_LEVEL,
 };
-/**
- * Whether this binding has stored every observer it admitted (`"complete"`), or was created by a
- * version that stored none (`"legacy"`), so that a CI-data read could not leave out a Reporter
- * still connected from before. Decided once, by the first start that finds no marker.
- */
-const OBSERVER_ROSTER_KEY = "observerRoster";
-type ObserverRoster = "complete" | "legacy";
+// Admits an observer only if their own account can read every project subresource a binding's
+// reads reported, as its UserAccount last learned (see UserAccount.checkSubresourceAccess).
+const verifyProjectAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<GitLabVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkSubresourceAccess([...subresources]),
+});
 /** The connected account: its user id, which tells its approvals and notes from others', and its actor. */
 type StoredViewer = { id: number; actor: GitLabActor };
 
@@ -351,19 +351,25 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   #servedSimulatedCommitIds = new Set<GitOid>();
 
-  /** Whether this binding's stored observers are all it has admitted; see `OBSERVER_ROSTER_KEY`. */
-  readonly #observerRoster: ObserverRoster;
-
   constructor(ctx: DurableObjectState<GitLabGatekeeperImplProps>, env: Env) {
     super(ctx, env);
-    // Synchronous, before anything this version writes: a binding with no storage yet is new, and
-    // one holding keys but no marker was used by a version that admitted observers unrecorded.
-    let roster = ctx.storage.kv.get<ObserverRoster>(OBSERVER_ROSTER_KEY);
-    if (roster === undefined) {
-      roster = [...ctx.storage.kv.list({ limit: 1 })].length === 0 ? "complete" : "legacy";
-      ctx.storage.kv.put<ObserverRoster>(OBSERVER_ROSTER_KEY, roster);
-    }
-    this.#observerRoster = roster;
+    this.#discardPathAddressedCaches();
+  }
+
+  /**
+   * Discards, once, what the caches held when this binding's reads were addressed by path: a path
+   * the project left could then have served another project's data, which a read now reporting the
+   * pinned id must not return. Run before anything can read them, by moving the generation every
+   * `cache:*` entry is checked against. Finished CI logs stay: each is revalidated by job id beneath
+   * the pinned project before use, and dropped if it isn't there. The roster marker earlier versions
+   * kept, for CI-data reads that no longer consult it, goes too.
+   */
+  #discardPathAddressedCaches(): void {
+    const kv = this.ctx.storage.kv;
+    if (kv.get<boolean>("cachesByProjectId")) return;
+    this.#clearCaches();
+    kv.delete("observerRoster");
+    kv.put("cachesByProjectId", true);
   }
 
   // -- identity ---------------------------------------------------------------------------
@@ -395,8 +401,44 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       this.ctx.exports.UserAccount.idFromString(this.#props().userObjectId));
   }
 
+  #projectPin?: Promise<PinnedProject>;
+
+  /**
+   * The bound project with its GitLab id, which every request addresses it by and every read
+   * reports (see PinnedProject, authorizeRead). The id is read once from the project's path and
+   * stored. Until a probe succeeds nothing is read or written through the binding, since its path
+   * alone may by then name another project; a failed probe is retried by the next call. GitLab
+   * answers a moved project's old path with a redirect, which is never followed, so a binding whose
+   * project moved before it was pinned fails until it is connected again at the new path.
+   *
+   * A binding that read before ids were pinned is pinned to the project its path names at its first
+   * read since: that may not be the one it read then, should the path have passed to another project
+   * meanwhile, and nothing recorded can tell.
+   */
+  #pinnedProject(): Promise<PinnedProject> {
+    const path = this.#projectPath();
+    return this.#projectPin ??= (async () => {
+      let id = this.ctx.storage.kv.get<number>("projectId");
+      if (id === undefined) {
+        try {
+          ({ id } = await withAccountApi(this.env, this.#userAccount(), api => api.getProject(path), { replayable: true }));
+          if (!Number.isSafeInteger(id) || id < 1) throw new Error(`GitLab answered for ${path} without its id.`);
+          this.ctx.storage.kv.put("projectId", id);
+        } catch (error) {
+          logger.warn("failed to pin the GitLab project id; refusing all requests", {
+            event: "project.pin.failed", error,
+          });
+          this.#projectPin = undefined;
+          throw error;
+        }
+      }
+      return { path, id };
+    })();
+  }
+
+  /** Runs `fn` against GitLab as the connected account, addressing the project by its pinned id. */
   async #withApi<T>(fn: (api: GitLabApi) => Promise<T>): Promise<T> {
-    return await withAccountApi(this.env, this.#userAccount(), fn);
+    return await withAccountApi(this.env, this.#userAccount(), fn, { project: await this.#pinnedProject() });
   }
 
   /**
@@ -405,7 +447,57 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * refusal, so the viewer read is where this matters.
    */
   async #readApi<T>(fn: (api: GitLabApi) => Promise<T>): Promise<T> {
-    return await withAccountApi(this.env, this.#userAccount(), fn, { replayable: true });
+    return await withAccountApi(this.env, this.#userAccount(), fn,
+      { replayable: true, project: await this.#pinnedProject() });
+  }
+
+  /**
+   * Authorizes a read made through this binding, reporting what it depends on as its subresource:
+   * the project it was made in, by its id (see projectSubresourceId), or `subresource`, the ID a
+   * job-log or test-report read chose when it fetched its data (see readJobLog, #readTestReport),
+   * which also names the role that data needs. Whatever a read returned, an observer can see it only
+   * if their own membership of that project reaches the role. Every read, each page of a listing
+   * included, authorizes through here, so none can leave it out.
+   */
+  async authorizeRead(
+    approvalQueue: RpcStub<ApprovalQueue>, observation: Omit<ObservationDescription, "subresources">,
+    subresource?: string,
+  ): Promise<void> {
+    const required = subresource ?? projectSubresourceId((await this.#pinnedProject()).id);
+    await approvalQueue.authorizeObservation({ ...observation, subresources: [required] });
+  }
+
+  /**
+   * The bound project's path now, read by its id, since a rename or a transfer changes it. Asked of
+   * GitLab each time, uncached: GitLab answers no conditional requests, and a git request must be
+   * sent to the path the project has at that moment.
+   */
+  async #currentProjectPath(): Promise<string> {
+    const { id } = await this.#pinnedProject();
+    return (await this.#withApi(api => api.getProjectById(id))).path_with_namespace;
+  }
+
+  /**
+   * Sends a git smart-HTTP request to the bound project. GitLab addresses git only by path, so
+   * `send` is given the path the project has now, read by its id (see #currentProjectPath), and its
+   * response is refused if that path changed before GitLab answered: the path it left may already
+   * name another project, which would then have served or received the request instead. GitLab has
+   * routed the request once its response arrives, so a pack still streaming after this check comes
+   * from the project checked.
+   */
+  async #gitRequest(send: (projectPath: string) => Promise<Response>): Promise<Response> {
+    const current = await this.#currentProjectPath();
+    const response = await send(current);
+    const after = await this.#currentProjectPath().catch(async (error: unknown) => {
+      await response.body?.cancel();
+      throw error;
+    });
+    if (after !== current) {
+      await response.body?.cancel();
+      throw new Error(`The GitLab project was moved from ${current} during a git request, which may have ` +
+        "reached the project now at its old path. Please retry it.");
+    }
+    return response;
   }
 
   // -- caches -----------------------------------------------------------------------------
@@ -1344,7 +1436,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /** The bound project's numeric id, which pipelines and jobs that ran here carry as `project_id`. */
   async #boundProjectId(): Promise<number> {
-    return (await this.#getProjectResponse()).id;
+    return (await this.#pinnedProject()).id;
   }
 
   /** Finished job logs, so following up on one (another page, a search) does not refetch it. */
@@ -1719,35 +1811,24 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * Refuses a job-log or test-report read on a binding created before observers were stored
-   * (`OBSERVER_ROSTER_KEY`): one it admitted then is still connected, unrecorded, so the read
-   * could not leave out a Reporter. The other CI reads are Reporter's and stay open.
+   * A test-report read, with the subresource it discloses (see authorizeRead), chosen here, as the
+   * report is fetched, and never again. GitLab filters reports by what the reading account may
+   * download, so through a Maintainer they can include one a job restricts to Maintainers
+   * (`artifacts:access: maintainer`), and observers need Maintainer too: `role/maintainer`. Only a
+   * confirmed membership below Maintainer, held by a user who is not an administrator, has had those
+   * left out, so only then is Developer exact (`role/developer`): GitLab grants an administrator
+   * Maintainer access whatever its membership row says, and an unconfirmed role (a reconnect
+   * mid-probe) is treated as Maintainer. Admin status is read fresh, since a promotion needs no
+   * reconnect. The report beside the probes may have used the replaced token, so all three are fenced
+   * to one connection and refused if it moved. The account's role may change once the report is
+   * read, but the report does not: what it holds is what the subresource names.
    */
-  #requireObserverRoster(): void {
-    if (this.#observerRoster === "legacy") {
-      throw new Error(
-        "This GitLab connection was created by an earlier version, so job logs and test reports cannot be read " +
-        "through it. Remove the GitLab connection and add it again.");
-    }
-  }
-
-  /**
-   * A test-report read, with the set it discloses. GitLab filters reports by what the reading
-   * account may download, so through a Maintainer they can include one a job restricts to
-   * Maintainers (`artifacts:access: maintainer`), and observers need Maintainer too. Only a
-   * confirmed membership below Maintainer, held by a user who is not an administrator, has had
-   * those left out, so only then is Developer exact: GitLab grants an administrator Maintainer
-   * access whatever its membership row says, and an unconfirmed role (a reconnect mid-probe) is
-   * treated as Maintainer. Admin status is read fresh, since a promotion needs no reconnect. The
-   * report beside the probes may have used the replaced token, so all three are fenced to one
-   * connection and refused if it moved.
-   */
-  async #readTestReport<T>(read: () => Promise<T>): Promise<{ set: CiDataSet; report: T }> {
-    this.#requireObserverRoster();
+  async #readTestReport<T>(read: () => Promise<T>): Promise<{ subresource: string; report: T }> {
+    const { id } = await this.#pinnedProject();
     const account = this.#userAccount();
     const { generation } = await account.getUser();
     const [level, user, report] = await Promise.all([
-      projectMembershipLevel(this.env, account, this.#projectPath()),
+      projectMembershipLevel(this.env, account, id),
       this.#readApi(api => api.getCurrentUser()),
       read(),
     ]);
@@ -1755,17 +1836,18 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       throw new Error("The GitLab connection changed during this read; read again.");
     }
     const belowMaintainer = level !== null && level < MAINTAINER_ACCESS_LEVEL && user.is_admin !== true;
-    return { set: belowMaintainer ? "ci-logs" : "ci-test-reports", report };
+    return { subresource: projectSubresourceId(id, belowMaintainer ? "developer" : "maintainer"), report };
   }
 
-  async pipelineTestReport(pipelineId: number): Promise<{ set: CiDataSet; report: GitLabTestReportSummary }> {
-    const { set, report } = await this.#readTestReport(() =>
+  async pipelineTestReport(pipelineId: number): Promise<{ subresource: string; report: GitLabTestReportSummary }> {
+    const { subresource, report } = await this.#readTestReport(() =>
       this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId)));
-    return { set, report: normalizeTestReportSummary(report) };
+    return { subresource, report: normalizeTestReportSummary(report) };
   }
 
-  async pipelineFailedTests(pipelineId: number, pageSize: number): Promise<{ set: CiDataSet; cases: Cursor<GitLabTestCase> }> {
-    const { set, report } = await this.#readTestReport(() =>
+  async pipelineFailedTests(pipelineId: number, pageSize: number):
+      Promise<{ subresource: string; cases: Cursor<GitLabTestCase> }> {
+    const { subresource, report } = await this.#readTestReport(() =>
       this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId)).catch((error: unknown) => {
         // The client reports a body past its cap as a 502 caused by the cap.
         if (!(error instanceof GitLabApiError && error.cause instanceof ResponseTooLargeError)) throw error;
@@ -1773,7 +1855,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           `Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its totals, ` +
           `and the failing jobs' logs for details.`, { cause: error });
       }));
-    return { set, cases: new ArrayCursor(failedTestCases(report), pageSize) };
+    return { subresource, cases: new ArrayCursor(failedTestCases(report), pageSize) };
   }
 
   async jobDetails(jobId: number): Promise<GitLabJobDetails> {
@@ -1781,15 +1863,18 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * One page of a job's log, with the job's name for the observation. The job is re-read first,
-   * uncached: its status says whether the log is final, and a log someone erased (`erased_at`, or
-   * the job gone) must not be served from the cache of finished logs. Nor one the account may no
-   * longer read: the job is Reporter's but a debug trace is Developer's, so a cached copy is
-   * served only while the account holds Developer; otherwise GitLab answers `/trace` itself.
+   * One page of a job's log, with the job's name for the observation and the subresource it
+   * discloses: `role/developer`, since a job run with `CI_DEBUG_TRACE` writes every CI/CD variable
+   * into its log, which GitLab shows only to Developers and above (see authorizeRead). The job is
+   * re-read first, uncached: its status says whether the log is final, and a log someone erased
+   * (`erased_at`, or the job gone) must not be served from the cache of finished logs. Nor one the
+   * account may no longer read: the job is Reporter's but a debug trace is Developer's, so a cached
+   * copy is served only while the account holds Developer; otherwise GitLab answers `/trace` itself.
    */
-  async readJobLog(jobId: number, options: GitLabLogOptions | undefined): Promise<{ jobName: string; page: GitLabLogPage }> {
-    this.#requireObserverRoster();
+  async readJobLog(jobId: number, options: GitLabLogOptions | undefined):
+      Promise<{ jobName: string; page: GitLabLogPage; subresource: string }> {
     validateCiLogOptions(options);
+    const { id } = await this.#pinnedProject();
     const cache = this.#ciLogs;
     const cacheKey = String(jobId);
     const job = await this.#withApi(api => api.getJob(this.#projectPath(), jobId));
@@ -1800,7 +1885,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const complete = ciPhase(ciStatus(job.status)) === "done";
     const cached = complete ? cache.get(cacheKey) : undefined;
     let log = cached !== undefined &&
-        await hasProjectMembership(this.env, this.#userAccount(), this.#projectPath(), DEVELOPER_ACCESS_LEVEL)
+        await hasProjectMembership(this.env, this.#userAccount(), id, DEVELOPER_ACCESS_LEVEL)
       ? cached : undefined;
     if (log === undefined) {
       const body = await this.#withApi(api => api.getJobTrace(this.#projectPath(), jobId));
@@ -1814,7 +1899,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       // An entry this account could not be served from is already stored.
       if (complete && body !== null && cached === undefined) cache.put(cacheKey, log);
     }
-    return { jobName: job.name, page: pageCiLog(log, options, complete) };
+    return { jobName: job.name, page: pageCiLog(log, options, complete), subresource: projectSubresourceId(id, "developer") };
   }
 
   // -- Gatekeeper interface ---------------------------------------------------------------
@@ -1877,46 +1962,54 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * Observer tracking: the "ACL check (single unit)" strategy, plus one tracked set. Every binding
-   * is scoped to one project, and issues/MRs inherit its permissions, so admission is one question
-   * -- can they read the project's repository (Reporter or above), checked with their own token
-   * via the verifier; the overseer re-runs `addObserver` on every open, so lost access is caught
-   * promptly.
+   * Observer tracking: the "ACL check (single unit)" strategy. Every binding is scoped to one
+   * project, and issues/MRs inherit its permissions, so the project is the atomic ACL unit, and an
+   * observer must be able to read its repository (Reporter or above). CI job logs and test reports
+   * need more: a job run with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its
+   * log, which GitLab shows only to Developers and above
+   * (https://docs.gitlab.com/ci/variables/variables_troubleshooting/), and a job can restrict its
+   * artifacts, test reports included, to Maintainers (https://docs.gitlab.com/ci/yaml/#artifactsaccess).
    *
-   * CI job logs and test reports are the exception (strategy C, two sets): a job run with
-   * `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, which GitLab shows
-   * only to Developers and above (https://docs.gitlab.com/ci/variables/variables_troubleshooting/),
-   * and a job can restrict its artifacts, test reports included, to Maintainers
-   * (https://docs.gitlab.com/ci/yaml/#artifactsaccess). So once this binding has read either, the
-   * read that first marks its set excludes stored observers below its role
-   * (`CI_DATA_ACCESS_LEVELS`), and admission needs every marked set's role: `ci-logs` (Developer)
-   * for job logs and test reports read below Maintainer, `ci-test-reports` (Maintainer) for test
-   * reports read as one (`#readTestReport`). Observers are stored for that reason alone.
+   * Every read reports the project by its id, and a CI-data read the role its data needs on it (see
+   * authorizeRead), which the Workshop checks through verifyObserverAccess. This check stays for the
+   * reads made before they did, asking GitLab with the observer's own token, now, whether their
+   * membership of the project the binding is pinned to, by its id, and of the one its path names,
+   * as releases that addressed it by path asked, reaches Reporter: those releases followed the
+   * path, so what they read may have come from a project that took it, and nothing stored can tell
+   * which bindings read that way. The CI-data sets those reads marked (strategy C) need their role
+   * the same way (`CI_DATA_ACCESS_LEVELS`): `ci-logs` (Developer) for job logs and test reports read
+   * below Maintainer, `ci-test-reports` (Maintainer) for test reports read as one. Reads no longer
+   * mark sets, so the observers the tracker stores are never checked again by a read.
    */
   #observerStrategy: ObserverStrategy | undefined;
 
   #observers(): ObserverStrategy {
+    // Both checks of one level: the pinned id, and the binding's path, as earlier releases read.
+    const hasLevel = async (verifier: Fetcher<GitLabVerifierApi>, level?: number) => {
+      const { id, path } = await this.#pinnedProject();
+      const [byId, byPath] = await Promise.all([
+        verifier.hasProjectAccess(id, level), verifier.hasProjectPathAccess(path, level),
+      ]);
+      return byId && byPath;
+    };
     return this.#observerStrategy ??= trackedCollectionObservers<Fetcher<GitLabVerifierApi>>({
       kv: this.ctx.storage.kv,
       collectionPrefix: OBSERVED_SET_PREFIX,
       vendorId: VENDOR_ID,
       maxTrackedCollections: 2,
-      // Sharing had no cap before observers were stored, so the kit's default (10) would refuse
-      // collaborators bindings already had. Each job-log or test-report read checks every stored
-      // observer's membership with GitLab, so the cap bounds that fan-out: 50 keeps a read well
-      // inside the Workers subrequest limit.
+      // The tracker still stores each observer it admits, and refuses one past this cap. 50 is the
+      // cap bindings admitted under while each CI-data read checked every stored observer, so none
+      // loses a collaborator it had.
       maxObservers: 50,
       verifyBaseline: async verifier => {
-        if (!(await verifier.hasProjectAccess(this.#projectPath()))) {
+        if (!(await hasLevel(verifier))) {
           throw new Error(
             `This collaborator does not have read access to the GitLab project ${this.#projectPath()}, ` +
             `so they cannot be allowed to observe data this workspace read from it.`);
         }
       },
-      hasCollectionAccess: async (verifier, setIds) => await Promise.all(setIds.map(id =>
-        Object.hasOwn(CI_DATA_ACCESS_LEVELS, id)
-          ? verifier.hasProjectAccess(this.#projectPath(), CI_DATA_ACCESS_LEVELS[id as CiDataSet])
-          : false)),
+      hasCollectionAccess: async (verifier, setIds) => await Promise.all(setIds.map(async id =>
+        Object.hasOwn(CI_DATA_ACCESS_LEVELS, id) && await hasLevel(verifier, CI_DATA_ACCESS_LEVELS[id as CiDataSet]))),
       denyMessage: setId => setId === "ci-test-reports"
         ? "This workspace has read CI test reports from this GitLab project through a connection that may have Maintainer access, " +
           "which can include reports GitLab shows only to members with the Maintainer role or above, so this " +
@@ -1936,12 +2029,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * An observation gate over this binding's observer strategy and its own duplicate of `queue`,
-   * for a pipeline or job capability, which authorizes its reads through it (CI-data reads with
-   * a `CiDataSet`) and disposes it with itself.
+   * Checks the project subresources this binding's reads report (see authorizeRead), failing the
+   * whole call for any other ID. An observer is allowed when their own membership of each project
+   * reaches the role its ID names, or Reporter for none, as their UserAccount last learned (see
+   * UserAccount.checkSubresourceAccess).
    */
-  observationGate(queue: RpcStub<ApprovalQueue>): ObservationGate {
-    return new ObservationGate(queue.dup(), this.#observers());
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    for (const subresource of subresources) parseProjectSubresource(subresource);
+    return await verifyProjectAccess(observers, subresources);
   }
 
   // -- session-facing reads (in-process; sessions hold this object directly) --------------
@@ -2852,7 +2950,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         try {
           const pack = await cache.buildPack();
           await this.#withApi(api => pushGitRefUpdate(
-            body => api.fetchGitReceivePack(projectPath, body),
+            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body)),
             { branch: action.branch, oldSha: action.expectedOldSha, newSha: action.newSha },
             pack));
         } catch (error) {
@@ -3351,7 +3449,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const deleting = action.expectedOldSha === ZERO_OID;
         try {
           await this.#withApi(async api => pushGitRefUpdate(
-            body => api.fetchGitReceivePack(this.#projectPath(), body),
+            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body)),
             { branch: action.branch, oldSha: action.newSha, newSha: deleting ? ZERO_OID : action.expectedOldSha },
             deleting ? null : bytesToStream(await emptyPackBytes())));
         } catch (error) {
@@ -3387,7 +3485,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
     return this.#withApi(api => startGitPull(
-      body => api.fetchGitUploadPack(this.#projectPath(), body), oids, options));
+      body => this.#gitRequest(path => api.fetchGitUploadPack(path, body)), oids, options));
   }
 
   /**

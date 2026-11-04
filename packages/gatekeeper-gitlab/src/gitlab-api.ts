@@ -506,6 +506,27 @@ export function encodeProjectPath(pathWithNamespace: string): string {
 }
 
 /**
+ * A project with its numeric GitLab id, which survives renames and transfers and is never reused.
+ * A request beneath `/projects/<encoded path>` is sent beneath `/projects/<id>` instead (see
+ * requestPath): the address GitLab redirects a moved project's old path to, and one no other
+ * project can take over, as a project created at a deleted or moved one's freed path takes over
+ * that path.
+ */
+export type PinnedProject = { path: string; id: number };
+
+/**
+ * Where a request for `path` is sent: with `project`, a path beneath the pinned project's path goes
+ * to the same path beneath its id (see PinnedProject); every other path is sent as given.
+ */
+function requestPath(path: string, project: PinnedProject | undefined): string {
+  if (!project) return path;
+  const prefix = `/projects/${encodeProjectPath(project.path)}`;
+  const suffix = path.slice(prefix.length);
+  return path.startsWith(prefix) && (suffix === "" || suffix.startsWith("/"))
+    ? `/projects/${project.id}${suffix}` : path;
+}
+
+/**
  * Encode a branch or tag name for a path parameter. GitLab wants the whole name as one segment
  * (`feature%2Fx`), the opposite of GitHub's per-segment join.
  */
@@ -855,21 +876,31 @@ export async function revokeToken(
 // ---------------------------------------------------------------------------
 // REST client
 
+/**
+ * GitLab's REST API as one account. With `project`, a request beneath its path is sent by its id
+ * (see PinnedProject); redirects are never followed (see `redirectMessage`).
+ */
 export class GitLabApi {
   #instance: GitLabInstance;
   #credentials: GitLabCredentialSource;
+  #project: PinnedProject | undefined;
 
-  constructor(instance: GitLabInstance, credentials: GitLabCredentialSource) {
+  constructor(instance: GitLabInstance, credentials: GitLabCredentialSource, project?: PinnedProject) {
     this.#instance = instance;
     this.#credentials = credentials;
+    this.#project = project;
   }
 
   get instance(): GitLabInstance {
     return this.#instance;
   }
 
+  async #send(method: string, path: string, options: RequestOptions & { accept?: string }): Promise<Response> {
+    return await send(this.#instance, method, requestPath(path, this.#project), options, this.#credentials);
+  }
+
   async #request<T>(method: string, path: string, options: RequestOptions = {}): Promise<RequestResult<T>> {
-    return await request<T>(this.#instance, method, path, options, this.#credentials);
+    return await request<T>(this.#instance, method, requestPath(path, this.#project), options, this.#credentials);
   }
 
   async #get<T>(path: string, query?: Query): Promise<T> {
@@ -935,9 +966,10 @@ export class GitLabApi {
    * `membership_state` but the user's effective `access_level` (from `project_authorizations`).
    * The highest is taken anyway, should a version return several.
    */
-  async getProjectMember(projectPath: string, userId: number): Promise<GitLabMemberResponse | null> {
+  async getProjectMember(project: number | string, userId: number): Promise<GitLabMemberResponse | null> {
     const rows = await this.#get<GitLabMemberResponse[]>(
-      `/projects/${encodeProjectPath(projectPath)}/members/all`, { user_ids: [userId], per_page: 100 });
+      `/projects/${typeof project === "number" ? project : encodeProjectPath(project)}/members/all`,
+      { user_ids: [userId], per_page: 100 });
     let best: GitLabMemberResponse | null = null;
     for (const row of rows) {
       if (row.id === userId && (best === null || row.access_level > best.access_level)) best = row;
@@ -1297,9 +1329,9 @@ export class GitLabApi {
    * blobs over 10 MB to 5 requests a minute.
    */
   async getBlob(projectPath: string, sha: string, maxBytes: number): Promise<Uint8Array | "oversized" | null> {
-    const response = await send(this.#instance, "GET",
+    const response = await this.#send("GET",
       `/projects/${encodeProjectPath(projectPath)}/repository/blobs/${encodeURIComponent(sha)}/raw`,
-      { okStatuses: [404] }, this.#credentials);
+      { okStatuses: [404] });
     if (response.status === 404) {
       await response.body?.cancel().catch(() => {});
       return null;
@@ -1317,9 +1349,9 @@ export class GitLabApi {
    * file's metadata headers (200) or 404, never its content.
    */
   async fileExists(projectPath: string, filePath: string, ref: string): Promise<boolean> {
-    const response = await send(this.#instance, "HEAD",
+    const response = await this.#send("HEAD",
       `/projects/${encodeProjectPath(projectPath)}/repository/files/${encodeURIComponent(filePath)}`,
-      { query: { ref }, okStatuses: [404] }, this.#credentials);
+      { query: { ref }, okStatuses: [404] });
     await response.body?.cancel().catch(() => {});
     return response.status !== 404;
   }
@@ -1432,9 +1464,9 @@ export class GitLabApi {
    * not found or no log file"). An archived log is streamed through Workhorse, not redirected.
    */
   async getJobTrace(projectPath: string, jobId: number): Promise<ReadableStream<Uint8Array> | null> {
-    const response = await send(this.#instance, "GET",
+    const response = await this.#send("GET",
       `/projects/${encodeProjectPath(projectPath)}/jobs/${jobId}/trace`,
-      { okStatuses: [404], timeoutMs: LOG_TIMEOUT_MS }, this.#credentials);
+      { okStatuses: [404], timeoutMs: LOG_TIMEOUT_MS });
     if (response.status === 404) {
       await response.body?.cancel().catch(() => {});
       return null;

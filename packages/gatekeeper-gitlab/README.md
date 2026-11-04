@@ -91,25 +91,62 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   first, so an erased log is never served, and a cached log is served only while the connected
   account still holds Developer on the project; otherwise the log is read from GitLab, which
   decides.
-- **Sharing.** Once a binding has read a job log or a test report, a collaborator needs the
-  **Developer** role on the project, not Reporter, to observe the workspace. A job run with
-  `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, and GitLab shows such
-  logs only to Developers and above
-  ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed test's
-  recorded output comes from the job that ran it, so test reports count too. A test report needs
-  **Maintainer** instead unless the connected account is a project member below Maintainer and
-  not an instance administrator: a job can restrict its reports to Maintainers
-  ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)), and GitLab includes
-  those for a Maintainer and for an administrator, whatever its membership. Collaborators already observing are checked again at that role on each
-  of those reads, and left out of them if they fall short. A connection made before this version
-  did not record its collaborators, so
-  those reads cannot leave out one admitted then: on it, job logs and test reports are refused
-  (every other CI read works) until the GitLab connection is removed and added again.
+- **Sharing.** A collaborator needs the **Developer** role on the project, not Reporter, to
+  observe a job log or a test report the workspace read. A job run with `CI_DEBUG_TRACE` writes
+  every CI/CD variable, masked or not, into its log, and GitLab shows such logs only to Developers
+  and above ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed
+  test's recorded output comes from the job that ran it, so test reports count too. A test report
+  needs **Maintainer** instead unless the connected account was a project member below Maintainer
+  and not an instance administrator when it was read: a job can restrict its reports to
+  Maintainers ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)), and GitLab
+  includes those for a Maintainer and for an administrator, whatever its membership. See
+  [Sharing with collaborators](#sharing-with-collaborators).
 
 Status values GitLab adds after this gatekeeper was written read as `unknown` with phase
 `blocked`, and are logged as `ci.unknown_status`. GitLab 19.2 renamed the trigger-jobs listing
 (`…/bridges` → `…/trigger_jobs`); the gatekeeper picks the route from the instance's version.
 This gatekeeper registers no GitLab webhooks, so agents poll.
+
+## Sharing with collaborators
+
+A binding is one project (or one of its issues or merge requests, which share its permissions),
+and the policy for a collaborator is that their own connected GitLab account holds an effective
+membership of that project at Reporter or above, whatever its visibility, since a public project
+can still hold confidential issues and internal notes; job logs and test reports need more (see
+[CI status](#ci-status)).
+
+- **Identity.** A binding pins its project's numeric GitLab id on its first read (read once by
+  path; GitLab answers a moved project's old path with a redirect, which is not followed, so that
+  read fails) and reads nothing until it has. From then on every REST request beneath the project
+  goes to `/projects/<id>/...`. Git fetches and pushes, which GitLab addresses only by path, are
+  sent to the path that id has now and fail if it changed before GitLab answered. So a rename or
+  transfer keeps the binding on its project and a project later created at an old path is never
+  read in its place: the binding's requests fail instead. A push is the exception only when the
+  move and the path's reuse both land between those two lookups: it then fails as possibly
+  delivered elsewhere, since what GitLab accepted can't be called back. A binding that read
+  before ids were pinned is pinned to the project its path names at its first read since, which
+  may not be the one it read then.
+- **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
+  and one served from a cache or from queued actions, reports `project/<projectId>` as its
+  subresource, so the Workshop checks everyone who can see it before it is returned (see
+  [docs/observers.md](../../docs/observers.md) §10). A job log reports
+  `project/<projectId>/role/developer`. A test report reports `project/<projectId>/role/developer`
+  when it was read through a member below Maintainer who is not an administrator, and
+  `project/<projectId>/role/maintainer` otherwise: chosen as the report is fetched, beside the
+  connected account's role and fenced to one connection, and kept for every page of it, however
+  the account's role changes later.
+- **Checks.** A collaborator's account is asked `GET /projects/<id>/members/all?user_ids[]=` for
+  its own GitLab user, with its own token: a membership at the role the ID names (Reporter for a
+  project alone) allows; none, a lower one, an invitation not yet accepted, an expired one, or a
+  project GitLab hides from them denies; anything else fails the check rather than deny. Their
+  account reuses a grant for up to 15 minutes and a denial for up to 15 seconds, so a removed
+  membership can still admit them for 15 minutes; it asks afresh after a reconnect, which may sign
+  in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
+  grant dead: the check fails. Each open also asks, uncached, for what the workspace read before
+  reads reported the project: the same question by id, and of the project the binding's path
+  names now, as releases that read by path asked, since what those read may have come from a
+  project that took the path; job logs and test reports those releases read still need their
+  role both ways. Caches those releases filled are discarded on upgrade.
 
 ## Setting up GitLab OAuth credentials
 
@@ -236,9 +273,11 @@ receives them.
 
 ### "The GitLab project has been renamed or transferred"
 
-The project a connection was bound to has moved. GitLab answers the old path with a redirect that
-the gatekeeper deliberately does not follow (following it would turn writes into reads). Re-bind
-the connection to the project's new path.
+The project a connection was bound to moved before the connection pinned its id (see
+[Sharing with collaborators](#sharing-with-collaborators)), or, when a collaborator opens the
+workspace, since a release that read the project by path last did. GitLab answers the old path
+with a redirect that the gatekeeper deliberately does not follow (following it would turn writes
+into reads). Re-bind the connection to the project's new path.
 
 ### "GitLab credentials have expired or been revoked"
 
@@ -290,27 +329,22 @@ project maintainer to add the collaborator as a Reporter (inherited group member
 
 ### "This workspace has read CI job logs or test reports from this GitLab project …"
 
-The collaborator is a member below **Developer**, and the workspace has read a job log or a test
-report, which raises the bar from Reporter to Developer (see [CI status](#ci-status)). A project
-maintainer can grant the collaborator Developer; otherwise share a workspace that has not read
-CI job logs or test reports.
+The collaborator is a member below **Developer**, and a release that recorded CI reads itself
+read a job log or a test report through this connection, which raises the bar from Reporter to
+Developer (see [CI status](#ci-status)). A project maintainer can grant the collaborator
+Developer; otherwise share a workspace that has not read CI job logs or test reports. Reads made
+since are checked by the Workshop, which refuses the read, or the collaborator, in its own words.
 
 ### "This workspace has read CI test reports from this GitLab project through a connection that may have Maintainer access …"
 
-The connected account is a Maintainer, an instance administrator, or not a project member, so the
-test reports it read may include ones a job keeps from anyone below Maintainer, and the
-collaborator is below Maintainer (see [CI status](#ci-status)).
-A project owner can grant the collaborator Maintainer; otherwise share a workspace whose test
-reports were read through a Developer's connection, or none at all.
-
-### "This GitLab connection was created by an earlier version, so job logs and test reports cannot be read …"
-
-The connection predates this gatekeeper's record of who shares the workspace, so it cannot keep
-a collaborator admitted back then (perhaps at Reporter) out of a job log or test report. Remove
-the GitLab connection from the workspace and add it again; the new one reads them.
+As above, for a test report such a release read through a connected account that was a
+Maintainer, an instance administrator, or not a project member, so it may include ones a job
+keeps from anyone below Maintainer, and the collaborator is below Maintainer (see
+[CI status](#ci-status)). A project owner can grant the collaborator Maintainer; otherwise share a
+workspace that has not read them.
 
 ### "This binding already answers for 50 collaborators …"
 
-A binding can be shared with at most 50 collaborators at once. Every job-log or test-report read
-checks each of them with GitLab, and the cap keeps that within what one request may fetch. Remove
-a collaborator from the workspace before adding another.
+A binding can be shared with at most 50 collaborators at once: it records each one it admits, as
+the releases that checked every one of them on each job-log or test-report read did. Remove a
+collaborator from the workspace before adding another.

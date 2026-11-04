@@ -324,6 +324,11 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   only name that same repository) and follows a redirect only to the same path under that id. A
   transferred issue, which redirects into another repository, is still refused, and props stay
   path-based, so the observer probe and URL builders are unchanged.
+  Since the observer conversion (§8) this gatekeeper pins the project's id as well, read once from
+  its path, whose redirect is still never followed, and sends every REST request beneath the
+  project to `/projects/<id>/…`, so a move after the pin no longer reaches the error; git, which
+  GitLab addresses only by path, goes to the path the id has now and is refused if that path
+  changed before GitLab answered.
 - **Tree-by-oid has no REST fallback; the simulation degrades.** GitHub's simulated MR diff over
   queued pushes falls back to `GET /git/trees/{sha}` when a tree isn't in the workspace cache.
   GitLab's tree endpoint is path-and-ref addressed, not oid addressed, so `TreeDiffSource.getTree`
@@ -997,6 +1002,22 @@ The owner's own access is checked too: the job read that revalidates a cached lo
 a debug trace Developer's, so a cached log is served only while the connected account holds
 Developer on the project (the verifier's `members/all` probe, run with the owner's token);
 otherwise the read goes to `/trace` and GitLab decides.
+
+**Kernel-checked subresources.** Every read now reports what it depends on as
+`ObservationDescription.subresources` (docs/observers.md §10): `project/<projectId>`, the id the
+binding pins on first use, or for CI data the role it needs, `project/<projectId>/role/developer`
+(job logs, and test reports read below Maintainer) or `project/<projectId>/role/maintainer` (test
+reports read as a Maintainer, an administrator or no member), chosen inside the report's
+connection fence and never recomputed from the owner's later role. `verifyObserverAccess` answers
+through the observer's `UserAccount.checkSubresourceAccess`: the `members/all` probe above, by id,
+at the role named, reusing a grant for 15 minutes and a denial for 15 seconds within one
+connection generation. Reads no longer mark sets, exclude observers or consult the roster, which
+is dropped: the Workshop checks the whole audience, observers admitted unrecorded included.
+`addObserver` keeps the tracker for the sets reads marked before, and requires the baseline and
+each marked set's role by the pinned id and by the binding's path, since those reads followed the
+path. A reported id is only true if the read came from it, so REST is addressed by id (§5,
+redirects), git by the path the id has now, and caches filled while reads followed the path are
+discarded once on upgrade.
 
 ### 9. Tests
 

@@ -6,6 +6,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matchesResourceUrlPattern, resolveRequestedResource } from "@gadgets/workshop-shared/gatekeeper";
+import * as fx from "../fixtures/gitlab-docs.js";
 import { FakeGitLab, hooks, json, projectProps, seedAccount, stageReconnect, unwrap } from "./fake-gitlab.js";
 
 afterEach(() => {
@@ -92,10 +93,14 @@ describe("observer admission", () => {
   // answers were checked live: a non-member is `[]`, an inherited Developer one row at 30.
   type Member = { access_level: number; membership_state?: string; expires_at?: string | null } | null;
 
+  /** The bound project's numeric id, which a binding pins from its path and then reads it by. */
+  const PROJECT_ID = 7;
+
   /**
    * A fake where the token names the user (`Bearer <username>`), `/user` answers with that
-   * user's id, and `members/all/:id` answers each user's membership -- 404 for a non-member, as
-   * for a project the token cannot see.
+   * user's id, the project answers its path with its id, and `members/all` answers each user's
+   * membership of it, addressed by path or by id -- 404 for a non-member, as for a project the
+   * token cannot see.
    */
   function fakeMembers(members: Record<string, Member>, projectStatus = 200): FakeGitLab {
     const gitlab = new FakeGitLab();
@@ -104,7 +109,11 @@ describe("observer admission", () => {
       const name = request.headers.get("authorization")!.replace("Bearer ", "");
       return json({ id: ids[name] ?? 999, username: name, name, web_url: `https://gitlab.example.com/${name}` });
     });
-    gitlab.on("GET", /^\/api\/v4\/projects\/group%2Fsub%2Fproject\/members\/all\?/, request => {
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/(?:group%2Fsub%2Fproject|${PROJECT_ID})$`), () => json({
+      ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: "group/sub/project",
+      web_url: "https://gitlab.example.com/group/sub/project",
+    }));
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/(?:group%2Fsub%2Fproject|${PROJECT_ID})/members/all\\?`), request => {
       if (projectStatus !== 200) return json({ message: `${projectStatus}` }, { status: projectStatus });
       // The documented `user_ids[]` filter; a non-member is the documented empty list.
       const id = Number(request.url.searchParams.get("user_ids[]"));
