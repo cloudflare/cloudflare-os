@@ -1980,16 +1980,24 @@ function applySettings(next: Partial<DocSettings> | null | undefined) {
   btn.aa.style.fontFamily = FONTS.find((f) => f.key === settings.font)!.stack;
   requestAnimationFrame(() => scheduleOutline());
 }
-// A change that fails to save is taken back (unless changed again since), so
-// the page doesn't show a look no one else sees.
+// The page shows the server's settings with this page's unsaved changes on
+// top, in order. A change that fails to save drops out, so the page never
+// keeps a look no one else sees.
+let confirmedSettings: Partial<DocSettings> = settings;
+const pendingSettings: Partial<DocSettings>[] = [];
+function showSettings() { applySettings(pendingSettings.reduce((shown, patch) => ({ ...shown, ...patch }), confirmedSettings)); }
+function receiveSettings(confirmed: Partial<DocSettings>) {
+  confirmedSettings = confirmed;
+  showSettings();
+}
 function updateSettings(patch: Partial<DocSettings>) {
-  const before = settings;
-  applySettings({ ...settings, ...patch });
-  const mine = settings;
-  gadget.setSettings({ ...patch, senderId: clientId }).catch((error) => {
-    console.error(error);
-    if (settings === mine) applySettings(before);
-  });
+  const change = { ...patch };
+  pendingSettings.push(change);
+  showSettings();
+  // Replies come in the order sent, each with the server's settings after its own change.
+  gadget.setSettings({ ...change, senderId: clientId })
+    .then((saved) => { confirmedSettings = saved; }, (error) => console.error(error))
+    .finally(() => { pendingSettings.splice(pendingSettings.indexOf(change), 1); showSettings(); });
 }
 function typeMenu(owner: HTMLElement) {
   const render = () => [
@@ -4820,9 +4828,11 @@ function pasteIntoCell(cell: HTMLTableCellElement, html: string, text: string) {
   if (inline) exec("insertHTML", inline);
 }
 
-// Plain text of a table: an aligned Markdown table.
+// Plain text of a table: an aligned Markdown table. A pipe in a cell is escaped,
+// and so is each backslash before it, which Markdown would otherwise pair up. A
+// run is matched from its start only, or one without a pipe is rescanned from each.
 function tableToMarkdown(t: HTMLTableElement) {
-  const rows = Array.from(t.rows, (r) => Array.from(r.cells, (c) => (c.innerText ?? c.textContent).replace(/\u200B/g, "").trim().replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|")));
+  const rows = Array.from(t.rows, (r) => Array.from(r.cells, (c) => (c.innerText ?? c.textContent).replace(/\u200B/g, "").trim().replace(/\s*\n\s*/g, " ").replace(/(?<!\\)(\\*)\|/g, (_, run: string) => run.repeat(2) + "\\|")));
   if (!rows.length) return "";
   const n = Math.max(...rows.map((r) => r.length));
   const widths = Array.from({ length: n }, (_, i) => Math.max(3, ...rows.map((r) => (r[i] || "").length)));
@@ -6323,7 +6333,7 @@ window.addEventListener("pagehide", () => { if (ready && (saver.busy || isDirty(
 // held back and replayed afterwards, so a snapshot read a moment earlier can't
 // overwrite a newer edit.
 function handleOperation(event: DocumentEvent) {
-  if (event.type === "settings") { if (event.senderId !== clientId) applySettings(event.settings); return; }
+  if (event.type === "settings") { if (event.senderId !== clientId) receiveSettings(event.settings); return; }
   if (event.type === "snapshot") {
     if (staleEvent(event.document?.revision)) return;
     if (event.senderId === clientId) { revision = Math.max(revision, event.document?.revision || 0); return; }
@@ -6395,7 +6405,7 @@ async function connect(settleMs = 0) {
   for (let attempt = 0; ; attempt++) {
     try {
       const { doc, settings: docSettings } = await withTimeout(loadFromServer(), isExport ? 6e4 : connectTimeoutMs(attempt), isExport ? null : nextKick());
-      if (docSettings) applySettings(docSettings);
+      if (docSettings) receiveSettings(docSettings);
       const firstLoad = !connectedOnce;
       if (connectedOnce) reconcileSnapshot(doc);
       else applySnapshot(doc);

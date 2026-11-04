@@ -27,6 +27,18 @@ describe("textToHtml", () => {
   it("reads a heading line holding a line separator", () => {
     expect(markdownToHtml("# a\u2028b\nnext")).toBe("<h1>a\u2028b</h1><p>next</p>");
   });
+
+  it("counts a numbered list, and a nested one, from its first marker", () => {
+    expect(markdownToHtml("5. Fifth\n6. Sixth\n   3. Third\n   4. Fourth\n1. One")).toBe(
+      '<ol start="5"><li>Fifth</li><li>Sixth<ol start="3"><li>Third</li><li>Fourth</li></ol></li><li>One</li></ol>',
+    );
+    expect(markdownToHtml("1. One\n2. Two")).toBe("<ol><li>One</li><li>Two</li></ol>");
+  });
+
+  it("reads a delimiter row with space around its cells, and nothing else, as a table's", () => {
+    expect(textToHtml("| a |\n|  ---  |  \n| 1 |")).toBe("<table><thead><tr><th>a</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>");
+    for (const row of ["| - | x |", "|---||---|", "|", "| :: |"]) expect(textToHtml(`| a |\n${row}`)).not.toContain("<table>");
+  });
 });
 
 describe("inlineMarkdown", () => {

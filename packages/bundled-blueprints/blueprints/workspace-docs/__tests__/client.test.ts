@@ -2,7 +2,7 @@
 // agent's) reach the DOM only through the editor's scrubbing. client.ts is a gadget entry with
 // top-level effects, so it is loaded once against a fake `gadget` stub and driven through it.
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { ApplyOperationResult, BlockUpsert, DocumentEvent, GadgetStub, Operation, StoredBlock, SubscribeSnapshot, SubscriberCallbacks } from "../files/lib/protocol.ts";
+import type { ApplyOperationResult, BlockUpsert, DocSettings, DocumentEvent, GadgetStub, Operation, StoredBlock, SubscribeSnapshot, SubscriberCallbacks } from "../files/lib/protocol.ts";
 
 const HOSTILE = '<p id="addEventListener" name="createElement">Hi<img name="getElementById" src="data:image/png;base64,AA" data-reencode="" onerror="alert(1)"><noscript>&lt;img src=x onerror=alert(1)&gt;</noscript><template><b>t</b></template></p>';
 
@@ -294,20 +294,39 @@ describe("more edits", () => {
     expect(editor().querySelector('[data-block-id="lk"]')!.innerHTML).toBe("First two NEW");
   });
 
-  // Otherwise this page alone would show the new typeface, until its next reconnect.
-  it("takes back a typeface change that fails to save", async () => {
+  // A change that fails to save drops out of what the page shows, whatever else is pending:
+  // otherwise this page alone would show it, until its next reconnect.
+  it("shows the saved settings with only the pending changes on top", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     // The mock gadget beforeAll installed.
     const { gadget } = globalThis as unknown as { gadget: GadgetStub };
-    Object.assign(gadget, { setSettings: vi.fn(async () => { throw new Error("offline"); }) });
+    const replies: PromiseWithResolvers<DocSettings>[] = [];
+    Object.assign(gadget, { setSettings: vi.fn(() => { const reply = Promise.withResolvers<DocSettings>(); replies.push(reply); return reply.promise; }) });
     const menu = document.querySelector<HTMLButtonElement>('button[aria-label="Typeface & width"]')!;
+    const page = document.querySelector<HTMLElement>(".page")!;
+    const pick = (label: string) => document.querySelector<HTMLElement>(`[role="menuitemradio"][aria-label="${label}"]`)!.click();
+    const shown = () => [page.dataset.font, page.classList.contains("wide")];
     try {
       menu.click();
-      document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-label="Serif"]')!.click();
-      const page = document.querySelector<HTMLElement>(".page")!;
-      expect(page.dataset.font).toBe("serif");
-      await vi.waitFor(() => expect(page.dataset.font).toBe("sans"));
-    } finally { menu.click(); error.mockRestore(); }
+      pick("Serif");
+      pick("Mono");
+      expect(shown()).toEqual(["mono", false]);
+      replies[0]!.reject(new Error("offline"));
+      replies[1]!.reject(new Error("offline"));
+      await vi.waitFor(() => expect(shown()).toEqual(["sans", false]));
+      // A failed typeface, then a width change that saves.
+      pick("Serif");
+      document.querySelector<HTMLElement>('[role="menuitemcheckbox"]')!.click();
+      expect(shown()).toEqual(["serif", true]);
+      replies[2]!.reject(new Error("offline"));
+      replies[3]!.resolve({ font: "sans", wide: true });
+      await vi.waitFor(() => expect(shown()).toEqual(["sans", true]));
+    } finally {
+      menu.click();
+      error.mockRestore();
+      // Back to the settings the other tests start from.
+      subscriber.operation({ type: "settings", senderId: "someone", settings: { font: "sans", wide: false } });
+    }
   });
 
   // A code block's lines are <br>s; copied as plain text, they stay lines.
@@ -319,6 +338,16 @@ describe("more edits", () => {
     const copy = Object.assign(new Event("copy", { bubbles: true, cancelable: true }), { clipboardData: { setData: (type: string, value: string) => data.set(type, value) } });
     (document.activeElement ?? document).dispatchEvent(copy);
     expect(data.get("text/plain")).toBe("```\nconst a = 1;\nconst b = 2;\n```");
+  });
+
+  it("copies a table as a Markdown table, escaping pipes and the backslashes before them", () => {
+    send([{ id: "tp", html: String.raw`<table><tbody><tr><td>a|b</td><td>c\|d</td><td>e\\|f</td><td>C:\dir\</td></tr></tbody></table>`, version: 1 }]);
+    caretIn(editor().querySelector('[data-block-id="tp"] td')!.firstChild!, 0);
+    editor().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    const data = new Map<string, string>();
+    const copy = Object.assign(new Event("copy", { bubbles: true, cancelable: true }), { clipboardData: { setData: (type: string, value: string) => data.set(type, value) } });
+    (document.activeElement ?? document).dispatchEvent(copy);
+    expect(data.get("text/plain")!.split("\n")[0]).toBe(String.raw`| a\|b | c\\\|d | e\\\\\|f | C:\dir\ |`);
   });
 
   // Only the selected text goes: the start of the first cell and the end of the last stay.

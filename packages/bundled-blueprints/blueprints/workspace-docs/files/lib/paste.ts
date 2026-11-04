@@ -14,7 +14,7 @@
 // styling are dropped.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { closesFence } from "./markdown.ts";
+import { closesFence, isPipeSeparator } from "./markdown.ts";
 
 /** What the paste conversions need from the editor. */
 export interface PasteContext {
@@ -516,8 +516,7 @@ function looksLikeMarkdown(text: string) {
 }
 // Markdown tables: "| a | b |" rows under a "| --- | :-: |" delimiter row,
 // whose colons set each column's alignment.
-const PIPE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-const startsPipeTable = (lines: string[], i: number) => lines[i].includes("|") && i + 1 < lines.length && PIPE_SEP.test(lines[i + 1]) && lines[i + 1].includes("|");
+const startsPipeTable = (lines: string[], i: number) => lines[i].includes("|") && i + 1 < lines.length && lines[i + 1].includes("|") && isPipeSeparator(lines[i + 1]);
 export function pipeCells(line: string): string[] {
   let s = line.trim();
   if (s.startsWith("|")) s = s.slice(1);
@@ -595,7 +594,9 @@ export function markdownToHtml(md: string): string {
         const top = stack.at(-1);
         if (top && indent === top.indent && top.kind !== kind) { html += `</li></${stack.pop()!.tag}>`; }
         if (!stack.length || indent > stack.at(-1)!.indent) {
-          html += `<${tag}${kind === "todo" ? ' class="checklist"' : ""}>`;
+          // A numbered list counts from its first marker, as "5." does.
+          const start = tag === "ol" ? parseInt(m[2], 10) : 1;
+          html += `<${tag}${kind === "todo" ? ' class="checklist"' : ""}${start !== 1 ? ` start="${start}"` : ""}>`;
           stack.push({ indent, tag, kind });
         } else html += "</li>";
         html += `<li${check && m[3].toLowerCase() === "x" ? ' data-checked="true"' : ""}>${inlineMarkdown(m[4])}`;

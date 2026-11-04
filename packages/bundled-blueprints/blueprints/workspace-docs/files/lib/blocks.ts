@@ -6,7 +6,7 @@
 // unsafe-markup filter, and the reverse direction the block listings use
 // (a block's type, and its Markdown via ./markdown.ts).
 import type { BlockContent, BlockDescription, BlockPosition, BlockSource, StoredBlock } from "./protocol.ts";
-import { closesFence, decodeHtml, htmlToMarkdown, readHtmlAttribute } from "./markdown.ts";
+import { closesFence, decodeHtml, htmlToMarkdown, isPipeSeparator, readHtmlAttribute } from "./markdown.ts";
 import { VOID_TAGS } from "./merge.ts";
 
 /**
@@ -272,9 +272,8 @@ function tableHtml(spec: BlockSpec): string {
 }
 
 // GFM pipe tables. A delimiter cell is one or more dashes, with optional alignment colons (`:-:`).
-const PIPE_SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 function isPipeTableStart(lines: string[], i: number): boolean {
-  return lines[i].includes("|") && i + 1 < lines.length && lines[i + 1].includes("|") && PIPE_SEPARATOR.test(lines[i + 1]);
+  return lines[i].includes("|") && i + 1 < lines.length && lines[i + 1].includes("|") && isPipeSeparator(lines[i + 1]);
 }
 function pipeCells(line: string): string[] {
   let s = line.trim();

@@ -514,6 +514,14 @@ export function closesFence(line: string, open: string): boolean {
   const t = line.trim();
   return t.length >= open.length && t === open[0].repeat(t.length);
 }
+// Whether `line` is a pipe table's delimiter row, such as `| --- | :-: |`.
+// Read cell by cell: one regex for the whole row backtracks on long space runs.
+export function isPipeSeparator(line: string): boolean {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").every((cell) => /^\s*:?-+:?\s*$/.test(cell));
+}
 
 /** The decoded value of attribute `name` in a tag's attribute source, or "" when it has none. */
 export function readHtmlAttribute(source: string, name: string): string {
