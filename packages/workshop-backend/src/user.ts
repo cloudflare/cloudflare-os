@@ -1323,7 +1323,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
               filterEnabledResources(config, id, supportedResources)
                   .filter(resource => resource.connectable !== false || resource.creatable);
           if (enabledResources.length === 0) {
-            // Every resource for this vendor is disabled (or it advertised none) — hide the vendor.
+            // No admin-enabled resource offers connection or creation — hide the vendor.
             return null;
           }
 
