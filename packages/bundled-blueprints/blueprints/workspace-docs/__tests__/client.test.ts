@@ -774,6 +774,17 @@ describe("editor keys, menus and undo", () => {
     expect(document.querySelector(".status")!.textContent).toContain("Adding image");
   });
 
+  // The document's own Markdown, pasted back as text, keeps its pictures: through the same
+  // rebuild as a pasted <img>, never as their data URL in the text.
+  it("pastes an embedded image in Markdown text as the image", () => {
+    caretIn(show("mdi", "<p>Here</p>").firstChild!, 4);
+    const src = "data:image/png;base64,iVBORw0KGgo=";
+    const execCommand = withExec(() => editor().dispatchEvent(Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+      clipboardData: { items: [], files: [], getData: (type: string) => (type === "text/plain" ? `# Notes\n\n![Shot](${src})` : "") },
+    })));
+    expect(execCommand).toHaveBeenCalledWith("insertHTML", false, `<h1>Notes</h1><p><img class="doc-image" draggable="true" src="${src}" alt="Shot" style="height: auto;"></p>`);
+  });
+
   it("picks a colour from the keyboard", () => {
     caretIn(show("co", "<p>Paint</p>").firstChild!, 0, undefined, 5);
     const owner = document.querySelector<HTMLButtonElement>(".tb.color")!;

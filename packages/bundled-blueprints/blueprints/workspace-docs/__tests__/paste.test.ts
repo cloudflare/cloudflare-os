@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { htmlToMarkdown } from "../files/lib/markdown.ts";
 import { inlineMarkdown, isCodeEditorHtml, markdownToHtml, normalizeHref, paletteColorOf, sanitizePastedHtml, textToHtml, type PasteContext } from "../files/lib/paste.ts";
 
 const context: PasteContext = {
@@ -14,6 +15,12 @@ describe("textToHtml", () => {
       "<table><thead><tr><th>a</th><th style=\"text-align: center;\">b</th><th style=\"text-align: right;\">c</th></tr></thead>" +
       "<tbody><tr><td>1</td><td style=\"text-align: center;\">2</td><td style=\"text-align: right;\">3</td></tr></tbody></table>",
     );
+  });
+
+  // An image's alt is its file name, brackets and all; the export escapes them.
+  it("pastes the editor's exported Markdown back with its images", () => {
+    const image = `<img class="doc-image" src="data:image/png;base64,iVBORw0KGgo=" alt="Screenshot [1] \\ a">`;
+    expect(textToHtml(htmlToMarkdown(`<p>${image}</p>`))).toBe(`<p>${image}</p>`);
   });
 
   it("keeps a quote's blocks: a quote per paragraph, its list and code between", () => {
@@ -46,6 +53,14 @@ describe("inlineMarkdown", () => {
     expect(inlineMarkdown("see [docs](https://x.com/_a_/*b*) and `*c*` but *d*"))
       .toBe('see <a href="https://x.com/_a_/*b*">docs</a> and <code>*c*</code> but <i>d</i>');
     expect(inlineMarkdown("**[bold link](x.com)**")).toBe('<b><a href="https://x.com">bold link</a></b>');
+  });
+
+  // The editor embeds images, so only an embedded one is pasted as a picture; another is a link.
+  it("reads an embedded image as the image, and any other as a link to it", () => {
+    const src = "data:image/png;base64,iVBORw0KGgo+/=";
+    expect(inlineMarkdown(`![A *shot*](${src}) and ![diagram](https://example.com/d_1_.png)`))
+      .toBe(`<img class="doc-image" src="${src}" alt="A *shot*"> and <a href="https://example.com/d_1_.png">diagram</a>`);
+    expect(inlineMarkdown("![x](data:text/html;base64,PHA+)")).toBe("[x](data:text/html;base64,PHA+)");
   });
 });
 

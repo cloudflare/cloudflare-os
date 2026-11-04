@@ -500,6 +500,10 @@ export function inlineMarkdown(s: string): string {
   const stash: string[] = [];
   const keep = (html: string) => `\u0000${stash.push(html) - 1}\u0000`;
   let out = escapeHtml(String(s).replace(/\u0000/g, "")).replace(/`([^`]+)`/g, (_, c: string) => keep(`<code>${c}</code>`));
+  // An embedded image (as the editor's Markdown export writes one, its alt's brackets escaped) is
+  // pasted as the image; any other is left to read as a link, since the editor embeds no remote image.
+  out = out.replace(/!\[((?:\\.|[^\]\\\n])*)\]\(([^)\s]+)\)/g, (m, alt: string, src: string) => EMBEDDED_IMAGE.test(src)
+    ? keep(`<img class="doc-image" src="${src}" alt="${alt.replace(/\u0000\d+\u0000/g, "").replace(/\\([\\[\]])/g, "$1")}">`) : m.slice(1));
   out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t: string, u: string) => {
     const href = u.includes("\u0000") ? "" : normalizeHref(u);
     return href ? keep(`<a href="${href}">`) + t + keep("</a>") : m;
@@ -509,9 +513,10 @@ export function inlineMarkdown(s: string): string {
   out = out.replace(/~~([^~]+)~~/g, "<s>$1</s>");
   return out.replace(/\u0000(\d+)\u0000/g, (_, i: string) => stash[Number(i)]);
 }
+const EMBEDDED_IMAGE = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/i;
 const LIST_LINE = /^(\s*)([-*+]|\d+[.)])\s+(?:\[( |x|X)\]\s+)?(.*)$/;
 function looksLikeMarkdown(text: string) {
-  return /^(#{1,6}\s|[^\S\n]*[-*+]\s|[^\S\n]*\d+[.)]\s|>\s?|```|[^\S\n]*[-*_]{3,}[^\S\n]*$)/m.test(text) || /\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^)\s]+\)|`[^`\n]+`/.test(text) ||
+  return /^(#{1,6}\s|[^\S\n]*[-*+]\s|[^\S\n]*\d+[.)]\s|>\s?|```|[^\S\n]*[-*_]{3,}[^\S\n]*$)/m.test(text) || /\*\*[^*\n]+\*\*|\[(?:\\.|[^\]\\\n])+\]\([^)\s]+\)|`[^`\n]+`/.test(text) ||
     text.split("\n").some((_, i, lines) => startsPipeTable(lines, i));
 }
 // Markdown tables: "| a | b |" rows under a "| --- | :-: |" delimiter row,

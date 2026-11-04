@@ -2490,8 +2490,14 @@ const pasteContext: PasteContext = { colorKeys: COLOR_KEYS, image: sanitizeImage
 const sanitizePastedHtml = (html: string) => sanitizeHtml(html, pasteContext);
 // Clipboard HTML and text as the editor's markup. A code editor's HTML is only
 // its text, syntax-coloured, so the text is pasted (and read as Markdown).
-const clipboardHtml = (html: string | undefined, text: string | undefined) =>
-  html?.trim() && !isCodeEditorHtml(html) ? sanitizePastedHtml(html) : textToHtml(text);
+// Markup read from text goes through the paste filter too, which rebuilds any
+// image as the editor's own; one line of plain text (all escaped, so no tag)
+// is inserted as it is, since in a paragraph its edge spaces would be lost.
+const clipboardHtml = (html: string | undefined, text: string | undefined) => {
+  if (html?.trim() && !isCodeEditorHtml(html)) return sanitizePastedHtml(html);
+  const fromText = textToHtml(text);
+  return fromText.startsWith("<") ? sanitizePastedHtml(fromText) : fromText;
+};
 // Excel and Word put a picture of the copied content beside its HTML, and a
 // web page a copied image's file beside HTML of just that <img>: the files go
 // in only when the HTML has no text.
