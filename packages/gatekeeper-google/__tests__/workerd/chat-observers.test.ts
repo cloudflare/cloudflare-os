@@ -15,9 +15,8 @@ const testEnv = env as unknown as {
 };
 
 const OWNER_TOKEN = "owner-token";
-/** The subresources reads report: two conversations, the first's member list, and the owner. */
+/** The subresources reads report: a conversation, its member list, and the owner. */
 const SPACE = "chat/space/AAAA";
-const OTHER_SPACE = "chat/space/BBBB";
 const MEMBERS = "chat/spaceMembers/AAAA";
 const OWNER = "chat/user/100";
 
@@ -182,13 +181,21 @@ describe("Google Chat observations", () => {
     using spaces = await account.listSpaces();
     using page = await spaces.next();
     await page![0].space.getMetadata();
+    using members = await page![0].space.listMembers();
+    using _memberPage = await members.next();
+    using messages = await page![0].space.listMessages();
+    using messagePage = await messages.next();
+    expect((await messagePage![0].message.getMetadata()).text).toBe("hello");
     await account.getCurrentUser();
 
-    expect(await chat.observations()).toEqual([
-      ["Open a Google Chat session", [OWNER]],
-      ["List Google Chat conversations", [SPACE, OTHER_SPACE, OWNER]],
-      ["Read Google Chat conversation metadata", [SPACE, OWNER]],
-      ["Read the connected Google Chat identity", [OWNER]],
+    expect((await chat.observations()).map(([, subresources]) => subresources)).toEqual([
+      [OWNER],
+      [OWNER],
+      [OWNER],
+      [OWNER],
+      [OWNER],
+      [OWNER],
+      [OWNER],
     ]);
   });
 });

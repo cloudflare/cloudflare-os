@@ -12,9 +12,9 @@
 //   - One thread (`ChatThread`). Observers: strategy B, as for its conversation — Google's
 //     access control stops at the space, so that is what a collaborator is verified against.
 //
-// Every read also reports what it depends on as subresources (see chatSubresourceId), which the
-// Workshop checks through verifyObserverAccess(): each conversation it read, a conversation's
-// member list when it read members, and on a whole-account binding, the connected account itself.
+// Every read reports what it depends on as subresources (see chatSubresourceId), which the
+// Workshop checks through verifyObserverAccess(): on a whole-account binding, only the connected
+// account itself; otherwise, the conversation it read or its member list when it read members.
 // Google's access control stops at the space, so a thread, message, reaction or attachment is
 // reported as its conversation. addObserver() keeps the checks above for the reads made before
 // reads reported subresources.
@@ -1666,7 +1666,7 @@ export class GoogleChatGatekeeperImpl
   #context(self: ChatUser, approvalQueue: RpcStub<ApprovalQueue>): ChatContext {
     const boundSpace = this.#boundSpaceName();
     // A whole-account binding reaches what only the connected account may see (see addObserver),
-    // so every read through it also reports the account.
+    // so every read through it reports only the account, including nested capabilities and hooks.
     const queue = new SharedApprovalQueue(approvalQueue.dup(),
       boundSpace === undefined ? [chatAccountSubresource(self)] : undefined);
     return {
