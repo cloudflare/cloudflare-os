@@ -551,13 +551,14 @@ export interface AgentHooks {
   /**
    * Record an observation in the Overseer audit log on behalf of a built-in agent tool
    * (i.e. one that isn't backed by a gatekeeper, like `webFetch`). Used to track which
-   * external influencers may have tainted the agent's session.
+   * external influencers may have tainted the agent's session. It records no observer
+   * requirement, so it reports no `subresources`.
    */
   recordAgentObservation(
       chatId: number,
       resourceTitle: string,
       resourceUrl: string | undefined,
-      description: ObservationDescription): Promise<void>;
+      description: Omit<ObservationDescription, "subresources">): Promise<void>;
 
   /** Returns the bytes of a committed attachment owned by this chat for inclusion in model input. */
   getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array>;

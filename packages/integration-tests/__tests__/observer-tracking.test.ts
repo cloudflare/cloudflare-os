@@ -1,9 +1,8 @@
-// Kernel-checked observer subresources (docs/observers.md §10), against the fixture gatekeeper. A
-// binding reports each read's `subresources` on `authorizeObservation()` once
-// `/control/report-subresources` says so, and its `verifyObserverAccess()` asks each observer's
-// verifier for the outcomes `/control/verify-outcome` sets per subresource. Admission is additive:
-// every collaborator must pass every connection's `addObserver()` and the kernel's check of what
-// was reported.
+// Kernel-checked observer subresources (docs/observers.md §10), against the fixture gatekeeper. Every
+// read reports its `subresources` on `authorizeObservation()`, and the binding's
+// `verifyObserverAccess()` asks each observer's verifier for the outcomes `/control/verify-outcome`
+// sets per subresource, binding, or account. A collaborator is checked only against what was
+// recorded through a connection; one with nothing recorded needs only an account choice.
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -50,22 +49,10 @@ function freshThingUrl(name: string): string {
   return `https://gadgets-test.example/things/${name}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function reportSubresources(resourceUrl: string): Promise<void> {
-  return testControl(harness, "report-subresources", { resourceUrl });
-}
-
 /** Refuse (or re-admit) `label` for one subresource of the binding at `resourceUrl`. */
 function setSubresourceAccess(
     label: string, resourceUrl: string, subresource: string, allow: boolean): Promise<void> {
-  return testControl(harness, "verify-outcome",
-      { label, resourceUrl, subresource, allow, reason: "The test refused this subresource." });
-}
-
-type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string };
-
-async function observerEvents(resourceUrl: string): Promise<ObserverEvent[]> {
-  return (await testControl<{ events: ObserverEvent[] }>(harness, "observer-events", { resourceUrl }))
-    .events;
+  return testControl(harness, "verify-outcome", { label, resourceUrl, subresource, allow });
 }
 
 async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<ConnectedAccount> {
@@ -101,7 +88,7 @@ async function connectAndRead(ws: Workspace, resourceUrl: string, subresources: 
   using gatekeeper = await ws.overseer.newGatekeeper(ws.account.id, resourceUrl);
   if (!gatekeeper) throw new Error(`Failed to connect ${resourceUrl}`);
   using session = await gatekeeper.openSession() as RpcStub<TestSession>;
-  await expect(session.readValue(false, false, undefined, subresources)).resolves.toBe(42);
+  await expect(session.readValue(false, false, subresources)).resolves.toBe(42);
   return gatekeeper.getId();
 }
 
@@ -153,35 +140,30 @@ async function collaboratorOpens(bob: Collaborator, workspaceId: string, gadgetI
   }
 }
 
-it.concurrent("a binding reporting subresources from creation checks reads and admission against them",
-    async () => {
+it.concurrent("reported subresources check reads and admission", async () => {
   using publicApi = connect(harness.url);
   using ws = await newWorkspace(publicApi);
   const url = freshThingUrl("reporting");
-  const legacyUrl = freshThingUrl("reporting-legacy");
-  await reportSubresources(url);
+  const unrestrictedUrl = freshThingUrl("reporting-unrestricted");
   using reporting = await ws.overseer.newGatekeeper(ws.account.id, url);
   if (!reporting) throw new Error(`Failed to connect ${url}`);
   const reportingId = await reporting.getId();
   using session = await reporting.openSession() as RpcStub<TestSession>;
-  await expect(session.readValue(false, false, undefined, ["doc-1"])).resolves.toBe(42);
-  await connectAndRead(ws, legacyUrl, []);
+  await expect(session.readValue(false, false, ["doc-1"])).resolves.toBe(42);
+  const unrestrictedId = await connectAndRead(ws, unrestrictedUrl, []);
   using bob = await addCollaborator(ws);
 
   const first = await collaboratorOpens(bob, ws.gadgetId);
   expect(first.error).toBeUndefined();
-  // The reporting connection is asked about under the same connection ID used by its binding.
-  expect(first.recorder.calls[0]!.map(need => need.gatekeeperId)).toContain(reportingId);
-  // Admission is additive: both connections' addObserver() admitted him.
-  expect(await observerEvents(url)).toMatchObject([{ type: "add" }]);
-  expect(await observerEvents(legacyUrl)).toMatchObject([{ type: "add" }]);
+  // Both connections are asked about under the same connection IDs used by their bindings.
+  expect(first.recorder.calls[0]!.map(need => need.gatekeeperId))
+      .toEqual(expect.arrayContaining([reportingId, unrestrictedId]));
 
   // Bob is now a current collaborator, so a read depending on what he can't access is refused...
   await setSubresourceAccess(bob.label, url, "secret-2", false);
-  await expect(session.readValue(false, false, undefined, ["secret-2"]))
-      .rejects.toThrow(READ_REFUSED);
+  await expect(session.readValue(false, false, ["secret-2"])).rejects.toThrow(READ_REFUSED);
   // ...while one he can access goes through.
-  await expect(session.readValue(false, false, undefined, ["doc-1"])).resolves.toBe(42);
+  await expect(session.readValue(false, false, ["doc-1"])).resolves.toBe(42);
   // The refused read recorded nothing, so it doesn't refuse him at his next open.
   expect((await collaboratorOpens(bob, ws.gadgetId)).error).toBeUndefined();
 
@@ -207,8 +189,6 @@ it.concurrent("the same local subresource ID is checked independently in differe
   const firstUrl = freshThingUrl("scope-first");
   const secondUrl = freshThingUrl("scope-second");
   const localId = 'same/local#id:"雪"';
-  await reportSubresources(firstUrl);
-  await reportSubresources(secondUrl);
   const firstId = await connectAndRead(ws, firstUrl, [localId]);
   const secondId = await connectAndRead(ws, secondUrl, [localId]);
   using bob = await addCollaborator(ws);
@@ -233,19 +213,28 @@ it.concurrent("the same local subresource ID is checked independently in differe
   expect((await collaboratorOpens(bob, ws.gadgetId)).error).toBeUndefined();
 });
 
-it.concurrent("addObserver() still refuses a collaborator of a binding that reports subresources",
+it.concurrent("a read of the thing itself records its ACL, and an empty report records nothing",
     async () => {
   using publicApi = connect(harness.url);
   using ws = await newWorkspace(publicApi);
-  const url = freshThingUrl("baseline");
-  await reportSubresources(url);
-  // `[]`: nothing restricts the read, so nothing is recorded for the Workshop to check.
-  const connectionId = await connectAndRead(ws, url, []);
+  const url = freshThingUrl("thing");
+  const unrestrictedUrl = freshThingUrl("thing-unrestricted");
+  using connection = await ws.overseer.newGatekeeper(ws.account.id, url);
+  if (!connection) throw new Error(`Failed to connect ${url}`);
+  const connectionId = await connection.getId();
+  using session = await connection.openSession() as RpcStub<TestSession>;
+  await expect(session.readThing()).resolves.toBe(42);
+  await connectAndRead(ws, unrestrictedUrl, []);
   using bob = await addCollaborator(ws);
-  const reason = "The test refused this account at this binding.";
-  await testControl(harness, "verify-outcome",
-      { label: bob.label, resourceUrl: url, allow: false, reason });
+  // The gatekeeper can't determine Bob's access at either binding, and says why.
+  const reason = "The test could not check this account at this binding.";
+  for (const resourceUrl of [url, unrestrictedUrl]) {
+    await testControl(harness, "verify-outcome",
+        { label: bob.label, resourceUrl, allow: false, reason });
+  }
 
+  // Only the connection whose read recorded something asks the gatekeeper, and its reason
+  // reaches him.
   const refused = await collaboratorOpens(bob, ws.gadgetId);
   expect(refused.error?.message).toContain(reason);
   expect(refused.recorder.calls.at(-1)!.filter(need => need.failure)).toEqual([
@@ -261,7 +250,6 @@ it.concurrent("disconnect drops reported permission checks but keeps the observa
   using publicApi = connect(harness.url);
   using ws = await newWorkspace(publicApi);
   const url = freshThingUrl("removed");
-  await reportSubresources(url);
   const connectionId = await connectAndRead(ws, url, ["kept-1"]);
   using bob = await addCollaborator(ws);
   const audit = await ws.overseer.listActions({ filter: "observation" });
@@ -316,7 +304,7 @@ interface ReadingGadget extends RpcTarget {
 const READING_SERVER = `import { DurableObject } from "cloudflare:workers";
 export class Gadget extends DurableObject {
   async read(subresource) {
-    const value = await this.env.THING.readValue(false, false, undefined, [subresource]);
+    const value = await this.env.THING.readValue(false, false, [subresource]);
     return { value, subresource };
   }
 }`;
@@ -339,7 +327,6 @@ it.concurrent("a gadget's reported reads enforce use collaborator admission and 
   using publicApi = connect(harness.url);
   using ws = await newWorkspace(publicApi);
   const url = freshThingUrl("gadget-reporting");
-  await reportSubresources(url);
   using reporting = await ws.overseer.newGatekeeper(ws.account.id, url);
   if (!reporting) throw new Error("Failed to create the reporting connection");
   const connectionId = await reporting.getId();
@@ -379,7 +366,6 @@ it.concurrent("a gadget's reported reads enforce use collaborator admission and 
   await setSubresourceAccess(viewer.label, url, "live-2", false);
   expect((await collaboratorOpens(viewer, ws.gadgetId, gadgetId)).error?.message)
       .toContain(DENIED);
-  expect(await observerEvents(url)).toContainEqual(expect.objectContaining({ type: "add" }));
 });
 
 it.concurrent("a collaborator granted one gadget is listed, verified, and revoked for it alone",
@@ -387,7 +373,6 @@ it.concurrent("a collaborator granted one gadget is listed, verified, and revoke
   using publicApi = connect(harness.url);
   using ws = await newWorkspace(publicApi);
   const url = freshThingUrl("one-gadget");
-  await reportSubresources(url);
   using reporting = await ws.overseer.newGatekeeper(ws.account.id, url);
   if (!reporting) throw new Error("Failed to create the reporting connection");
   const connectionId = await reporting.getId();
@@ -520,7 +505,6 @@ it.concurrent("reported hook deliveries are authorized, check both collaborator 
   using ws = await newWorkspace(publicApi);
   const url = freshThingUrl("hook-reporting");
   const hookKey = `reporting-hook-${crypto.randomUUID()}`;
-  await reportSubresources(url);
   using reporting = await ws.overseer.newGatekeeper(ws.account.id, url);
   if (!reporting) throw new Error("Failed to create the reporting connection");
   const connectionId = await reporting.getId();

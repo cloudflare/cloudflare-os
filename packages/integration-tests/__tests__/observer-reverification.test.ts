@@ -10,11 +10,13 @@
 // Nothing is stubbed but the network. The real workshop-backend runs under wrangler, tests speak Cap'n
 // Web over a WebSocket to /api exactly as the browser does, and the gatekeeper is a real Worker
 // speaking the real protocol -- one whose verification outcome the tests set, which is the whole reason
-// the fixture exists (see fixtures/gatekeeper-test/src/test-gatekeeper.ts).
+// the fixture exists (see fixtures/gatekeeper-test/src/test-gatekeeper.ts). A collaborator is checked
+// only against what was read, so the owner reads each bound thing before Bob opens.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
+import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, testControl, type Harness,
 } from "../src/harness.js";
@@ -25,7 +27,8 @@ import {
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 
 // Reason text shaped like the two failures a gatekeeper actually reports. The overseer cannot tell
-// them apart -- both arrive as a thrown error -- so what the user reads is the reason itself.
+// them apart -- the fixture's access check throws either -- so what the user reads is the reason
+// itself.
 const EXPIRED_REASON = "credentials expired — please reconnect";
 const DENIED_REASON = "You do not have access to this thing.";
 
@@ -75,21 +78,13 @@ async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<Connect
 }
 
 /**
- * Tell the gatekeeper what to do the next time it's asked to admit `label` as an observer --
- * everywhere, or only at the binding `resourceUrl` names (a resource-specific outcome wins).
+ * Make the gatekeeper's access check fail for `label` with `reason` (or pass again) -- everywhere,
+ * or only at the binding `resourceUrl` names (a resource-specific outcome wins).
  */
 function setVerifyOutcome(
     label: string, outcome: { allow: true } | { allow: false; reason: string },
     resourceUrl?: string): Promise<void> {
   return testControl(harness, "verify-outcome", { label, resourceUrl, ...outcome });
-}
-
-type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string };
-
-/** The addObserver()/removeObserver() calls one binding's gatekeeper has seen, in order. */
-async function observerEvents(resourceUrl: string): Promise<ObserverEvent[]> {
-  return (await testControl<{ events: ObserverEvent[] }>(harness, "observer-events", { resourceUrl }))
-    .events;
 }
 
 async function ambientVerificationCount(label: string): Promise<number> {
@@ -107,8 +102,8 @@ type SharedGadget = {
   failBob(reason: string): Promise<void>;
 };
 
-// Alice creates a gadget bound to each thing, shares it with Bob as "build", and Bob gets his own
-// account. Call failBob() to put the gadget into the state the bug lives in.
+// Alice creates a gadget bound to each thing and reads each one, shares it with Bob as "build", and
+// Bob gets his own account. Call failBob() to put the gadget into the state the bug lives in.
 //
 // `thingNames` names the fixture gatekeeper's "Test Thing" resources to bind, one gatekeeper each --
 // thingUrl() turns each name into a resource URL. They also end up in the failure message the last
@@ -125,7 +120,10 @@ async function shareGadgetWithBob(
 
   const overseer = await aliceApi.newWorkspace();
   for (const thingName of thingNames) {
-    await overseer.newGatekeeper(aliceAccount.id, thingUrl(thingName));
+    using gatekeeper = await overseer.newGatekeeper(aliceAccount.id, thingUrl(thingName));
+    if (!gatekeeper) throw new Error(`Failed to connect ${thingName}`);
+    using session = await gatekeeper.openSession() as RpcStub<TestSession>;
+    await session.readThing();
   }
   const { id: gadgetId } = await overseer.getMetadata();
   const collaborator = await overseer.addCollaborator(bob, "workspace");
@@ -218,12 +216,21 @@ describe("observer re-verification", () => {
 
       const ownerWorkspace = await aliceApi.newWorkspace();
       const { id: gadgetId } = await ownerWorkspace.getMetadata();
+      // Alice reads the ambient thing, so opening the workspace checks Bob's ambient account.
+      const ambient = await waitFor("the workspace's ambient binding", async () =>
+        (await ownerWorkspace.listObserverRequirements("workspace"))
+          .find(entry => entry.resourceTitle === "Test Ambient") ?? null);
+      {
+        using gatekeeper = await ownerWorkspace.getGatekeeperById(ambient.gatekeeperId);
+        using session = await gatekeeper.openSession() as RpcStub<TestSession>;
+        await session.readThing();
+      }
       const collaborator = await ownerWorkspace.addCollaborator(bob, "workspace");
       if (!collaborator) throw new Error(`Failed to share the gadget with ${bob}`);
       ownerWorkspace[Symbol.dispose]();
 
       // No ObserverConfigCallback is supplied. Opening can only succeed if the Workshop discovers
-      // Bob's ambient account itself; the fixture records which account's verifier it receives.
+      // Bob's ambient account itself; the fixture records which account's verifier it checks.
       using sharedWorkspace = await bobApi.openWorkspace(gadgetId);
       await expect(sharedWorkspace.getMetadata()).resolves.toMatchObject({ id: gadgetId });
       expect(await ambientVerificationCount(accountLabel(bobAccount))).toBe(1);
@@ -325,11 +332,11 @@ describe("observer re-verification", () => {
     });
   });
 
-  it.concurrent("keeps a repaired pre-existing registration when another binding fails terminally",
+  it.concurrent("re-prompts only for the failing binding, and names one that fails after repair",
       async () => {
     await withSession(async publicApi => {
       const shared = await shareGadgetWithBob(publicApi, ["keep-a", "keep-b"]);
-      // First open persists Bob's choices and registers him with both gatekeepers.
+      // First open persists Bob's choices for both bindings.
       expect((await bobOpensAndCloses(shared)).callCount).toBe(1);
 
       // Between opens, only binding a lapses; b still verifies.
@@ -345,19 +352,16 @@ describe("observer re-verification", () => {
           shared.bobLabel, { allow: false, reason: EXPIRED_REASON }, thingUrl("keep-b"));
         return needs.map(n => ({ gatekeeperId: n.gatekeeperId, accountId: shared.bobAccount.id }));
       });
-      await expect(bobOpens(shared, second)).rejects.toThrow(/could not confirm/i);
+      const error = await bobOpens(shared, second).then(
+        overseer => { overseer[Symbol.dispose](); return null; },
+        (err: unknown) => err as Error);
 
       expect(second.callCount).toBe(1);
       expect(second.calls[0]).toHaveLength(1);
       expect(second.needAt(0).failure?.reason).toContain(EXPIRED_REASON);
-
-      // The failed open rolls back only observers registered *this* call. a's registration
-      // predates the call and the persisted record still asserts it exists, so repairing it must
-      // not reclassify it as newly added. The buggy rollback emitted exactly one remove here.
-      const events = await observerEvents(thingUrl("keep-a"));
-      expect(events.filter(e => e.type === "remove")).toEqual([]);
-      // Both successful verifications registered it: the first open and the pass-2 repair.
-      expect(events.filter(e => e.type === "add")).toHaveLength(2);
+      expect(error?.message).toMatch(/could not confirm/i);
+      expect(error!.message).toContain("Test Thing keep-b");
+      expect(error!.message).not.toContain("Test Thing keep-a");
     });
   });
 

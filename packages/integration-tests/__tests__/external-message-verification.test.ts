@@ -9,6 +9,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import type { AuthenticatedApi, PublicApi } from "@gadgets/workshop-shared/api";
+import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import type {
   SubmitExternalMessageResult,
 } from "@gadgets/workshop-shared/external-message-gateway";
@@ -21,8 +22,8 @@ import {
 } from "../src/rpc-client.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 
-// Reason text shaped like what a gatekeeper actually reports on a settled denial. Its appearance
-// in the gateway's reply below is what proves a live verification round trip happened.
+// Reason text shaped like what a gatekeeper actually reports when it refuses an account. Its
+// appearance in the gateway's reply below is what proves a live verification round trip happened.
 const DENIED_REASON = "You do not have access to this thing.";
 
 let harness: Harness;
@@ -76,7 +77,7 @@ function submitExternalMessage(input: {
   });
 }
 
-/** Tell the gatekeeper what to do the next time it's asked to admit `label` as an observer. */
+/** Make the gatekeeper's access check for `label` fail with `reason`, or pass again. */
 function setVerifyOutcome(
     label: string, outcome: { allow: true } | { allow: false; reason: string }): Promise<void> {
   return testControl(harness, "verify-outcome", { label, ...outcome });
@@ -103,12 +104,14 @@ describe("external-message verification", () => {
           .resolves.toMatchObject({
             accepted: false, message: expect.stringMatching(/AI model/i) });
 
-      // Wire the workspace up over the web API: connect a Thing (an account-requiring connection,
-      // so collaborators must be observer-verified against it) and add Bob.
+      // Wire the workspace up over the web API: connect a Thing and read it (an account-requiring
+      // connection whose read records what collaborators must be verified against) and add Bob.
       const gadgetId = await externalGadgetId(gadgetKey);
       using overseer = await aliceApi.openWorkspace(gadgetId);
-      const gatekeeper = await overseer.newGatekeeper(aliceAccount.id, thingUrl("external"));
+      using gatekeeper = await overseer.newGatekeeper(aliceAccount.id, thingUrl("external"));
       if (!gatekeeper) throw new Error("Failed to create the test connection");
+      using session = await gatekeeper.openSession() as RpcStub<TestSession>;
+      await session.readThing();
 
       const bobApi = await signUp(publicApi, bob);
       const bobAccount = await provisionAccount(bobApi);
@@ -142,7 +145,7 @@ describe("external-message verification", () => {
             accepted: false, message: expect.stringMatching(/AI model/i) });
 
       // The gatekeeper now revokes Bob's underlying access. His persisted observer record is
-      // untouched, so only a live addObserver re-verification on this submission can notice --
+      // untouched, so only a live verifyObserverAccess() re-check on this submission can notice --
       // and the gatekeeper's own refusal reason appearing in the reply is the proof that round
       // trip happened, since nothing persisted in the Workshop contains it. An implementation
       // that merely checked the record would keep accepting him here.

@@ -15,8 +15,8 @@ import type {
   AgentSpawnerConfig, CommitIdentity, GadgetUpstream, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
-  chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
-  type LegacyAgentSpawnerConfig, type OverseerStorage,
+  chatKeyPrefix, connectionVendorId, type AgentSpawnerBindingProps, type BindingRecord,
+  type GadgetRecord, type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 6;
+export const OVERSEER_STORAGE_VERSION = 7;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -376,5 +376,27 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
   host.logger.info("moved agent spawners' bindings", {
     event: "storage.migration.spawner-bindings.completed",
+  });
+}
+
+/**
+ * Version 6 -> 7: the Workshop tracks every observation itself, so a gatekeeper no longer
+ * enforces what was read through it before. Marks every vendor connection as still holding
+ * history recorded under that legacy protocol, which ObserverLedger.importHistory() then exports
+ * from its gatekeeper into the action log. Vendorless connections (models, agent spawners) were
+ * never verified against anything, so there is nothing to import. Synchronous and atomic, like
+ * migrateToWorkpieceTypes.
+ */
+export function migrateToKernelObserverTracking(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 6) return;
+  host.ctx.storage.transactionSync(() => {
+    for (let record of Array.from(host.storage.gatekeepers.list())) {
+      if (connectionVendorId(record) === undefined) continue;
+      host.storage.gatekeepers.put({...record, observerHistoryPending: true});
+    }
+    host.storage.version.put(7);
+  });
+  host.logger.info("marked connections' legacy observer history for import", {
+    event: "storage.migration.kernel-observer-tracking.completed",
   });
 }

@@ -12,8 +12,8 @@
 // #initializeNewWorkspace would stamp version 4 and shadow the scenario.
 //
 // The version-3 action-index backfill, the version-4 workpiece-type stamp, the version-5
-// blueprint-upstream backfill and the version-6 spawner-bindings move ride the same constructor
-// trigger, so their tests live here too.
+// blueprint-upstream backfill, the version-6 spawner-bindings move and the version-7 legacy
+// observer-history mark ride the same constructor trigger, so their tests live here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -22,6 +22,7 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migration";
 import {
   OVERSEER_STORAGE_VERSION, UPSTREAM_BACKFILL_MESSAGE_LIMIT, migrateToBlueprintUpstreams,
+  migrateToKernelObserverTracking,
 } from "../src/storage-schema/overseer-migrations";
 import {
   LegacyWorkspace, MINUTE, T0, USER, expectHeadsMatchDoc, readDocFiles, setFile,
@@ -428,6 +429,44 @@ describe("the spawner-bindings move via the Overseer constructor", () => {
       });
       expect(impl.storage.gatekeepers.get(2).creationSpec.config).not.toHaveProperty("env");
       expect(impl.storage.gatekeepers.get(1).bindings).toBeUndefined();
+    });
+  });
+});
+
+// Called directly rather than through the constructor, which then starts importing each flagged
+// connection's history in the background and clears its flag.
+describe("the legacy observer-history mark", () => {
+  it("flags only vendor connections for import, and stamps version 7", async () => {
+    await inOverseer("observer-history-mark", async impl => {
+      expect(impl.storage.version.get()).toBe(0);
+      let cls = impl.ctx.exports.AgentSpawnerGatekeeper({ props: { config: {} } });
+      impl.storage.gatekeepers.put({
+        id: 1, resourceTitle: "Sheet", class: cls,
+        creationSpec: {
+          type: "gatekeeper", vendorId: "test", resourceUrl: "https://example.com/1",
+          typeUrlPattern: "https://*",
+        },
+      });
+      impl.storage.gatekeepers.put({
+        id: 2, resourceTitle: "Mail", class: cls, creationSpec: { type: "ambient", vendorId: "test" },
+      });
+      impl.storage.gatekeepers.put({
+        id: 3, resourceTitle: "Model", class: cls,
+        creationSpec: { type: "aiModel", modelId: "m", provider: "anthropic", modelName: "claude" },
+      });
+      impl.storage.gatekeepers.put({
+        id: 4, resourceTitle: "Spawner", class: cls,
+        creationSpec: { type: "agentSpawner", config: { displayName: "S", modelId: null } },
+      });
+      impl.storage.version.put(6);
+
+      migrateToKernelObserverTracking(impl);
+
+      expect(impl.storage.version.get()).toBe(7);
+      expect(impl.storage.gatekeepers.get(1).observerHistoryPending).toBe(true);
+      expect(impl.storage.gatekeepers.get(2).observerHistoryPending).toBe(true);
+      expect(impl.storage.gatekeepers.get(3).observerHistoryPending).toBeUndefined();
+      expect(impl.storage.gatekeepers.get(4).observerHistoryPending).toBeUndefined();
     });
   });
 });

@@ -499,11 +499,13 @@ describe("restarting sessions when verification scope widens", () => {
       () => withImpl(async (impl, restarts) => {
     joinSession(impl);
     seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    seedGadgetHistory(impl, 100, 1);
     impl.storage.observers.put(
         { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+    // Her account can no longer read what was read through the connection.
     impl.getGatekeeperFacet = () => ({
-      addObserver: async () => { throw new Error("access revoked upstream"); },
-      removeObserver: async () => {},
+      verifyObserverAccess: async () => ({ allowedObserverIds: [] }),
     });
     let fakeClientUser =
         { getVerifier: async () => ({}), describeConnectedAccount: async () => null } as any;
@@ -1204,9 +1206,9 @@ describe("gadget facet stubs count as sessions", () => {
 
 // Revoking access must sever the revoked collaborator's live sessions promptly: the restart is
 // scheduled in the same synchronous step as the sharing mutation, never behind the best-effort
-// cross-DO cleanup, which can stall or hang.
+// cross-DO listing cleanup, which can stall or hang.
 describe("revocation restart ordering", () => {
-  it("removeCollaborator schedules the restart before the observer teardown", async () => {
+  it("removeCollaborator schedules the restart without waiting on the listing cleanup", async () => {
     let restarts: string[] = [];
     let restartRecorded = Promise.withResolvers<void>();
     let client = await openFakeOverseer({}, { impl: {
@@ -1216,9 +1218,9 @@ describe("revocation restart ordering", () => {
           oldAccess: { role: "use", gadgetIds: [100] }, newAccess: null,
         }],
       }),
-      // A hung gatekeeper/User-DO round trip: the cleanup never settles.
-      tearDownLostObservers: () => new Promise(() => {}),
-      refreshAffectedCollaboratorListings: async () => {},
+      tearDownLostObservers: () => {},
+      // A hung User-DO round trip: the listing cleanup never settles.
+      refreshAffectedCollaboratorListings: () => Promise.withResolvers<void>().promise,
       scheduleAccessRestart: (reason: string) => {
         restarts.push(reason);
         restartRecorded.resolve();
