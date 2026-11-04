@@ -226,6 +226,13 @@ describe("saveDashboard and fireEvent", () => {
 });
 
 describe("callService allowlist", () => {
+  it("keeps a light step manual, since a retried apply would step it again", () => {
+    const reg = registry({ entities: [{ entity_id: "light.lamp", platform: "hue" }] });
+    expect(verdict(entityCall("light.lamp", "turn_on", { brightness_step: 20 }), reg)).toEqual(callService);
+    expect(verdict(entityCall("light.lamp", "turn_on", { brightness_step_pct: -10 }), reg)).toEqual(callService);
+    expect(verdict(entityCall("light.lamp", "turn_on", { brightness_pct: 40 }), reg)).toEqual(deviceControl);
+  });
+
   it.each([
     ["light.lamp", "toggle"],
     ["switch.plug", "toggle"],

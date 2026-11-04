@@ -138,6 +138,10 @@ const SCRIPT_BACKED_PLATFORMS = new Set([
 const ENTITY_TARGETS_ONLY = new Set(["cover"]);
 
 const TARGET_KEYS = ["entity_id", "device_id", "area_id", "label_id", "floor_id"] as const;
+
+// Service data that changes a state relative to the current one, which a retried apply would
+// repeat, like the relative services left off the allowlist.
+const RELATIVE_DATA_KEYS = new Set(["brightness_step", "brightness_step_pct"]);
 type TargetKey = (typeof TARGET_KEYS)[number];
 
 /**
@@ -151,6 +155,7 @@ function isDeviceControl(
 ): boolean {
   const { domain, service, data, target, origin } = action;
   if (!DEVICE_CONTROL_SERVICES.has(`${domain}.${service}`)) return false;
+  if (data && Object.keys(data).some((key) => RELATIVE_DATA_KEYS.has(key))) return false;
 
   const targets = effectiveTargets(target, data);
   if (!targets) return false;
