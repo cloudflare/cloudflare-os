@@ -1206,31 +1206,34 @@ describe("gadget facet stubs count as sessions", () => {
 // scheduled in the same synchronous step as the sharing mutation, never behind the best-effort
 // cross-DO cleanup, which can stall or hang.
 describe("revocation restart ordering", () => {
-  it("removeCollaborator schedules the restart before the observer teardown", async () => {
+  it.each(["removeCollaborator", "revokeShareLink"] as const)("%s acknowledges before cleanup can stall the restart", async method => {
     let restarts: string[] = [];
-    let restartRecorded = Promise.withResolvers<void>();
+    let cleanup = Promise.withResolvers<void>();
+    let background: Promise<unknown>[] = [];
+    let affected = [{
+      profile: { type: "user", id: "carol", name: "Carol" }, addedBy: [],
+      oldAccess: { role: "use", gadgetIds: [100] }, newAccess: null,
+    }];
     let client = await openFakeOverseer({}, { impl: {
-      getSharingManager: async () => ({
-        removeCollaborator: () => [{
-          profile: { type: "user", id: "carol", name: "Carol" }, addedBy: [],
-          oldAccess: { role: "use", gadgetIds: [100] }, newAccess: null,
-        }],
-      }),
-      // A hung gatekeeper/User-DO round trip: the cleanup never settles.
-      tearDownLostObservers: () => new Promise(() => {}),
-      refreshAffectedCollaboratorListings: async () => {},
+      getSharingManager: async () => ({[method]: () => affected}),
+      ctx: {waitUntil: (work: Promise<unknown>) => { background.push(work); }},
+      // Neither gatekeeper teardown nor User DO delivery can hold up the response.
+      tearDownLostObservers: () => cleanup.promise,
+      refreshAffectedCollaboratorListings: () => cleanup.promise,
       scheduleAccessRestart: (reason: string) => {
         restarts.push(reason);
-        restartRecorded.resolve();
         return Promise.resolve();
       },
     } });
 
-    let pending = client.removeCollaborator("carol", []);
-    pending.catch(() => {});  // never settles; the restart is what revokes
-
-    await restartRecorded.promise;
-    expect(restarts).toHaveLength(1);
+    try {
+      expect(await client[method]("carol", [])).toEqual(affected);
+      expect(restarts).toHaveLength(1);
+      expect(background).toHaveLength(1);
+    } finally {
+      cleanup.resolve();
+      await Promise.all(background);
+    }
   });
 });
 

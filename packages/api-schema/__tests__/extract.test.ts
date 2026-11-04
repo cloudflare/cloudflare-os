@@ -616,7 +616,7 @@ test("workshop-shared's API: the whole graph, and every subscriber's full method
   let functions = 0;
   for (const [service, { methods: list }] of Object.entries(schema.services)) {
     for (const m of list.filter((x) => x.name.startsWith("subscribe"))) {
-      const callback = m.params[0]!.type;
+      const callback = m.params.find(p => p.type.kind === "function" || p.type.kind === "stub")!.type;
       if (callback.kind === "function") {
         functions++;
         expect(callback.params.map((p) => p.name), `${service}.${m.name}`).toEqual(["metadata"]);
@@ -629,7 +629,7 @@ test("workshop-shared's API: the whole graph, and every subscriber's full method
   expect(functions).toBe(1);
   expect([...new Set(subscribers.values())].toSorted()).toEqual([
     "ActionsSubscriber", "AiChatSubscriber", "ConnectedAccountsSubscriber", "ConsoleLogSubscriber",
-    "NotificationSubscriber", "PresenceSubscriber", "WorkpiecesSubscriber",
+    "NotificationSubscriber", "PresenceSubscriber", "UnreadStateSubscriber", "WorkpiecesSubscriber",
   ]);
   // A client-implemented interface keeps every method it declares, so the client can implement it
   // from the schema alone.
