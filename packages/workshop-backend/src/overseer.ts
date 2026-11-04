@@ -1239,21 +1239,28 @@ class OverseerImpl implements AgentHooks {
     this.#chatDeliveryScheduled = true;
     this.ctx.waitUntil(Promise.resolve().then(() => {
       this.#chatDeliveryScheduled = false;
-      return this.deliverDirtyChats();
+      return this.deliverDirtyChats({retryFailures: false});
     }).catch(error => {
       this.logger.warn("chat delivery deferred", {event: "chat.delivery.deferred", error});
     }));
   }
 
-  deliverDirtyChats(): Promise<void> {
+  deliverDirtyChats({chatId: onlyChatId, retryFailures = true}:
+      {chatId?: number; retryFailures?: boolean} = {}): Promise<void> {
     if (this.storage.deleting.get()) return Promise.resolve();
-    if (!this.#chatDeliveries.size) this.#unreadRetryAt = Date.now() + 30_000;
+    if (!this.#chatDeliveries.size) {
+      let retryAt = Date.now() + 30_000;
+      this.#unreadRetryAt = retryFailures ? retryAt : Math.min(this.#unreadRetryAt || Infinity, retryAt);
+    }
     this.#updateAlarm();
     // Close the iterator before callbacks can mutate it. Coalesce per thread so a stalled
     // recipient cannot block other threads, including those dirtied after this pass starts.
-    let deliveries = Array.from(this.storage.dirtyChats.list()).map(({chatId}) => {
+    let dirtyChats = onlyChatId === undefined ? Array.from(this.storage.dirtyChats.list()) :
+      [this.storage.dirtyChats.get(onlyChatId)].filter(row => row !== undefined);
+    let deliveries = dirtyChats.filter(row => retryFailures || !row.retryOnly).map(({chatId}) => {
       let pending = this.#chatDeliveries.get(chatId);
       if (pending) return pending;
+      let token: ChatFanoutStart | undefined;
       let delivery = (async () => {
         let ownerId = this.ownerId;
         if (!ownerId) return;
@@ -1265,7 +1272,7 @@ class OverseerImpl implements AgentHooks {
         if (!dirty) return;
         // Mutations after this snapshot accumulate their own start without another write on
         // the successful path. Until checkpoint, the durable row still covers the whole batch.
-        let token: ChatFanoutStart = {};
+        token = {};
         this.#dirtyChatTokens.set(chatId, token);
         let targets = new Map<string, ChatFanoutStart>();
         if (!dirty.retryOnly) {
@@ -1325,19 +1332,24 @@ class OverseerImpl implements AgentHooks {
           this.storage.dirtyChats.delete(chatId);
           this.#dirtyChatTokens.delete(chatId);
         }
-        // A fresh broadcast must not wait behind the older failed recipients' retry backoff.
-        if (newer !== token) this.#unreadRetryAt = 0;
         for (let result of results) if (result.status === "rejected") throw result.reason;
-      })().finally(() => { this.#chatDeliveries.delete(chatId); });
+      })().finally(() => {
+        this.#chatDeliveries.delete(chatId);
+        if (token && this.#dirtyChatTokens.has(chatId) && this.#dirtyChatTokens.get(chatId) !== token) {
+          // The keep-alive alarm may still be running; fresh work must not wait for it to end.
+          this.ctx.waitUntil(this.deliverDirtyChats({chatId, retryFailures: false}).catch(error => {
+            this.logger.warn("chat delivery deferred", {event: "chat.delivery.deferred", error});
+          }));
+        }
+      });
       this.#chatDeliveries.set(chatId, delivery);
       return delivery;
     });
     return (async () => {
       let results = await Promise.allSettled(deliveries);
       for (let result of results) if (result.status === "rejected") throw result.reason;
-      // Successful fanout can leave newer mutations pending. Give those the normal short wake,
-      // rather than retaining this pass's failure backoff.
-      this.#unreadRetryAt = 0;
+      // Fresh work must not postpone or discard parked recipients' existing retry deadline.
+      if (retryFailures || ![...this.storage.dirtyChats.list({limit: 1})].length) this.#unreadRetryAt = 0;
     })().finally(() => {
       this.#updateAlarm();
     });
@@ -12049,6 +12061,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can delete it.");
     }
+    if (!this.impl.ownerId) return;
     let startedAt = Date.now();
 
     this.impl.destroyAllLiveChats();
@@ -12065,7 +12078,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
-    let readers = new Set([this.impl.ownerId!, ...(await this.impl.getSharingManager()).listCollaborators()
+    let sharing = await this.impl.getSharingManager();
+    if (!this.impl.ownerId) return; // Another deletion may have committed while hooks were disabled.
+    let readers = new Set([this.impl.ownerId, ...sharing.listCollaborators()
       .map(reader => this.impl.users.idFromName(reader.profile.id).toString())]);
     this.impl.beginDeletion(readers);
     this.impl.recordGadgetAnalytics({

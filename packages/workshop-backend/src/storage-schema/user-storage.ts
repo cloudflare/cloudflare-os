@@ -150,13 +150,14 @@ export type ChatReadCursor = {
   /** Number of unread messages: `latestVisibleSequence - readThroughVisibleSequence`. */
   unreadCount: number;
   /**
-   * Sequence of the latest notification already delivered (or deliberately skipped). If the
-   * workspace sends a notification again, e.g. because it never got our acknowledgement, this
-   * keeps the user from being notified twice.
+   * Sequence of the latest completed notification (delivered, deliberately skipped, or expired).
+   * Older notifications with failed devices remain in the outbox independently of this receipt.
+   * If the workspace resends completed work after losing our acknowledgement, the receipt keeps
+   * it from being queued twice.
    */
   notifiedThroughSequence: number;
   /**
-   * IDs of the notifications already delivered at exactly `notifiedThroughSequence`, since several
+   * IDs of the completed notifications at exactly `notifiedThroughSequence`, since several
    * can share one position. Absent means all notifications at that position count as handled; this
    * is the case when the position is a starting point set when tracking began, not a delivery.
    */
@@ -191,6 +192,8 @@ export type QueuedChatNotification = UserNotification & {
    * retries, repeated sends from the workspace, or DO restarts.
    */
   expiresAt: Date;
+  /** Only these subscriptions failed the previous attempt; absent until first delivery. */
+  failedSubscriptions?: string[];
 };
 
 /**

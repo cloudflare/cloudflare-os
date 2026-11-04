@@ -41,6 +41,13 @@ const OUTPUTS_BACKFILL_PAGE = 16;
 const NOTIFICATION_RETRY_LIFETIME_MS = 10 * 60_000;
 const NOTIFICATION_ATTEMPT_TIMEOUT_MS = 15_000;
 
+// Carries only failed destinations back to the local outbox; successful devices leave the retry set.
+class NotificationDeliveryError extends Error {
+  constructor(readonly failedSubscriptions: string[], cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Notification delivery failed.", {cause});
+  }
+}
+
 // How many notification-service calls (device authorizations and registrations) one user may make
 // per minute; see #countNotificationServiceCall().
 const NOTIFICATION_SERVICE_CALLS_PER_MINUTE = 20;
@@ -731,8 +738,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         (!cursor.notifiedEventIds || cursor.notifiedEventIds.includes(event.id)));
   }
 
-  // Read commands and alert delivery share one mutex. Arrivals commit without awaits, so their
-  // counts/queue handoff cannot race another synchronous write or block on a slow alert provider.
+  // Only alert delivery awaits under the mutex. Counts and read commands commit synchronously
+  // so a slow notification provider cannot delay read horizons or badge updates.
   async #serialize(key: string, operation: () => Promise<void>) {
     let previous = this.#chatWork.get(key) ?? Promise.resolve();
     let current = previous.catch(() => {}).then(operation);
@@ -767,54 +774,60 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async applyReadHorizon(workspaceId: string, chatId: number, position: ChatReadPosition,
       rewind: boolean): Promise<boolean> {
-    let admission = this.#unreadWorkspaces.get(workspaceId);
+    if (!this.#hasWorkspace(workspaceId)) return false;
     let key = `${workspaceId}:${chatId}`;
-    let changed = false;
-    await this.#serialize(key, async () => {
-      if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
-      let current = this.#cursor(workspaceId, chatId);
-      if (current.deleted) return;
-      let through = position.readThroughSequence;
-      let visible = position.readThroughVisibleSequence;
-      // An own-message arrival can advance the horizon before this packet acquires the mutex.
-      if (!rewind && current.readThroughSequence > through) {
-        through = current.readThroughSequence;
-        visible = current.readThroughVisibleSequence!;
-      }
-      let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
-      changed = this.#storeCursor({...current, ...this.#mergeHead(current, position),
-        readThroughSequence: through, readThroughVisibleSequence: visible,
-        latestVisibleSequence: latest, unreadCount: latest - visible,
-        notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline});
-      if (changed) this.#unreadChanged(workspaceId, chatId);
-    });
+    let current = this.#cursor(workspaceId, chatId);
+    if (current.deleted) return false;
+    let through = position.readThroughSequence;
+    let visible = position.readThroughVisibleSequence;
+    // An own-message arrival may already have advanced beyond this source-authorized boundary.
+    if (!rewind && current.readThroughSequence > through) {
+      through = current.readThroughSequence;
+      visible = current.readThroughVisibleSequence!;
+    }
+    let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
+    let changed = this.#storeCursor({...current, ...this.#mergeHead(current, position),
+      readThroughSequence: through, readThroughVisibleSequence: visible,
+      latestVisibleSequence: latest, unreadCount: latest - visible,
+      notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline});
+    if (changed) this.#unreadChanged(workspaceId, chatId);
     return changed;
   }
 
   // Only notification delivery takes this path. All payloads needed for recovery are local.
-  async #processChat(workspaceId: string, chatId: number): Promise<void> {
+  async #processChat(workspaceId: string, chatId: number, retryFailures = false): Promise<void> {
     let admission = this.#unreadWorkspaces.get(workspaceId);
     let key = `${workspaceId}:${chatId}`;
     let hadNotifications = this.#notificationChats.has(key);
     try {
       await this.#serialize(key, async () => {
         if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
-        while (this.#unreadWorkspaces.get(workspaceId) === admission) {
-          let [event] = this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`, limit: 1});
-          if (!event) break;
+        let failures: unknown[] = [];
+        let events = [...this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`})];
+        for (let event of events) {
+          if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
           let cursor = this.#readCursors.get(key);
           if (!cursor || cursor.deleted) return;
-          let expired = false;
-          if (!this.#wasNotified(cursor, event)) {
-            expired = event.expiresAt.getTime() <= Date.now();
-            if (!expired) {
-              let {sequence: _, expiresAt, ...notification} = event;
-              try {
-                await this.publishNotification(notification, expiresAt.getTime());
-              } catch (error) {
-                if (Date.now() < event.expiresAt.getTime()) throw error;
-                expired = true;
+          let expired = event.expiresAt.getTime() <= Date.now();
+          // Arrivals deliver new work; only alarm/restart recovery retries failed destinations.
+          if (!expired && event.failedSubscriptions !== undefined && !retryFailures) continue;
+          if (!expired) {
+            let {sequence: _, expiresAt, failedSubscriptions, ...notification} = event;
+            try {
+              await this.publishNotification(notification, expiresAt.getTime(), failedSubscriptions);
+            } catch (error) {
+              if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+              if (this.#readCursors.get(key)?.deleted) return;
+              if (Date.now() < expiresAt.getTime()) {
+                let failed = error instanceof NotificationDeliveryError ? error.failedSubscriptions : failedSubscriptions;
+                failed ??= [];
+                if (event.failedSubscriptions?.join() !== failed.join()) {
+                  this.storage.notificationOutbox.put({...event, failedSubscriptions: failed});
+                }
+                failures.push(error);
+                continue;
               }
+              expired = true;
             }
           }
           if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
@@ -825,6 +838,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           });
           this.ctx.storage.transactionSync(() => {
             this.storage.notificationOutbox.deleteRecord(event);
+            // Lower positions can remain queued for failed devices after a later event completes.
             if (!this.#wasNotified(checkpoint, event)) {
               this.#storeCursor({...checkpoint, notifiedThroughSequence: event.sequence,
                 notifiedEventIds: [...(event.sequence === checkpoint.notifiedThroughSequence
@@ -832,6 +846,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             }
           });
         }
+        if (failures.length) throw failures[0];
       });
     } finally {
       if (hadNotifications || this.#notificationChats.has(key)) await this.#armExpirySweep();
@@ -981,39 +996,29 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Mark the locally known heads in one workspace read, without waking the workspace. */
   async markWorkspaceRead(workspaceId: string): Promise<void> {
-    await this.#markRead(workspaceId);
+    this.#markRead(workspaceId);
   }
 
   /** Mark all locally known heads read; later source updates remain unread. */
   async markAllRead(): Promise<void> {
-    await this.#markRead();
+    this.#markRead();
   }
 
-  async #markRead(workspaceId?: string): Promise<void> {
+  #markRead(workspaceId?: string): void {
     let changed = false;
-    let results = await Promise.allSettled([...this.#readCursors.values()]
-      .filter(cursor => workspaceId === undefined || cursor.workspaceId === workspaceId)
-      .map(cursor => {
-        let admission = this.#unreadWorkspaces.get(cursor.workspaceId);
-        return this.#serialize(`${cursor.workspaceId}:${cursor.chatId}`, async () => {
-          if (!admission || this.#unreadWorkspaces.get(cursor.workspaceId) !== admission) return;
-          let current = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
-          if (!current || current.deleted || !current.unreadCount) return;
-          // Every tracked live cursor has a source-supplied head; raw and visible positions stay paired.
-          let visible = Math.max(current.readThroughVisibleSequence!, cursor.latestVisibleSequence!);
-          let updated = {...current,
-            readThroughSequence: Math.max(current.readThroughSequence, cursor.head!.latestSequence),
-            readThroughVisibleSequence: visible, unreadCount: current.latestVisibleSequence! - visible};
-          if (this.#storeCursor(updated)) changed = true;
-        });
-      }));
+    for (let cursor of this.#readCursors.values()) {
+      if ((workspaceId !== undefined && cursor.workspaceId !== workspaceId) ||
+          !this.#hasWorkspace(cursor.workspaceId) || cursor.deleted || !cursor.unreadCount) continue;
+      // No await: the head and paired read positions belong to the same source update.
+      if (this.#storeCursor({...cursor, readThroughSequence: cursor.head!.latestSequence,
+          readThroughVisibleSequence: cursor.latestVisibleSequence!, unreadCount: 0})) changed = true;
+    }
     if (changed) this.#unreadChanged();
-    for (let result of results) if (result.status === "rejected") throw result.reason;
   }
 
   async #deliverNotifications(): Promise<void> {
     let results = await Promise.allSettled([...this.#notificationChats.values()]
-      .map(({workspaceId, chatId}) => this.#processChat(workspaceId, chatId)));
+      .map(({workspaceId, chatId}) => this.#processChat(workspaceId, chatId, true)));
     await this.#armExpirySweep();
     for (let result of results) if (result.status === "rejected") throw result.reason;
   }
@@ -1052,12 +1057,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * notifiedThroughSequence only once this delivery succeeds or policy intentionally skips it.
    */
   async publishNotification(notification: UserNotification,
-      retryUntil = Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS): Promise<void> {
+      retryUntil = Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS, retrySubscriptions?: string[]): Promise<void> {
     let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
     if (notification.kind === "taskCompleted" && mute &&
         ("indefinite" in mute || mute.until.getTime() > Date.now())) {
       return;
     }
+    let stores = [this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions];
+    let subscriptions = stores.flatMap(store => Object.entries(store.get())
+      .filter(([, id]) => retrySubscriptions === undefined || retrySubscriptions.includes(id))
+      .map(([deviceKey, subscriptionId]) => ({store, deviceKey, subscriptionId})));
     let attemptUntil = Math.min(retryUntil, Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS);
     let admission = this.#unreadWorkspaces.get(notification.workspaceId);
     let controller = new AbortController();
@@ -1068,7 +1077,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       ...(admission ? [admission.signal] : [])]);
     try {
       let timeout: ReturnType<typeof setTimeout> | undefined;
-      let acknowledged = await Promise.race([
+      let acknowledged = retrySubscriptions === undefined && await Promise.race([
         Promise.any([...this.#notificationSubscribers.values()]
             .map(subscriber => subscriber.notify(notification))).then(() => true, () => false),
         new Promise<boolean>(resolve => {
@@ -1078,20 +1087,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (acknowledged) return;
       signal.throwIfAborted();
       if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
-      let subject = this.#notificationSubject;
-      let stores = [
-        this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions,
-      ];
-      let results = await Promise.allSettled(stores.flatMap(store =>
-        Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
-          if (await deliver(this.env, subject, subscriptionId, notification, signal)) return;
-          // This subscription is dead; the device gets a new one when its app next opens. Keep one it
-          // registered while this delivery was in flight.
-          let { [deviceKey]: current, ...others } = store.get();
-          if (current === subscriptionId) store.put(others);
-        })));
-      for (let result of results) {
-        if (result.status === "rejected") throw result.reason;
+      let results = await Promise.allSettled(subscriptions.map(async ({store, deviceKey, subscriptionId}) => {
+        if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification, signal)) return;
+        // Retire only the failed subscription, preserving a registration made during delivery.
+        let { [deviceKey]: current, ...others } = store.get();
+        if (current === subscriptionId) store.put(others);
+      }));
+      let failed = subscriptions.filter((_, index) => results[index].status === "rejected");
+      if (failed.length) {
+        let failure = results.find(result => result.status === "rejected")!;
+        throw new NotificationDeliveryError(failed.map(({subscriptionId}) => subscriptionId), failure.reason);
+      }
+    } catch (error) {
+      if (error instanceof NotificationDeliveryError) throw error;
+      throw new NotificationDeliveryError(subscriptions.map(({subscriptionId}) => subscriptionId), error);
     } finally {
       clearTimeout(deadline);
     }
@@ -2764,7 +2773,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     await this.#armExpirySweep();
-    for (let result of await deliveries) if (result.status === "rejected") throw result.reason;
+    for (let result of await deliveries) if (result.status === "rejected") {
+      // The durable outbox already has a retry alarm; don't also trigger platform alarm retries.
+      logger.warn("notification delivery deferred", {event: "notification.delivery.deferred", error: result.reason});
+    }
   }
 
   async getGatekeeperClassFor(accountId: number, url: string)

@@ -112,11 +112,13 @@ async function reset(stub: DurableObjectStub<OverseerDurableObject>) {
 }
 
 function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
-  const userId = impl.storage.activeAgents.get(CHAT)?.initiatorUserId;
-  return openFakeOverseer(impl.storage, {ownerId: impl.ownerId, impl: {
+  const userId = profile.id === USER.id ? impl.ownerId : env.TEST_USER.idFromName(profile.id).toString();
+  return openFakeOverseer(impl.storage, {ownerId: impl.ownerId, userId, impl: {
     users: {idFromString: (id: string) => id,
-      get: (id: string) => ({id: {toString: () => userId ?? id}, whoami: async () => profile,
-        getChatContext: async () => ({profile: USER, aiModel: MODEL})})},
+      get: (id: string) => ({id: {toString: () => id}, whoami: async () => profile,
+        getChatContext: async () => ({profile: USER, aiModel: MODEL}), recordSharedWorkspaceOpen: async () => {}})},
+    nextChatSequencePeek: impl.nextChatSequencePeek.bind(impl),
+    chatHead: impl.chatHead.bind(impl),
     rememberDecisionInitiator: impl.rememberDecisionInitiator.bind(impl),
     resumeAgentAfterDecision: impl.resumeAgentAfterDecision.bind(impl),
     getChatTimestamp: impl.getChatTimestamp.bind(impl),
@@ -282,12 +284,16 @@ describe("decision handoff using the existing execution row", () => {
       if (legacy) impl.storage.activeAgents.delete(CHAT);
       const gate = Promise.withResolvers<void>();
       const approver = {...USER, id: "approver", name: "Approver"};
+      impl.storage.collaborators.put({profile: approver,
+        addedBy: [{type: "user", sharer: USER.id, role: "build", created: new Date()}]});
       modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
       using client = await decisionClient(impl, approver);
       await client.acceptConnectionRequest("1:connection", {gatekeeperId: 31});
       const record = impl.storage.activeAgents.get(CHAT)!;
       expect(record.initiator).toEqual(legacy ? approver : USER);
-      expect(record.initiatorUserId).toBe(s.user.id.toString());
+      expect(record.initiatorUserId).toBe(legacy
+        ? env.TEST_USER.idFromName(approver.id).toString() : s.user.id.toString());
+      expect(env.TEST_USER.idFromName(approver.id).toString()).not.toBe(s.user.id.toString());
       gate.resolve();
       await impl.waitForAllAgentsToComplete();
     });

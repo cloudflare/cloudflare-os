@@ -74,13 +74,13 @@ export function putAction(
  */
 export async function openFakeOverseer(
     storage: object,
-    opts: { role?: "build" | "use", access?: CollaboratorAccess, ownerId?: string, exports?: object,
+    opts: { role?: "build" | "use", access?: CollaboratorAccess, ownerId?: string, userId?: string, exports?: object,
             impl?: object } = {}): Promise<Overseer> {
   let role = opts.role ?? "build";
   let access: CollaboratorAccess = role === "build"
       ? { role: "build" } : opts.access ?? { role: "use", gadgetIds: "all" };
   let ownerId = opts.ownerId ?? "owner-id";
-  let userId = role === "build" ? ownerId : "viewer-id";
+  let userId = opts.userId ?? (role === "build" ? ownerId : "viewer-id");
   let overseer = {
     open: OverseerDurableObject.prototype.open,
     impl: {

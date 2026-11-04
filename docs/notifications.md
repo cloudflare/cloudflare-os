@@ -211,7 +211,9 @@ only if no tab acknowledges it within three seconds. A tab subscribes while visi
 User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
 app next opens. Any other failure, including `invalid_signature`, keeps the subscription and
-retries the alert for up to ten minutes from first acceptance. Each attempt has a 15-second
+retries only the failed device subscriptions for up to ten minutes from first acceptance.
+Successful devices are not retried, and a failed event does not block later queued notifications.
+Each attempt has a 15-second
 budget, shortened to the remaining alert lifetime. Expired alerts are logged and discarded;
 their fixed deadlines survive resets and are not extended by repeated source delivery. Later
 alerts remain eligible, while unread counts are unchanged. Only turns a person

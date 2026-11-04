@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { NotificationSubscriber, UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
@@ -7,6 +7,7 @@ import {
   authorizeDevice, deliver, registerAuthorizedDevice, registerDevice,
 } from "../src/notification-service.js";
 import type { UserDurableObject } from "../src/user.js";
+import { makeUserStorage } from "../src/storage-schema/user-storage.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -280,6 +281,53 @@ async function publish(notify?: () => Promise<void>): Promise<string[]> {
 }
 
 describe("UserDurableObject notifications", () => {
+  it("retries only failed devices after eviction while later notifications complete", async () => {
+    const fetcher = stubService();
+    const stub = env.TEST_USER.getByName(crypto.randomUUID());
+    const nextId = crypto.randomUUID();
+    await runInDurableObject(stub, async (user, ctx) => {
+      user["env"] = {...user["env"], ...INSTALL};
+      await user.newWorkspace(NOTIFICATION.workspaceId, "Workspace");
+      await user.registerNotificationDevice("a".repeat(64));
+      await user.registerNotificationDevice("b".repeat(64));
+      fetcher.mockClear();
+      fetcher.mockImplementation(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        return body.subscriptionId === mintedId(2) && body.eventId === NOTIFICATION.id
+          ? new Response(null, {status: 503}) : new Response(null, {status: 202});
+      });
+      const packet = (sequence: number, id: string) => ({
+        head: {chatTitle: NOTIFICATION.chatTitle!, latestSequence: sequence},
+        headUpdatedAt: new Date(), firstMessageSequence: sequence,
+        firstVisibleSequence: sequence, latestVisibleSequence: sequence,
+        notifications: [{id, kind: NOTIFICATION.kind, chatTitle: NOTIFICATION.chatTitle, sequence}],
+      });
+      await user.messageArrived(NOTIFICATION.workspaceId, NOTIFICATION.chatId, packet(1, NOTIFICATION.id));
+      const storage = makeUserStorage(ctx.storage);
+      await vi.waitFor(() => expect([...storage.notificationOutbox.list()][0]?.failedSubscriptions)
+        .toEqual([mintedId(2)]));
+      await user.messageArrived(NOTIFICATION.workspaceId, NOTIFICATION.chatId, packet(2, nextId));
+      await vi.waitFor(() => expect(storage.chatReadCursors.get(`${NOTIFICATION.workspaceId}:${NOTIFICATION.chatId}`))
+        .toMatchObject({notifiedThroughSequence: 2, unreadCount: 2}));
+      expect(bodies(fetcher, "/v1/deliveries").map(({eventId, subscriptionId}) => [eventId, subscriptionId]))
+        .toEqual([[NOTIFICATION.id, mintedId(1)], [NOTIFICATION.id, mintedId(2)],
+          [nextId, mintedId(1)], [nextId, mintedId(2)]]);
+      expect([...storage.notificationOutbox.list()]).toHaveLength(1);
+    });
+    await evictDurableObject(stub);
+    fetcher.mockClear();
+    fetcher.mockResolvedValue(new Response(null, {status: 202}));
+    await runInDurableObject(stub, async (user, ctx) => {
+      user["env"] = {...user["env"], ...INSTALL};
+      await user.alarm();
+      expect([...makeUserStorage(ctx.storage).notificationOutbox.list()]).toEqual([]);
+      expect(makeUserStorage(ctx.storage).chatReadCursors.get(`${NOTIFICATION.workspaceId}:${NOTIFICATION.chatId}`))
+        .toMatchObject({notifiedThroughSequence: 2, unreadCount: 2});
+    });
+    expect(bodies(fetcher, "/v1/deliveries").map(({eventId, subscriptionId}) => [eventId, subscriptionId]))
+      .toEqual([[NOTIFICATION.id, mintedId(2)]]);
+  });
+
   it.each(["browser", "push", "failure"] as const)("releases the attempt deadline after %s delivery", async outcome => {
     vi.useFakeTimers();
     using _timeout = trackNativeTimeouts();

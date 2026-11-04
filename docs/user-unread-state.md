@@ -109,10 +109,12 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
    repeated failure needs no row rewrite. New mutations still broadcast to everyone, retaining
    older work only for failed recipients. Mutations during an await become the next broadcast,
    without being erased by the older pass's checkpoint or delayed by its retry backoff.
-5. The User DO drains each chat's local queue under its existing per-thread mutex. It awaits
-   delivery or an intentional policy skip, then atomically deletes that item and advances
-   `notifiedThroughSequence` plus the UUIDs completed at that position. Three coalesced alerts
-   remain three delivery attempts, including distinct alerts at the same raw position.
+5. The User DO drains each chat's local queue under its existing per-thread mutex. A failed
+   attempt stores only its failed subscription IDs on that queue item; later events still run.
+   Arrivals attempt fresh events, while alarm/restart recovery retries failed destinations without
+   re-offering them to browsers or successful devices. Completion, intentional skip or expiry
+   atomically deletes the item and advances `notifiedThroughSequence` plus the UUIDs completed at
+   that position. Older failed items remain queued even when a later event advances the receipt.
 
 If a caught-up user receives exactly their own next visible message, the User DO advances both
 read horizons with the head and keeps the count zero. When already behind, or when a batch spans
@@ -123,7 +125,8 @@ resets preserve that deadline. Failed delivery uses the existing 30-second alarm
 attempt is bounded to 15 seconds or the remaining lifetime, including browser acknowledgement
 and push. Expiry intentionally drops the alert, logs `notification.delivery.expired` without
 notification contents, and advances the same delivery receipt so the source cannot replay it.
-Later queued alerts can then proceed. Counts and read horizons are unaffected by delivery expiry.
+Later queued alerts proceed independently of earlier failures. Counts and read horizons are
+unaffected by delivery expiry.
 
 Count arithmetic needs no source RPC. Notification delivery/recovery also performs **no workspace
 read**. The sole queued payload is sufficient to retry after eviction. A new DO lifetime reloads
@@ -155,8 +158,8 @@ position is rejected; a non-visible record or gap maps to its preceding visible 
 the boundary uses the latest visible message, so thread menus need no metadata fetch.
 Use-only sessions deny these commands. No separate caller-supplied identity authorization path exists.
 
-The User DO applies this packet under the existing thread mutex using only local rows. It
-preserves newer heads and own-message read advances received before the packet is processed,
+The User DO applies this packet synchronously using only local rows, without waiting for
+notification delivery. It preserves newer heads and own-message read advances received before the packet is processed,
 unless the command explicitly rewinds. It commits changed horizons/counts and publishes updates;
 identical state causes no write. Read commands never drain queued alerts, so a delivery failure
 cannot reject a successfully committed read. Alert delivery retains its own mutexed processing.
