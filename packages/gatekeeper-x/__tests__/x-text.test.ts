@@ -23,6 +23,9 @@ describe("weightedLength", () => {
     expect(weightedLength("👍🏽")).toBe(2);
     expect(weightedLength("👨‍👩‍👧‍👦")).toBe(2);
     expect(weightedLength("🇺🇸")).toBe(2);
+    // Keycap emoji have an ASCII base + VS16 + U+20E3; still one weight-2 emoji.
+    expect(weightedLength("1️⃣")).toBe(2);
+    expect(weightedLength("#️⃣")).toBe(2);
   });
 
   it("counts typographic punctuation as one", () => {

@@ -36,7 +36,11 @@ const TRAILING_PUNCTUATION = new Set([".", ",", "!", "?", ";", ":", ")", "]"]);
 /** A mention: an `@handle` not preceded by a word character or another `@`. */
 const MENTION_PATTERN = /(?:^|[^A-Za-z0-9_@])@([A-Za-z0-9_]{1,15})(?![A-Za-z0-9_@])/g;
 
-const EMOJI = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
+// Also match graphemes carrying the emoji-presentation selector (U+FE0F) or the
+// combining enclosing keycap (U+20E3): keycap emoji like `1️⃣` have an ASCII base
+// that is not Extended_Pictographic, so without this they are weighed per code
+// point (1+2+2=5) instead of as a single weight-2 emoji.
+const EMOJI = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\uFE0F|\u20E3/u;
 
 let segmenter: Intl.Segmenter | undefined;
 
