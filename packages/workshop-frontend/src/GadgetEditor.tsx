@@ -2238,15 +2238,16 @@ export default function GadgetEditor() {
             </div>
 
             <div className={activeTab === 'connections' ? 'h-full overflow-auto' : 'hidden'}>
-              {overseer && selectedGadgetStub ? (
+              {overseer ? (
                 <Connections
                   key={selectedGadgetId}
                   overseer={overseer.stub}
-                  gadget={selectedGadgetStub}
+                  gadget={selectedGadgetStub ?? undefined}
                   chatId={effectiveSelectedChatId ?? undefined}
                   authenticatedApi={authenticatedApi}
                   onConnectionsChange={() => setUiReloadTrigger(t => t + 1)}
                   isVisible={activeTab === 'connections'}
+                  isAgentActive={isAgentActive}
                   onHasGatekeepersChange={setHasBindings}
                 />
               ) : (

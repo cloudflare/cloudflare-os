@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, ResourceBindingInfo } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
@@ -54,7 +54,7 @@ import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
+import { chatChangeStatuses, foldCompactedCode, isTurnPrompt, replayChatBindings } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
@@ -12728,6 +12728,26 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return msg && this.#getChatMessageForClient(msg);
   }
 
+  async listChatBindings(chatId: number): Promise<ResourceBindingInfo[]> {
+    let {checkpoint, chatMessages} = this.impl.loadChatHistory(chatId);
+    // Only persisted seeds: preparing an unstarted chat here would name resources, contact
+    // providers and freeze the default environment merely because someone opened this tab.
+    let seeds: [string, ChatBindingEntry][] = Object.entries(
+        this.impl.getChatAgentContext(chatId).bindings ?? {})
+        .map(([name, id]) => [name, {type: "workpiece", id}]);
+    let bindings = replayChatBindings(chatMessages, seeds, checkpoint?.chatBindings);
+    return [...bindings].flatMap(([name, entry]) => {
+      if (entry.type !== "workpiece") return [];
+      let resource = this.impl.storage.gatekeepers.get(entry.id);
+      if (!resource || !this.impl.gatekeeperUsable(entry.id)) return [];
+      return [{
+        name, target: entry.id, resourceTitle: resource.resourceTitle || "(title unavailable)",
+        vendorId: resource.creationSpec?.type === "gatekeeper"
+            ? resource.creationSpec.vendorId : undefined,
+      }];
+    });
+  }
+
   #getChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
@@ -13559,6 +13579,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#deny();
   }
   async getChatMessage(_chatId: number, _sequence: number): Promise<AiChatMessage | undefined> { this.#deny(); }
+  async listChatBindings(_chatId: number): Promise<ResourceBindingInfo[]> { this.#deny(); }
   async listSlashCommands(): Promise<SlashCommandChoice[]> { this.#deny(); }
   async subscribeToChat(
       _subscriber: RpcStub<AiChatSubscriber>, _startAfter?: Date): Promise<RpcStub<{}>> {

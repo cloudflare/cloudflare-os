@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Dialog, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import {
   Pencil,
@@ -8,7 +8,7 @@ import {
   X,
 } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
-import { Overseer, GadgetClient, GadgetBindingInfo, BoundHookInfo, AuthenticatedApi, WorkpieceId } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetClient, GadgetBindingInfo, ResourceBindingInfo, BoundHookInfo, AuthenticatedApi, WorkpieceId } from '@gadgets/workshop-shared/api'
 import GatekeeperModal from './GatekeeperModal'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
@@ -25,7 +25,7 @@ import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
   overseer: RpcStub<Overseer>
-  gadget: RpcStub<GadgetClient>
+  gadget?: RpcStub<GadgetClient>
   // The chat currently open in the editor, if any. Connecting a resource with a chat open makes
   // the new binding provisional to that chat, exactly like a code edit: it works in the chat's
   // preview immediately, and becomes permanent only when the user accepts the chat's changes.
@@ -33,20 +33,23 @@ interface ConnectionsProps {
   authenticatedApi: RpcStub<AuthenticatedApi>
   onConnectionsChange?: () => void
   isVisible?: boolean
+  isAgentActive?: boolean
   onHasGatekeepersChange?: (hasGatekeepers: boolean) => void
 }
 
 /**
- * Auto-approval rules live in Activity because they apply across the workspace, while this view is
- * scoped to one gadget.
+ * Show the agent's chat connections separately from the selected gadget's editable bindings.
  */
-export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
+export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, isAgentActive, onHasGatekeepersChange }: ConnectionsProps) {
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
+  const [chatBindings, setChatBindings] = useState<ResourceBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.
   const [gadgetInfo, setGadgetInfo] = useState<{ id: WorkpieceId; title: string } | null>(null)
   const [hooks, setHooks] = useState<BoundHookInfo[]>([])
   const vendorBranding = useVendorBranding(authenticatedApi)
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const loadGeneration = useRef(0)
   const [editingBinding, setEditingBinding] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
   const [isNewConnectionModalVisible, setIsNewConnectionModalVisible] = useState(false)
@@ -57,29 +60,35 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const toasts = useKumoToastManager()
 
   const loadGatekeepers = async () => {
+    const generation = ++loadGeneration.current
     try {
-      const [id, gadgetTitle, bindingList, hookList] = await Promise.all([
-        gadget.getId(),
-        gadget.getTitle(),
+      const [id, gadgetTitle, bindingList, hookList, chatBindingList] = await Promise.all([
+        gadget?.getId(),
+        gadget?.getTitle(),
         // Pass the open chat so bindings this tab added provisionally to it are listed too.
-        gadget.listBindings(chatId),
+        gadget?.listBindings(chatId) ?? [],
         // Workspace-wide; filtered to this gadget below.
         overseer.listHooks(),
+        chatId === undefined ? [] : overseer.listChatBindings(chatId),
       ])
-      setGadgetInfo({ id, title: gadgetTitle })
+      if (generation !== loadGeneration.current) return
+      setGadgetInfo(id === undefined ? null : { id, title: gadgetTitle! })
       setBindings(bindingList)
+      setChatBindings(chatBindingList)
+      setLoadFailed(false)
       // This tab shows one gadget, so drop hooks that wake a different one -- otherwise its
       // toggle/delete controls would operate on another gadget's hooks.
       setHooks(hookList.filter((hook) => hook.gadgetId === id))
-      onHasGatekeepersChange?.(bindingList.length > 0)
+      onHasGatekeepersChange?.(bindingList.length > 0 || chatBindingList.length > 0)
     } catch (err) {
-      // Loud on purpose: this panel has no retry path, so a quieted transient failure would
-      // silently render "no connected resources".
+      if (generation !== loadGeneration.current) return
+      setLoadFailed(true)
+      // Keep a failed inventory distinct from a successfully loaded, empty one.
       console.error('Failed to load gatekeepers:', err)
       reportIssue('connections.load', err)
       toasts.add({ title: 'Failed to load connections', variant: 'error' })
     } finally {
-      setLoading(false)
+      if (generation === loadGeneration.current) setLoading(false)
     }
   }
 
@@ -129,14 +138,15 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   // the derived stub can't observe that intermediate render, and a new overseer always yields a
   // new gadget stub, so reconnects are still covered.
   useEffect(() => {
+    setLoading(true)
     loadGatekeepers()
-  }, [gadget, chatId])
+    return () => { ++loadGeneration.current }
+  }, [gadget ?? overseer, chatId])
 
-  // Re-load when the tab becomes visible, so hooks enabled elsewhere (e.g. from the Activity log)
-  // show up without a full page reload.
+  // Refresh on opening the tab and after an agent turn can have accepted more chat connections.
   useEffect(() => {
-    if (isVisible) loadGatekeepers()
-  }, [isVisible])
+    if (isVisible && !isAgentActive) loadGatekeepers()
+  }, [isVisible, isAgentActive])
 
 
   // What an agent spawner created here may offer its agents: this gadget itself (under the same
@@ -161,6 +171,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   }
 
   const handleEditSave = async (name: string) => {
+    if (!gadget) return
     const newName = editValue.trim()
     if (!newName) {
       toasts.add({ title: 'Binding name cannot be empty', variant: 'error' })
@@ -189,7 +200,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   }
 
   const handleDeleteConfirm = async () => {
-    if (!deleteTarget) return
+    if (!deleteTarget || !gadget) return
     try {
       await gadget.unbind(deleteTarget.name)
       await loadGatekeepers()
@@ -212,25 +223,65 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                 Connections
               </h2>
               <p className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                External resources this gadget can use.
+                {chatId === undefined ? 'External resources this gadget can use.' : 'External resources available to this chat and the selected gadget.'}
               </p>
             </div>
-            <WorkshopButton
-              tone="primary"
-              onClick={() => setIsNewConnectionModalVisible(true)}
-              className="self-start"
-            >
-              Connect resource
-            </WorkshopButton>
+            <div className="flex gap-2">
+              <WorkshopButton onClick={() => loadGatekeepers()}>Refresh</WorkshopButton>
+              {gadget && <WorkshopButton
+                tone="primary"
+                onClick={() => setIsNewConnectionModalVisible(true)}
+                className="self-start"
+              >
+                Connect to gadget
+              </WorkshopButton>}
+            </div>
           </div>
 
+          {!loading && !loadFailed && chatId !== undefined && (
+            <section aria-label="Chat connections" className="mb-6">
+              <h3 className="mb-1 text-sm font-medium text-kumo-default">This chat</h3>
+              <p className="mb-3 text-xs text-kumo-subtle">
+                Available to the agent in this conversation. Changing a gadget's connections does not change these.
+              </p>
+              {chatBindings.length === 0 ? (
+                <p className="text-sm text-kumo-subtle">No resource connections in this chat yet.</p>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
+                  {chatBindings.map((binding, index) => {
+                    const gadgetAliases = bindings.filter(b => b.target === binding.target).map(b => b.name)
+                    return (
+                      <div key={binding.name} className={`flex items-center gap-3 px-3 py-3 ${index > 0 ? 'border-t border-kumo-line' : ''}`}>
+                        <GatekeeperIcon vendorId={binding.vendorId} fallbackText={binding.resourceTitle}
+                          {...(binding.vendorId ? vendorBranding.get(binding.vendorId) : undefined)} />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-kumo-default">{binding.resourceTitle}</p>
+                          <p className="text-xs text-kumo-subtle">Chat name: <span className="font-mono">{binding.name}</span></p>
+                          {gadgetAliases.length > 0 && (
+                            <p className="text-xs text-kumo-subtle">
+                              Same connection used by {gadgetInfo?.title} as <span className="font-mono">{gadgetAliases.join(', ')}</span>.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+          {!loading && !loadFailed && gadget && (
+            <h3 className="mb-3 text-sm font-medium text-kumo-default">This gadget{gadgetInfo ? `: ${gadgetInfo.title}` : ''}</h3>
+          )}
           {loading ? (
             <div className="rounded-xl border border-kumo-line bg-kumo-base px-4 py-6 text-center text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
               Loading connections...
             </div>
-          ) : bindings.length === 0 ? (
+          ) : loadFailed ? (
+            <p role="alert" className="text-sm text-kumo-danger">Could not load connections. Use Refresh to try again.</p>
+          ) : !gadget ? null : bindings.length === 0 ? (
             <EmptyState
-              title="No connected resources"
+              title="No connections for this gadget"
               description="Connect Google Docs, GitHub, Google Sheets, and other services so this gadget can safely use external data."
               actionLabel="Connect resource"
               onAction={() => setIsNewConnectionModalVisible(true)}
@@ -463,6 +514,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
         onCreated={async (gk) => {
           try {
             const gatekeeperId = await gk.getId()
+            if (!gadget) return
             await gadget.bindWithSuggestedName(gatekeeperId, chatId)
             toasts.add({
               title: chatId === undefined
@@ -478,7 +530,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
         }}
       />
 
-      <BlueprintAnnotationModal
+      {gadget && <BlueprintAnnotationModal
         target={annotationTarget}
         gadget={gadget}
         onClose={() => setAnnotationTarget(null)}
@@ -486,7 +538,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
           toasts.add({ title: 'Blueprint settings saved.', variant: 'success' })
           setAnnotationTarget(null)
         }}
-      />
+      />}
 
     </div>
   )

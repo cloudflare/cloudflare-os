@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { BoundHookInfo } from '@gadgets/workshop-shared/api'
+import type { BoundHookInfo, GadgetBindingInfo, ResourceBindingInfo } from '@gadgets/workshop-shared/api'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
 
@@ -63,6 +63,92 @@ async function renderConnections(overseer: ReturnType<typeof workspace>['oversee
 }
 
 const isOn = () => hookSwitch(TITLE).getAttribute('aria-checked') === 'true'
+
+const resource = (name: string, target: number, resourceTitle: string): ResourceBindingInfo =>
+  ({ name, target, resourceTitle, vendorId: 'slack' })
+
+const connectionFixture = () => {
+  const chatBindings = [resource('SLACK_CTO', 5, 'Cloudflare - CTO'), resource('SLACK_SUCCESS', 6, 'Customer Success')]
+  const gadgetBindings: GadgetBindingInfo[] = [resource('SLACK_WORKSPACE', 5, 'Cloudflare - CTO')]
+  const overseer = { ...workspace().overseer, listChatBindings: vi.fn<(chatId: number) => Promise<ResourceBindingInfo[]>>(async () => chatBindings) }
+  const gadget = {
+    getId: async () => 10, getTitle: async () => 'Megamind', listBindings: async () => gadgetBindings,
+    unbind: vi.fn<(name: string) => Promise<void>>(async () => {}),
+  }
+  const render = async (chatId = 0, withGadget = true, isAgentActive = false) => {
+    await view.render(<Connections overseer={overseer as never} gadget={withGadget ? gadget as never : undefined}
+      chatId={chatId} authenticatedApi={{ listGatekeeperVendors: async () => [] } as never}
+      isVisible isAgentActive={isAgentActive} />)
+  }
+  return { chatBindings, gadgetBindings, overseer, gadget, render }
+}
+
+it('shows chat-only connections and gadget bindings with their scopes and shared connection', async () => {
+  const { overseer, render } = connectionFixture()
+  await render()
+  const chat = document.querySelector('[aria-label="Chat connections"]')!
+  expect(chat.textContent).toContain('SLACK_CTO')
+  expect(chat.textContent).toContain('SLACK_SUCCESS')
+  expect(chat.textContent).toContain('Same connection used by Megamind as SLACK_WORKSPACE')
+  expect(document.body.textContent).toContain('This gadget: Megamind')
+  // Chat entries have no gadget rename/delete controls. There is just one editable gadget edge.
+  expect(chat.querySelector('button')).toBeNull()
+  expect(document.querySelectorAll('button[aria-label="Delete connection"]')).toHaveLength(1)
+  expect(overseer.listChatBindings).toHaveBeenCalledWith(0)
+})
+
+it('keeps chat connections visible when removing their gadget binding', async () => {
+  const { gadgetBindings, gadget, render } = connectionFixture()
+  gadget.unbind.mockImplementation(async () => { gadgetBindings.splice(0) })
+  await render()
+  await act(async () => (document.querySelector('button[aria-label="Delete connection"]') as HTMLButtonElement).click())
+  const confirm = [...document.querySelectorAll('button')].find(button => button.textContent === 'Delete')!
+  await act(async () => confirm.click())
+  expect(gadget.unbind).toHaveBeenCalledExactlyOnceWith('SLACK_WORKSPACE')
+  const chat = document.querySelector('[aria-label="Chat connections"]')!
+  expect(chat.textContent).toContain('SLACK_CTO')
+  expect(chat.textContent).toContain('SLACK_SUCCESS')
+  expect(chat.textContent).not.toContain('Same connection used by')
+})
+
+it('lists chat resources without requiring a gadget', async () => {
+  const { render } = connectionFixture()
+  await render(0, false)
+  expect(document.querySelector('[aria-label="Chat connections"]')?.textContent).toContain('SLACK_SUCCESS')
+  expect(document.body.textContent).not.toContain('This gadget')
+  expect(document.querySelector('button[aria-label="Delete connection"]')).toBeNull()
+})
+
+it('refreshes connections after a visible chat finishes an agent turn', async () => {
+  const { chatBindings, render } = connectionFixture()
+  await render(0, true, true)
+  chatBindings.push(resource('NEW_CONNECTION', 7, 'New resource'))
+  await render(0, true, false)
+  expect(document.querySelector('[aria-label="Chat connections"]')?.textContent).toContain('NEW_CONNECTION')
+})
+
+it('does not let an older chat load overwrite the selected chat', async () => {
+  const { overseer, render } = connectionFixture()
+  const old = deferred<ResourceBindingInfo[]>()
+  overseer.listChatBindings.mockImplementation(chatId => chatId === 0 ? old.promise : Promise.resolve([resource('CURRENT', 8, 'Current resource')]))
+  await render(0)
+  await render(1)
+  await old.resolve([resource('OLD', 9, 'Old resource')])
+  expect(document.querySelector('[aria-label="Chat connections"]')?.textContent).toContain('CURRENT')
+  expect(document.body.textContent).not.toContain('Old resource')
+})
+
+it('shows a retryable load error rather than an empty connection list', async () => {
+  const { overseer, render } = connectionFixture()
+  overseer.listChatBindings.mockRejectedValue(new Error('Disconnected'))
+  await render()
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not load connections')
+  expect(document.body.textContent).not.toContain('No resource connections')
+  overseer.listChatBindings.mockResolvedValue([resource('RETRIED', 5, 'Retried resource')])
+  await act(async () => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh')!.click())
+  expect(document.querySelector('[role="alert"]')).toBeNull()
+  expect(document.querySelector('[aria-label="Chat connections"]')?.textContent).toContain('RETRIED')
+})
 
 it("names a hook's switch after the hook, which says whether it is on", async () => {
   await renderConnections(workspace().overseer)

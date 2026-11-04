@@ -3386,6 +3386,13 @@ export interface Overseer extends RpcTarget {
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
 
   /**
+   * List the named resource connections in this chat's agent environment, including saved seeds
+   * and connections accepted or pasted into the chat. Excludes gadgets, callback arguments and
+   * disconnected resources. Reading the list does not seed the chat or contact providers.
+   */
+  listChatBindings(chatId: number): Promise<ResourceBindingInfo[]>;
+
+  /**
    * Subscribe to all new chat messages (across all threads), the agent's replies among them.
    *
    * If `startAt` is given, it must be a date in the past. All messages starting from that date
@@ -5623,20 +5630,24 @@ export interface WorkpiecesSubscriber {
 }
 
 /**
- * Information about one of a gadget's bindings, for display in the Connections tab. Returned by
- * GadgetClient.listBindings().
+ * Display metadata for a named resource connection in a chat or gadget environment.
  */
-export type GadgetBindingInfo = {
-  /** The binding name, as it appears in the gadget worker's `env`. */
+export type ResourceBindingInfo = {
+  /** The binding name, as it appears in the environment. */
   name: string;
 
   /** The workpiece that the binding points at. */
   target: WorkpieceId;
 
-  /** Denormalized display info about the target. */
+  /** Display title of the resource. */
   resourceTitle: string;
-  vendorId?: string;
 
+  /** Vendor identifier, when the resource was created through a gatekeeper vendor. */
+  vendorId?: string;
+};
+
+/** A gadget resource binding, including whether it is provisional to a chat. */
+export type GadgetBindingInfo = ResourceBindingInfo & {
   /**
    * If present, this binding is still provisional to the given chat (which is necessarily the
    * `chatId` passed to listBindings(); edges pending in other chats are never listed). It becomes
