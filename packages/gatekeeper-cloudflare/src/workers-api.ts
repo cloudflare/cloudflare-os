@@ -8,6 +8,7 @@
 // The API answers a path segment with the Worker whose ID *or name* it is, and a Worker may be
 // named like another Worker's ID, so every lookup checks the field it asked by.
 
+import { pathSegment } from "@gadgets/gatekeeper-kit/endpoint";
 import { obsContext } from "./observability.js";
 import { CloudflareObservabilityApiError, requestAccountApi } from "./observability-api.js";
 import { invalidResponse, isRecord } from "./observability-parse.js";
@@ -47,7 +48,7 @@ export async function getWorker(
   let worker: unknown;
   try {
     ({ result: worker } = await requestAccountApi(
-      getToken, accountId, "workers", `workers/workers/${encodeURIComponent(asked)}`));
+      getToken, accountId, "workers", `workers/workers/${pathSegment(asked)}`));
   } catch (error) {
     if (error instanceof CloudflareObservabilityApiError && error.status === 404) return null;
     throw error;
@@ -74,7 +75,7 @@ async function listVersionIds(
     let envelope: Record<string, unknown>;
     try {
       envelope = await requestAccountApi(getToken, accountId, "worker-versions",
-        `workers/workers/${encodeURIComponent(workerId)}/versions?${query}`);
+        `workers/workers/${pathSegment(workerId)}/versions?${query}`);
     } catch (error) {
       if (error instanceof CloudflareObservabilityApiError && error.status === 404) return null;
       throw error;

@@ -1,3 +1,4 @@
+import { readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import type {
   CloudflareObservabilityCalculationQuery,
   CloudflareObservabilityCalculationResult,
@@ -230,39 +231,20 @@ function isTimeout(error: unknown): boolean {
 }
 
 async function readJson(response: Response): Promise<unknown> {
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
-    await response.body?.cancel();
-    throw new CloudflareObservabilityApiError(
-      invalidResponseStatus(response), "The Workers Observability response is too large.",
-    );
-  }
   if (!response.body) return null;
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_RESPONSE_BYTES) {
-      await reader.cancel();
+  let text: string;
+  try {
+    text = await readTextCapped(response, MAX_RESPONSE_BYTES);
+  } catch (error) {
+    if (error instanceof ResponseTooLargeError) {
       throw new CloudflareObservabilityApiError(
         invalidResponseStatus(response), "The Workers Observability response is too large.",
       );
     }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+    throw error;
   }
   try {
-    return JSON.parse(new TextDecoder().decode(bytes));
+    return JSON.parse(text);
   } catch {
     throw new CloudflareObservabilityApiError(
       invalidResponseStatus(response),
