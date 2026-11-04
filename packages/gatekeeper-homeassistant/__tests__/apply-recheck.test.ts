@@ -139,6 +139,17 @@ describe("submitting a call that is applied before the reply arrives", () => {
     }
   });
 
+  it("reports success, without calling again, when an apply that ran is delivered again", async () => {
+    const { gk } = gatekeeper();
+    live.registry = home();
+    let actionId = 0;
+    const session = await gk.startSession(queue(async submitted => { actionId = submitted; })) as any;
+    await session.callService(turnOnLounge.domain, turnOnLounge.service, undefined, turnOnLounge.target);
+    await gk.applyAction(actionId);
+    await expect(gk.applyAction(actionId)).resolves.toBeUndefined();
+    expect(executed).toHaveLength(1);
+  });
+
   it("still fails when the submit fails without applying", async () => {
     const { gk, kv } = gatekeeper();
     live.registry = home();

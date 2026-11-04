@@ -1197,6 +1197,9 @@ export class HomeAssistantGatekeeperImpl
     // The overseer only knows the numeric action ID; the full action lives in DO storage.
     const pending = this.#getPending(actionId);
     if (!pending) {
+      // The overseer records completion only after this returns, so an apply that already ran can
+      // be delivered again after a lost reply or a restart; it has nothing left to do.
+      if (this.#getApplied(actionId) !== undefined) return;
       throw new Error(`No queued Home Assistant action exists with id ${actionId}.`);
     }
     const action = pending.action;
