@@ -36,6 +36,7 @@ export default defineConfig({
     testTimeout: 15_000,
     include: [
       "__tests__/workerd/bigquery-observers.test.ts",
+      "__tests__/workerd/calendar-actions.test.ts",
       "__tests__/workerd/calendar-observers.test.ts",
       "__tests__/workerd/chat-actions.test.ts",
       "__tests__/workerd/chat-hooks.test.ts",

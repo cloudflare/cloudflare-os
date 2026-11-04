@@ -634,6 +634,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await this.#calendar(facetName, id, props).startSession(queueStub);
   }
 
+  async calendarAutoApprovableActions(
+      facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps,
+  ): Promise<ActionKind[]> {
+    return this.#calendar(facetName, id, props).getAutoApprovableActions();
+  }
+
   async calendarAddObserver(
       facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps,
       observerId: string, userObjectId: string,

@@ -2579,6 +2579,16 @@ type GoogleCalendarUpdateAction = GoogleCalendarActionBase & {
 
 type GoogleCalendarAction = GoogleCalendarCreateAction | GoogleCalendarUpdateAction;
 
+// Every Calendar action is auto-approvable, including ones whose `sendUpdates` notifies
+// attendees: like a Chat message, an invitation is something the user opts into trusting the
+// agent with. Creating and updating are separate kinds so a user can trust one without the other.
+const CREATE_CALENDAR_EVENT_ACTION: ActionKind = {
+  tag: "calendarCreateEvent", label: "Create calendar events",
+};
+const UPDATE_CALENDAR_EVENT_ACTION: ActionKind = {
+  tag: "calendarUpdateEvent", label: "Update calendar events",
+};
+
 type GoogleCalendarRevertInfo =
   | {
       type: "createdEvent";
@@ -2786,7 +2796,7 @@ export class GoogleCalendarGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return [CREATE_CALENDAR_EVENT_ACTION, UPDATE_CALENDAR_EVENT_ACTION];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
@@ -3068,6 +3078,8 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Event", event)
           .finish(),
         implementsRevert: true,
+        actionKind: CREATE_CALENDAR_EVENT_ACTION,
+        autoApprovable: true,
       });
     } catch (error) {
       this.#pendingActions.remove(actionId);
@@ -3115,6 +3127,8 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Changes", patch)
           .finish(),
         implementsRevert: true,
+        actionKind: UPDATE_CALENDAR_EVENT_ACTION,
+        autoApprovable: true,
       });
     } catch (error) {
       this.#pendingActions.remove(actionId);
