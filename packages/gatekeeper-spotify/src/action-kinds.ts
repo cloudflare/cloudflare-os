@@ -20,6 +20,9 @@ export const ACTION_KINDS = {
 
 type SpotifyActionKind = keyof typeof ACTION_KINDS;
 
+/** Player commands whose effect is relative to what is playing (see `autoApprovalOf`). */
+const RELATIVE_PLAYER_COMMANDS: ReadonlySet<string> = new Set(["next", "previous", "addToQueue"]);
+
 // The kinds whose actions can be auto-approvable, by the binding whose session submits them, so a
 // pre-approval UI lists only those. A playlist binding can follow its playlist and edit its tracks
 // and details; the account session reaches every action, other playlists' included.
@@ -74,7 +77,10 @@ export function autoApprovalOf(action: SpotifyAction): Pick<ActionDescription, "
     case "playlistDetails":
       return verdict("editPlaylistDetails",
         action.update.public === undefined && action.update.collaborative === undefined);
+    // Next, previous and adding to the queue act relative to what is playing, and Spotify takes no
+    // key to recognize a repeat, so a retried apply whose result was lost would skip or queue
+    // twice. Every other command sets a state, which a repeat leaves as it was.
     case "player":
-      return verdict("playback", true);
+      return verdict("playback", !RELATIVE_PLAYER_COMMANDS.has(action.command.op));
   }
 }

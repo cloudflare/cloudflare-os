@@ -93,24 +93,25 @@ export function serviceCallVerdict(
 // siren, remote.send_command, button.press, input_* helpers and number/select/text (helpers and
 // device settings that automations key on), every script/automation/homeassistant service, and
 // every scene service: a scene's members can be edited while its action is pending, so checking
-// them at submit would not bound what runs at apply.
+// them at submit would not bound what runs at apply. Also left out: services whose effect is
+// relative to the device's state (toggles, play_pause, next and previous track, volume and fan
+// speed steps). Home Assistant takes no key to recognize a repeat, so an apply whose result was
+// lost and is retried would undo or double them; every service here sets a state, which a repeat
+// leaves as it was.
 const DEVICE_CONTROL_SERVICES = new Set([
-  "light.turn_on", "light.turn_off", "light.toggle",
-  "switch.turn_on", "switch.turn_off", "switch.toggle",
-  "fan.turn_on", "fan.turn_off", "fan.toggle", "fan.set_percentage", "fan.increase_speed",
-  "fan.decrease_speed", "fan.oscillate", "fan.set_direction", "fan.set_preset_mode",
-  "humidifier.turn_on", "humidifier.turn_off", "humidifier.toggle", "humidifier.set_humidity",
-  "humidifier.set_mode",
+  "light.turn_on", "light.turn_off",
+  "switch.turn_on", "switch.turn_off",
+  "fan.turn_on", "fan.turn_off", "fan.set_percentage", "fan.oscillate", "fan.set_direction",
+  "fan.set_preset_mode",
+  "humidifier.turn_on", "humidifier.turn_off", "humidifier.set_humidity", "humidifier.set_mode",
   "climate.turn_on", "climate.turn_off", "climate.set_temperature", "climate.set_hvac_mode",
   "climate.set_fan_mode", "climate.set_swing_mode", "climate.set_preset_mode",
   "climate.set_humidity",
-  "cover.open_cover", "cover.close_cover", "cover.stop_cover", "cover.toggle",
-  "cover.set_cover_position", "cover.open_cover_tilt", "cover.close_cover_tilt",
-  "cover.stop_cover_tilt", "cover.toggle_cover_tilt", "cover.set_cover_tilt_position",
-  "media_player.media_play", "media_player.media_pause", "media_player.media_play_pause",
-  "media_player.media_stop", "media_player.media_next_track", "media_player.media_previous_track",
-  "media_player.volume_set", "media_player.volume_up", "media_player.volume_down",
-  "media_player.volume_mute",
+  "cover.open_cover", "cover.close_cover", "cover.stop_cover", "cover.set_cover_position",
+  "cover.open_cover_tilt", "cover.close_cover_tilt", "cover.stop_cover_tilt",
+  "cover.set_cover_tilt_position",
+  "media_player.media_play", "media_player.media_pause", "media_player.media_stop",
+  "media_player.volume_set", "media_player.volume_mute",
   "vacuum.start", "vacuum.pause", "vacuum.stop", "vacuum.return_to_base", "vacuum.locate",
 ]);
 

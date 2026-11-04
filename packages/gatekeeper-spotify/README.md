@@ -86,7 +86,9 @@ You can see and manage connected accounts in settings (via the account menu in t
 - **Auto-approval.** A user may let some kinds of write apply without review: saving tracks, albums
   and playlists to the library, following artists, creating private playlists, adding and
   reordering playlist tracks, editing playlist names and descriptions, and playback control (which
-  takes effect on the device at once and cannot be reverted). Removing anything from the library or
+  takes effect on the device at once and cannot be reverted). Skipping to the next or previous track
+  and adding to the queue always wait, since an apply retried after its result was lost would skip
+  or queue twice. Removing anything from the library or
   a playlist, unfollowing or deleting a playlist, replacing a playlist's contents, and any change
   that makes a playlist public or collaborative, or undoes that, always need a manual approval.
 - **Non-owned playlists.** Spotify withholds track contents for playlists you don't own/collaborate

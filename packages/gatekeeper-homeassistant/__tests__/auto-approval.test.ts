@@ -227,8 +227,21 @@ describe("saveDashboard and fireEvent", () => {
 
 describe("callService allowlist", () => {
   it.each([
-    ["light.lamp", "turn_on"],
     ["light.lamp", "toggle"],
+    ["switch.plug", "toggle"],
+    ["fan.ceiling", "increase_speed"],
+    ["cover.blind", "toggle"],
+    ["media_player.speaker", "media_play_pause"],
+    ["media_player.speaker", "media_next_track"],
+    ["media_player.speaker", "volume_up"],
+  ])("keeps %s %s manual, since a retried apply would repeat its relative effect", (entityId, service) => {
+    const [domain] = entityId.split(".");
+    const reg = registry({ entities: [{ entity_id: entityId, platform: "hue", ...(domain === "cover" ? { device_class: "blind" } : {}) }] });
+    expect(verdict(entityCall(entityId, service), reg)).toEqual(callService);
+  });
+
+  it.each([
+    ["light.lamp", "turn_on"],
     ["switch.plug", "turn_off"],
     ["fan.ceiling", "set_percentage"],
     ["climate.hall", "set_temperature"],

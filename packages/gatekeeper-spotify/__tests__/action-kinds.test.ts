@@ -64,15 +64,23 @@ describe("autoApprovalOf", () => {
 
   it.each<[string, Record<string, unknown>]>([
     ["play", { op: "play", body: { uris: ["spotify:track:t1"] } }],
-    ["next", { op: "next" }],
+    ["pause", { op: "pause" }],
     ["seek", { op: "seek", positionMs: 1000 }],
     ["setVolume", { op: "setVolume", volumePercent: 30, deviceId: "d1" }],
     ["setShuffle", { op: "setShuffle", shuffle: true }],
     ["setRepeat", { op: "setRepeat", mode: "track" }],
     ["transfer", { op: "transfer", deviceId: "d1", play: true }],
-    ["addToQueue", { op: "addToQueue", uri: "spotify:track:t1" }],
   ])("lets the %s playback command apply without review", (_op, command) => {
     expect(autoApprovalOf(action({ type: "player", command } as never)).autoApprovable).toBe(true);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["next", { op: "next" }],
+    ["previous", { op: "previous" }],
+    ["addToQueue", { op: "addToQueue", uri: "spotify:track:t1" }],
+  ])("keeps the %s playback command manual, since a retried apply would repeat it", (_op, command) => {
+    expect(autoApprovalOf(action({ type: "player", command } as never)))
+      .toEqual({ actionKind: ACTION_KINDS.playback, autoApprovable: false });
   });
 
   describe("playlist create", () => {
