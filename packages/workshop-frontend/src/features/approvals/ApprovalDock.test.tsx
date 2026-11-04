@@ -44,7 +44,12 @@ function Dock(props: Omit<ComponentProps<typeof ApprovalDock>, 'selectedActionId
   return <ApprovalDock {...props} selectedActionId={selectedActionId} onSelect={setSelectedActionId} />
 }
 
-async function renderDock(entries: ActionLogEntry[], restricted = false) {
+// By default a request is in its chat whenever it names one.
+async function renderDock(
+  entries: ActionLogEntry[],
+  restricted = false,
+  inChat = (action: ActionLogEntry) => action.chatId !== undefined,
+) {
   const server = makeOverseer()
   const approveAction = vi.fn<(id: number, creation?: unknown) => Promise<void>>(async () => {})
   const rejectAction = vi.fn<(id: number) => Promise<void>>(async () => {})
@@ -63,6 +68,7 @@ async function renderDock(entries: ActionLogEntry[], restricted = false) {
       onHide={onHide}
       onViewAll={onViewAll}
       onShowInChat={onShowInChat}
+      inChat={inChat}
     />,
   )
   await server.resolveSubscription()
@@ -144,6 +150,15 @@ describe('ApprovalDock', () => {
     await click('Previous request')
     expect(onShowInChat).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1, chatId: 3 }))
     expect(onShowInChat).toHaveBeenCalledTimes(2)
+  })
+
+  it('neither links nor follows a request whose chat is gone', async () => {
+    const { onShowInChat } = await renderDock(
+      [entry(1, { chatId: 3 }), entry(2, { chatId: 4 })], false, action => action.chatId === 3)
+    await click('Next request')
+    expect(document.querySelector('button[title="Show in chat"]')).toBeNull()
+    expect(onShowInChat).not.toHaveBeenCalled()
+    expect(button('Approve').disabled).toBe(false)
   })
 
   it('approves and denies the request it shows', async () => {

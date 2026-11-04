@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act } from 'react'
+import { act, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
@@ -90,15 +90,29 @@ function withChatApi(
   }
 }
 
-function renderChat(
-  overseer: RpcStub<Overseer>,
-  props: {
-    restricted?: boolean, selectedChatId?: number,
-    revealActionId?: number, onActionRevealed?: () => void,
-    composerAccessory?: React.ReactNode,
-  } = {},
-) {
-  return testRoot.render(
+type ChatProps = {
+  restricted?: boolean, selectedChatId?: number,
+  revealActionId?: number | null, onActionRevealed?: () => void,
+  composerAccessory?: React.ReactNode,
+}
+
+function renderChat(overseer: RpcStub<Overseer>, props: ChatProps = {}) {
+  return testRoot.render(chatElement(overseer, props))
+}
+
+// Holds the request to reveal and clears it once revealed, as the Workshop does. `reveal` asks
+// for another.
+let reveal: (actionId: number) => void
+function RevealingChat({ overseer, initial }: { overseer: RpcStub<Overseer>, initial: number }) {
+  const [revealActionId, setRevealActionId] = useState<number | null>(initial)
+  reveal = setRevealActionId
+  return chatElement(overseer, {
+    selectedChatId: 1, revealActionId, onActionRevealed: () => setRevealActionId(null),
+  })
+}
+
+function chatElement(overseer: RpcStub<Overseer>, props: ChatProps) {
+  return (
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
@@ -115,7 +129,7 @@ function renderChat(
       onDiscardConsoleLogs={() => {}}
       onOpenGadget={() => {}}
       outputOfWorkpiece={() => undefined}
-    />,
+    />
   )
 }
 
@@ -355,6 +369,34 @@ describe('revealing a request', () => {
     expect(addToast).toHaveBeenCalledOnce()
     expect(onActionRevealed).toHaveBeenCalledOnce()
     expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('lets a newer reveal finish when an older one\'s page fails', async () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1000)
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    const latest = { ...actionMessage, sequence: 5, actionLog: pendingLog() } as AiChatMessage
+    let failEarlier!: (err: Error) => void
+    Object.assign(server.overseer as object, {
+      getChatHistory: (_chatId: number, before?: number) => before === undefined
+        ? Promise.resolve({ messages: [latest] })
+        : new Promise((_resolve, reject) => { failEarlier = reject }),
+    })
+    // Request 99 is not on screen, so its reveal asks for the page before.
+    await testRoot.render(<RevealingChat overseer={server.overseer} initial={99} />)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    expect(failEarlier).toBeDefined()
+
+    // The approver moves on to request 1, which is on screen, before that page fails.
+    act(() => reveal(1))
+    await act(async () => failEarlier(new Error('offline')))
+    for (let i = 0; i < 3; i++) await act(async () => {})
+
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+    expect(scrollIntoView.mock.contexts[0]).toBe(document.querySelector('[data-action-id="1"]'))
   })
 
   it('gives up once the whole thread is loaded without the card', async () => {

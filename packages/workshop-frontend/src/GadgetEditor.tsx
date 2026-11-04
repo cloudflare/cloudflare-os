@@ -1032,6 +1032,8 @@ export default function GadgetEditor() {
   // The request the dock is paged to, kept here since the dock remounts as it moves between the
   // composer and the gadget pane.
   const [dockActionId, setDockActionId] = useState<number | null>(null)
+  // The workspace's chats, so the dock only links a request to a chat that still exists.
+  const [chatIds, setChatIds] = useState<ReadonlySet<number>>(new Set())
   // The pending request the dock asked to show in its chat, until the chat has revealed it.
   const [revealRequest, setRevealRequest] = useState<{ chatId: number, actionId: number } | null>(null)
   const showRequestInChat = (action: ActionLogEntry) => {
@@ -1051,6 +1053,7 @@ export default function GadgetEditor() {
       onHide={approvalDock.hide}
       onViewAll={() => openActivity('review')}
       onShowInChat={showRequestInChat}
+      inChat={action => action.chatId !== undefined && chatIds.has(action.chatId)}
       selectedActionId={dockActionId}
       onSelect={setDockActionId}
     />
@@ -1213,6 +1216,7 @@ export default function GadgetEditor() {
     setUserNavigatedToList(false)
     setDockActionId(null)
     setRevealRequest(null)
+    setChatIds(new Set())
   }, [id])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
@@ -2052,6 +2056,7 @@ export default function GadgetEditor() {
                   onDiscardConsoleLogs={discardConsoleLogs}
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
+                  onChatIdsChange={setChatIds}
                   onAgentActiveChange={handleAgentActiveChange}
                   onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}

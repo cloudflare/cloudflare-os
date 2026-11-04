@@ -2516,6 +2516,8 @@ interface ChatInterfaceProps {
   onConsumeConsoleLogs: () => string;
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
+  // The ids of the workspace's chats, once listed and whenever one is added or deleted.
+  onChatIdsChange?: (chatIds: ReadonlySet<number>) => void;
   onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
   // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
   // Auto-approval list reflects it without a reload.
@@ -2722,6 +2724,7 @@ function ChatInterface({
   onConsumeConsoleLogs,
   onDiscardConsoleLogs,
   onChatCountChange,
+  onChatIdsChange,
   onAgentActiveChange,
   onAutoApproveChange,
   composerAccessory,
@@ -3060,6 +3063,16 @@ function ChatInterface({
       ],
     };
   }, [chatList, chatListScope]);
+
+  // Notify parent which chats exist, on the same gate as the count below.
+  const onChatIdsChangeRef = useRef(onChatIdsChange);
+  onChatIdsChangeRef.current = onChatIdsChange;
+  const chatIdsKey = chatList.map((chat) => chat.id).toSorted((a, b) => a - b).join(",");
+  useEffect(() => {
+    if (chatListReady) {
+      onChatIdsChangeRef.current?.(new Set(chatIdsKey ? chatIdsKey.split(",").map(Number) : []));
+    }
+  }, [chatIdsKey, chatListReady]);
 
   // Notify parent when chat list changes. Gated on chatListReady so that we
   // don't report 0 from the empty initial cache before listChats() has completed.
@@ -4081,6 +4094,9 @@ function ChatInterface({
   const revealedActionIdRef = useRef<number | null>(null);
   // Whether the reveal is waiting on a page of earlier history it asked for.
   const revealPagingRef = useRef(false);
+  // The chat and request being revealed, for a page that arrives after either has changed.
+  const revealTargetRef = useRef("");
+  revealTargetRef.current = `${selectedChatId}:${revealActionId}`;
   useEffect(() => {
     if (revealActionId === null) revealedActionIdRef.current = null;
     if (revealActionId === null || revealActionId === revealedActionIdRef.current) return;
@@ -4092,9 +4108,13 @@ function ChatInterface({
       // again on the next render; a loaded one re-renders so the next look sees it. A skipped one
       // means a page is already loading, whose arrival re-renders.
       revealPagingRef.current = true;
+      const target = revealTargetRef.current;
       void handleShowEarlierMessages().then((result) => {
         revealPagingRef.current = false;
-        if (result === "failed") {
+        if (revealTargetRef.current !== target) {
+          // Superseded: let the current reveal look again rather than ending it.
+          forceUpdate();
+        } else if (result === "failed") {
           revealedActionIdRef.current = revealActionId;
           onActionRevealedRef.current?.();
         } else if (result === "loaded") {

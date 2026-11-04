@@ -26,8 +26,9 @@ type ApprovalDockProps = {
   // Opens the full list of requests (Activity → Review).
   onViewAll: () => void
   // Shows the request where it was asked for: called on paging to it and on clicking it, for one
-  // that names its chat.
+  // inChat accepts (its chat still exists, say).
   onShowInChat: (action: ActionLogEntry) => void
+  inChat: (action: ActionLogEntry) => boolean
   // The request the approver paged to; null shows the oldest (see `index` for one that is no
   // longer pending). Held by the caller, so it survives the dock moving between placements.
   selectedActionId: number | null
@@ -42,7 +43,7 @@ const pagerButtonClassName =
  * page through them and approve or deny each. Renders nothing while none is pending.
  */
 export const ApprovalDock = ({
-  overseer, restricted, onAutoApproveChange, onHide, onViewAll, onShowInChat, selectedActionId, onSelect,
+  overseer, restricted, onAutoApproveChange, onHide, onViewAll, onShowInChat, inChat, selectedActionId, onSelect,
 }: ApprovalDockProps) => {
   const { pending } = useActions(overseer)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
@@ -91,7 +92,7 @@ export const ApprovalDock = ({
   // Paging also takes the chat to the request (a request resolving moves the dock on without it).
   const go = (to: number) => {
     onSelect(pending[to].id)
-    if (pending[to].chatId !== undefined) onShowInChat(pending[to])
+    if (inChat(pending[to])) onShowInChat(pending[to])
   }
 
   const summary = (
@@ -161,7 +162,7 @@ export const ApprovalDock = ({
         </div>
 
         <div className="min-w-[10rem] flex-1" aria-live="polite">
-          {action.chatId === undefined ? summary : (
+          {!inChat(action) ? summary : (
             <button
               type="button"
               onClick={() => onShowInChat(action)}
