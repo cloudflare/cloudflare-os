@@ -1004,10 +1004,14 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   (at most three times) if a connection in its scope appeared or disappeared, or its requirements
   changed: one recorded meanwhile, one a gadget it newly reaches had recorded, or one dropped
   because a gadget is no longer reached (a failure may have been about it, so it is not reported
-  against the narrower scope); reads through connections outside its scope don't count. An
-  observation recomputes who it reaches after its checks and checks whoever it gained (at most
-  three times). Both decisions are confirmed in the same synchronous block that publishes them
-  (the observer record; the audit record), so neither can miss the other.
+  against the narrower scope); reads through connections outside its scope don't count. A re-run
+  calls every connection's `addObserver()` again, since what the gatekeeper tracks itself may
+  have grown, but asks `verifyObserverAccess()` only about requirements no earlier pass checked;
+  after a configuration prompt it checks them all again. Requirements that keep landing faster
+  than a pass completes can still exhaust the budget. An observation recomputes who it reaches
+  after its checks and checks whoever it gained (at most three times). Both decisions are
+  confirmed in the same synchronous block that publishes them (the observer record; the audit
+  record), so neither can miss the other.
 - **Pending creations.** While a `createExternalResource` creation is pending, its simulated
   reads are audited and enforce workspace policy but record no requirements, even if they report
   subresources.

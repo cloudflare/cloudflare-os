@@ -1100,8 +1100,65 @@ describe("admission against recorded requirements", () => {
     release();
     await admission;
 
-    expect(world.checks.at(-1)).toEqual({ profileId: "carol", ids: ["a", "b"] });
+    expect(world.checks).toEqual([
+      { profileId: "carol", ids: ["a"] },
+      { profileId: "carol", ids: ["b"] },
+    ]);
     expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+  }));
+
+  it("checks only new requirements when one lands during verification", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    let other = CONN + 1;
+    seedConnection(impl);
+    seedConnection(impl, other);
+    addRows(impl, WORKSPACE, CONN, ["a"]);
+    addRows(impl, WORKSPACE, other, ["steady"]);
+    let calls: FacetCall[] = [];
+    fakeFacets(impl, { calls });
+    world.roles.set("carol", "build");
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => {
+      // The owner reads more through the connection while Carol is being checked.
+      if (ids.includes("a")) addRows(impl, WORKSPACE, CONN, ["b"]);
+      return [];
+    }));
+
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+
+    // The second pass registers her with every connection again, but asks only about the new
+    // requirement; the connection with nothing new is not asked again.
+    expect(world.checks.map(check => check.ids).toSorted()).toEqual([["a"], ["b"], ["steady"]]);
+    expect(callsTo(calls, "addObserver").toSorted()).toEqual([CONN, CONN, other, other]);
+    expect(callsTo(calls, "verifyObserverAccess").toSorted()).toEqual([CONN, CONN, other]);
+    expect(impl.storage.observers.get("carol").accountChoices)
+        .toEqual({ [CONN]: 20, [other]: 30 });
+  }));
+
+  it("denies a re-run whose addObserver() refuses after an earlier pass's succeeded", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    addRows(impl, WORKSPACE, CONN, ["a"]);
+    let registrations = 0;
+    // What the connection tracks itself grows during her first check: say, a read omitting
+    // subresources that excluded her but was admitted because she is not yet published.
+    fakeFacets(impl, {
+      addObserver: () => {
+        if (++registrations > 1) throw new Error("can't read the tracked history");
+      },
+    });
+    world.roles.set("carol", "build");
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => {
+      // A read reporting a subresource lands too, so the pass re-runs.
+      if (ids.includes("a")) addRows(impl, WORKSPACE, CONN, ["b"]);
+      return [];
+    }));
+
+    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+    await expect(admission).rejects.toThrow(/could not confirm/);
+    await expect(admission).rejects.toThrow(/can't read the tracked history/);
+    expect(impl.storage.observers.get("carol")).toBeUndefined();
   }));
 
   it("blocks an in-flight observation that a newly admitted collaborator cannot access", () =>
