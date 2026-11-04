@@ -16,7 +16,6 @@
     "preview:sweep": "node scripts/preview/preview.ts sweep",
     "dev-client": "cd packages/workshop-frontend && pnpm run dev",
     "dev-server": "node scripts/run-dev-server.ts",
-    "cf-os": "node packages/api-schema/scripts/generate.ts --if-stale && node packages/api-cli/src/main.ts",
     "clean": "node scripts/vp/run.ts --filter=!cloudflare-os clean",
     "lint:check": "vp lint",
     "lint:fix": "vp lint --fix",
@@ -29,6 +28,7 @@
     "api-schema:generate": "node packages/api-schema/scripts/generate.ts"
   },
   "devDependencies": {
+    "@gadgets/api-cli": "workspace:*",
     "@gadgets/scripts": "workspace:*",
     "@types/node": "26.1.0",
     "typescript": "catalog:",

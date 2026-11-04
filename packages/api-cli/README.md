@@ -3,8 +3,9 @@
 `pnpm cf-os api` calls a running instance's [Cap'n Web](https://github.com/cloudflare/capnweb) API,
 the one the Workshop frontend uses, so an agent can drive workspaces, chats, actions and gatekeepers
 from the command line. Its commands are generated from `packages/workshop-shared/src/api.ts` by
-[`packages/api-schema`](../api-schema/README.md), so they always match this checkout. Run it from the
-repository root (`pnpm -w cf-os api ...` from a package directory). On a deployment only deployment
+[`packages/api-schema`](../api-schema/README.md), so they always match this checkout. It is the workspace's
+`cf-os` bin, so `pnpm cf-os api ...` works from any directory of the repository, and regenerates the
+commands first when the API has changed. On a deployment only deployment
 admins may use it ([Deployment admins only](#deployment-admins-only)); on a local dev server anyone
 may.
 
@@ -97,8 +98,7 @@ declared type before anything is sent. Put `--` before a value that reads as an 
 Results are JSON on stdout: bigints as strings, bytes as `{"base64": "..."}`, dates as ISO strings.
 Messages go to stderr. A `subscribe-*` command prints one JSON line per event until `--timeout`,
 Ctrl-C or its reader closes; pair a pipe to `head` with `--timeout`. Byte streams go to
-`--out <file|->`. pnpm adds its own lines on failure, so for clean output run
-`node packages/api-cli/src/main.ts api ...` once `pnpm cf-os` has generated the commands.
+`--out <file|->`.
 
 | Code | Means |
 | --- | --- |

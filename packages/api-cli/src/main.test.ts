@@ -1,4 +1,4 @@
-// `cf-os` as the root `pnpm cf-os` script and cloudflare-os-starter run it: a spawned
+// `cf-os` as the bin (bin.ts) and cloudflare-os-starter run it: a spawned
 // `node src/main.ts`, with none of the caller's environment but PATH and what each case sets. And the
 // runtime's import graph, which the starter relies on to run this file with nothing but Node and the
 // submodule's workspace install.
@@ -11,6 +11,7 @@ import test from "node:test";
 import { invocationDir } from "./main.ts";
 
 const MAIN = join(import.meta.dirname, "main.ts");
+const BIN = join(import.meta.dirname, "bin.ts");
 const PACKAGE = join(import.meta.dirname, "..");
 
 /** What CFOS_API_URL_UNAVAILABLE says in a starter whose deployment file is not configured. */
@@ -119,9 +120,11 @@ function closure(entry: string): { files: Set<string>; packages: Set<string> } {
 }
 
 test("the runtime loads node builtins, capnweb, hash-wasm and its own src/ and generated/ only", () => {
-  // cloudflare-os-starter runs this file from its submodule with nothing but Node and the
-  // submodule's workspace install: no build, and nothing of @gadgets/* at run time.
-  const { files, packages } = closure(MAIN);
+  // cloudflare-os-starter runs main.ts from its submodule with nothing but Node and the
+  // submodule's workspace install: no build, and nothing of @gadgets/* at run time. The bin loads
+  // main.ts, so its closure holds main.ts's.
+  const { files, packages } = closure(BIN);
+  assert.ok(files.has(MAIN));
   for (const name of packages) assert.ok(name.startsWith("node:") || name === "capnweb" || name === "hash-wasm", name);
   for (const file of files) {
     const at = relative(PACKAGE, file);
@@ -130,6 +133,17 @@ test("the runtime loads node builtins, capnweb, hash-wasm and its own src/ and g
   assert.ok([...files].some((file) => file.endsWith(join("generated", "commands.ts"))));
   const manifest = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8"));
   assert.deepEqual(Object.keys(manifest.dependencies).toSorted(), ["capnweb", "hash-wasm"]);
+});
+
+test("the cf-os bin is bin.ts, which Node runs on every platform, and it runs main.ts once the commands are generated", () => {
+  // pnpm's shims (sh, and on Windows .cmd and .ps1) run the program the bin's shebang names.
+  const manifest = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8"));
+  assert.deepEqual(manifest.bin, { "cf-os": "./src/bin.ts" });
+  assert.ok(readFileSync(BIN, "utf8").startsWith("#!/usr/bin/env node\n"));
+  const run = spawnSync(process.execPath, [BIN, "api", "open-workspace"], { env: { PATH: process.env.PATH ?? "" }, encoding: "utf8" });
+  assert.equal(run.status, 2, run.stderr);
+  assert.equal(run.stdout, "");
+  assert.match(run.stderr, /open-workspace needs <id>\./);
 });
 
 test("relative paths resolve where the command was typed: INIT_CWD under a package script, when it is below", () => {

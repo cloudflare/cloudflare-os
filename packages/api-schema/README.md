@@ -121,7 +121,7 @@ Whatever reads the generated files generates them first, with
 `node packages/api-schema/scripts/generate.ts --if-stale`: the `@gadgets/api-schema#generate` task,
 which `@gadgets/api-cli`'s `build` and `test` and the integration tests depend on (so `pnpm build`,
 `pnpm lint` and `pnpm test` run it), the CLI's and the integration tests' direct `test:run`, and the
-root `pnpm cf-os`. A change to `packages/workshop-shared/src/api.ts`, to a gatekeeper app UI's
+`cf-os` bin (`pnpm cf-os`). A change to `packages/workshop-shared/src/api.ts`, to a gatekeeper app UI's
 interface or to its `src/app-api.ts` needs no step of its own, and nothing to commit.
 
 Each generation writes this directory and `packages/api-cli/generated/`, `pnpm cf-os api`'s command

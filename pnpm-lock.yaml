@@ -63,6 +63,9 @@ importers:
 
   .:
     devDependencies:
+      '@gadgets/api-cli':
+        specifier: workspace:*
+        version: link:packages/api-cli
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:scripts

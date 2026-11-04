@@ -15,7 +15,7 @@ const MAIN = join(import.meta.dirname, "main.ts");
 /** api-schema's generated declarations, which `pnpm api-schema:generate` copies beside the command table. */
 const UPSTREAM = join(import.meta.dirname, "..", "..", "api-schema", "generated");
 
-/** `cf-os api <args>`, as the root `pnpm cf-os` script runs it, with none of the caller's environment but PATH. */
+/** `cf-os api <args>`, as the `cf-os` bin runs it, with none of the caller's environment but PATH. */
 function api(...args: string[]) {
   return spawnSync(process.execPath, [MAIN, "api", ...args], { env: { PATH: process.env.PATH ?? "" }, encoding: "utf8" });
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // `cf-os` in cloudflare-os, which has only `api`: `pnpm cf-os api ...` calls a running instance's
-// API (api.ts). The root `pnpm cf-os` script runs this file, and cloudflare-os-starter's `cf-os api`
+// API (api.ts). The `cf-os` bin (bin.ts) runs this file, and cloudflare-os-starter's `cf-os api`
 // is to run it from its submodule (packages/api-cli/README.md, "Running it from another repository").
 // cf-os's other commands (init, check, deploy, update, ...) are the starter's, so here any other
 // command is refused, saying where it lives.
@@ -71,9 +71,9 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
 }
 
 /**
- * The directory the command was typed in. A package script (`pnpm -w cf-os` from a package) runs
- * from the root and records the directory it was started from in `INIT_CWD`; that one is taken only
- * when it lies below, so an unrelated outer script's is ignored.
+ * The directory the command was typed in. A package script that runs `cf-os` runs from its
+ * package's directory and records the directory it was started from in `INIT_CWD`; that one is
+ * taken only when it lies below, so an unrelated outer script's is ignored.
  */
 export function invocationDir(cwd: string, env: NodeJS.ProcessEnv): string {
   const started = env.npm_lifecycle_event ? env.INIT_CWD : undefined;
@@ -96,6 +96,9 @@ export async function finish(code: number, exit: (code: number) => void = proces
   exit(code);
 }
 
-if (import.meta.main) {
+/** Runs `cf-os` on this process's arguments, environment and stdio, and ends it with the exit code. */
+export async function main(): Promise<void> {
   await finish(await cli(process.argv.slice(2), { cwd: invocationDir(process.cwd(), process.env), out: consoleOutput(), stdout: process.stdout }));
 }
+
+if (import.meta.main) await main();

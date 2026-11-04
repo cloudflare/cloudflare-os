@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "cf-os": "./src/bin.ts"
+  },
   "scripts": {
     "test:run": "node ../api-schema/scripts/generate.ts --if-stale && node --test 'src/**/*.test.ts' 'generator/**/*.test.ts'"
   },
