@@ -60,6 +60,13 @@ user stories, what would you do differently? Check that the seams (resource gran
 sessions) partition authority along the lines users actually grant. The checklist is "Reviewing a
 gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
 
+For **new gatekeepers**, enforce that checklist's "Observer protocol" items, including a read-only
+`getHistoricalSubresources()` returning `[]`. The current `Gatekeeper` interface enforces none of
+them, so code that type-checks can still violate them. For **existing migrations**,
+preserve old enforcement until replaced and export complete historical requirements through
+`getHistoricalSubresources()`; do not apply the new-gatekeeper empty-history/no-op rule to
+existing data.
+
 ## Logging, errors and secrets
 
 - Server code logs through `@gadgets/observability/logger` with a module-scoped logger and a stable

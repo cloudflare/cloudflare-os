@@ -38,9 +38,10 @@ export type SubresourceId = {
  * requirements by string, so describe one resource with the same fragments in the same order
  * everywhere it is reported.
  *
- * The Workshop refuses an observation carrying an ID over 512 UTF-16 code units, and escaping can
- * lengthen a component up to ninefold (a three-byte UTF-8 character becomes nine), so a resource
- * whose provider id approaches that needs a shorter identity.
+ * The Workshop refuses an observation carrying an ID over 2048 UTF-16 code units (every bound is in
+ * `ObservationDescription.subresources`), and escaping can lengthen a component up to ninefold (a
+ * three-byte UTF-8 character becomes nine), so a resource whose provider id approaches that needs a
+ * shorter identity.
  * @param value Namespace and fragments.
  * @returns The encoded ID.
  * @throws Error when the namespace is empty, there are no fragments, a fragment's name or id is
