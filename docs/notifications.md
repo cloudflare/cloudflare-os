@@ -74,20 +74,25 @@ could make them hot and use up the installation's request limit there, refusing 
 pushes until it resets.
 
 The limit covers device calls only; deliveries aren't counted. A notification no open tab
-acknowledges is signed once for each device the User DO stores, and it stores only the 20 most
-recently registered: the service keeps at most 10 browsers and 10 phones per user, but the User DO
-drops a device the service evicted only once a delivery to it fails, so without the cap a
-registration loop could pile up devices for one notification to reach.
+acknowledges is signed once for each device the User DO stores, and it stores only a user's 10
+most recently registered phones and, separately, their 10 most recently registered browsers, as
+the service keeps that many of each. The User DO drops a device the service evicted only once a
+push to it is answered `invalid_subscription` or `device_gone`, so without the cap a registration
+loop could pile up devices for one notification to reach. It registers one device at a time, so
+it stores them in the order the service received them.
 
-Unlike the service, the cap counts browsers and phones together, so it can drop a device that is
-still live: a phone behind 20 newer registrations gets no push until its app next registers. That
-is unlikely but not impossible. Reloading a page refreshes its browser's entry instead of adding
-one, and the service keeps at most 10 live browsers and 10 phones, so this happens only when a user
-already at both limits adds another device, or when entries are left over for endpoints the
-service has evicted. Those go only when a push to them is answered `invalid_subscription` or
-`device_gone`: a notification an open tab acknowledges sends no push, and any other failure, such
-as a 429, keeps the entry, so leftovers can build up across notifications. If users do hit it, cap
-browsers and phones separately at 10 each, as the service does.
+The cap mirrors the service instead of asking it, so it can still drop a live device, which then
+misses pushes until it next registers:
+
+- A phone's place at the service is set when the phone itself registers there, before the
+  installation exchanges that registration, so two phones registering at once can be ordered
+  differently in the two places.
+- A phone on the legacy path below counts toward its Cloudflare account's 10 at the service, so a
+  user with legacy phones from several accounts can have more than 10 live.
+- A device the service dropped for another reason, such as a revoked phone or a browser endpoint
+  another user of the installation took over, still counts here until a push finds it dead.
+
+Agreeing exactly would need the service to report a user's devices, which the protocol doesn't.
 
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting

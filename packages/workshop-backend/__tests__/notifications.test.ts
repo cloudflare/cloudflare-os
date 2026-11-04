@@ -249,6 +249,12 @@ async function inUser(fn: (user: UserDurableObject) => Promise<void>): Promise<v
 const pushed = (fetcher: Mock<Fetch>) =>
   bodies(fetcher, "/v1/deliveries").map(({ subscriptionId }) => subscriptionId).toSorted();
 
+// A browser subscription whose device key, in stubService(), repeats `n`'s last hex digit.
+const browser = (n: number): WebPushSubscription => ({
+  endpoint: `https://fcm.googleapis.com/wp/${n.toString(16)}`,
+  keys: { p256dh: "BP", auth: "AA" },
+});
+
 // Registers a phone, then publishes NOTIFICATION while `notify` is the only open tab's answer
 // (none when undefined), and returns the subscriptions pushed to.
 async function publish(notify?: () => Promise<void>): Promise<string[]> {
@@ -394,20 +400,63 @@ describe("UserDurableObject notifications", () => {
     expect(bodies(fetcher, "/v1/subscriptions")).toHaveLength(21);
   });
 
-  // The service drops a user's devices past 10 browsers and 10 phones, but the User DO keeps an
-  // entry until a delivery to it fails, so a registration loop could pile up entries for one
-  // notification to fan out to.
-  it("pushes only to the 20 most recently registered devices", async () => {
+  // The service keeps a user's 10 most recently registered phones and, separately, browsers, but
+  // the User DO keeps an entry until a push to it is refused as dead, so a registration loop could
+  // pile up entries for one notification to fan out to.
+  it("pushes only to the 10 most recently registered phones and browsers", async () => {
     vi.useFakeTimers();
     let fetcher = stubService();
     await inUser(async user => {
-      for (let n = 1; n <= 20; n++) await user.registerNotificationDevice(mintedId(n));
-      vi.advanceTimersByTime(60_000);
-      // The first device registers again, leaving the second the stalest.
+      // Subscriptions 1-20: a phone, 10 browsers, then 9 more phones.
       await user.registerNotificationDevice(mintedId(1));
-      await user.registerNotificationDevice(mintedId(21));
+      for (let n = 1; n <= 10; n++) await user.registerNotificationDevice(browser(n));
+      for (let n = 2; n <= 10; n++) await user.registerNotificationDevice(mintedId(n));
+      vi.advanceTimersByTime(60_000);
+      // The first browser registers again, leaving the second the stalest, which an 11th browser
+      // displaces. The first phone stays: only another phone takes a phone's place.
+      await user.registerNotificationDevice(browser(1));
+      await user.registerNotificationDevice(browser(11));
       await user.publishNotification(NOTIFICATION);
     });
-    expect(pushed(fetcher)).toEqual(Array.from({ length: 20 }, (_, i) => mintedId(i + 3)));
+    expect(pushed(fetcher))
+        .toEqual([1, ...Array.from({ length: 19 }, (_, i) => i + 4)].map(mintedId));
+  });
+
+  // The service evicts the browser it received longest ago, so the User DO must store browsers in
+  // the order the service received them, even when one's response is slow to arrive.
+  it("stores browsers in the order the service received them", async () => {
+    let fetcher = stubService();
+    let answer = fetcher.getMockImplementation()!;
+    let released = Promise.withResolvers<void>();
+    fetcher.mockImplementationOnce(async (input, init) => {
+      let response = await answer(input, init);
+      await released.promise;
+      return response;
+    });
+    await inUser(async user => {
+      let first = user.registerNotificationDevice(browser(1));
+      let second = user.registerNotificationDevice(browser(2));
+      // Holds the first response until the second registration is stored, were it sent alongside.
+      // A correct User DO sends nothing meanwhile, so no event can end the hold and it is bounded
+      // in real time instead; fake timers can't, as signing a request waits on real crypto.
+      await Promise.race([second, scheduler.wait(100)]);
+      released.resolve();
+      await Promise.all([first, second]);
+      for (let n = 3; n <= 11; n++) await user.registerNotificationDevice(browser(n));
+      await user.publishNotification(NOTIFICATION);
+    });
+    // The 11th browser evicted the first, subscription 1, at the service.
+    expect(pushed(fetcher)).toEqual(Array.from({ length: 10 }, (_, i) => mintedId(i + 2)));
+  });
+
+  it("registers again after a registration fails", async () => {
+    let fetcher = stubService();
+    fetcher.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await inUser(async user => {
+      await expect(user.registerNotificationDevice(browser(1))).rejects.toThrow("503");
+      await user.registerNotificationDevice(browser(2));
+      await user.publishNotification(NOTIFICATION);
+    });
+    expect(pushed(fetcher)).toEqual([ONE]);
   });
 });
