@@ -51,7 +51,7 @@ import {
   fetchDashboardConfig,
   resolveTargets,
 } from "./approvals";
-import { autoApprovableKinds, serviceCallVerdict } from "./auto-approval";
+import { autoApprovableKinds, dashboardVerdict, serviceCallVerdict } from "./auto-approval";
 import {
   indexPendingByEntity,
   overlayDashboardConfig,
@@ -1220,6 +1220,11 @@ export class HomeAssistantGatekeeperImpl
     if (action.type === "callService" && pending.autoApprovable === true &&
         !serviceCallVerdict(action, await fetchRegistrySnapshot(creds)).autoApprovable) {
       throw new Error("What this call reaches has changed since it was queued, so it is no longer only device control. Queue it again to have it reviewed.");
+    }
+    // The same holds for the entities a dashboard shows controls for.
+    if (action.type === "saveDashboard" && pending.autoApprovable === true &&
+        !dashboardVerdict(action.config, await fetchRegistrySnapshot(creds)).autoApprovable) {
+      throw new Error("An entity this dashboard shows has changed since it was queued, so its controls are no longer only device control. Queue it again to have it reviewed.");
     }
 
     try {

@@ -40,10 +40,15 @@ export function autoApprovableKinds(resourceKind: HomeAssistantResourceKind, res
  * The kind and verdict of a dashboard save. False when the configuration could make a browser
  * showing the dashboard contact a host the agent picked, since such an address can carry Home
  * Assistant data in it the moment anyone opens the dashboard; or when a tap on it could do more
- * than device control, since a card's name can say anything.
+ * than device control, since a card's name can say anything. Entities it shows are judged against
+ * `registry` as a service call on them would be, so the save is checked again when it applies.
  */
-export function dashboardVerdict(config: unknown): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
-  return { actionKind: EDIT_DASHBOARDS_KIND, autoApprovable: isSelfContained(config, 0) };
+export function dashboardVerdict(
+  config: unknown,
+  registry: RegistrySnapshot,
+): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
+  const domains = new Set(registry.entities.map((e: any) => String(e.entity_id).split(".")[0]));
+  return { actionKind: EDIT_DASHBOARDS_KIND, autoApprovable: isSelfContained(config, 0, { registry, domains }) };
 }
 
 // Strings that can name or build an address off the Home Assistant origin, tested after removing
@@ -61,34 +66,60 @@ export function dashboardVerdict(config: unknown): Pick<ActionDescription, "acti
 //   like.
 const EXTERNAL_REFERENCE = /\/\/|\\|(https?|ftp|wss?|data|blob):|&(#|[a-z][a-z0-9]*;)|\{\{|\{%|\[\[\[|script:|^\s*custom:/i;
 
-// Strings that let a tap do more than device control (rule 4):
-// - A tap action that calls a service (`perform-action`, or `call-service` before Home Assistant
-//   renamed it) or fires a DOM event for a card to act on, and the keys naming such a service.
-// - An entity whose control unlocks, disarms or runs logic: a lock row shows an Unlock button, and
-//   tapping a script, scene or button card runs it. Matched anywhere, so a local file named
-//   `script.js` also needs a person.
+// Strings that let a tap do more than device control (rule 4): a tap action that calls a service
+// (`perform-action`, or `call-service` before Home Assistant renamed it) or fires a DOM event for a
+// card to act on, and the keys naming such a service.
 const RUNS_SERVICE = /^\s*(call-service|perform-action|fire-dom-event)\s*$/i;
 const SERVICE_KEY = /^\s*(perform_action|service)\s*$/i;
-const UNSAFE_ENTITY =
-  /(^|[^a-z0-9_])(lock|alarm_control_panel|script|automation|scene|button|input_button|siren|valve|remote)\.[a-z0-9_]/i;
+
+// A row or card shows its entity's own controls, and a tap toggles it by default, so every entity a
+// dashboard names must be one a service call could control without a person (`isSafeEntity`), or
+// one whose cards only display it. Any other entity needs a person: a lock row shows an Unlock
+// button, a cover row opens a garage, a script card runs the script. A `domain.id` string counts as
+// an entity when its domain is one of these or the registry's, matched anywhere, so a local file
+// named `script.js` also needs a person.
+const ENTITY_REFERENCE = /(?<![a-z0-9_.])([a-z][a-z0-9_]*)\.([a-z0-9_]+)(?![a-z0-9_.])/gi;
+const DISPLAY_ONLY_DOMAINS = new Set([
+  "sensor", "binary_sensor", "weather", "sun", "person", "zone", "device_tracker", "calendar",
+  "camera", "image", "event", "geo_location", "air_quality",
+]);
+const CONTROL_DOMAINS = new Set([
+  "lock", "alarm_control_panel", "script", "automation", "scene", "button", "input_button",
+  "input_boolean", "input_number", "input_select", "input_text", "input_datetime", "number",
+  "select", "text", "siren", "valve", "remote", "update", "lawn_mower", "water_heater",
+  "todo",
+]);
+
+type DashboardContext = { registry: RegistrySnapshot; domains: Set<string> };
 
 // Deeper than any real dashboard; a configuration past it is not checked and so not trusted.
 const MAX_CONFIG_DEPTH = 64;
 
 // True when no key or string anywhere in a dashboard configuration matches EXTERNAL_REFERENCE or
 // lets a tap do more than device control.
-function isSelfContained(value: unknown, depth: number): boolean {
-  if (typeof value === "string") return isLocalString(value);
+function isSelfContained(value: unknown, depth: number, context: DashboardContext): boolean {
+  if (typeof value === "string") return isLocalString(value, context);
   if (value === null || typeof value !== "object") return true;
   if (depth >= MAX_CONFIG_DEPTH) return false;
   const entries = Array.isArray(value) ? value.map((v) => ["", v] as const) : Object.entries(value);
   return entries.every(([key, child]) =>
-    isLocalString(key) && !SERVICE_KEY.test(key) && isSelfContained(child, depth + 1));
+    isLocalString(key, context) && !SERVICE_KEY.test(key) && isSelfContained(child, depth + 1, context));
 }
 
-function isLocalString(value: string): boolean {
+function isLocalString(value: string, context: DashboardContext): boolean {
   const text = value.replace(/[\t\n\r]/g, "");
-  return !EXTERNAL_REFERENCE.test(text) && !RUNS_SERVICE.test(text) && !UNSAFE_ENTITY.test(text);
+  if (EXTERNAL_REFERENCE.test(text) || RUNS_SERVICE.test(text)) return false;
+  for (const [reference, name] of text.matchAll(ENTITY_REFERENCE)) {
+    const entityId = reference.toLowerCase();
+    const domain = name.toLowerCase();
+    if (DISPLAY_ONLY_DOMAINS.has(domain)) continue;
+    if (DEVICE_CONTROL_DOMAINS.has(domain)) {
+      if (!isSafeEntity(entityId, context.registry)) return false;
+    } else if (CONTROL_DOMAINS.has(domain) || context.domains.has(domain)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** The kind and verdict of a well-formed service call. */

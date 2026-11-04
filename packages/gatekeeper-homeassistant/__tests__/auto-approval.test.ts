@@ -202,6 +202,28 @@ describe("saveDashboard and fireEvent", () => {
     });
   });
 
+  it.each([
+    ["a garage door's cover row", { type: "entities", entities: [{ entity: "cover.garage_door", name: "Lights" }] }],
+    ["a command-line switch's button", { type: "button", entity: "switch.runner", name: "Lights" }],
+    ["a config switch", { type: "entities", entities: ["switch.camera_motion"] }],
+    ["a light the registry does not know", { type: "button", entity: "light.unknown" }],
+    ["a lawn mower the registry does not list", { type: "tile", entity: "lawn_mower.front" }],
+    ["an entity in a list of ids", { type: "glance", entities: ["light.lamp", "lock.front_door"] }],
+  ])("asks before saving a dashboard with %s", (_name, card) => {
+    const reg = registry({ entities: [{ entity_id: "switch.runner", platform: "command_line" } as Entity] });
+    expect(verdict(saveDashboard({ views: [{ cards: [card] }] }), reg).autoApprovable).toBe(false);
+  });
+
+  it("auto-approves cards that only display sensors and weather", () => {
+    const card = { type: "entities", entities: ["sensor.temperature", "binary_sensor.door", "weather.home"] };
+    expect(verdict(saveDashboard({ views: [{ cards: [card] }] })).autoApprovable).toBe(true);
+  });
+
+  it("asks before saving a dashboard with any device control when the registry could not be read", () => {
+    const card = { type: "button", entity: "light.lamp" };
+    expect(verdict(saveDashboard({ views: [{ cards: [card] }] }), emptyRegistry).autoApprovable).toBe(false);
+  });
+
   it("auto-approves a toggle of a device-control entity", () => {
     const card = { type: "button", entity: "light.lamp", tap_action: { action: "toggle" }, hold_action: { action: "more-info" } };
     expect(verdict(saveDashboard({ views: [{ cards: [card] }] })).autoApprovable).toBe(true);

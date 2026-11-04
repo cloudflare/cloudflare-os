@@ -110,6 +110,33 @@ describe("applying a queued device-control call", () => {
   });
 });
 
+describe("applying a queued dashboard save", () => {
+  function queueDashboard(kv: Map<string, unknown>, config: unknown) {
+    kv.set("pending:1", {
+      id: 1, submittedAt: 0, autoApprovable: true,
+      action: { id: 1, type: "saveDashboard", urlPath: null, config, origin: { kind: "dashboard", urlPath: "lovelace" } },
+    });
+  }
+  const plugButton = { views: [{ cards: [{ type: "button", entity: "switch.plug" }] }] };
+
+  it("is refused when an entity it shows stopped being device control after it was queued", async () => {
+    const { gk, kv } = gatekeeper();
+    queueDashboard(kv, plugButton);
+    live.registry = home();
+    live.registry.entities[0].platform = "command_line";
+    await expect(gk.applyAction(1)).rejects.toThrow(/no longer only device control/);
+    expect(executed).toEqual([]);
+  });
+
+  it("runs when the entities it shows still qualify", async () => {
+    const { gk, kv } = gatekeeper();
+    queueDashboard(kv, plugButton);
+    live.registry = home();
+    await gk.applyAction(1);
+    expect(executed).toHaveLength(1);
+  });
+});
+
 describe("submitting a call that is applied before the reply arrives", () => {
   it("reports success when the reply is lost after it applied", async () => {
     const { gk, kv } = gatekeeper();

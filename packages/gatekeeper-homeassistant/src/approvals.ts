@@ -112,7 +112,7 @@ export function describeAction(
     case "fireEvent":
       return describeFireEvent(action);
     case "saveDashboard":
-      return describeSaveDashboard(action);
+      return describeSaveDashboard(action, registry);
   }
 }
 
@@ -284,6 +284,7 @@ function describeFireEvent(action: HomeAssistantAction & { type: "fireEvent" }):
 
 function describeSaveDashboard(
   action: HomeAssistantAction & { type: "saveDashboard" },
+  registry: RegistrySnapshot,
 ): ActionDescription {
   const config = action.config as { title?: string; views?: unknown[] } | undefined;
   const urlLabel = action.urlPath ?? "lovelace (default)";
@@ -300,7 +301,7 @@ function describeSaveDashboard(
       .json("Dashboard configuration", action.config)
       .finish(),
     implementsRevert: true,
-    ...dashboardVerdict(action.config),
+    ...dashboardVerdict(action.config, registry),
   };
 }
 
