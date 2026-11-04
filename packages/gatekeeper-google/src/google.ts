@@ -111,7 +111,7 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "./oauth-flow";
 import {
-  type ObserverBatchResult, type ObserverCheck, ObserverTracker,
+  DEFAULT_CONCURRENCY, mapWithConcurrency, type ObserverBatchResult, type ObserverCheck, ObserverTracker,
 } from "./observers";
 import type {Pager} from "./cursor";
 import {
