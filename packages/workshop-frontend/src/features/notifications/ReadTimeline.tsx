@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -6,7 +7,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { Overseer } from "@gadgets/workshop-shared/api";
+import type { ChatReadState, Overseer, UserUnreadState } from "@gadgets/workshop-shared/api";
 import { Button } from "@cloudflare/kumo";
 import { useUnreadState } from "./UnreadStateBridge";
 import { isChatVisible, subscribeVisibleChat } from "./visibleChat";
@@ -62,6 +63,7 @@ export const ReadTimeline = ({
     startedSnapshot: typeof chat;
     acknowledgedReplacement?: object;
   })[]>([]);
+  const localEchoes = useRef(new WeakSet<ChatReadState>());
   const latestAction = useRef<LocalAction | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence, overseer });
@@ -100,21 +102,13 @@ export const ReadTimeline = ({
     }
   };
 
-  useLayoutEffect(() => {
-    if (!chat) {
-      pending.current = -1;
-      // A legacy thread is already open, but its first cursor must establish the horizon.
-      // History and unread snapshots arrive independently; the history tail cannot stand in for it.
-      if (unread?.state && !visit && oldestSequence !== undefined) {
-        setVisit({paused: false});
-      }
-      return;
-    }
+  const reconcileChat = useCallback((chat: ChatReadState | undefined, replacement?: UserUnreadState) => {
+    if (!chat || localEchoes.current.has(chat)) return;
     const localIndex = localUnreadRequests.current.findLastIndex(request =>
       request.startedSnapshot !== chat && request.horizon === chat.readThroughSequence);
-    const localUnread = localIndex !== -1;
-    // Subscriber snapshots can coalesce earlier local commands; consume those markers together.
-    if (localUnread) {
+    if (localIndex !== -1) {
+      localEchoes.current.add(chat);
+      // A later local command can supersede earlier ones before their echoes arrive.
       for (const request of localUnreadRequests.current.splice(0, localIndex + 1)) {
         const previous = request.rollback.visit;
         if (previous && (previous.horizon === undefined || chat.readThroughSequence < previous.horizon)) {
@@ -126,13 +120,32 @@ export const ReadTimeline = ({
       }
       // An earlier local echo must still leave later commands' markers intact on re-render.
       for (const request of localUnreadRequests.current) {
-        if (request.acknowledgedReplacement) request.acknowledgedReplacement = unread?.replacementSnapshot;
+        if (request.acknowledgedReplacement) request.acknowledgedReplacement = replacement;
       }
     } else {
       // A replacement can supersede a rewind missed while hidden; ordinary deltas cannot.
       localUnreadRequests.current = localUnreadRequests.current.filter(request =>
-        (!request.acknowledgedReplacement || request.acknowledgedReplacement === unread?.replacementSnapshot));
+        (!request.acknowledgedReplacement || request.acknowledgedReplacement === replacement));
     }
+  }, []);
+
+  useLayoutEffect(() => unread?.subscribeToUpdates((state, replacement) => {
+    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId), replacement);
+  }), [unread?.subscribeToUpdates, workspaceId, chatId, reconcileChat]);
+
+  useLayoutEffect(() => {
+    if (!chat) {
+      pending.current = -1;
+      // A legacy thread is already open, but its first cursor must establish the horizon.
+      // History and unread snapshots arrive independently; the history tail cannot stand in for it.
+      if (unread?.state && !visit && oldestSequence !== undefined) {
+        setVisit({paused: false});
+      }
+      return;
+    }
+    // Also reconcile the initial snapshot when entering an already-subscribed workspace.
+    reconcileChat(chat, unread?.replacementSnapshot);
+    const localUnread = localEchoes.current.has(chat);
     if (!visit || (visit.horizon !== undefined && chat.readThroughSequence < visit.horizon)) {
       // A remote rewind establishes a new visit, not a rollback target for older commands.
       if (visit && !localUnread) latestAction.current = undefined;
@@ -158,7 +171,7 @@ export const ReadTimeline = ({
     } else if (visit.horizon !== chat.readThroughSequence) {
       setVisit({...visit, horizon: chat.readThroughSequence});
     }
-  }, [chat, visit, latestSequence, oldestSequence, onUnreadNavigation, unread?.state, unread?.replacementSnapshot]);
+  }, [chat, visit, latestSequence, oldestSequence, onUnreadNavigation, unread?.state, unread?.replacementSnapshot, reconcileChat]);
 
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.

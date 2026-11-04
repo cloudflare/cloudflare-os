@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@cloudflare/kumo";
 import { RpcStub, RpcTarget } from "capnweb";
 import type {
@@ -34,10 +34,14 @@ class UnreadSubscriber extends RpcTarget implements UnreadStateSubscriber {
   }
 }
 
+type UnreadUpdateListener = (state: UserUnreadState, replacement: UserUnreadState) => void;
+
 type UnreadContextValue = {
   state?: UserUnreadState;
   /** Last full replacement, retaining its identity across deltas so visits can recognize reconnects. */
   replacementSnapshot?: UserUnreadState;
+  /** Reconcile command echoes on receipt, before React can batch consecutive state updates. */
+  subscribeToUpdates: (listener: UnreadUpdateListener) => () => void;
   markRead: (overseer: Pick<Overseer, "markChatRead">, chatId: number, throughSequence?: number) => Promise<void>;
   markAllRead: () => Promise<void>;
   markWorkspaceRead: (workspaceId: string) => Promise<void>;
@@ -71,6 +75,11 @@ export const UnreadStateBridge = ({
     replacement: UserUnreadState;
   }>();
   const [failure, setFailure] = useState<{ api: RpcStub<AuthenticatedApi> }>();
+  const updateListeners = useRef(new Set<UnreadUpdateListener>());
+  const subscribeToUpdates = useCallback((listener: UnreadUpdateListener) => {
+    updateListeners.current.add(listener);
+    return () => { updateListeners.current.delete(listener); };
+  }, []);
   const refreshAfterReconnect = useRef<(() => void) | undefined>(undefined);
   // Don't display another authenticated session's state while its replacement is connecting.
   const scopeKey = typeof scope === "string" ? scope : `workspace:${scope.workspaceId}`;
@@ -83,6 +92,11 @@ export const UnreadStateBridge = ({
     let generation = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = 1_000;
+    const publish = () => {
+      if (!latest) return;
+      for (const listener of updateListeners.current) listener(latest.state, latest.replacement);
+      setSnapshot(latest);
+    };
     const subscribe = () => {
       clearTimeout(retryTimer);
       retryTimer = undefined;
@@ -105,7 +119,7 @@ export const UnreadStateBridge = ({
         (next) => {
           if (!active || currentGeneration !== generation) return;
           latest = {api: authenticatedApi, scopeKey, state: next, replacement: next};
-          setSnapshot(latest);
+          publish();
           clearTimeout(retryTimer);
           retryTimer = undefined;
           retryDelay = 1_000;
@@ -113,7 +127,7 @@ export const UnreadStateBridge = ({
         async (summary) => {
           if (!active || currentGeneration !== generation || !latest) return;
           latest = {...latest, state: applySummary(latest.state, summary)};
-          setSnapshot(latest);
+          publish();
         },
         async (workspaceId, chatId, chat, counts) => {
           if (!active || currentGeneration !== generation || !latest) return;
@@ -121,7 +135,7 @@ export const UnreadStateBridge = ({
             item.workspaceId !== workspaceId || item.chatId !== chatId);
           if (chat) chats.push(chat);
           latest = {...latest, state: {...applySummary(latest.state, counts), chats}};
-          setSnapshot(latest);
+          publish();
         },
         () => {
           released = true;
@@ -188,6 +202,7 @@ export const UnreadStateBridge = ({
       value={{
         state,
         replacementSnapshot: state ? snapshot?.replacement : undefined,
+        subscribeToUpdates,
         markRead: (overseer, chatId, through) => perform(overseer.markChatRead(chatId, through)),
         markAllRead: () => perform(authenticatedApi.markAllRead()),
         markWorkspaceRead: (workspaceId) => perform(authenticatedApi.markWorkspaceRead(workspaceId)),

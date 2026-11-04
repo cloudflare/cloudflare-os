@@ -86,10 +86,11 @@ describe("timeline read/unread experience", () => {
       ),
     );
   const update = (state: UserUnreadState) => act(async () => subscriber.updated(state));
-  const updateChat = (state: UserUnreadState) => act(async () => subscriber.chatUpdated("workspace", 1, state.chats[0], {
+  const receiveChat = (state: UserUnreadState) => subscriber.chatUpdated("workspace", 1, state.chats[0], {
     unreadChatCount: state.unreadChatCount, unreadMessageCount: state.unreadMessageCount,
     workspace: {workspaceId: "workspace", unreadChatCount: state.unreadChatCount, unreadMessageCount: state.unreadMessageCount},
-  }));
+  });
+  const updateChat = (state: UserUnreadState) => act(async () => receiveChat(state));
   const settle = async () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -434,7 +435,9 @@ describe("timeline read/unread experience", () => {
   it.each([
     {ackFirst: false, initialHorizon: 1}, {ackFirst: true, initialHorizon: 1},
     {ackFirst: false, initialHorizon: 0}, {ackFirst: true, initialHorizon: 0},
-  ])("does not pause a successful read on a delayed local rewind echo (read ACK first: $ackFirst, initial horizon: $initialHorizon)", async ({ackFirst, initialHorizon}) => {
+  ].flatMap(scenario => [false, true].map(batched => ({...scenario, batched}))))(
+    "consumes a delayed local rewind echo before a later remote rewind (read ACK first: $ackFirst, initial horizon: $initialHorizon, batched: $batched)",
+    async ({ackFirst, initialHorizon, batched}) => {
     await render();
     await update(snapshot(1, initialHorizon));
     await settle();
@@ -444,17 +447,25 @@ describe("timeline read/unread experience", () => {
     await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
     if (ackFirst) await act(async () => read.resolve());
     if (initialHorizon === 0) await updateChat(snapshot(2, 2)); // Earlier remote read, delivered late.
-    await updateChat(snapshot(3, 0));
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
     const state = snapshot(4, 2);
-    await updateChat({...state, unreadChatCount: 1, unreadMessageCount: 1,
-      chats: [{...state.chats[0], unreadMessageCount: 1}]});
+    const readState = {...state, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...state.chats[0], unreadMessageCount: 1}]};
+    if (batched) await act(async () => {
+      await receiveChat(snapshot(3, 0));
+      await receiveChat(readState);
+    });
+    else { await updateChat(snapshot(3, 0)); await updateChat(readState); }
     if (!ackFirst) await act(async () => read.resolve());
     await settle();
     expect(container.textContent).not.toContain("automatic reading paused");
     visibleBottom = 450;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
+    expect(markChatRead.mock.calls.map(([, through]) => through)).toEqual([2, 3]);
+    await updateChat(snapshot(5, 0));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
     expect(markChatRead.mock.calls.map(([, through]) => through)).toEqual([2, 3]);
   });
 
