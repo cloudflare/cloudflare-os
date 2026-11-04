@@ -1,0 +1,21 @@
+packages/gatekeeper-confluence/__tests__/apply.test.ts
+  s_5ca7ea8bc1cea4::t_c5d3be7037800c 70-92,209-234
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_5ca7ea8bc1cea4::t_63f823bc681247 80-84,627-638,644
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7b37163bffc652375549b1946f200c8271c80305",
+  "prompts": {},
+  "sessions": {
+    "s_5ca7ea8bc1cea4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa381fc9-0eba-49ab-8927-331e511c06ed",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
