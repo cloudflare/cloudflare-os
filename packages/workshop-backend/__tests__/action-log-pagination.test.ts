@@ -155,6 +155,19 @@ describe("subscribeToActions", () => {
 });
 
 describe("listActions", () => {
+  it("names the chat each entry came from, and none for a hook firing", async () => {
+    let storage = makeActionStorage();
+    putAction(storage, 0, { caller: { from: "agent", chatId: 4 } });
+    putAction(storage, 1, { caller: { from: "gadget", chatId: 2, gadgetId: 3 } });
+    putAction(storage, 2, { caller: { from: "gadget", gadgetId: 3 } });
+    putAction(storage, 3, { type: "observation", state: "approved", caller: { from: "hook" } });
+    let client = await openFakeOverseer(storage);
+
+    let page = await client.listActions();
+    expect(page.entries.map(e => [e.id, e.chatId])).toEqual(
+        [[3, undefined], [2, undefined], [1, 2], [0, 4]]);
+  });
+
   it("returns sparse matches in one full page, however much history buries them", async () => {
     let storage = makeActionStorage();
     // A few observations buried under far more history than the old design's per-call scan cap:

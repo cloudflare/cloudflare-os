@@ -41,11 +41,11 @@ export function putAction(
     id: number,
     opts: { state?: ActionRecord["state"], type?: ActionRecord["type"], gatekeeperId?: number,
             actionTag?: string, autoApprovable?: boolean, createdAt?: Date,
-            appliedAt?: Date } = {}) {
+            appliedAt?: Date, caller?: ActionRecord["caller"] } = {}) {
   let base = {
     id,
     gatekeeperId: opts.gatekeeperId ?? 1,
-    caller: { from: "agent", chatId: 1 } as const,
+    caller: opts.caller ?? { from: "agent", chatId: 1 },
     resourceTitle: `Resource ${id}`,
     createdAt: opts.createdAt ?? new Date(FIXTURE_EPOCH + id),
     ...(opts.appliedAt !== undefined ? { appliedAt: opts.appliedAt } : {}),
