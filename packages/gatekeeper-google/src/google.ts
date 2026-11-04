@@ -1232,12 +1232,6 @@ function httpStatusFromError(error: unknown): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-// True if an error means "the observer's token cannot access this resource" (as opposed to a
-// transient failure, which is rethrown so the open fails loudly rather than silently denying).
-function isNoAccessStatus(status: number | undefined): boolean {
-  return status === 401 || status === 403 || status === 404;
-}
-
 // Whether the account behind `api` holds a role on the calendar that sees private event details,
 // not merely write access (see hasCalendarPrivateAccessRole): false when the calendar isn't on the
 // account's list (404), and a throw for any other failure. A refused request (expired
