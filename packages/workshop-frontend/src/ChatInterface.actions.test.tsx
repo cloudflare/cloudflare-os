@@ -8,7 +8,10 @@ import type {
   ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatSubscriber, Overseer,
 } from '@gadgets/workshop-shared/api'
 
+// Each observer's callback, so a test can report a resize jsdom never lays out.
+const resizeCallbacks: Array<() => void> = []
 vi.stubGlobal('ResizeObserver', class {
+  constructor(callback: () => void) { resizeCallbacks.push(callback) }
   observe() {}
   disconnect() {}
 })
@@ -89,7 +92,11 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
+  props: {
+    restricted?: boolean, selectedChatId?: number,
+    revealActionId?: number, onActionRevealed?: () => void,
+    composerAccessory?: React.ReactNode,
+  } = {},
 ) {
   return testRoot.render(
     <ChatInterface
@@ -97,6 +104,9 @@ function renderChat(
       overseer={overseer}
       restricted={props.restricted}
       selectedChatId={props.selectedChatId ?? null}
+      revealActionId={props.revealActionId}
+      onActionRevealed={props.onActionRevealed}
+      composerAccessory={props.composerAccessory}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
       consoleLogPreview=""
@@ -182,9 +192,17 @@ async function renderPendingCard(log: ActionLogEntry, props: { restricted?: bool
   await server.resolveSubscription()
   await server.resolvePendingQuery({ entries: [log] })
   chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+  return server
 }
 
 const clampedDescription = () => document.querySelector('[class*="max-h-[200px]"]')
+
+// Opens a pending card's details, which start collapsed to a one-line summary.
+async function openDetails() {
+  const toggle = document.querySelector('button[aria-expanded="false"]')
+  if (!(toggle instanceof HTMLButtonElement)) throw new Error('No collapsed details to open')
+  await act(async () => toggle.click())
+}
 
 // The text a screen reader announces as the Approve button's description.
 function approveDescribedBy(): string | null {
@@ -249,12 +267,118 @@ describe('restricted approval', () => {
     })
   }
 
+  it('collapses the request to its first line until opened when not restricted', async () => {
+    await renderPendingCard(pendingLog())
+
+    expect(document.body.textContent).toContain('Send the following email to alice@example.com:')
+    expect(document.body.textContent).not.toContain('Regards, the workspace.')
+    // Approving does not need the details open.
+    expect([...document.querySelectorAll('button')].some(b => b.textContent === 'Approve')).toBe(true)
+
+    await openDetails()
+    expect(document.body.textContent).toContain('Regards, the workspace.')
+  })
+
   it('keeps the scrolling description and no notice when not restricted', async () => {
     await renderPendingCard(pendingLog())
+    await openDetails()
 
     expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
     expect(clampedDescription()).not.toBeNull()
     expect(approveDescribedBy()).toBeNull()
+  })
+})
+
+describe('revealing a request', () => {
+  // jsdom implements no scrolling.
+  const scrollIntoView = vi.fn<(options?: ScrollIntoViewOptions) => void>()
+  beforeEach(() => {
+    scrollIntoView.mockClear()
+    Element.prototype.scrollIntoView = scrollIntoView
+  })
+  afterEach(() => {
+    delete (Element.prototype as Partial<Element>).scrollIntoView
+  })
+
+  it('scrolls to the card it names, then reports it revealed', async () => {
+    const server = await renderPendingCard(pendingLog())
+    const onActionRevealed = vi.fn<() => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 1, onActionRevealed })
+
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+    expect(scrollIntoView.mock.contexts[0]).toBe(document.querySelector('[data-action-id="1"]'))
+    expect(onActionRevealed).toHaveBeenCalled()
+  })
+
+  it('waits for the chat history to load before looking for the card', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    let loadHistory!: (page: { messages: AiChatMessage[] }) => void
+    Object.assign(server.overseer as object, {
+      getChatHistory: () => new Promise(resolve => { loadHistory = resolve }),
+    })
+    const onActionRevealed = vi.fn<() => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 1, onActionRevealed })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    expect(onActionRevealed).not.toHaveBeenCalled()
+
+    await act(async () => loadHistory({ messages: [{ ...actionMessage, actionLog: pendingLog() } as AiChatMessage] }))
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+    expect(onActionRevealed).toHaveBeenCalled()
+  })
+
+  it('gives up once the whole thread is loaded without the card', async () => {
+    const server = await renderPendingCard(pendingLog())
+    const onActionRevealed = vi.fn<() => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, revealActionId: 9, onActionRevealed })
+
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    expect(onActionRevealed).toHaveBeenCalled()
+  })
+})
+
+// Renders chat 1 with an accessory, with a resize() that reports it
+// `height` tall.
+async function renderWithAccessory() {
+  const server = await renderPendingCard(pendingLog())
+  resizeCallbacks.length = 0
+  await renderChat(server.overseer, { selectedChatId: 1, composerAccessory: <div id="accessory" /> })
+  const floating = document.getElementById('accessory')!.parentElement!.parentElement!
+  const list = document.querySelector('.chat-panel')!
+  return {
+    list,
+    resize: (height: number) => act(() => {
+      Object.defineProperty(floating, 'offsetHeight', { value: height, configurable: true })
+      for (const callback of resizeCallbacks) callback()
+    }),
+  }
+}
+
+describe('composer accessory', () => {
+  it('leaves room for the accessory and keeps a reader at the bottom there as it grows', async () => {
+    const scrollTo = vi.spyOn(Element.prototype, 'scrollTo')
+    const { list, resize } = await renderWithAccessory()
+    scrollTo.mockClear()
+    await resize(300)
+    expect((list.firstElementChild as HTMLElement).style.paddingBottom).toBe('344px')
+    expect(scrollTo).toHaveBeenCalled()
+  })
+
+  it('leaves a reader who scrolled up where they are', async () => {
+    const scrollTo = vi.spyOn(Element.prototype, 'scrollTo')
+    const { list, resize } = await renderWithAccessory()
+    Object.defineProperties(list, {
+      scrollHeight: { value: 2000, configurable: true },
+      clientHeight: { value: 500, configurable: true },
+      scrollTop: { value: 600, configurable: true, writable: true },
+    })
+    list.dispatchEvent(new Event('scroll'))
+    scrollTo.mockClear()
+    await resize(300)
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 })
 
@@ -273,6 +397,7 @@ describe('incomplete description notice', () => {
 
   it('shows no notice when the description is complete', async () => {
     await renderPendingCard(pendingLog({ descriptionIsComplete: true }))
+    await openDetails()
 
     expect(document.body.textContent).toContain('Regards, the workspace.')
     expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
@@ -286,6 +411,7 @@ describe('action fields', () => {
   for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
     it(`shows a ${name} action's fields as literal text after the description`, async () => {
       await renderPendingCard(pendingLog({ ...over, fields }))
+      await openDetails()
 
       const pre = [...document.body.querySelectorAll('pre')].find(el => el.textContent === body)
       expect(pre).toBeDefined()

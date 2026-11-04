@@ -147,7 +147,6 @@ vi.mock('./WorkpiecePicker', () => ({
 vi.mock('./components/format/FormatVisuals', () => ({ FormatGlyph: () => null }))
 vi.mock('./components/GadgetPresence', () => ({ GadgetPresence: () => null }))
 vi.mock('./Activity', () => ({ default: () => null }))
-vi.mock('./ActivityNotifications', () => ({ default: () => null }))
 vi.mock('./BlueprintModal', () => ({ default: () => null }))
 vi.mock('./Connections', () => ({ default: () => null }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
