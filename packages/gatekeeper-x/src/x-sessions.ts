@@ -10,7 +10,7 @@ import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import {
-  escapeObservationValue, type ObservationGate, type ObservationScope,
+  escapeObservationValue, type ObservationGate, type ObservationInput,
 } from "@gadgets/gatekeeper-kit/observers";
 import type {
   Cursor, XAccountSession, XList, XListInfo, XPageOptions, XPost, XPostDraft, XPostInfo, XProfile,
@@ -20,7 +20,7 @@ import {
   LIST_FIELDS, POST_FIELDS, USER_FIELDS, XApi, pageQuery, requireData, requirePage, xTime, type XEnvelope,
 } from "./x-api";
 import { MAX_THREAD_POSTS, validateDraft, validateReplyParent, type StoredDraft, type XActions } from "./x-actions";
-import type { StoredIdentity } from "./x-credentials";
+import { xUserSubresourceId, type StoredIdentity } from "./x-credentials";
 import { XCursor, type XPage } from "./x-cursor";
 import {
   authorsUnverified, indexIncludes, isMutedStatus, mentionsProtectedAuthor, toListInfo, toPostInfo, toUserInfo,
@@ -54,11 +54,6 @@ export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 100;
 /** Longest search query X's self-serve tier accepts. */
 const MAX_QUERY_LENGTH = 512;
-
-/** The collection every owner-private read names; see `XGatekeeperImpl` for who may see it. */
-export const OWNER_COLLECTION = "owner";
-const OWNER: ObservationScope = { kind: "collections", ids: [OWNER_COLLECTION] };
-const BASELINE: ObservationScope = { kind: "baseline" };
 
 /** What a session may ask of the gatekeeper Durable Object. */
 export type XSessionHost = {
@@ -182,11 +177,20 @@ function excludeQuery(options: XTimelineOptions | undefined): Record<string, str
 }
 
 /**
- * The scope a read disclosing `posts` needs: the owner's when `restricted` -- a private source, or
- * authors whose privacy X did not report -- or when any post is a protected account's.
+ * The subresources that restrict who may see a read: none for a public read, and for one private
+ * to the account the X user the connection is pinned to, `user/<id>`, whom only an observer
+ * connected as that same X user may see (see `XGatekeeperImpl.verifyObserverAccess`).
  */
-function postScope(posts: readonly XPostInfo[], restricted = false): ObservationScope {
-  return restricted || mentionsProtectedAuthor(posts) ? OWNER : BASELINE;
+async function readSubresources(host: XSessionHost, isPrivate: boolean): Promise<string[]> {
+  return isPrivate ? [xUserSubresourceId((await host.me()).id)] : [];
+}
+
+/**
+ * Authorizes a read, reporting exactly the subresources that restrict it. Every read reports them,
+ * `[]` included, so none falls back to the legacy observer protocol.
+ */
+function authorizeRead(gate: ObservationGate, observation: ObservationInput, subresources: string[]): Promise<void> {
+  return gate.authorize(observation, { kind: "subresources", ids: subresources });
 }
 
 /** `post` with every author it names taken as protected. */
@@ -250,10 +254,13 @@ function postsCursor(ctx: SessionContext, size: number, listing: PostListing): C
         items,
         nextToken: envelope.meta?.next_token,
         observation: { title: listing.title, description: listing.describe(items.length) },
-        scope: postScope(items, privateSource || authorsUnverified(wire, includes)),
+        // Private when the source is -- or authors whose privacy X did not report -- or when any
+        // post is a protected account's.
+        subresources: await readSubresources(host,
+          privateSource || authorsUnverified(wire, includes) || mentionsProtectedAuthor(items)),
       };
     },
-    authorize: page => gate.authorize(page.observation, page.scope),
+    authorize: page => authorizeRead(gate, page.observation, page.subresources),
     dispose: () => gate[Symbol.dispose](),
   });
 }
@@ -261,7 +268,7 @@ function postsCursor(ctx: SessionContext, size: number, listing: PostListing): C
 /** A walk over posts that exist only while pending: there is nothing on X to read yet. */
 function pendingCursor(items: XPostInfo[]): Cursor<XPostInfo> {
   return new XCursor<XPostInfo>({
-    fetchPage: async () => ({ items, observation: { title: "", description: "" }, scope: BASELINE }),
+    fetchPage: async () => ({ items, observation: { title: "", description: "" }, subresources: [] }),
     // The pending posts are the session's own drafts; nothing from X is disclosed.
     authorize: async () => {},
   });
@@ -295,10 +302,10 @@ function usersCursor(ctx: SessionContext, size: number, listing: UserListing): C
         items,
         nextToken: envelope.meta?.next_token,
         observation: { title: listing.title, description: listing.describe(items.length) },
-        scope: await listing.privateSource() ? OWNER : BASELINE,
+        subresources: await readSubresources(host, await listing.privateSource()),
       };
     },
-    authorize: page => gate.authorize(page.observation, page.scope),
+    authorize: page => authorizeRead(gate, page.observation, page.subresources),
     dispose: () => gate[Symbol.dispose](),
   });
 }
@@ -487,8 +494,9 @@ export class XPostImpl extends RpcTarget implements XPost {
 
   async getInfo(): Promise<XPostInfo> {
     const { info, unverified } = await this.#read();
-    await this.#ctx.gate.authorize(
-      { title: "Read an X post", description: `Read a post by ${who(info.author)}.` }, postScope([info], unverified));
+    // Private when the post is a protected account's, or names an author whose privacy X didn't report.
+    await authorizeRead(this.#ctx.gate, { title: "Read an X post", description: `Read a post by ${who(info.author)}.` },
+      await readSubresources(this.#ctx.host, unverified || mentionsProtectedAuthor([info])));
     return info;
   }
 
@@ -701,8 +709,9 @@ export class XProfileImpl extends RpcTarget implements XProfile {
 
   async getInfo(): Promise<XUserInfo> {
     const info = await profileInfo(this.#ctx, await this.#resolve(), false);
-    await this.#ctx.gate.authorize(
-      { title: "Read an X profile", description: `Read the profile of ${who(info)}.` }, BASELINE);
+    // Every profile is public: X shows protected accounts' profiles, and hides only their posts.
+    await authorizeRead(this.#ctx.gate,
+      { title: "Read an X profile", description: `Read the profile of ${who(info)}.` }, []);
     return info;
   }
 
@@ -731,8 +740,8 @@ export class XUserImpl extends RpcTarget implements XUser {
     // The relationship is one edge of the connected account's follow graph, which is private to it
     // when it is protected, as `listFollowing` and `listFollowers` treat the whole graph.
     const restricted = info.relationship !== undefined && await accountProtected(this.#ctx.host);
-    await this.#ctx.gate.authorize(
-      { title: "Read an X profile", description: `Read the profile of ${who(info)}.` }, restricted ? OWNER : BASELINE);
+    await authorizeRead(this.#ctx.gate, { title: "Read an X profile", description: `Read the profile of ${who(info)}.` },
+      await readSubresources(this.#ctx.host, restricted));
     return info;
   }
 
@@ -744,10 +753,10 @@ export class XUserImpl extends RpcTarget implements XUser {
     const user = await readUser(this.#ctx.host, this.#target);
     const muted = overlayMuted(isMutedStatus(user), this.#ctx.host.pending(), user.id);
     // Whom the account mutes is private to it.
-    await this.#ctx.gate.authorize({
+    await authorizeRead(this.#ctx.gate, {
       title: "Check whether an X account is muted",
       description: `Checked whether ${who(toUserInfo(user, false))} is muted.`,
-    }, OWNER);
+    }, await readSubresources(this.#ctx.host, true));
     return muted;
   }
 
@@ -809,10 +818,10 @@ export class XListImpl extends RpcTarget implements XList {
 
   async getInfo(): Promise<XListInfo> {
     const { info, restricted } = await readList(this.#ctx, this.#id);
-    await this.#ctx.gate.authorize({
+    await authorizeRead(this.#ctx.gate, {
       title: "Read an X List",
       description: `Read the List "${escapeObservationValue(info.name)}".`,
-    }, restricted ? OWNER : BASELINE);
+    }, await readSubresources(this.#ctx.host, restricted));
     return info;
   }
 
@@ -850,9 +859,9 @@ export class XListImpl extends RpcTarget implements XList {
         fetchPage: async () => ({
           items: added,
           observation: { title: "Read an X List's members", description: `Read ${countOf(added.length, "member")} of the List "${name}".` },
-          scope: list.private ? OWNER : BASELINE,
+          subresources: await readSubresources(host, list.private),
         }),
-        authorize: page => gate.authorize(page.observation, page.scope),
+        authorize: page => authorizeRead(gate, page.observation, page.subresources),
         dispose: () => gate[Symbol.dispose](),
       });
     }
@@ -927,8 +936,8 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
   async getProfile(): Promise<XUserInfo> {
     const me = await this.#ctx.host.me();
     const info = toUserInfo(await readUser(this.#ctx.host, { id: me.id }), false);
-    await this.#ctx.gate.authorize({ title: "Read the connected X profile", description: `Read ${who(info)}'s profile.` },
-      BASELINE);
+    await authorizeRead(this.#ctx.gate,
+      { title: "Read the connected X profile", description: `Read ${who(info)}'s profile.` }, []);
     return info;
   }
 
@@ -1073,10 +1082,10 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
           nextToken: envelope.meta?.next_token,
           observation: { title: "List owned X Lists", description: `Read ${countOf(items.length, "owned List")}.` },
           // As `readList`: what X says is private stays so, whatever a pending change would make it.
-          scope: [...fetched, ...items].some(list => list.private) ? OWNER : BASELINE,
+          subresources: await readSubresources(host, [...fetched, ...items].some(list => list.private)),
         } satisfies XPage<XListInfo>;
       },
-      authorize: page => gate.authorize(page.observation, page.scope),
+      authorize: page => authorizeRead(gate, page.observation, page.subresources),
       dispose: () => gate[Symbol.dispose](),
     });
   }

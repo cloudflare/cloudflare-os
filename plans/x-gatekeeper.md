@@ -758,22 +758,37 @@ Each read is classified before it is authorized:
 - **Public** otherwise: public posts, every profile (X shows protected accounts' profiles; only
   their posts are hidden), public Lists, and an unprotected account's followers and following.
 
-Owner-private reads authorize against one synthetic collection, `owner`; public reads use the
-`baseline` scope; the kit's `trackedCollectionObservers` does the bookkeeping.
+Every read reports what restricts who may see it as kernel-checked `subresources`
+(`docs/observers.md` §10): an owner-private read reports `user/<id>`, the numeric ID X assigned
+the user the connection is pinned to (never a handle, which can change); a public read reports
+`[]`. Cursor pages, pages served from the cache and empty pages report one or the other too, each
+page judged when it is fetched. Only a walk over the session's own pending drafts, which discloses
+nothing from X, authorizes no observation.
 
-| Binding | Strategy | `verifyBaseline` (every open) | Access to `owner` |
+| Binding | Public read | Owner-private read | Who may see `user/<id>` |
 |---|---|---|---|
-| X Account | C | — (public data needs only the X account every observer must connect) | the observer's X user ID is the bound one |
-| X Post | C | the observer's X account can see the bound post | same |
-| X List | C | the observer's X account can see the bound List | same |
-| X Profile | C | — (a public profile needs only an X account) | same — for a protected user's posts |
+| X Account | `[]` | `user/<id>` | an observer whose own connection is pinned to that X user |
+| X Post | `[]` | `user/<id>` (a protected author's post) | same |
+| X List | `[]` | `user/<id>` (a private List) | same |
+| X Profile | `[]` | `user/<id>` (a protected user's posts) | same |
 
 `XVerifier` is a `WorkerEntrypoint` over the observer's own `UserAccount`. `getXUserId()` answers
-from the stored identity, once the connection's credentials prove usable — no call unless the
-access token needs refreshing, and null for a grant X refused for good. `canViewPost(id)` / `canViewList(id)` ask X with the
-observer's token through `probeAccess` (401/403/404 → `false`; anything else throws, so the open
-fails loudly). Each probe costs a read, so positive verdicts are cached per (observer, resource)
-for an hour; negatives never are.
+with the stored identity's ID, once the connection's credentials prove usable — no request to X
+beyond refreshing an expired access token, and never the daily identity re-read, since the pin
+never moves. It answers null for a grant X refused for good or a disconnect, which
+`verifyObserverAccess()` turns into a failed check, not a denial; any other failure fails the check
+too. Nothing is cached, since the comparison costs nothing.
+
+Two admission requirements were dropped deliberately when reads began reporting subresources.
+Admission had required a working X connection of the observer's own, even for a workspace that read
+only public data, and for a Post or List binding that the observer's account could see the bound
+post or List (`canViewPost` / `canViewList`, a read billed to the observer, a pass trusted for an
+hour). Public data needs no X account to be seen, and a bound post or List restricts nothing a read
+doesn't already report: a protected author's post or a private List reports `user/<id>` like any
+owner-private read. Before then, owner-private reads authorized against one synthetic tracked
+collection, `owner`. The kit's `trackedCollectionObservers` keeps those records: while one exists,
+pending or observed, `addObserver()` admits only the same X user, and `getHistoricalSubresources()`
+exports it as `user/<id>`.
 
 Why not D, as Spotify is: X's likes have been private since 2024, bookmarks always were, and a
 protected account's posts exist to be seen only by approved followers — a shared gadget
@@ -888,8 +903,9 @@ the account's posts), `XPost.subscribeReplies(hook)` for the account's own posts
     failure; dependents of `~N`; the cascade and `{restart: true}`; reconciliation binding a match
     after an injected timeout; an auto-approval racing `submitAction`; media captured, uploaded
     only at apply, and pruned.
-  - *observers*: public-only workspaces admit any X observer; `owner` admits only the same X user;
-    the Post / List baselines; positive verdict caching.
+  - *observers*: public reads report `[]` and owner-private ones `user/<id>`; `verifyObserverAccess`
+    allows only the same X user, without a request to X; legacy `owner` records still guard
+    `addObserver` and are exported by `getHistoricalSubresources`.
 - **Release**: fixture bundle `scripts/release/testdata/fixture-bundles/gatekeeper-x/x.js`, then
   `UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts`.
 
@@ -1120,7 +1136,7 @@ departed from the design above:
 - **`x-credentials.ts`** holds what the account shares with the rest of the Worker -- the public
   grant, the pinned identity, the read reservation, `accountSource` and `withinReadLimit` -- so the
   facet and configurator modules use them without an import cycle through `x.ts`. Every read the
-  gatekeeper, the List picker and the observer probes make goes through `withinReadLimit`.
+  gatekeeper and the List picker make goes through `withinReadLimit`; observer checks make none.
 - **No 429 fail-fast map** (§8).
 - **The pins live in the facet.** `pinnedUserId` (first use; a connection that comes to name
   another user is refused, and it is the action fence) and a Profile binding's `profileUserId`

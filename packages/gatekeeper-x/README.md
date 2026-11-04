@@ -84,10 +84,14 @@ X's developer agreement puts these on the app's owner, not on Gadgets:
 
 ## Sharing a workspace
 
-A collaborator can observe a workspace that reads X only with an X connection of their own (and,
-for a Post or List binding, one that can see the bound post or List). What the account reads that
-is private to it -- bookmarks, likes, mutes, private Lists, and posts by protected accounts -- is
-shown only to collaborators connected as the same X user. See `docs/observers.md`.
+Anyone a workspace is shared with can observe what it reads from X that is public: public posts,
+profiles, public Lists, and an unprotected account's followers and following. They need no X
+connection of their own for that, and a Post or List binding doesn't check that their account can
+see the bound post or List. What the account reads that is private to it -- bookmarks, likes, mutes,
+private Lists, a protected account's follow graph and home timeline, and posts by protected accounts
+-- is reported to the Workshop as `user/<id>`, the numeric ID of the X user the connection is pinned
+to, and is shown only to collaborators whose own connection is pinned to that same X user. Checking
+that makes no request to X, so it costs no reads. See `docs/observers.md`.
 
 ## Troubleshooting
 

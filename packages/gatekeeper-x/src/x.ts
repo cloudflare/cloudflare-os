@@ -40,7 +40,6 @@ import {
 } from "@gadgets/gatekeeper-kit/credentials";
 import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, discardStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
-import { probeAccess } from "@gadgets/gatekeeper-kit/http-errors";
 import {
   OAuthClient,
   OAuthResponseError,
@@ -54,7 +53,6 @@ import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeepe
 import { XApi, requireData, type XEnvelope } from "./x-api";
 import {
   RECONNECT_MESSAGE,
-  accountSource,
   withinReadLimit,
   type PublicGrant,
   type ReadReservation,
@@ -529,6 +527,16 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
+   * The X user this connection is pinned to, from storage alone: the pin never moves, so comparing
+   * against it needs no read from X. A disconnected account names nobody.
+   */
+  async getPinnedUserId(): Promise<string> {
+    const stored = this.ctx.storage.kv.get<StoredIdentity>("identity");
+    if (stored === undefined) throw new CredentialsExpiredError(RECONNECT_MESSAGE);
+    return stored.id;
+  }
+
+  /**
    * Reserves `count` billable reads against today's limit. X bills per resource per UTC day, so the
    * limit counts the same way and resets at UTC midnight.
    */
@@ -689,7 +697,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  /** Mints a verifier for this account; see `XGatekeeperImpl.addObserver`. */
+  /** Mints a verifier for this account; see `XGatekeeperImpl.verifyObserverAccess`. */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     const props: XVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -700,11 +708,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // ---------------------------------------------------------------------------
 // Verifier
 //
-// Every binding admits observers by one rule (plans/x-gatekeeper.md §7): public reads need only an
-// X account of the observer's own, and owner-private reads -- bookmarks, likes, mute state,
-// private Lists, protected accounts' posts -- need the observer to be connected as the same X
-// user. A Post or List binding also checks, on every open, that the observer's own account can
-// see the bound post or List.
+// Every binding checks observers by one rule (plans/x-gatekeeper.md §7): public reads restrict
+// nothing, and reads private to the account -- bookmarks, likes, mute state, private Lists,
+// protected accounts' posts -- are for observers connected as the same X user only. The verifier
+// says which X user that is, without asking X.
 
 type XVerifierProps = {
   userObjectId: string;
@@ -720,28 +727,13 @@ export class XVerifier extends WorkerEntrypoint<Env, XVerifierProps> implements 
     const account = this.#account();
     try {
       // The identity outlives the grant, so it speaks for the observer only while the connection's
-      // credentials still work: a grant X refused for good answers null.
+      // credentials still work: a grant X refused for good, or a disconnect, answers null.
       await account.getCredentials();
-      return (await account.getIdentity()).id;
-    } catch {
-      return null;
+      return await account.getPinnedUserId();
+    } catch (error) {
+      if (isCredentialsExpired(error)) return null;
+      throw error;
     }
-  }
-
-  async canViewPost(postId: string): Promise<boolean> {
-    return await this.#probe(api => api.get<unknown>(`/2/tweets/${postId}`, {}), "post");
-  }
-
-  async canViewList(listId: string): Promise<boolean> {
-    return await this.#probe(api => api.get<unknown>(`/2/lists/${listId}`, {}), "List");
-  }
-
-  /** Runs one access probe with the observer's own token. Probes count against their read limit. */
-  async #probe(lookup: (api: XApi) => Promise<XEnvelope<unknown>>, what: string): Promise<boolean> {
-    const source = accountSource(this.ctx.exports, this.ctx.props.userObjectId);
-    return await probeAccess(async () => requireData(await withinReadLimit(this.#account(), 1,
-      () => source.run(creds => lookup(new XApi(creds.accessToken)), { replayable: true }),
-      "The collaborator's X connection"), what));
   }
 }
 

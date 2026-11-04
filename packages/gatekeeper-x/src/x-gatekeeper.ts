@@ -1,9 +1,10 @@
 // The per-binding gatekeeper Durable Object: one instance per binding of an X connection, whether to
 // the whole account, one post, one List, or one profile. It owns the binding's action journal, the
 // temporary IDs of posts and Lists not yet created, captured images, a read cache partitioned by
-// connection, and its observer records. It pins the X user the connection belongs to, and mints the
-// capabilities gadgets hold (x-sessions.ts). Every X request runs through the account's credential
-// source, and every read draws on the connection's daily read limit.
+// connection, and the observer records reads made before they reported subresources. It pins the X
+// user the connection belongs to, and mints the capabilities gadgets hold (x-sessions.ts). Every X
+// request runs through the account's credential source, and every read draws on the connection's
+// daily read limit.
 
 import { DurableObject, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -18,7 +19,7 @@ import type {
 import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import { ActionJournal, type ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
-import { ObservationGate, trackedCollectionObservers } from "@gadgets/gatekeeper-kit/observers";
+import { ObservationGate, observerAccessVerifier, trackedCollectionObservers } from "@gadgets/gatekeeper-kit/observers";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import type { XAccountSession, XList, XPost, XProfile } from "./types";
 import TYPES_CODE from "./types.txt";
@@ -38,11 +39,12 @@ import {
   type XActions,
 } from "./x-actions";
 import { XApi, XApiError, XCreditsError, XRateLimitError, type XEnvelope } from "./x-api";
-import { accountSource, withinReadLimit, type StoredIdentity, type XVerifierApi } from "./x-credentials";
+import {
+  accountSource, parseXUserSubresource, withinReadLimit, xUserSubresourceId, type StoredIdentity, type XVerifierApi,
+} from "./x-credentials";
 import { ACCOUNT_URL, VENDOR_ID, type Env, type ResourceKind, type XGatekeeperImplProps } from "./x-env";
 import { toUserInfo, type WireUser } from "./x-normalize";
 import {
-  OWNER_COLLECTION,
   SessionContext,
   XAccountSessionImpl,
   XListImpl,
@@ -59,8 +61,6 @@ const logger = obsContext.createLogger({ component: "gatekeeper.x", vendorId: VE
 
 /** How long the connected identity is trusted in memory before the account is asked again. */
 const IDENTITY_MEMO_MS = 60 * 1000;
-/** How long an observer's account is trusted to see the bound post or List once it could. */
-const VERDICT_TTL_MS = 60 * 60 * 1000;
 /** Most bytes the images of every pending post may hold together. */
 const PENDING_MEDIA_BYTES = 64 * 1024 * 1024;
 /** How long a captured image may go unreferenced before it is swept: past any submit in flight. */
@@ -74,15 +74,18 @@ const SNIPPET_LENGTH = 100;
 
 // Storage keys of this class's own. The kit modules own theirs: `x:` and the journal's
 // `retained:`/`applied:` tiers, `refs:`, `cache:@x:`, `images:`, `imageAllocations:`, and the
-// observers' `observer:`/`observed:`.
+// observers' `observer:` and `observed:` (named here, since the historical export reads it).
 const PINNED_USER_KEY = "pinnedUserId";
 const PROFILE_USER_KEY = "profileUserId";
 const DESCRIPTION_KEY = "description";
 const HOUSEKEEPING_KEY = "housekeptAt";
-const VERDICT_PREFIX = "verdict:";
+const OBSERVED_PREFIX = "observed:";
 const PROGRESS_PREFIX = "progress:";
 const ATTEMPT_PREFIX = "attempt:";
 const PREVIOUS_PREFIX = "previous:";
+
+/** The collection reads private to the account named before they reported subresources. */
+const OWNER_COLLECTION = "owner";
 
 /** Which action tags each kind of binding can submit, for the auto-approval catalog. */
 const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
@@ -115,21 +118,31 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     maxTotalBytes: PENDING_MEDIA_BYTES,
   });
 
-  // Observers (plans/x-gatekeeper.md §7): public reads need only an X account of the observer's
-  // own; reads private to the account authorize against the synthetic `owner` collection, which
-  // only the same X user may see.
+  // Observers (plans/x-gatekeeper.md §7): every read reports what restricts who may see it, which
+  // the Workshop checks through verifyObserverAccess(): nothing for a public read, and for one
+  // private to the account the pinned X user's `user/<id>`, which only an observer connected as that
+  // same X user may see. The tracker keeps what reads recorded before they reported subresources --
+  // only ever the `owner` collection, which the same rule guards -- for addObserver() and
+  // getHistoricalSubresources(); no read adds to it.
   readonly #observers = trackedCollectionObservers<XVerifierApi>({
     kv: this.ctx.storage.kv,
-    verifyBaseline: verifier => this.#verifyBaseline(verifier),
+    collectionPrefix: OBSERVED_PREFIX,
     hasCollectionAccess: async (verifier, ids) => {
-      const pinned = this.ctx.storage.kv.get<string>(PINNED_USER_KEY);
-      const observer = await verifier.getXUserId();
-      return ids.map(id => id === OWNER_COLLECTION && pinned !== undefined && observer === pinned);
+      const same = await this.#isPinnedUser(verifier);
+      return ids.map(id => id === OWNER_COLLECTION && same);
     },
     denyMessage: () => "This collaborator isn't connected as the X account this workspace read " +
       "private data from (bookmarks, likes, mutes, private Lists, or protected accounts' posts), " +
       "so they can't observe it.",
     vendorId: VENDOR_ID,
+  });
+
+  // Every ID that reaches it names the pinned X user, so an observer's answer is the same for each.
+  readonly #verifyAccess = observerAccessVerifier<XVerifierApi>({
+    hasCollectionAccess: async (verifier, ids) => {
+      const same = await this.#isPinnedUser(verifier);
+      return ids.map(() => same);
+    },
   });
 
   #identity?: { value: StoredIdentity; at: number };
@@ -284,12 +297,46 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     });
   }
 
+  /**
+   * Admits any observer, unless reads private to the account were recorded before they reported
+   * subresources: then only one connected as the same X user. Every read since reports what
+   * restricts it, which the Workshop checks through `verifyObserverAccess()`.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user);
   }
 
   async removeObserver(id: string): Promise<void> {
     await this.#observers.removeObserver(id);
+  }
+
+  /**
+   * Checks the `user/<id>` subresource reads private to the account report, failing the whole call
+   * for any other ID, another X user's included. An observer is allowed only when their own
+   * connection is pinned to this binding's X user (see `#isPinnedUser`): no request reaches X, and
+   * nothing is remembered between calls.
+   */
+  async verifyObserverAccess(
+      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    const pinned = this.#pinnedUserId();
+    for (const id of subresources) {
+      if (parseXUserSubresource(id) !== pinned) {
+        throw new Error("This subresource ID names a different X user than this binding is pinned to.");
+      }
+    }
+    return await this.#verifyAccess(observers, subresources);
+  }
+
+  /**
+   * Exports what reads recorded before they reported subresources: the `owner` collection, observed
+   * or still pending (its read may have been recorded), as the pinned X user's `user/<id>`. Public
+   * reads recorded nothing, and a Post or List binding's check that an observer could see the bound
+   * post or List guarded admission, not data a read recorded, so nothing else is exported.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    if (this.ctx.storage.kv.get(`${OBSERVED_PREFIX}${OWNER_COLLECTION}`) === undefined) return [];
+    return [xUserSubresourceId(this.#pinnedUserId())];
   }
 
   // -- the connection ----------------------------------------------------------------------
@@ -402,29 +449,27 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
   // -- observers ---------------------------------------------------------------------------
 
   /**
-   * Admits an observer with a working X connection of their own and, for a Post or List binding,
-   * an account that can see the bound post or List. This runs on every open and each probe is a
-   * read billed to the observer, so a positive answer is remembered for an hour.
+   * The X user this binding is pinned to. Every read pins it first, so a binding with none has made
+   * no read whose observers need checking; asked anyway, this throws rather than answer for nobody.
    */
-  async #verifyBaseline(verifier: XVerifierApi): Promise<void> {
+  #pinnedUserId(): string {
+    const pinned = this.ctx.storage.kv.get<string>(PINNED_USER_KEY);
+    if (pinned === undefined) throw new Error("This X binding has not read anything as its X account yet.");
+    return pinned;
+  }
+
+  /**
+   * Whether `verifier` stands for the X user this binding is pinned to, as the observer's own
+   * connection names them, without a request to X. Not knowing is no denial: a connection that can
+   * no longer vouch for anyone, or an account that can't answer, fails the check instead.
+   */
+  async #isPinnedUser(verifier: XVerifierApi): Promise<boolean> {
+    const pinned = this.#pinnedUserId();
     const observer = await verifier.getXUserId();
     if (observer === null) {
       throw new Error("This collaborator's X connection has expired. They need to reconnect it " +
         "before they can observe this workspace.");
     }
-    const props = this.ctx.props;
-    if (props.resourceKind !== "post" && props.resourceKind !== "list") return;
-    if (observer === this.ctx.storage.kv.get<string>(PINNED_USER_KEY)) return;
-    const key = `${VERDICT_PREFIX}${observer}`;
-    const verifiedAt = this.ctx.storage.kv.get<number>(key);
-    if (verifiedAt !== undefined && Date.now() - verifiedAt < VERDICT_TTL_MS) return;
-    const visible = props.resourceKind === "post"
-      ? await verifier.canViewPost(props.postId)
-      : await verifier.canViewList(props.listId);
-    if (visible !== true) {
-      throw new Error(`This collaborator's X account can't see the ${props.resourceKind === "post" ? "post" : "List"} ` +
-        "this workspace is bound to, so they can't observe it.");
-    }
-    this.ctx.storage.kv.put(key, Date.now());
+    return observer === pinned;
   }
 }

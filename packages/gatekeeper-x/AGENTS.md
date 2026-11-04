@@ -15,6 +15,11 @@ by accident:
 - A connection is pinned to the X user it was made as (a reconnect as anyone else is refused and its
   new grant revoked), and actions are fenced on that X user's ID rather than the connection
   generation, so a same-user reconnect to widen scopes does not strand pending actions.
+- Observer checks never read X. Every read reports `[]` or, when private to the account,
+  `user/<pinned X user ID>`, and `verifyObserverAccess()` compares that ID with the one the
+  observer's own account stores. Do not add a probe of the bound post, List or author: each is a
+  billed read on the observer's connection, and the bound resource restricts nothing a read doesn't
+  already report.
 - Publishing is `claimBeforeApply`, and a send whose outcome X never reported is reconciled inline on
   the next apply (an attempt marker, then a look at the account's posts from around the attempt,
   binding only a unique match on text, links, media and reply parent), because the kit's
