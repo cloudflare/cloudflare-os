@@ -4097,6 +4097,13 @@ function ChatInterface({
   // The chat and request being revealed, for a page that arrives after either has changed.
   const revealTargetRef = useRef("");
   revealTargetRef.current = `${selectedChatId}:${revealActionId}`;
+  // Set once unmounted (another workspace's chat replaces this one), so a page that settles after
+  // that neither ends nor restarts a reveal the parent now holds for the new chat.
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => { unmountedRef.current = true; };
+  }, []);
   useEffect(() => {
     if (revealActionId === null) revealedActionIdRef.current = null;
     if (revealActionId === null || revealActionId === revealedActionIdRef.current) return;
@@ -4111,6 +4118,7 @@ function ChatInterface({
       const target = revealTargetRef.current;
       void handleShowEarlierMessages().then((result) => {
         revealPagingRef.current = false;
+        if (unmountedRef.current) return;
         if (revealTargetRef.current !== target) {
           // Superseded: let the current reveal look again rather than ending it.
           forceUpdate();

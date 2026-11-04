@@ -406,6 +406,51 @@ describe('revealing a request', () => {
     expect(scrollIntoView.mock.contexts[0]).toBe(document.querySelector('[data-action-id="1"]'))
   })
 
+  it('leaves the next workspace\'s reveal alone when an earlier page fails after a switch', async () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1000)
+    const chats = [{ id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }]
+    // Workspace A: its page before request 5 fails, but only once B is on screen.
+    const a = makeOverseer()
+    withChatApi(a, undefined, chats)
+    let failEarlier!: (err: Error) => void
+    Object.assign(a.overseer as object, {
+      getChatHistory: (_chatId: number, before?: number) => before === undefined
+        ? Promise.resolve({ messages: [{ ...actionMessage, sequence: 5, actionLog: pendingLog() }] })
+        : new Promise((_resolve, reject) => { failEarlier = reject }),
+    })
+    // Workspace B: its history arrives last, holding the request it reveals.
+    const b = makeOverseer()
+    withChatApi(b, undefined, chats)
+    let loadB!: (page: { messages: AiChatMessage[] }) => void
+    Object.assign(b.overseer as object, {
+      getChatHistory: () => new Promise(resolve => { loadB = resolve }),
+    })
+
+    // As the Workshop does, the reveal outlives the chat, which is keyed by workspace.
+    let switchToB!: () => void
+    function Workspaces() {
+      const [onB, setOnB] = useState(false)
+      const [revealActionId, setRevealActionId] = useState<number | null>(99)
+      switchToB = () => { setOnB(true); setRevealActionId(1) }
+      return <div key={onB ? 'b' : 'a'}>{chatElement(onB ? b.overseer : a.overseer, {
+        selectedChatId: 1, revealActionId, onActionRevealed: () => setRevealActionId(null),
+      })}</div>
+    }
+    await testRoot.render(<Workspaces />)
+    await a.resolveSubscription()
+    await a.resolvePendingQuery({ entries: [pendingLog()] })
+    expect(failEarlier).toBeDefined()
+
+    act(() => switchToB())
+    await b.resolveSubscription()
+    await b.resolvePendingQuery({ entries: [pendingLog()] })
+    await act(async () => failEarlier(new Error('offline')))
+    await act(async () => loadB({ messages: [{ ...actionMessage, actionLog: pendingLog() } as AiChatMessage] }))
+    for (let i = 0; i < 3; i++) await act(async () => {})
+
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+  })
+
   it('gives up once the whole thread is loaded without the card', async () => {
     const server = await renderPendingCard(pendingLog())
     const onActionRevealed = vi.fn<() => void>()
