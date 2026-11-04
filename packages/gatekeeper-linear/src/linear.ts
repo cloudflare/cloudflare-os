@@ -1579,6 +1579,9 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
   async applyAction(actionId: number): Promise<void> {
     const action = this.ctx.storage.kv.get<StoredAction>(`action:${actionId}`);
     if (!action) throw new Error(`Unknown action: ${actionId}`);
+    // The overseer records completion only after this returns, so a lost reply or a restart in
+    // between re-delivers an apply that already ran; running it again would repeat the write.
+    if (action.status === "applied") return;
     if (!action.applyStarted) {
       action.applyStarted = true;
       this.ctx.storage.kv.put<StoredAction>(`action:${actionId}`, action);

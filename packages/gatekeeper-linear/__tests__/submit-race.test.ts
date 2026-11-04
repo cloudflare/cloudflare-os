@@ -55,6 +55,18 @@ describe("enqueue when the action is applied before the reply", () => {
     expect(kv.get("action:1")).toMatchObject({ status: "pending", applyStarted: true });
   });
 
+  it("does not write again when an apply already ran is delivered again", async () => {
+    const fetch = vi.fn(async () => Response.json({ data: { issueArchive: { success: true } } }));
+    vi.stubGlobal("fetch", fetch);
+    const { gk } = gatekeeper();
+    const queue = { submitAction: async () => {} } as never;
+    await gk.enqueue(queue, archive as never, description as never);
+    await gk.applyAction(1);
+    const calls = fetch.mock.calls.length;
+    await gk.applyAction(1);
+    expect(fetch.mock.calls.length).toBe(calls);
+  });
+
   it("still drops the record and fails when the submit fails without applying", async () => {
     const { gk, kv } = gatekeeper();
     const queue = { submitAction: async () => { throw new Error("queue gone"); } } as never;

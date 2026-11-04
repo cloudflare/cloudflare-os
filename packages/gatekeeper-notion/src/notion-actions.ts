@@ -1180,6 +1180,9 @@ function markApplyStarted(store: NotionStore, record: StoredActionRecord): void 
 export async function applyStoredAction(store: NotionStore, id: number): Promise<void> {
   const record = store.getAction(id);
   if (!record) throw new Error(`Unknown action: ${id}`);
+  // The overseer records completion only after this returns, so a lost reply or a restart in
+  // between re-delivers an apply that already ran; running it again would repeat the write.
+  if (record.state === "applied") return;
   markApplyStarted(store, record);
   await applyNotionAction(store, record);
 }

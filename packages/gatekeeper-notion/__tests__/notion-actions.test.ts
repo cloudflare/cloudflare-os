@@ -242,6 +242,19 @@ describe("stageAction", () => {
     expect(store.getAction(id)).toMatchObject({ state: "pending" });
   });
 
+  it("does not write again when an apply already ran is delivered again", async () => {
+    const appended: string[] = [];
+    const store = memoryStore(appended);
+    const queue = { submitAction: async () => {} };
+    const id = await stageAction(store, queue as never, { type: "appendContent", pageId: "page-1", markdown: "Hello" });
+
+    await applyStoredAction(store, id);
+    await applyStoredAction(store, id);
+
+    expect(appended).toEqual(["page-1"]);
+    expect(store.getAction(id)).toMatchObject({ state: "applied", appendedBlockIds: ["block-1"] });
+  });
+
   it("drops the record and fails when the submit fails without applying", async () => {
     const store = memoryStore([]);
     const queue = { submitAction: async () => { throw new Error("queue gone"); } };
