@@ -30,7 +30,7 @@ import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { CachedRequest, ModelHandle } from "./ai-models";
-import { blobOid } from "./git-store";
+import { assertNoNul, blobOid } from "./git-store";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
   StoredChatMessage, StoredToolCall,
@@ -2944,6 +2944,10 @@ async function runAgentPass(
         event: "agent.step.change.invalid", chatId, changeStage: "buffer", ...agentCodeChangeShape(change),
       });
       throw error;
+    }
+    // Text a gadget's store can't read back is a model mistake the tool error lets it correct.
+    if (!hooks.isWorktree(workpieceId)) {
+      for (let [path, file] of Object.values(change).flat()) assertNoNul(path, file);
     }
     // Bound the step's total: the barrier writes the buffer as exactly one "changes" message,
     // which must fit in one storage record, or the step's edits would be lost. Composition never

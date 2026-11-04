@@ -62,7 +62,7 @@ import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
 import type { GitObjectRecord } from "./storage-schema/overseer-storage";
 import { decodeBlobText, MAX_GIT_OBJECT_SIZE } from "./git-cache";
-import type { BytesRef, FileContent } from "@gadgets/workshop-shared/code-change";
+import type { BytesRef, FileChange, FileContent } from "@gadgets/workshop-shared/code-change";
 import {
   decodeLooseObject,
   encodeGitCommit,
@@ -605,6 +605,19 @@ export function filesEqual(
     if (b.get(name) !== content) return false;
   }
   return true;
+}
+
+/**
+ * Throws if `change` would write a NUL (U+0000) into the gadget file at `path`. A blob holding
+ * one reads back as binary (see decodeBlobText), and readCommitFiles() fails on the whole
+ * commit, so accepting it would break every reader of the gadget's head.
+ */
+export function assertNoNul(path: string, change: FileChange): void {
+  let inserted = "set" in change ? [change.set] : "edit" in change ? change.edit.flat() : [];
+  if (inserted.some(text => typeof text === "string" && text.includes("\0"))) {
+    throw new Error(`${path} would contain a NUL character (U+0000), which a gadget file ` +
+        `can't hold. Write an escape sequence such as \\u0000 instead of the character itself.`);
+  }
 }
 
 // =======================================================================================
