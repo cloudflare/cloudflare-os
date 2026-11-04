@@ -138,12 +138,13 @@ const SAFE_COVER_CLASSES = new Set(["awning", "blind", "curtain", "damper", "sha
 
 // Integrations whose entities run user-configured actions rather than drive one device: a template
 // or command-line switch runs a script or shell command on turn_on, a wake_on_lan switch runs its
-// configured off script, a REST switch calls an arbitrary URL, and group, universal and
+// configured off script, a telnet switch sends whatever commands it was configured with to a
+// host, a REST switch calls an arbitrary URL, and group, universal and
 // switch_as_x entities forward to members of any platform, as generic thermostats and hygrostats
 // forward to the heater, cooler or humidifier switch they were configured with. Turning one on is
 // as open-ended as calling a script, so it waits for a person.
 const SCRIPT_BACKED_PLATFORMS = new Set([
-  "template", "command_line", "wake_on_lan", "rest", "group", "universal", "switch_as_x",
+  "template", "command_line", "wake_on_lan", "telnet", "rest", "group", "universal", "switch_as_x",
   "generic_thermostat", "generic_hygrostat",
 ]);
 

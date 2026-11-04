@@ -444,8 +444,8 @@ batches, links, fonts, alt text, new shapes and tables, table rows, columns and 
 changes to layouts, masters and theme colours, which reach every slide made from them). The
 fourth, "Slide changes that delete elements, table rows or columns, or download images", always
 waits for approval. It holds a batch that deletes an element or a table's rows or columns, or has
-Google download an image, added, replaced or set as a picture background, from a URL the agent
-chose, which can carry whatever it encoded there.
+Google download an image from a URL the agent chose (to insert it, replace one, or use it as a
+picture background), since that URL can carry whatever the agent encoded in it.
 
 `createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
 after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
