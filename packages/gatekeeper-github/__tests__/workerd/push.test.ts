@@ -21,7 +21,10 @@ import type { GatekeeperProps, Outcome, PushActionData } from "./worker";
 
 const OWNER = "acme";
 const REPO = "widgets";
-const API_BASE = `https://api.github.com/repos/${OWNER}/${REPO}`;
+/** Where the binding reads the repository once pinned: by its id, 1. */
+const API_BASE = "https://api.github.com/repositories/1";
+/** The repository by name, which the binding reads only to pin its id. */
+const NAME_ROOT = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const RECEIVE_PACK_URL = `https://github.com/${OWNER}/${REPO}.git/git-receive-pack`;
 
 /** Deterministic fake full commit ids. */
@@ -176,8 +179,9 @@ class FakeGitHub {
       });
     }
 
-    if (path === API_BASE) {
+    if (path === API_BASE || path === NAME_ROOT) {
       return Response.json({
+        id: 1,
         name: REPO,
         full_name: `${OWNER}/${REPO}`,
         html_url: `https://github.com/${OWNER}/${REPO}`,
@@ -203,6 +207,33 @@ class TestApprovalQueue extends RpcTarget {
 
   async submitAction(action: number, description: ActionDescription): Promise<void> {
     this.submitted.push({ action, description });
+  }
+}
+
+class AdvertisingCache extends RpcTarget {
+  readonly advertised: GitOid[] = [];
+
+  async advertiseCommit(id: GitOid): Promise<void> {
+    this.advertised.push(id);
+  }
+}
+
+/** A session's approval queue that refuses its first observation, as the Workshop refusing its audience would. */
+class RefusingSessionQueue extends RpcTarget {
+  readonly observations: string[] = [];
+  readonly cache = new AdvertisingCache();
+  #refused = false;
+
+  async authorizeObservation(description: { title: string }): Promise<void> {
+    if (!this.#refused) {
+      this.#refused = true;
+      throw new Error("test: the audience was refused");
+    }
+    this.observations.push(description.title);
+  }
+
+  async getGitCache(): Promise<AdvertisingCache> {
+    return this.cache;
   }
 }
 
@@ -253,6 +284,9 @@ async function repoGatekeeper() {
       unwrap(hooks.listBranchesFirstPageAfterReject(scenario, props, pageSize, actionId)),
     listBranchesPagedRejectBetween: (actionId: number) =>
       unwrap(hooks.listBranchesPagedRejectBetween(scenario, props, actionId)),
+    /** The session's `listBranches()` pages over `queue`, rejecting `actionId`, if given, after each refused page. */
+    sessionBranchPages: (queue: RefusingSessionQueue, actionId?: number) => unwrap(hooks.sessionPages(
+      scenario, props, new RpcStub(queue) as never, [{ method: "listBranches" }], actionId)),
     isSimulatedCommitId: (commitId: string) =>
       unwrap(hooks.isSimulatedCommitId(scenario, props, commitId)),
     getCommit: (ref: string | undefined, cache?: TestGitCache) =>
@@ -421,6 +455,29 @@ describe("simulation", () => {
     // callbacks must keep withholding it, or the rejected push's commit would be durably
     // recorded as pullable from this remote (misrouting pulls and shrinking later push packs).
     expect(await gk.isSimulatedCommitId(HEAD1)).toBe(true);
+  });
+
+  it.each([
+    ["a branch it creates", "feature", new TestGitCache().withCommit(HEAD1, commitPayload([BASE], "x"))],
+    ["an existing branch's head", "main", new TestGitCache().withAncestry(BASE, HEAD1)],
+  ])("never offers a refused page again once the push behind it, to %s, is rejected", async (_, branch, cache) => {
+    const github = new FakeGitHub();
+    github.branches.set("main", BASE);
+    github.install();
+    const gk = await repoGatekeeper();
+    const action = (await queuePush(gk, cache, new TestApprovalQueue(), branch, HEAD1))!;
+    const queue = new RefusingSessionQueue();
+
+    // The first page is refused, and the push rejected before the retry, which fails as it did:
+    // the page it would offer was overlaid with the push.
+    await expect(gk.sessionBranchPages(queue, action.approvalId)).rejects.toThrow("audience was refused");
+    // A listing made since shows the branches as GitHub has them.
+    expect(await gk.sessionBranchPages(queue)).toEqual([
+      [expect.objectContaining({ name: "main", headCommit: BASE })],
+      null,
+    ]);
+    expect(queue.observations).toEqual(["List branches"]);
+    expect(queue.cache.advertised).toEqual([BASE]);
   });
 
   it("revalidates injected branches when served, not when buffered behind a small page", async () => {
