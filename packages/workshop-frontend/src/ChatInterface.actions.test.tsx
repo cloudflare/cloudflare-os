@@ -478,6 +478,8 @@ describe('composer accessory', () => {
     scrollTo.mockClear()
     resize(300)
     expect((list.firstElementChild as HTMLElement).style.paddingBottom).toBe('344px')
+    // A card scrolled into view lands above it.
+    expect((list as HTMLElement).style.scrollPaddingBottom).toBe('312px')
     expect(scrollTo).toHaveBeenCalled()
   })
 

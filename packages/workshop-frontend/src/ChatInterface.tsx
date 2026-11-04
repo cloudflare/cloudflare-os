@@ -5810,6 +5810,8 @@ function ChatInterface({
                 ref={messagesContainerRef}
                 onScroll={handleMessagesScroll}
                 className="chat-panel min-h-0 flex-1 overscroll-contain overflow-y-auto"
+                // Scrolling a card into view (a reveal) aims at the part the accessory leaves visible.
+                style={accessoryHeight > 0 ? { scrollPaddingBottom: accessoryHeight + 12 } : undefined}
               >
                 {isLoading ? (
                   <div className="flex items-center justify-center py-10">
