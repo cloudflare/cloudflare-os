@@ -675,10 +675,17 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     }));
   }
 
-  /** The test approval queue a BigQuery binding's sessions and observers share, made on first use. */
+  async bigQueryStartSession(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
+  ): Promise<void> {
+    this.#queues.set(queueId, new TestApprovalQueue());
+    this.#bigQuery(facetName, id, props);
+  }
+
+  /** The test approval queue a BigQuery binding's sessions and observers share. */
   #bigQueryQueue(queueId: string): TestApprovalQueue {
-    let queue = this.#queues.get(queueId);
-    if (!queue) this.#queues.set(queueId, queue = new TestApprovalQueue());
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
     return queue;
   }
 
@@ -709,13 +716,13 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       subresources);
   }
 
-  /** Record a dataset as observed, as reads did before they reported subresources. */
-  async bigQueryRecordLegacyDataset(
-      facetName: string, id: string, props: BigQueryGatekeeperImplProps, encoded: string,
+  async bigQueryApplyStorage(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+      operations: StorageOperation[],
   ): Promise<void> {
     // Installed on the prototype below; the facet's own type lacks it.
     const bigQuery = this.#bigQuery(facetName, id, props) as unknown as TestBigQuery;
-    await bigQuery.applyTestStorage([{kind: "put", key: `observedDataset:${encoded}`, value: "observed"}]);
+    await bigQuery.applyTestStorage(operations);
   }
 
   // ── Google Chat and Gmail hooks, with these hooks standing in for the Overseer ──

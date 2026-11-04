@@ -112,7 +112,7 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "./oauth-flow";
 import {
-  DEFAULT_CONCURRENCY, mapWithConcurrency, type ObserverBatchResult, type ObserverCheck, ObserverTracker,
+  type ObserverBatchResult, type ObserverCheck, ObserverTracker,
 } from "./observers";
 import type {Pager} from "./cursor";
 import {
@@ -694,11 +694,10 @@ export class UserAccount extends DurableObject<Env> {
     }
     if (datasets.size > 0) {
       let bigQuery = new BigQueryApi(getToken);
-      // BigQuery answers for one dataset per request, so a few run at a time.
-      let entries = [...datasets];
-      let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY, ([subresource, dataset]) =>
-          this.#access.cached(subresource, ttl, () => hasBigQueryDatasetAccess(bigQuery, dataset)));
-      entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+      for (let [subresource, dataset] of datasets) {
+        access.set(subresource, await this.#access.cached(subresource, ttl,
+            () => hasBigQueryDatasetAccess(bigQuery, dataset)));
+      }
     }
     return subresources.map(subresource => access.get(subresource)!);
   }

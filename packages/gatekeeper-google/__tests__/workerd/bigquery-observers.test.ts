@@ -125,7 +125,11 @@ function bigQueryHarness(
     });
     return accountId.toString();
   };
-  const props = account(OWNER_TOKEN).then((userObjectId): BigQueryGatekeeperImplProps => ({userObjectId, ...scope}));
+  const props = account(OWNER_TOKEN).then(async userObjectId => {
+    const bindingProps: BigQueryGatekeeperImplProps = {userObjectId, ...scope};
+    await hook.bigQueryStartSession(facetName, id, bindingProps, queueId);
+    return bindingProps;
+  });
   return {
     session: async () => hook.openBigQuerySession(facetName, id, await props, queueId),
     /** An observer's account, which BigQuery lets open `datasets` (each `project/dataset`). */
@@ -138,7 +142,9 @@ function bigQueryHarness(
     verify: async (observers: Array<{id: string; userObjectId: string}>, subresources: string[]) =>
       hook.bigQueryVerifyObserverAccess(facetName, id, await props, observers, subresources),
     recordLegacyDataset: async (encoded: string) =>
-      hook.bigQueryRecordLegacyDataset(facetName, id, await props, encoded),
+      hook.bigQueryApplyStorage(facetName, id, await props, [{
+        kind: "put", key: `observedDataset:${encoded}`, value: "observed",
+      }]),
     observations: async (): Promise<Observation[]> => {
       const {observations} = await runInDurableObject(hook, (instance: TestHooks) => instance.readQueue(queueId));
       return observations as Observation[];
@@ -243,6 +249,30 @@ describe("BigQuery verifyObserverAccess", () => {
     expect(await bigQuery.verify(observers, [sales])).toEqual({allowedObserverIds: ["both", "sales-only"]});
   });
 
+  it("checks datasets one at a time when parallel lookups would hit a rate limit", async () => {
+    const backend = bigQueryBackend();
+    const fetch = backend.fetch;
+    let inFlight = false;
+    backend.fetch = async (url, init) => {
+      if (inFlight) {
+        return json({error: {code: 403, errors: [{reason: "rateLimitExceeded"}]}}, 403);
+      }
+      inFlight = true;
+      try {
+        await scheduler.wait(1);
+        return await fetch(url, init);
+      } finally {
+        inFlight = false;
+      }
+    };
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "proj"});
+    const observers = [
+      {id: "analyst", userObjectId: await bigQuery.observer("analyst-token", ["proj/sales", "proj/web"])},
+    ];
+
+    expect(await bigQuery.verify(observers, [sales, web])).toEqual({allowedObserverIds: ["analyst"]});
+  });
+
   it("reuses an account's recent answers, asking BigQuery only about datasets it hasn't", async () => {
     const backend = bigQueryBackend();
     const bigQuery = bigQueryHarness(backend, {scopedProjectId: "proj"});
@@ -345,5 +375,15 @@ describe("BigQuery addObserver", () => {
     backend.state.access.set("analyst-token", []);
     await expect(bigQuery.addObserver("analyst", analyst))
       .rejects.toThrow("does not have access to the BigQuery dataset `proj.sales`");
+  });
+
+  it("propagates a recorded dataset's rate-limit error instead of reporting access denied", async () => {
+    const backend = bigQueryBackend();
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "proj"});
+    await bigQuery.recordLegacyDataset("proj/sales");
+    const analyst = await bigQuery.observer("analyst-token", ["proj/sales"]);
+    backend.state.refusals.set("analyst-token proj/sales", {status: 403, reason: "rateLimitExceeded"});
+
+    await expect(bigQuery.addObserver("analyst", analyst)).rejects.toThrow(/http=403.*rateLimitExceeded/);
   });
 });
