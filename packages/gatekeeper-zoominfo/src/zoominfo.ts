@@ -30,6 +30,7 @@ import {
   deriveCodeChallenge,
   exchangeAuthCode,
   generateCodeVerifier,
+  isGrantRefused,
   refreshAccessToken,
   resolveOAuthConfig,
   type JsonApiDoc,
@@ -440,7 +441,10 @@ export class UserAccount extends DurableObject<Env> {
         refreshed = await refreshAccessToken(grant.refreshToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET,
           resolveOAuthConfig(this.env).tokenUrl);
       } catch (err) {
-        if (err instanceof ZoomInfoApiError && (err.isAuthError || err.status === 400)) {
+        // Only ZoomInfo refusing the refresh token itself proves the grant dead. A client or
+        // configuration error, a rate limit or an outage throws as itself, and the next read
+        // retries the refresh.
+        if (isGrantRefused(err)) {
           throw new CredentialsExpiredError(
             "ZoomInfo credentials have expired or been revoked. Please reconnect the account.", { cause: err });
         }
@@ -458,8 +462,8 @@ export class UserAccount extends DurableObject<Env> {
         // ZoomInfo rotates refresh tokens: keep the new one, never the consumed one.
         refreshToken: refreshed.refreshToken ?? grant.refreshToken,
         scopes: refreshed.scopes.length > 0 ? refreshed.scopes : grant.scopes,
-        // Still absent when ZoomInfo didn't identify the user: getAccessToken refuses the grant, and
-        // its next use refreshes again.
+        // Still absent when ZoomInfo didn't identify the user: getAccessToken refuses the grant
+        // from then on.
         userId,
       };
     },
@@ -598,9 +602,11 @@ export class UserAccount extends DurableObject<Env> {
    * as must one whose refresh names another user (see #recovery).
    */
   async getAccessToken(): Promise<ZoomInfoAccess> {
-    const { creds } = await this.#creds.snapshot(this.#recovery.refresh, this.#recovery);
+    const { creds, identity } = await this.#creds.snapshot(this.#recovery.refresh, this.#recovery);
     if (creds.userId === undefined) {
-      await this.noteCredentialsExpired();
+      // Retired, so later reads refuse it without redeeming another single-use refresh token or
+      // announcing it again. The rotated token stays stored until a reconnect replaces it.
+      await this.#creds.adjudicateRejection(identity, { notify: this.#recovery.notify });
       throw new Error(
         "ZoomInfo hasn't identified which ZoomInfo user this connection belongs to. Please reconnect the account.");
     }
@@ -825,7 +831,8 @@ export class ZoomInfoGatekeeperImpl extends DurableObject<Env, ZoomInfoGatekeepe
    * entitlement-dependent data and account-specific intelligence, and ZoomInfo provides no ACL
    * oracle that can prove another account could read every historical result. Reads now report
    * their ZoomInfo user as a subresource, which verifyObserverAccess() grants to nobody; this keeps
-   * refusing every observer, for the reads made before they reported it.
+   * refusing every observer, for the reads made before they reported it and for the enrichment
+   * outcomes stored then, which are still read without one.
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     throw new Error(
@@ -1022,7 +1029,7 @@ type PendingEnrichment = {
 // The stored outcome once the user has decided (mirrors EnrichmentOutcome minus the "pending" state,
 // which is represented by the absence of a stored outcome while the request is still pending). An
 // outcome holding what ZoomInfo returned keeps the ZoomInfo user whose token got it; one stored
-// before reads reported their user has none, and so can't be attributed to anyone.
+// before outcomes kept their user has none, and is read as reads were then (see getEnrichmentResult).
 type StoredEnrichmentOutcome =
   | { status: "ready"; result: unknown; userId?: string }
   | { status: "rejected" }
@@ -1145,10 +1152,6 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   #approvalQueue: RpcStub<ApprovalQueue>;
   #apiBaseUrl: string;
   #kv: DurableObjectStorage["kv"];
-  // Partitioned by the ZoomInfo user rather than the connection generation: a lookup is shaped by
-  // that user's entitlements, so a reconnect as the same user may keep serving it, while one as
-  // another user stops their entries matching. Shared across this binding's sessions.
-  #lookups: KvTtlCache;
 
   constructor(
     account: DurableObjectStub<UserAccount>,
@@ -1161,7 +1164,6 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     this.#approvalQueue = approvalQueue;
     this.#apiBaseUrl = apiBaseUrl;
     this.#kv = kv;
-    this.#lookups = new KvTtlCache(kv, () => account.getUserId(), { name: "lookups" });
   }
 
   [Symbol.dispose]() {
@@ -1177,10 +1179,11 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     });
   }
 
-  // Authorize a read that discloses data ZoomInfo returned to `userId`. Every data-revealing read
-  // goes through here, reporting that user as its one subresource, `user/<userId>`: the user's ID
-  // is their ID token's `sub` (see readIdToken), so the ID names them however their name or email
-  // changes. verifyObserverAccess() lets no collaborator read it.
+  // Authorize a read that discloses data ZoomInfo returned to `userId`, reporting that user as its
+  // one subresource, `user/<userId>`. Every data-revealing read goes through here but an enrichment
+  // outcome stored before outcomes kept their user (see getEnrichmentResult). The user's ID is their
+  // ID token's `sub` (see readIdToken), so the ID names them however their name or email changes.
+  // verifyObserverAccess() lets no collaborator read it.
   #observe(userId: string, title: string, description: string): Promise<void> {
     return this.#approvalQueue.authorizeObservation({
       title,
@@ -1189,14 +1192,27 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     });
   }
 
-  // Read a lookup through the cache, with the ZoomInfo user whose token fetched it: a hit was
-  // fetched as the user the connection acts for now, the cache's partition.
+  // Read a lookup through the cache, with the ZoomInfo user whose token fetched it. Partitioned by
+  // that user rather than the connection generation: a lookup is shaped by the user's entitlements,
+  // so a reconnect as the same user may keep serving it, while one as another user stops their
+  // entries matching. A hit was fetched as the user the connection acts for now, the partition.
   async #cachedLookup<T>(key: string, fn: (api: ZoomInfoApi) => Promise<T>):
       Promise<{ value: T; userId: string; fromCache: boolean }> {
     let fromCache = true;
-    const { value, userId } = await this.#lookups.cached(key, LOOKUP_CACHE_TTL_MS, () => {
+    let loadedAs: string | undefined;
+    // Built per read, so `loadedAs` is this read's own. The cache reads the partition before the
+    // load and again before storing it, storing only if the two match. That second read answers
+    // unknown when the load's token acted for a user other than the one the connection acts for
+    // now, so such a load is never stored, even under a partition two reconnects brought back.
+    const lookups = new KvTtlCache(this.#kv, async () => {
+      const userId = await this.#account.getUserId();
+      return loadedAs === undefined || loadedAs === userId ? userId : undefined;
+    }, { name: "lookups" });
+    const { value, userId } = await lookups.cached(key, LOOKUP_CACHE_TTL_MS, async () => {
       fromCache = false;
-      return this.#call(fn);
+      const loaded = await this.#call(fn);
+      loadedAs = loaded.userId;
+      return loaded;
     });
     return { value, userId, fromCache };
   }
@@ -1480,16 +1496,10 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     const store = new EnrichmentStore(this.#kv);
     const stored = store.getResult(ticket.id);
     let outcome: EnrichmentOutcome;
-    let userId: string;
+    let userId: string | undefined;
     if (stored?.status === "ready" || stored?.status === "failed") {
       // What ZoomInfo returned is reported as the user whose token got it, whoever the connection
-      // acts for now. An outcome stored before outcomes kept their user can't be attributed to
-      // anyone, so it isn't returned.
-      if (stored.userId === undefined) {
-        throw new Error(
-          `ZoomInfo enrichment #${ticket.id} was stored without the ZoomInfo user who retrieved it, ` +
-          "so it can't be returned. Request the enrichment again.");
-      }
+      // acts for now. An outcome stored before outcomes kept their user names nobody.
       userId = stored.userId;
       // The stored result payload is untyped (see StoredEnrichmentOutcome); its shape was produced
       // by performEnrichment for this ticket's kind, so we re-attach the kind discriminant to form a
@@ -1504,11 +1514,16 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     } else {
       throw new Error(`Unknown ZoomInfo enrichment ticket: ${ticket.id}`);
     }
-    await this.#observe(
-      userId,
-      `Read ZoomInfo enrichment result #${ticket.id}`,
-      `Enrichment \`${ticket.kind}\` (${ticket.summary}): **${outcome.status}**.`,
-    );
+    const title = `Read ZoomInfo enrichment result #${ticket.id}`;
+    const description = `Enrichment \`${ticket.kind}\` (${ticket.summary}): **${outcome.status}**.`;
+    if (userId === undefined) {
+      // Read as it was when stored, reporting no subresources rather than inventing a user: the
+      // Workshop then checks nothing, and addObserver(), which refuses every observer, keeps it
+      // private.
+      await this.#approvalQueue.authorizeObservation({ title, description });
+    } else {
+      await this.#observe(userId, title, description);
+    }
     return outcome;
   }
 

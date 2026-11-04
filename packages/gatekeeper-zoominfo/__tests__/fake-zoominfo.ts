@@ -43,6 +43,10 @@ export class FakeZoomInfo {
   tokenLatencyMs = 0;
   /** While set, the token endpoint holds each refresh until it settles, so a test can act mid-refresh. */
   holdRefreshes?: Promise<void>;
+  /** While set, the token endpoint refuses each refresh with this OAuth error. */
+  refuseRefreshes?: { status: number; error: string };
+  /** While set, the data API holds each lookup until it settles, so a test can act mid-load. */
+  holdLookups?: Promise<void>;
   /** The user each live access token, refresh token and authorization code belongs to. */
   readonly #owners = new Map<string, FakeUser>();
   #issued = 0;
@@ -80,7 +84,10 @@ export class FakeZoomInfo {
     if (url.pathname === "/gtm/oauth/v1/token") {
       const form = new URLSearchParams(await request.text());
       if (this.tokenLatencyMs > 0) await scheduler.wait(this.tokenLatencyMs);
-      if (form.get("grant_type") === "refresh_token") await this.holdRefreshes;
+      if (form.get("grant_type") === "refresh_token") {
+        await this.holdRefreshes;
+        if (this.refuseRefreshes) return json({ error: this.refuseRefreshes.error }, this.refuseRefreshes.status);
+      }
       return this.#token(form);
     }
 
@@ -100,6 +107,7 @@ export class FakeZoomInfo {
     }
     // A lookup names its user, so a test can tell whose entitlements shaped a cached value.
     if (url.pathname.startsWith("/gtm/data/v1/lookup/")) {
+      await this.holdLookups;
       return json({ data: [{ type: "Value", id: "1", attributes: { name: `${user.name}'s value` } }] });
     }
     // Every other read finds nothing.

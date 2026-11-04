@@ -131,6 +131,9 @@ describe("a connection made before its user's ID was kept", () => {
     fake.idToken = () => null;
     const zoominfo = binding(id);
     expect(failure(await zoominfo.run(["searchCompanies", {}]))).toMatch(/Please reconnect the account/);
+    // Later reads are refused without redeeming another refresh token or announcing it again.
+    expect(failure(await zoominfo.run(["searchCompanies", {}]))).toMatch(/expired/);
+    expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
     expect(fake.count(/^POST \/gtm\/data\//)).toBe(0);
     expect(await zoominfo.reported()).toEqual([]);
     expect(await hooks().expiredNotices(id)).toBe(1);
@@ -158,7 +161,7 @@ describe("a connection made before its user's ID was kept", () => {
     expect(await zoominfo.reported()).toEqual([[ALICE_ID], [ALICE_ID]]);
   });
 
-  it("returns no stored outcome it can't attribute, and serves no cached lookup it can't", async () => {
+  it("returns a stored outcome it can't attribute as reads then were, and serves no cached lookup it can't", async () => {
     const fake = new FakeZoomInfo().install();
     const zoominfo = binding(await seedAccount(fake, ALICE));
     const ticket = unwrap(await zoominfo.run(ENRICH)) as Ticket;
@@ -167,12 +170,13 @@ describe("a connection made before its user's ID was kept", () => {
       [`enrich:result:${ticket.id}`]: { status: "ready", result: [] },
       "cache:lookup:industries:{}": { value: [{ id: "1", type: "Value", name: "old value" }], fetchedAt: Date.now() },
     });
-    expect(failure(await zoominfo.run(["getEnrichmentResult", ticket])))
-      .toMatch(/stored without the ZoomInfo user who retrieved it/);
+    expect(unwrap(await zoominfo.run(["getEnrichmentResult", ticket])))
+      .toEqual({ status: "ready", kind: "companies", result: [] });
     expect(unwrap(await zoominfo.run(["lookup", "industries"]))).toEqual([
       { id: "1", type: "Value", name: "Alice's value", attributes: {} },
     ]);
-    expect(await zoominfo.reported()).toEqual([[ALICE_ID]]);
+    // The outcome reports no subresources, leaving it to addObserver(), which refuses everyone.
+    expect(await zoominfo.reported()).toEqual([undefined, [ALICE_ID]]);
   });
 });
 
@@ -185,6 +189,32 @@ describe("a refresh", () => {
     expect(failure(await zoominfo.run(["searchCompanies", {}]))).toMatch(/different user/);
     expect(fake.count(/^POST \/gtm\/data\//)).toBe(0);
     expect(await storedGrant(id)).toMatchObject({ userId: ALICE.sub });
+  });
+
+  it("ZoomInfo refuses for a reason other than the grant leaves the connection for a later read to retry", async () => {
+    const fake = new FakeZoomInfo().install();
+    const id = await seedAccount(fake, ALICE, { expiresInMs: 0 });
+    fake.refuseRefreshes = { status: 401, error: "invalid_client" };
+    const zoominfo = binding(id);
+    expect(failure(await zoominfo.run(["searchCompanies", {}]))).toMatch(/invalid_client/);
+    expect(await hooks().expiredNotices(id)).toBe(0);
+
+    fake.refuseRefreshes = undefined;
+    unwrap(await zoominfo.run(["searchCompanies", {}]));
+    expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(2);
+    expect(await zoominfo.reported()).toEqual([[ALICE_ID]]);
+  });
+
+  it("ZoomInfo refuses as an invalid grant retires the connection until it is reconnected", async () => {
+    const fake = new FakeZoomInfo().install();
+    const id = await seedAccount(fake, ALICE, { expiresInMs: 0 });
+    fake.refuseRefreshes = { status: 400, error: "invalid_grant" };
+    const zoominfo = binding(id);
+    expect(failure(await zoominfo.run(["searchCompanies", {}]))).toMatch(/Please reconnect the account/);
+    fake.refuseRefreshes = undefined;
+    expect(failure(await zoominfo.run(["searchCompanies", {}]))).toMatch(/expired/);
+    expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
+    expect(await hooks().expiredNotices(id)).toBe(1);
   });
 
   it("a reconnect overtakes is dropped, leaving the reconnected user's credentials", async () => {
@@ -244,6 +274,30 @@ describe("reconnecting", () => {
     unwrap(await zoominfo.run(["getEnrichmentResult", done]));
     unwrap(await zoominfo.run(["getEnrichmentResult", pending]));
     expect(await zoominfo.reported()).toEqual([[ALICE_ID], [ALICE_ID], [ALICE_ID]]);
+  });
+
+  it("as another user and back while a lookup loads caches nothing the other user's token fetched", async () => {
+    const fake = new FakeZoomInfo().install();
+    const id = await seedAccount(fake, ALICE, { expiresInMs: 0 });
+    const zoominfo = binding(id);
+    const [refresh, load] = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    fake.holdRefreshes = refresh.promise;
+    fake.holdLookups = load.promise;
+    // Partitioned as Alice, the lookup refreshes her token until Bob has reconnected, and so runs
+    // with his; Alice is back by the time it finishes.
+    const reading = zoominfo.run(["lookup", "industries"]);
+    await vi.waitUntil(() => fake.count(/^POST \/gtm\/oauth\/v1\/token$/) === 1);
+    await reconnectAs(fake, id, BOB);
+    refresh.resolve();
+    await vi.waitUntil(() => fake.count(/^GET \/gtm\/data\/v1\/lookup\//) === 1);
+    await reconnectAs(fake, id, ALICE);
+    load.resolve();
+    expect(unwrap(await reading)).toEqual([{ id: "1", type: "Value", name: "Bob's value", attributes: {} }]);
+
+    expect(unwrap(await zoominfo.run(["lookup", "industries"]))).toEqual([
+      { id: "1", type: "Value", name: "Alice's value", attributes: {} },
+    ]);
+    expect(await zoominfo.reported()).toEqual([[BOB_ID], [ALICE_ID]]);
   });
 
   it("as another user reports new reads as them, never what earlier credentials returned", async () => {
