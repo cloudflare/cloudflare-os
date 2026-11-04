@@ -1354,7 +1354,7 @@ function makeChecklist() {
 }
 // Turn one existing list item into a to-do (used by the "- [ ] " shortcut).
 function itemToTodo(li: Element, checked: boolean) {
-  editBlocks([li], () => {
+  editBlocks(() => {
     const saved = saveSelection();
     const list = li.parentElement!;
     let ul: Element;
@@ -1383,7 +1383,7 @@ function setList(kind: ListKind) {
     exec(kind === "ol" ? "insertOrderedList" : "insertUnorderedList");
   } else if (kind === "todo" || current === "todo") {
     // To-do lists are built directly, so ⌘Z undoes them as a block action.
-    editBlocks(topBlocksIn(getRange()), () => {
+    editBlocks(() => {
       const list = currentList(), saved = saveSelection();
       if (kind !== "todo") {
         const root = list!.closest("ul.checklist")!;
@@ -1621,7 +1621,7 @@ function clearFormatting() {
 function insertDivider() {
   ensureSelection();
   const top = currentTopBlock();
-  editBlocks([], () => {
+  editBlocks(() => {
     const hr = document.createElement("hr");
     if (top && top.tagName === "P" && !top.textContent.replace(/\u200B/g, "").trim() && !top.querySelector("img")) top.replaceWith(hr);
     else if (top) top.after(hr);
@@ -2139,9 +2139,8 @@ function openLinkEditor() {
     restore();
     if (targetGone()) return;
     if (anchor) {
-      if (!href) { const r = document.createRange(); r.selectNodeContents(anchor); setRange(r); exec("unlink"); }
-      else anchor.setAttribute("href", href);
-      changed();
+      if (href) editBlocks(() => anchor.setAttribute("href", href));
+      else { const r = document.createRange(); r.selectNodeContents(anchor); setRange(r); exec("unlink"); changed(); }
     } else if (href) {
       if (saved.collapsed) {
         const text = textInput?.value.replace(/\s+/g, " ").trim() || shownFor(raw);
@@ -2189,7 +2188,7 @@ function updateLinkView() {
     tb("pencil", "Edit link", combo("mod", "K"), () => { closePop(true); openLinkEditor(); }),
     tb("unlink", "Remove link", null, () => {
       closePop(true);
-      editBlocks([a], () => keepSelection(() => unwrap(a)));
+      editBlocks(() => keepSelection(() => unwrap(a)));
     })
   ]);
   showPop(card, a.getBoundingClientRect(), { kind: "link-view", className: "link-pop", reposition: () => a.isConnected ? a.getBoundingClientRect() : null, onClose: () => { linkViewAnchor = null; } });
@@ -2407,7 +2406,7 @@ editor.addEventListener("drop", (e) => {
     draggedImage = null;
     setCaretFromPoint(e.clientX, e.clientY);
     const range = getRange();
-    if (range) editBlocks([img, range.startContainer], () => {
+    if (range) editBlocks(() => {
       range.insertNode(img);
       const after = document.createRange();
       after.setStartAfter(img);
@@ -2524,7 +2523,7 @@ function atBlockEnd(block: Node, range: Range) {
 const isNestedItem = (li: Element) => /^(LI|UL|OL)$/.test(li.parentElement?.parentElement?.tagName || "");
 function leaveListItem(li: HTMLElement) {
   if (isNestedItem(li)) { exec("outdent"); changed(); return; }
-  editBlocks([li], () => {
+  editBlocks(() => {
     const list = li.parentElement!;
     const p = document.createElement("p");
     if (li.style.textAlign) p.style.textAlign = li.style.textAlign;
@@ -2632,7 +2631,7 @@ editor.addEventListener("keydown", (e) => {
     e.preventDefault();
     const img = selectedImage;
     hideImageControls();
-    editBlocks([img], () => {
+    editBlocks(() => {
       const parent = img.parentElement;
       img.remove();
       if (parent && parent !== editor && !parent.textContent.trim() && !parent.querySelector("img, br")) parent.appendChild(document.createElement("br"));
@@ -2688,7 +2687,7 @@ editor.addEventListener("keydown", (e) => {
       rest.setStart(range.endContainer, range.endOffset);
       if (!rest.toString().replace(/\u200B/g, "").length) {
         e.preventDefault();
-        editBlocks([], () => {
+        editBlocks(() => {
           const p = emptyParagraph();
           quote.after(p);
           placeCaret(p, 0);
@@ -2723,7 +2722,7 @@ editor.addEventListener("keydown", (e) => {
     const next = top?.nextElementSibling;
     if (top && next && top.tagName === "P" && !hasContent(top) && !closestEl(range.startContainer, "li")) {
       e.preventDefault();
-      editBlocks([], () => {
+      editBlocks(() => {
         top.remove();
         const [node, offset] = startPoint(next);
         placeCaret(node, offset);
@@ -2763,8 +2762,10 @@ editor.addEventListener("beforeinput", (e) => { deletedSelection = e.inputType.s
 editor.addEventListener("input", (e) => {
   if (e.isComposing || composing) { scheduleSave(); return; }
   // Typing hands undo back to the browser. A block action an input rule makes
-  // of it (a divider, a to-do list) is then undone on its own.
-  clearBlockHistory();
+  // of it (a divider, a to-do list) is then undone on its own. The browser's
+  // own undo and redo don't: block undo runs on into its history, and back.
+  if (e.inputType === "historyUndo") nativeRedo = true;
+  else if (e.inputType !== "historyRedo") clearBlockHistory();
   normalize();
   // Deleting a selection that spans a table (⌘A, ⌫) leaves Chrome's merge of
   // two empty lines, <p><br><br></p>: an empty line that is two lines tall.
@@ -3266,25 +3267,27 @@ function placeBox(box: HTMLElement, units: Element[]) {
 }
 
 // ── Motion ───────────────────────────────────────────────────────────────
-// After any rearrangement every block slides from where it was to where it
-// is (positions in document coordinates, so scrolling to follow the change
-// doesn't distort it). Blocks that are new fade in.
+// After any rearrangement every block in view slides from where it was to
+// where it is (positions in document coordinates, so scrolling to follow the
+// change doesn't distort it). Blocks that are new fade in. A block that is
+// out of view before and after isn't animated: no one would see it.
+// Every measuring pass reads all positions before writing anything (cancelling
+// or starting an animation), or each read would lay the page out again.
 function measureTops() {
-  const st = canvas.scrollTop, m = new Map<Element, number>();
-  for (const u of unitsOf()) for (const n of members(u)) {
-    // Key-repeat moves stay crisp: a slide still in flight is finished first.
-    for (const a of n.getAnimations?.() || []) if (a.id === "blk-flip") a.cancel();
-    m.set(n, n.getBoundingClientRect().top + st);
-  }
-  return m;
+  const st = canvas.scrollTop, nodes = Array.from(unitsOf(), members).flat();
+  // Key-repeat moves stay crisp: a slide still in flight is finished first.
+  for (const n of nodes) for (const a of n.getAnimations?.() || []) if (a.id === "blk-flip") a.cancel();
+  return new Map(nodes.map((n) => [n, n.getBoundingClientRect().top + st]));
 }
 function settle(before: Map<Element, number>, moved: Element[] = [], from: number | null = null) {
   if (reducedMotion.matches) return;
-  const st = canvas.scrollTop, movedSet = new Set(moved), slides: Animation[] = [];
+  const st = canvas.scrollTop, view = canvas.clientHeight, movedSet = new Set(moved), slides: Animation[] = [];
+  const shown = (y: number) => y > st - view && y < st + 2 * view;
   const anchor = from !== null && moved.length ? moved[0].getBoundingClientRect().top + st : 0;
-  for (const u of unitsOf()) for (const n of members(u)) {
-    const now = n.getBoundingClientRect().top + st;
+  const tops = Array.from(unitsOf(), members).flat().map((n) => [n, n.getBoundingClientRect().top + st] as const);
+  for (const [n, now] of tops) {
     const old = from !== null && movedSet.has(n) ? from + (now - anchor) : before.get(n);
+    if (!shown(now) && (old === undefined || !shown(old))) continue;
     if (old === undefined) { n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: "ease-out" }); continue; }
     const dy = old - now;
     if (Math.abs(dy) < 0.5) continue;
@@ -3321,7 +3324,14 @@ function nudge(units: Element[], dir: number) {
 // intact. The snapshot also notes which to-do items are ticked, so ticking
 // one is undone the same way. Any other edit clears these snapshots (see
 // changed()).
-function clearBlockHistory() { blockHistory.undo.length = 0; blockHistory.redo.length = 0; }
+//
+// The two histories make one: block steps are always newer than the
+// browser's (typing clears them), so ⌘Z undoes them first and then the
+// browser's, and ⇧⌘Z redoes what the browser undid first, then the steps.
+// `nativeRedo`: whether the browser's redo still follows on (it undid
+// something, and no edit since has made that stale).
+let nativeRedo = false;
+function clearBlockHistory() { blockHistory.undo.length = 0; blockHistory.redo.length = 0; nativeRedo = false; }
 /** A snapshot of the block structure (which nodes, in which order) and of what was selected. */
 interface BlockState {
   structure: { node: HTMLElement; kids: ChildNode[] | null }[];
@@ -3329,6 +3339,8 @@ interface BlockState {
   checked: Element[];
   sel: { anchor: Element; focus: Element } | null;
   caret: SavedSelection | null;
+  /** The changes the step made beyond rearranging (see editBlocks), for undo to revert. */
+  edits?: MutationRecord[];
 }
 function captureState(): BlockState {
   return {
@@ -3338,77 +3350,101 @@ function captureState(): BlockState {
     caret: !blockSel && document.activeElement === editor ? saveSelection() : null
   };
 }
+// Writes only what differs, so restoring the structure the page already has
+// records nothing for the next undo step to replay.
 function restoreState(s: BlockState) {
-  for (const { node, kids } of s.structure) {
-    if (!kids) continue;
-    const keep = new Set(kids);
-    for (const c of Array.from(node.childNodes)) if (!keep.has(c)) c.remove();
-    for (const k of kids) node.appendChild(k);
-  }
-  editor.replaceChildren(...s.structure.map((x) => x.node));
+  for (const { node, kids } of s.structure) if (kids) arrange(node, kids);
+  arrange(editor, s.structure.map((x) => x.node));
   const checked = new Set(s.checked);
   for (const li of editor.querySelectorAll("ul.checklist li")) {
-    if (checked.has(li)) li.setAttribute("data-checked", "true");
-    else li.removeAttribute("data-checked");
+    if (!checked.has(li)) li.removeAttribute("data-checked");
+    else if (li.getAttribute("data-checked") !== "true") li.setAttribute("data-checked", "true");
   }
   if (s.sel && s.sel.anchor.isConnected && s.sel.focus.isConnected) selectBlocks(s.sel.anchor, s.sel.focus);
   else if (s.caret) { clearBlockSel(); editor.focus({ preventScroll: true }); restoreSelection(s.caret); }
 }
-function recordBlockStep() {
-  blockHistory.undo.push(captureState());
+// Gives `parent` exactly `nodes`, in order, touching only those out of place:
+// a node standing in the way of the next one is taken out (to go back when
+// its turn comes, if ever), so a block moved any distance costs one move.
+function arrange(parent: Node, nodes: ChildNode[]) {
+  let at = parent.firstChild;
+  for (const n of nodes) {
+    if (at && at !== n && at.nextSibling === n) { const out = at; at = n; out.remove(); }
+    if (n === at) at = at.nextSibling;
+    else parent.insertBefore(n, at);
+  }
+  while (at) { const next = at.nextSibling; at.remove(); at = next; }
+}
+function recordBlockStep(): BlockState {
+  const step = captureState();
+  blockHistory.undo.push(step);
   if (blockHistory.undo.length > 60) blockHistory.undo.shift();
   blockHistory.redo.length = 0;
+  nativeRedo = false;
+  return step;
 }
+// What stepping back makes is recorded too, so stepping forward again reverts exactly that.
 function stepBlockHistory(redo: boolean) {
   const from = redo ? blockHistory.redo : blockHistory.undo;
   const to = redo ? blockHistory.undo : blockHistory.redo;
   const state = from.pop();
   if (!state) return false;
   const before = measureTops();
-  to.push(captureState());
-  restoreState(state);
-  blockChanged();
+  const back = captureState();
+  back.edits = recordEdits((watch) => {
+    if (state.edits) revertEdits(state.edits, watch);
+    restoreState(state);
+    blockChanged();
+  });
+  to.push(back);
   settle(before);
   return true;
 }
 function undoAny() { if (!stepBlockHistory(false)) exec("undo"); }
-function redoAny() { if (!stepBlockHistory(true)) exec("redo"); }
+function redoAny() {
+  if (nativeRedo && exec("redo")) return;
+  nativeRedo = false;
+  stepBlockHistory(true);
+}
 function blockChanged(options?: { typing?: boolean }) {
   blockOpDepth++;
   try { changed(options); } finally { blockOpDepth--; }
 }
+const EDITS: MutationObserverInit = { subtree: true, childList: true, attributes: true, attributeOldValue: true, characterData: true, characterDataOldValue: true };
+// The changes `fn` makes in the editor, and inside any node it passes to `watch`.
+function recordEdits(fn: (watch: (node: Node) => void) => void): MutationRecord[] {
+  const observer = new MutationObserver(() => {});
+  observer.observe(editor, EDITS);
+  try { fn((node) => observer.observe(node, EDITS)); return observer.takeRecords(); } finally { observer.disconnect(); }
+}
+// Undoes recorded changes, newest first, on the very nodes they changed: a
+// node taken out goes back, not a copy, so the browser's undo history of
+// typing in it stays valid. A node this takes out is watched, since an older
+// change may still move things out of it, and redo must see that too.
+function revertEdits(edits: MutationRecord[], watch: (node: Node) => void) {
+  for (const r of edits.toReversed()) {
+    if (r.type === "characterData") r.target.nodeValue = r.oldValue;
+    else if (r.type === "attributes") {
+      const node = r.target as Element;
+      if (r.oldValue === null) node.removeAttribute(r.attributeName!);
+      else node.setAttribute(r.attributeName!, r.oldValue);
+    } else {
+      r.addedNodes.forEach((n) => { watch(n); (n as ChildNode).remove(); });
+      // (A sibling some unrecorded change has moved, such as a save's repair, is no place to go back to.)
+      const next = r.nextSibling?.parentNode === r.target ? r.nextSibling : null;
+      r.removedNodes.forEach((n) => r.target.insertBefore(n, next));
+    }
+  }
+}
 /**
  * An edit the browser's own undo doesn't see (the editor's DOM surgery),
- * undone by ⌘Z as a block action. The edit is made in the live blocks, so the
- * browser's history of typing in them stays valid; every undo step holding the
- * top blocks that hold `touched` -- earlier ones too, which would otherwise
- * bring the edit back -- takes deep copies of them (made before the edit) in
- * their place, and undo swaps those back in.
+ * undone by ⌘Z as a block action: its changes are recorded, and undo
+ * reverts them.
  */
-function editBlocks<T>(touched: Node[], fn: () => T): T {
-  recordBlockStep();
-  const copies = new Map<Node, HTMLElement>();
-  for (const b of touched.map(topBlockOf)) if (b && !copies.has(b)) copies.set(b, b.cloneNode(true) as HTMLElement);
-  // A node's counterpart in the copies (itself outside them).
-  const copyOf = <N extends Node>(node: N): N => {
-    const path: number[] = [];
-    let n: Node = node;
-    while (!copies.has(n)) {
-      const parent = n.parentNode;
-      if (!parent) return node;
-      path.push(Array.prototype.indexOf.call(parent.childNodes, n));
-      n = parent;
-    }
-    return path.reduceRight<Node>((c, i) => c.childNodes[i], copies.get(n)!) as N;
-  };
-  if (copies.size) for (const step of blockHistory.undo) {
-    step.structure = step.structure.map(({ node, kids }) => ({ node: copyOf(node), kids: kids && kids.map(copyOf) }));
-    step.checked = step.checked.map(copyOf);
-    if (step.sel) step.sel = { anchor: copyOf(step.sel.anchor), focus: copyOf(step.sel.focus) };
-    for (const p of step.caret ? [step.caret.a, step.caret.f] : []) if (p.node) p.node = copyOf(p.node); else if (p.ref) p.ref = copyOf(p.ref);
-  }
-  const out = fn();
-  blockChanged();
+function editBlocks<T>(fn: () => T): T {
+  const step = recordBlockStep();
+  let out!: T;
+  step.edits = recordEdits(() => { out = fn(); blockChanged(); });
   return out;
 }
 
@@ -3793,7 +3829,8 @@ editor.addEventListener("keydown", (e) => {
   }
   if (mod && !e.altKey && (k === "z" || k === "y")) {
     const redo = k === "y" || e.shiftKey;
-    if ((redo ? blockHistory.redo : blockHistory.undo).length) { e.preventDefault(); stepBlockHistory(redo); }
+    e.preventDefault();
+    if (redo) redoAny(); else undoAny();
   }
 });
 // ⌘D while typing: the caret moves to the same spot in the copy, so pressing

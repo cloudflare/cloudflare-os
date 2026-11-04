@@ -298,11 +298,13 @@ export function escapeHtml(value: unknown): string {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// A browser drops a URL's leading and trailing controls and spaces, and any
+// tab or newline, so its scheme is checked as the browser will read it.
 function safeUrl(url: unknown, { image = false } = {}): string | null {
-  const u = String(url || "").trim();
-  if (image) return /^(https?:\/\/|data:image\/(png|jpe?g|gif|webp|avif);)/i.test(u) ? u : null;
-  if (/^(https?:|mailto:|tel:|#|\/)/i.test(u)) return u;
-  return /^[a-z][a-z0-9+.-]*:/i.test(u) ? null : u;
+  const u = String(url || "").trim().replace(/^[\0- ]+|[\0- ]+$/g, ""), read = u.replace(/[\t\n\r]/g, "");
+  if (image) return /^(https?:\/\/|data:image\/(png|jpe?g|gif|webp|avif);)/i.test(read) ? u : null;
+  if (/^(https?:|mailto:|tel:|#|\/)/i.test(read)) return u;
+  return /^[a-z][a-z0-9+.-]*:/i.test(read) ? null : u;
 }
 
 // Code spans, taken out first: what is inside one is literal, escapes too.
@@ -521,10 +523,11 @@ function cleanTag(tag: ReadTag): string {
   return out + (tag.selfClose ? " /" : "") + ">";
 }
 
-// A URL attribute's source value as a browser decodes it, then as client.ts tests it. Named
-// references decodeHtml doesn't know are dropped (`java&Tab;script:`), all but `&colon;`.
+// A URL attribute's source value as a browser decodes it, then as client.ts tests it. A numeric
+// reference needs no `;` (`&#106avascript:`); named ones decodeHtml doesn't know are dropped
+// (`java&Tab;script:`), all but `&colon;`.
 function isScriptUrl(source: string): boolean {
-  const value = decodeHtml(source.replace(/&colon;?/gi, ":").replace(/&(?!(?:#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);)[a-z][a-z0-9]*;?/gi, ""));
+  const value = decodeHtml(source.replace(/&#(x[0-9a-f]+|\d+);?/gi, "&#$1;").replace(/&colon;?/gi, ":").replace(/&(?!(?:#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);)[a-z][a-z0-9]*;?/gi, ""));
   return /^(javascript|vbscript|data:text)/i.test(value.replace(/[\s\u0000-\u001f]+/g, ""));
 }
 
@@ -608,7 +611,8 @@ export function markdownToSpecs(markdown: unknown): BlockSpec[] {
   const lines = raw.map((line) => line.replace(/\t/g, "    "));
   const specs: BlockSpec[] = [];
   // An empty item ("-", "2.", "- [ ]") is still an item.
-  const LIST = /^(\s*)([-*+]|\d{1,9}[.)])(?:\s+|$)(?:\[([ xX])\](?:\s+|$))?(.*)$/;
+  // `s`: a line separator (U+2028/9) in a line is text, not its end.
+  const LIST = /^(\s*)([-*+]|\d{1,9}[.)])(?:\s+|$)(?:\[([ xX])\](?:\s+|$))?(.*)$/s;
   let para: string[] = [];
   const flush = () => {
     if (para.length) specs.push({ type: "p", text: para.join("\n") });
@@ -636,7 +640,7 @@ export function markdownToSpecs(markdown: unknown): BlockSpec[] {
       continue;
     }
     // A closing run of #s needs a space before it: "Learn C#" keeps its #.
-    const heading = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/.exec(line);
+    const heading = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/s.exec(line);
     if (heading) { flush(); specs.push({ type: "h" + Math.min(3, heading[1].length), text: heading[2] }); continue; }
     if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); specs.push({ type: "divider" }); continue; }
     const image = /^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$/.exec(line);

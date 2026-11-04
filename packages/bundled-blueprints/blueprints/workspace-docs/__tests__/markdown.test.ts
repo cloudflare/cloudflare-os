@@ -122,6 +122,15 @@ describe("htmlToMarkdown", () => {
     expect(html.match(/<ul>|<ol>/g)).toHaveLength(5);
   });
 
+  // Agent and imported HTML often wraps an item's text in a paragraph or heading.
+  it("writes the blocks a list item holds as the item's lines", () => {
+    const markdown = htmlToMarkdown("<ul><li><p>one</p></li><li><h2>two</h2><p>more</p><ul><li><p>nested</p></li></ul></li><li><p>a</p>b</li></ul>");
+    expect(markdown).toBe("- one\n- two\\\n  more\n  - nested\n- a\\\n  b\n");
+    expect(new HtmlRenderer().render(new Parser().parse(markdown)).replace(/\n/g, "")).toBe(
+      "<ul><li>one</li><li>two<br />more<ul><li>nested</li></ul></li><li>a<br />b</li></ul>",
+    );
+  });
+
   it("escapes Markdown punctuation in text, and writes nothing for an empty document", () => {
     expect(htmlToMarkdown("<p>a*b_c [x] \\ &lt;tag&gt; &amp;&nbsp;done</p>")).toBe("a\\*b\\_c \\[x\\] \\\\ \\<tag> & done\n");
     expect(htmlToMarkdown("<p><br></p><p></p>")).toBe("");

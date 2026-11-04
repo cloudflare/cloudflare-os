@@ -256,9 +256,9 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
     const titleChanged = nextTitle !== doc.title;
     const changed = outcome.changed || titleChanged ||
       order.join("\n") !== doc.blocks.map((b) => b.id).join("\n");
-    if (!changed) {
-      return { status: operationStatus(false, conflicts), revision: doc.revision, conflicts };
-    }
+    // With the document's order, which the client confirms rather than the order it sent: that one
+    // lacks any block a rejected deletion brings back.
+    if (!changed) return { status: operationStatus(false, conflicts), revision: doc.revision, conflicts, order };
 
     doc = {
       revision: doc.revision + 1,
@@ -340,7 +340,7 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
   /** Blocks by id (or all), including their stored HTML. */
   async getBlocks({ ids }: { ids?: unknown } = {}): Promise<BlockDescription[]> {
     const doc = await this.loadBlockDocument();
-    const wanted = Array.isArray(ids) ? new Set(ids.map(String)) : null;
+    const wanted = ids === undefined || ids === null ? null : idSet(ids);
     return doc.blocks.filter((b) => !wanted || wanted.has(b.id)).map((b) => describeBlock(b, true));
   }
 
@@ -401,7 +401,7 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
   deleteBlocks({ ids }: { ids?: unknown } = {}): Promise<BlockEditResult> {
     return this.editBlocks((list) => {
       if (ids === undefined || ids === null) throw new Error("Pass ids: the blocks to delete.");
-      const gone = new Set((Array.isArray(ids) ? ids : [ids]).map(String));
+      const gone = idSet(ids);
       for (const id of gone) indexOfBlock(list, id);
       const kept = list.filter((b) => !gone.has(b.id));
       list.splice(0, list.length, ...(kept.length ? kept : [{ id: newBlockId(), html: "<p><br></p>" }]));
@@ -413,7 +413,7 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
   moveBlocks({ ids, afterId, beforeId, index }: { ids?: unknown } & BlockPosition = {}): Promise<BlockEditResult> {
     return this.editBlocks((list) => {
       if (ids === undefined || ids === null) throw new Error("Pass ids: the blocks to move.");
-      const moving = new Set((Array.isArray(ids) ? ids : [ids]).map(String));
+      const moving = idSet(ids);
       for (const id of moving) indexOfBlock(list, id);
       if (moving.has(String(afterId)) || moving.has(String(beforeId))) throw new Error("A block can't be moved next to itself.");
       const picked = list.filter((b) => moving.has(b.id));
@@ -425,8 +425,8 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
   }
 
   /** Replace the whole document with Markdown (or specs). */
-  setMarkdown({ markdown, blocks, title, replace }: BlockSource & { title?: unknown; replace?: unknown } = {}): Promise<BlockEditResult> {
-    return this.editBlocks((list, doc) => {
+  setMarkdown({ markdown, blocks, replace }: BlockSource & { replace?: unknown } = {}): Promise<BlockEditResult> {
+    return this.editBlocks((list) => {
       const specs = specsFrom(expandImageRefs({ blocks, markdown }, list));
       const htmls = (specs.length ? specs : [{ type: "p", text: "" }]).map(specHtml);
       // Open editors keep no undo for it, so replacing content takes an explicit `replace: true`.
@@ -440,7 +440,6 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
       // open editors (and anyone typing) see just what actually changed.
       const next = mergeBlockList(list, htmls);
       list.splice(0, list.length, ...next);
-      if (typeof title === "string") doc.title = title.slice(0, MAX_TITLE_LENGTH);
       return next.map((b) => b.id);
     });
   }
@@ -474,16 +473,15 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
     return doc;
   }
 
-  // Runs `edit(list, doc)` on a copy of the block list inside the mutation
+  // Runs `edit(list)` on a copy of the block list inside the mutation
   // queue, then stores and broadcasts exactly what changed, versioned like
   // any other edit.
-  editBlocks(edit: (list: BlockContent[], draft: { title: string }) => string[]): Promise<BlockEditResult> {
+  editBlocks(edit: (list: BlockContent[]) => string[]): Promise<BlockEditResult> {
     return this.mutations.run(async (): Promise<BlockEditResult> => {
       const doc = await this.loadBlockDocument(true);
       const before = new Map(doc.blocks.map((b) => [b.id, b]));
       const list = doc.blocks.map((b) => ({ id: b.id, html: b.html }));
-      const draft = { title: doc.title };
-      const ids = edit(list, draft) || [];
+      const ids = edit(list) || [];
       const upserts: StoredBlock[] = [];
       const blocks = list.map((b) => {
         const old = before.get(b.id);
@@ -495,10 +493,10 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
       const keptIds = new Set(blocks.map((b) => b.id));
       const deletedIds = doc.blocks.filter((b) => !keptIds.has(b.id)).map((b) => b.id);
       const order = blocks.map((b) => b.id);
-      const changed = upserts.length || deletedIds.length || draft.title !== doc.title ||
+      const changed = upserts.length || deletedIds.length ||
         order.join("\n") !== doc.blocks.map((b) => b.id).join("\n");
       if (!changed) return { status: "unchanged", revision: doc.revision, ids };
-      const next: StoredDocument = { revision: doc.revision + 1, title: draft.title, blocks, lastModified: Date.now() };
+      const next: StoredDocument = { revision: doc.revision + 1, title: doc.title, blocks, lastModified: Date.now() };
       await this.ctx.storage.put("document:v2", next);
       if (doc.revision === 0) this.broadcast({ type: "snapshot", senderId: "agent", document: next });
       else this.broadcast({ type: "operation", senderId: "agent", revision: next.revision, title: next.title, upserts, deletedIds, order, lastModified: next.lastModified });
@@ -533,6 +531,9 @@ export function upgradeStoredDocument(doc: StoredDocument): StoredDocument | nul
 
 /* ── Settings and stored blocks ─────────────────────────────────────────── */
 
+// The block ids an agent passes: a list, or one id on its own.
+const idSet = (ids: unknown) => new Set((Array.isArray(ids) ? ids : [ids]).map(String));
+
 const FONTS = new Set<unknown>(["sans", "serif", "mono"] satisfies DocFont[]);
 const isFont = (value: unknown): value is DocFont => FONTS.has(value);
 
@@ -546,10 +547,12 @@ function cleanSettings(value: unknown): DocSettings {
 }
 
 // The blocks of an incoming document or operation, as far as they can be
-// trusted: a non-empty id (at most 100 characters) seen once, HTML under 10M
-// characters with what the editor would scrub on display removed (so the
-// exports, which read stored HTML, never see it), and a well-formed base
-// version. The editor's own HTML passes through unchanged.
+// trusted: a non-empty id (at most 100 characters) seen once, and a
+// well-formed base version, with what the editor would scrub on display
+// removed from the HTML (so the exports, which read stored HTML, never see
+// it). The editor's own HTML passes through unchanged. A block over 10M
+// characters is refused, not dropped: dropped, its editor would see it never
+// saved and send it again and again.
 function sanitizeBlocks(blocks: unknown): BlockUpsert[] {
   if (!Array.isArray(blocks)) return [];
   const result: BlockUpsert[] = [];
@@ -558,7 +561,8 @@ function sanitizeBlocks(blocks: unknown): BlockUpsert[] {
     const block = isRecord(value) ? value : null;
     const id = String(block?.id || "").slice(0, 100);
     const html = String(block?.html || "");
-    if (!id || seen.has(id) || html.length > 1e7) continue;
+    if (!id || seen.has(id)) continue;
+    if (html.length > 1e7) throw new Error("A block is too large to save: it holds more than 10M characters.");
     seen.add(id);
     result.push({ id, html: stripUnsafe(html), baseVersion: normalizeBaseVersion(block?.baseVersion) });
   }

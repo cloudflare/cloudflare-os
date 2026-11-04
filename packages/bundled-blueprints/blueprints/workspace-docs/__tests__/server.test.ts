@@ -64,10 +64,12 @@ describe("editor protocol", () => {
       senderId: "c2",
       upserts: [{ id: "a", html: "<p>stale</p>", baseVersion: 1 }, { id: "ghost", html: "<p>g</p>", baseVersion: 4 }],
     });
+    // With the document's order: the client confirms it, rather than the order it sent.
     expect(conflict).toEqual({
       status: "conflict",
       revision: 2,
       conflicts: [{ id: "a", html: "<p>ONE</p>", version: 2 }, { id: "ghost", html: null, version: 0, missing: true }],
+      order: ["a", "b"],
     });
   });
 
@@ -123,7 +125,16 @@ describe("editor protocol", () => {
     await gadget.initializeBlocks(init);
     const titled = await gadget.applyOperation({ senderId: "c1", title: "x".repeat(600) });
     expect(titled.title).toHaveLength(500);
-    expect(await gadget.applyOperation({ senderId: "c1", order: ["a", "b"] })).toEqual({ status: "unchanged", revision: 2, conflicts: [] });
+    expect(await gadget.applyOperation({ senderId: "c1", order: ["a", "b"] })).toEqual({ status: "unchanged", revision: 2, conflicts: [], order: ["a", "b"] });
+  });
+
+  // Dropped, a block too large to store would look unsaved to its editor, which would send it forever.
+  it("refuses a block too large to store, rather than dropping it", async () => {
+    const { gadget, stored: map } = inMemoryGadget();
+    await gadget.initializeBlocks(init);
+    const huge = { id: "a", html: `<p>${"x".repeat(1e7)}</p>`, baseVersion: 1 };
+    await expect(gadget.applyOperation({ senderId: "c1", upserts: [huge] })).rejects.toThrow("too large");
+    expect(stored(map).blocks[0].html).toBe("<p>one</p>");
   });
 
   it("refuses an operation on a document that was never initialized", async () => {
@@ -196,6 +207,8 @@ describe("block API", () => {
     ]);
     const [got] = await gadget.getBlocks({ ids: [blocks[2].id] });
     expect(got).toMatchObject({ id: blocks[2].id, html: "<p>Body <i>text</i></p>" });
+    // One id on its own, as deleteBlocks and moveBlocks take it, is that block, not every block.
+    expect(await gadget.getBlocks({ ids: blocks[2].id })).toEqual([got]);
     expect(await gadget.getMarkdown()).toBe("# Plan\n\n- [ ] Ship it\n\nBody *text*\n");
   });
 
@@ -277,11 +290,10 @@ describe("block API", () => {
 
   it("replaces the document with setMarkdown, keeping unchanged blocks", async () => {
     const { gadget, blocks } = await withMarkdown("a\n\nb\n\nc");
-    const result = await gadget.setMarkdown({ markdown: "a\n\nB\n\nc", title: "New", replace: true });
+    const result = await gadget.setMarkdown({ markdown: "a\n\nB\n\nc", replace: true });
     const after = (await gadget.listBlocks()).blocks;
     expect(after.map((block) => [block.id, block.version])).toEqual([[blocks[0].id, 1], [blocks[1].id, 2], [blocks[2].id, 1]]);
     expect(result).toMatchObject({ status: "applied", ids: after.map((block) => block.id) });
-    expect((await gadget.getDocument()).title).toBe("New");
     expect(await gadget.setMarkdown({ markdown: "a\n\nB\n\nc" })).toMatchObject({ status: "unchanged" });
   });
 

@@ -142,9 +142,9 @@ export interface MissingBlock {
 }
 
 /**
- * What `applyOperation` returns: the status, the revision, and the authoritative blocks whose
- * edits were rejected, for the client to rebase onto. When the operation changed the document the
- * fields of the broadcast {@link OperationEvent} are included too.
+ * What `applyOperation` returns: the status, the revision, the document's block order, and the
+ * authoritative blocks whose edits were rejected, for the client to rebase onto. When the operation
+ * changed the document the other fields of the broadcast {@link OperationEvent} are included too.
  */
 export type ApplyOperationResult = Partial<OperationEvent> & {
   status: OperationStatus;
@@ -226,6 +226,6 @@ export interface GadgetStub {
   setChecked(args?: { id?: unknown; item?: unknown; checked?: unknown }): Promise<BlockEditResult>;
   deleteBlocks(args?: { ids?: unknown }): Promise<BlockEditResult>;
   moveBlocks(args?: { ids?: unknown } & BlockPosition): Promise<BlockEditResult>;
-  setMarkdown(args?: BlockSource & { title?: unknown; replace?: unknown }): Promise<BlockEditResult>;
+  setMarkdown(args?: BlockSource & { replace?: unknown }): Promise<BlockEditResult>;
   getMarkdown(): Promise<string>;
 }

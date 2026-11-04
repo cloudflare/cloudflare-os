@@ -18,8 +18,8 @@ import {
 // content, so an agent's block and a typed one are indistinguishable to the editor and the exports.
 describe("specHtml", () => {
   it("writes inline Markdown as the editor's markup, and leaves unsafe links as text", () => {
-    expect(specHtml("Hello **world** and `x<y` [l](https://a.b) [bad](javascript:alert(1))"))
-      .toBe('<p>Hello <b>world</b> and <code>x&lt;y</code> <a href="https://a.b">l</a> [bad](javascript:alert(1))</p>');
+    expect(specHtml("Hello **world** and `x<y` [l](https://a.b) [bad](javascript:alert(1)) [ctl](\u0001javascript:void0)"))
+      .toBe('<p>Hello <b>world</b> and <code>x&lt;y</code> <a href="https://a.b">l</a> [bad](javascript:alert(1)) [ctl](\u0001javascript:void0)</p>');
   });
 
   it("keeps code spans out of link targets", () => {
@@ -109,6 +109,12 @@ describe("markdownToSpecs", () => {
   it("caps headings at level 3 and keeps an unsafe image as a paragraph", () => {
     expect(markdownToSpecs("#### deep\n![x](javascript:alert(1))")).toEqual([
       { type: "h3", text: "deep" }, { type: "p", text: "![x](javascript:alert(1))" },
+    ]);
+  });
+
+  it("reads a heading or list line holding a line separator as one", () => {
+    expect(markdownToSpecs("# a\u2028b\n- c\u2029d")).toEqual([
+      { type: "h1", text: "a\u2028b" }, { type: "ul", items: [{ text: "c\u2029d", checked: false }] },
     ]);
   });
 
@@ -245,6 +251,8 @@ describe("stripUnsafe", () => {
   it("drops a script URL spelled with named character references", () => {
     expect(stripUnsafe('<a href="java&Tab;script:alert(1)">x</a><a href="javascript&colon;alert(1)">y</a>')).toBe("<a>x</a><a>y</a>");
     expect(stripUnsafe('<a href="data&colon;text/html,x">z</a><a href="/q?a=1&amp;x;javascript:1">ok</a>')).toBe('<a>z</a><a href="/q?a=1&amp;x;javascript:1">ok</a>');
+    // A browser decodes a numeric reference without its `;` too.
+    expect(stripUnsafe('<a href="&#106avascript:alert(1)">n</a><a href="javascri&#112t:1">p</a>')).toBe("<a>n</a><a>p</a>");
   });
 
   it("drops what the editor scrubs: forms, templates, noscript, and id, name, srcdoc, contenteditable", () => {

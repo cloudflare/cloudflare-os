@@ -40,7 +40,7 @@ Every write runs in the Durable Object's mutation queue. One that changes the do
 | Method | Notes |
 | --- | --- |
 | `listBlocks()` | `{ revision, blocks: [{ id, type, markdown, version }] }`. `type` is `p`, `h1`–`h3`, `quote`, `code`, `divider`, `ul`, `ol`, `todo`, `image`, `table` (or another tag's name). |
-| `getBlocks({ ids? })` | The listed blocks (all if `ids` omitted), each also with its stored `html`. |
+| `getBlocks({ ids? })` | The listed blocks (all if `ids` omitted; `ids` is an id or an array), each also with its stored `html`. |
 | `getMarkdown()` | The whole document as Markdown. |
 | `insertBlocks({ blocks?, markdown?, afterId? \| beforeId? \| index? })` | Inserts at the end by default. `index` is 0-based; negative counts from the end (-1 is the end). Into a brand-new doc (one empty line) with no position, the empty line is replaced. Throws `Nothing to insert` when given no content. |
 | `updateBlock({ id, ...spec })` or `updateBlock({ id, markdown })` | Replaces the block's content. Text without a `type` keeps the block's type (a heading stays a heading), except that an image, a divider or another tag's block becomes a paragraph; untyped `items` keep the list kind (`ul` from a non-list), `rows` make a table (a table needs them: text alone throws), `src` an image, block-level `html` an html block. If the Markdown or html yields several blocks, the extra ones are inserted after it. No fields at all throws rather than emptying the block. |
@@ -48,7 +48,7 @@ Every write runs in the Durable Object's mutation queue. One that changes the do
 | `setChecked({ id, item = 0, checked = true })` | Ticks the `item`-th (0-based) top-level item of a to-do list. Throws if the block isn't a to-do list or has no such item. |
 | `deleteBlocks({ ids })` | `ids` is an id or an array. Deleting every block leaves one empty paragraph. |
 | `moveBlocks({ ids, afterId? \| beforeId? \| index? })` | Keeps the moved blocks' relative order. A block can't be positioned relative to itself. |
-| `setMarkdown({ markdown?, blocks?, title?, replace? })` | Replaces the whole document. Throws on a document with content unless `replace: true` (see rule 4) or the call changes nothing. Unchanged blocks keep their ids, changed ones update in place. |
+| `setMarkdown({ markdown?, blocks?, replace? })` | Replaces the whole document. Throws on a document with content unless `replace: true` (see rule 4) or the call changes nothing. Unchanged blocks keep their ids, changed ones update in place. |
 
 **Images in reads are abbreviated.** A long `data:` image appears in `listBlocks`, `getBlocks` Markdown and `getMarkdown` as `![alt](data:image/jpeg;… 57 KB #1a2b3c4d)` (type, size, hash). The full URI is in `getBlocks`' `html`. Pass the reference back unchanged in any write (`markdown`, `text`, `src` or `html`) and it stands for that same image, so editing around or copying an image keeps it. A reference to an image no longer in the document throws.
 

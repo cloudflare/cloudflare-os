@@ -568,6 +568,22 @@ describe("editor keys, menus and undo", () => {
     expect(doc()).toBe(before);
   });
 
+  it("undoes and redoes changing a link's address", () => {
+    const block = show("la", '<p>See <a href="https://old.example/">the site</a> now</p>');
+    caretIn(block.querySelector("a")!.firstChild!, 2);
+    const before = doc();
+    document.querySelector<HTMLButtonElement>('button[aria-label="Link"]')!.click();
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Link address"]')!;
+    input.value = "https://new.example/";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    const after = doc();
+    expect(block.querySelector("a")!.getAttribute("href")).toBe("https://new.example/");
+    undo();
+    expect(doc()).toBe(before);
+    redo();
+    expect(doc()).toBe(after);
+  });
+
   it("undoes and redoes inserting a divider", () => {
     const block = show("dv", "<p>Above</p>");
     caretIn(block.firstChild!, 5);

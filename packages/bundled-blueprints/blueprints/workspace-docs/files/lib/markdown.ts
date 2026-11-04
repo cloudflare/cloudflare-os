@@ -32,6 +32,8 @@ interface OpenList {
   indent?: string;
   /** Spaces that put a list nested in the current item under its content. */
   nest?: string;
+  /** Where the open item's content starts in the Markdown; unset between items. */
+  item?: number;
 }
 interface OpenTable {
   rows: OpenRow[];
@@ -98,6 +100,12 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
   // breaks nothing.
   let space = false, breaks = 0;
   const inCell = () => tables.at(-1)?.cellStart != null;
+  // A paragraph or heading inside a list item (`<li><p>…</p></li>`) is a line
+  // of the item, not a block after it: the first runs on from the marker, and
+  // a line break comes between it and any content before or after it in the
+  // item. (Not in a quote the item holds.)
+  const inItem = () => { const item = lists.at(-1)?.item; return item !== undefined && (blockquotes.at(-1) ?? -1) < item; };
+  const itemLine = () => { if (markdown.length > lists.at(-1)!.item!) breaks = 1; };
   const closeTo = (depth: number) => {
     for (const marker of written.splice(depth).reverse()) changes.push({ at: inline.length, marker, open: false });
   };
@@ -124,7 +132,7 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
   // is padded with spaces, which reading it back drops.
   const closeCode = () => {
     const code = inline.slice(codeStart), fence = codeFence(code, 1);
-    const pad = /^`|`$|^ .*[^ ].* $/.test(code) ? " " : "";
+    const pad = /^`|`$/.test(code) || code.startsWith(" ") && code.endsWith(" ") && /[^ ]/.test(code) ? " " : "";
     inline = inline.slice(0, codeStart) + fence + pad + code + pad + fence;
     inCode = false;
     lastCode = { start: codeStart, end: inline.length, code, changes: changes.length };
@@ -187,11 +195,13 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
     if (closing) {
       switch (tag) {
         case "h1": case "h2": case "h3": case "h4": case "h5": case "h6":
+          if (inItem()) { itemLine(); break; }
           inHeading = false;
           markdown += "\n\n";
           break;
         case "p": case "div":
-          markdown += "\n\n";
+          if (inItem()) itemLine();
+          else markdown += "\n\n";
           break;
         case "blockquote": {
           const start = blockquotes.pop() ?? markdown.length;
@@ -225,6 +235,7 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
         }
         case "li":
           if (!markdown.endsWith("\n")) markdown += "\n";
+          if (lists.length) lists.at(-1)!.item = undefined;
           break;
         case "ul": case "ol":
           lists.pop();
@@ -273,11 +284,13 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
     }
     switch (tag) {
       case "h1": case "h2": case "h3": case "h4": case "h5": case "h6":
+        if (inItem()) { itemLine(); break; }
         inHeading = true;
         markdown += "\n\n" + "#".repeat(Number(tag[1])) + " ";
         break;
       case "p": case "div":
-        markdown += "\n\n";
+        if (inItem()) itemLine();
+        else markdown += "\n\n";
         break;
       // A heading is one line in Markdown, and inline code one span, so a
       // break in either is a space.
@@ -357,6 +370,7 @@ export function htmlToMarkdown(html: string, { abbreviateImages = false } = {}):
         // A to-do's "[ ] " is its content, and four spaces past that would be code.
         list.nest = lead + " ".repeat(list.type === "check" ? b.length + 1 : marker.length);
         markdown += (markdown.endsWith("\n") ? "" : "\n") + lead + marker;
+        list.item = markdown.length;
         break;
       }
       case "a": {
