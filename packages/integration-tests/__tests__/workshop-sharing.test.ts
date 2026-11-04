@@ -277,7 +277,11 @@ it.concurrent("revoking one gadget removes only it from the collaborator's Outpu
         return {
           role: (await reopenedWorkspace.getMetadata()).role,
           revoked: await reopenedWorkspace.getGadget(defaultGadgetId)
-              .then(() => null, (error: unknown) => (error as Error).message),
+              .then(() => null, (error: unknown) => {
+                // A socket lost during restart isn't the access decision; reconnect and retry.
+                if (!(error instanceof Error) || error.message !== `No such gadget: ${defaultGadgetId}`) throw error;
+                return error.message;
+              }),
         };
       });
     } catch {

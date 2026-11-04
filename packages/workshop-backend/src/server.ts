@@ -1,8 +1,9 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, type UnreadStateSubscriber } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
+import type { UnreadStateScope } from "@gadgets/workshop-shared/api";
 import { backendVersion, getServerConfig } from "./deployment-config.js";
 import { isDeploymentAdmin, isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
@@ -213,6 +214,31 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null): Promise<void> {
     return this.#user.setWorkspaceNotificationMute(workspaceId, mute);
+  }
+
+  getUnreadThreads() {
+    return retryOnDoReset(() => this.#user.getUnreadThreads());
+  }
+
+  getWorkspaceUnreadState(workspaceId: string) {
+    return retryOnDoReset(() => this.#user.getWorkspaceUnreadState(workspaceId));
+  }
+
+  getUnreadSummary() {
+    return retryOnDoReset(() => this.#user.getUnreadSummary());
+  }
+
+  subscribeToUnreadState(scope: UnreadStateScope,
+      subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToUnreadState(scope, subscriber);
+  }
+
+  markWorkspaceRead(workspaceId: string): Promise<void> {
+    return retryOnDoReset(() => this.#user.markWorkspaceRead(workspaceId));
+  }
+
+  markAllRead(): Promise<void> {
+    return retryOnDoReset(() => this.#user.markAllRead());
   }
 
   getPreferredModel(): Promise<string | null> {

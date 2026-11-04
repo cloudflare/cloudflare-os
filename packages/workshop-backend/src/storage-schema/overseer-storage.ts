@@ -582,9 +582,22 @@ export type StoredChatMetadata = AiChatMetadata & {hasProposedChanges?: boolean}
  */
 type StoredChangesMessage = Extract<AiChatMessage, {type: "changes"}> & {update?: Uint8Array};
 
-/** A stored chat message: the wire type, except that "changes" messages may be legacy ones. */
+/**
+ * A stored chat message: the wire type plus server-only fields, which are removed before the
+ * message is sent to clients. "changes" messages may also be legacy ones (see
+ * StoredChangesMessage).
+ */
 export type StoredChatMessage =
-    Exclude<AiChatMessage, {type: "changes"}> | StoredChangesMessage;
+    (Exclude<AiChatMessage, {type: "changes"}> | StoredChangesMessage) & {
+      /**
+       * For unread counts: how many visible messages (text or attachments; see
+       * `isCountableChatMessage()` in overseer.ts) the chat has up to and including this record,
+       * counting only from when unread tracking began. Every new record gets this, visible or not,
+       * so any read position can be turned into a count of visible messages by looking up a single
+       * record. Absent on records written before unread tracking existed.
+       */
+      visibleThroughSequence?: number;
+    };
 
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
@@ -1270,6 +1283,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     singletons: {
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
+      // Set when the workspace starts being deleted. From then on it can't be opened. Its storage is
+      // wiped only after every user who had it listed has confirmed removing it, along with their
+      // unread state and queued notifications for it (see pendingUserUpdates).
+      deleting: false,
 
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
@@ -1368,6 +1385,47 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
+      // Changes to a user's access to this workspace that still need to be sent to that user's
+      // User DO: a new role (e.g. downgraded to use-only), or removal (`role: null`), which also
+      // clears their unread state and queued notifications for this workspace. When the workspace
+      // is deleted, every user gets a removal. Retried from the alarm until each User DO confirms.
+      // Before each attempt, the user's current access is checked again (via `profileId`), so an
+      // outdated entry is updated or dropped. Deletion entries have no `profileId`.
+      pendingUserUpdates: collection<{
+        /** The recipient's User DO ID. */
+        userId: string;
+        profileId?: string;
+        role: CollaboratorRole | null;
+      }>()({primaryKey: "userId"}),
+      // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
+      // reached every user who tracks unread state for this workspace (the owner and build
+      // collaborators). Written in the same transaction as the change itself, so the update isn't
+      // lost if the DO restarts; the alarm retries it. There's at most one row per chat: later
+      // changes merge into it. The row is deleted once every recipient has accepted the update (or
+      // been skipped for lacking access). See docs/user-unread-state.md.
+      dirtyChats: collection<ChatFanoutStart & {
+        chatId: number;
+        /**
+         * Everyone has received the latest changes except `failedRecipients`, so only they need
+         * another attempt.
+         */
+        retryOnly?: true;
+        /**
+         * Recipients whose last attempt failed, each with the earliest change they still haven't
+         * received. Only written after a failure; a fully successful delivery deletes the row.
+         */
+        failedRecipients?: (ChatFanoutStart & {userId: string})[];
+      }>()({primaryKey: "chatId"}),
+      // Notifications ("task completed" or "permission requested") to send to a user. They're
+      // delivered to the user's User DO along with the chat's next unread update (see dirtyChats).
+      // Each refers to the timeline position where its event happened, rather than copying any
+      // message content. `userId` is the recipient's User DO ID. `id` is a stable notification ID,
+      // reused if recovery records the same outcome again, so the user isn't notified twice.
+      chatNotifications: collection<{
+        id: string;
+        chatId: number; sequence: number; userId: string;
+        kind: "taskCompleted" | "permissionRequested";
+      }>()({primaryKey: record => `${chatKey(record.chatId, record.sequence)}:${record.userId}:${record.kind}`}),
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage
@@ -1593,7 +1651,25 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "chatId"
       }),
 
-      nextChatSequences: collection<{chatId: number, nextSequence: number}>()({
+      nextChatSequences: collection<{
+        chatId: number;
+        nextSequence: number;
+        /**
+         * Number of visible messages written to the chat since unread tracking began; older history
+         * isn't counted. Equal to the `visibleThroughSequence` of the chat's latest record.
+         */
+        visibleThroughSequence?: number;
+        /**
+         * Sequence of the chat's latest visible message (since unread tracking began), so its
+         * preview can be read directly without searching back through internal activity.
+         */
+        latestVisibleMessageSequence?: number;
+        /**
+         * Sequence of the first record written after unread tracking began. Earlier records have no
+         * `visibleThroughSequence`; they count as read, and their notifications are never sent.
+         */
+        trackingStartSequence?: number;
+      }>()({
         primaryKey: "chatId"
       }),
 
@@ -1666,6 +1742,22 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     }
   });
 }
+
+/**
+ * Where a chat's pending unread update starts: the earliest change that recipients haven't received
+ * yet (see `dirtyChats`). It decides which notifications go with the update. For a user who has no
+ * read state for the chat yet, it also sets their starting read position: everything before it
+ * counts as read.
+ */
+export type ChatFanoutStart = {
+  /**
+   * Sequence of the earliest new message or notification in the pending update. Absent if only the
+   * chat's details (e.g. its title) changed.
+   */
+  firstMessageSequence?: number;
+  /** The `visibleThroughSequence` of the earliest new visible message in the pending update, if any. */
+  firstVisibleSequence?: number;
+};
 
 /** The Overseer's typed storage. See makeOverseerStorage. */
 export type OverseerStorage = ReturnType<typeof makeOverseerStorage>;

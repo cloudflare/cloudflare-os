@@ -1,4 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
+import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
@@ -17,7 +18,7 @@ import {
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
-  type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
+  type ChatChangeBoundaryRecord, type ChatChangeRecord, type ChatFanoutStart, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
   type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
@@ -104,6 +105,35 @@ import {
 } from "./gadget-export";
 
 const logger = createWorkshopLogger("workshop.overseer");
+
+function isCountableChatMessage(message: StoredChatMessage): boolean {
+  return message.type === "message" && message.generatedBySlashCommandSequence === undefined &&
+    (!!message.message.trim() || !!message.attachments?.length);
+}
+
+function headForMessage(meta: AiChatMetadata, message?: StoredChatMessage): ChatTimelineHead {
+  return message && isCountableChatMessage(message) ? {chatTitle: meta.title, latestSequence: message.sequence,
+    latestActivityAt: message.timestamp, latestMessagePreview: message.type === "message"
+      ? message.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240) || "Attachment" : ""}
+    : {chatTitle: meta.title, latestSequence: -1, latestMessagePreview: ""};
+}
+
+function mergeChatFanoutStarts(left: ChatFanoutStart | undefined, right: ChatFanoutStart): ChatFanoutStart {
+  let raw = Math.min(left?.firstMessageSequence ?? Infinity, right.firstMessageSequence ?? Infinity);
+  let visible = Math.min(left?.firstVisibleSequence ?? Infinity, right.firstVisibleSequence ?? Infinity);
+  return {firstMessageSequence: raw === Infinity ? undefined : raw,
+    firstVisibleSequence: visible === Infinity ? undefined : visible};
+}
+
+async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([request, new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("User DO handoff timed out.")), 2_000);
+    })]);
+  } finally { clearTimeout(timeout); }
+}
+
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
 let CODE_MODE_HARNESS =
@@ -650,9 +680,6 @@ async function submissionDigest(submission: CodeChangeSubmission): Promise<strin
 // the excess costs chips, not text.
 const MAX_MESSAGE_FORMAT_REFS = 32;
 
-// How many affected collaborator listings to refresh at once after a sharing change.
-const LISTING_REFRESH_BATCH = 16;
-
 // Longest noun accepted on a format reference. Denormalized display data.
 const MAX_FORMAT_REF_NOUN = 128;
 
@@ -1024,7 +1051,19 @@ class OverseerImpl implements AgentHooks {
   #updateAlarm(notBefore = 0): void {
     if (this.#inAlarmHandler) return;
 
+    if (this.storage.deleting.get()) {
+      // Even an empty removal queue must wake to finish an interrupted physical deletion.
+      this.#setAlarm(Math.max(notBefore, this.#userUpdatesRetryAt || Date.now() + 1_000));
+      return;
+    }
+
     let times: number[] = [];
+    if ([...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+      times.push(this.#userUpdatesRetryAt || Date.now() + 1_000);
+    }
+    if ([...this.storage.dirtyChats.list({limit: 1})].length) {
+      times.push(this.#unreadRetryAt || Date.now() + 1_000);
+    }
 
     // Outstanding agent work: see #agentKeepAliveTime for why it is set once and held.
     let hasAgentWork = this.#runningAgents.size > 0 ||
@@ -1051,6 +1090,10 @@ class OverseerImpl implements AgentHooks {
     }
 
     let next = times.length > 0 ? Math.max(notBefore, Math.min(...times)) : null;
+    this.#setAlarm(next);
+  }
+
+  #setAlarm(next: number | null): void {
     if (next === this.#scheduledAlarm) return;
     this.#scheduledAlarm = next;
     if (next === null) this.ctx.storage.deleteAlarm();
@@ -1073,12 +1116,18 @@ class OverseerImpl implements AgentHooks {
     this.#scheduledAlarm = undefined; // A success recomputes the next alarm from settled state.
     let failed = false;
     try {
+      if (this.storage.deleting.get()) {
+        await this.deliverUserUpdates();
+        return;
+      }
       do {
         this.#resumeInterruptedAgents();
         let results = await Promise.allSettled([
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
           this.deliverReadyExternalMessageResponses(),
+          this.deliverDirtyChats(),
+          this.deliverUserUpdates(),
         ]);
         for (let result of results) {
           if (result.status === "rejected") throw result.reason;
@@ -1094,6 +1143,305 @@ class OverseerImpl implements AgentHooks {
       if (!failed || retryCount >= ALARM_MAX_RETRIES) {
         this.#updateAlarm(failed ? Date.now() + AGENT_KEEPALIVE_ALARM_MS : 0);
       }
+    }
+  }
+
+  #unreadRetryAt = 0;
+  #dirtyChatTokens = new Map<number, ChatFanoutStart>();
+  #chatDeliveries = new Map<number, Promise<void>>();
+  #chatDeliveryScheduled = false;
+  #userUpdatesRetryAt = 0;
+  #userUpdateDrain?: Promise<void>;
+
+  // The tombstone fences every new open before callbacks cross an async boundary. Content is
+  // retained only until all user listings/accepted notifications have been removed durably.
+  beginDeletion(userIds: Set<string>): void {
+    this.ctx.storage.transactionSync(() => {
+      this.storage.deleting.put(true);
+      for (let pending of this.storage.pendingUserUpdates.list()) userIds.add(pending.userId);
+      for (let userId of userIds) this.storage.pendingUserUpdates.put({userId, role: null});
+    });
+    this.ownerId = undefined;
+    this.#userUpdatesRetryAt = 0;
+    this.#updateAlarm();
+  }
+
+  deliverUserUpdates(): Promise<void> {
+    if (this.#userUpdateDrain) return this.#userUpdateDrain;
+    if (!this.storage.deleting.get() && ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+      return Promise.resolve();
+    }
+    this.#userUpdatesRetryAt = Date.now() + 30_000;
+    this.#updateAlarm();
+    return this.#userUpdateDrain = (async () => {
+      let sharing = this.storage.deleting.get() ? undefined : await this.getSharingManager();
+      let deleting = this.storage.deleting.get();
+      let updates = [...this.storage.pendingUserUpdates.list()];
+      await Promise.allSettled(updates.map(async update => {
+        try {
+          // Re-admission supersedes a pending revocation; never replay an old removal after it.
+          if (!deleting) {
+            let role = sharing!.getEffectiveAccess(update.profileId!)?.role ?? null;
+            if (role === "build") {
+              this.storage.pendingUserUpdates.delete(update.userId);
+              return;
+            }
+            if (role !== update.role) {
+              update = {...update, role};
+              this.storage.pendingUserUpdates.put(update);
+            }
+          }
+          let user = this.users.get(this.users.idFromString(update.userId));
+          await boundedUserUpdate(deleting ? user.workspaceRemoved(this.ctx.id.toString()) :
+            update.role === null ? user.forgetSharedWorkspace(this.ctx.id.toString()) :
+              user.updateSharedWorkspaceRole(this.ctx.id.toString(), update.role));
+          let current = this.storage.pendingUserUpdates.get(update.userId);
+          if (current?.role === update.role && current.profileId === update.profileId) {
+            this.storage.pendingUserUpdates.delete(update.userId);
+          }
+        } catch (error) {
+          this.logger.warn("user workspace cleanup deferred", {
+            event: "shared.gadget.access.refresh.failed", gadgetId: this.ctx.id.toString(), error,
+          });
+        }
+      }));
+      if (this.storage.deleting.get() && ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+        await this.ctx.storage.deleteAll();
+        this.#scheduledAlarm = undefined;
+      }
+    })().finally(() => {
+      this.#userUpdateDrain = undefined;
+      this.#updateAlarm();
+    });
+  }
+
+  // Called by pre-write storage hooks: journal only; read committed data in a microtask.
+  markChatDirty(chatId: number, firstMessageSequence?: number, firstVisibleSequence?: number): void {
+    if (!this.ownerId) return;
+    let incoming = {firstMessageSequence, firstVisibleSequence};
+    this.#dirtyChatTokens.set(chatId, mergeChatFanoutStarts(this.#dirtyChatTokens.get(chatId), incoming));
+    let pending = this.storage.dirtyChats.get(chatId);
+    let start = mergeChatFanoutStarts(pending?.retryOnly ? undefined : pending, incoming);
+    if (!pending || pending.retryOnly || start.firstMessageSequence !== pending.firstMessageSequence ||
+        start.firstVisibleSequence !== pending.firstVisibleSequence) {
+      let updated = {...pending, chatId, ...start};
+      delete updated.retryOnly;
+      this.storage.dirtyChats.put(updated);
+    }
+    // Arm alongside the dirty write, before any RPC/microtask. Do not enumerate collections
+    // here: this hook may run inside a caller's live storage iterator.
+    let wake = Date.now() + 1_000;
+    if (!this.#inAlarmHandler && (this.#scheduledAlarm == null || this.#scheduledAlarm > wake)) {
+      this.#scheduledAlarm = wake;
+      this.ctx.storage.setAlarm(wake);
+    }
+    if (this.#chatDeliveryScheduled) return;
+    this.#chatDeliveryScheduled = true;
+    this.ctx.waitUntil(Promise.resolve().then(() => {
+      this.#chatDeliveryScheduled = false;
+      return this.deliverDirtyChats({retryFailures: false});
+    }).catch(error => {
+      this.logger.warn("chat delivery deferred", {event: "chat.delivery.deferred", error});
+    }));
+  }
+
+  deliverDirtyChats({chatId: onlyChatId, retryFailures = true}:
+      {chatId?: number; retryFailures?: boolean} = {}): Promise<void> {
+    if (this.storage.deleting.get()) return Promise.resolve();
+    if (!this.#chatDeliveries.size) {
+      let retryAt = Date.now() + 30_000;
+      this.#unreadRetryAt = retryFailures ? retryAt : Math.min(this.#unreadRetryAt || Infinity, retryAt);
+    }
+    this.#updateAlarm();
+    // Close the iterator before callbacks can mutate it. Coalesce per thread so a stalled
+    // recipient cannot block other threads, including those dirtied after this pass starts.
+    let dirtyChats = onlyChatId === undefined ? Array.from(this.storage.dirtyChats.list()) :
+      [this.storage.dirtyChats.get(onlyChatId)].filter(row => row !== undefined);
+    let deliveries = dirtyChats.filter(row => retryFailures || !row.retryOnly).map(({chatId}) => {
+      let pending = this.#chatDeliveries.get(chatId);
+      if (pending) return pending;
+      let token: ChatFanoutStart | undefined;
+      let delivery = (async () => {
+        let ownerId = this.ownerId;
+        if (!ownerId) return;
+        let sharing = await this.getSharingManager();
+        let recipients = new Map([[ownerId, ""], ...sharing.listCollaborators()
+          .filter(reader => reader.access.role === "build")
+          .map(reader => [this.users.idFromName(reader.profile.id).toString(), reader.profile.id] as const)]);
+        let dirty = this.storage.dirtyChats.get(chatId);
+        if (!dirty) return;
+        // Mutations after this snapshot accumulate their own start without another write on
+        // the successful path. Until checkpoint, the durable row still covers the whole batch.
+        token = {};
+        this.#dirtyChatTokens.set(chatId, token);
+        let targets = new Map<string, ChatFanoutStart>();
+        if (!dirty.retryOnly) {
+          let start = mergeChatFanoutStarts(undefined, dirty);
+          for (let userId of recipients.keys()) targets.set(userId, start);
+        }
+        for (let failed of dirty.failedRecipients ?? []) {
+          if (recipients.has(failed.userId)) {
+            targets.set(failed.userId, mergeChatFanoutStarts(targets.get(failed.userId), failed));
+          }
+        }
+        let meta = this.storage.chatMeta.get(chatId);
+        let counter = this.storage.nextChatSequences.get(chatId);
+        let latestMessage = counter?.latestVisibleMessageSequence === undefined ? undefined :
+          this.storage.chats.get(chatKey(chatId, counter.latestVisibleMessageSequence));
+        let head = meta ? headForMessage(meta, latestMessage) : undefined;
+        let latestVisibleSequence = counter?.visibleThroughSequence ?? 0;
+        let latestMessageAuthorId = head && head.latestSequence >= 0 && latestMessage?.author.type === "user"
+          ? latestMessage.author.id : undefined;
+        // Read this pending batch once, not all historical candidates once per recipient.
+        let firstMessage = [...targets.values()].reduce((earliest, start) =>
+          Math.min(earliest, start.firstMessageSequence ?? Infinity), Infinity);
+        let notifications = !meta || firstMessage === Infinity ? [] :
+          [...this.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId),
+            start: chatKey(chatId, firstMessage)})];
+        let entries = [...targets];
+        let results = await Promise.allSettled(entries.map(async ([userId, start]) => {
+          // Admission belongs to the source. Accepted alerts are delivery intent owned by the
+          // recipient; retries need neither a source read nor a new authorization decision.
+          if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!)) return;
+          await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
+            this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence, latestMessageAuthorId,
+              head: head!, headUpdatedAt: meta.lastActive,
+              notifications: notifications.filter(event => event.userId === userId &&
+                start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
+                .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null));
+        }));
+        // Workspace deletion cancels the durable intent, including outstanding failed handoffs.
+        if (this.storage.deleting.get() || !this.storage.dirtyChats.get(chatId)) return;
+        let failedRecipients = entries.flatMap(([userId, start], index) =>
+          results[index].status === "rejected" ? [{userId, ...start}] : []);
+        let newer = this.#dirtyChatTokens.get(chatId)!;
+        if (newer !== token || failedRecipients.length) {
+          // ACKed/denied users are not retried. New broadcasts still reach everyone, while
+          // failures alone retain older work. Eviction before this write can replay the batch.
+          if (newer !== token || !dirty.retryOnly || failedRecipients.length !== dirty.failedRecipients?.length ||
+              failedRecipients.some((failed, index) => {
+                let old = dirty.failedRecipients?.[index];
+                return !old || failed.userId !== old.userId || failed.firstMessageSequence !== old.firstMessageSequence ||
+                  failed.firstVisibleSequence !== old.firstVisibleSequence;
+              })) {
+            this.storage.dirtyChats.put({chatId, ...newer,
+              ...(newer === token ? {retryOnly: true as const} : {}),
+              ...(failedRecipients.length ? {failedRecipients} : {})});
+          }
+        } else {
+          this.storage.dirtyChats.delete(chatId);
+          this.#dirtyChatTokens.delete(chatId);
+        }
+        for (let result of results) if (result.status === "rejected") throw result.reason;
+      })().finally(() => {
+        this.#chatDeliveries.delete(chatId);
+        if (token && this.#dirtyChatTokens.has(chatId) && this.#dirtyChatTokens.get(chatId) !== token) {
+          // The keep-alive alarm may still be running; fresh work must not wait for it to end.
+          this.ctx.waitUntil(this.deliverDirtyChats({chatId, retryFailures: false}).catch(error => {
+            this.logger.warn("chat delivery deferred", {event: "chat.delivery.deferred", error});
+          }));
+        }
+      });
+      this.#chatDeliveries.set(chatId, delivery);
+      return delivery;
+    });
+    return (async () => {
+      let results = await Promise.allSettled(deliveries);
+      for (let result of results) if (result.status === "rejected") throw result.reason;
+      // Fresh work must not postpone or discard parked recipients' existing retry deadline.
+      if (retryFailures || ![...this.storage.dirtyChats.list({limit: 1})].length) this.#unreadRetryAt = 0;
+    })().finally(() => {
+      this.#updateAlarm();
+    });
+  }
+
+  chatHead(chatId: number): ChatTimelineHead | undefined {
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta) return;
+    let latest = this.storage.nextChatSequences.get(chatId)?.latestVisibleMessageSequence;
+    let message = latest === undefined ? undefined : this.storage.chats.get(chatKey(chatId, latest));
+    return headForMessage(meta, message);
+  }
+
+  async setChatReadHorizon(userId: string, chatId: number, sequence: number | undefined,
+      rewind: boolean): Promise<boolean> {
+    if (!this.ownerId) throw new Error("Workspace has been deleted.");
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta) return false;
+    let counter = this.storage.nextChatSequences.get(chatId);
+    let boundary = sequence ?? counter?.latestVisibleMessageSequence ?? -1;
+    if (rewind && boundary < 0) return false;
+    let through = rewind ? boundary - 1 : boundary;
+    let tail = this.nextChatSequencePeek(chatId) - 1;
+    if (!Number.isSafeInteger(through) || through < -1 || through > tail) {
+      throw new Error("Invalid timeline sequence.");
+    }
+    let [message] = through < 0 ? [] : this.storage.chats.list({
+      prefix: chatKeyPrefix(chatId), end: chatKey(chatId, through + 1), reverse: true, limit: 1});
+    return this.wrapUserDo(this.users.get(this.users.idFromString(userId))).applyReadHorizon(
+      this.ctx.id.toString(), chatId, {
+        readThroughSequence: through, readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
+        latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
+        head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
+        notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1,
+      }, rewind);
+  }
+
+  // Background reads retain the admission established on open, with the same lazy revocation
+  // semantics as existing sessions. New/unconfigured gatekeepers require a fresh interactive open.
+  async mayReadChatState(userId: string, profileId: string): Promise<boolean> {
+    if (!this.ownerId) return false;
+    if (userId === this.ownerId) return true;
+    let sharing = await this.getSharingManager();
+    if (sharing.getEffectiveAccess(profileId)?.role !== "build") return false;
+    let observer = this.storage.observers.get(profileId);
+    return this.#inScopeGatekeepers("workspace").every(gk =>
+      observer?.accountChoices[gk.id] !== undefined);
+  }
+
+  #initializeUnreadTracking(): void {
+    // These hooks run inside the collection's synchronous write transaction, before it stores
+    // the incoming record. Stamp every new record (including non-visible records) so a read
+    // command can translate its raw timeline boundary with one indexed seek, not a tail scan.
+    const stamp = (message: StoredChatMessage, old?: StoredChatMessage) => {
+      if (old) { message.visibleThroughSequence = old.visibleThroughSequence; return; }
+      if (!this.ownerId) return;
+      let counter = this.storage.nextChatSequences.get(message.chatId) ?? {chatId: message.chatId, nextSequence: 0};
+      let visible = counter.visibleThroughSequence ?? 0;
+      if (isCountableChatMessage(message)) visible++;
+      if (counter.trackingStartSequence === undefined || visible !== counter.visibleThroughSequence) {
+        this.storage.nextChatSequences.put({...counter, visibleThroughSequence: visible,
+          latestVisibleMessageSequence: isCountableChatMessage(message) ? message.sequence : counter.latestVisibleMessageSequence,
+          trackingStartSequence: counter.trackingStartSequence ?? message.sequence});
+      }
+      message.visibleThroughSequence = visible;
+    };
+    this.storage.chats.subscribe({
+      add: message => {
+        stamp(message);
+        if (isCountableChatMessage(message)) this.markChatDirty(message.chatId, message.sequence, message.visibleThroughSequence);
+      },
+      update: (old, message) => {
+        stamp(message, old);
+        if (isCountableChatMessage(old) || isCountableChatMessage(message)) {
+          this.markChatDirty(message.chatId, isCountableChatMessage(old) ? undefined : message.sequence);
+        }
+      },
+      remove: () => {}, // Whole-thread deletion is journaled by chatMeta.remove.
+    });
+    this.storage.chatMeta.subscribe({
+      add: meta => this.markChatDirty(meta.id),
+      update: (old, meta) => { if (old.title !== meta.title) this.markChatDirty(meta.id); },
+      remove: meta => this.markChatDirty(meta.id),
+    });
+    this.storage.chatNotifications.subscribe({
+      add: event => this.markChatDirty(event.chatId, event.sequence),
+      update: (_old, event) => this.markChatDirty(event.chatId, event.sequence),
+      remove: () => {},
+    });
+    if ([...this.storage.dirtyChats.list({limit: 1})].length) {
+      this.#unreadRetryAt = this.#scheduledAlarm ?? Date.now() + 1_000;
+      this.#updateAlarm();
     }
   }
 
@@ -1266,7 +1614,7 @@ class OverseerImpl implements AgentHooks {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
     });
     this.users = this.ctx.exports.UserDurableObject;
-    this.ownerId = this.storage.ownerId.get();
+    this.ownerId = this.storage.deleting.get() ? undefined : this.storage.ownerId.get();
     this.observerLedger = new ObserverLedger(this);
 
     // Run any pending storage migration (see storage-schema/overseer-migrations.ts) before
@@ -1308,9 +1656,19 @@ class OverseerImpl implements AgentHooks {
       if ([...this.storage.activeAgents.list()].some(r => this.storage.chatMeta.get(r.chatId)?.activeAgent)) {
         this.#agentKeepAliveTime = this.#scheduledAlarm ?? undefined;
       }
+      this.#initializeUnreadTracking();
+      if (this.storage.deleting.get() || [...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+        this.#userUpdatesRetryAt = this.#scheduledAlarm ?? Date.now() + 1_000;
+        this.#updateAlarm();
+      }
     // Resume outside the critical section, before blocked events are delivered. On failure,
     // blockConcurrencyWhile already aborted the object; consume its rejection and retry on wake.
-    }).then(() => this.#resumeInterruptedAgents(), () => {});
+    }).then(() => {
+      this.#resumeInterruptedAgents();
+      if (this.storage.deleting.get() || [...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+        this.ctx.waitUntil(this.deliverUserUpdates());
+      }
+    }, () => {});
   }
 
   // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
@@ -1318,6 +1676,7 @@ class OverseerImpl implements AgentHooks {
   // before any blocked event is delivered, so at the start of the alarm handler
   // it'll recognize that agents are running and wait for them.
   #resumeInterruptedAgents(): void {
+    if (this.storage.deleting.get()) return;
     for (let record of Array.from(this.storage.activeAgents.list())) {
       if (this.#runningAgents.has(record.chatId)) continue;
       if (!this.storage.chatMeta.get(record.chatId)?.activeAgent) {
@@ -5455,15 +5814,15 @@ class OverseerImpl implements AgentHooks {
       if (sharing && baseline) {
         let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
         if (affected.length > 0) {
+          let refresh = this.refreshAffectedCollaboratorListings(affected);
           // Anyone who joined through a link or through another collaborator just lost access (or
           // was downgraded), so sever live sessions as removeCollaborator does, after the writes
-          // above. The cleanup is best-effort and not awaited: the observation shouldn't wait on
-          // gatekeeper and User-DO round trips, and whatever the restart cuts off self-heals (see
-          // removeCollaborator).
+          // above. The observation doesn't wait for cleanup: User DO updates are journaled before
+          // the restart, while observer teardown remains best-effort (see removeCollaborator).
           this.scheduleAccessRestart(
               "Gadget restarted to revoke access for people the owner did not add directly.");
           this.tearDownLostObservers(affected)
-              .then(() => this.refreshAffectedCollaboratorListings(affected))
+              .then(() => refresh)
               .catch(err => {
                 this.logger.warn("failed to clean up after ownerInvitesOnly revoked access", {
                   event: "sharing.owner.invites.only.cleanup.failed", error: err,
@@ -5494,12 +5853,15 @@ class OverseerImpl implements AgentHooks {
       {type: "blob", referencedBy: entry.referencedBy})).payload;
   }
 
-  // Prepare a stored chat message for delivery to a client: inline image attachment bytes
+  // Prepare a stored chat message for delivery to a client: strip private unread positions,
+  // inline image attachment bytes
   // (non-image attachments are fetched on demand via getChatAttachmentContent()), strip the
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
   // rollback insurance (see overseer-git-migration.ts) but nothing can apply it, so it must not
   // ship as dead weight on the wire (it is not part of the message's API type).
   hydrateChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
+    let {visibleThroughSequence: _, ...publicMessage} = msg;
+    msg = publicMessage;
     if (msg.type === "changes" && "update" in msg) {
       let {update: _, ...rest} = msg;
       msg = rest;
@@ -6584,8 +6946,9 @@ class OverseerImpl implements AgentHooks {
 
   // Get the sequence number that should be assigned to the next message in the given chat thread.
   nextChatSequence(chatId: number): number {
-    let result = this.storage.nextChatSequences.get(chatId)?.nextSequence || 0;
-    this.storage.nextChatSequences.put({chatId, nextSequence: result + 1});
+    let counter = this.storage.nextChatSequences.get(chatId);
+    let result = counter?.nextSequence ?? 0;
+    this.storage.nextChatSequences.put({...counter, chatId, nextSequence: result + 1});
     return result;
   }
 
@@ -9312,22 +9675,16 @@ class OverseerImpl implements AgentHooks {
   // Normal teardown and recovery of a logged outcome notify the same original caller. Only a
   // person waits on completion; callbacks and spawned agents notify only when permission is needed.
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
-    let meta = this.storage.chatMeta.get(chatId);
-    if (!meta) return;
+    if (!this.storage.chatMeta.get(chatId)) return;
     let awaitingDecision = this.#decisionWait(chatId)?.pending ?? false;
     if (!awaitingDecision && initiator.type !== "user") return;
-    this.ctx.waitUntil(this.users.get(this.users.idFromString(initiatorUserId))
-        .publishNotification({
-          id: crypto.randomUUID(),
-          kind: awaitingDecision ? "permissionRequested" : "taskCompleted",
-          workspaceId: this.ctx.id.toString(),
-          chatId,
-          chatTitle: meta.title,
-        }).catch(error => {
-          this.logger.warn("notification publish failed", {
-            event: "notification.publish.failed", chatId, error,
-          });
-        }));
+    // The outcome already exists in the timeline. Recovery reuses this position and event ID.
+    let sequence = this.nextChatSequencePeek(chatId) - 1;
+    let kind = awaitingDecision ? "permissionRequested" as const : "taskCompleted" as const;
+    let previous = this.storage.chatNotifications.get(`${chatKey(chatId, sequence)}:${initiatorUserId}:${kind}`);
+    if (previous?.kind === kind && previous.userId === initiatorUserId) return;
+    this.storage.chatNotifications.put({id: crypto.randomUUID(), chatId, sequence,
+      userId: initiatorUserId, kind});
   }
 
   // The log is the wait record. A nudge is the consumption boundary for a previous decision,
@@ -10041,31 +10398,34 @@ class OverseerImpl implements AgentHooks {
   // for those who lost access entirely, and for those who kept some, refresh the
   // presentation-only role and their Outputs index, which may list gadgets they no longer hold.
   async refreshAffectedCollaboratorListings(affected: AffectedCollaborator[]): Promise<void> {
-    let gadgetId = this.ctx.id.toString();
-
-    // Fanned out because these are independent DO round-trips: revoking a share link can affect
-    // everyone who joined through it, and one await each would make revocation take as long as the
-    // slowest collaborator times their number. Chunked to cap how many are in flight at once, not
-    // how many are made in total.
-    for (let i = 0; i < affected.length; i += LISTING_REFRESH_BATCH) {
-      let batch = affected.slice(i, i + LISTING_REFRESH_BATCH);
-      let results = await Promise.allSettled(batch.map(entry => {
-        let user = this.users.get(this.users.idFromName(entry.profile.id));
-        return entry.newAccess === null
-          ? user.forgetSharedWorkspace(gadgetId)
-          : Promise.all([
-              user.updateSharedWorkspaceRole(gadgetId, entry.newAccess.role),
-              user.syncWorkspaceOutputs(gadgetId, this.outputsSnapshot(entry.newAccess)),
-            ]);
-      }));
-      for (let j = 0; j < results.length; j++) {
-        let result = results[j];
-        if (result.status !== "rejected") continue;
-        this.logger.warn("failed to refresh affected collaborator's workspace listing", {
-          event: "shared.gadget.access.refresh.failed", gadgetId, error: result.reason,
+    if (!affected.length || this.storage.deleting.get()) return;
+    // Persist in the sharing mutation's synchronous continuation, before a session restart or
+    // gatekeeper teardown can interrupt it. Retries use this same source alarm after eviction.
+    this.ctx.storage.transactionSync(() => {
+      for (let entry of affected) {
+        let userId = this.users.idFromName(entry.profile.id).toString();
+        let current = this.storage.pendingUserUpdates.get(userId);
+        let role = entry.newAccess?.role ?? null;
+        if (current?.role !== role) this.storage.pendingUserUpdates.put({
+          userId, profileId: entry.profile.id, role,
         });
       }
+    });
+    this.#userUpdatesRetryAt = 0;
+    this.#updateAlarm();
+    let work = this.deliverUserUpdates();
+    this.ctx.waitUntil(work);
+    // Preserve the scoped Outputs refresh when access narrows without changing the role.
+    let outputs = await Promise.allSettled(affected.flatMap(entry => entry.newAccess === null ? [] : [
+      boundedUserUpdate(this.users.get(this.users.idFromName(entry.profile.id)).syncWorkspaceOutputs(
+        this.ctx.id.toString(), this.outputsSnapshot(entry.newAccess))),
+    ]));
+    for (let result of outputs) if (result.status === "rejected") {
+      this.logger.warn("failed to refresh affected collaborator's workspace outputs", {
+        event: "shared.gadget.access.refresh.failed", gadgetId: this.ctx.id.toString(), error: result.reason,
+      });
     }
+    await work;
   }
 
   // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
@@ -10640,6 +11000,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
              notifyClosed: NativeRpcStub<() => void>,
              shareKey?: string,
              configureObservers?: RpcStub<ObserverConfigCallback>): Promise<Overseer> {
+    if (this.impl.storage.deleting.get()) {
+      throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
+    }
     let firstOpen = !this.impl.ownerId;
     if (firstOpen) {
       // This Overseer hasn't been initialized yet.
@@ -10742,10 +11105,20 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // (or is refreshed on) their home page.
       let title = this.impl.storage.title.get();
       let gadgetId = this.impl.ctx.id.toString();
+      // Initial admission skips earlier alerts. Carry the timeline boundaries in this existing
+      // callback so the User DO can initialize under its thread mutex without another RPC.
+      // Enrollment is best-effort: events racing this first registration are not guaranteed;
+      // subsequent arrivals fan out normally once the User DO has recorded the listing.
+      let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
+        chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
+        head: this.impl.chatHead(meta.id),
+        headUpdatedAt: meta.lastActive,
+        readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
+      })) : [];
       void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          await clientUser.recordSharedWorkspaceOpen(gadgetId, title, ownerProfile, role);
+          await clientUser.recordSharedWorkspaceOpen(gadgetId, title, ownerProfile, role, notificationBaselines);
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,
@@ -10787,6 +11160,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   async receiveExternalMessage(
     input: ExternalMessageSubmitInput,
   ): Promise<SubmitExternalMessageResult> {
+    if (this.impl.storage.deleting.get()) return {accepted: false, message: "Workspace was deleted."};
     if (!input.prompt.trim()) {
       return { accepted: false, message: "Please include a prompt." };
     }
@@ -11687,6 +12061,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can delete it.");
     }
+    if (!this.impl.ownerId) return;
     let startedAt = Date.now();
 
     this.impl.destroyAllLiveChats();
@@ -11703,19 +12078,18 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
-    await this.impl.ctx.blockConcurrencyWhile(async () => {
-      await this.#owner.deleteWorkspace(this.impl.ctx.id.toString());
-      await this.impl.ctx.storage.deleteAll();
-      this.impl.recordGadgetAnalytics({
-        event_name: "gadget_deleted",
-        user_id: this.#clientUser.id.toString(),
-      });
-      // The restart severs every session still holding this workspace so its client reopens. The
-      // deleter has nothing to reopen, so close it first. Best-effort: throwing here resets the DO.
-      await this.notifyClosed().catch(() => {});
-      this.impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
-      this.impl.ownerId = undefined;
+    let sharing = await this.impl.getSharingManager();
+    if (!this.impl.ownerId) return; // Another deletion may have committed while hooks were disabled.
+    let readers = new Set([this.impl.ownerId, ...sharing.listCollaborators()
+      .map(reader => this.impl.users.idFromName(reader.profile.id).toString())]);
+    this.impl.beginDeletion(readers);
+    this.impl.recordGadgetAnalytics({
+      event_name: "gadget_deleted",
+      user_id: this.#clientUser.id.toString(),
     });
+    await this.impl.deliverUserUpdates();
+    this.impl.ctx.waitUntil(this.notifyClosed().catch(() => {}));
+    this.impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
 
     this.impl.logger.info("deleted workspace", {
       event: "workspace.delete.completed", durationMs: Date.now() - startedAt,
@@ -12293,6 +12667,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }));
   }
 
+  async markChatRead(chatId: number, throughSequence?: number): Promise<void> {
+    await this.impl.setChatReadHorizon(this.clientUserId, chatId, throughSequence, false);
+  }
+
+  async markChatUnread(chatId: number, fromSequence?: number): Promise<boolean> {
+    return this.impl.setChatReadHorizon(this.clientUserId, chatId, fromSequence, true);
+  }
+
   async listChats(): Promise<AiChatMetadata[]> {
     return [...this.impl.storage.chatMeta.list({reverse: true})]
         .map(meta => this.impl.chatMetaForClient(meta));
@@ -12540,6 +12922,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.removeChatWorkpieces(chatId);
     this.impl.storage.chatMeta.delete(chatId);
     this.impl.storage.chatContext.delete(chatId);
+    for (let event of Array.from(this.impl.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.chatNotifications.deleteRecord(event);
+    }
     // Buffer the checkpoints first: deleting invalidates the list cursor.
     for (let checkpoint of Array.from(
         this.impl.storage.chatCompactions.list({prefix: chatKeyPrefix(chatId)}))) {
@@ -12833,6 +13218,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       : Promise<AffectedCollaborator[]> {
     let affected = (await this.impl.getSharingManager())
         .removeCollaborator(this.#sharingCaller(), profileId, keepUsers, gadgetId);
+    let refresh = this.impl.refreshAffectedCollaboratorListings(affected);
     // Schedule the restart in the same synchronous step as the sharing mutation: the revoked
     // collaborator's live sessions must not outlive the cleanup below, which crosses gatekeeper
     // and User-DO round trips that can stall or hang. Only restart if someone actually lost
@@ -12842,13 +13228,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       this.impl.scheduleAccessRestart(
           "Gadget restarted to revoke access for a removed collaborator.");
     }
-    // The reset's ~100ms delay gives the best-effort cleanup below a head start; whatever it cut
-    // off self-heals (a leftover observer registration is lazily cleaned at exclusion time or by
-    // a later open, a stale cached workspace listing just yields a denied open).
-    // Tear down observer records for anyone who lost access (see tearDownLostObservers)...
-    await this.impl.tearDownLostObservers(affected);
-    // ...and likewise update or remove their cached workspace listing.
-    await this.impl.refreshAffectedCollaboratorListings(affected);
+    // The reset's ~100ms delay gives observer cleanup a head start. A leftover observer is lazily
+    // cleaned at exclusion time or by a later open; journaled User DO updates resume on the alarm.
+    // Acknowledge the durable sharing change before that restart severs the caller's socket.
+    this.impl.ctx.waitUntil(Promise.all([this.impl.tearDownLostObservers(affected), refresh]).catch(error => {
+      this.impl.logger.warn("failed to clean up after collaborator removal", {
+        event: "sharing.collaborator.removal.cleanup.failed", error,
+      });
+    }));
     return affected;
   }
 
@@ -12860,13 +13247,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]> {
     let affected = (await this.impl.getSharingManager())
         .revokeShareLink(this.#sharingCaller(), linkId, keepUsers);
-    // Restart first, then best-effort cleanup, for the reasons given in removeCollaborator.
+    let refresh = this.impl.refreshAffectedCollaboratorListings(affected);
+    // User DO cleanup is already journaled; restart live sessions before observer teardown.
     if (affected.length > 0) {
       this.impl.scheduleAccessRestart(
           "Gadget restarted to revoke access for a revoked share link.");
     }
-    await this.impl.tearDownLostObservers(affected);
-    await this.impl.refreshAffectedCollaboratorListings(affected);
+    this.impl.ctx.waitUntil(Promise.all([this.impl.tearDownLostObservers(affected), refresh]).catch(error => {
+      this.impl.logger.warn("failed to clean up after share link revocation", {
+        event: "sharing.link.revocation.cleanup.failed", error,
+      });
+    }));
     return affected;
   }
 
@@ -13160,6 +13551,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       }
     }));
   }
+  async markChatRead(_chatId: number, _throughSequence?: number): Promise<void> { this.#deny(); }
+  async markChatUnread(_chatId: number, _fromSequence?: number): Promise<boolean> { this.#deny(); }
   async listChats(): Promise<AiChatMetadata[]> { this.#deny(); }
   async listModels(): Promise<AiChatAuthorInfo[]> { this.#deny(); }
   async getChatHistory(_chatId: number, _beforeSequence?: number): Promise<AiChatHistoryPage> {
