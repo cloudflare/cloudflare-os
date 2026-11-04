@@ -899,6 +899,7 @@ its resource types.
 | **microsoft** | Outlook Mailbox / Folder / Conversation / Sender | **C** | Track the mailbox, folders and messages each read revealed (`outlook-observers.ts`); verify each by a probe `GET` as the observer: the whole mailbox needs access to all of it (someone shared one folder gets 404), a folder or message needs that folder or message. |
 | **microsoft** | Outlook Calendar / Availability | **C** | Track calendar units at the detail level each read revealed (`calendar-observers.ts`): a calendar unit admits an observer only when the owner's `calendarPermissions` give them a role that sees that level (`calendar-acl.ts`, where a group entry can only lower the organization default), which only the owner can read, so a unit of someone else's calendar admits that owner alone; an `availability:<address>` unit only when `getSchedule` as the observer answers for that address; the all-calendars unit admits nobody but the owner. |
 | **x** | Profile | **C** | As Account: a public profile needs only an X account, and the `owner` collection covers a protected user's posts. Accepted over-permissiveness for every X binding: an author who has blocked the observer is still readable through the gadget, since checking each author per observer per read would cost a read each and what leaks is public. |
+| **canva** | Account | **A** | Always throw. Designs are shared inside Canva, and sharing a gadget in the Workshop shares nothing there, so a collaborator would read designs Canva never showed them. The Connect API has no way to grant that access or to ask what another Canva user may see, and a narrower per-design binding was considered and dropped for the same reason: a Workshop collaborator has no standing in Canva to verify against. |
 
 ### 9.3 The "broad binding" lens
 
@@ -926,6 +927,9 @@ This is why the broad bindings split the way they do:
 - **Decomposition deliberately deferred → A:** Gmail Mailbox — could in principle decompose into
   mailing lists the observer belongs to, but that is the out-of-scope "advanced" case, so it stays
   fully private for now.
+- **Fail criterion 2 → A:** Canva Account — designs have distinct ACLs, but they are Canva's, and a
+  Workshop collaborator holds no Canva standing the API could check them against; probing with the
+  collaborator's own Canva connection answers a different question from "did the owner share this".
 - **Satisfies both but still A:** Google Chat Account — spaces have distinct ACLs and `spaces.get`
   is a serviceable oracle, so C is technically available. It stays A because the binding also
   reaches the owner's direct messages, where "can this collaborator open it too" has no useful
