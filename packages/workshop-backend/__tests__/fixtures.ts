@@ -41,7 +41,7 @@ export function putAction(
     id: number,
     opts: { state?: ActionRecord["state"], type?: ActionRecord["type"], gatekeeperId?: number,
             actionTag?: string, autoApprovable?: boolean, createdAt?: Date,
-            appliedAt?: Date } = {}) {
+            appliedAt?: Date, autoApplyAttemptedAt?: Date } = {}) {
   let base = {
     id,
     gatekeeperId: opts.gatekeeperId ?? 1,
@@ -54,7 +54,10 @@ export function putAction(
   let description = { title: `Action ${id}`, description: `Action ${id} description` };
   let type = opts.type ?? "action";
   storage.actions.put(
-      type === "action" ? { ...base, type, action: id, description: {
+      type === "action" ? { ...base, type, action: id,
+        ...(opts.autoApplyAttemptedAt !== undefined
+            ? { autoApplyAttemptedAt: opts.autoApplyAttemptedAt } : {}),
+        description: {
         ...description,
         implementsRevert: true,
         actionKind: { tag: opts.actionTag ?? "edit", label: "Edits" },

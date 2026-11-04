@@ -388,6 +388,40 @@ describe("agent tracing", () => {
     }
   });
 
+  it("suspends an awaited auto-approvable action behind one whose automatic apply was attempted",
+      async () => {
+    let workspace = `agent-tracing-${crypto.randomUUID()}`;
+    let poke = { tag: "poke", label: "Pokes" };
+    await inOverseer(workspace, async impl => {
+      impl.storage.gatekeepers.put({
+        id: 7, resourceTitle: "Repository", class: {},
+        creationSpec: {
+          type: "gatekeeper", vendorId: "testvendor",
+          resourceUrl: "https://example.com/repo", typeUrlPattern: "https://*",
+        },
+      });
+      impl.storage.autoApproveTags.put({ gatekeeperId: 7, actionKind: poke, enabledBy: OWNER });
+      let applied: number[] = [];
+      impl.getGatekeeperFacet = async () => ({ applyAction: async (n: number) => { applied.push(n); } });
+      // An earlier automatic apply of this one threw or was cut off, so it waits for a person.
+      impl.storage.actions.put({ id: 1, gatekeeperId: 7, type: "action", action: 1,
+        createdAt: new Date(), state: "pending", caller: { from: "agent", chatId: CHAT_ID },
+        autoApplyAttemptedAt: new Date(),
+        description: { title: "Poke", description: "", implementsRevert: false,
+          autoApprovable: true, actionKind: poke } });
+      impl.storage.nextActionId.put(2);
+
+      await impl.submitAction(7, 2, {
+        title: "Poke again", description: "", implementsRevert: false, autoApprovable: true,
+        actionKind: poke, awaitDecision: true,
+      }, { from: "agent", chatId: CHAT_ID });
+      await impl.drainAutoApprovals(7);
+
+      expect(applied).toEqual([]);
+      expect(impl.consumeCapturedActions(CHAT_ID)?.awaitDecision).toBe(true);
+    });
+  });
+
   it("traces approval of actions an agent submits", async () => {
     let workspace = `agent-tracing-${crypto.randomUUID()}`;
     let gadgetId = env.TEST_OVERSEER.idFromName(workspace).toString();

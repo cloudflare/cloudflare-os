@@ -38,6 +38,17 @@ export function autoApprovalRule(
 }
 
 /**
+ * `autoApprovalRule()` for a pending action the drainer may apply: undefined once an automatic
+ * apply of it has been attempted, since the gatekeeper may have committed that attempt.
+ */
+export function autoApplyRule(
+    storage: AutoApprovalStorage, gatekeeperId: number, record: ActionRecord & {type: "action"})
+    : AutoApproveTagRecord | undefined {
+  if (record.autoApplyAttemptedAt !== undefined) return undefined;
+  return autoApprovalRule(storage, gatekeeperId, record.description);
+}
+
+/**
  * Applies a single eligible pending action: invoke the gatekeeper, mark it approved, persist. The
  * caller has already validated that the record is still pending.
  */
@@ -84,8 +95,9 @@ export class AutoApprovalDrainer {
   // applying -- it is never skipped ahead of. This preserves in-order application and the
   // invariant that nothing is silently applied past a human gate.
   //
-  // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, a user-enabled
-  // rule for the action's kind, and no restricted-data latch.
+  // Eligibility is `autoApplyRule()`: the author's `autoApprovable` verdict, a user-enabled rule
+  // for the action's kind, no restricted-data latch, and no earlier automatic attempt (an apply
+  // that threw or was cut off stays a manual gate on every later drain).
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Materialize before applying: the index yields lazily in ascending id order, and applying
     // mutates it mid-iteration. Actions created after this snapshot trigger their own drain(),
@@ -95,7 +107,7 @@ export class AutoApprovalDrainer {
     for (let record of pending) {
       if (record.type !== "action") continue;
 
-      let rule = autoApprovalRule(this.storage, gatekeeperId, record.description);
+      let rule = autoApplyRule(this.storage, gatekeeperId, record);
       if (rule === undefined) {
         // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
         return;
@@ -114,6 +126,7 @@ export class AutoApprovalDrainer {
         await this.applyPendingAction(fresh, rule.enabledBy, true);
       } catch (err) {
         // Leave the action pending for manual handling and stop the drain (never skip ahead).
+        // applyPendingAction recorded the attempt, so later drains stop here too.
         logger.error("auto-approval failed", {
           event: "auto.approval.failed", actionId: fresh.id, error: err,
         });
