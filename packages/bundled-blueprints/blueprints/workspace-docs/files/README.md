@@ -87,4 +87,5 @@ Every write runs in the Durable Object's mutation queue. One that changes the do
 ## Limitations
 
 - No real-time cursors or presence.
+- Undo of block actions (moving, duplicating or deleting blocks, ticking a to-do) ends once you type: the browser's own undo history doesn't hold them, so ⌘Z after typing undoes only the typing.
 - Images added in the editor are embedded in the document (downscaled to 1600px and under about 1.4 MB each, or 2.7 MB for a GIF), so many large images make it heavy.

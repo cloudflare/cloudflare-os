@@ -1465,8 +1465,9 @@ function toggleCode() {
   const lineOf = (node: Node) => closestEl(node, "p, h1, h2, h3, h4, h5, h6, li, td, th, blockquote");
   const line = lineOf(range.startContainer);
   if (range.collapsed || !line || line !== lineOf(range.endContainer)) return;
-  const text = range.toString();
-  if (!text || /\n/.test(text)) return;
+  // Range text leaves out a <br>: a selection across a soft line break would join its lines.
+  const text = textWithBreaks(range.cloneContents());
+  if (!text || text.includes("\n")) return;
   // Built here rather than by insertHTML, whose markup the editor then rewrites
   // (see fixCodeSpans) where the browser's undo can't follow. The words stay
   // selected, as bold leaves them, so toggling again takes the code off.

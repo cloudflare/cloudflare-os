@@ -147,12 +147,16 @@ describe("editing", () => {
   });
 
   // A cell or list item holds the code, never the table or list: a selection across two is left alone.
-  it("makes no inline code of a selection across cells or list items", () => {
-    for (const [id, html] of [["c3", "<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>"], ["c4", "<ul><li>one</li><li>two</li></ul>"]]) {
+  // So is one across a soft line break, whose lines the code would join.
+  it("makes no inline code of a selection across cells, list items or lines", () => {
+    for (const [id, html] of [["c3", "<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>"], ["c4", "<ul><li>one</li><li>two</li></ul>"], ["c5", "<p>one<br>two</p>"]]) {
       const block = show(id!, html!);
-      const [first, second] = block.querySelectorAll("td, li");
-      select(first!.firstChild!, 1);
-      getSelection()!.getRangeAt(0).setEnd(second!.firstChild!, 2);
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      const first = walker.nextNode()!;
+      let last = first;
+      while (walker.nextNode()) last = walker.currentNode;
+      select(first, 1);
+      getSelection()!.getRangeAt(0).setEnd(last, 2);
       const before = block.innerHTML;
       press({ key: "e" });
       expect(block.innerHTML).toBe(before);

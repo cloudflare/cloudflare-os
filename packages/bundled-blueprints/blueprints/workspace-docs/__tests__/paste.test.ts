@@ -70,14 +70,17 @@ describe("sanitizePastedHtml", () => {
     expect(paste('<h1 style="mso-list:l0 level1 lfo1">Heading</h1>')).toBe("<h1>Heading</h1>");
   });
 
+  // A numbered excerpt from mid-list keeps its numbers.
   it("rebuilds Word's list paragraphs as nested lists without their markers", () => {
     const item = (list: string, level: number, marker: string, text: string) =>
       `<p class=MsoListParagraph style='margin-left:.5in;text-indent:-.25in;mso-list:${list} level${level} lfo1'><![if !supportLists]>` +
       `<span style='font-family:Symbol'><span style='mso-list:Ignore'>${marker}<span style='font:7.0pt "Times New Roman"'>&nbsp;&nbsp;&nbsp; </span></span></span><![endif]>${text}<o:p></o:p></p>\n`;
     expect(paste(
       item("l0", 1, "·", "One") + item("l0", 2, "o", "Nested <b>bold</b>") + item("l0", 1, "·", "Two") +
-      "<p class=MsoNormal>Between</p>\n" + item("l1", 1, "1.", "First") + item("l1", 1, "2.", "Second"),
-    )).toBe("<ul><li>One<ul><li>Nested <b>bold</b></li></ul></li><li>Two</li></ul><p>Between</p><ol><li>First</li><li>Second</li></ol>");
+      "<p class=MsoNormal>Between</p>\n" + item("l1", 1, "1.", "First") + item("l1", 1, "2.", "Second") +
+      "<p class=MsoNormal>Excerpt</p>\n" + item("l2", 1, "5.", "Fifth") + item("l2", 1, "6.", "Sixth"),
+    )).toBe("<ul><li>One<ul><li>Nested <b>bold</b></li></ul></li><li>Two</li></ul><p>Between</p><ol><li>First</li><li>Second</li></ol>" +
+      '<p>Excerpt</p><ol start="5"><li>Fifth</li><li>Sixth</li></ol>');
   });
 
   // Word for the web makes each item a list of its own, its depth in data-aria-level and its list in

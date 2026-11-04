@@ -216,7 +216,9 @@ function wordListItems(node: Node): WordListItem[] | null {
     const lead = first && /^[\s\u00a0]*(\S{1,5})[\s\u00a0]+/.exec(first.data);
     if (first && lead && (ORDERED_MARKER.test(lead[1]) || /^[·•▪◦§o\-–*]$/.test(lead[1]))) { text = lead[1]; first.data = first.data.slice(lead[0].length); }
   }
-  return [{ node, level: Math.max(1, Number(m[1])), ordered: ORDERED_MARKER.test(text.replace(/[\s\u00a0]+/g, "")) }];
+  const ordered = ORDERED_MARKER.exec(text.replace(/[\s\u00a0]+/g, ""));
+  // A numbered marker starts the list at its number ("5." for an excerpt); a lettered or roman one at 1.
+  return [{ node, level: Math.max(1, Number(m[1])), ordered: !!ordered, start: Number(ordered?.[1]) || 1 }];
 }
 
 // A line's tag: h1–h3 for a heading (deeper ones are h3), Word for the web's
