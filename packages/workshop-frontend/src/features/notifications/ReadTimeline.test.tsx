@@ -728,6 +728,26 @@ describe("timeline read/unread experience", () => {
     }
   });
 
+  it.each([false, true])("pauses for a remote read then rewind, including a following arrival (batched: %s)", async batched => {
+    await render();
+    await update(snapshot(1, 0));
+    await settle();
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const arrival = snapshot(4, 0);
+    const updates = [snapshot(2, 2), snapshot(3, 0), {...arrival,
+      chats: [{...arrival.chats[0], unreadMessageCount: 3}]}];
+    if (batched) await act(async () => {
+      for (const next of updates) await receiveChat(next);
+    });
+    else for (const next of updates) await updateChat(next);
+    visibleBottom = 450;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
   it("pauses automatic reading when another device marks unread, and resumes after an explicit read", async () => {
     await render();
     await update(snapshot(1, 2));

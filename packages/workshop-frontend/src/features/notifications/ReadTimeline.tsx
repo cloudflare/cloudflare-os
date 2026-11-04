@@ -44,7 +44,7 @@ export const ReadTimeline = ({
   const chat = unread?.state?.chats.find(
     (item) => item.workspaceId === workspaceId && item.chatId === chatId,
   );
-  const [visit, setVisit] = useState<{ horizon?: number; divider?: number; paused: boolean }>();
+  const [visit, renderVisit] = useState<{ horizon?: number; divider?: number; paused: boolean }>();
   // A new request also retries a failed page when navigation is already pending; zero is idle.
   const [jump, setJump] = useState(1);
   const root = useRef<HTMLDivElement>(null);
@@ -63,18 +63,25 @@ export const ReadTimeline = ({
     startedSnapshot: typeof chat;
     acknowledgedReplacement?: object;
   })[]>([]);
-  const localEchoes = useRef(new WeakSet<ChatReadState>());
+  const receivedChat = useRef<ChatReadState | undefined>(undefined);
   const latestAction = useRef<LocalAction | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence, overseer });
   latest.current = { chat, unread, visit, latestSequence, overseer };
+  // Subscriber callbacks can precede the next render. Each transition must see the prior visit,
+  // including changes from earlier callbacks and local command completions in the same batch.
+  const setVisit = useCallback((update: typeof visit | ((current: typeof visit) => typeof visit)) => {
+    const next = typeof update === "function" ? update(latest.current.visit) : update;
+    latest.current.visit = next;
+    renderVisit(next);
+  }, []);
 
   // A departed visit must not restore navigation through the parent's shared callback.
   useLayoutEffect(() => () => { latestAction.current = undefined; }, []);
 
   const createAction = (): LocalAction => ({
     previousAction: latestAction.current,
-    rollback: {visit, jump, target: jumpSequence.current, requestedPage: requestedPage.current},
+    rollback: {visit: latest.current.visit, jump, target: jumpSequence.current, requestedPage: requestedPage.current},
   });
   const rollbackAction = (action: LocalAction) => {
     action.failed = true;
@@ -102,12 +109,23 @@ export const ReadTimeline = ({
     }
   };
 
-  const reconcileChat = useCallback((chat: ChatReadState | undefined, replacement?: UserUnreadState) => {
-    if (!chat || localEchoes.current.has(chat)) return;
+  const reconcileChat = useCallback((chat: ChatReadState | undefined, replacement?: UserUnreadState, available = true) => {
+    const visit = latest.current.visit;
+    latest.current.chat = chat;
+    if (!chat) {
+      receivedChat.current = undefined;
+      pending.current = -1;
+      // A legacy thread is already open, but its first cursor must establish the horizon.
+      // History and unread snapshots arrive independently; the history tail cannot stand in for it.
+      if (available && !visit && oldestSequence !== undefined) setVisit({paused: false});
+      return;
+    }
+    if (receivedChat.current === chat) return;
+    receivedChat.current = chat;
     const localIndex = localUnreadRequests.current.findLastIndex(request =>
       request.startedSnapshot !== chat && request.horizon === chat.readThroughSequence);
-    if (localIndex !== -1) {
-      localEchoes.current.add(chat);
+    const localUnread = localIndex !== -1;
+    if (localUnread) {
       // A later local command can supersede earlier ones before their echoes arrive.
       for (const request of localUnreadRequests.current.splice(0, localIndex + 1)) {
         const previous = request.rollback.visit;
@@ -127,25 +145,6 @@ export const ReadTimeline = ({
       localUnreadRequests.current = localUnreadRequests.current.filter(request =>
         (!request.acknowledgedReplacement || request.acknowledgedReplacement === replacement));
     }
-  }, []);
-
-  useLayoutEffect(() => unread?.subscribeToUpdates((state, replacement) => {
-    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId), replacement);
-  }), [unread?.subscribeToUpdates, workspaceId, chatId, reconcileChat]);
-
-  useLayoutEffect(() => {
-    if (!chat) {
-      pending.current = -1;
-      // A legacy thread is already open, but its first cursor must establish the horizon.
-      // History and unread snapshots arrive independently; the history tail cannot stand in for it.
-      if (unread?.state && !visit && oldestSequence !== undefined) {
-        setVisit({paused: false});
-      }
-      return;
-    }
-    // Also reconcile the initial snapshot when entering an already-subscribed workspace.
-    reconcileChat(chat, unread?.replacementSnapshot);
-    const localUnread = localEchoes.current.has(chat);
     if (!visit || (visit.horizon !== undefined && chat.readThroughSequence < visit.horizon)) {
       // A remote rewind establishes a new visit, not a rollback target for older commands.
       if (visit && !localUnread) latestAction.current = undefined;
@@ -171,7 +170,16 @@ export const ReadTimeline = ({
     } else if (visit.horizon !== chat.readThroughSequence) {
       setVisit({...visit, horizon: chat.readThroughSequence});
     }
-  }, [chat, visit, latestSequence, oldestSequence, onUnreadNavigation, unread?.state, unread?.replacementSnapshot, reconcileChat]);
+  }, [oldestSequence, onUnreadNavigation, setVisit]);
+
+  useLayoutEffect(() => unread?.subscribeToUpdates((state, replacement) => {
+    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId), replacement);
+  }), [unread?.subscribeToUpdates, workspaceId, chatId, reconcileChat]);
+
+  useLayoutEffect(() => {
+    // Also reconcile the initial snapshot when entering an already-subscribed workspace.
+    reconcileChat(chat, unread?.replacementSnapshot, !!unread?.state);
+  }, [chat, unread?.state, unread?.replacementSnapshot, reconcileChat]);
 
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.
@@ -321,7 +329,7 @@ export const ReadTimeline = ({
           requestedPage.current = undefined;
           if (jump) onUnreadNavigation(false);
           setJump(0);
-          setVisit({ horizon: visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
+          setVisit({ horizon: latest.current.visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
           // Changed boundaries retain markers until an echo or a replacement snapshot arrives.
           void unread.markUnread(overseer, chatId, sequence).then(changed => {
             if (!changed) {
