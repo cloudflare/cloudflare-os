@@ -401,8 +401,9 @@ export class UserAccount extends DurableObject<Env> {
    * Whether this account can read each subresource, in order. An account's telemetry needs a
    * telemetry read there to succeed; a Worker's needs that and for the Worker, looked up by its ID,
    * to be one this account can see, so a Worker that took its name since is never asked about.
-   * Scopes are checked on every call, before anything is reused, so a connection whose grant lacks
-   * telemetry, a billing-only one, is denied without asking Cloudflare. An allowed answer from
+   * Scopes are checked on every call, before anything is reused or asked, so a connection whose
+   * grant lacks a subresource's scopes (a billing-only one, or one granted only account telemetry
+   * asked about a Worker) is denied without asking Cloudflare. An allowed answer from
    * Cloudflare is reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
    * SUBRESOURCE_ACCESS_DENIED_TTL_MS, under the credentials that learned it. Throws for an ID it
    * can't check, or when access can't be determined (no usable credentials, an outage, a
@@ -435,9 +436,9 @@ export class UserAccount extends DurableObject<Env> {
     // one can read telemetry in.
     for (const { accountId, workerId } of parsed) {
       allowed.push(granted.includes(ACCOUNT_OBSERVABILITY_RESOURCE.urlPattern) &&
+        (workerId === undefined || granted.includes(WORKER_OBSERVABILITY_RESOURCE.urlPattern)) &&
         await ask(observabilitySubresourceId(accountId)) &&
-        (workerId === undefined || (granted.includes(WORKER_OBSERVABILITY_RESOURCE.urlPattern) &&
-          await ask(observabilitySubresourceId(accountId, workerId)))));
+        (workerId === undefined || await ask(observabilitySubresourceId(accountId, workerId))));
     }
     if (this.#credentialsId() !== credentials) {
       throw new Error("This Cloudflare connection was reconnected while its access was being checked.");

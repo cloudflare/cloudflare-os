@@ -100,8 +100,10 @@ describe("verifyObserverAccess", () => {
     await bind(workerObservabilityUrl(ACCOUNT_ID, "api"));
     await account("account-only", ACCOUNT_ONLY_SCOPES);
 
-    expect(await verify(["account-only"], [ACCOUNT])).toEqual(["account-only"]);
+    // Refused on its scopes alone, before the account's own question is asked.
     expect(await verify(["account-only"], [API_WORKER])).toEqual([]);
+    expect(asked("account-only")).toEqual([]);
+    expect(await verify(["account-only"], [ACCOUNT])).toEqual(["account-only"]);
     expect(asked("account-only")).toEqual([`POST workers/observability/telemetry/keys`]);
   });
 
