@@ -135,10 +135,12 @@ The check works as follows:
 - **Observer:** a non-owner collaborator (any role) who can see data the Gadget has read.
 - **Sharing table:** the existing `collaborators` / `shareKeys` storage + permission graph
   (`sharing.ts`). Records the owner's **intent** that a user have access.
-- **Observer record (new):** overseer storage describing a user who has **configured their
-  gatekeeper accounts and passed all `addObserver` checks** — i.e. is actually set up to observe.
-  This is distinct from the sharing table: intent vs. configured-and-verified. Opening requires
-  **both** (reachable in the sharing graph AND a valid, complete observer record).
+- **Observer record (new):** overseer storage holding a user's observer ID and the gatekeeper
+  accounts they chose. A first admission reserves it with no choices before registering anywhere;
+  each admission then publishes the choices it verified, so a published choice — not the record's
+  existence — marks someone configured and verified for that connection. This is distinct from
+  the sharing table: intent vs. configured-and-verified. Opening requires **both** (reachable in
+  the sharing graph AND passing verification for what is opened).
 - **Observer ID:** a **random, opaque** string the overseer generates when it first creates an
   observer record, and stores in that record. It is passed to gatekeepers as the stable handle
   for this observer. We deliberately do **not** use `profile.id` (usually an email), to avoid
@@ -645,8 +647,8 @@ Persisting the observation record itself is unchanged; we only gate it.
 > configures, `addObserver` re-checks them against *all* past observations (including any
 > restricted one) and throws, denying them. So forward exclusion only needs to handle
 > already-configured observers — plus the one case in between: a user *mid*-registration is
-> already known to every gatekeeper whose `addObserver` has returned, and can be named before
-> their record exists. That is the Step 5 item 1 known gap above.
+> already known to every gatekeeper whose `addObserver` has returned. Their record is reserved
+> before any of those calls, so item 1 resolves them like any other observer.
 
 ### Step 6 — Overseer: remove observers on sharing changes
 
@@ -672,7 +674,8 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
   causes superfluous future checks, never a data leak: a registration is what *admits* an open,
   and every open re-runs `addObserver`, so a stale one grants nothing on its own — while
   `authorizeObservation`'s exclusion gate re-checks the live sharing graph for any id a gatekeeper
-  still names. A record is only ever persisted for a party who passed full verification.
+  still names. Account choices are only ever published for a party who passed verification of
+  them; a reserved record carries none.
 
 > Multi-gatekeeper sequencing/atomicity is an overseer implementation detail, not part of the
 > shared interface. Because `addObserver` is re-run every open and `removeObserver` is idempotent,
