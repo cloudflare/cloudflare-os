@@ -110,10 +110,11 @@ type CursorShape<T> = {
    * between refusal and retry would otherwise disclose the previous connection's rows.
    *
    * `terminal` marks the walk over, so `items` is empty and no further page will come. Describe
-   * that case as the query it answered rather than the rows it returned, and give it a
-   * `{ kind: "baseline" }` scope or a synthetic collection id: the gate refuses a `collections`
-   * scope naming none. A mid-walk empty page (a spent fetch window that still says "ask again")
-   * arrives with `terminal: false`.
+   * that case as the query it answered rather than the rows it returned, and still report whatever
+   * restricts that answer (a containing workspace or tenant, say), since "none" is provider data
+   * too. A mid-walk empty page (a spent fetch window that still says "ask again") arrives with
+   * `terminal: false`. A legacy gate refuses a `collections` scope naming none, so a binding still
+   * on one gives an empty page `{ kind: "baseline" }` or a synthetic collection id.
    * @param items The provider rows of the page, without injected rows. Empty when `terminal`.
    * @param context `terminal` when this ends the walk.
    */
@@ -433,9 +434,10 @@ export type TokenCursorOptions<T> = CursorShape<T> & {
  *
  * @example
  * ```ts
- * // The cursor is walked after this call returns, so it takes its own lease rather than
- * // borrowing the session's stub, and releases it when the walk is dropped.
- * const walk = this.#gate.lease();
+ * // The cursor is walked after this call returns, so it owns a duplicate of the session's
+ * // approval-queue stub and releases it when the walk is dropped.
+ * const walk = this.#queue.dup();
+ * const workspace = formatSubresourceId({ fragments: [{ name: "workspace", id: workspaceId }] });
  * return new TokenCursor<Project>({
  *   pageSize: 50,
  *   dispose: () => walk[Symbol.dispose](),
@@ -443,15 +445,17 @@ export type TokenCursorOptions<T> = CursorShape<T> & {
  *     const page = await api.listProjects({ cursor: token, limit: perPage });
  *     return { items: page.projects, nextToken: page.nextCursor };
  *   },
- *   // Branch on emptiness, not on `terminal`: a spent mid-walk window is also empty, and a
- *   // `collections` scope naming no collection is refused.
- *   authorizePage: (items, { terminal }) => items.length === 0
- *     ? walk.authorize(
- *       { title: "Projects", description: terminal ? "Listed the projects; there were none" : "Scanned a window of projects; none were visible" },
- *       { kind: "baseline" })
- *     : walk.authorize(
- *       { title: "Projects", description: `Read ${items.length} projects` },
- *       { kind: "collections", ids: items.map(project => project.id) }),
+ *   // Every page reports the workspace, an empty one included: membership governs "none" too.
+ *   authorizePage: (items, { terminal }) => walk.authorizeObservation({
+ *     title: "Projects",
+ *     description: items.length > 0
+ *       ? `Read ${items.length} projects`
+ *       : terminal ? "Listed the projects; there were none" : "Scanned a window of projects; none were visible",
+ *     subresources: [
+ *       workspace,
+ *       ...items.map(project => formatSubresourceId({ fragments: [{ name: "project", id: project.id }] })),
+ *     ],
+ *   }),
  * });
  * ```
  */
