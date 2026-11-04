@@ -212,6 +212,12 @@ Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) w
 6. is barred from automation by provider policy;
 7. changes permissions, sharing or membership.
 
+Exceptions, kept `true` by decision although a rule covers them; add one only with the maintainers' agreement:
+
+- Gmail's trash, spam, draft delete and label delete (rule 1): routine mailbox upkeep, and trash and spam are undone in Gmail.
+- GitHub's force push to a branch that is neither the default nor protected (rule 1): it has its own `forcePush` kind, which a user enables apart from other pushes.
+- X's bookmark, mute and hide (rule 3): one billed write each, and the only X writes its developer policy lets software automate (see `packages/gatekeeper-x/AGENTS.md`).
+
 Every `false` carries a one-line comment naming its rule. Posting into the resource the user bound (its channel, thread or issue) is not rule 2. A package's `AGENTS.md` or README may be stricter (e.g. `gatekeeper-x`); follow it.
 
 Where the verdict depends on the payload, compute it instead of a blanket `false`: per payload in a hand-built `ActionDescription` (`autoApprovalOf` in `packages/gatekeeper-github/src/github.ts`), or in the kit as sibling definitions, one `true` and one `false`, that the session picks between at submit (`editSheetValues` and `updateSpreadsheet` in `packages/gatekeeper-google/src/sheets-actions.ts`). The existing definition keeps its name, since stored records resolve by it. When the facts behind a `true` can change before apply (an event gaining attendees), re-check at apply time.
@@ -385,7 +391,7 @@ Reviews tend to stop at general correctness. The most important review is of the
   - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
   - Runtime coverage exercises denied observers, empty and cached/buffered pages, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
-- **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true`. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
+- **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 
 ## Tips
 
