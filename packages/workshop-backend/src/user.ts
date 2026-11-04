@@ -2353,11 +2353,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let description: AccountDescription;
       try {
         description = await record.account.describe();
+        // Identity lookup can fail independently of grants. Only preserve saved identity fields,
+        // never saved grants that the live description no longer advertises.
+        description.displayName ??= record.description.displayName;
+        description.uniqueName ??= record.description.uniqueName;
+        description.avatar ??= record.description.avatar;
       } catch (err) {
         // Keep the account available for reconnecting, but don't assert grants we couldn't check.
         description = { ...record.description, grantedResourceUrlPatterns: [] };
-        logger.warn("failed to describe connected account", {
-          event: "connected.account.describe.failed",
+        logger.warn("failed to refresh connected account grants", {
+          event: "connected.account.grants.refresh.failed",
           accountId: record.id, vendorId: record.vendorId, error: err,
         });
       }

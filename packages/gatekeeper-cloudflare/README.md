@@ -26,9 +26,10 @@ billing-only connections can add the grant when the user first selects an observ
 and a connection granted only `workers-observability.read` (as every one was before Worker bindings
 needed the second scope) is asked for `workers-tail.read` the first time it connects a Worker.
 The Workshop obtains a live account description when listing connected accounts, including during
-observer setup, so a pre-upgrade saved description cannot bypass that additional consent. If the
-description cannot be refreshed, the saved identity remains available for reconnecting but no grants
-are asserted.
+observer setup, so a pre-upgrade saved description cannot bypass that additional consent. Missing
+display name, unique name, or avatar fields retain their saved values, but grants come only from the
+live description. If description refresh rejects, the saved identity remains available for
+reconnecting but no grants are asserted.
 Cloudflare exposes account and Worker resource choices; resource bindings provide the finer
 capability boundary after connection.
 

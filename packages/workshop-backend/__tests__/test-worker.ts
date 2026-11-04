@@ -96,7 +96,7 @@ const stashedTickets = new Map<string, string>();
  * `failRevoke` / `failDescribe`, that method rejects after being recorded.
  */
 export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
-  name: string; failRevoke?: boolean; failDescribe?: boolean; providesUi?: boolean;
+  name: string; failRevoke?: boolean; failDescribe?: boolean; omitIdentity?: boolean; providesUi?: boolean;
   grantedResourceUrlPatterns?: string[]; supportedResourceUrlPatterns?: string[];
 }> {
   #record(call: string) {
@@ -109,8 +109,8 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
     this.#record("describe");
     if (this.ctx.props.failDescribe) throw new Error("describe failed");
     return {
-      displayName: this.ctx.props.name,
-      uniqueName: this.ctx.props.name,
+      displayName: this.ctx.props.omitIdentity ? undefined : this.ctx.props.name,
+      uniqueName: this.ctx.props.omitIdentity ? undefined : this.ctx.props.name,
       ...(this.ctx.props.grantedResourceUrlPatterns === undefined ? {} : {
         grantedResourceUrlPatterns: this.ctx.props.grantedResourceUrlPatterns,
       }),

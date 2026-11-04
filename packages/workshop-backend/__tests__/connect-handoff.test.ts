@@ -41,7 +41,7 @@ type UserInternals = UserDurableObject & {
 };
 
 type FakeAccountProps = {
-  name: string; failRevoke?: boolean; failDescribe?: boolean;
+  name: string; failRevoke?: boolean; failDescribe?: boolean; omitIdentity?: boolean;
   grantedResourceUrlPatterns?: string[]; supportedResourceUrlPatterns?: string[];
 };
 
@@ -376,17 +376,24 @@ describe("connect handoff", () => {
     });
   });
 
-  it.each([false, true])("checks live grants before publishing a pre-upgrade description (describe fails: %s)", async failDescribe => {
+  it.each([
+    { mode: "live identity", failDescribe: false, omitIdentity: false, noGrants: false },
+    { mode: "partial identity", failDescribe: false, omitIdentity: true, noGrants: false },
+    { mode: "partial identity without grants", failDescribe: false, omitIdentity: true, noGrants: true },
+    { mode: "rejected description", failDescribe: true, omitIdentity: false, noGrants: true },
+  ])("checks live grants before publishing a pre-upgrade description ($mode)", async ({
+    mode, failDescribe, omitIdentity, noGrants,
+  }) => {
     const { inDo } = freshUser();
     // Before Worker metadata was needed, this exact stored snapshot advertised both types even
     // though the token only had workers-observability.read. Both connect and observer UIs use it.
     const accountPattern = "https://dash.cloudflare.com/:accountId/workers-and-pages/observability";
     const workerPattern = "https://dash.cloudflare.com/:accountId/workers/services/view/:workerName/production/observability";
     await inDo(async user => {
-      const name = `pre-upgrade-${failDescribe}`;
+      const name = `pre-upgrade-${mode}`;
       const { account } = fakeAccount(user, name, {
-        failDescribe,
-        grantedResourceUrlPatterns: [accountPattern],
+        failDescribe, omitIdentity,
+        grantedResourceUrlPatterns: noGrants ? [] : [accountPattern],
         supportedResourceUrlPatterns: [accountPattern, workerPattern],
       });
       user["vendors"].set("cloudflare", {
@@ -412,10 +419,12 @@ describe("connect handoff", () => {
       await initial;
 
       expect(descriptions).toHaveLength(1);
-      expect(descriptions[0].grantedResourceUrlPatterns).toEqual(failDescribe ? [] : [accountPattern]);
-      if (failDescribe) {
-        expect(descriptions[0]).toEqual({ ...storedDescription, grantedResourceUrlPatterns: [] });
-      }
+      expect(descriptions[0]).toEqual({
+        displayName: failDescribe || omitIdentity ? storedDescription.displayName : name,
+        uniqueName: failDescribe || omitIdentity ? storedDescription.uniqueName : name,
+        avatar: storedDescription.avatar,
+        grantedResourceUrlPatterns: noGrants ? [] : [accountPattern],
+      });
       // Drive the existing consumer flow, not just describe(): the missing Worker grant must
       // reach ensureResources and return a nonce-bound consent flow rather than a Worker lookup.
       const missing = [workerPattern].filter(pattern =>
