@@ -188,11 +188,23 @@ describe("saveDashboard and fireEvent", () => {
     ["a blob: iframe", { type: "iframe", url: "blob:abc-123" }],
     ["a custom card", { type: "custom:button-card", entity: "light.lamp" }],
     ["a URL in a key", { type: "entities", entities: [], "https://attacker.example/": true }],
+    ["a tap that performs an action", { type: "button", name: "Lights", tap_action: { action: "perform-action", perform_action: "light.turn_on" } }],
+    ["a tap that calls a service", { type: "button", name: "Lights", tap_action: { action: "call-service", service: "light.turn_on" } }],
+    ["a hold that fires a DOM event", { type: "button", hold_action: { action: "fire-dom-event", browser_mod: {} } }],
+    ["a lock row", { type: "entities", entities: [{ entity: "lock.front_door", name: "Lights" }] }],
+    ["a script button", { type: "button", entity: "script.open_garage", name: "Lights" }],
+    ["an alarm panel", { type: "alarm-panel", entity: "alarm_control_panel.home" }],
+    ["a scene in a tile", { type: "tile", entity: "scene.away" }],
   ])("asks before saving a dashboard with %s", (_name, card) => {
     expect(verdict(saveDashboard({ views: [{ cards: [card] }] }))).toEqual({
       tag: "edit-dashboards",
       autoApprovable: false,
     });
+  });
+
+  it("auto-approves a toggle of a device-control entity", () => {
+    const card = { type: "button", entity: "light.lamp", tap_action: { action: "toggle" }, hold_action: { action: "more-info" } };
+    expect(verdict(saveDashboard({ views: [{ cards: [card] }] })).autoApprovable).toBe(true);
   });
 
   it("asks before saving a dashboard driven by a custom strategy", () => {
