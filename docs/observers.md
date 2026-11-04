@@ -343,8 +343,9 @@ Logic:
 6. **Publish the verified choices** only after every in-scope binding verified: they are merged
    into the record as it stands then, so concurrent admissions keep each other's choices. A record
    deleted or replaced meanwhile, because the profile lost access, refuses the admission rather
-   than reviving it. Publishing a choice is the moment the user becomes a configured observer of
-   that connection; deleting the record is what triggers `removeObserver` (Steps 5 and 6).
+   than reviving it, and de-registers its id from every connection as the teardown does.
+   Publishing a choice is the moment the user becomes a configured observer of that connection;
+   deleting the record is what triggers `removeObserver` (Steps 5 and 6).
 
 Then in `open()`:
 

@@ -10712,11 +10712,15 @@ class OverseerImpl implements AgentHooks {
 
     // 7. Publish the choices this admission verified onto the record as it stands now, keeping
     //    those another admission by this profile published while this one awaited. A record
-    //    deleted or replaced meanwhile means the profile lost access (see tearDownLostObservers):
-    //    this admission's registrations were made under an id nothing resolves any more, so it is
-    //    refused rather than reviving the record.
+    //    deleted or replaced meanwhile means the profile lost access (see tearDownLostObservers),
+    //    so the admission is refused rather than reviving the record, and its id is de-registered
+    //    as that teardown does: registrations landing after the teardown would otherwise linger
+    //    under an id nothing resolves. No admission can still need it -- any other holding it is
+    //    refused the same way, and a new one reserves a fresh id.
     let latest = this.storage.observers.get(profileId);
     if (latest?.observerId !== observerId) {
+      await this.#removeObserverFromGatekeepers(
+          observerId, [...this.storage.gatekeepers.list()].map(gk => gk.id));
       throw new Error(
           "Your access to this workspace changed while you were being verified. Please try again.");
     }

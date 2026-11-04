@@ -1,5 +1,6 @@
 // What ensureObserver does with a binding it could not verify: every failure is collected and
-// reported as a denial the user can act on, and no registration is torn down.
+// reported as a denial the user can act on, and no registration another admission may share is
+// torn down.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding, like
 // git-migration-do.test.ts); the gatekeeper facet and the client's User DO are the only fakes.
@@ -47,11 +48,11 @@ function seedGatekeepers(impl: ObserverImpl, ids: number[] = [1, 2]): void {
 // Facets for every seeded connection, each registering observers through `hooks`.
 function setObserverFacets(impl: ObserverImpl, hooks: {
   addObserver?(id: number, observerId: string): Promise<void>;
-  removeObserver?(id: number): Promise<void>;
+  removeObserver?(id: number, observerId: string): Promise<void>;
 } = {}): void {
   const getFacet = async (id: number) => ({
     addObserver: async (observerId: string) => { await hooks.addObserver?.(id, observerId); },
-    removeObserver: async () => { await hooks.removeObserver?.(id); },
+    removeObserver: async (observerId: string) => { await hooks.removeObserver?.(id, observerId); },
   });
   // These direct-DO tests exercise only the observer methods admission calls, not the full RPC
   // facet.
@@ -212,6 +213,47 @@ describe("a binding that fails verification", () => {
       let record = impl.storage.observers.get("alice");
       expect(record?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
       expect(registered).toEqual(new Set([record?.observerId]));
+    });
+  });
+
+  it.each(["deleted", "replaced"])(
+      "refuses an admission whose record was %s while it waited, de-registering its id",
+      async mode => {
+    let stub = env.TEST_OVERSEER.getByName(`observer-verify-stale-${mode}`);
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = instance["impl"];
+      seedOwner(impl);
+      seedGatekeepers(impl, [1]);
+      let registrations = new Set<string>();
+      setObserverFacets(impl, {
+        addObserver: async (id, observerId) => { registrations.add(`${id}:${observerId}`); },
+        removeObserver: async (id, observerId) => { registrations.delete(`${id}:${observerId}`); },
+      });
+
+      // Alice loses access while her first admission waits on its account prompt: the teardown
+      // deletes her record before the admission registers anything ("replaced": and a later
+      // admission has since reserved a new one).
+      let release!: () => void;
+      let parked = new Promise<void>(resolve => { release = resolve; });
+      let prompted!: () => void;
+      let promptOpen = new Promise<void>(resolve => { prompted = resolve; });
+      let admission = impl.ensureObserver("alice", fakeClientUser, "workspace", {
+        configure: async (needs: {gatekeeperId: number}[]) => {
+          prompted();
+          await parked;
+          return needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: 10 }));
+        },
+      } as unknown as ObserverConfigureCallback);
+      await promptOpen;
+      impl.storage.observers.delete("alice");
+      let replacement = { profileId: "alice", observerId: "obs-new", accountChoices: { 1: 99 } };
+      if (mode === "replaced") impl.storage.observers.put(replacement);
+      release();
+
+      await expect(admission).rejects.toThrow(/access to this workspace changed/);
+      expect(impl.storage.observers.get("alice"))
+          .toEqual(mode === "replaced" ? replacement : undefined);
+      expect(registrations).toEqual(new Set());
     });
   });
 });
