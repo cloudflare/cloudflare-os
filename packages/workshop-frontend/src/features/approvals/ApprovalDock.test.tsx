@@ -58,7 +58,7 @@ async function renderDock(
   const onAutoApproveChange = vi.fn<() => void>()
   const onHide = vi.fn<() => void>()
   const onViewAll = vi.fn<() => void>()
-  const onShowInChat = vi.fn<(action: ActionLogEntry) => void>()
+  const onShowInChat = vi.fn<(action: ActionLogEntry, how: 'paged' | 'clicked') => void>()
   Object.assign(server.overseer as object, { approveAction, rejectAction, setAutoApprovedActionKind })
   await view.render(
     <Dock
@@ -137,7 +137,8 @@ describe('ApprovalDock', () => {
     await click('Next request')
     onShowInChat.mockClear()
     await act(async () => document.querySelector<HTMLButtonElement>('button[title="Show in chat"]')!.click())
-    expect(onShowInChat).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 2, chatId: 3 }))
+    expect(onShowInChat).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: 2, chatId: 3 }), 'clicked')
   })
 
   it('shows each request it pages to in its chat, and none that names no chat', async () => {
@@ -145,10 +146,10 @@ describe('ApprovalDock', () => {
     await click('Next request')
     expect(onShowInChat).not.toHaveBeenCalled()
     await click('Next request')
-    expect(onShowInChat).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3, chatId: 5 }))
+    expect(onShowInChat).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3, chatId: 5 }), 'paged')
     await click('Previous request')
     await click('Previous request')
-    expect(onShowInChat).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1, chatId: 3 }))
+    expect(onShowInChat).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1, chatId: 3 }), 'paged')
     expect(onShowInChat).toHaveBeenCalledTimes(2)
   })
 
@@ -198,7 +199,13 @@ describe('ApprovalDock', () => {
 
     await click('Approval needed')
     expect(document.body.textContent).toContain('Regards, the workspace.')
+  })
+
+  it('flags an incomplete description before the request is opened', async () => {
+    await renderDock([email(1), email(2, { descriptionIsComplete: true })])
     expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
+    await click('Next request')
+    expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
     expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
   })
 

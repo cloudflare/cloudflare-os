@@ -27,7 +27,7 @@ type ApprovalDockProps = {
   onViewAll: () => void
   // Shows the request where it was asked for: called on paging to it and on clicking it, for one
   // inChat accepts (its chat still exists, say).
-  onShowInChat: (action: ActionLogEntry) => void
+  onShowInChat: (action: ActionLogEntry, how: 'paged' | 'clicked') => void
   inChat: (action: ActionLogEntry) => boolean
   // The request the approver paged to; null shows the oldest (see `index` for one that is no
   // longer pending). Held by the caller, so it survives the dock moving between placements.
@@ -92,7 +92,7 @@ export const ApprovalDock = ({
   // Paging also takes the chat to the request (a request resolving moves the dock on without it).
   const go = (to: number) => {
     onSelect(pending[to].id)
-    if (inChat(pending[to])) onShowInChat(pending[to])
+    if (inChat(pending[to])) onShowInChat(pending[to], 'paged')
   }
 
   const summary = (
@@ -132,7 +132,12 @@ export const ApprovalDock = ({
               <ActionFields fields={fields} uncapped={restricted} />
             </div>
           )}
-          {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
+        </div>
+      )}
+      {/* Outside the disclosure: the approver is told even before opening the request. */}
+      {incomplete && (
+        <div className="border-b border-kumo-line p-2">
+          <IncompleteDescriptionNotice id={incompleteId} />
         </div>
       )}
 
@@ -165,7 +170,7 @@ export const ApprovalDock = ({
           {!inChat(action) ? summary : (
             <button
               type="button"
-              onClick={() => onShowInChat(action)}
+              onClick={() => onShowInChat(action, 'clicked')}
               title="Show in chat"
               className="group/summary block w-full min-w-0 cursor-pointer rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
             >

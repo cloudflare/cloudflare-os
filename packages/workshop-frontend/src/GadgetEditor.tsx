@@ -1036,8 +1036,14 @@ export default function GadgetEditor() {
   const [chatIds, setChatIds] = useState<ReadonlySet<number>>(new Set())
   // The pending request the dock asked to show in its chat, until the chat has revealed it.
   const [revealRequest, setRevealRequest] = useState<{ chatId: number, actionId: number } | null>(null)
-  const showRequestInChat = (action: ActionLogEntry) => {
+  // Full-screen preview covers the chat: paging there only changes the dock, and clicking a
+  // request leaves full screen to show it.
+  const showRequestInChat = (action: ActionLogEntry, how: 'paged' | 'clicked') => {
     if (action.chatId === undefined) return
+    if (isGadgetFullscreen) {
+      if (how === 'paged') return
+      exitGadgetFullscreen()
+    }
     if (action.chatId !== effectiveSelectedChatId) navigateToChat(action.chatId)
     setRevealRequest({ chatId: action.chatId, actionId: action.id })
   }
