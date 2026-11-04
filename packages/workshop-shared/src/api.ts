@@ -5933,7 +5933,8 @@ export interface GadgetClient extends WorkpieceClient {
   /**
    * Restore an earlier version of this gadget's code: commit `commitId`'s files on top of the
    * current head, so the head moves forward and history keeps every version. A gadget whose head
-   * can't be read is recovered this way.
+   * can't be read is recovered this way. Only code is restored: the gadget's stored data stays as
+   * later versions left it, and the restored code must be able to read it.
    *
    * Throws if `commitId` is not on the head's first-parent history, if a blueprint update was
    * merged since it (restoring it would drop the update the gadget still records taking), or if
