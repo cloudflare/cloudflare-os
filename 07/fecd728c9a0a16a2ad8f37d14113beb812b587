@@ -1,0 +1,27 @@
+packages/ui/src/HierarchicalList/HierarchicalList.test.tsx
+  s_dd2417a6d5bd82::t_47b7dde3434b87 28-54,80-83,553-711
+  s_dd2417a6d5bd82::t_fa53280560d2d7 55,84
+  s_dd2417a6d5bd82::t_bf302650379328 712-713
+packages/ui/src/HierarchicalList/HierarchicalListPrimitive.tsx
+  s_dd2417a6d5bd82::t_47b7dde3434b87 310-315,466,482-487
+packages/ui/src/HierarchicalList/HierarchicalList.tsx
+  s_dd2417a6d5bd82::t_9153c33d24c0cb 80,95,108,126-128,134,136,138-140,166,254,258-259,262-263,318,331,333-335,339-344,346-349,361,403,407
+  s_dd2417a6d5bd82::t_47b7dde3434b87 4,37-45,72-77,81-82,86,88-90,100,102-103,121,302-317,319-330,345,358,405-406,408
+  s_dd2417a6d5bd82::t_350ee1725f5066 96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "07fecd728c9a0a16a2ad8f37d14113beb812b587",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

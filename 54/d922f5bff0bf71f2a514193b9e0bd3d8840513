@@ -1,0 +1,41 @@
+packages/workshop-shared/src/api.ts
+  s_dd2417a6d5bd82::t_7ca61c08974ba3 28,569-607,941-944,6686-6743
+  s_1da8b1c2e6d0c9::t_53ed147f2ecd01 569,6686-6711,6716-6743
+  s_1da8b1c2e6d0c9::t_ff4a3bf706e7fe 570-576,580-593,595-607
+  s_1da8b1c2e6d0c9::t_9eed2f1924d6d8 28,577-579,594,6712-6715
+  s_1da8b1c2e6d0c9::t_488600ed2e56db 941-944
+packages/workshop-shared/src/coded-errors.ts
+  s_dd2417a6d5bd82::t_a6fb80315369e2 1-18
+  s_1da8b1c2e6d0c9::t_9eed2f1924d6d8 1-18
+packages/workshop-shared/src/gatekeeper.ts
+  s_dd2417a6d5bd82::t_35b7c98715b487 20,282-292,953-981,1869-1973
+  s_1da8b1c2e6d0c9::t_c33dcf729c8ac6 1869-1900,1902-1924,1927-1936,1973
+  s_1da8b1c2e6d0c9::t_9eed2f1924d6d8 20,965-966,975-978,1901,1925-1926,1937-1972
+  s_1da8b1c2e6d0c9::t_9ab35381db2322 282-292
+  s_1da8b1c2e6d0c9::t_c4b4f14f6b3a95 953-963,967-974,979-981
+  s_1da8b1c2e6d0c9::t_1d205f8e4332f5 964
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "54d922f5bff0bf71f2a514193b9e0bd3d8840513",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

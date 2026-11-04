@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.test.tsx
+  s_ec879fdc5b589d::t_a09ee23bc8be15 612-654
+packages/workshop-frontend/src/features/ai-models/AllowedModelsField.tsx
+  s_ec879fdc5b589d::t_9600b4eefc1b31 1-3,22-23,57-59,72-73,80-92,206,258-261,286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2642e8453034a5633260ba93ad586356657952e1",
+  "prompts": {},
+  "sessions": {
+    "s_ec879fdc5b589d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "224442ef-c782-431b-80fc-658f13b10f31",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
