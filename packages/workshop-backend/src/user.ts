@@ -52,31 +52,60 @@ const NOTIFICATION_DEVICES_PER_KIND = 10;
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
 export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
 
-/** Coalesced visible-message progress carried by the workspace's durable handoff. */
+/**
+ * A workspace's update about one chat, sent to `messageArrived()`. It may cover several changes
+ * made since the last update. It carries the chat's current state rather than a diff, so receiving
+ * it twice is harmless. "Sequence" and "visible sequence" are as described on `ChatReadCursor`.
+ */
 export type ChatMessageProgress = {
-  /** Current inbox metadata. */
+  /** The chat's current title and latest-message preview, for the inbox. */
   head: Omit<ChatTimelineHead, "chatId">;
-  /** Source metadata's existing monotonic timestamp, independent of the latest visible message. */
+  /**
+   * The chat's `lastActive` time in the workspace. Decides which of two updates with the same latest
+   * message (e.g. from before and after a rename) is newer.
+   */
   headUpdatedAt: Date;
-  /** Latest dense visible position; repeated/older deliveries never increment a count. */
+  /**
+   * Visible sequence of the chat's latest message: the total that unread counts are computed from.
+   * An update older than one already received never lowers it.
+   */
   latestVisibleSequence: number;
-  /** Author of the latest visible message, when it is a user rather than an agent. */
+  /**
+   * Profile ID of the latest visible message's author, if it's a person rather than the agent. If
+   * the user wrote that message themselves while caught up, it doesn't count as unread for them.
+   */
   latestMessageAuthorId?: string;
-  /** First new timeline record in this pending batch, for the initial notification boundary. */
+  /**
+   * Sequence of the earliest new message or notification this update covers. For a user who has no
+   * read state for the chat yet, everything before it counts as read and already notified. Absent
+   * if only the chat's details (e.g. its title) changed.
+   */
   firstMessageSequence?: number;
-  /** First new visible position in this pending batch, for a missing read cursor. */
+  /** Visible sequence of the earliest new visible message this update covers, if any. */
   firstVisibleSequence?: number;
-  /** Eligible alerts from this source batch; never fetched again by the recipient. */
+  /**
+   * Notifications for this user that this update covers. The User DO queues them for delivery; the
+   * workspace won't send them again once this call succeeds.
+   */
   notifications: (Pick<UserNotification, "id" | "kind" | "chatTitle"> & {sequence: number})[];
 };
 
-/** A raw read boundary translated by an already-authorized workspace session. */
+/**
+ * A new read position for one chat, sent by a workspace to `applyReadHorizon()` when the user marks
+ * the chat read or unread there. The workspace has already checked the user's access and converted
+ * the client's sequence number into a visible sequence. "Sequence" and "visible sequence" are as
+ * described on `ChatReadCursor`.
+ */
 export type ChatReadPosition = Pick<ChatMessageProgress, "head" | "headUpdatedAt" | "latestVisibleSequence"> & {
-  /** Inclusive raw timeline boundary. */
+  /** Sequence of the last record to count as read, inclusive. */
   readThroughSequence: number;
-  /** Dense visible prefix at that boundary. */
+  /** The same read position, as a visible sequence. */
   readThroughVisibleSequence: number;
-  /** Pre-tracking alert boundary, used only when creating a cursor. */
+  /**
+   * Sequence through which notifications count as already handled. Used only if the user has no
+   * read state for this chat yet, so that notifications from before unread tracking began are
+   * never sent.
+   */
   notificationBaseline: number;
 };
 
@@ -730,7 +759,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount};
   }
 
-  /** Apply a source-authorized boundary using only local state; never drain alerts on a read command. */
+  /**
+   * Called by a workspace when the user marks one of its chats read (`rewind` false) or unread
+   * (`rewind` true); see `Overseer.markChatRead()` / `markChatUnread()`. Returns whether the user's
+   * read state changed. Uses only this DO's own state, and never delivers queued notifications, so
+   * a delivery failure can't make the read command fail.
+   */
   async applyReadHorizon(workspaceId: string, chatId: number, position: ChatReadPosition,
       rewind: boolean): Promise<boolean> {
     let admission = this.#unreadWorkspaces.get(workspaceId);
@@ -886,7 +920,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /** Commit counts and the alert outbox before ACK; delivery never holds up source fanout. */
+  /**
+   * Called by a workspace when one of its chats changes (see `ChatMessageProgress`), or with null
+   * when the chat was deleted. Saves the new unread count and queues any notifications before
+   * returning, so the workspace can stop retrying. Notifications are then delivered in the
+   * background, so a slow delivery never holds up the workspace.
+   */
   async messageArrived(workspaceId: string, chatId: number, progress: ChatMessageProgress | null): Promise<void> {
     if (!this.#hasWorkspace(workspaceId)) return;
     let key = `${workspaceId}:${chatId}`;

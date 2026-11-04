@@ -221,80 +221,149 @@ export interface NotificationSubscriber extends RpcTarget {
   notify(notification: UserNotification): Promise<void>;
 }
 
-/** One user's private per-thread read horizon and locally stored message count. */
+// Unread tracking
+//
+// Every user has their own private read position in each chat; other users never see it. Unread
+// counts include only "visible" messages, meaning chat messages with text or attachments, from a
+// person or the agent. Tool calls, reasoning-only records, slash-command expansions and other
+// internal activity are never counted.
+//
+// Read positions are timeline sequence numbers (the same numbers as `AiChatMessage.sequence`), so
+// a client can pass the sequence of a message it is displaying. Messages written before unread
+// tracking was introduced always count as read.
+//
+// Unread state is tracked only for workspaces the user owns or can build in, not for use-only
+// workspaces. It is stored with the user's account and kept up to date by each workspace as
+// messages arrive. So the unread queries and subscriptions on `AuthenticatedApi` are cheap and
+// never need to open a workspace. Marking a single chat read or unread goes through that
+// workspace's `Overseer` session (`markChatRead()` / `markChatUnread()`), because only the
+// workspace can turn a sequence number into a count of visible messages. See
+// docs/user-unread-state.md for the full design.
+
+/** The current user's read state for one chat. */
 export type ChatReadState = {
-  /** Workspace containing the thread. */
+  /** Workspace containing the chat. */
   workspaceId: string;
-  /** Thread identifier, scoped to the workspace. */
+  /** The chat's ID within its workspace. */
   chatId: number;
-  /** Number of unread visible text/attachment messages, excluding internal agent activity. */
+  /** How many visible messages in the chat the user hasn't read. Zero means the chat is fully read. */
   unreadMessageCount: number;
-  /** Last read sequence, inclusive; -1 means nothing has been read. */
+  /**
+   * Sequence of the last timeline record the user has read, inclusive: any visible messages after
+   * it are unread. -1 means the user hasn't read anything in this chat yet. Use this, for example,
+   * to place a "new messages" divider.
+   */
   readThroughSequence: number;
 };
 
-/** Display metadata for a thread's latest visible message, independent of private read horizons. */
+/**
+ * What a chat's most recent visible message looks like, used to display the chat in a list such as
+ * the unread inbox. It's the same for every user, regardless of what they've read.
+ */
 export type ChatTimelineHead = {
-  /** Thread identifier, scoped to the workspace. */
+  /** The chat's ID within its workspace. */
   chatId: number;
-  /** Current thread title. */
+  /** The chat's current title. */
   chatTitle: string;
-  /** Sequence of the latest visible text/attachment message; -1 if none. */
+  /** Sequence of the chat's latest visible message, or -1 if the chat has none. */
   latestSequence: number;
-  /** First nonempty line of the latest visible message, capped at 240 characters; empty for none. Absent on older servers. */
+  /**
+   * Snippet of the latest visible message: its first line of text, cut off at 240 characters
+   * ("Attachment" if the message only has attachments). Empty if the chat has no visible messages.
+   * Absent when the server is older than this field.
+   */
   latestMessagePreview?: string;
-  /** Time of the latest visible message; absent for empty threads or older servers. */
+  /**
+   * When the latest visible message was sent. Absent if the chat has no visible messages, or when
+   * the server is older than this field.
+   */
   latestActivityAt?: Date;
 };
 
-/** An unread inbox row, served entirely from the user's local thread projection. */
+/**
+ * One row of the user's unread inbox: a chat with unread messages, plus what's needed to display it.
+ * Returned by `AuthenticatedApi.getUnreadThreads()`.
+ */
 export type UnreadThread = ChatReadState & ChatTimelineHead;
 
-/** Locally calculated counts for one workspace; omitted from rollups when fully read. */
+/** Unread totals for one workspace, e.g. for a badge next to it in the workspace list. */
 export type WorkspaceUnreadSummary = {
-  /** Workspace containing the unread threads. */
+  /** The workspace these totals are for. */
   workspaceId: string;
-  /** Number of threads with unread visible messages. */
+  /** Number of chats in the workspace with at least one unread message. */
   unreadChatCount: number;
-  /** Total unread visible messages in this workspace. */
+  /** Total number of unread messages across all chats in the workspace. */
   unreadMessageCount: number;
 };
 
-/** Instance-wide and per-workspace badge totals, without individual thread rows. */
+/** The user's unread totals for badges: overall and per workspace, without per-chat details. */
 export type UserUnreadSummary = {
-  /** Number of threads with unread visible messages across all listed workspaces. */
+  /** Number of chats with at least one unread message, across all of the user's workspaces. */
   unreadChatCount: number;
-  /** Total unread visible messages across all listed workspaces. */
+  /** Total number of unread messages across all of the user's workspaces. */
   unreadMessageCount: number;
-  /** Nonzero workspace totals; an absent workspace has no unread messages. */
+  /**
+   * Totals for each workspace that has unread messages. Fully read workspaces are left out, so a
+   * workspace that isn't listed has nothing unread.
+   */
   workspaces: WorkspaceUnreadSummary[];
 };
 
-/** Global totals and only the changed workspace's rollup, keeping live updates bounded. */
+/**
+ * Updated unread totals, sent to live subscribers when something changes. To keep updates small,
+ * this has the new overall totals but only the one workspace whose totals changed, not all of them.
+ */
 export type UnreadSummaryUpdate = Pick<UserUnreadSummary, "unreadChatCount" | "unreadMessageCount"> & {
-  /** Replace this workspace's counts; zero removes it from the nonzero rollup list. */
+  /**
+   * New totals for the workspace that changed; replace your copy of that workspace's totals with
+   * these. If the counts are zero, the workspace now has nothing unread and should be dropped from
+   * your `UserUnreadSummary.workspaces` list.
+   */
   workspace: WorkspaceUnreadSummary;
 };
 
-/** The thread rows a live unread subscription needs; no scope exposes all historical threads. */
+/**
+ * Which chats an `AuthenticatedApi.subscribeToUnreadState()` subscription receives per-chat
+ * updates for. Every scope receives the overall and per-workspace totals. The scope only controls
+ * which chat rows are sent:
+ * - `"summary"`: no chats, only totals (e.g. for badges).
+ * - `"unread"`: every chat that has unread messages (e.g. for the unread inbox).
+ * - `{workspaceId}`: the chats in one workspace, read or unread (e.g. for that workspace's chat
+ *   list).
+ */
 export type UnreadStateScope = "summary" | "unread" | {
-  /** Include read and unread thread statuses only for this workspace. */
+  /** The workspace whose chats to send. */
   workspaceId: string;
 };
 
-/** Global badge rollups plus only the thread rows requested by a subscription's scope. */
+/** A full snapshot for an unread-state subscription: the totals, plus the chats its scope asks for. */
 export type UserUnreadState = UserUnreadSummary & {
-  /** Scoped thread rows: none for summary, unread-only for inbox, or one workspace's statuses. */
+  /**
+   * The chats in the subscription's scope (see `UnreadStateScope`): none for `"summary"`, chats
+   * with unread messages for `"unread"`, or one workspace's chats for a workspace scope. Chats in
+   * that workspace that aren't listed have nothing unread.
+   */
   chats: ChatReadState[];
 };
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
 export interface UnreadStateSubscriber extends RpcTarget {
-  /** Receive the scoped initial snapshot, or a replacement after a bulk change. */
+  /**
+   * Replace everything you have with this full snapshot. Called once right after subscribing, and
+   * again after changes that affect many chats at once (such as "mark all read", or losing access
+   * to a workspace).
+   */
   updated(state: UserUnreadState): Promise<void>;
-  /** Update global/workspace rollups without sending thread rows outside the requested scope. */
+  /**
+   * The totals changed because of a chat outside this subscription's scope. Apply the new totals;
+   * no chat rows are affected.
+   */
   summaryUpdated(summary: UnreadSummaryUpdate): Promise<void>;
-  /** Replace one in-scope thread (null removes it), together with current badge rollups. */
+  /**
+   * One chat in this subscription's scope changed. Replace your row for it with `chat`, or remove
+   * the row if `chat` is null (the chat was deleted, or, for the `"unread"` scope, it's now fully
+   * read). `summary` has the updated totals, just like `summaryUpdated()`.
+   */
   chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
     summary: UnreadSummaryUpdate): Promise<void>;
 }
@@ -634,27 +703,46 @@ export interface AuthenticatedApi extends RpcTarget {
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Fetch unread inbox rows, newest first, including locally copied titles and previews. No workspace reads. */
+  /**
+   * List the chats with unread messages across all of the user's workspaces, most recently active
+   * first: the unread inbox. Each row includes the chat's title and a preview of its latest message,
+   * so the inbox can be shown without opening any workspace. See "Unread tracking" above
+   * `ChatReadState`.
+   */
   getUnreadThreads(): Promise<UnreadThread[]>;
 
-  /** Fetch tracked thread horizons/counts for one workspace to merge with its thread list. Missing rows are read. */
+  /**
+   * Get the user's read state for the chats in one workspace, to combine with that workspace's own
+   * chat list (e.g. to highlight unread chats). Chats that aren't returned have nothing unread.
+   */
   getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]>;
 
-  /** Fetch instance and workspace badge rollups without transferring individual thread rows or querying workspaces. */
+  /** Get the user's unread totals, overall and per workspace, for badges. */
   getUnreadSummary(): Promise<UserUnreadSummary>;
 
   /**
-   * Subscribe to badge rollups and explicitly scoped thread rows, never all thread history.
-   * Use summary for global indicators, unread for the inbox, or a workspace ID for its thread list.
-   * Dispose when hidden; re-subscribe after visibility changes or disconnect/reset.
-   * Receiving state never marks messages read or acknowledges alerts.
+   * Subscribe to live unread-state changes. `scope` picks which chats to get per-chat updates for
+   * (see `UnreadStateScope`). Totals are always included. Use the narrowest scope the current view
+   * needs: `"summary"` for badges, `"unread"` for the inbox, or a workspace ID for that workspace's
+   * chat list.
+   *
+   * The subscriber first gets a full snapshot through `updated()`, then incremental changes. Dispose
+   * of the returned stub to unsubscribe, e.g. when the view is hidden or its scope changes. If the
+   * connection drops, subscribe again to get a fresh snapshot.
+   *
+   * Subscribing is read-only: it never marks messages read or dismisses notifications.
    */
   subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Mark this workspace's locally received thread heads read, without querying the workspace. */
+  /**
+   * Mark every chat in a workspace read, up to the latest messages the user's unread state has
+   * received from it. Doesn't open the workspace, so a message that is still on its way from the
+   * workspace at that moment stays unread, as do messages that arrive later. To mark a single chat
+   * read, use `Overseer.markChatRead()`.
+   */
   markWorkspaceRead(workspaceId: string): Promise<void>;
 
-  /** Mark all locally received thread heads read, without querying any workspace. */
+  /** Mark every chat in all of the user's workspaces read. Works like `markWorkspaceRead()`. */
   markAllRead(): Promise<void>;
 
   /**
@@ -3250,10 +3338,24 @@ export interface Overseer extends RpcTarget {
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
 
-  /** Mark through a raw timeline boundary read, or the latest visible message if omitted. Uses this session's identity. */
+  /**
+   * Mark a chat read for the current user, up to and including the timeline record at
+   * `throughSequence` (an `AiChatMessage.sequence`). If omitted, marks the whole chat read, through
+   * its latest visible message. This never moves the user's read position backwards; use
+   * `markChatUnread()` for that. Does nothing if the chat doesn't exist, and throws if the sequence
+   * is beyond the end of the chat. Not available in use-only sessions. See "Unread tracking" above
+   * `ChatReadState`.
+   */
   markChatRead(chatId: number, throughSequence?: number): Promise<void>;
 
-  /** Rewind before a raw timeline boundary, or the latest visible message if omitted. Returns whether user state changed. */
+  /**
+   * Mark a chat unread for the current user, starting at the timeline record at `fromSequence`: the
+   * user's read position moves to just before it, so that message and every visible message after
+   * it count as unread. If omitted, marks only the chat's latest visible message unread. Messages
+   * from before unread tracking was introduced never become unread. Returns true if the user's read
+   * state changed, or false if it was already in that state or the chat doesn't exist. Throws if the
+   * sequence is beyond the end of the chat. Not available in use-only sessions.
+   */
   markChatUnread(chatId: number, fromSequence?: number): Promise<boolean>;
 
   /** List past AI chats, with each one's id and title. */

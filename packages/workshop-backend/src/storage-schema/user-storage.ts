@@ -121,32 +121,75 @@ export type GadgetRecord = WorkspaceMetadata & {
   // WorkspaceMetadata).
 };
 
-/** Private per-thread read state and the receipt for completed notification delivery. */
+/**
+ * The user's private read state for one chat, plus a record of which notifications for it have
+ * already been delivered. The unread queries and subscriptions on `AuthenticatedApi` are answered
+ * entirely from these rows. See docs/user-unread-state.md.
+ *
+ * Positions come in two kinds:
+ * - A "sequence" is a timeline sequence number (`AiChatMessage.sequence`). It counts every record
+ *   in the chat, including tool calls and other internal activity, and is what clients use.
+ * - A "visible sequence" counts only visible messages (see the Overseer's `visibleThroughSequence`).
+ *   Subtracting two visible sequences gives a number of unread messages.
+ */
 export type ChatReadCursor = {
   workspaceId: string;
   chatId: number;
+  /** Sequence of the last record the user has read, inclusive; -1 if they haven't read anything. */
   readThroughSequence: number;
-  /** Dense visible position at the read horizon; absent until tracking is initialized. */
+  /**
+   * The same read position, as a visible sequence. Absent until the row is first set up from the
+   * workspace (by a new message, the user first being given access, or a read/unread command).
+   */
   readThroughVisibleSequence?: number;
-  /** Latest delivered dense visible position, monotonic even when source deliveries repeat. */
+  /**
+   * Visible sequence of the latest message received from the workspace. It never goes down, so a
+   * repeated or out-of-date update from the workspace can't inflate the count.
+   */
   latestVisibleSequence?: number;
+  /** Number of unread messages: `latestVisibleSequence - readThroughVisibleSequence`. */
   unreadCount: number;
+  /**
+   * Sequence of the latest notification already delivered (or deliberately skipped). If the
+   * workspace sends a notification again, e.g. because it never got our acknowledgement, this
+   * keeps the user from being notified twice.
+   */
   notifiedThroughSequence: number;
-  /** Delivered IDs at that position. Absent means the entire position was skipped on admission. */
+  /**
+   * IDs of the notifications already delivered at exactly `notifiedThroughSequence`, since several
+   * can share one position. Absent means all notifications at that position count as handled; this
+   * is the case when the position is a starting point set when tracking began, not a delivery.
+   */
   notifiedEventIds?: string[];
-  /** Every live tracked cursor has this source-owned head; deletion tombstones may omit it. */
+  /**
+   * The chat's title and latest-message preview, copied from the workspace so the inbox can show it
+   * without asking the workspace. Always present, except on rows for deleted chats.
+   */
   head?: Omit<ChatTimelineHead, "chatId">;
-  /** Source metadata's existing lastActive timestamp, ordering renames at the same message position. */
+  /**
+   * The chat's `lastActive` time in the workspace when `head` was produced. Decides which of two
+   * heads with the same latest message (e.g. from before and after a rename) is newer.
+   */
   headUpdatedAt?: Date;
-  /** Reject delayed pre-deletion handoffs. Chat IDs are never reused. */
+  /**
+   * Set when the chat has been deleted. The row is kept so a delayed update from before the
+   * deletion can't bring the chat back. Chat IDs are never reused.
+   */
   deleted?: true;
 };
 
-/** An accepted alert awaiting delivery or an intentional policy skip. */
+/**
+ * A notification that the User DO has accepted from a workspace and still has to deliver, to an
+ * open client if there is one or else by push. It is removed once it has been delivered,
+ * deliberately skipped (e.g. because the workspace is muted), or has expired.
+ */
 export type QueuedChatNotification = UserNotification & {
-  /** Original timeline position, independent of the visible-message count. */
+  /** Sequence of the timeline record where the notification's event happened. */
   sequence: number;
-  /** Fixed retry deadline from first acceptance; replays and eviction never extend it. */
+  /**
+   * When to give up delivering. Set when the notification is first accepted, and never extended by
+   * retries, repeated sends from the workspace, or DO restarts.
+   */
   expiresAt: Date;
 };
 
@@ -187,9 +230,13 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
+      // Notifications waiting to be delivered (see QueuedChatNotification). The key lists each
+      // chat's queue in timeline order, and keeps separate notifications at the same position apart.
       notificationOutbox: collection<QueuedChatNotification>()({
         primaryKey: event => `${event.workspaceId}:${chatKey(event.chatId, event.sequence)}:${event.id}`,
       }),
+      // The user's read state for each chat (see ChatReadCursor), indexed by workspace so a
+      // workspace's rows can be removed together.
       chatReadCursors: collection<ChatReadCursor>()({
         primaryKey: record => `${record.workspaceId}:${record.chatId}`,
         nonUniqueIndexes: {
