@@ -6221,7 +6221,8 @@ class OverseerImpl implements AgentHooks {
   // Enforce an observation's `excludeObservers`, named by the gatekeeper `gatekeeperId` produced
   // it. For each named opaque observerId:
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
-  //     observer (e.g. already torn down), so it is ignored.
+  //     observer -- admission reserves the record before registering its id, so it was torn
+  //     down -- and is ignored.
   //   - If that profileId is still authorized in the sharing graph *and* this gatekeeper is in
   //     their access's forward reach, we cannot guarantee they won't see the observation (v1 has
   //     no per-thread hiding, and a legacy connection's observations are not attributed to a
@@ -6249,10 +6250,6 @@ class OverseerImpl implements AgentHooks {
     let unreached: string[] = [];
     for (let observerId of observerIds) {
       let observer = this.storage.observers.byObserverId.get(observerId);
-      // TODO(observer-races): a first-time ensureObserver registers its observerId with the
-      // gatekeepers before the record is persisted, so an id named here in that window reads as
-      // unknown and the observation is admitted. Fix: an in-memory pending-id map consulted
-      // here, failing closed.
       if (!observer) continue;  // not an active observer -> ignore
       let access = sharing.getEffectiveAccess(observer.profileId);
       if (!access) {
@@ -10504,11 +10501,20 @@ class OverseerImpl implements AgentHooks {
   // `verifyObserverAccess()` for the requirements the grant reaches (see observer-ledger.ts).
   // Returns when fully verified; throws to deny access.
   //
-  // See observers-implementation-plan.md §5 Step 3.
+  // Concurrent admissions by one profile -- other tabs or devices, each possibly parked on its own
+  // account prompt -- run independently and share the profile's one observer record: its
+  // observerId is reserved before anything registers it, and each admission publishes only the
+  // choices it verified. A failure denies only that admission and de-registers nothing, since
+  // another admission may share the registration and de-registering is the fail-open direction
+  // (the gatekeeper stops naming the observer in `excludeObservers`). A registration a failed
+  // admission leaves keeps blocking the reads its connection excludes the observer from for as
+  // long as they hold access reaching that connection: #enforceExcludeObservers drops it only once
+  // they don't, and a later successful admission replaces its verifier. Sessions the collaborator
+  // already holds keep what their own admissions verified until they re-open: the lazy-revocation
+  // residual documented in docs/observers.md. The exception is an admission whose record was
+  // deleted or replaced while it ran: it de-registers its id (see the catch).
   //
-  // TODO: Concurrent opens by the same profile race this method -- two calls mint two observerIds
-  //   and the last-written record forgets the other's gatekeeper registrations -- so verification
-  //   needs to be serialized per profile.
+  // See observers-implementation-plan.md §5 Step 3.
   async ensureObserver(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
@@ -10520,19 +10526,17 @@ class OverseerImpl implements AgentHooks {
     let scope = this.#observerScope(grant);
     if (scope.gatekeepers.length === 0) return;
 
-    // 2. Load any existing observer record, and build a working copy of its account choices.
+    // 2. Load the observer record, reserving it on a first admission (nothing awaits between the
+    //    read and the write), and build a working copy of its account choices. A reserved record
+    //    has no choices, so no observation checks it (see ObserverLedger), but its id resolves
+    //    for #enforceExcludeObservers before any connection can name it.
     let record = this.storage.observers.get(profileId);
-    let accountChoices: {[gatekeeperId: number]: number} = {...record?.accountChoices};
-
-    let observerId = record?.observerId ?? crypto.randomUUID();
-    // Whether this collaborator was already an admitted observer when the call began. A returning
-    // observer's `observerId` is already persisted, so it stays resolvable no matter how this call
-    // ends -- which is what makes keeping their registrations on a failure safe (see the catch).
-    let returningObserver = record !== undefined;
-    // Gatekeepers this call tried to register the observer with, for a *first-time* observer's
-    // rollback only (see the catch): a refused addObserver, or one whose recorded requirements
-    // were then denied, may still have registered them.
-    let attempted = new Set<number>();
+    if (!record) {
+      record = {profileId, observerId: crypto.randomUUID(), accountChoices: {}};
+      this.storage.observers.put(record);
+    }
+    let {observerId} = record;
+    let accountChoices: {[gatekeeperId: number]: number} = {...record.accountChoices};
 
     // Failures from the previous pass, keyed by gatekeeper id: an already-configured binding whose
     // chosen account was disconnected, or which refused it.
@@ -10548,9 +10552,8 @@ class OverseerImpl implements AgentHooks {
     // Requirement IDs earlier passes of this call checked, by gatekeeper id, so a pass re-run after
     // a scope change asks verifyObserverAccess() only about the rest. Registration is never
     // skipped: addObserver() also enforces history the gatekeeper tracks itself, which can grow
-    // while this call awaits (until this observer is published, a read excluding them is admitted;
-    // see #enforceExcludeObservers). Cleared after a configuration prompt, so no check made before
-    // a wait on the user admits anyone.
+    // while this call awaits. Cleared after a configuration prompt, so no check made before a wait
+    // on the user admits anyone.
     let checked = new Map<number, Set<string>>();
 
     try {
@@ -10640,7 +10643,6 @@ class OverseerImpl implements AgentHooks {
           }
 
           try {
-            attempted.add(gk.id);
             let verifier = await requireVerifier(clientUser, accountId, vendorId);
             // Serialized per (observer, gatekeeper) so this registration can't land while an
             // exclusion teardown's removeObserver for the same pair is still in flight (which
@@ -10670,7 +10672,7 @@ class OverseerImpl implements AgentHooks {
         //    reached. Successes and failures alike may be stale, so re-run the pass rather than
         //    admit or refuse against them. This check and the publication below share one
         //    synchronous block, so nothing recorded after it can be missed: an observation checks
-        //    every published observer.
+        //    every published account choice.
         let current = this.#observerScope(grant);
         if (!sameObserverScope(scope, current)) {
           if (++scopePasses > MAX_VERIFICATION_PASSES) {
@@ -10709,31 +10711,33 @@ class OverseerImpl implements AgentHooks {
         // All in-scope bindings verified successfully.
         break;
       }
-    } catch (err) {
-      // Best-effort remove everything a *first-ever* verification registered: nothing referenced
-      // those registrations before this call, and the freshly-minted observerId is discarded with
-      // the unpersisted record, so anything left behind would linger unresolvable.
-      //
-      // A *returning* observer's registrations are all kept -- including the ones this call added.
-      // Their persisted observerId is shared with concurrent opens, so a rollback here could
-      // delete a registration that a concurrent successful open just made and persisted.
-      // De-registering is the fail-open direction: the gatekeeper stops naming that observer in
-      // `excludeObservers`, so an observation it should have excluded them from is admitted with
-      // nothing left to block it. A spurious registration merely blocks fail-closed until it is
-      // lazily cleaned up (see #enforceExcludeObservers) or a later open re-verifies it.
-      if (!returningObserver) {
-        await this.#removeObserverFromGatekeepers(observerId, [...attempted]);
-      }
 
-      // Only this open is denied. Sessions the collaborator already holds are left alone: they
-      // keep whatever access their own open verified until they next re-open, which is the
-      // lazy-revocation residual documented in docs/observers.md.
+      // 7. Publish the choices this admission verified onto the record as it stands now, keeping
+      //    those another admission by this profile published while this one awaited. A record
+      //    deleted or replaced meanwhile means the profile lost access (see tearDownLostObservers),
+      //    so the admission is refused rather than reviving the record.
+      let latest = this.storage.observers.get(profileId);
+      if (latest?.observerId !== observerId) {
+        throw new Error(
+            "Your access to this workspace changed while you were being verified. " +
+            "Please try again.");
+      }
+      let published = {...latest.accountChoices};
+      for (let gk of scope.gatekeepers) published[gk.id] = accountChoices[gk.id];
+      this.storage.observers.put({...latest, accountChoices: published});
+    } catch (err) {
+      // An admission whose record was deleted or replaced while it awaited, whether refused in
+      // step 7 or failed before it, de-registers its id as tearDownLostObservers does:
+      // registrations landing after that teardown would otherwise linger under an id nothing
+      // resolves. No admission can still need it -- any other holding it ends here too, and a new
+      // one reserves a fresh id. While the record stands, a failure de-registers nothing (see
+      // above).
+      if (this.storage.observers.get(profileId)?.observerId !== observerId) {
+        await this.#removeObserverFromGatekeepers(
+            observerId, [...this.storage.gatekeepers.list()].map(gk => gk.id));
+      }
       throw err;
     }
-
-    // 7. Persist the observer record only after every binding verified. Creating/updating the
-    //    record is the canonical moment the user becomes a configured observer.
-    this.storage.observers.put({profileId, observerId, accountChoices});
   }
 
   // Everything a collaborator holding `grant` is verified against (see

@@ -1122,12 +1122,15 @@ export type ShareKeyAliasRecord = {
 export type ShareKeyRecord = ShareLinkRecord | ShareKeyAliasRecord;
 
 /**
- * Storage record describing a non-owner collaborator who has configured their gatekeeper accounts
- * and passed the observer checks of something they opened -- the workspace, for a "build"
- * collaborator, or one gadget -- i.e. is actually set up to observe data it has read. This is
- * distinct from the sharing table (which records the owner's *intent* that a user have access):
- * opening requires BOTH reachable access in the sharing graph AND passing verification for what
- * is opened, which this record only remembers choices for. See observers-implementation-plan.md §3.
+ * Storage record of a non-owner collaborator's observer identity and the gatekeeper accounts they
+ * chose for it. Their first admission -- to the workspace, for a "build" collaborator, or to one
+ * gadget -- reserves it with no choices before registering its observerId with any gatekeeper, so
+ * concurrent admissions share the id and forward exclusion can always resolve it; each admission
+ * then publishes the choices it verified. The record outlives a failed admission and is deleted
+ * only when the collaborator loses access. This is distinct from the sharing table (which records
+ * the owner's *intent* that a user have access): opening requires BOTH reachable access in the
+ * sharing graph AND passing verification for what is opened, which this record only remembers
+ * choices for. See observers-implementation-plan.md §3.
  */
 export type ObserverRecord = {
   /** The sharing-table key for this user (their profile.id). Primary key of the collection. */
@@ -1142,10 +1145,11 @@ export type ObserverRecord = {
   observerId: string;
 
   /**
-   * The account the user chose to satisfy each in-scope gatekeeper binding, remembered so they are
-   * not asked again. Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a
-   * ConnectedAccountRecord in THIS user's own User DO. An entry records only that choice -- it
-   * asserts nothing about whether the gatekeeper still admits them, which every open re-checks.
+   * The account the user chose to satisfy each in-scope gatekeeper binding, published once an
+   * admission verified it and remembered so they are not asked again; empty on a reservation.
+   * Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a ConnectedAccountRecord
+   * in THIS user's own User DO. An entry records only that choice -- it asserts nothing about
+   * whether the gatekeeper still admits them, which every open re-checks.
    */
   accountChoices: { [gatekeeperId: number]: number };
 };
@@ -1728,9 +1732,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         },
       }),
 
-      // Non-owner collaborators who have configured their gatekeeper accounts and passed all
-      // `addObserver` checks. See `ObserverRecord`. The secondary index lets the forward-exclusion
-      // path (`authorizeObservation`) map an opaque observerId back to a profileId.
+      // Non-owner collaborators' observer identities, reserved at their first admission and kept,
+      // with the account choices admissions verified, until they lose access. See
+      // `ObserverRecord`. The secondary index lets the forward-exclusion path
+      // (`authorizeObservation`) map an opaque observerId back to a profileId.
       observers: collection<ObserverRecord>()({
         primaryKey: "profileId",
         uniqueIndexes: {

@@ -1,5 +1,6 @@
 // What ensureObserver does with a binding it could not verify: every failure is collected and
-// reported as a denial the user can act on, and nothing the call did not create is torn down.
+// reported as a denial the user can act on, and no registration another admission may share is
+// torn down.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding, like
 // git-migration-do.test.ts); the gatekeeper facet and the client's User DO are the only fakes.
@@ -46,12 +47,12 @@ function seedGatekeepers(impl: ObserverImpl, ids: number[] = [1, 2]): void {
 
 // Facets for every seeded connection, each registering observers through `hooks`.
 function setObserverFacets(impl: ObserverImpl, hooks: {
-  addObserver?(id: number): Promise<void>;
-  removeObserver?(id: number): Promise<void>;
+  addObserver?(id: number, observerId: string): Promise<void>;
+  removeObserver?(id: number, observerId: string): Promise<void>;
 } = {}): void {
   const getFacet = async (id: number) => ({
-    addObserver: async () => { await hooks.addObserver?.(id); },
-    removeObserver: async () => { await hooks.removeObserver?.(id); },
+    addObserver: async (observerId: string) => { await hooks.addObserver?.(id, observerId); },
+    removeObserver: async (observerId: string) => { await hooks.removeObserver?.(id, observerId); },
   });
   // These direct-DO tests exercise only the observer methods admission calls, not the full RPC
   // facet.
@@ -101,9 +102,8 @@ describe("a binding that fails verification", () => {
       await expect(impl.ensureObserver("alice", failingClientUser, "workspace"))
           .rejects.toThrow(/could not confirm/);
 
-      // Alice was already an admitted observer, so this call registered nothing and there is
-      // nothing for the rollback to remove. Her registrations are what make gatekeepers name her
-      // in `excludeObservers`, so dropping one would be fail-open.
+      // Her registrations are what make gatekeepers name her in `excludeObservers`, so dropping
+      // one would be fail-open.
       expect(removed).toEqual([]);
 
       // Neither producer's restricted reads are blocked, though -- both are verifiable, so
@@ -147,18 +147,23 @@ describe("a binding that fails verification", () => {
     });
   });
 
-  it("a failed open does not roll back registrations a concurrent open persisted", async () => {
-    let stub = env.TEST_OVERSEER.getByName("observer-verify-concurrent");
+  it.each(["returning", "first-time"])(
+      "a failed open does not roll back registrations a concurrent open published (%s observer)",
+      async kind => {
+    let stub = env.TEST_OVERSEER.getByName(`observer-verify-concurrent-${kind}`);
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = instance["impl"];
       seedOwner(impl);
       seedGatekeepers(impl, [1, 2, 3]);
-      // Alice's record predates connections 2 and 3, so both opens must register her with both --
-      // under the one persisted observerId they share.
-      impl.storage.observers.put(
-          { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+      // A returning Alice's record predates connections 2 and 3; a first-time Alice has none. Both
+      // opens must register her with both under one observerId they share.
+      if (kind === "returning") {
+        impl.storage.observers.put(
+            { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+      }
 
       let removed: number[] = [];
+      let registered = new Set<string>();
       // Call A parks on connection 3's *verifier* -- deliberately outside the per-(observer,
       // gatekeeper) serialization of the addObserver RPCs themselves, which would otherwise queue
       // call B's registration behind a parked one. Connection 3 then admits only call B's
@@ -179,7 +184,8 @@ describe("a binding that fails verification", () => {
       } as unknown as ObserverClientUser;
       let gk3Adds = 0;
       setObserverFacets(impl, {
-        addObserver: async id => {
+        addObserver: async (id, observerId) => {
+          registered.add(observerId);
           if (id === 3 && ++gk3Adds > 1) throw new Error("no access");
         },
         removeObserver: async id => { removed.push(id); },
@@ -190,8 +196,8 @@ describe("a binding that fails verification", () => {
       callA.catch(() => {});  // asserted below; not unhandled in the meantime
       await verifierReached;
 
-      // Call B -- the same returning observer opening concurrently -- verifies everything and
-      // persists the record asserting all three registrations.
+      // Call B -- the same observer opening concurrently -- verifies everything and publishes the
+      // choices asserting all three registrations.
       await impl.ensureObserver("alice", fakeClientUser, "workspace", configureAll);
       expect(impl.storage.observers.get("alice")?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
 
@@ -201,74 +207,62 @@ describe("a binding that fails verification", () => {
 
       // Call A also registered her with connection 2 before failing on 3, but must not roll that
       // back: the registration is keyed by the shared observerId, so removing it would delete the
-      // one call B just made -- while B's persisted record asserts it exists, breaking every
+      // one call B just made -- while B's published choices assert it exists, breaking every
       // future exclusion that names her.
       expect(removed).toEqual([]);
-      expect(impl.storage.observers.get("alice")?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
+      let record = impl.storage.observers.get("alice");
+      expect(record?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
+      expect(registered).toEqual(new Set([record?.observerId]));
     });
   });
 
-  it.each(["verifier rejection", "disconnected account", "registration refusal"])(
-      "rolls back a first-ever observer after %s", async failure => {
-    let stub = env.TEST_OVERSEER.getByName(`observer-verify-first-ever-${failure}`);
+  it.each([
+    { mode: "deleted", outcome: "verifies" },
+    { mode: "replaced", outcome: "verifies" },
+    { mode: "deleted", outcome: "fails" },
+    { mode: "replaced", outcome: "fails" },
+  ])("de-registers the id of an admission that $outcome after its record was $mode",
+      async ({ mode, outcome }) => {
+    let stub = env.TEST_OVERSEER.getByName(`observer-verify-stale-${mode}-${outcome}`);
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = instance["impl"];
       seedOwner(impl);
       seedGatekeepers(impl);
-      let removed: number[] = [];
+      let registrations = new Set<string>();
       setObserverFacets(impl, {
-        addObserver: async id => {
-          if (id === 2 && failure === "registration refusal") throw new Error("no access");
+        addObserver: async (id, observerId) => {
+          // A failing admission is refused by connection 2 after connection 1 registered her.
+          if (outcome === "fails" && id === 2) throw new Error("no access");
+          registrations.add(`${id}:${observerId}`);
         },
-        removeObserver: async id => { removed.push(id); },
-      });
-      let clientUser = {
-        getVerifier: async (accountId: number) => {
-          if (accountId === 20) {
-            if (failure === "verifier rejection") throw new Error("verifier unavailable");
-            if (failure === "disconnected account") return null;
-          }
-          return {};
-        },
-        describeConnectedAccount: async () => null,
-      } as unknown as ObserverClientUser;
-
-      await expect(impl.ensureObserver("alice", clientUser, "workspace", configureAll))
-          .rejects.toThrow(/could not confirm/);
-
-      // Both the one that verified and the one that refused are rolled back, and no record is
-      // persisted.
-      expect(removed.toSorted()).toEqual([1, 2]);
-      expect(impl.storage.observers.get("alice")).toBeUndefined();
-    });
-  });
-
-  it("rolls back registrations from earlier repaired attempts after a later failure", async () => {
-    let stub = env.TEST_OVERSEER.getByName("observer-verify-repaired-rollback");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = instance["impl"];
-      seedOwner(impl);
-      seedGatekeepers(impl);
-      let attempts = new Map<number, number>();
-      let removed: number[] = [];
-      setObserverFacets(impl, {
-        addObserver: async id => {
-          let attempt = (attempts.get(id) ?? 0) + 1;
-          attempts.set(id, attempt);
-          if ((id === 1 && attempt === 1) || (id === 2 && attempt === 2)) {
-            throw new Error("no access");
-          }
-        },
-        removeObserver: async id => { removed.push(id); },
+        removeObserver: async (id, observerId) => { registrations.delete(`${id}:${observerId}`); },
       });
 
-      await expect(impl.ensureObserver("alice", fakeClientUser, "workspace", configureAll))
-          .rejects.toThrow(/could not confirm/);
+      // Alice loses access while her first admission waits on its account prompt: the teardown
+      // deletes her record before the admission registers anything ("replaced": and a later
+      // admission has since reserved a new one).
+      let release!: () => void;
+      let parked = new Promise<void>(resolve => { release = resolve; });
+      let prompted!: () => void;
+      let promptOpen = new Promise<void>(resolve => { prompted = resolve; });
+      let admission = impl.ensureObserver("alice", fakeClientUser, "workspace", {
+        configure: async (needs: {gatekeeperId: number}[]) => {
+          prompted();
+          await parked;
+          return needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: 10 }));
+        },
+      } as unknown as ObserverConfigureCallback);
+      await promptOpen;
+      impl.storage.observers.delete("alice");
+      let replacement = { profileId: "alice", observerId: "obs-new", accountChoices: { 1: 99 } };
+      if (mode === "replaced") impl.storage.observers.put(replacement);
+      release();
 
-      expect(attempts.get(1)).toBe(2);
-      expect(attempts.get(2)).toBe(2);
-      expect(removed.toSorted()).toEqual([1, 2]);
-      expect(impl.storage.observers.get("alice")).toBeUndefined();
+      await expect(admission).rejects.toThrow(
+          outcome === "fails" ? /could not confirm/ : /access to this workspace changed/);
+      expect(impl.storage.observers.get("alice"))
+          .toEqual(mode === "replaced" ? replacement : undefined);
+      expect(registrations).toEqual(new Set());
     });
   });
 });
