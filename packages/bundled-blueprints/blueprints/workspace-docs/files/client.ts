@@ -31,6 +31,16 @@ import type {
 import { escapeHtml, inlineMarkdown, isCodeEditorHtml, normalizeHref, parseTsv, pipeCells, sanitizePastedHtml as sanitizeHtml, textToHtml, type PasteContext } from "./lib/paste.ts";
 import { MARK_TAGS, VOID_TAGS, mergeBlockHtml } from "./lib/merge.ts";
 import { codeFence } from "./lib/markdown.ts";
+import {
+  type ElChild,
+  DEFAULT_IMAGE_LIMITS,
+  altFromFileName,
+  el,
+  imageFilesFrom,
+  isImageFile,
+  loadImage,
+  readFileAsDataURL,
+} from "@gadgets/bundled-blueprints/libraries/ui/client";
 
 // The bindings the Workshop's iframe bootstrap defines before this module runs: the RPC stub to
 // this gadget's Durable Object, and Cap'n Web's RpcTarget for the callbacks it is handed.
@@ -47,30 +57,6 @@ declare global {
   function clearTimeout(id: number | null | undefined): void;
 }
 
-/** What `el` accepts as an attribute or property: falsy values are skipped. */
-type ElProp = string | number | boolean | null | undefined | Partial<CSSStyleDeclaration> | EventListener;
-/** What `el` accepts as children: nodes, text, and skipped falsy values. */
-type ElChild = Node | string | number | null | undefined | false;
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, props?: Record<string, ElProp>, children?: ElChild | ElChild[]): HTMLElementTagNameMap[K];
-function el(tag: string, props?: Record<string, ElProp>, children?: ElChild | ElChild[]): HTMLElement;
-function el(tag: string, props: Record<string, ElProp> = {}, children: ElChild | ElChild[] = []): HTMLElement {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (value === null || value === void 0 || value === false) continue;
-    if (key === "class") node.className = String(value);
-    else if (key === "text") node.textContent = String(value);
-    else if (key === "html") node.innerHTML = String(value);
-    else if (key === "style" && typeof value === "object") Object.assign(node.style, value);
-    else if (key.startsWith("on") && typeof value === "function") node.addEventListener(key.slice(2).toLowerCase(), value);
-    else node.setAttribute(key, value === true ? "" : String(value));
-  }
-  for (const child of Array.isArray(children) ? children : [children]) {
-    if (child === null || child === void 0 || child === false) continue;
-    node.appendChild(typeof child === "object" ? child : document.createTextNode(String(child)));
-  }
-  return node;
-}
 const isElement = (n: Node | null | undefined): n is HTMLElement => !!n && n.nodeType === 1;
 const isText = (n: Node | null | undefined): n is Text => !!n && n.nodeType === 3;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -2210,35 +2196,11 @@ function updateLinkView() {
 }
 
 // ── Images ────────────────────────────────────────────────────────────────
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const isImageFile = (f: File | null | undefined): f is File => !!f && IMAGE_TYPES.has(f.type);
-function imageFilesFrom(transfer: DataTransfer | null | undefined): File[] {
-  if (!transfer) return [];
-  const files = Array.from(transfer.files ?? []).filter(isImageFile);
-  if (files.length) return files;
-  return Array.from(transfer.items ?? []).filter((i: DataTransferItem) => i.kind === "file" && IMAGE_TYPES.has(i.type)).map((i: DataTransferItem) => i.getAsFile()).filter(isImageFile);
-}
-function readFileAsDataURL(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => resolve(String(reader.result)), { once: true });
-    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read the image.")), { once: true });
-    reader.readAsDataURL(file);
-  });
-}
-function loadImage(src: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.addEventListener("load", () => resolve(image), { once: true });
-    image.addEventListener("error", () => reject(new Error("That file is not an image this browser can decode.")), { once: true });
-    image.src = src;
-  });
-}
 // Stored images are always PNG, JPEG or GIF: those open everywhere a document
 // goes (Word and Pages show a WebP inside a .docx as a blank box). Opaque
 // pictures become JPEG; anything with a transparent pixel stays PNG, which has
 // no quality knob, so it shrinks instead until it fits.
-const IMAGE_MAX_DIMENSION = 1600, IMAGE_MAX_LENGTH = 14e5, IMAGE_MAX_GIF = 27e5;
+const { maxDimension: IMAGE_MAX_DIMENSION, maxDataUrlLength: IMAGE_MAX_LENGTH, maxGifDataUrlLength: IMAGE_MAX_GIF } = DEFAULT_IMAGE_LIMITS;
 function hasTransparency(image: HTMLImageElement, w0: number, h0: number) {
   const s = Math.min(1, 96 / Math.max(w0, h0, 1));
   const c = document.createElement("canvas");
@@ -2281,7 +2243,7 @@ const keepsGif = (src: string, image: HTMLImageElement) =>
 async function prepareImage(file: File) {
   const original = await readFileAsDataURL(file);
   const image = await loadImage(original);
-  const alt = (file.name || "").replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").trim() || "Image";
+  const alt = altFromFileName(file.name || "");
   if (keepsGif(original, image)) return { src: original, alt, width: image.naturalWidth || image.width };
   return { ...encodeImage(image), alt };
 }
@@ -2545,6 +2507,12 @@ function atBlockStart(block: Node, range: Range) {
   const r = document.createRange();
   r.selectNodeContents(block);
   r.setEnd(range.startContainer, range.startOffset);
+  return !r.toString().replace(/\u200B/g, "").length && !r.cloneContents().querySelector?.("img");
+}
+function atBlockEnd(block: Node, range: Range) {
+  const r = document.createRange();
+  r.selectNodeContents(block);
+  r.setStart(range.startContainer, range.startOffset);
   return !r.toString().replace(/\u200B/g, "").length && !r.cloneContents().querySelector?.("img");
 }
 
@@ -4688,10 +4656,7 @@ function handleTableKey(e: KeyboardEvent) {
     return true;
   }
   if (e.key === "Delete" && range.collapsed) {
-    const rest = document.createRange();
-    rest.selectNodeContents(cell);
-    rest.setStart(range.startContainer, range.startOffset);
-    if (!rest.toString().replace(/\u200B/g, "") && !rest.cloneContents().querySelector?.("img")) { e.preventDefault(); return true; }
+    if (atBlockEnd(cell, range)) { e.preventDefault(); return true; }
     return false;
   }
   // ↑ from the first row / ↓ from the last, with nothing beyond the table:
@@ -4723,12 +4688,7 @@ function besideTable(e: KeyboardEvent, range: Range) {
   const back = e.key === "Backspace";
   const table = back ? top.previousElementSibling : top.nextElementSibling;
   if (table?.tagName !== "TABLE") return false;
-  if (back ? !atBlockStart(top, range) : (() => {
-    const rest = document.createRange();
-    rest.selectNodeContents(top);
-    rest.setStart(range.startContainer, range.startOffset);
-    return rest.toString().replace(/\u200B/g, "") || rest.cloneContents().querySelector?.("img");
-  })()) return false;
+  if (!(back ? atBlockStart(top, range) : atBlockEnd(top, range))) return false;
   e.preventDefault();
   // An empty line between blocks goes away -- but not the last line of the
   // document, which is what you type into below a table.
@@ -5848,6 +5808,11 @@ function scheduleSave(delay?: number) {
   if (applyingRemote || isExport || !ready) return;
   saver.schedule(delay);
 }
+// Changes the page to take in a remote change, which is not itself saved.
+function applyRemote(apply: () => void) {
+  applyingRemote = true;
+  try { apply(); } finally { applyingRemote = false; }
+}
 
 // Serialize the document, repairing changed blocks that wouldn't round-trip
 // (not under an IME composition, whose DOM must not be replaced).
@@ -5943,14 +5908,12 @@ function mergeConflicts(result: ApplyOperationResult): SaveOutcome {
   // is deleted -- an edited one stays, as a pending deletion whose baseline a
   // concurrent re-creation still merges against. The next send saves the rest.
   const activeId = editingBlockId();
-  keepSelection(() => {
-    applyingRemote = true;
+  keepSelection(() => applyRemote(() => {
     for (const b of result.conflicts) {
       if ((b as MissingBlock).missing) remoteDelete(b.id, activeId);
       else remoteUpsert(b as StoredBlock, activeId);
     }
-    applyingRemote = false;
-  });
+  }));
   mergedDrafts = false; // the scheduler sends again after a conflict anyway
   afterRemoteChange();
   return "conflict";
@@ -5995,15 +5958,13 @@ function applyHeldChanges() {
   const held = Array.from(heldWhileSaving);
   heldWhileSaving.clear();
   const activeId = editingBlockId();
-  keepSelection(() => {
-    applyingRemote = true;
+  keepSelection(() => applyRemote(() => {
     for (const [id, block] of held) {
       if (block) remoteUpsert(block, activeId);
       else remoteDelete(id, activeId);
     }
     if (order) applyOrder(order);
-    applyingRemote = false;
-  });
+  }));
   afterRemoteChange();
   saveMergedDrafts();
 }
@@ -6101,37 +6062,34 @@ function applyRemoteOperation(event: OperationEvent) {
   revision = Math.max(revision, event.revision || 0);
   const activeId = editingBlockId();
   const live = event.senderId === "agent" && liveEffectsOn() ? captureLiveEdit(event) : null;
-  keepSelection(() => {
-    applyingRemote = true;
+  keepSelection(() => applyRemote(() => {
     for (const b of event.upserts || []) remoteUpsert(b, activeId);
     for (const id of event.deletedIds || []) remoteDelete(id, activeId);
     if (Array.isArray(event.order)) remoteOrder(event.order, event.revision || 0);
-    applyingRemote = false;
-  });
+  }));
   afterRemoteChange();
   saveMergedDrafts();
   if (live) { try { showLiveEdit(live); } catch {} }
 }
 function applySnapshot(doc: DocumentSnapshot) {
-  applyingRemote = true;
-  closePop(true);
-  hideImageControls();
-  revision = doc.revision || 0;
-  lastEventRevision = revision;
-  acknowledged.clear();
-  pendingByBlock.clear();
-  sentDrafts.clear();
-  heldWhileSaving.clear();
-  editor.replaceChildren(...(doc.blocks || []).map(parseBlock));
-  normalize();
-  for (const block of doc.blocks || []) {
-    const node = findBlock(block.id);
-    acknowledged.set(block.id, { html: node ? canonicalBlockHtml(node) : block.html, version: block.version });
-  }
-  ackOrder = (doc.blocks || []).map((b: StoredBlock) => b.id);
-  ackOrderRevision = revision;
-  applyingRemote = false;
-
+  applyRemote(() => {
+    closePop(true);
+    hideImageControls();
+    revision = doc.revision || 0;
+    lastEventRevision = revision;
+    acknowledged.clear();
+    pendingByBlock.clear();
+    sentDrafts.clear();
+    heldWhileSaving.clear();
+    editor.replaceChildren(...(doc.blocks || []).map(parseBlock));
+    normalize();
+    for (const block of doc.blocks || []) {
+      const node = findBlock(block.id);
+      acknowledged.set(block.id, { html: node ? canonicalBlockHtml(node) : block.html, version: block.version });
+    }
+    ackOrder = (doc.blocks || []).map((b: StoredBlock) => b.id);
+    ackOrderRevision = revision;
+  });
   afterRemoteChange();
 }
 // After a reconnect, or when someone replaces the document wholesale: bring in
@@ -6140,8 +6098,7 @@ function reconcileSnapshot(doc: DocumentSnapshot) {
   revision = Math.max(revision, doc.revision || 0);
   lastEventRevision = Math.max(lastEventRevision, doc.revision || 0);
   const activeId = editingBlockId();
-  keepSelection(() => {
-    applyingRemote = true;
+  keepSelection(() => applyRemote(() => {
     const serverIds = new Set<string>();
     for (const block of doc.blocks || []) {
       serverIds.add(block.id);
@@ -6151,8 +6108,7 @@ function reconcileSnapshot(doc: DocumentSnapshot) {
     }
     for (const id of Array.from(acknowledged.keys())) if (!serverIds.has(id)) remoteDelete(id, activeId);
     remoteOrder((doc.blocks || []).map((b: StoredBlock) => b.id), doc.revision || 0);
-    applyingRemote = false;
-  });
+  }));
   afterRemoteChange();
   saveMergedDrafts();
 }
@@ -6170,14 +6126,14 @@ function settlePendingBlock(id: string) {
     return first;
   }
   pendingByBlock.delete(id);
-  applyingRemote = true;
-  if (pending.type === "delete") local?.remove();
-  else {
-    const next = parseBlock(pending.block);
-    if (local) mergeRemoteBlock(local, pending.baseHtml, next, canonicalBlockHtml(next));
-    else insertByServerOrder(next);
-  }
-  applyingRemote = false;
+  applyRemote(() => {
+    if (pending.type === "delete") local?.remove();
+    else {
+      const next = parseBlock(pending.block);
+      if (local) mergeRemoteBlock(local, pending.baseHtml, next, canonicalBlockHtml(next));
+      else insertByServerOrder(next);
+    }
+  });
   afterRemoteChange();
   const kept = mergedDrafts;
   mergedDrafts = false;

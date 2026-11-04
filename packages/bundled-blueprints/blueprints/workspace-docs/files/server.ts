@@ -71,7 +71,7 @@ type BlockDocument = Omit<StoredDocument, "lastModified"> & { lastModified: numb
 // Props is `unknown` so that `ctx` is the plain `DurableObjectState` the constructor receives.
 export class Gadget extends DurableObject<unknown, unknown> implements GadgetStub {
   mutations: MutationQueue;
-  subscribers: SubscriberRegistry<SubscriberCallbacks, Record<string, never>>;
+  subscribers: SubscriberRegistry<SubscriberCallbacks>;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -289,7 +289,7 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
 
   // `_client` is what an older editor said about itself; with no presence it is not kept.
   async subscribe(callback: SubscriberCallbacks, _client: unknown = {}): Promise<SubscribeSnapshot> {
-    this.subscribers.add(callback, {});
+    this.subscribers.add(callback);
     const [doc, settings] = await Promise.all([this.loadDocument(), this.getSettings()]);
     return { ...doc, settings };
   }
@@ -591,8 +591,11 @@ export class ExportHandler extends WorkerEntrypoint {
 
   async export(gadget: GadgetStub, id: string): Promise<ReadableStream<Uint8Array>> {
     if (id !== "markdown" && id !== "docx") throw new Error("Unsupported document export format: " + id);
+    if (id === "docx") {
+      const [document, settings] = await Promise.all([gadget.getDocument(), gadget.getSettings()]);
+      return documentToDocx(document, settings);
+    }
     const document = await gadget.getDocument();
-    if (id === "docx") return documentToDocx(document, await gadget.getSettings());
     const html = document.blocks ? document.blocks.map((block) => block.html).join("") : document.legacyContent || "";
     return new Response(htmlToMarkdown(html)).body!;
   }

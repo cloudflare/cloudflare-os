@@ -21,6 +21,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { type ZipEntry, createZip } from "@gadgets/bundled-blueprints/libraries/zip/server";
+import { VOID_TAGS } from "./merge.ts";
+import type { DocFont, DocSettings } from "./protocol.ts";
 
 /* ═══════════════════════ 1. Limits, units & XML ════════════════════════════ */
 
@@ -52,11 +54,8 @@ export interface DocxSource {
   lastModified?: number | null;
 }
 
-/** The document's shared presentation settings. */
-export interface DocxSettings {
-  font?: string;
-  wide?: boolean;
-}
+/** The document's shared presentation settings; any left out take their defaults. */
+export type DocxSettings = Partial<DocSettings>;
 
 // US Letter, 1in margins: the content box is 6.5in wide.
 const PAGE = { w: 12240, h: 15840, margin: 1440 };
@@ -76,7 +75,7 @@ interface Typeface {
 
 // The three shared typefaces (settings.font), mirroring the editor's
 // --doc-font / --doc-size / --doc-lh: the editor's 16px sans body maps to 11pt.
-const TYPEFACES: Record<"sans" | "serif" | "mono", Typeface> = {
+const TYPEFACES: Record<DocFont, Typeface> = {
   sans: { font: "Arial", size: 11, line: 1.65 },
   serif: { font: "Georgia", size: 12, line: 1.6 },
   mono: { font: "Courier New", size: 10, line: 1.7 },
@@ -139,7 +138,6 @@ type HtmlNode = ElementNode | TextNode;
 
 const isElement = (node: HtmlNode): node is ElementNode => "tag" in node;
 
-const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 // Content that never renders as document text.
 const IGNORED_TAGS = new Set(["head", "title", "meta", "link", "script", "style", "template", "noscript", "iframe", "object", "embed", "svg", "math", "canvas", "audio", "video", "select", "button", "input", "textarea"]);
 const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title"]);
@@ -660,7 +658,7 @@ class DocxWriter {
   #nextDrawing = 1;
 
   constructor(settings: DocxSettings) {
-    this.face = TYPEFACES[settings.font as keyof typeof TYPEFACES] ?? TYPEFACES.sans;
+    this.face = TYPEFACES[settings.font ?? "sans"];
     this.basePt = this.face.size;
     this.measurePx = settings.wide ? MEASURE_PX.wide : MEASURE_PX.normal;
   }

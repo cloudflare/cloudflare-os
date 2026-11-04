@@ -527,7 +527,7 @@ export function pipeCells(line: string): string[] {
 type Align = "center" | "right" | null;
 const alignOf = (cell: string): Align => /^:-+:$/.test(cell) ? "center" : /^-+:$/.test(cell) ? "right" : null;
 // Cells are inline Markdown, or ready HTML when `raw`.
-export function tableHtmlFrom(head: string[] | null, body: string[][], raw = false, aligns: Align[] = []): string {
+function tableHtmlFrom(head: string[] | null, body: string[][], raw = false, aligns: Align[] = []): string {
   const cols = Math.max(head?.length || 0, ...body.map((r) => r.length), 1);
   const html = (s: string | undefined) => raw ? String(s ?? "") : inlineMarkdown(s ?? "").replace(/&lt;br\s*\/?&gt;/gi, "<br>");
   const open = (tag: string, i: number) => aligns[i] ? `<${tag} style="text-align: ${aligns[i]};">` : `<${tag}>`;

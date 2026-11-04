@@ -28,9 +28,12 @@ formats on top of it.
   `{ id, version }`: an upsert whose `baseVersion` is stale is rejected with the authoritative
   item, one for a deleted item is rejected as `missing` (the client may re-create it with
   `baseVersion` 0), an identical upsert is no change, deletions are version-checked, and accepted
-  items take the next version. Returns the new item map, `accepted`, `deletedIds`, `conflicts`,
-  `changed` and a `status`; `operationStatus(changed, conflicts)` recomputes the status for a
-  gadget whose batch also carries ordering or a title. `normalizeBaseVersion` reads a base version
+  items take the next version -- a created one `createdVersion`, 1 by default; a gadget where a
+  deleted id can come back passes one above every version the id has had (Docs passes the
+  revision the batch makes), so an id and a version always name one content. Returns the new item
+  map, `accepted`, `deletedIds`, `conflicts`, `changed` and a `status`;
+  `operationStatus(changed, conflicts)` recomputes the status for a gadget whose batch also
+  carries ordering or a title. `normalizeBaseVersion` reads a base version
   off the wire.
 - **`normalizeCollaborator`** bounds what a client says about itself before it is repeated.
 
@@ -71,7 +74,8 @@ server, every mutation runs through `queue.run`, one registry with hooks that bu
 upsert/delete rule with the gadget's sanitizer in front and its ordering after. In the browser, a
 `SaveScheduler` whose `save()` is the gadget's payload builder drives saving, a roster holds the
 collaborators, a reporter sends presence and the heartbeat, and `createSubscriber` builds the
-callbacks class. Each part stands alone; a gadget may use any subset.
+callbacks class. Each part stands alone; a gadget may use any subset. Docs uses only the server
+side: its block merging needs a save loop and subscriber of its own.
 
 ## Tests
 

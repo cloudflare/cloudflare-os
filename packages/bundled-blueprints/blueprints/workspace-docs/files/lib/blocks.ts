@@ -7,6 +7,7 @@
 // (a block's type, and its Markdown via ./markdown.ts).
 import type { BlockContent, BlockDescription, BlockPosition, BlockSource, StoredBlock } from "./protocol.ts";
 import { closesFence, decodeHtml, htmlToMarkdown, readHtmlAttribute } from "./markdown.ts";
+import { VOID_TAGS } from "./merge.ts";
 
 /**
  * A block spec as an agent passes it: `{ type, text | html | items | rows | src | code | markdown,
@@ -158,7 +159,6 @@ export function fallbackKind(spec: unknown): BlockKind {
 // block, so several elements (or loose text) in one html spec must become
 // several blocks, or all but the first would be invisible.
 const SPLIT_BLOCK_TAGS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "blockquote", "pre", "hr", "div", "table", "figure", "section", "article", "header", "footer", "aside", "nav", "dl", "address", "details", "main"]);
-const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 
 export function splitTopLevelHtml(html: string): string[] {
   const pieces = splitPieces(html).map((piece) => piece.html);
@@ -238,7 +238,7 @@ export function repairBlockHtml(html: string, depth = 0): string[] {
   return out.length ? out : ["<p><br></p>"];
 }
 
-export function blockKind(type: unknown, fallback: BlockKind = "p"): BlockKind {
+function blockKind(type: unknown, fallback: BlockKind = "p"): BlockKind {
   if (type === undefined || type === null || type === "") return fallback;
   const kind = TYPE_ALIASES[String(type).toLowerCase()];
   if (!kind) throw new Error(`Unknown block type "${type}". Use one of: p, h1, h2, h3, quote, code, divider, ul, ol, todo, image, table, html.`);

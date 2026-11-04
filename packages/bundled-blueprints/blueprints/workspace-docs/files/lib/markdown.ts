@@ -543,7 +543,7 @@ const ABBREVIATE_OVER = 256;
 const IMAGE_REF = /data:(image\/[a-z0-9.+-]+);… [\d.]+ (?:B|KB|MB) #([0-9a-f]{8})/gi;
 
 /** `src` itself, or for a long `data:` URI the short reference that stands for it. */
-export function abbreviateDataUri(src: string): string {
+function abbreviateDataUri(src: string): string {
   const match = /^data:([^;,]+)[^,]*,/i.exec(src);
   if (!match || src.length <= ABBREVIATE_OVER) return src;
   const payload = src.length - match[0].length;
