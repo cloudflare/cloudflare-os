@@ -25,6 +25,10 @@ versions. The OAuth client must allow both scopes or Cloudflare will omit/reject
 billing-only connections can add the grant when the user first selects an observability resource,
 and a connection granted only `workers-observability.read` (as every one was before Worker bindings
 needed the second scope) is asked for `workers-tail.read` the first time it connects a Worker.
+The Workshop obtains a live account description when listing connected accounts, including during
+observer setup, so a pre-upgrade saved description cannot bypass that additional consent. If the
+description cannot be refreshed, the saved identity remains available for reconnecting but no grants
+are asserted.
 Cloudflare exposes account and Worker resource choices; resource bindings provide the finer
 capability boundary after connection.
 
@@ -108,6 +112,12 @@ provider does filter correctly. Unconstrained account-wide discovery still uses 
 > `$workers.scriptVersion.id` matching the versions list. If the last is wrong, a Worker binding
 > returns no events rather than another Worker's, and an aggregate either matches nothing or, should
 > the provider ignore the version condition, is kept to the Worker's current name alone.
+
+Worker version discovery stops on an empty or short page and is bounded to ten pages of 100 versions;
+a nonpositive reported page size falls back to the requested size. Queries send all listed version
+IDs as one comma-separated condition (about 37 KB for 1,000 UUIDs). The API reference specifies
+neither that condition's maximum length nor the version listing's default order, and neither has
+been verified live. A rejected query fails rather than retrying without its scope conditions.
 
 ### Two names for one field
 

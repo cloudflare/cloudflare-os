@@ -87,9 +87,9 @@ async function listVersionIds(
     }
     for (const version of result as Array<{ id: string }>) versionIds.add(version.id);
     // The provider reports the page size it actually used, which may be lower than requested.
-    const perPage = isRecord(info) && typeof info.per_page === "number"
+    const perPage = isRecord(info) && typeof info.per_page === "number" && info.per_page > 0
       ? info.per_page : VERSIONS_PER_PAGE;
-    if (result.length < perPage) return versionIds;
+    if (result.length === 0 || result.length < perPage) return versionIds;
   }
   logger.warn("stopped listing Worker versions at the page cap", {
     event: "observability.worker.versions.truncated", versionsListed: versionIds.size,

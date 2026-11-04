@@ -121,6 +121,50 @@ describe("resolveWorkerScope", () => {
     ]);
   });
 
+  it.each([0, -1])("uses the requested page size when the provider reports %s", async perPage => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => `version-${i}`);
+    const paths = stubApi(path => {
+      if (path === `workers/workers/${WORKER_ID}`) return worker();
+      const page = new URL(path, API_BASE).searchParams.get("page");
+      if (page === "1") return versionsPage(firstPage, perPage);
+      if (page === "2") return versionsPage(["last-version"], perPage);
+      // Over-paging is observable to callers: the unnecessary request can fail a valid read.
+      return Response.json({ success: false, errors: [] }, { status: 403 });
+    });
+
+    await expect(resolveWorkerScope(getToken, ACCOUNT_ID, WORKER_ID))
+      .resolves.toEqual({
+        workerId: WORKER_ID,
+        name: "renamed-worker",
+        versionIds: new Set([...firstPage, "last-version"]),
+      });
+    expect(paths).toHaveLength(3);
+  });
+
+  it.each([0, -1])("stops on an empty page even when per_page is %s", async perPage => {
+    const paths = stubApi(path => path.includes("/versions") ? versionsPage([], perPage) : worker());
+
+    await expect(resolveWorkerScope(getToken, ACCOUNT_ID, WORKER_ID))
+      .resolves.toMatchObject({ versionIds: new Set() });
+    expect(paths).toHaveLength(2);
+  });
+
+  it("bounds a full version walk at ten pages without dropping any listed versions", async () => {
+    const paths = stubApi(path => {
+      if (path === `workers/workers/${WORKER_ID}`) return worker();
+      const page = new URL(path, API_BASE).searchParams.get("page");
+      return versionsPage(Array.from({ length: 100 }, (_, i) => `${page}-version-${i}`));
+    });
+
+    const scope = await resolveWorkerScope(getToken, ACCOUNT_ID, WORKER_ID);
+
+    expect(scope.versionIds.size).toBe(1_000);
+    expect(scope.versionIds.has("1-version-0")).toBe(true);
+    expect(scope.versionIds.has("10-version-99")).toBe(true);
+    expect(paths).toHaveLength(11);
+    expect(paths.some(path => path.includes("page=11&"))).toBe(false);
+  });
+
   it("reports a deleted Worker as gone", async () => {
     stubApi(path => path.includes("/versions") ? notFound() : worker());
 
