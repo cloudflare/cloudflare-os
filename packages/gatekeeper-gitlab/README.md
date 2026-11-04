@@ -119,13 +119,13 @@ can still hold confidential issues and internal notes; job logs and test reports
   path; GitLab answers a moved project's old path with a redirect, which is not followed, so that
   read fails) and reads nothing until it has. From then on every REST request beneath the project
   goes to `/projects/<id>/...`. Git fetches and pushes, which GitLab addresses only by path, are
-  sent to the path that id has now and fail if it changed before GitLab answered. So a rename or
-  transfer keeps the binding on its project and a project later created at an old path is never
-  read in its place: the binding's requests fail instead. A push is the exception only when the
-  move and the path's reuse both land between those two lookups: it then fails as possibly
-  delivered elsewhere, since what GitLab accepted can't be called back. A binding that read
-  before ids were pinned is pinned to the project its path names at its first read since, which
-  may not be the one it read then.
+  sent to the path that id has now, and a fetch fails if that path changed before GitLab answered.
+  So a rename or transfer keeps the binding on its project and a project later created at an old
+  path is never read in its place: the binding's requests fail instead. A push is not checked
+  again once GitLab has answered, since what GitLab accepted can't be called back: only a move
+  and the path's reuse both landing between the lookup and the push could deliver it elsewhere.
+  A binding that read before ids were pinned is pinned to the project its path names at its first
+  read since, which may not be the one it read then.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
   subresource, so the Workshop checks everyone who can see it before it is returned (see
@@ -142,11 +142,13 @@ can still hold confidential issues and internal notes; job logs and test reports
   account reuses a grant for up to 15 minutes and a denial for up to 15 seconds, so a removed
   membership can still admit them for 15 minutes; it asks afresh after a reconnect, which may sign
   in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
-  grant dead: the check fails. Each open also asks, uncached, for what the workspace read before
-  reads reported the project: the same question by id, and of the project the binding's path
-  names now, as releases that read by path asked, since what those read may have come from a
-  project that took the path; job logs and test reports those releases read still need their
-  role both ways. Caches those releases filled are discarded on upgrade.
+  grant dead: the check fails. Each open also asks, uncached and never with the binding owner's
+  token, for what the workspace read before reads reported the project: the same question of the
+  project the binding's path names now, as releases that read by path asked, and, once the binding
+  has pinned an id, of that id, since what those releases read may have come from a project that
+  took the path. A binding with no id yet has read nothing by id, so the path is all it is checked
+  by. Job logs and test reports those releases read still need their role the same way. Caches
+  those releases filled are discarded on upgrade.
 
 ## Setting up GitLab OAuth credentials
 

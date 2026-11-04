@@ -479,15 +479,18 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Sends a git smart-HTTP request to the bound project. GitLab addresses git only by path, so
-   * `send` is given the path the project has now, read by its id (see #currentProjectPath), and its
-   * response is refused if that path changed before GitLab answered: the path it left may already
-   * name another project, which would then have served or received the request instead. GitLab has
-   * routed the request once its response arrives, so a pack still streaming after this check comes
-   * from the project checked.
+   * `send` is given the path the project has now, read by its id (see #currentProjectPath). With
+   * `confirm`, as for a fetch, the response is refused if that path changed before GitLab answered:
+   * the path it left may already name another project, which would then have served the request
+   * instead. GitLab has routed the request once its response arrives, so a pack still streaming
+   * after this check comes from the project checked. A push is sent unconfirmed: GitLab has applied
+   * it by the time it answers, so a check then could only report, not prevent, its delivery to a
+   * project that took the path between the lookup and the push.
    */
-  async #gitRequest(send: (projectPath: string) => Promise<Response>): Promise<Response> {
+  async #gitRequest(send: (projectPath: string) => Promise<Response>, options: { confirm: boolean }): Promise<Response> {
     const current = await this.#currentProjectPath();
     const response = await send(current);
+    if (!options.confirm) return response;
     const after = await this.#currentProjectPath().catch(async (error: unknown) => {
       await response.body?.cancel();
       throw error;
@@ -1973,22 +1976,27 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * Every read reports the project by its id, and a CI-data read the role its data needs on it (see
    * authorizeRead), which the Workshop checks through verifyObserverAccess. This check stays for the
    * reads made before they did, asking GitLab with the observer's own token, now, whether their
-   * membership of the project the binding is pinned to, by its id, and of the one its path names,
-   * as releases that addressed it by path asked, reaches Reporter: those releases followed the
-   * path, so what they read may have come from a project that took it, and nothing stored can tell
-   * which bindings read that way. The CI-data sets those reads marked (strategy C) need their role
-   * the same way (`CI_DATA_ACCESS_LEVELS`): `ci-logs` (Developer) for job logs and test reports read
-   * below Maintainer, `ci-test-reports` (Maintainer) for test reports read as one. Reads no longer
-   * mark sets, so the observers the tracker stores are never checked again by a read.
+   * membership reaches Reporter on the project the binding's path names, as releases that addressed
+   * it by path asked, and on the project the binding is pinned to, by its stored id, when it has
+   * one: those releases followed the path, so what they read may have come from a project that
+   * took it, and nothing stored can tell which bindings read that way. Admission never pins the
+   * project, which would ask with the binding owner's token, so a binding whose owner's grant has
+   * lapsed still admits observers on their own; a binding with no stored id has read nothing by id
+   * (every read pins it first), so the path is all its reads followed. The CI-data sets those reads
+   * marked (strategy C) need their role the same way (`CI_DATA_ACCESS_LEVELS`): `ci-logs`
+   * (Developer) for job logs and test reports read below Maintainer, `ci-test-reports` (Maintainer)
+   * for test reports read as one. Reads no longer mark sets, so the observers the tracker stores are
+   * never checked again by a read.
    */
   #observerStrategy: ObserverStrategy | undefined;
 
   #observers(): ObserverStrategy {
-    // Both checks of one level: the pinned id, and the binding's path, as earlier releases read.
+    // One level, checked by the binding's path and by its stored id, if any.
     const hasLevel = async (verifier: Fetcher<GitLabVerifierApi>, level?: number) => {
-      const { id, path } = await this.#pinnedProject();
+      const id = this.ctx.storage.kv.get<number>("projectId");
       const [byId, byPath] = await Promise.all([
-        verifier.hasProjectAccess(id, level), verifier.hasProjectPathAccess(path, level),
+        id === undefined || verifier.hasProjectAccess(id, level),
+        verifier.hasProjectPathAccess(this.#projectPath(), level),
       ]);
       return byId && byPath;
     };
@@ -2950,7 +2958,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         try {
           const pack = await cache.buildPack();
           await this.#withApi(api => pushGitRefUpdate(
-            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body)),
+            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body), { confirm: false }),
             { branch: action.branch, oldSha: action.expectedOldSha, newSha: action.newSha },
             pack));
         } catch (error) {
@@ -3449,7 +3457,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const deleting = action.expectedOldSha === ZERO_OID;
         try {
           await this.#withApi(async api => pushGitRefUpdate(
-            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body)),
+            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body), { confirm: false }),
             { branch: action.branch, oldSha: action.newSha, newSha: deleting ? ZERO_OID : action.expectedOldSha },
             deleting ? null : bytesToStream(await emptyPackBytes())));
         } catch (error) {
@@ -3485,7 +3493,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
     return this.#withApi(api => startGitPull(
-      body => this.#gitRequest(path => api.fetchGitUploadPack(path, body)), oids, options));
+      body => this.#gitRequest(path => api.fetchGitUploadPack(path, body), { confirm: true }), oids, options));
   }
 
   /**

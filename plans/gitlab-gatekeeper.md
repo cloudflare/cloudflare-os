@@ -327,8 +327,8 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   Since the observer conversion (§8) this gatekeeper pins the project's id as well, read once from
   its path, whose redirect is still never followed, and sends every REST request beneath the
   project to `/projects/<id>/…`, so a move after the pin no longer reaches the error; git, which
-  GitLab addresses only by path, goes to the path the id has now and is refused if that path
-  changed before GitLab answered.
+  GitLab addresses only by path, goes to the path the id has now, and a fetch is refused if that
+  path changed before GitLab answered.
 - **Tree-by-oid has no REST fallback; the simulation degrades.** GitHub's simulated MR diff over
   queued pushes falls back to `GET /git/trees/{sha}` when a tree isn't in the workspace cache.
   GitLab's tree endpoint is path-and-ref addressed, not oid addressed, so `TreeDiffSource.getTree`
@@ -1014,10 +1014,12 @@ at the role named, reusing a grant for 15 minutes and a denial for 15 seconds wi
 connection generation. Reads no longer mark sets, exclude observers or consult the roster, which
 is dropped: the Workshop checks the whole audience, observers admitted unrecorded included.
 `addObserver` keeps the tracker for the sets reads marked before, and requires the baseline and
-each marked set's role by the pinned id and by the binding's path, since those reads followed the
-path. A reported id is only true if the read came from it, so REST is addressed by id (§5,
-redirects), git by the path the id has now, and caches filled while reads followed the path are
-discarded once on upgrade.
+each marked set's role by the binding's path, since those reads followed it, and by the stored id
+once there is one. It never pins, which would ask with the owner's token and lock collaborators out
+of the history once the owner's grant lapsed; a binding without an id has read nothing by it. A
+reported id is only true if the read came from it, so REST is addressed by id (§5, redirects), git
+by the path the id has now, and caches filled while reads followed the path are discarded once on
+upgrade.
 
 ### 9. Tests
 

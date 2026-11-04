@@ -1041,11 +1041,12 @@ describe("what CI reads disclose to observers", () => {
 
     it.each([["the pinned id", P], ["the binding's path", PATH]] as const)(
       "needs the role, and Reporter at all, by %s as well", async (_, address) => {
-        // The marked reads followed the path, which may since name another project than the pinned
-        // one: a membership of either alone does not show the observer may see what was read.
+        // The marked reads followed the path, which may since name another project than the one
+        // the binding has pinned since: a membership of either alone does not show the observer may
+        // see what was read.
         const fake = gateFake();
         const { props, name } = await setup(fake, { reporter: 20, developer: 30 });
-        await hooks().startOnEarlierStorage(name, props, { "observedSet:ci-logs": "observed" });
+        await hooks().startOnEarlierStorage(name, props, { "observedSet:ci-logs": "observed", projectId: PROJECT_ID });
         // CiFake numbers its members from 100 in order.
         const developerId = 100 + [...fake.members.keys()].indexOf("developer");
         fake.on("GET", new RegExp(`^/api/v4/projects/${address}/members/all\\?`), request => {

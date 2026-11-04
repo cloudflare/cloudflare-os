@@ -191,6 +191,8 @@ async function binding(options: { pinned?: boolean } = {}) {
   const props: GatekeeperProps = projectProps(await account(OWNER_TOKEN), PATH);
   if (options.pinned) await hooks().startOnEarlierStorage(name, props, { projectId: PROJECT_ID });
   return {
+    /** The binding owner's account. */
+    owner: props.userObjectId,
     read: (steps: SessionStep[]) => hooks().session(name, props, steps),
     /** Walks the cursor the last step returns, asking once more for a page that fails. */
     pages: (steps: SessionStep[]) => hooks().sessionRetryingPages(name, props, steps),
@@ -555,15 +557,22 @@ describe("addObserver", () => {
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
   });
 
-  it("admits no one while the project's id can't be pinned", async () => {
+  it("admits an observer on their own membership by path while no id is stored, never asking the owner", async () => {
+    // A binding not read since ids were pinned has read nothing by id, and its owner's grant may
+    // have lapsed since; that must not keep out collaborators who can see the project themselves.
     const gitlab = new ObserverGitLab();
-    gitlab.probeStatus = 502;
     gitlab.install();
-    const alice = await account("alice");
+    const [alice, bob] = await Promise.all([account("alice"), account("bob")]);
     gitlab.member("alice", { [PROJECT_ID]: REPORTER });
+    gitlab.member("bob");
     const gk = await binding();
+    await hooks().installCallback(gk.owner);
+    expect(await hooks().reportTokenRejected(gk.owner, OWNER_TOKEN)).toBe("expired");
 
-    expect(await gk.admit(alice)).toEqual({ error: expect.any(String) });
-    expect(gitlab.requestsWith("alice")).toEqual([]);
+    expect(await gk.admit(alice)).toEqual({ ok: undefined });
+    expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
+    expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")))
+      .toEqual(["/api/v4/projects/group%2Fsub%2Fproject/members/all"]);
+    expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
   });
 });
