@@ -120,6 +120,20 @@ describe("editor protocol", () => {
     expect(stored(map).blocks).toEqual([{ id: "a", html: clean, version: 2 }]);
   });
 
+  // An editor shows a block's first element only: what it can't show isn't stored for the exports and agents.
+  it("stores a block as one element, as an editor shows it", async () => {
+    const { gadget, stored: map } = inMemoryGadget();
+    await gadget.initializeBlocks({ blocks: [{ id: "a", html: "<p>A</p>" }], title: "Doc", senderId: "c1" });
+    const save = (html: string, baseVersion: number) => gadget.applyOperation({ senderId: "c1", upserts: [{ id: "a", html, baseVersion }], order: ["a"] });
+    await save("<p>shown</p><p>hidden</p>", 1);
+    expect(stored(map).blocks[0].html).toBe("<p>shown</p>");
+    await save("<b>both</b> <i>shown</i>", 2);
+    expect(stored(map).blocks[0].html).toBe("<p><b>both</b> <i>shown</i></p>");
+    await save("loose<p>hidden</p>", 3);
+    expect(stored(map).blocks[0].html).toBe("<p>loose</p>");
+    expect(await gadget.getMarkdown()).toBe("loose\n");
+  });
+
   it("changes the title, capped, and reports an operation that changes nothing as unchanged", async () => {
     const { gadget } = inMemoryGadget();
     await gadget.initializeBlocks(init);
@@ -240,6 +254,13 @@ describe("block API", () => {
     expect(html).toEqual(["<h2>Renamed</h2>", '<ul class="checklist"><li>a</li><li>b</li></ul>']);
     await expect(gadget.updateBlock({ id: blocks[0].id })).rejects.toThrow("Nothing to update");
     await expect(gadget.updateBlock({ id: "nope", text: "x" })).rejects.toThrow("Unknown block id: nope");
+  });
+
+  it("keeps a list or code block's type and content when updated with inline html", async () => {
+    const { gadget, blocks } = await withMarkdown("- a\n\n```\nx\n```");
+    await gadget.updateBlock({ id: blocks[0].id, html: "new <b>item</b>" });
+    await gadget.updateBlock({ id: blocks[1].id, html: "a &lt; b<br>c" });
+    expect((await gadget.getBlocks()).map((block) => block.html)).toEqual(["<ul><li>new <b>item</b></li></ul>", "<pre>a &lt; b\nc</pre>"]);
   });
 
   it("puts extra Markdown blocks of an update right after the block", async () => {

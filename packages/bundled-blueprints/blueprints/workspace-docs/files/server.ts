@@ -98,7 +98,6 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
       const next = upgradeStoredDocument({ ...doc, lastModified: doc.lastModified });
       if (!next) return;
       await this.ctx.storage.put("document:v2", next);
-      this.broadcast({ type: "snapshot", senderId: "upgrade", document: next });
     } catch (error) {
       console.error("Docs: could not upgrade the stored document", error);
     }
@@ -550,9 +549,12 @@ function cleanSettings(value: unknown): DocSettings {
 // trusted: a non-empty id (at most 100 characters) seen once, and a
 // well-formed base version, with what the editor would scrub on display
 // removed from the HTML (so the exports, which read stored HTML, never see
-// it). The editor's own HTML passes through unchanged. A block over 10M
-// characters is refused, not dropped: dropped, its editor would see it never
-// saved and send it again and again.
+// it), and kept to one top-level block, as the editor holds it (loose text or
+// inline tags wrapped in a <p>): an editor shows only its first element, so
+// the exports and agents can't read anything more. The editor's own HTML
+// passes through unchanged. A block over 10M characters is refused, not
+// dropped: dropped, its editor would see it never saved and send it again
+// and again.
 function sanitizeBlocks(blocks: unknown): BlockUpsert[] {
   if (!Array.isArray(blocks)) return [];
   const result: BlockUpsert[] = [];
@@ -564,7 +566,7 @@ function sanitizeBlocks(blocks: unknown): BlockUpsert[] {
     if (!id || seen.has(id)) continue;
     if (html.length > 1e7) throw new Error("A block is too large to save: it holds more than 10M characters.");
     seen.add(id);
-    result.push({ id, html: stripUnsafe(html), baseVersion: normalizeBaseVersion(block?.baseVersion) });
+    result.push({ id, html: splitTopLevelHtml(stripUnsafe(html))[0], baseVersion: normalizeBaseVersion(block?.baseVersion) });
   }
   return result;
 }

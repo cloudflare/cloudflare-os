@@ -14,7 +14,7 @@ The people using this doc watch it change live: each block API call appears in t
 1. **Edit one block per call.** Use `updateBlock` (rewrite a block), `insertBlocks({ afterId, … })` (add blocks), `deleteBlocks` and `moveBlocks`. Several calls can go in one `executeCode` run: loop and `await` each one.
 2. **Pause briefly between calls**, about `await new Promise(r => setTimeout(r, 150))`, so each change lands as a distinct step. For new content, insert blocks one after another, each `afterId` the block just created, so text appears in reading order.
 3. **Change only what needs changing.** Read first (`listBlocks()` gives ids, types and Markdown), then touch only blocks whose content changes. Don't rewrite a block whose text is the same. For a small edit, keep the rest of the block's wording so only the changed words light up.
-4. **Never replace the whole document** (`setMarkdown`) when it already has content. `setMarkdown` is for filling an empty document; on one with content it throws unless you pass `replace: true`, which only a user's request to replace everything justifies. (It applies as a diff: unchanged blocks keep their ids.)
+4. **Never replace the whole document** (`setMarkdown`) when it already has content. `setMarkdown` is for filling an empty document; on one with content it throws unless you pass `replace: true`, which only a user's request to replace everything justifies, or the call changes nothing. (It applies as a diff: unchanged blocks keep their ids.)
 5. **Prefer blocks the user isn't typing in.** An edit to a block someone is typing in is merged word by word with their unsaved typing: where you both changed the same words, theirs win. So `status: "applied"` means the server stored your version, not that every word survives a concurrent edit; read the block back (`getBlocks`) later if that matters.
 
 Example: rewrite two paragraphs and add a section.
@@ -57,10 +57,10 @@ Every write runs in the Durable Object's mutation queue. One that changes the do
 `blocks` is an array of specs. A plain string is a paragraph; `{ markdown }` expands into several blocks.
 
 - `{ type: "p" | "h1" | "h2" | "h3" | "quote", text }` — `text` is inline Markdown: `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `[link](https://…)`, bare URLs, `![alt](src)` images. Alternatively pass inline `html` instead of `text`.
-- `{ type: "code", text }` (or `code`) — plain text, line breaks kept.
+- `{ type: "code", text }` (or `code`) — plain text, line breaks kept. Inline `html` is read as its text, `<br>` as a line break.
 - `{ type: "divider" }`.
 - `{ type: "image", src, alt?, width? }` — `src` must be `http(s)://` or a PNG, JPEG, GIF, WebP or AVIF `data:` URI; `width` in px.
-- `{ type: "ul" | "ol" | "todo", items, start? }` — each item a string or `{ text, checked?, items?, listType? }` (nested `items` make a sub-list, of the same kind unless `listType` says otherwise). Or `text` with one item per line. `start` is the number an `ol` counts from.
+- `{ type: "ul" | "ol" | "todo", items, start? }` — each item a string or `{ text, checked?, items?, listType? }` (nested `items` make a sub-list, of the same kind unless `listType` says otherwise). Or `text` with one item per line, or inline `html` as one item. `start` is the number an `ol` counts from.
 - `{ type: "table", rows: [[cell, …], …], header?, widths? }` — cells are inline Markdown, `"\n"` is a line break. The first row is the header unless `header: false`. Short rows are padded. `widths` are relative numbers, one per column.
 - `{ type: "html", html }` — the editor holds one element per block, so several top-level elements become several blocks, and loose text or inline tags are wrapped in `<p>`. Scripts, styles, frames, forms, `svg`/`math`, event handlers, `id`/`name` and `javascript:` URLs are removed (the server filters all stored HTML this way).
 - Type aliases are accepted (`text`, `heading` → h2, `bullets`, `numbered`, `checklist`, `tasks`, `hr`, `img`, `grid`, …). An unknown type throws with the list of valid ones.

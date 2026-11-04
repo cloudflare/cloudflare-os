@@ -1451,24 +1451,38 @@ function toggleCode() {
     }
     // A selection inside the code takes off only its own words: the code's
     // other words are split off first and stay code.
-    if (!range.collapsed) {
-      splitAtRange(code, range);
-      setRange(range);
-    }
-    keepSelection(() => unwrap(code));
-    changed();
+    editBlocks(() => {
+      if (!range.collapsed) {
+        splitAtRange(code, range);
+        setRange(range);
+      }
+      keepSelection(() => unwrap(code));
+    });
     return;
   }
-  if (range.collapsed) return;
+  // Inline code sits in one line, cell or list item: across two it would land in the table or list itself.
+  const lineOf = (node: Node) => closestEl(node, "p, h1, h2, h3, h4, h5, h6, li, td, th, blockquote");
+  const line = lineOf(range.startContainer);
+  if (range.collapsed || !line || line !== lineOf(range.endContainer)) return;
   const text = range.toString();
   if (!text || /\n/.test(text)) return;
-  exec("insertHTML", `<code>${escapeHtml(text)}</code>`);
+  // Built here rather than by insertHTML, whose markup the editor then rewrites
+  // (see fixCodeSpans) where the browser's undo can't follow. The words stay
+  // selected, as bold leaves them, so toggling again takes the code off.
+  editBlocks(() => {
+    const code = el("code", {}, text);
+    range.deleteContents();
+    range.insertNode(code);
+    const words = document.createRange();
+    words.selectNodeContents(code);
+    setRange(words);
+  });
 }
 // Chrome writes inline code it inserts or carries over (insertHTML of a
-// <code>, typing where a code run was deleted, Enter at its end) as a <span>
-// or <font face> carrying the code's computed style. That element is turned
-// back into <code>, merged with a neighbouring one, so inline code is always
-// the element and toggling it off works.
+// <code>, as a paste does; typing where a code run was deleted; Enter at its
+// end) as a <span> or <font face> carrying the code's computed style. That
+// element is turned back into <code>, merged with a neighbouring one, so
+// inline code is always the element and toggling it off works.
 const CODE_STYLES = ["font-family", "font-size", "background-color", "background", "border-radius", "padding"];
 function fixCodeSpans(scope: Element = editor) {
   const marks = Array.from(scope.querySelectorAll<HTMLElement>('span[style*="monospace"], font[face*="monospace"]')).filter((s) => !s.closest("pre"));
@@ -1966,9 +1980,16 @@ function applySettings(next: Partial<DocSettings> | null | undefined) {
   btn.aa.style.fontFamily = FONTS.find((f) => f.key === settings.font)!.stack;
   requestAnimationFrame(() => scheduleOutline());
 }
+// A change that fails to save is taken back (unless changed again since), so
+// the page doesn't show a look no one else sees.
 function updateSettings(patch: Partial<DocSettings>) {
+  const before = settings;
   applySettings({ ...settings, ...patch });
-  gadget.setSettings({ ...patch, senderId: clientId }).catch((error) => console.error(error));
+  const mine = settings;
+  gadget.setSettings({ ...patch, senderId: clientId }).catch((error) => {
+    console.error(error);
+    if (settings === mine) applySettings(before);
+  });
 }
 function typeMenu(owner: HTMLElement) {
   const render = () => [

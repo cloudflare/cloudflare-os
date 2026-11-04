@@ -95,7 +95,7 @@ export function retypeSpec(html: string, type: unknown): BlockSpec {
   if (m && textual.includes(current) && !/<(p|div|h[1-6]|ul|ol|pre|table|blockquote)\b/i.test(inner)) {
     if (textual.includes(kind)) return { type: "html", html: `<${kind === "quote" ? "blockquote" : kind}${style}>${inner.trim() ? inner : "<br>"}</${kind === "quote" ? "blockquote" : kind}>` };
     if (lists.includes(kind)) return { type: kind, items: [{ html: inner }] };
-    if (kind === "code") return { type: "code", text: decodeHtml(stripTags(inner.replace(/<br\s*\/?>/gi, "\n"))) };
+    if (kind === "code") return { type: "code", text: codeText(inner) };
   }
   if (m && current === "code" && (textual.includes(kind) || lists.includes(kind))) {
     const lines = stripTags(inner.replace(/<br\s*\/?>/gi, "\n")).replace(/\n$/, "").split("\n").map((line) => escapeHtml(decodeHtml(line)));
@@ -115,6 +115,11 @@ export function retypeSpec(html: string, type: unknown): BlockSpec {
 // An empty paragraph, whatever its attributes (the editor saves its block id on it).
 export function isEmptyLine(html: string): boolean {
   return /^<p\b[^>]*>(?:<br\s*\/?>)?<\/p>$/i.test(String(html).trim());
+}
+
+// The text a code block holds for `html`: its lines, without markup.
+function codeText(html: string): string {
+  return decodeHtml(stripTags(html.replace(/<br\s*\/?>/gi, "\n")));
 }
 
 // The text of `html` with every tag removed, repeatedly, so a tag split by another can't remain.
@@ -323,7 +328,7 @@ function codeSpans(s: string, keep: (html: string) => string): string {
     const end = close.exec(s)?.index ?? -1;
     const c = s.slice(j, end);
     if (end < 0 || c.includes("\n")) { out += fence; i = j; continue; }
-    out += keep("<code>" + escapeHtml(/^ .*[^ ].* $/.test(c) ? c.slice(1, -1) : c) + "</code>");
+    out += keep("<code>" + escapeHtml(c.startsWith(" ") && c.endsWith(" ") && /[^ ]/.test(c) ? c.slice(1, -1) : c) + "</code>");
     i = end + fence.length;
   }
   return out;
@@ -544,7 +549,8 @@ export function specHtml(input: unknown): string {
     case "h1": case "h2": case "h3": return `<${kind}>${inlineContent(spec)}</${kind}>`;
     case "quote": return "<blockquote>" + inlineContent(spec) + "</blockquote>";
     case "code": {
-      const code = String(spec.text ?? spec.code ?? "").replace(/\n$/, "");
+      // Inline `html` is read as the code's text, as `text` would be.
+      const code = String(spec.text ?? spec.code ?? (spec.html === undefined ? "" : codeText(String(spec.html)))).replace(/\n$/, "");
       return "<pre>" + (code ? escapeHtml(code) : "<br>") + "</pre>";
     }
     case "divider": return "<hr>";
@@ -560,8 +566,9 @@ export function specHtml(input: unknown): string {
       return html || "<p><br></p>";
     }
     default: {
-      // { type: "ul", text: "a\nb" } is a list of two items.
-      const items = spec.items ?? (spec.text !== undefined ? String(spec.text).split("\n").map((text) => ({ text, checked: spec.checked })) : []);
+      // { type: "ul", text: "a\nb" } is a list of two items; inline `html`, one.
+      const items = spec.items ?? (spec.text !== undefined ? String(spec.text).split("\n").map((text) => ({ text, checked: spec.checked }))
+        : spec.html !== undefined ? [{ html: spec.html, checked: spec.checked }] : []);
       return listHtml(kind, items, false, spec.start);
     }
   }
@@ -639,9 +646,8 @@ export function markdownToSpecs(markdown: unknown): BlockSpec[] {
       specs.push({ type: "table", rows: header ? rows : rows.slice(1), header });
       continue;
     }
-    // A closing run of #s needs a space before it: "Learn C#" keeps its #.
-    const heading = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/s.exec(line);
-    if (heading) { flush(); specs.push({ type: "h" + Math.min(3, heading[1].length), text: heading[2] }); continue; }
+    const heading = /^\s{0,3}(#{1,6})\s+(.*)$/s.exec(line);
+    if (heading) { flush(); specs.push({ type: "h" + Math.min(3, heading[1].length), text: headingText(heading[2]) }); continue; }
     if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); specs.push({ type: "divider" }); continue; }
     const image = /^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$/.exec(line);
     if (image && safeUrl(image[2], { image: true })) { flush(); specs.push({ type: "image", alt: image[1], src: image[2] }); continue; }
@@ -755,4 +761,13 @@ export function describeBlock(block: StoredBlock, withHtml: boolean): BlockDescr
   const out: BlockDescription = { id: block.id, type: blockTypeOf(block.html), markdown: htmlToMarkdown(block.html, { abbreviateImages: true }).trim(), version: block.version };
   if (withHtml) out.html = block.html;
   return out;
+}
+
+// A heading's text without its closing run of #s, which needs a space before
+// it: "Learn C#" keeps its #. (Read by hand: a regex backtracks on long space runs.)
+function headingText(line: string): string {
+  const text = line.trimEnd();
+  let end = text.length;
+  while (end && text[end - 1] === "#") end--;
+  return end < text.length && /\s/.test(text[end - 1] ?? "") ? text.slice(0, end).trimEnd() : text;
 }

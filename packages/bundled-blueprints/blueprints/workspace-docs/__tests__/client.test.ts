@@ -121,12 +121,42 @@ describe("editing", () => {
     expect(li.getAttribute("data-checked")).toBe("true");
   });
 
-  it("takes inline code off the selected words only", () => {
+  it("takes inline code off the selected words only, undoably", () => {
     const block = show("c1", "<p><code>one two three</code></p>");
     select(block.querySelector("code")!.firstChild!, 4, 7);
     press({ key: "e" });
     expect(block.innerHTML).toBe("<code>one </code>two<code> three</code>");
     expect(getSelection()!.toString()).toBe("two");
+    press({ key: "z" });
+    expect(block.innerHTML).toBe("<code>one two three</code>");
+    press({ key: "z", shiftKey: true });
+    expect(block.innerHTML).toBe("<code>one </code>two<code> three</code>");
+  });
+
+  // Next to other code too: the browser's undo of an insertHTML the editor rewrote left the words twice.
+  it("makes the selected words inline code, undoably", () => {
+    const block = show("c2", "<p>x <code>one</code> two</p>");
+    select(block.lastChild!, 1, 4);
+    press({ key: "e" });
+    expect(block.innerHTML).toBe("x <code>one</code> <code>two</code>");
+    expect(getSelection()!.toString()).toBe("two");
+    press({ key: "z" });
+    expect(block.innerHTML).toBe("x <code>one</code> two");
+    press({ key: "z", shiftKey: true });
+    expect(block.innerHTML).toBe("x <code>one</code> <code>two</code>");
+  });
+
+  // A cell or list item holds the code, never the table or list: a selection across two is left alone.
+  it("makes no inline code of a selection across cells or list items", () => {
+    for (const [id, html] of [["c3", "<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>"], ["c4", "<ul><li>one</li><li>two</li></ul>"]]) {
+      const block = show(id!, html!);
+      const [first, second] = block.querySelectorAll("td, li");
+      select(first!.firstChild!, 1);
+      getSelection()!.getRangeAt(0).setEnd(second!.firstChild!, 2);
+      const before = block.innerHTML;
+      press({ key: "e" });
+      expect(block.innerHTML).toBe(before);
+    }
   });
 });
 
@@ -262,6 +292,22 @@ describe("more edits", () => {
     try { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); } finally { delete (document as { execCommand?: unknown }).execCommand; }
     expect(execCommand).not.toHaveBeenCalled();
     expect(editor().querySelector('[data-block-id="lk"]')!.innerHTML).toBe("First two NEW");
+  });
+
+  // Otherwise this page alone would show the new typeface, until its next reconnect.
+  it("takes back a typeface change that fails to save", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The mock gadget beforeAll installed.
+    const { gadget } = globalThis as unknown as { gadget: GadgetStub };
+    Object.assign(gadget, { setSettings: vi.fn(async () => { throw new Error("offline"); }) });
+    const menu = document.querySelector<HTMLButtonElement>('button[aria-label="Typeface & width"]')!;
+    try {
+      menu.click();
+      document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-label="Serif"]')!.click();
+      const page = document.querySelector<HTMLElement>(".page")!;
+      expect(page.dataset.font).toBe("serif");
+      await vi.waitFor(() => expect(page.dataset.font).toBe("sans"));
+    } finally { menu.click(); error.mockRestore(); }
   });
 
   // A code block's lines are <br>s; copied as plain text, they stay lines.
