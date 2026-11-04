@@ -725,45 +725,6 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(1);
   });
 
-  it("records an automatic apply before calling the gatekeeper and never repeats it", async () => {
-    const s = await scenario();
-    const marked: boolean[] = [];
-    await s.visit(async impl => {
-      impl.storage.autoApproveTags.put({gatekeeperId: 31, actionKind: {tag: "edit", label: "Edits"},
-        enabledBy: USER});
-      impl.storage.actions.put({id: 8, gatekeeperId: 31, type: "action", action: 43,
-        createdAt: new Date(), state: "pending", caller: {from: "agent", chatId: CHAT},
-        description: {title: "Edit", description: "Edit", implementsRevert: false,
-          actionKind: {tag: "edit", label: "Edits"}, autoApprovable: true}});
-      const apply = vi.fn(async () => {
-        marked.push(impl.storage.actions.get(8)?.type === "action" &&
-            impl.storage.actions.get(8)?.autoApplyAttemptedAt !== undefined);
-        throw new Error("reply lost");
-      });
-      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyAction: apply} as unknown as
-          Awaited<ReturnType<Impl["getGatekeeperFacet"]>>);
-      await impl.drainAutoApprovals(31);
-      expect(apply).toHaveBeenCalledTimes(1);
-    });
-    // The marker was durable before the gatekeeper ran, so it survives a restart.
-    await evictDurableObject(s.stub);
-    await s.visit(async impl => {
-      const apply = vi.fn(async () => {});
-      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyAction: apply} as unknown as
-          Awaited<ReturnType<Impl["getGatekeeperFacet"]>>);
-      await impl.drainAutoApprovals(31);
-      expect(apply).not.toHaveBeenCalled();
-      expect(impl.storage.actions.get(8)?.state).toBe("pending");
-      // A person can still approve it (approveAction's apply).
-      const action = impl.storage.actions.get(8)!;
-      if (action.type !== "action") throw new Error("Missing action");
-      await impl.applyPendingAction(action, USER, false);
-      expect(apply).toHaveBeenCalledTimes(1);
-      expect(impl.storage.actions.get(8)?.state).toBe("approved");
-    });
-    expect(marked).toEqual([true]);
-  });
-
   it.each([false, true])("claims an awaited action inside the apply path (auto-approved: %s)", async auto => {
     const s = await scenario("action"), requests = inference();
     await s.visit(async impl => {

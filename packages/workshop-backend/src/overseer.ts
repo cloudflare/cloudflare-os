@@ -82,7 +82,7 @@ import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApplyRule, autoApprovalRule } from "./auto-approval";
+import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
@@ -5345,9 +5345,6 @@ class OverseerImpl implements AgentHooks {
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
   // A creation also needs `creation`: the verifier of the account the approver chose to create it
   // in, and what they chose in that account's creation configurator.
-  //
-  // An automatic apply is recorded durably before the gatekeeper is called, so that an attempt
-  // which throws or is cut off is never applied automatically again (see autoApplyRule).
   async applyPendingAction(record: ActionRecord & {type: "action"},
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
@@ -5356,11 +5353,6 @@ class OverseerImpl implements AgentHooks {
     // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.creationPending(id)) {
       throw new Error("This resource doesn't exist yet. Approve its creation first.");
-    }
-    if (autoApproved && record.action !== "create") {
-      record.autoApplyAttemptedAt = new Date();
-      this.storage.actions.put(record);
-      await this.ctx.storage.sync();
     }
     let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
     let created: {class: GatekeeperClass, resourceUrl: string} | undefined;
@@ -6421,7 +6413,7 @@ class OverseerImpl implements AgentHooks {
     if (caller.from === "agent" && description.awaitDecision && (!willAutoApprove ||
         [...this.storage.actions.pendingByGatekeeper.get(gatekeeperId)].some(queued =>
             queued.type === "action" &&
-            autoApplyRule(this.storage, gatekeeperId, queued) === undefined))) {
+            autoApprovalRule(this.storage, gatekeeperId, queued.description) === undefined))) {
       this.#getOrCreateCapturedActions(caller.chatId).awaitDecision = true;
     }
 
@@ -12309,7 +12301,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async #drainAutoApprovalsAndResume(gatekeeperId: WorkpieceId): Promise<void> {
     // Snapshot every awaited action, even auto-eligible ones that didn't suspend their turn: a turn
     // suspended on a manual action can also be waiting on them. Accepted cost: one applied here
-    // can resume a turn that never suspended.
+    // (e.g. a retried auto-apply failure) can resume a turn that never suspended.
     let awaited = new Map<number, number>();  // action id -> chat id
     let profile: AiChatAuthorInfo | undefined;
     // Legacy adoption scans chat history, so close the single KV cursor before adopting or awaiting.

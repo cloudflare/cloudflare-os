@@ -475,13 +475,6 @@ export type ActionRecord = {
   description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
-  /**
-   * When the overseer started applying this action automatically, written before it called the
-   * gatekeeper. Once set, the auto-approval drainer never applies the action again, so an apply
-   * that threw or was cut off (perhaps after its write landed) waits for a person. Absent means
-   * never applied automatically, which is how records written before the field read.
-   */
-  autoApplyAttemptedAt?: Date;
 } | {
   type: "observation";
 

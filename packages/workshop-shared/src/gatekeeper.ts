@@ -1184,8 +1184,7 @@ export interface Gatekeeper<Session> extends DurableObject {
    *
    * Depending on policy conditions, an action may be approved and applied automatically. However,
    * the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
-   * in which it's OK to skip the check. The overseer applies an action automatically at most once:
-   * if that attempt throws or is interrupted, a person decides whether to approve it again.
+   * in which it's OK to skip the check.
    *
    * To the maximum extent possible, implementations of `applyAction()` should be idempotent, as
    * a poorly-timed crash may cause the overseer to fail to record that an `applyAction()`

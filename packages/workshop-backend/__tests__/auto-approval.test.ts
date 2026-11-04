@@ -1,14 +1,12 @@
 import { describe, it, expect } from "vitest";
-import {
-  AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApplyRule, autoApprovalRule,
-} from "../src/auto-approval.js";
+import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule }
+    from "../src/auto-approval.js";
 import type { ActionRecord, StoredActionDescription }
     from "../src/storage-schema/overseer-storage.js";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { makeMockStorage } from "./mock-storage.js";
-import { FIXTURE_EPOCH, makeActionStorage, makePreIndexActionStorage, putAction }
-    from "./fixtures.js";
+import { makeActionStorage, makePreIndexActionStorage, putAction } from "./fixtures.js";
 
 const makeStorage = makeActionStorage;
 
@@ -265,56 +263,6 @@ describe("AutoApprovalDrainer.drain", () => {
     expect(getAction(storage, 3).state).toBe("pending");
   });
 
-  // OverseerImpl.applyPendingAction records an automatic attempt before calling the gatekeeper,
-  // which may have committed the write before the attempt threw. Later drains must not repeat it.
-  it("never applies a failed automatic apply again, and stops there on later drains", async () => {
-    let storage = makeStorage();
-    enableRule(storage);
-    putAction(storage, 1);
-    putAction(storage, 2);
-
-    let inner = makeImmediateApply(storage);
-    let attempts: number[] = [];
-    let failFirst = true;
-    let applyFn: ApplyPendingActionFn = async (record, resolvedBy, autoApproved) => {
-      attempts.push(record.id);
-      if (failFirst) {
-        failFirst = false;
-        record.autoApplyAttemptedAt = new Date();
-        storage.actions.put(record);
-        throw new Error("reply lost");
-      }
-      return inner.applyFn(record, resolvedBy, autoApproved);
-    };
-    let drainer = new AutoApprovalDrainer(storage, applyFn);
-    await drainer.drain(GK);
-    await drainer.drain(GK);
-
-    expect(attempts).toEqual([1]);
-    expect(getAction(storage, 1).state).toBe("pending");
-    expect(getAction(storage, 2).state).toBe("pending");
-
-    // A person approving it clears the gate, and the drain resumes behind it.
-    await inner.applyFn(getAction(storage, 1), ENABLER, false);
-    await drainer.drain(GK);
-    expect(attempts).toEqual([1, 2]);
-    expect(getAction(storage, 2).state).toBe("approved");
-  });
-
-  it("treats an action whose automatic apply was cut off as a manual gate", async () => {
-    let storage = makeStorage();
-    enableRule(storage);
-    putAction(storage, 1, { autoApplyAttemptedAt: new Date(FIXTURE_EPOCH) });  // crashed mid-apply
-    putAction(storage, 2);
-
-    let apply = makeImmediateApply(storage);
-    await new AutoApprovalDrainer(storage, apply.applyFn).drain(GK);
-
-    expect(apply.calls).toEqual([]);
-    expect(getAction(storage, 1).state).toBe("pending");
-    expect(getAction(storage, 2).state).toBe("pending");
-  });
-
   // An action created after a drain snapshotted the pending index is out of that drain's scope;
   // the creation path is responsible for its own drain() call (which the rerun flag folds in --
   // see the parked-mid-apply test above).
@@ -413,16 +361,5 @@ describe("autoApprovalRule", () => {
     // on every gatekeeper.
     expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
     expect(autoApprovalRule(storage, GK + 1, eligibleDescription())).toBeUndefined();
-  });
-});
-
-describe("autoApplyRule", () => {
-  it("is autoApprovalRule until an automatic apply has been attempted", () => {
-    let storage = makeStorage();
-    enableRule(storage);
-    putAction(storage, 1);
-    expect(autoApplyRule(storage, GK, getAction(storage, 1))?.enabledBy).toEqual(ENABLER);
-    putAction(storage, 2, { autoApplyAttemptedAt: new Date(FIXTURE_EPOCH) });
-    expect(autoApplyRule(storage, GK, getAction(storage, 2))).toBeUndefined();
   });
 });
