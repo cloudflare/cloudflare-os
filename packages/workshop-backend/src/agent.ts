@@ -2945,10 +2945,8 @@ async function runAgentPass(
       });
       throw error;
     }
-    // Text a gadget's store can't read back is a model mistake the tool error lets it correct.
-    if (!hooks.isWorktree(workpieceId)) {
-      for (let [path, file] of Object.values(change).flat()) assertNoNul(path, file);
-    }
+    // Text that won't read back from Git is a model mistake the tool error lets it correct.
+    for (let [path, file] of Object.values(change).flat()) assertNoNul(path, file);
     // Bound the step's total: the barrier writes the buffer as exactly one "changes" message,
     // which must fit in one storage record, or the step's edits would be lost. Composition never
     // exceeds the sum of its inputs' sizes, so the summed size bounds the message's change.

@@ -2874,12 +2874,12 @@ class OverseerImpl implements AgentHooks {
     return {sequence, meta: this.getChatMetaOrThrow(chatId)};
   }
 
-  // All publication paths validate durable sources before ACK; text-only gadgets cannot
-  // acquire byte state: neither a byte payload, which their runtime cannot compile or display,
-  // nor text holding a NUL, which their git store reads back as binary.
+  // All publication paths validate durable sources before ACK. No text may hold a NUL, which
+  // the git store reads back as binary; and text-only gadgets cannot acquire byte state, which
+  // their runtime cannot compile or display.
   #validateByteChanges(change: CodeChange): void {
     for (const [id, entries] of Object.entries(change)) for (const [path, file] of entries) {
-      if (!this.isWorktree(Number(id))) assertNoNul(path, file);
+      assertNoNul(path, file);
       if (!("setBytes" in file)) continue;
       if (!this.isWorktree(Number(id))) throw new Error("Binary mutations require a worktree.");
       this.gitStore.readBlob(file.setBytes.oid, file.setBytes.byteLength);

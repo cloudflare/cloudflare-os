@@ -91,7 +91,7 @@ describe("agent transform validation boundaries", () => {
     expect(impl.getGadgetHead(gadget.id)).toBe(commitId);
   }));
 
-  it("refuses a NUL in gadget text as a tool error, so accepting the turn leaves a readable head", () => inKernel(async impl => {
+  it("refuses a NUL in text from the file tools as a tool error, so accepting the turn leaves a readable head", () => inKernel(async impl => {
     const commitId = await impl.gitStore.writeFilesAsCommit(new Map([["client.js", "const SEP = ',';\n"]]),
       {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Initial", timestamp: new Date(0)});
     const gadget = impl.createGadget("Board", "BOARD", undefined, undefined, commitId);
@@ -103,6 +103,8 @@ describe("agent transform validation boundaries", () => {
         fauxToolCall("writeFile", {workpiece: "BOARD", filename: "client.js", content: "const SEP = '\0';\n"}),
         fauxToolCall("editFile", {workpiece: "BOARD", filename: "client.js", textToReplace: "','", replacement: "'\0'"}),
         fauxToolCall("editFile", {workpiece: "BOARD", filename: "client.js", textToReplace: "','", replacement: "'\\0'"}),
+        fauxToolCall("createWorktree", {title: "Repo", bindingName: "REPO", commitId}),
+        fauxToolCall("writeFile", {workpiece: "REPO", filename: "client.js", content: "const SEP = '\0';\n"}),
       ], {stopReason: "toolUse"}),
       fauxAssistantMessage(fauxText("Done.")),
     ]);
@@ -111,7 +113,8 @@ describe("agent transform validation boundaries", () => {
     const calls = [...impl.storage.chats.list()].flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
     expect(calls.map(call => call.error)).toEqual([undefined,
       expect.stringMatching(/client\.js would contain a NUL character/),
-      expect.stringMatching(/client\.js would contain a NUL character/), undefined]);
+      expect.stringMatching(/client\.js would contain a NUL character/), undefined, undefined,
+      expect.stringMatching(/client\.js would contain a NUL character/)]);
     expect(await impl.mergeChanges(1, {profile: USER}, "user-do-id")).toEqual({outcome: "merged"});
     expect(await impl.gitStore.readCommitFiles(impl.getGadgetHead(gadget.id)!))
       .toEqual(new Map([["client.js", "const SEP = '\\0';\n"]]));
