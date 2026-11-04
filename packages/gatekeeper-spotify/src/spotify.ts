@@ -1884,6 +1884,9 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
 
   async applyAction(actionId: number): Promise<void> {
     const record = this.#requireRecord(actionId);
+    // The overseer records completion only after this returns, so an apply that already ran can be
+    // delivered again after a lost reply or a restart; it has nothing left to do.
+    if (record.state === "approved") return;
     // "failed" is retryable (a prior apply threw); the overseer may call applyAction again.
     if (record.state !== "pending" && record.state !== "staged" && record.state !== "failed") {
       throw new Error(`Spotify action ${actionId} is no longer pending.`);

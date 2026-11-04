@@ -558,7 +558,8 @@ function describeGitHubAction(action: GitHubAction): RenderedDescription {
           `moving the branch from its current head ${codeSpan(action.expectedOldSha)}.` +
           (action.force ? " This is a force push: it rewrites the branch's history." : "") +
           (action.gatedBranch === true
-            ? ` Branch ${codeSpan(action.branch)} is the repository's default branch or a protected branch.`
+            ? ` Branch ${codeSpan(action.branch)} is the repository's default branch or a protected ` +
+              `branch, the repository is empty, or GitHub could not be asked which.`
             : "");
       // The commits themselves cannot be reviewed as text here, so no completeness claim.
       return { description };
@@ -4496,6 +4497,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         // compares against does not change, so a push that could apply without a person is
         // checked again.
         if (action.gatedBranch === false) {
+          // A branch already at the pushed commit is an apply whose first attempt landed, and that
+          // push can itself have gated the branch (created where a ruleset covers it), so it is
+          // looked for before the gate is judged again.
+          const head = await this.#withApi(api =>
+            api.getBranchHead(action.owner, action.repo, action.branch));
+          if (head === action.newSha) {
+            this.#appliedPushes.record(action.newSha);
+            this.#markActionApproved(action);
+            this.#clearCaches();
+            return;
+          }
           const gated = await this.#isGatedBranch(action.branch);
           if (gated === undefined) {
             throw new Error(

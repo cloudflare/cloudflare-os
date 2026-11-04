@@ -671,6 +671,29 @@ describe("applying a push", () => {
     expect(gitlab.receivePackBodies).toHaveLength(0);
   });
 
+  it("asks for a retry when a new branch's protection cannot be read at apply", async () => {
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
+    expect(action).toMatchObject({ targetProtected: false });
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), () =>
+      json({ message: "500 Internal Server Error" }, { status: 500 }));
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
+      .rejects.toThrow(/Could not read whether branch "feature".*Try again/);
+    expect(gitlab.receivePackBodies).toHaveLength(0);
+  });
+
+  it("finds a push that landed before its reply was lost even once it made its branch protected", async () => {
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
+    expect(action).toMatchObject({ targetProtected: false });
+    gitlab.branches.set("feature", HEAD1);
+    gitlab.protectedBranches.add("feature");
+    await unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache)));
+    expect(gitlab.receivePackBodies).toHaveLength(0);
+  });
+
   it("streams the overseer-built pack behind the queue-time CAS command", async () => {
     const { gitlab, props, name } = await setup();
     const cache = cacheWithChain();

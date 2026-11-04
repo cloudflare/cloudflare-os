@@ -191,7 +191,7 @@ describe("Google Calendar auto-approval", () => {
     calendar.events.get("own")!.attendees = [{ email: "guest@example.com" }];
 
     expect(await hooks().applyAction("recheck", call.actionId!))
-      .toMatch(/now has other people on it.*Nothing was changed/);
+      .toMatch(/now has other people on it.*This attempt changed nothing/);
     expect(calendar.patches).toEqual([]);
   });
 
@@ -204,7 +204,8 @@ describe("Google Calendar auto-approval", () => {
     expect(call.action).toMatchObject({ autoApprovable: true });
     calendar.omitEtags = true;
 
-    expect(await hooks().applyAction("no-etag", call.actionId!)).toMatch(/Nothing was changed/);
+    expect(await hooks().applyAction("no-etag", call.actionId!))
+      .toMatch(/without the version tag.*This attempt changed nothing/);
     expect(calendar.patches).toEqual([]);
   });
 
@@ -232,7 +233,7 @@ describe("Google Calendar auto-approval", () => {
     calendar.afterRead = () => calendar.edit("own", { attendees: [{ email: "guest@example.com" }] });
 
     expect(await hooks().applyAction("race", call.actionId!))
-      .toMatch(/now has other people on it.*Nothing was changed/);
+      .toMatch(/now has other people on it.*This attempt changed nothing/);
     expect(calendar.patches).toEqual([]);
   });
 
@@ -244,6 +245,17 @@ describe("Google Calendar auto-approval", () => {
     let call = await hooks().updateEvent("apply-own", "own", { title: "Deep work" });
     expect(await hooks().applyAction("apply-own", call.actionId!)).toBeNull();
     expect(calendar.patches).toEqual([{ eventId: "own", body: { summary: "Deep work" } }]);
+  });
+
+  it("reports success, without writing again, when an apply that ran is delivered again", async () => {
+    let calendar = new CalendarModel();
+    calendar.add("own");
+    calendar.install();
+
+    let call = await hooks().updateEvent("redeliver", "own", { title: "Deep work" });
+    expect(await hooks().applyAction("redeliver", call.actionId!)).toBeNull();
+    expect(await hooks().applyAction("redeliver", call.actionId!)).toBeNull();
+    expect(calendar.patches).toHaveLength(1);
   });
 
   it("applies an update a person approved as a meeting without judging it again", async () => {

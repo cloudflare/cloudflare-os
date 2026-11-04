@@ -2853,6 +2853,9 @@ export class GoogleCalendarGatekeeperImpl
     let pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
     let action = pendingActions.get(actionId);
     if (!action) {
+      // The overseer records completion only after this returns, so an apply that already ran can
+      // be delivered again after a lost reply or a restart; it has nothing left to do.
+      if (this.ctx.storage.kv.get(this.#revertKey(actionId)) !== undefined) return;
       throw new Error(`Unknown pending Google Calendar action: ${actionId}`);
     }
     pendingActions.markApplying(actionId);
@@ -2876,12 +2879,17 @@ export class GoogleCalendarGatekeeperImpl
         // visibility narrowed in Google since, applying it would now email them or expose it.
         let changedError = new Error(
           "The event has changed in Google Calendar since this was proposed: it now has other " +
-          "people on it, or this change would widen who can see it. Nothing was changed. Reject " +
-          "this and ask the agent to read the event again.");
+          "people on it, or this change would widen who can see it. This attempt changed nothing. " +
+          "Reject this and ask the agent to read the event again.");
         // The write below is conditional on the etag, so an event Google sent without one cannot
         // be updated without a person.
-        if (action.autoApprovable &&
-            (!oldEvent.etag || !updateEventVerdict(oldEvent, action.patch).autoApprovable)) {
+        if (action.autoApprovable && !oldEvent.etag) {
+          throw new Error(
+            "Google Calendar sent this event without the version tag this change needs to apply " +
+            "only to the event as it was checked. This attempt changed nothing. Reject this and " +
+            "ask the agent to make the change again.");
+        }
+        if (action.autoApprovable && !updateEventVerdict(oldEvent, action.patch).autoApprovable) {
           throw changedError;
         }
         let previous = priorCalendarPatch(oldEvent, action.patch);

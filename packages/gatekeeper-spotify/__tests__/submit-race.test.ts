@@ -77,6 +77,17 @@ describe("submitActionForApproval when the action is applied before the reply", 
     expect(kv.get(`retiredAction:${action.approvalId}`)).toMatchObject({ state: "approved" });
   });
 
+  it("reports success, without calling Spotify again, when an apply that ran is delivered again", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetch);
+    const { gk } = gatekeeper();
+    const action = pause(gk);
+    await gk.submitActionForApproval(applyingQueue(gk, "ok"), action, presentation);
+    const calls = fetch.mock.calls.length;
+    await expect(gk.applyAction(action.approvalId)).resolves.toBeUndefined();
+    expect(fetch.mock.calls.length).toBe(calls);
+  });
+
   it("keeps a failed apply for a retry when the reply is lost", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 503 })));
     const { gk, kv } = gatekeeper();

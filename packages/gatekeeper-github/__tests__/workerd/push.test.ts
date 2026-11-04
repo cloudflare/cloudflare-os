@@ -458,7 +458,9 @@ describe("auto-approval", () => {
   it("keeps a push or force push to the default branch manual under its usual kind", async () => {
     const plain = await verdict(repoWith("main"), "main");
     expect(plain).toMatchObject({ gatedBranch: true, tag: "github.push", autoApprovable: false });
-    expect(plain.description).toContain("Branch `main` is the repository's default branch or a protected branch.");
+    expect(plain.description).toContain(
+      "Branch `main` is the repository's default branch or a protected branch, the repository is empty, " +
+      "or GitHub could not be asked which.");
     expect(await verdict(repoWith("main"), "main", true))
       .toMatchObject({ gatedBranch: true, tag: "github.forcePush", autoApprovable: false });
   });
@@ -736,6 +738,15 @@ describe("apply", () => {
   it("asks for a retry, not a discard, when the gate cannot be read at apply", async () => {
     const { github, applied } = await applyAfter(github => { github.branchRulesStatus = 429; });
     await expect(applied).rejects.toThrow(/Could not read whether branch "feature".*Try again/);
+    expect(github.receivePackExchanges).toHaveLength(0);
+  });
+
+  it("finds a push that landed before its reply was lost even once it gated its branch", async () => {
+    const { github, applied } = await applyAfter(github => {
+      github.branches.set("feature", HEAD1);
+      github.protectedBranches.add("feature");
+    });
+    await expect(applied).resolves.toBeUndefined();
     expect(github.receivePackExchanges).toHaveLength(0);
   });
 

@@ -2817,11 +2817,26 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         // A branch can become the default or protected while the push waits, and the head it
         // compares against does not change, so a push that could apply without a person is
         // checked again.
-        if (!action.force && action.targetProtected === false && await this.#isProtectedTarget(
-          action.branch, await this.#withApi(api => api.getBranch(projectPath, action.branch)))) {
-          throw new Error(
-            `Branch "${action.branch}" has become the default or a protected branch since this push was ` +
-            `queued, so it can no longer apply without review. Discard it and push again to have it reviewed.`);
+        // A branch already at the pushed commit is an apply whose first attempt landed, and that
+        // push can itself have made the branch protected (created where a rule covers it), so it is
+        // looked for before the gate is judged again.
+        const remote = await this.#withApi(api => api.getBranch(projectPath, action.branch));
+        if (remote?.commit.id === action.newSha) {
+          this.#appliedPushes.record(action.newSha);
+          break;
+        }
+        if (!action.force && action.targetProtected === false) {
+          const gated = await this.#isProtectedTarget(action.branch, remote);
+          if (gated === undefined) {
+            throw new Error(
+              `Could not read whether branch "${action.branch}" is the default or a protected branch, ` +
+              `so this push was not applied. Try again.`);
+          }
+          if (gated) {
+            throw new Error(
+              `Branch "${action.branch}" has become the default or a protected branch since this push was ` +
+              `queued, so it can no longer apply without review. Discard it and push again to have it reviewed.`);
+          }
         }
         // No gatekeeper-side object walk: the overseer composes the pack from the action's
         // pending-push marks (`cache.buildPack()` on the action-scoped stub), and this side
@@ -3398,16 +3413,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         `${commitId}, so this push is not a fast-forward -- the branch has moved past the head this work ` +
         `was based on. Pull the branch's new head and rebase onto it, or pass force: true to overwrite the branch.`);
     }
-    const targetProtected = await this.#isProtectedTarget(branch, remote);
+    // A gate that could not be read holds the push for a person.
+    const targetProtected = await this.#isProtectedTarget(branch, remote) ?? true;
     return { type: "push", ...this.#base(), branch, expectedOldSha, newSha: commitId, force, targetProtected };
   }
 
   /**
    * Whether `branch`, as `remote` reads it (null when GitLab does not have it), is the default or
-   * a protected branch, or would be once a push creates it. Anything but a reported `false` on
-   * both reads as protected.
+   * a protected branch, or would be once a push creates it; undefined when that could not be read.
+   * Anything but a reported `false` on both reads as protected.
    */
-  async #isProtectedTarget(branch: string, remote: GitLabBranchResponse | null): Promise<boolean> {
+  async #isProtectedTarget(branch: string, remote: GitLabBranchResponse | null): Promise<boolean | undefined> {
     return remote === null ? await this.#newBranchProtected(branch)
       : !(remote.protected === false && remote.default === false);
   }
@@ -3417,9 +3433,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * creates it: it is the default branch's name, the repository is empty (its first branch becomes
    * the default), or a protected-branch rule's name or wildcard covers it. Read live, like the
    * branch itself. GitLab refusing this account the rules (listing them takes Maintainer) counts as
-   * no rule covering it; any other failed lookup, or rules too many to read, count as protected.
+   * no rule covering it, and rules too many to read as protected; any other failed lookup is
+   * undefined.
    */
-  async #newBranchProtected(branch: string): Promise<boolean> {
+  async #newBranchProtected(branch: string): Promise<boolean | undefined> {
     const projectPath = this.#projectPath();
     try {
       const project = await this.#withApi(api => api.getProject(projectPath));
@@ -3443,7 +3460,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         event: "push.branch.protection.read.failed",
         ...(error instanceof GitLabApiError ? { status: error.status } : { error }),
       });
-      return true;
+      return undefined;
     }
   }
 
