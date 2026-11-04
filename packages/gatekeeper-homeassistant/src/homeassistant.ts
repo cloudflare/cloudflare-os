@@ -1217,6 +1217,9 @@ export class HomeAssistantGatekeeperImpl
     // device-control call reaches can change while it is queued (a template switch moved into the
     // area). One that could be auto-approved is held unless it would still qualify now, checked
     // last, just before the call: Home Assistant has no conditional call to close the gap entirely.
+    // An apply cannot tell a rule's approval from a person's, so this holds one a person approved
+    // too, as GitHub's and GitLab's push gates and Calendar's do: they approved what the card
+    // showed, which reached only device control.
     if (action.type === "callService" && pending.autoApprovable === true &&
         !serviceCallVerdict(action, await fetchRegistrySnapshot(creds)).autoApprovable) {
       throw new Error("What this call reaches has changed since it was queued, so it is no longer only device control. Queue it again to have it reviewed.");
