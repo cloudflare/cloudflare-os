@@ -429,6 +429,18 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  /** The facet's verifyObserverAccess(), with each observer's verifier minted for its account. */
+  async gmailVerifyObserverAccess(
+      facetName: string, id: string, props: GmailGatekeeperImplProps,
+      observers: Array<{id: string; userObjectId: string}>, subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}> {
+    return this.#gatekeeper(facetName, id, props).verifyObserverAccess(
+      observers.map(({id: observerId, userObjectId}) => ({
+        id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }),
+      })),
+      subresources);
+  }
+
   async readQueue(queueId: string): Promise<{
     submissions: Array<{actionId: number; description: unknown}>;
     observations: unknown[];

@@ -5,14 +5,13 @@ import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
-import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import {
   PreviewOAuth,
   PreviewOAuthConfigurationError,
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import { GoogleDocSession, DocMetadata, type GoogleDocReadSession, type GoogleDocTab } from "./docs-types";
 import {
   BLANK_DOC_TAB_ID, BlankGoogleDoc, GoogleDocsApi, type GoogleDocReader, type GoogleDocsDocument,
@@ -55,7 +54,7 @@ import type {
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, isChatNoAccessError } from "./chat-api";
-import type { GoogleVerifierApi } from "./google-verifier-types";
+import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
@@ -148,7 +147,9 @@ function getGoogleDriveTypesCode(): string {
   ].join("\n");
 }
 
-import type {GmailGatekeeperImplProps} from "./gmail";
+import {
+  GMAIL_SUBRESOURCE_NAMESPACE, parseGmailUserSubresource, type GmailGatekeeperImplProps,
+} from "./gmail";
 import type {GoogleChatGatekeeperImplProps} from "./chat";
 
 export { GmailGatekeeperImpl } from "./gmail";
@@ -458,11 +459,13 @@ const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
 /** A subresource whose access a UserAccount checks for itself (see parseAccountSubresource). */
 type AccountSubresource =
   | { kind: "calendar" | "freeBusy"; calendarId: string }
-  | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef };
+  | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef }
+  | { kind: "gmailUser"; subject: string };
 
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
- * (see parseCalendarSubresource), or a BigQuery dataset. Throws for any other ID.
+ * (see parseCalendarSubresource), a BigQuery dataset, or a Gmail mailbox's owner. Throws for any
+ * other ID.
  */
 function parseAccountSubresource(subresource: string): AccountSubresource {
   switch (parseSubresourceId(subresource).namespace) {
@@ -470,6 +473,8 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
       return parseCalendarSubresource(subresource);
     case BIGQUERY_SUBRESOURCE_NAMESPACE:
       return { kind: "bigQueryDataset", dataset: parseBigQueryDatasetSubresource(subresource) };
+    case GMAIL_SUBRESOURCE_NAMESPACE:
+      return { kind: "gmailUser", subject: parseGmailUserSubresource(subresource) };
     default:
       throw new Error("Not a Google subresource.");
   }
@@ -670,8 +675,10 @@ export class UserAccount extends DurableObject<Env> {
     let freeBusy = new Map<string, string>();
     let calendars = new Map<string, string>();
     let datasets = new Map<string, BigQueryDatasetRef>();
+    let mailboxes = new Map<string, string>();
     for (let [subresource, resource] of parsed) {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
+      else if (resource.kind === "gmailUser") mailboxes.set(subresource, resource.subject);
       else (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
     }
     let api = new GoogleCalendarApi(getToken);
@@ -698,6 +705,15 @@ export class UserAccount extends DurableObject<Env> {
         access.set(subresource, await this.#access.cached(subresource, ttl,
             () => hasBigQueryDatasetAccess(bigQuery, dataset)));
       }
+    }
+    if (mailboxes.size > 0) {
+      // A mailbox is private to its owner, so only that same Google account can read it.
+      let mailboxIds = [...mailboxes.keys()];
+      let answers = await this.#access.cachedMany(mailboxIds, ttl, async missing => {
+        let { sub } = await getGoogleAccountProfile(getToken);
+        return missing.map(subresource => mailboxes.get(subresource) === sub);
+      });
+      mailboxIds.forEach((subresource, index) => access.set(subresource, answers[index]));
     }
     return subresources.map(subresource => access.get(subresource)!);
   }
@@ -1090,11 +1106,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   /**
-   * Mint a verifier representing this account, used by the Google gatekeepers' addObserver to confirm
-   * a prospective observer may read a bound resource. The verifier carries this user's own account
-   * id, so the access checks run against the observer's *own* Google token. (The Gmail gatekeeper
-   * uses strategy A — it never consults the verifier — but getVerifier must still exist because the
-   * overseer mints one on every open.)
+   * Mint a verifier representing this account, used by the Google gatekeepers' addObserver and
+   * verifyObserverAccess to confirm a prospective observer may read a bound resource. The verifier
+   * carries this user's own account id, so the access checks run against the observer's *own*
+   * Google token.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -1107,8 +1122,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // Verifier
 //
 // Google spans several strategies (see each gatekeeper's observer methods):
-//   - Gmail Mailbox — strategy A (private-only): addObserver always throws, so the verifier is never
-//     consulted (but must exist).
+//   - Gmail Mailbox — strategy A (private-only), kernel-checked: every read reports its owner's
+//     account as a `gmail/user/<sub>` subresource, which checkSubresourceAccess grants only to that
+//     same Google account. addObserver still always throws, for reads made before they reported it.
 //   - Google Doc — strategy B (ACL check, single unit): hasDocAccess answers whether the observer's
 //     own token can open the bound document (Docs API returns 401/403/404 otherwise).
 //   - Google Sheets — strategy B (ACL check, single unit): hasSpreadsheetAccess answers whether the
@@ -1291,15 +1307,6 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
     return this.ctx.props.userObjectId;
   }
 }
-
-// Google's verifyObserverAccess(): admits an observer only if their own account can read every
-// subresource, as its UserAccount last learned (see UserAccount.checkSubresourceAccess for how long
-// it reuses answers). The account checks every Google gatekeeper's subresources, so each gatekeeper
-// first refuses those it doesn't report.
-const verifyGoogleSubresourceAccess = observerAccessVerifier({
-  hasCollectionAccess: (verifier: Fetcher<GoogleVerifierApi>, subresources: readonly string[]) =>
-    verifier.checkSubresourceAccess([...subresources]),
-});
 
 class PendingActionStore<Action> {
   #kv: DurableObjectStorage["kv"];

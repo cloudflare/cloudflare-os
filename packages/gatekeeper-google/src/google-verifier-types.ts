@@ -6,10 +6,12 @@
 // gatekeeper of the same vendor, which is what makes the cast in each `addObserver()` and in
 // `createFileOnce()` safe.
 //
-// It lives in its own module so that a gatekeeper implemented outside google.ts (Chat) can name
-// the interface without importing the module that implements it, which also re-exports it.
+// It lives in its own module so that a gatekeeper implemented outside google.ts (Chat, Gmail) can
+// use the interface, and the verifyObserverAccess() built on it, without importing the module that
+// implements it, which also re-exports the interface.
 
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import type { ObserverBatchResult } from "./observers";
 import type { DriveObservation } from "./drive-observers";
 
@@ -42,3 +44,14 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
    */
   getUserObjectId(): Promise<string>;
 }
+
+/**
+ * Google's verifyObserverAccess(): admits an observer only if their own account can read every
+ * subresource, as its UserAccount last learned (see UserAccount.checkSubresourceAccess for how long
+ * it reuses answers). The account checks every Google gatekeeper's subresources, so each gatekeeper
+ * first refuses those it doesn't report.
+ */
+export const verifyGoogleSubresourceAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<GoogleVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkSubresourceAccess([...subresources]),
+});

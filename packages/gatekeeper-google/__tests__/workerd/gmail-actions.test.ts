@@ -6543,8 +6543,8 @@ describe("Gmail draft dependency reconciliation", () => {
       typeof observation === "object" && observation !== null && "title" in observation &&
       /^Read \d+ Gmail drafts$/.test(String(observation.title)));
     expect(pageObservations).toEqual([
-      {title: "Read 1 Gmail drafts", description: expect.any(String)},
-      {title: "Read 0 Gmail drafts", description: expect.any(String)},
+      expect.objectContaining({title: "Read 1 Gmail drafts"}),
+      expect.objectContaining({title: "Read 0 Gmail drafts"}),
     ]);
   });
 
