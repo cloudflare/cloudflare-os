@@ -30,7 +30,8 @@ the `github.postReview` kind with comment and request-changes reviews, and a gat
 auto-approvable, so enabling those kinds does not cover them. Whether a branch is gated is read
 live when the push is queued, and again when an auto-approvable push applies: the repository's
 default branch, a branch GitHub reports as protected, or one a ruleset covers, including a branch
-the push creates. A classic protection pattern is shown only to admins, so a push that creates a
+the push creates, and the first push into an empty repository, which makes its default branch. A
+classic protection pattern is shown only to admins, so a push that creates a
 branch one will match is not gated. GitHub refusing the account the protection or the rulesets
 counts as unprotected; any other failed read gates the push. Creating an issue assigned to an app (a login ending in `[bot]`, or `Copilot`) also
 waits for a person under `github.createIssue`, because an app such as Copilot's coding agent

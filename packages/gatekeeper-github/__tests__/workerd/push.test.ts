@@ -485,6 +485,11 @@ describe("auto-approval", () => {
       .toMatchObject({ gatedBranch: true, tag: "github.forcePush", autoApprovable: false });
   });
 
+  it("keeps the first push into an empty repository manual, since it makes the default branch", async () => {
+    expect(await verdict(repoWith(), "feature"))
+      .toMatchObject({ gatedBranch: true, tag: "github.push", autoApprovable: false });
+  });
+
   it("keeps a push that creates a branch a ruleset covers manual", async () => {
     const github = repoWith("main");
     github.branchRules.set("release/1.0", [{ type: "pull_request" }]);
@@ -725,6 +730,12 @@ describe("apply", () => {
   it("refuses an auto-approvable push whose branch became protected while it waited", async () => {
     const { github, applied } = await applyAfter(github => github.protectedBranches.add("feature"));
     await expect(applied).rejects.toThrow(/has become the default or a protected branch/);
+    expect(github.receivePackExchanges).toHaveLength(0);
+  });
+
+  it("asks for a retry, not a discard, when the gate cannot be read at apply", async () => {
+    const { github, applied } = await applyAfter(github => { github.branchRulesStatus = 429; });
+    await expect(applied).rejects.toThrow(/Could not read whether branch "feature".*Try again/);
     expect(github.receivePackExchanges).toHaveLength(0);
   });
 

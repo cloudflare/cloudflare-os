@@ -4495,10 +4495,18 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         // A branch can become the default or protected while the push waits, and the head it
         // compares against does not change, so a push that could apply without a person is
         // checked again.
-        if (action.gatedBranch === false && await this.#isGatedBranch(action.branch)) {
-          throw new Error(
-            `Branch "${action.branch}" has become the default or a protected branch since this push was ` +
-            `queued, so it can no longer apply without review. Discard it and push again to have it reviewed.`);
+        if (action.gatedBranch === false) {
+          const gated = await this.#isGatedBranch(action.branch);
+          if (gated === undefined) {
+            throw new Error(
+              `Could not read whether branch "${action.branch}" is the default or a protected branch, ` +
+              `so this push was not applied. Try again.`);
+          }
+          if (gated) {
+            throw new Error(
+              `Branch "${action.branch}" has become the default or a protected branch since this push was ` +
+              `queued, so it can no longer apply without review. Discard it and push again to have it reviewed.`);
+          }
         }
         // No gatekeeper-side object walk: the overseer composes the pack from the action's
         // pending-push marks (`cache.buildPack()` on the action-scoped stub), and this side
@@ -6368,7 +6376,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const { owner, repo } = this.ctx.props;
     const [realHead, gatedBranch] = await Promise.all([
       this.#withApi(api => api.getBranchHead(owner, repo, branch)),
-      this.#isGatedBranch(branch),
+      this.#isGatedBranch(branch).then(gated => gated ?? true),
     ]);
     const expectedOldSha = this.#simulateBranchHead(branch, realHead) ?? ZERO_OID;
     if (expectedOldSha === commitId) return null;
@@ -6400,10 +6408,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * create). Rules a ruleset applies to the whole repository, such as `repository_delete`, do not
    * protect a branch, as GitHub's own `protected` flag agrees. All three are read live. GitHub
    * refusing this account the protection or the rulesets counts as neither protecting the branch;
-   * any other failed read, a rate limit included, counts as gated. A classic protection rule's
-   * pattern is shown only to admins, so a branch the push would create is not matched against those.
+   * any other failed read, a rate limit included, answers undefined, which callers treat as
+   * gated. A push into an empty repository is gated too, since GitHub makes the first branch the
+   * default. A classic protection rule's pattern is shown only to admins, so a branch the push
+   * would create is not matched against those.
    */
-  async #isGatedBranch(branch: string): Promise<boolean> {
+  async #isGatedBranch(branch: string): Promise<boolean | undefined> {
     const { owner, repo } = this.ctx.props;
     const unlessRefused = <T>(read: Promise<T>, refused: T): Promise<T> => read.catch(error => {
       if (error instanceof GitHubApiError && error.status === 403 && !error.rateLimited) return refused;
@@ -6415,14 +6425,16 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         unlessRefused(this.#withApi(api => api.isBranchProtected(owner, repo, branch)), false),
         unlessRefused(this.#withApi(api => api.getBranchRules(owner, repo, branch)), []),
       ]);
-      return branch === repository.default_branch || isProtected ||
-        rules.some(rule => !rule.type.startsWith("repository_"));
+      if (branch === repository.default_branch || isProtected ||
+          rules.some(rule => !rule.type.startsWith("repository_"))) return true;
+      // An empty repository has no head on its default branch (GitHub answers 404 or 409).
+      return await this.#withApi(api => api.getBranchHead(owner, repo, repository.default_branch)) === null;
     } catch (error) {
-      logger.warn("failed to read whether a push target is gated; holding it for a person", {
+      logger.warn("failed to read whether a push target is gated", {
         event: "push.branch.gate.read.failed",
         ...(error instanceof GitHubApiError ? { status: error.status } : { error }),
       });
-      return true;
+      return undefined;
     }
   }
 
