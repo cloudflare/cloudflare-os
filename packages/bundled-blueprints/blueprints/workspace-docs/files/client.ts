@@ -5847,7 +5847,12 @@ const pendingByBlock = new Map<string, PendingChange>(); // id -> remote change 
 // reply is lost, the reconnect's snapshot says which of these blocks the server
 // wrote (its `lastSave`): they rest on the drafts, which aren't merged in again.
 let saveSeq = 0;
-let unconfirmedSave: { seq: number; drafts: Map<string, string> } | null = null;
+let unconfirmedDrafts: Map<string, string> | null = null;
+// A newer version may already have arrived; never step a block back to an
+// older one. (An unknown block's missing version compares false.)
+function acknowledge({ id, html, version }: StoredBlock) {
+  if (!(acknowledged.get(id)?.version! >= version)) acknowledged.set(id, { html, version });
+}
 // The blocks whose save (or deletion) is in flight, and the remote changes to
 // them that came meanwhile (null for a deletion). A remote version may already
 // include that save, so it is applied only once the reply has said which
@@ -5935,20 +5940,15 @@ async function sendChanges(failures = 0): Promise<SaveOutcome> {
   const sentOrder = blocks.map((b) => b.id);
   // If this times out, a late reply is simply dropped and the page reconnects;
   // should the server have applied it after all, the snapshot then says so.
-  const save = { seq: ++saveSeq, drafts: new Map(upserts.map((b) => [b.id, b.html])) };
-  unconfirmedSave = save;
-  savingIds = new Set([...save.drafts.keys(), ...deletes.map((d) => d.id)]);
+  unconfirmedDrafts = new Map(upserts.map((b) => [b.id, b.html]));
+  savingIds = new Set([...unconfirmedDrafts.keys(), ...deletes.map((d) => d.id)]);
   savingOrder = reordered ? sentOrder : null;
   let result: ApplyOperationResult;
   try {
-    result = await withTimeout(gadget.applyOperation({ senderId: clientId, seq: save.seq, baseRevision: revision, upserts, deletes, order: sentOrder }), saveTimeoutMs(failures));
-    if (unconfirmedSave === save) unconfirmedSave = null;
+    result = await withTimeout(gadget.applyOperation({ senderId: clientId, seq: ++saveSeq, baseRevision: revision, upserts, deletes, order: sentOrder }), saveTimeoutMs(failures));
+    unconfirmedDrafts = null;
     revision = Math.max(revision, result.revision || 0);
     confirmOrder(Array.isArray(result.order) ? result.order : sentOrder, result.revision || 0);
-    // A newer version may already have arrived as a live event while this reply
-    // was in flight; never step a block back to an older one.
-    // (An unknown block's missing version compares false.)
-    const acknowledge = (b: StoredBlock) => { if (!(acknowledged.get(b.id)?.version! > b.version)) acknowledged.set(b.id, { html: b.html, version: b.version }); };
     for (const b of result.upserts || []) {
       acknowledge(b);
       // A block deleted remotely while it was being typed in, and re-created by
@@ -6141,10 +6141,9 @@ function applyRemoteOperation(event: OperationEvent) {
   const activeId = editingBlockId();
   const live = event.senderId === "agent" && liveEffectsOn() ? captureLiveEdit(event) : null;
   keepSelection(() => applyRemote(() => {
-    // Newer than a change still held from a save that failed (see sendChanges).
-    for (const id of [...(event.upserts || []).map((b) => b.id), ...(event.deletedIds || [])]) if (!savingIds?.has(id)) heldWhileSaving.delete(id);
-    for (const b of event.upserts || []) remoteUpsert(b, activeId);
-    for (const id of event.deletedIds || []) remoteDelete(id, activeId);
+    // Each is newer than a change still held for its block (see sendChanges).
+    for (const b of event.upserts || []) { heldWhileSaving.delete(b.id); remoteUpsert(b, activeId); }
+    for (const id of event.deletedIds || []) { heldWhileSaving.delete(id); remoteDelete(id, activeId); }
     if (Array.isArray(event.order)) remoteOrder(event.order, event.revision || 0);
   }));
   afterRemoteChange();
@@ -6159,7 +6158,7 @@ function applySnapshot(doc: DocumentSnapshot) {
     lastEventRevision = revision;
     acknowledged.clear();
     pendingByBlock.clear();
-    unconfirmedSave = null;
+    unconfirmedDrafts = null;
     heldWhileSaving.clear();
     editor.replaceChildren(...(doc.blocks || []).map(parseBlock));
     normalize();
@@ -6179,14 +6178,13 @@ function reconcileSnapshot(doc: DocumentSnapshot, lastSave?: LastSave) {
   heldWhileSaving.clear();
   // This page's save whose reply was lost, which the server applied: the blocks
   // it wrote rest on its drafts, so the drafts aren't merged in a second time.
-  const save = unconfirmedSave;
-  if (save && lastSave?.seq === save.seq) {
+  if (unconfirmedDrafts && lastSave?.seq === saveSeq) {
     for (const [id, version] of lastSave.versions) {
-      const html = save.drafts.get(id);
-      if (html !== undefined && !(acknowledged.get(id)?.version! >= version)) acknowledged.set(id, { html, version });
+      const html = unconfirmedDrafts.get(id);
+      if (html !== undefined) acknowledge({ id, html, version });
     }
-    unconfirmedSave = null;
   }
+  unconfirmedDrafts = null;
   revision = Math.max(revision, doc.revision || 0);
   lastEventRevision = Math.max(lastEventRevision, doc.revision || 0);
   const activeId = editingBlockId();

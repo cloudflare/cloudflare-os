@@ -303,7 +303,7 @@ export class Gadget extends DurableObject<unknown, unknown> implements GadgetStu
     this.subscribers.add(callback);
     const [doc, settings, saves] = await Promise.all([this.loadDocument(), this.getSettings(), this.ctx.storage.get<StoredSave[]>("lastSaves")]);
     const mine = isRecord(client) ? saves?.find((s) => s.senderId === client.clientId) : undefined;
-    return { ...doc, settings, ...mine && { lastSave: { seq: mine.seq, versions: mine.versions } } };
+    return { ...doc, settings, lastSave: mine && { seq: mine.seq, versions: mine.versions } };
   }
 
   // No presence (see README). An editor page from before that, still open

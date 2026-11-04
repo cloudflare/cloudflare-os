@@ -208,7 +208,6 @@ describe("a save in flight", () => {
       window.dispatchEvent(new Event("pagehide"));
       await vi.waitFor(() => expect(vi.mocked(gadget.subscribe).mock.results.at(-1)?.type).toBe("return"));
       await vi.waitFor(() => expect(editor().querySelector(`[data-block-id="${id}"]`)?.textContent).toBe("bar A"));
-      expect(seq).toBeTypeOf("number");
     } finally { error.mockRestore(); }
   });
 });

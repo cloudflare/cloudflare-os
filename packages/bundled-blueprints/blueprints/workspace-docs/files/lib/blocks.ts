@@ -51,9 +51,9 @@ export function resolvePosition(list: BlockContent[], { afterId, beforeId, index
 export function sameBlockHtml(a: string, b: string): boolean {
   return a === b || withoutBlockId(a) === withoutBlockId(b);
 }
-// Stored HTML has one space before each attribute (stripUnsafe writes it so). Matching that space
-// alone keeps this linear: `\s+` would backtrack over a long space run inside an attribute value.
-const withoutBlockId = (html: string) => html.replace(/^(\s*<[a-z0-9]+\b[^>]*?) data-block-id="[^"]*"/i, "$1");
+// The lookbehind starts `\s+` only at the beginning of a whitespace run, which keeps this linear
+// over a long run inside an attribute value.
+const withoutBlockId = (html: string) => html.replace(/^(\s*<[a-z0-9]+\b[^>]*?)(?<!\s)\s+data-block-id="[^"]*"/i, "$1");
 
 // Line up a new list of block HTML against the current blocks: identical
 // blocks are matched (longest common subsequence), and between matches the

@@ -95,7 +95,7 @@ export interface DocumentInit {
 }
 
 /** A change to the settings, as `setSettings` receives it: any of the fields, and the sender's id. */
-export type SettingsPatch = Partial<DocSettings> & { senderId?: string };
+export type SettingsPatch = Partial<Omit<DocSettings, "revision">> & { senderId?: string };
 
 /* ── Operations and events ──────────────────────────────────────────────── */
 
