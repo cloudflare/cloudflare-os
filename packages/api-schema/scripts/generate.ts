@@ -10,7 +10,7 @@
 //
 // Neither directory is committed. Whatever reads them generates them first, with --if-stale: the
 // `@gadgets/api-schema#generate` task, which the CLI's `build` and `test` and the integration tests
-// depend on, the CLI's and the integration tests' direct `test:run`, and the root `cf-os` script.
+// depend on, the CLI's and the integration tests' direct `test:run`, and the `cf-os` bin.
 //
 // It does the same for each gatekeeper app UI: a gatekeeper whose management app's capability (the
 // `ui` of `getGatekeeperApp(<vendor>)`) has a declared interface exports it as `AppApi` from its

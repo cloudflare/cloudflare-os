@@ -2,8 +2,8 @@
 // generated command table and agent declarations (`generated/`), the command-table emitter
 // (`generator/`), the tests, and the Vite+ config.
 //
-// Nothing here is compiled: `node` runs these modules directly, stripping the types, so the root
-// `cf-os` script and the starter that delegates to this CLI need no build step. `erasableSyntaxOnly`
+// Nothing here is compiled: `node` runs these modules directly, stripping the types, so the `cf-os`
+// bin and the starter that delegates to this CLI need no build step. `erasableSyntaxOnly`
 // keeps that a guarantee, and `nodenext` resolution is what `node` actually does with the imports:
 // the same settings as `packages/api-schema`, for the same reason. The `build` task (`tsc`, run by
 // `pnpm build` and `pnpm lint` once `@gadgets/api-schema#generate` has written `generated/`) is the
