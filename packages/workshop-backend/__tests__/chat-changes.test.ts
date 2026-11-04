@@ -10,6 +10,7 @@ import {
   codeChangeSerializedSize, diffFiles, MAX_CODE_CHANGE_SIZE, type CodeContent, type CodeChange,
 } from "@gadgets/workshop-shared/code-change";
 import { keyString } from "@gadgets/typed-storage";
+import { releaseMergeHeader } from "../src/blueprint-release";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
@@ -508,6 +509,74 @@ describe("mergeChanges", () => {
     let head = impl.storage.gadgets.get(1)!.commitId!;
     expect(await impl.gitStore.readCommitFiles(head))
         .toEqual(new Map([["a.txt", "late\none\nfirst\n"]]));
+  }));
+});
+
+describe("restoreVersion", () => {
+  async function restore(client: Overseer, commitId: string): Promise<void> {
+    using gadget = await client.getGadget(1);
+    await gadget.restoreVersion(commitId);
+  }
+
+  it("puts back an earlier version on top of a head that cannot be read",
+      () => withClient(async (impl, client) => {
+    // The head is an accept on top of a chat's update from mainline (`M = [P, S]`), as an
+    // accept of a chat that was brought up to date is, and holds a file with a NUL in it.
+    let p = await commitFiles(impl, { "client.js": "good\n" });
+    let s = await commitFiles(impl, { "client.js": "chat\n" }, [p]);
+    let m = await commitFiles(impl, { "client.js": "chat\n" }, [p, s]);
+    let broken = await commitFiles(impl, { "client.js": "bad\0\n" }, [m]);
+    addGadget(impl, 1, "APP", broken);
+    await expect(impl.getGadgetUiBundle(1)).rejects.toThrow(/not a text file/);
+
+    await restore(client, p);
+
+    let head = impl.storage.gadgets.get(1)!.commitId!;
+    expect((await commitObject(impl, head)).parent).toEqual([broken]);
+    expect(await filesAt(impl, head)).toEqual({ "client.js": "good\n" });
+    expect(await impl.getGadgetUiBundle(1)).toEqual({ jsCode: "good\n" });
+
+    // A retried restore leaves the head alone.
+    await restore(client, p);
+    expect(impl.storage.gadgets.get(1)!.commitId).toBe(head);
+  }));
+
+  it("refuses a commit that is not an earlier version of the gadget",
+      () => withClient(async (impl, client) => {
+    // A chat's own commit, merged by an update from mainline: in the head's history, but never
+    // a version of the gadget.
+    let p = await commitFiles(impl, { "client.js": "mine\n" });
+    let s = await commitFiles(impl, { "client.js": "chat\n" }, [p]);
+    let head = await commitFiles(impl, { "client.js": "chat\n" }, [p, s]);
+    addGadget(impl, 1, "APP", head);
+
+    await expect(restore(client, s)).rejects.toThrow(/not an earlier version/);
+    expect(impl.storage.gadgets.get(1)!.commitId).toBe(head);
+  }));
+
+  it("refuses a version from before a blueprint release the gadget merged",
+      () => withClient(async (impl, client) => {
+    let p = await commitFiles(impl, { "client.js": "mine\n" });
+    let release = await commitFiles(impl, { "client.js": "blueprint\n" });
+    let merged = await impl.gitStore.writeFilesAsCommit(
+        new Map([["client.js", "blueprint\n"]]), {
+          parents: [p, release], headers: [releaseMergeHeader(release)],
+          author: { name: "Alice", email: "alice@example.com" }, message: "Merge blueprint",
+          timestamp: new Date(1700000000_000),
+        });
+    addGadget(impl, 1, "APP", merged);
+
+    await expect(restore(client, p)).rejects.toThrow(/blueprint update/);
+    expect(impl.storage.gadgets.get(1)!.commitId).toBe(merged);
+  }));
+
+  it("refuses a version that cannot be read", () => withClient(async (impl, client) => {
+    let broken = await commitFiles(impl, { "client.js": "bad\0\n" });
+    let head = await commitFiles(impl, { "client.js": "good\n" }, [broken]);
+    addGadget(impl, 1, "APP", head);
+
+    await expect(restore(client, broken)).rejects.toThrow(/not a text file/);
+    expect(impl.storage.gadgets.get(1)!.commitId).toBe(head);
   }));
 });
 

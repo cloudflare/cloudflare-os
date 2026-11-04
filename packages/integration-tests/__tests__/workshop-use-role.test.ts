@@ -171,6 +171,7 @@ const deniedGadget = (chatId: number): Record<
   setBlueprintAnnotation: g => g.setBlueprintAnnotation("DATA", { title: "Data", description: "" }),
   createBlueprint: g => g.createBlueprint(),
   applyBlueprint: g => g.applyBlueprint("blueprint", { modelId: null }),
+  restoreVersion: g => g.restoreVersion("0".repeat(40)),
 });
 
 it("a use collaborator reaches only the mainline gadget UI", async () => {
