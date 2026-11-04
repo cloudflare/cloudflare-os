@@ -442,6 +442,22 @@ describe("sync through deletions and moves", () => {
     for (const order of later) expect(order.indexOf("o3")).toBeLessThan(order.indexOf("o1"));
   });
 
+  // A collaborator's edit arrives before this page's move is saved (during the save debounce),
+  // with the order from before the move: the move stays, and is what is saved next.
+  it("keeps a move not yet saved when an event arrives with the older order", async () => {
+    send(["u1", "u2", "u3"].map((id) => ({ id, html: `<p>${id}</p>`, version: 1 })));
+    const before = ids();
+    const saved: string[][] = [];
+    serve(async (op) => { saved.push(op.order ?? []); return undefined; });
+    block("u1").before(block("u3"));
+    send([{ id: "u1", html: "<p>u1 typed</p>", version: 2 }], before);
+    expect(block("u1").textContent).toBe("u1 typed");
+    expect(ids().indexOf("u3")).toBeLessThan(ids().indexOf("u1"));
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]!.indexOf("u3")).toBeLessThan(saved[0]!.indexOf("u1"));
+  });
+
   // A collaborator inserts a block while this page's move is saving, and the page moves again
   // before the reply: the new block stays where the collaborator put it in what is saved next.
   it("keeps a block inserted during a move's save in place through a second move", async () => {
@@ -533,6 +549,23 @@ describe("editor keys, menus and undo", () => {
     expect(doc()).toBe(before);
     redo();
     expect(doc()).toBe(after);
+  });
+
+  // The move's undo step holds the image's block too: undoing past the deletion must not delete it again.
+  it("undoes a move after undoing an image deletion made after it", () => {
+    show("mv", "<p>Top</p>");
+    const block = show("mi", '<p>a<img class="doc-image" src="data:image/png;base64,AA" alt="x">b</p>');
+    caretIn(block.firstChild!, 1);
+    const before = doc();
+    key({ key: "ArrowUp", altKey: true, shiftKey: true });
+    const moved = doc();
+    expect(moved).not.toBe(before);
+    block.querySelector("img")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    key({ key: "Backspace" });
+    undo();
+    expect(doc()).toBe(moved);
+    undo();
+    expect(doc()).toBe(before);
   });
 
   it("undoes and redoes inserting a divider", () => {

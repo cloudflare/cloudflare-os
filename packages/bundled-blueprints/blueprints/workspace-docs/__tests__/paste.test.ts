@@ -22,6 +22,11 @@ describe("textToHtml", () => {
       "<blockquote>one<br>two</blockquote><ul><li>a</li><li>b</li></ul><pre>x</pre><blockquote>end</blockquote>",
     );
   });
+
+  // `.` stops at a line separator: a heading holding one must still be read, not looped on.
+  it("reads a heading line holding a line separator", () => {
+    expect(markdownToHtml("# a\u2028b\nnext")).toBe("<h1>a\u2028b</h1><p>next</p>");
+  });
 });
 
 describe("inlineMarkdown", () => {

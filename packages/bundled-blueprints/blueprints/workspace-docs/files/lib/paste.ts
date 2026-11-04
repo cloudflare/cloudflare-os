@@ -573,7 +573,8 @@ export function markdownToHtml(md: string): string {
       continue;
     }
     let m: RegExpMatchArray | null;
-    if (m = line.match(/^(#{1,6})\s+(.*)$/)) { const l = Math.min(3, m[1].length); html += `<h${l}>${inlineMarkdown(m[2])}</h${l}>`; i++; continue; }
+    // [\s\S]: a line separator (U+2028/9) is text here, and a heading line left unread would loop.
+    if (m = line.match(/^(#{1,6})\s+([\s\S]*)$/)) { const l = Math.min(3, m[1].length); html += `<h${l}>${inlineMarkdown(m[2])}</h${l}>`; i++; continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { html += "<hr>"; i++; continue; }
     if (/^>\s?/.test(line)) {
       const body: string[] = [];

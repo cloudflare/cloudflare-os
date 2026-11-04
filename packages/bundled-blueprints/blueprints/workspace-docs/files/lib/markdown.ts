@@ -489,7 +489,6 @@ function charClass(char: string | undefined): "space" | "punctuation" | "word" {
   return /[\p{P}\p{S}]/u.test(char) ? "punctuation" : "word";
 }
 
-/** The decoded value of attribute `name` in a tag's attribute source, or "" when it has none. */
 // A code fence (or, with `min` 1, a code span's delimiter) longer than any
 // run of backticks in `code`, so none of them can close it early.
 export function codeFence(code: string, min = 3): string {
@@ -502,6 +501,7 @@ export function closesFence(line: string, open: string): boolean {
   return t.length >= open.length && t === open[0].repeat(t.length);
 }
 
+/** The decoded value of attribute `name` in a tag's attribute source, or "" when it has none. */
 export function readHtmlAttribute(source: string, name: string): string {
   // Attributes are read one by one, so neither another attribute ending in the name (`data-src`
   // for `src`) nor text inside another's value (`alt="x src=y"`) is mistaken for it.

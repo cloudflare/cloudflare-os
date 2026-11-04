@@ -3380,13 +3380,13 @@ function blockChanged(options?: { typing?: boolean }) {
 /**
  * An edit the browser's own undo doesn't see (the editor's DOM surgery),
  * undone by ⌘Z as a block action. The edit is made in the live blocks, so the
- * browser's history of typing in them stays valid; the undo step holds deep
- * copies of the top blocks holding `touched` (taken before the edit) in their
- * place, and undo swaps those back in.
+ * browser's history of typing in them stays valid; every undo step holding the
+ * top blocks that hold `touched` -- earlier ones too, which would otherwise
+ * bring the edit back -- takes deep copies of them (made before the edit) in
+ * their place, and undo swaps those back in.
  */
 function editBlocks<T>(touched: Node[], fn: () => T): T {
   recordBlockStep();
-  const step = blockHistory.undo.at(-1)!;
   const copies = new Map<Node, HTMLElement>();
   for (const b of touched.map(topBlockOf)) if (b && !copies.has(b)) copies.set(b, b.cloneNode(true) as HTMLElement);
   // A node's counterpart in the copies (itself outside them).
@@ -3401,11 +3401,8 @@ function editBlocks<T>(touched: Node[], fn: () => T): T {
     }
     return path.reduceRight<Node>((c, i) => c.childNodes[i], copies.get(n)!) as N;
   };
-  if (copies.size) {
-    step.structure = step.structure.map(({ node, kids }) => {
-      const copy = copies.get(node);
-      return copy ? { node: copy, kids: kids && Array.from(copy.childNodes) } : { node, kids };
-    });
+  if (copies.size) for (const step of blockHistory.undo) {
+    step.structure = step.structure.map(({ node, kids }) => ({ node: copyOf(node), kids: kids && kids.map(copyOf) }));
     step.checked = step.checked.map(copyOf);
     if (step.sel) step.sel = { anchor: copyOf(step.sel.anchor), focus: copyOf(step.sel.focus) };
     for (const p of step.caret ? [step.caret.a, step.caret.f] : []) if (p.node) p.node = copyOf(p.node); else if (p.ref) p.ref = copyOf(p.ref);
@@ -6041,21 +6038,31 @@ function staleEvent(rev: number | undefined) {
   lastEventRevision = rev;
   return false;
 }
-// A remote order waits while a move of this page's is in flight (see savingOrder).
-// Blocks the move didn't include can't wait: they go where the server has them
-// now, so a later move here, or a failed save, doesn't send them to the end.
-// They join the order the move left, unless the page has moved again since.
+// A remote order waits while a move of this page's is unsent, or in flight (see
+// savingOrder): the next save sends the page's order over it, and a reply in
+// flight may already include it. Blocks the move didn't include can't wait:
+// they go where the server has them now, so a later move here, or a failed
+// save, doesn't send them to the end. They join the order the move left,
+// unless the page has moved again since.
 function remoteOrder(order: string[], rev: number) {
+  const moved = savingOrder ?? unsentMove();
   confirmOrder(order, rev);
-  if (!savingOrder) return applyOrder(order);
-  orderHeld = true;
-  const unmoved = sameRelativeOrder(pageOrder(), savingOrder);
-  const sent = new Set(savingOrder);
+  if (!moved) return applyOrder(order);
+  if (savingOrder) orderHeld = true;
+  const unmoved = !!savingOrder && sameRelativeOrder(pageOrder(), savingOrder);
+  const kept = new Set(moved);
   for (const id of ackOrder) {
-    const node = sent.has(id) ? null : findBlock(id);
+    const node = kept.has(id) ? null : findBlock(id);
     if (node) insertByServerOrder(node);
   }
   if (unmoved) savingOrder = pageOrder();
+}
+// The server's blocks in the order a move of this page's not yet sent has them, if any.
+function unsentMove() {
+  const page = pageOrder();
+  if (sameRelativeOrder(page, ackOrder)) return null;
+  const known = new Set(ackOrder);
+  return page.filter((id) => known.has(id));
 }
 function applyRemoteOperation(event: OperationEvent) {
   if (!event || staleEvent(event.revision) || event.senderId === clientId) return;

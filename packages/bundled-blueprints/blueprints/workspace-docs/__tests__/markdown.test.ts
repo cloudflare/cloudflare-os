@@ -188,6 +188,7 @@ describe("Markdown round trips", () => {
     "<ol><li>a<ol><li>nested</li></ol></li></ol>", '<ol start="9"><li>a</li><li>b<ul><li>nested<br>line</li></ul></li></ol>',
     '<ul class="checklist"><li data-checked="true">a<ul><li>sub<ul><li>deep</li></ul></li></ul></li><li>b</li></ul>',
     "<ul><li>a<ol><li>n1</li><li>n2<ul><li>deep</li></ul></li></ol></li><li>b</li></ul>",
+    '<ol><li>Parent<ol start="5"><li>Fifth</li><li>Sixth</li></ol></li><li>Last</li></ol>',
     "<blockquote>x<br>y</blockquote>", "<blockquote>q1<br><br>q2</blockquote>",
     "<pre>def a():\n    pass  \n\n\ndef b():\n\treturn 1\t</pre>",
     "<h2>Learn C #</h2>", "<h3>Item ##</h3>",

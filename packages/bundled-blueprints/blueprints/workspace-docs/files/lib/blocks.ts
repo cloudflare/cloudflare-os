@@ -579,7 +579,8 @@ function listHtml(kind: BlockKind, items: unknown, inChecklist: boolean, start: 
       if (runs.at(-1)?.kind === run) runs.at(-1)!.items.push(child);
       else runs.push({ kind: run, items: [child] });
     }
-    const nested = runs.map((r) => listHtml(r.kind, r.items, inChecklist || kind === "todo")).join("");
+    // A nested numbered list starts at its first item's number.
+    const nested = runs.map((r) => listHtml(r.kind, r.items, inChecklist || kind === "todo", isRecord(r.items[0]) ? r.items[0].number : 1)).join("");
     const body = { ...item, type: undefined };
     const content = inlineContent(body);
     return `<li${checked}>${content === "<br>" && nested ? "" : content}${nested}</li>`;
@@ -595,6 +596,8 @@ interface MarkdownItem {
   listType?: BlockKind;
   /** The kind of the nested list it is in, when that isn't its parent's `listType`. */
   run?: BlockKind;
+  /** The number of a numbered item's marker, for a nested list's start. */
+  number?: number;
 }
 
 // Block-level Markdown -> specs: headings, paragraphs, (nested) bulleted,
@@ -697,6 +700,7 @@ export function markdownToSpecs(markdown: unknown): BlockSpec[] {
         // A nested run of another kind (a bulleted list after a numbered one
         // under the same item) stays a list of its own.
         if (level.parent && kind !== level.parent.listType) item.run = kind;
+        if (level.parent && kind === "ol") item.number = parseInt(m[2], 10);
         level.items.push(item);
       }
       i--;
