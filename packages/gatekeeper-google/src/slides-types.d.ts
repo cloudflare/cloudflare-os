@@ -268,9 +268,10 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    *
    * The user may let a batch apply without asking when it only edits text, or when it only
    * formats text, paragraphs and shapes, moves elements, or sets slides' backgrounds to a colour,
-   * `"none"` or `null`, setting no link or font. Any other batch waits for approval: one mixing
-   * those two, setting a picture background, changing a layout or master, or setting theme
-   * colours. So queue changes that need not apply together as separate batches.
+   * `"none"` or `null`, setting no link or font. Any other batch waits for approval, unless the
+   * deployment lets the user allow other batches too: one mixing those two, setting a picture
+   * background, changing a layout or master, or setting theme colours. So queue changes that need
+   * not apply together as separate batches.
    *
    * Reads show the changes as if applied, except what only Google can work out: a new element
    * reads with just what the change sets until it is applied, and an image's fitted size, the

@@ -5,5 +5,7 @@ declare namespace Cloudflare {
     // The AI Gateway Drive PDF conversion goes through, when set. It is not in the config, because
     // previews upload a backend secret under this name.
     CF_AI_GATEWAY?: string;
+    // "true" to make every Google Slides change a kind a user may let apply without asking.
+    GOOGLE_SLIDES_ALL_AUTO_APPROVABLE?: string;
   }
 }

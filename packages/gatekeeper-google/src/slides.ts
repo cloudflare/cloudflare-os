@@ -16,7 +16,7 @@ import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
-import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
+import { batchKind, SLIDES_ACTIONS, slidesActionsFor, type SlidesHost } from "./slides-actions";
 import {
   BlankPresentation, GoogleSlidesApi, type PresentationReader, type ThumbnailSize,
 } from "./slides-api";
@@ -103,7 +103,9 @@ export class GoogleSlidesGatekeeperImpl
   #drive = new DriveApi((opts?: AccessTokenRequest) => this.#tokens.get(opts));
   #presentationId = isSimulated(this.ctx.props) ? UNCREATED_FILE_ID : this.ctx.props.presentationId;
   #journal = new ActionJournal<SlidesAction>(this.ctx.storage.kv, { namespace: "slides" });
-  #actions = SLIDES_ACTIONS.bind(this.#journal, { api: this.#api, presentationId: this.#presentationId });
+  #host: SlidesHost = { api: this.#api, presentationId: this.#presentationId };
+  // Resolves every change; `#submitting` is the set a change is queued and described through.
+  #actions = SLIDES_ACTIONS.bind(this.#journal, this.#host);
   #reads = new ReadGate();
   #preparing = new SerialTaskQueue();
   #inPreparation = 0;
@@ -143,8 +145,12 @@ export class GoogleSlidesGatekeeperImpl
     return getGoogleSlidesTypesCode();
   }
 
+  get #submitting() {
+    return slidesActionsFor(this.env).bind(this.#journal, this.#host);
+  }
+
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return this.#actions.autoApprovableKinds();
+    return this.#submitting.autoApprovableKinds();
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GooglePresentationSession> {
@@ -166,7 +172,7 @@ export class GoogleSlidesGatekeeperImpl
             throw new Error(`This change is too large to queue (${bytes} bytes, limit ` +
               `${MAX_CHANGE_BYTES}). Split it up.`);
           }
-          await this.#actions.submit(queue, kind, payload);
+          await this.#submitting.submit(queue, kind, payload);
           return result;
         }),
       },

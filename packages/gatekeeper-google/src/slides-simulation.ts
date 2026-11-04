@@ -47,13 +47,15 @@ export type CreatedPlaceholder = {
 
 /**
  * The payload of each kind of queued change. A batch is queued as `editText` when it only edits
- * text, `formatSlides` when it only formats or moves, and `updateSlides` otherwise; they differ in
- * nothing but which kinds a user may let apply without asking.
+ * text, `formatSlides` when it only formats or moves, `pictureSlides` when it otherwise makes
+ * Google download a picture, and `updateSlides` otherwise; they differ in nothing but which kind a
+ * user may let apply without asking.
  */
 export type SlidesActions = {
   editText: DesignBatch;
   formatSlides: DesignBatch;
   updateSlides: DesignBatch;
+  pictureSlides: DesignBatch;
   /** `objectIds` maps the source's element IDs to the IDs the gatekeeper minted for the copy's. */
   duplicateSlide: {
     slideId: string; newSlideId: string; objectIds: Record<string, string>; slide: SlideLabel;
@@ -255,6 +257,7 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
     case "editText":
     case "formatSlides":
     case "updateSlides":
+    case "pictureSlides":
       return designDeck(deck, action.payload.changes).deck;
     case "duplicateSlide": {
       let { slideId, newSlideId, objectIds } = action.payload;
@@ -343,7 +346,8 @@ export function slidesToFetch(pages: readonly string[], changes: readonly Queued
   for (let { action } of changes.toReversed()) {
     if (action.kind === "duplicateSlide" && needed.has(action.payload.newSlideId)) {
       needed.add(action.payload.slideId);
-    } else if (action.kind === "editText" || action.kind === "formatSlides" || action.kind === "updateSlides") {
+    } else if (action.kind === "editText" || action.kind === "formatSlides" || action.kind === "updateSlides" ||
+        action.kind === "pictureSlides") {
       let targets = action.payload.changes.map(change => pageOf(change).id);
       if (targets.some(id => needed.has(id))) for (let id of targets) needed.add(id);
     }
@@ -360,6 +364,7 @@ export function batchSlides(action: SlidesAction): string[] {
     case "editText":
     case "formatSlides":
     case "updateSlides":
+    case "pictureSlides":
       return action.payload.changes.flatMap(change => slideIdOf(change) ?? []);
     default:
       return [];
