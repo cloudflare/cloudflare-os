@@ -767,6 +767,11 @@ converts one read path at a time:
    throw when it cannot tell — expired credentials, a provider outage: the tracker excludes one
    observer whose oracle throws, but here the throw fails the call, as the Workshop expects, while
    `false` would deny without saying why.
+
+   Size the oracle for that before sharing it. The tracker never asks about more than
+   `maxTrackedCollections` ids, but `verifyObserverAccess()` hands each verifier every subresource
+   in the Workshop's call, up to 10,000. Split them to fit any per-request cap the provider has,
+   in no more requests than the Worker's subrequest limit allows.
 3. Keep the strategy. Its `addObserver()` still enforces the admission baseline, everything
    recorded before a path converted, and every read still on another scope. An owner-only read stays
    on `withholdFromObservers` until the binding reports an id its oracle grants only to the owner:

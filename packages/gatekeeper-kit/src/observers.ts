@@ -234,7 +234,8 @@ export type ObservationScope =
 export type ObservationInput = Omit<ObservationDescription, "excludeObservers" | "subresources">;
 
 /**
- * Authorizes observations after applying the selected observer strategy.
+ * Authorizes observations: through the selected observer strategy, or for a `subresources` scope
+ * with the Workshop alone.
  *
  * @example
  * ```ts
@@ -376,12 +377,17 @@ export type VerifyObserverAccess = NonNullable<Gatekeeper<unknown>["verifyObserv
  * itself be awaiting the authorization that asked.
  *
  * The oracle has the shape `trackedCollectionObservers` takes, so a binding converting read by read
- * can hand both the same function. It receives the ids exactly as reads reported them, so report
- * canonical spellings. Only a literal `true` grants, and an answer of the wrong length throws, since
- * index alignment is all that ties a verdict to an id. Unlike the tracker, which excludes an
- * observer whose oracle throws, a throw here fails the whole call, and the Workshop denies everyone
- * in it: what the contract asks for when access cannot be determined. So the oracle must throw,
- * rather than answer `false`, when it cannot tell — expired credentials, a provider outage.
+ * can hand both the same function, once it is sized for this use: the tracker never asks it about
+ * more than `maxTrackedCollections` ids, while this hands it every subresource in the Workshop's
+ * call, up to 10,000, which it must split to fit any per-request cap the provider has, in no more
+ * requests than the Worker's subrequest limit allows. It receives the ids exactly as reads
+ * reported them, so report canonical spellings. Only a literal `true` grants, and an answer of the
+ * wrong length throws, since index alignment is all that ties a verdict to an id. Unlike the
+ * tracker, which excludes an observer whose oracle throws, a throw here fails the whole call: no
+ * further verifier is asked, the call rejects once those already asked have answered, and the
+ * Workshop denies everyone in it, what the contract asks for when access cannot be determined. So
+ * the oracle must throw, rather than answer `false`, when it cannot tell — expired credentials, a
+ * provider outage.
  * @param options ACL oracle and verifier concurrency (default 6).
  * @returns A `verifyObserverAccess()` implementation.
  */
