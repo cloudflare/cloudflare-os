@@ -43,9 +43,10 @@ commits.
   so the exception lives in the schema rather than as a special case at each call site.
 - **Admission is per-collaborator, checked continuously.** Not at grant time: at every
   `open()`, so revocation of a collaborator's underlying resource access is caught
-  promptly. Nobody is in the workspace without having passed the producer's
-  `addObserver()`, and anything that widens what they must pass restarts every live
-  session so it re-opens at the new scope (`#restartIfSessionsAffected`).
+  promptly. Nobody is in the workspace without having passed the producer's check (at the
+  time, `addObserver()`; since the kernel cutover, `verifyObserverAccess()` over the
+  requirements recorded through it), and anything that widens what they must pass restarts
+  every live session so it re-opens at the new scope (`#restartIfSessionsAffected`).
 - **Coverage is held to each collaborator's own role scope.** `ensureObserver` never
   verifies a `use` collaborator against a gatekeeper outside their scope. This is a liveness
   tradeoff, not a security guarantee: restricted data can flow from that gatekeeper
@@ -75,8 +76,10 @@ commits.
   or refused, and where it sets the durable `containsRestrictedData` flag.
 - `ensureObserver` (overseer.ts) brings a non-owner into compliance for their role:
   selects in-scope gatekeepers, prompts for unconfigured account choices via
-  `configureCb`, calls `addObserver` on each gatekeeper facet, and persists an
-  `ObserverRecord` only after all of them succeed. Re-runs on every open. Throws to deny.
+  `configureCb`, verifies each binding (originally by calling `addObserver` on each
+  gatekeeper facet; since the kernel cutover by minting each verifier and calling
+  `verifyObserverAccess()` for recorded requirements), and persists an `ObserverRecord`
+  only after all of them succeed. Re-runs on every open. Throws to deny.
 - `SharingManager` (sharing.ts) owns the permission graph: collaborator records, their
   `addedBy` edges, share links and keys, and `computeEffectiveRoles`' fixed-point
   resolution. The module header states that sharing *policy* deliberately lives outside
@@ -114,7 +117,7 @@ callers: `open()` interactively and `receiveExternalMessage` non-interactively (
 latter previously checked only the role).
 
 Denying early matters: without it a `use` collaborator reaching `receiveExternalMessage`
-would be verified (real `addObserver` calls, a persisted record) only to be turned away,
+would be verified (verifier RPCs, a persisted record) only to be turned away,
 or worse, told to fix a verification failure that could never grant them access.
 
 Because redemption writes a real edge, a redeemer mid-verification is visible to the
@@ -128,7 +131,7 @@ An earlier draft scrubbed the failed gatekeeper from the collaborator's persiste
 `accountChoices` and restarted the workspace on the failure. The observer machinery
 landed on main (#380) without either: an `accountChoices` entry records the account the
 collaborator chose so they are not asked again, and asserts nothing about whether the
-gatekeeper still admits them — every open re-runs `addObserver`, so a revoked
+gatekeeper still admits them — every open re-verifies, so a revoked
 collaborator is denied at their next open regardless, and only that open is denied (the
 lazy-revocation residual in `docs/observers.md` edge case 3). Nothing in this model reads
 `accountChoices` to admit a restricted read, so the scrub is not a precondition of it.
@@ -220,12 +223,10 @@ the window. Each item is marked in the code by a matching `TODO` comment; this l
 the follow-up worklist.
 
 - Observer verification is not serialized per profile, so concurrent opens by one
-  collaborator can overwrite each other's records and registrations.
-- A mid-registration observer named in `excludeObservers` is read as unknown and the
-  observation admitted: a first-time `ensureObserver` registers the id with the
-  gatekeepers before the record is persisted, so `#enforceExcludeObservers` cannot map it
-  back during that window. Persistent (the observation lands in chat history). Fix: an
-  in-memory pending-id map consulted there, failing closed — `observer-verification-fixes`.
+  collaborator can overwrite each other's records, losing the other's account choices.
+  (A second item, a mid-registration observer named in `excludeObservers` and read as
+  unknown by `#enforceExcludeObservers`, was closed by the kernel observer-tracking
+  cutover, which removed registrations, that field, and that method.)
 - An unverified redeemer persists as a collaborator: redemption writes a real edge
   before the redeeming open's verification runs, so from click onward the recipient is
   visible in `listCollaborators` whether or not they ever complete the open (remedies:
@@ -256,13 +257,14 @@ the follow-up worklist.
   restores verifiability at the next open. The residual is `use` grants created after the
   unbind. The chat-history argument does not cover a binding loopback retained across the
   unbind, which returns the read directly as an RPC result and stays callable until
-  `removeGatekeeper`; that is the `docs/observers.md` Step 5 known gap, with `#assertBindingEdgeLive` as the
-  named fix.
+  `removeGatekeeper`; its reads are attributed to the gadget but skip `use` collaborators
+  with no account chosen for the connection. That is the `docs/observers.md` edge case 7
+  known gap, with `#assertBindingEdgeLive` as the named fix.
 - **Known security risk — never-bound producers.** A producer reachable only through chat
   bindings (including an ambient singleton) is never in a `use` collaborator's verification
   scope. The agent can read restricted data from it, persist the result into gadget code,
   storage, or UI state, and the collaborator can then read that state through the deployed
-  gadget despite never passing the producer's `addObserver()` check. Role-scoped
+  gadget despite never passing the producer's observer check. Role-scoped
   verification deliberately never asks this collaborator about that producer, so
   `containsRestrictedData` does not prevent this disclosure. Binding the producer makes
   future opens verifiable but does not retract data already exposed. Accepted temporarily

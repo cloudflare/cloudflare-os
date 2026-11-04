@@ -283,8 +283,6 @@ export default async function(self, env) {
   using reopened = await reopenVerified(workspaceId, viewer);
   expect(reopened.recorder.callCount).toBe(1);
   expect(reopened.recorder.calls[0].map(n => n.gatekeeperId)).toEqual([sourceId]);
-  expect(await testControl(harness, "observer-events", { resourceUrl: SOURCE_URL }))
-      .toEqual({ events: [expect.objectContaining({ type: "add" })] });
 
   using facet = await reopened.gadget.connectToGadget() as RpcStub<StateGadget>;
   expect(await testControl(harness, "fire-hook", { key: hookKey, value: 7 })).toEqual({ fired: true });

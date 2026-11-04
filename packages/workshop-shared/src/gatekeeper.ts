@@ -120,7 +120,7 @@ export type GatekeeperUserSelection = {
 export type RedeemedGatekeeperUserSelection = {
   /**
    * This account's vendor-specific identity capability
-   * (GatekeeperUser.getVerifier), exactly as `Gatekeeper.addObserver()`
+   * (GatekeeperUser.getVerifier), exactly as `Gatekeeper.verifyObserverAccess()`
    * receives one. May be stored. No other vendor's accounts are returned.
    */
   verifier: Fetcher<GatekeeperUserVerifier>;
@@ -944,8 +944,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
 /**
  * Opaque object representing one of a user's accounts. Minted by `GatekeeperUser`, and then passed
- * to `Gatekeeper.addObserver()` or `Gatekeeper.verifyObserverAccess()`, to verify whether the user
- * is able to access a particular Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a
+ * to `Gatekeeper.verifyObserverAccess()`, to verify whether the user is able to access data read
+ * through a particular Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a
  * resource with the account's authority. Also returned from
  * `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible accounts with the
  * same vendor.
@@ -956,8 +956,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  * IMPLEMENTATION NOTE: As of this writing, there is no runtime-supported way to "unwrap" a
  * `Fetcher` passed back to its implementer in order to extract the underlying `props`. This will
  * be added eventually. For now, we recommend that the `GatekeeperUserVerifier` implement a public
- * but non-standard method which the same gatekeeper's `addObserver()`, `verifyObserverAccess()`
- * and `applyCreation()` implementations can call. The overseer promises only to pass a
+ * but non-standard method which the same gatekeeper's `verifyObserverAccess()` and
+ * `applyCreation()` implementations can call. The overseer promises only to pass a
  * `GatekeeperUserVerifier` object back to the same gatekeeper that created it, so they can then
  * call that non-standard method and trust the results.
  */
@@ -1048,67 +1048,17 @@ export interface Gatekeeper<Session> extends DurableObject {
   getAgentCatalog?(): Promise<AgentCatalog | null>;
 
   /**
-   * Informs the gatekeeper that a new user is being added to the Gadget with the potential to see
-   * all data that was read from this Gatekeeper in the past.
-   *
-   * `id` is a unique, stable, but opaque string chosen by the overseer to identify this user in
-   * the context of this gadget.
-   *
-   * The gatekeeper must verify that the given user is allowed to directly observe everything that
-   * has been observed through this gatekeeper in the past. If this is not the case, addObserver()
-   * must throw an exception.
-   *
-   * If this returns without throwing, the Gatekeeper must remember that this user is now an
-   * observer. If any future observation must be hidden from this observer, then the
-   * `ObservationDescription` must include the `excludeObservers` property to indicate who is not
-   * permitted to see the observation.
-   *
-   * `addObserver()` may be called again with the same user ID. If so, the gatekeeper should re-run
-   * the same verifications it would have done if the user were newly-added. The overseer may run
-   * this periodically to check if the user's access to the resource may have been revoked.
-   *
-   * For most gatekeepers, addObserver() should simply check that the user is allowed to read the
-   * target resource in general -- there's no actual need to check against a log of past
-   * observations. For gatekeepers that provide broad access to a user's resources, though, it may
-   * be unlikely that any other user could possibly have access to everything the gatekeeper provides.
-   * In these cases, logging what was actually observed makes things more useful.
-   *
-   * For example, imagine a gatekeeper that grants access to a user's email inbox. Full access to
-   * an inbox is extremely personal and usually no other user can possibly be permitted such broad
-   * access. However, if the Gadget itself carefully reads only emails addressed to a particular
-   * mailing list, then it is OK to reveal those observations to any member of the mailing list.
-   * The gatekeeper should ideally permit observers who are mailing list members.
-   *
-   * The Workshop calls this for every connection, whether or not its observations report
-   * `ObservationDescription.subresources`, and checks the subresources they recorded itself,
-   * through `verifyObserverAccess()`: a collaborator must pass both. So a gatekeeper need not
-   * track here what its reads report as subresources, but must keep enforcing everything else:
-   * any binding-wide requirement its reads rely on (such as tenant membership), the reads that
-   * omit subresources, and whatever it recorded before it began reporting them.
-   */
-  addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void>;
-
-  /**
-   * Notifies the gatekeeper that it can stop tracking the given observer, who was previously
-   * added using `addObserver()`. The gatekeeper no longer needs to verify whether each observation
-   * is safe for this observer.
-   *
-   * This method must be idempotent: If the gatekeeper is unaware that this user was ever added, it
-   * should just ignore the call rather than throw.
-   */
-  removeObserver(id: string): Promise<void>;
-
-  /**
-   * Required of a gatekeeper whose observations report `ObservationDescription.subresources`:
+   * Required of a gatekeeper that reports non-empty `ObservationDescription.subresources` or
+   * exports non-empty `getHistoricalSubresources()`:
    * which of `observers` can read every one of `subresources` now. The Workshop calls this to check
    * collaborators against the subresource IDs this gatekeeper reported: before authorizing a read
    * that reports them, for every collaborator who can see the context that made it, and at
-   * admission, alongside `addObserver()`, for everything the collaborator's role reaches. The
-   * answer must not depend on which of the two is asking, and the Workshop does not say.
+   * admission, for everything the collaborator's role reaches, including requirements imported
+   * through `getHistoricalSubresources()`. The answer must not depend on which is asking.
    *
-   * Each observer's `id` is the opaque observer ID `addObserver()` and `excludeObservers` use,
-   * unique within one call. It is not a cache key: the same observer may arrive later with a
-   * different account's verifier. Each `verifier` was minted by this gatekeeper's vendor (see
+   * Each observer's `id` is an opaque observer ID assigned by the Workshop, unique within one
+   * call. It is not a cache key: the same observer may arrive later with a different account's
+   * verifier. Each `verifier` was minted by this gatekeeper's vendor (see
    * `GatekeeperUserVerifier`) and is meant for this call only. A call carries at most 10,000
    * subresource IDs, never none; the Workshop splits larger checks.
    *
@@ -1124,6 +1074,34 @@ export interface Gatekeeper<Session> extends DurableObject {
     observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
     subresources: string[],
   ): Promise<{allowedObserverIds: string[]}>;
+
+  /**
+   * Exports a complete, deduplicated list of data subresource IDs actually observed through this
+   * connection under legacy observation tracking and not already reported to the Workshop as
+   * subresources. The Workshop imports this history once per connection.
+   *
+   * Only pre-migration connections in pre-existing workspaces may have a non-empty export.
+   * Return `[]` if there were no such legacy observations. Connections created after migration,
+   * including new connections in existing workspaces, must always return `[]`: their reads report
+   * subresources directly to the Workshop and never add to the historical export.
+   *
+   * Do not include binding-wide admission requirements merely because a connection exists. A
+   * bound resource belongs in the export only if its data was actually observed through the
+   * connection. `verifyObserverAccess()` must accept every exported ID and check access to the
+   * data it represents.
+   *
+   * Each ID follows `ObservationDescription.subresources`' stability, secrecy, Unicode and
+   * per-ID length rules. The export has no per-observation count or total-length limit; the
+   * Workshop will split larger imports into bounded records and verification calls. Never
+   * truncate history or add unobserved resources to make the export fit.
+   *
+   * The Workshop imports it when the workspace first wakes after this export was introduced, and
+   * again until the import commits; admission against the connection waits for it. This is a
+   * read-only, repeatable export: do not clear the legacy history it reads, and keep that history
+   * for as long as this method exists. Throw if a complete export cannot be produced, rather than
+   * returning an incomplete list.
+   */
+  getHistoricalSubresources(): Promise<string[]>;
 
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
@@ -1487,9 +1465,9 @@ export type ObservationDescription = {
   /**
    * If true, then this observation contains sensitive information that must only be shown to
    * people who are verified to have access to the same data. This means:
-   * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
-   *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
-   *   once it has made one of these observations.
+   * - Every collaborator who can see what made it must pass this gatekeeper's
+   *   `verifyObserverAccess()` for its `subresources`, so a gatekeeper that admits nobody to them
+   *   makes the gadget effectively unshareable once it has made one of these observations.
    * - Once observed, the gadget enters a restricted mode: web fetches reach only the hosts the
    *   deployment admin trusts with such data (none by default), and every action
    *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
@@ -1510,8 +1488,8 @@ export type ObservationDescription = {
    * owner added directly keep access: share links stop granting anything (none can be created,
    * copied, or redeemed), and people who joined through a link or through another collaborator
    * lose access, restarting the gadget if any are present. After that, only the owner can add
-   * collaborators, one at a time. Those who remain are still subject to `addObserver()`
-   * verification on every open.
+   * collaborators, one at a time. Those who remain are still subject to observer verification on
+   * every open.
    *
    * Typically paired with `containsRestrictedData`, for data sources whose own sharing model
    * requires each recipient to be granted access individually.
@@ -1519,51 +1497,28 @@ export type ObservationDescription = {
   ownerInvitesOnly?: boolean;
 
   /**
-   * If present, then this observation includes data that must not be revealed to the given
-   * observer IDs, who were previously added via `Gatekeeper.addObserver()`.
-   *
-   * If the call to authorizeObservation() succeeds, then the overseer is promising to ensure that
-   * these users will not see this observation. How it does this is up to the overseer, but in
-   * practice it may be one of:
-   * - The user had already been removed.
-   * - The overseer revoked the user's access synchronously (however, in practice, we don't do
-   *   this, because it would be weird UX).
-   * - The observation occurred in a specific agent thread, and the overseer can prevent the
-   *   observer from viewing that thread.
-   *
-   * If authorizeObservation() throws, then the gatekeeper should allow the exception to propagate
-   * out to the caller, blocking the observation from taking place at all. The overseer will
-   * throw in cases where it would not otherwise be able to prevent the given observer from seeing
-   * the observation.
-   */
-  excludeObservers?: string[];
-
-  /**
    * The IDs of everything this disclosure depends on that might restrict who may see it, which the
    * Workshop checks collaborators against through this gatekeeper's
-   * `Gatekeeper.verifyObserverAccess()`, so a gatekeeper reporting them must implement it. Before
+   * `Gatekeeper.verifyObserverAccess()`, so a gatekeeper reporting any must implement it. Before
    * authorizing the read, the Workshop checks every collaborator who can see the chat or gadget
    * that made it, refusing the read if any is denied; it then records the IDs and checks them again
-   * at each collaborator's admission, alongside `Gatekeeper.addObserver()`.
+   * at each collaborator's admission.
    *
    * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
    * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)
    * with a JavaScript `length` of 1–2048 (UTF-16 code units), and a single observation may report
    * at most 10,000 IDs totalling at most 500,000 code units, before deduplication; report a
    * coarser ID (a containing folder or list, say) for a read that reveals more. `[]` means
-   * nothing restricts it. A binding-wide requirement every read relies on (such as tenant
-   * membership) belongs in `Gatekeeper.addObserver()`, which runs at every admission.
+   * nothing restricts it. Nothing else restricts who may see a read: when access to the bound
+   * resource itself governs the data (its ACL, or tenant membership), report that resource's ID.
    *
    * The Workshop records these IDs on the chat or gadget whose trusted binding authorizer
    * approved the read (a hook firing's on the gadget the hook wakes, or the workspace for a user
    * session with no known chat).
    * Attribution stays with the original authorizer, including child sessions that reuse it;
    * passing capabilities or data between contexts does not transfer requirements.
-   *
-   * Absent, the Workshop checks nothing for this read: the gatekeeper's own `addObserver()` and
-   * `excludeObservers` must cover it, as they did before this field existed.
    */
-  subresources?: string[];
+  subresources: string[];
 }
 
 /** The language a `text` action field is written in, named so the approver knows how it is read. */

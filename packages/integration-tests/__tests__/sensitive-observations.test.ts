@@ -1,20 +1,22 @@
 // Tests for the sensitive-data (`containsRestrictedData`) observation policy.
 //
-// Coverage is enforced at admission, not at the read: every collaborator passes the producing
-// gatekeeper's `addObserver` at their most recent open and cannot open without passing it, and
-// anything that widens what they must pass restarts the workspace so every live session re-opens
-// against the new scope. So sensitive observations are not blocked by an unverified collaborator,
-// and sharing stays available. The observation also sets `containsRestrictedData`, putting the
-// workspace into a restricted mode: once it is set, every action pends for manual approval and is
-// never auto-approved, a git push is refused, and the workspace may fetch only from admin-trusted
-// hosts (covered by workshop-restricted-web-fetch.test.ts). An observation that also carries
-// `ownerInvitesOnly` sets that flag too: from then on only direct grants from the owner count, so
-// share links stop admitting anyone and people who joined through one lose access.
+// Coverage is enforced at admission: every collaborator passes the producing connection's check of
+// what its reads recorded (`verifyObserverAccess`) at their most recent open and cannot open without
+// passing it, and anything that widens what they must pass restarts the workspace so every live
+// session re-opens against the new scope. So sensitive observations are not blocked by an
+// unverified collaborator, and sharing stays available. The observation also sets
+// `containsRestrictedData`, putting the workspace into a restricted mode: once it is set, every
+// action pends for manual approval and is never auto-approved, a git push is refused, and the
+// workspace may fetch only from admin-trusted hosts (covered by
+// workshop-restricted-web-fetch.test.ts). An observation that also carries `ownerInvitesOnly` sets
+// that flag too: from then on only direct grants from the owner count, so share links stop
+// admitting anyone and people who joined through one lose access.
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
-// `readValue(true)` records a `containsRestrictedData` observation, `writeValue()` submits an
-// action (held for the owner's approval, so a test that wants it to go through approves it via
-// the overseer).
+// `readValue(true)` records a `containsRestrictedData` observation that depends on nothing, and
+// `readThing(true)` one that depends on the bound thing, so collaborators are checked against it;
+// `writeValue()` submits an action (held for the owner's approval, so a test that wants it to go
+// through approves it via the overseer).
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcPromise, RpcStub } from "capnweb";
@@ -71,8 +73,9 @@ async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<Connect
 }
 
 /**
- * Tell the fixture gatekeeper whether to admit `label` as an observer -- everywhere, or (with
- * `resourceUrl`) at one bound resource only, which wins over the account-wide outcome.
+ * Make the fixture gatekeeper's access check for `label` fail with `reason` (or pass again) --
+ * everywhere, or (with `resourceUrl`) at one bound resource only, which wins over the account-wide
+ * outcome.
  */
 function setVerifyOutcome(
     label: string, outcome: { allow: true } | { allow: false; reason: string },
@@ -393,17 +396,17 @@ describe("sensitive observations", () => {
       // Bob has access but has never opened, so he holds no observer record for this gatekeeper
       // -- and no session either, because verification is a precondition of getting one. There is
       // nothing for the read to fail closed against.
-      await expect(ws.session.readValue(true)).resolves.toBe(42);
+      await expect(ws.session.readThing(true)).resolves.toBe(42);
 
-      // Admission is where the coverage requirement bites: the gatekeeper refuses him, so his
-      // open is denied and he never reaches the workspace, let alone the observation.
+      // Admission is where the coverage requirement bites: the gatekeeper refuses him for what
+      // was read, so his open is denied and he never reaches the workspace.
       await setVerifyOutcome(bob.bobLabel, { allow: false, reason: "You do not have access." });
       await expect(bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))
           .rejects.toThrow(/could not confirm/i);
 
       // His refusal costs the owner nothing: only his open is denied, so nothing was severed and
       // reads keep flowing.
-      await expect(ws.session.readValue(true)).resolves.toBe(42);
+      await expect(ws.session.readThing(true)).resolves.toBe(42);
     });
   });
 
@@ -484,14 +487,14 @@ describe("sensitive observations", () => {
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "refused");
-      await expect(ws.session.readValue(true)).resolves.toBe(42);
+      await expect(ws.session.readThing(true)).resolves.toBe(42);
 
       const bob = await addBob(publicApi, ws);
       const reason = "You do not have access to this thing.";
       await setVerifyOutcome(bob.bobLabel, { allow: false, reason });
 
-      // This is the strategy-A shape: enforcement lives in the gatekeeper's addObserver(), so
-      // the user sees the gatekeeper's own message.
+      // The gatekeeper's access check throws its own reason for what was read, so the user sees
+      // the gatekeeper's own message.
       const error = await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount).then(
         overseer => { overseer[Symbol.dispose](); return null; },
         (err: unknown) => err as Error);
@@ -515,8 +518,8 @@ describe("sensitive observations", () => {
       // Bob verifies against both producers.
       const bob = await addBob(publicApi, ws);
       (await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))[Symbol.dispose]();
-      await expect(ws.session.readValue(true)).resolves.toBe(42);
-      await expect(secondSession.readValue(true)).resolves.toBe(42);
+      await expect(ws.session.readThing(true)).resolves.toBe(42);
+      await expect(secondSession.readThing(true)).resolves.toBe(42);
 
       // Bob's access to the first producer's resource is revoked; his next open is denied...
       await setVerifyOutcome(
@@ -524,11 +527,12 @@ describe("sensitive observations", () => {
       await expect(bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))
           .rejects.toThrow(/could not confirm/i);
 
-      // ...and only that open. Nothing is severed and the owner's reads keep flowing through both
-      // producers: Bob cannot be admitted again without re-verifying, which is the whole of the
-      // enforcement (the lazy-revocation residual documented in docs/observers.md).
+      // ...and only that open. Nothing is severed and the owner's reads keep flowing: through the
+      // second producer, which still admits him, and through the first where a read depends on
+      // nothing he lost. Bob cannot be admitted again without re-verifying, which is the whole of
+      // the enforcement (the lazy-revocation residual documented in docs/observers.md).
       await expect(ws.session.readValue(true)).resolves.toBe(42);
-      await expect(secondSession.readValue(true)).resolves.toBe(42);
+      await expect(secondSession.readThing(true)).resolves.toBe(42);
 
       // A returning observer's coverage survives the failure, so once repaired his re-open
       // re-verifies both producers from his persisted choices without prompting (the recorder has
@@ -544,7 +548,7 @@ describe("sensitive observations", () => {
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "refused-link");
-      await expect(ws.session.readValue(true)).resolves.toBe(42);
+      await expect(ws.session.readThing(true)).resolves.toBe(42);
 
       const { key } = await ws.overseer.createShareLink("workspace", "refused recipient");
 
@@ -572,7 +576,7 @@ describe("sensitive observations", () => {
       // severed either, since only his own open was denied.
       const collaborators = await ws.overseer.listCollaborators();
       expect(collaborators).toHaveLength(1);
-      await expect(ws.session.readValue(true)).resolves.toBe(42);
+      await expect(ws.session.readThing(true)).resolves.toBe(42);
     });
   });
 
@@ -622,8 +626,8 @@ describe("sensitive observations", () => {
         await expect(reopened.session.readValue(true)).resolves.toBe(42);
 
         // Removal also tore down his observer record, so re-adding him must not silently restore
-        // his coverage: his next open has to name an account for the producer and pass
-        // addObserver again.
+        // his coverage: his next open has to name an account for the producer and be verified
+        // again.
         await reopened.overseer.addCollaborator(bob.bob, "workspace");
         const recorder = new ObserverConfigRecorder()
             .alwaysChoose(bob.bobAccount.id, MAX_OBSERVER_PROMPTS);

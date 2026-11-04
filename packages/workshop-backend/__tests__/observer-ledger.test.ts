@@ -1,11 +1,11 @@
-// Kernel-owned observer requirements (observer-ledger.ts), decided per observation. A read that
-// reports ObservationDescription.subresources is checked against every collaborator who can see
+// Kernel-owned observer requirements (observer-ledger.ts), decided per observation. Every read
+// reports ObservationDescription.subresources, checked against every collaborator who can see
 // its context, through the connection's own verifyObserverAccess() handed each observer's
-// verifier -- failing closed on every malformed or failed answer -- and is then recorded as a
-// requirement. A read omitting them is checked by nothing here: the gatekeeper's addObserver()
-// and excludeObservers cover it, as they always have. Admission is additive: every in-scope
-// connection's addObserver(), plus its verifyObserverAccess() for the requirements recorded
-// through it that the collaborator's role reaches.
+// verifier -- failing closed on every malformed or failed answer -- and then recorded as a
+// requirement (`[]` checks and records nothing). Admission checks, through each in-scope
+// connection's verifyObserverAccess(), the requirements recorded through it that the
+// collaborator's role reaches, including a pre-existing connection's imported legacy history
+// (getHistoricalSubresources()), which admission waits for.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding, like
 // observer-verification-failure.test.ts); gatekeeper facets, User DOs, verifiers, and the sharing
@@ -186,6 +186,19 @@ function seedConnection(impl: ObserverImpl, id = CONN): void {
   });
 }
 
+// A connection that predates kernel observer tracking, its legacy history not yet imported.
+function seedLegacyConnection(impl: ObserverImpl, id = CONN): void {
+  seedConnection(impl, id);
+  impl.storage.gatekeepers.put({ ...impl.storage.gatekeepers.get(id)!, observerHistoryPending: true });
+}
+
+// The observation records that imported connections' legacy history.
+function importedRecords(impl: ObserverImpl) {
+  return Array.from(impl.storage.actions.list()).flatMap(record =>
+      record.type === "observation" && record.description.title === "Imported earlier reads"
+          ? [record] : []);
+}
+
 // `bindings` maps binding names to connection ids; a bound connection is in "use" scope.
 function seedGadget(impl: ObserverImpl, id = GADGET, bindings: Record<string, number> = {}): void {
   impl.storage.gadgets.put({
@@ -229,7 +242,7 @@ function requirements(impl: ObserverImpl, reach: "build" | number[]): Map<number
 
 // One observer-protocol call a fake facet received.
 type FacetCall = {
-  method: "addObserver" | "removeObserver" | "verifyObserverAccess",
+  method: "verifyObserverAccess" | "getHistoricalSubresources",
   gatekeeperId: number,
   observerIds: string[],
 };
@@ -239,13 +252,13 @@ function callsTo(calls: FacetCall[], method: FacetCall["method"]): number[] {
   return calls.filter(call => call.method === method).map(call => call.gatekeeperId);
 }
 
-// Every connection's facet: addObserver() accepts unless `addObserver` throws, removeObserver()
-// accepts, and verifyObserverAccess() asks each observer's verifier unless `verify` replaces it
-// (null removes it). Every call is logged to `calls`.
+// Every connection's facet: verifyObserverAccess() asks each observer's verifier unless `verify`
+// replaces it (null removes it), and getHistoricalSubresources() exports what `history` returns
+// (nothing by default). Every call is logged to `calls`.
 function fakeFacets(impl: any, opts: {
   calls?: FacetCall[],
-  addObserver?: (gatekeeperId: number) => void | Promise<void>,
   verify?: VerifyObserverAccess | null,
+  history?: (gatekeeperId: number) => unknown,
 } = {}): void {
   impl.getGatekeeperFacet = async (id: number) => ({
     ...(opts.verify === null ? {} : {
@@ -257,12 +270,9 @@ function fakeFacets(impl: any, opts: {
         return await (opts.verify ?? verifyEachObserver)(observers, ids);
       },
     }),
-    addObserver: async (observerId: string) => {
-      opts.calls?.push({ method: "addObserver", gatekeeperId: id, observerIds: [observerId] });
-      await opts.addObserver?.(id);
-    },
-    removeObserver: async (observerId: string) => {
-      opts.calls?.push({ method: "removeObserver", gatekeeperId: id, observerIds: [observerId] });
+    getHistoricalSubresources: async () => {
+      opts.calls?.push({ method: "getHistoricalSubresources", gatekeeperId: id, observerIds: [] });
+      return await (opts.history?.(id) ?? []);
     },
   });
 }
@@ -302,11 +312,11 @@ const configureAll = {
       needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 })),
 } as any;
 
+// A read reporting `subresources` (none by default).
 function observation(extra: Partial<ObservationDescription> = {}): ObservationDescription {
-  return { title: "Read", description: "A read", ...extra };
+  return { title: "Read", description: "A read", subresources: [], ...extra };
 }
 
-// An observation reporting `subresources`.
 function withSubresources(subresources: string[],
                           extra: Partial<ObservationDescription> = {}): ObservationDescription {
   return observation({ ...extra, subresources });
@@ -538,37 +548,6 @@ describe("hook observations", () => {
 });
 
 describe("observations with and without subresources", () => {
-  it("checks nothing and records no requirement for a read omitting them, still enforcing " +
-      "excludeObservers", () => withWorld(async world => {
-    let { impl } = world;
-    seedConnection(impl);
-    addRows(impl, WORKSPACE, CONN, ["a"]);
-    let calls: FacetCall[] = [];
-    fakeFacets(impl, { calls });
-    world.roles.set("carol", "build");
-    impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
-    // Carol could read none of it: only a read that reports subresources asks.
-    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
-    let before = impl.storage.nextActionId.get();
-
-    await impl.authorizeObservation(CONN, observation(), { from: "user" });
-    expect(calls).toEqual([]);
-    expect(world.checks).toEqual([]);
-    expect(impl.storage.actions.get(before)).toMatchObject({
-      gatekeeperId: CONN, type: "observation", state: "approved",
-    });
-    expect(impl.storage.actions.get(before).description.subresources).toBeUndefined();
-    expect(requirements(impl, "build").get(CONN)).toEqual(["a"]);
-    expect(rows(impl, WORKSPACE)).toEqual(["2:a"]);
-
-    // The gatekeeper's own exclusion still blocks it.
-    await expect(impl.authorizeObservation(CONN,
-        observation({ excludeObservers: ["obs-c"] }), { from: "user" }))
-        .rejects.toThrow(/not permitted to see/);
-    expect(impl.storage.nextActionId.get()).toBe(before + 1);
-  }));
-
   it("records only the reads of a connection that report subresources as requirements", () =>
       withWorld(async world => {
     let { impl } = world;
@@ -589,38 +568,6 @@ describe("observations with and without subresources", () => {
     expect(world.checks.map(check => ({ ...check, ids: check.ids.toSorted() }))).toEqual([
       { profileId: "carol", ids: ["also-reported", "reported"] },
     ]);
-  }));
-
-  it("enforces excludeObservers and subresources together on one read", () =>
-      withWorld(async world => {
-    let { impl } = world;
-    seedConnection(impl);
-    world.roles.set("carol", "build");
-    impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
-    let before = impl.storage.nextActionId.get();
-
-    // Carol can read it, but the gatekeeper names her and she still has access.
-    await expect(impl.authorizeObservation(CONN,
-        withSubresources(["x"], { excludeObservers: ["obs-c"] }), { from: "user" }))
-        .rejects.toThrow(/not permitted to see/);
-    expect(impl.storage.nextActionId.get()).toBe(before);
-
-    // Nobody named can reach it, but Carol is denied the reported subresource.
-    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
-    await expect(impl.authorizeObservation(CONN,
-        withSubresources(["x"], { excludeObservers: ["obs-unknown"] }), { from: "user" }))
-        .rejects.toThrow(/could not be confirmed/);
-    expect(impl.storage.nextActionId.get()).toBe(before);
-    expect(rows(impl, WORKSPACE)).toEqual([]);
-
-    // Both satisfied: authorized and recorded.
-    world.verifiers.delete("carol");
-    await impl.authorizeObservation(CONN,
-        withSubresources(["x"], { excludeObservers: ["obs-unknown"] }), { from: "user" });
-    expect(rows(impl, WORKSPACE)).toEqual(["2:x"]);
-    expect(impl.storage.actions.get(before).description)
-        .toMatchObject({ subresources: ["x"], excludeObservers: ["obs-unknown"] });
   }));
 
   it("audits an explicit [] without checking anyone or adding a requirement", () =>
@@ -689,7 +636,6 @@ describe("observations reporting subresources", () => {
         .rejects.toThrow(/could not be confirmed/);
     expect(rows(impl, WORKSPACE)).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);
-    expect(callsTo(calls, "addObserver")).toEqual([]);
   }));
 
   it("check configured observers who are offline, but not ones who lost access", () =>
@@ -901,7 +847,7 @@ describe("admission against recorded requirements", () => {
 
     await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, configureAll);
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["a"] }]);
-    expect(callsTo(calls, "addObserver").toSorted()).toEqual([unrecorded, CONN]);
+    expect(callsTo(calls, "verifyObserverAccess")).toEqual([CONN]);
     let admitted = impl.storage.observers.get("carol");
     expect(admitted.accountChoices).toEqual({ [unrecorded]: 10, [CONN]: 20 });
 
@@ -910,12 +856,11 @@ describe("admission against recorded requirements", () => {
     await expect(impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET + 1 },
         configureAll)).rejects.toThrow(/could not confirm/);
     expect(world.checks.at(-1)).toEqual({ profileId: "carol", ids: ["b"] });
-    expect(callsTo(calls, "addObserver")).toContain(CONN);
+    expect(callsTo(calls, "verifyObserverAccess")).toContain(CONN);
     expect(calls.every(call => call.gatekeeperId === CONN)).toBe(true);
 
-    // ...without touching what admitted A: her record and registrations stand, and A opens again.
+    // ...without touching what admitted A: her record stands, and A opens again.
     expect(impl.storage.observers.get("carol")).toEqual(admitted);
-    expect(callsTo(calls, "removeObserver")).toEqual([]);
     await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, configureAll);
     expect(world.checks.at(-1)).toEqual({ profileId: "carol", ids: ["a"] });
   }));
@@ -969,6 +914,30 @@ describe("admission against recorded requirements", () => {
 
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["driven"] }]);
     expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+  }));
+
+  it("verifies a gadget open against the connection its bound agent spawner names", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    impl.storage.gatekeepers.put({
+      id: 7, resourceTitle: "Spawner", class: fakeGatekeeperClass,
+      creationSpec: { type: "agentSpawner", config: { displayName: "S", modelId: null } },
+      bindings: { DB: { target: CONN } },
+    });
+    seedGadget(impl, GADGET, { SPAWN: 7 });
+    addRows(impl, WORKSPACE, CONN, ["env-read"]);
+    fakeFacets(impl);
+    world.roles.set("carol", "use");
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+
+    // No gadget binds the connection, but an agent spawned through the gadget reads it and
+    // returns its data into state Carol can open. The spawner itself needs no account.
+    expect(impl.listObserverRequirements({ gadgetId: GADGET })
+        .map((need: { gatekeeperId: number }) => need.gatekeeperId)).toEqual([CONN]);
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET },
+        configureAll)).rejects.toThrow(/could not confirm/);
+    expect(world.checks).toContainEqual({ profileId: "carol", ids: ["env-read"] });
   }));
 
   it("re-verifies against a scope that shrank mid-admission rather than keep a stale denial", () =>
@@ -1027,31 +996,8 @@ describe("admission against recorded requirements", () => {
         check.ids.length === 1 && check.ids[0] === "remembered")).toBe(true);
   }));
 
-  it("lets a historical producer's new read through, dropping only that registration", () =>
-      withWorld(async world => {
-    let { impl } = world;
-    seedConnection(impl);
-    seedGadget(impl);
-    addRows(impl, gadget(GADGET), CONN, ["remembered"]);
-    world.roles.set("carol", "use");
-    let calls: FacetCall[] = [];
-    fakeFacets(impl, { calls });
-    await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, configureAll);
-    let record = impl.storage.observers.get("carol");
-
-    // History requires admission, but no binding, hook, or spawner delivers this new read to her.
-    let actionId = impl.storage.nextActionId.get();
-    await impl.authorizeObservation(CONN,
-        observation({ excludeObservers: [record.observerId] }), { from: "user" });
-    expect(impl.storage.actions.get(actionId)).toMatchObject({
-      gatekeeperId: CONN, type: "observation", state: "approved",
-    });
-    expect(callsTo(calls, "removeObserver")).toEqual([CONN]);
-    expect(impl.storage.observers.get("carol")).toEqual(record);
-  }));
-
   // Admission shares the observation path's answer validation (see refusingAnswers); a
-  // verifyObserverAccess() denial is covered under "additive admission" below.
+  // verifyObserverAccess() denial is covered under "admission through connections" below.
   it("fails closed when the chosen account's verifier can't be looked up", () =>
       withWorld(async world => {
     let { impl } = world;
@@ -1067,7 +1013,6 @@ describe("admission against recorded requirements", () => {
     let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
     await expect(admission).rejects.toThrow(/could not confirm/);
     await expect(admission).rejects.toThrow(/Invalid account selection/);
-    expect(callsTo(calls, "addObserver")).toEqual([]);
     expect(callsTo(calls, "verifyObserverAccess")).toEqual([]);
   }));
 
@@ -1311,26 +1256,8 @@ describe("admission against recorded requirements", () => {
   }));
 });
 
-describe("additive admission", () => {
-  it("denies an addObserver refusal with no recorded requirements, never asking " +
-      "verifyObserverAccess", () => withWorld(async world => {
-    let { impl } = world;
-    seedConnection(impl);
-    let calls: FacetCall[] = [];
-    fakeFacets(impl, {
-      calls,
-      addObserver: () => { throw new Error("This account can't read the sheet."); },
-    });
-    world.roles.set("carol", "build");
-
-    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
-        .rejects.toThrow(/Connection 2 .*can't read the sheet/);
-    expect(callsTo(calls, "addObserver")).toContain(CONN);
-    expect(callsTo(calls, "verifyObserverAccess")).toEqual([]);
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
-  }));
-
-  it("denies a recorded requirement the account can't read even though addObserver accepted",
+describe("admission through connections", () => {
+  it("denies a recorded requirement the account can't read, keeping a returning observer's record",
       () => withWorld(async world => {
     let { impl } = world;
     seedConnection(impl);
@@ -1345,37 +1272,11 @@ describe("additive admission", () => {
     let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
     await expect(admission).rejects.toThrow(/could not confirm/);
     await expect(admission).rejects.toThrow(/can't access some of the data/);
-    expect(callsTo(calls, "addObserver")).toEqual([CONN]);
+    expect(callsTo(calls, "verifyObserverAccess")).toEqual([CONN]);
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["a"] }]);
-    // A returning observer keeps her registrations and her record.
-    expect(callsTo(calls, "removeObserver")).toEqual([]);
+    // A returning observer keeps her record.
     expect(impl.storage.observers.get("carol"))
         .toEqual({ profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
-  }));
-
-  it("removes a first-time observer's registrations when the requirement check refuses her", () =>
-      withWorld(async world => {
-    let { impl } = world;
-    let unrecorded = CONN - 1;
-    seedConnection(impl, unrecorded);
-    seedConnection(impl);
-    addRows(impl, WORKSPACE, CONN, ["a"]);
-    let calls: FacetCall[] = [];
-    fakeFacets(impl, { calls });
-    world.roles.set("carol", "build");
-    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
-
-    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
-        .rejects.toThrow(/can't access some of the data/);
-    // Both connections' addObserver() accepted her, but every registration this call made is
-    // removed under the observer ID it registered, and nothing persists.
-    expect(impl.storage.observers.get("carol")).toBeUndefined();
-    let added = calls.filter(call => call.method === "addObserver");
-    let removed = calls.filter(call => call.method === "removeObserver");
-    expect([...new Set(callsTo(calls, "addObserver"))].toSorted()).toEqual([unrecorded, CONN]);
-    expect(callsTo(calls, "removeObserver").toSorted()).toEqual([unrecorded, CONN]);
-    expect(new Set(removed.flatMap(call => call.observerIds)))
-        .toEqual(new Set(added.flatMap(call => call.observerIds)));
   }));
 
   it("asks verifyObserverAccess only of connections with recorded requirements", () =>
@@ -1385,7 +1286,7 @@ describe("additive admission", () => {
     seedConnection(impl, unrecorded);
     seedConnection(impl);
     addRows(impl, WORKSPACE, CONN, ["a"]);
-    // A read omitting subresources records nothing to check either.
+    // A read reporting no subresources records nothing to check.
     await impl.authorizeObservation(unrecorded, observation(), { from: "user" });
     let calls: FacetCall[] = [];
     fakeFacets(impl, { calls });
@@ -1393,19 +1294,175 @@ describe("additive admission", () => {
 
     await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
 
-    // Every connection registered her; only the one with requirements checked them.
-    expect(callsTo(calls, "addObserver").toSorted()).toEqual([unrecorded, CONN]);
+    // Both connections needed an account; only the one with requirements checked them.
     expect(callsTo(calls, "verifyObserverAccess")).toEqual([CONN]);
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["a"] }]);
     let record = impl.storage.observers.get("carol");
     expect(record.accountChoices).toEqual({ [unrecorded]: 10, [CONN]: 20 });
-    // Both gates ran for the identity that was then persisted.
+    // The check ran for the identity that was then persisted.
     expect(new Set(calls.flatMap(call => call.observerIds))).toEqual(new Set([record.observerId]));
+  }));
+});
 
-    // The gatekeeper still names observers to exclude, and is still blocked by them.
-    await expect(impl.authorizeObservation(unrecorded,
-        observation({ excludeObservers: [record.observerId] }), { from: "user" }))
-        .rejects.toThrow(/not permitted to see/);
+describe("legacy history import", () => {
+  it("waits for a pre-existing connection's history and checks it at every admission reaching it",
+      () => withWorld(async world => {
+    let { impl } = world;
+    seedLegacyConnection(impl);
+    seedGadget(impl, GADGET, { C: CONN });
+    let calls: FacetCall[] = [];
+    let exported = Promise.withResolvers<string[]>();
+    fakeFacets(impl, { calls, history: () => exported.promise });
+    world.roles.set("carol", "use");
+    world.roles.set("dave", "use");
+    world.verifiers.set("carol", observerVerifier(() => world, "carol",
+        ids => ids.filter(id => id === "old/b")));
+
+    let carol = impl.ensureObserver("carol", world.clientUser("carol"), grantOf("use"), configureAll);
+    await vi.waitFor(() => expect(callsTo(calls, "getHistoricalSubresources")).toEqual([CONN]));
+    // Nobody is verified against part of the history.
+    expect(world.checks).toEqual([]);
+    exported.resolve(["old/a", "old/b", "old/a"]);
+
+    await expect(carol).rejects.toThrow(/could not confirm/);
+    expect(world.checks.map(check => check.ids.toSorted())).toContainEqual(["old/a", "old/b"]);
+    expect(impl.storage.observers.get("carol")).toBeUndefined();
+    // Imported once, deduplicated, on the workspace context every grant reaches.
+    expect(importedRecords(impl)).toMatchObject(
+        [{ gatekeeperId: CONN, caller: { from: "user" }, state: "approved" }]);
+    expect(rows(impl, WORKSPACE)).toEqual(["2:old/a", "2:old/b"]);
+    expect(impl.storage.gatekeepers.get(CONN).observerHistoryPending).toBeUndefined();
+
+    await impl.ensureObserver("dave", world.clientUser("dave"), grantOf("use"), configureAll);
+    expect(world.checks.filter(check => check.profileId === "dave")
+        .map(check => check.ids.toSorted())).toEqual([["old/a", "old/b"]]);
+    expect(impl.storage.observers.get("dave").accountChoices).toEqual({ [CONN]: 20 });
+    expect(callsTo(calls, "getHistoricalSubresources")).toEqual([CONN]);
+  }));
+
+  it.each<[string, () => unknown]>([
+    ["a failed export", () => { throw new Error("legacy store unavailable"); }],
+    ["a non-array", () => ({ ids: ["a"] })],
+    ["a non-string ID", () => ["a", 7]],
+    ["a sparse hole", () => sparseIds(["a"])],
+    ["an empty ID", () => ["a", ""]],
+    ["an ID over 2048 code units", () => ["a", "x".repeat(2049)]],
+  ])("denies the open on %s, committing nothing, and retries at the next admission",
+      (_name, broken) => withWorld(async world => {
+    let { impl } = world;
+    seedLegacyConnection(impl);
+    let history = broken;
+    fakeFacets(impl, { history: () => history() });
+    world.roles.set("carol", "build");
+    let before = impl.storage.nextActionId.get();
+
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
+        .rejects.toThrow(/couldn't load what it read earlier through Connection 2/);
+    expect(impl.storage.nextActionId.get()).toBe(before);
+    expect(impl.storage.gatekeepers.get(CONN).observerHistoryPending).toBe(true);
+    expect(impl.storage.observers.get("carol")).toBeUndefined();
+    expect(world.checks).toEqual([]);
+
+    history = () => ["a"];
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["a"] }]);
+    expect(impl.storage.gatekeepers.get(CONN).observerHistoryPending).toBeUndefined();
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+  }));
+
+  it("shares one export among concurrent admissions", () => withWorld(async world => {
+    let { impl } = world;
+    seedLegacyConnection(impl);
+    let calls: FacetCall[] = [];
+    let exported = Promise.withResolvers<string[]>();
+    fakeFacets(impl, { calls, history: () => exported.promise });
+    world.roles.set("carol", "build");
+    world.roles.set("dave", "build");
+
+    let admissions = ["carol", "dave"].map(profileId =>
+        impl.ensureObserver(profileId, world.clientUser(profileId), "workspace", configureAll));
+    await vi.waitFor(() => expect(callsTo(calls, "getHistoricalSubresources")).toEqual([CONN]));
+    exported.resolve(["old"]);
+    await Promise.all(admissions);
+
+    expect(callsTo(calls, "getHistoricalSubresources")).toEqual([CONN]);
+    expect(importedRecords(impl)).toHaveLength(1);
+    expect(world.checks.toSorted((a, b) => a.profileId.localeCompare(b.profileId))).toEqual([
+      { profileId: "carol", ids: ["old"] },
+      { profileId: "dave", ids: ["old"] },
+    ]);
+  }));
+
+  it.each([
+    ["more IDs", Array.from({ length: 10_001 }, (_, i) => `id-${i}`)],
+    ["longer IDs in total", Array.from({ length: 1_001 }, (_, i) => String(i).padStart(500, "x"))],
+  ])("splits an export with %s than one observation may report, enforcing every ID",
+      (_name, ids) => withWorld(async world => {
+    let { impl } = world;
+    seedLegacyConnection(impl);
+    fakeFacets(impl, { history: () => ids });
+    world.roles.set("carol", "build");
+    let last = ids.at(-1);
+    world.verifiers.set("carol", observerVerifier(() => world, "carol",
+        batch => batch.filter(id => id === last)));
+
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
+        .rejects.toThrow(/could not confirm/);
+    let records = importedRecords(impl);
+    expect(records.length).toBeGreaterThan(1);
+    for (let record of records) {
+      let chunk = record.description.subresources ?? [];
+      expect(chunk.length).toBeLessThanOrEqual(10_000);
+      expect(chunk.reduce((total, id) => total + id.length, 0)).toBeLessThanOrEqual(500_000);
+    }
+    expect(records.flatMap(record => record.description.subresources ?? []).toSorted())
+        .toEqual(ids.toSorted());
+    expect(requirements(impl, "build").get(CONN)?.toSorted()).toEqual(ids.toSorted());
+
+    world.verifiers.delete("carol");
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+  }));
+
+  it("clears the flag on an empty export, and never asks a connection created since", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    let newer = CONN + 1;
+    seedLegacyConnection(impl);
+    seedConnection(impl, newer);
+    let calls: FacetCall[] = [];
+    fakeFacets(impl, { calls });
+    world.roles.set("carol", "build");
+    let before = impl.storage.nextActionId.get();
+
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+
+    expect(callsTo(calls, "getHistoricalSubresources")).toEqual([CONN]);
+    expect(impl.storage.gatekeepers.get(CONN).observerHistoryPending).toBeUndefined();
+    expect(impl.storage.nextActionId.get()).toBe(before);
+    expect(world.checks).toEqual([]);
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20, [newer]: 30 });
+  }));
+
+  it("writes nothing for a connection removed while its export is in flight", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedLegacyConnection(impl);
+    let calls: FacetCall[] = [];
+    let exported = Promise.withResolvers<string[]>();
+    fakeFacets(impl, { calls, history: () => exported.promise });
+    world.roles.set("carol", "build");
+
+    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+    await vi.waitFor(() => expect(callsTo(calls, "getHistoricalSubresources")).toEqual([CONN]));
+    impl.removeGatekeeper(CONN);
+    exported.resolve(["old"]);
+    await admission;
+
+    expect(importedRecords(impl)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
+    expect(world.checks).toEqual([]);
   }));
 });
 
@@ -1421,8 +1478,6 @@ describe("pending creation", () => {
         title: real ? "Real" : "Simulated", snippet: "", suggestedBindingName: "N", tsType: "N",
       }),
       verifyObserverAccess: verifyEachObserver,
-      addObserver: async () => {},
-      removeObserver: async () => {},
       applyCreation: async () => {
         real = true;
         return { class: {}, resourceUrl: "https://example.com/real" };
@@ -1638,9 +1693,10 @@ describe("direct context authorization", () => {
         .rejects.toThrow(/has ended/);
     expect(rows(impl, chat(1))).toEqual(["2:read"]);
     expect(impl.storage.nextActionId.get()).toBe(before);
-    // The fence covers only reads reporting subresources; one omitting them is unaffected.
-    await impl.authorizeObservation(CONN, observation(), { from: "agent", chatId: 1 }, "e1");
-    expect(impl.storage.nextActionId.get()).toBe(before + 1);
+    // The fence covers a read reporting no subresources too.
+    await expect(impl.authorizeObservation(CONN, observation(), { from: "agent", chatId: 1 }, "e1"))
+        .rejects.toThrow(/has ended/);
+    expect(impl.storage.nextActionId.get()).toBe(before);
     expect(rows(impl, chat(1))).toEqual(["2:read"]);
   }));
 

@@ -1244,13 +1244,10 @@ export class LanguageModelGatekeeper
     throw new Error("This gatekeeper implements no actions.");
   }
 
-  async addObserver(_id: string, _user: Fetcher): Promise<void> {
-    // An AI model is not a restricted-access resource: nothing read through it identifies the
-    // observer or leaks private data, so any observer is permitted. No-op (never throws).
-  }
-
-  async removeObserver(_id: string): Promise<void> {
-    // No observer state is tracked (see addObserver). Idempotent no-op.
+  async getHistoricalSubresources(): Promise<string[]> {
+    // An AI model is not a restricted-access resource, and as a vendorless connection it is never
+    // asked: nothing read through it identifies the observer or leaks private data.
+    return [];
   }
 }
 
@@ -1313,13 +1310,10 @@ export class DecisionModelGatekeeper
     throw new Error("This gatekeeper implements no actions.");
   }
 
-  async addObserver(_id: string, _user: Fetcher): Promise<void> {
+  async getHistoricalSubresources(): Promise<string[]> {
     // Like an LLM, a decision model is not a restricted-access resource (see
     // LanguageModelGatekeeper).
-  }
-
-  async removeObserver(_id: string): Promise<void> {
-    // No observer state is tracked (see addObserver). Idempotent no-op.
+    return [];
   }
 }
 

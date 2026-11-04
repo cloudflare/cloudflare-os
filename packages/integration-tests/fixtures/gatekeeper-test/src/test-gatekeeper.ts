@@ -1,11 +1,11 @@
 // A real gatekeeper Worker whose verification outcomes the tests decide.
 //
-// WHY THIS EXISTS. The overseer tests need a gatekeeper that will refuse to admit an observer on
-// command. Every shipping public gatekeeper can do that only at a cost that would dominate the test:
-// the OAuth ones need a whole vendor's auth surface mocked before an account exists at all, and the
-// Context Library only refuses once an observation has been *recorded*, which takes a gadget read
-// session (so a Worker Loader) or a slash-command invocation. It is also a singleton, so it can never
-// produce the two simultaneously-failing bindings one of these cases needs.
+// WHY THIS EXISTS. The overseer tests need a gatekeeper that will refuse an observer on command.
+// Every shipping public gatekeeper can do that only at a cost that would dominate the test: the OAuth
+// ones need a whole vendor's auth surface mocked before an account exists at all, and the Context
+// Library only records a requirement through a gadget read session (so a Worker Loader) or a
+// slash-command invocation. It is also a singleton, so it can never produce the two
+// simultaneously-failing bindings one of these cases needs.
 //
 // So the overseer's own logic -- collect every failure, re-prompt once, then name what failed -- is
 // tested against this fixture, where an outcome is one HTTP call away. Realism about a *particular*
@@ -13,11 +13,13 @@
 // gatekeeper unmodified and mock the vendor's external surfaces through a NetworkInterceptor handler
 // module. This file deliberately does not try to be that.
 //
-// Note what the fixture does NOT model: a settled denial ("you may not read this") and an operational
-// failure ("the credential expired") reach the overseer identically, as a thrown error, and the
-// overseer cannot tell them apart -- by design, since it treats every failure as repairable. So there
-// is one control knob here, `allow`, and the reason string is what carries the distinction to the
-// user. Tests exercise both narratives by choosing reason text.
+// Every read reports what it depends on as `subresources`: the local IDs a test names, or the thing's
+// own ID when the thing's ACL governs it (`readThing()`). The Workshop checks a collaborator only
+// against what was recorded, so a test that wants a refusal at open first reads through the
+// connection. `verifyObserverAccess()` then answers from the outcome the test set for the
+// collaborator's account: an outcome without a reason denies (the Workshop words the refusal), one
+// with a reason makes the call throw it, as a gatekeeper that can't determine access (an expired
+// credential) would, so the user reads the reason itself.
 
 import {
   DurableObject, RpcTarget, WorkerEntrypoint, restore, type RpcStub,
@@ -71,14 +73,11 @@ const AVATAR = {
 // shows the user -- so a test that read a label off `description.uniqueName` can aim an outcome at it
 // without having to learn any internal id.
 
-type VerifyOutcome = { allow: true } | { allow: false; reason: string };
-
 /**
- * One addObserver()/removeObserver() call, mirrored here as it happens: the gatekeeper is a facet
- * under the gadget's Overseer, unreachable from this worker's routes, and a log (not a boolean)
- * also pins the add/remove ordering.
+ * What verifyObserverAccess() does for one account: admit, deny (omit it from the answer), or, with
+ * a `reason`, fail (throw the reason).
  */
-type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string };
+type VerifyOutcome = { allow: true } | { allow: false; reason?: string };
 
 type PendingTestAction = { id: number; value: number };
 type TestActionState = {
@@ -121,35 +120,18 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
         ?? { allow: true };
   }
 
-  /** Answers TestVerifier.deniedSubresources(): input IDs whose verification outcome denies. */
-  deniedSubresources(label: string, subresources: string[]): string[] {
-    return subresources.filter(id => {
-      const [resourceUrl, subresource] = JSON.parse(id) as [string, string];
-      return !this.getVerifyOutcome(label, resourceUrl, subresource).allow;
-    });
-  }
-
   /**
-   * Makes the binding at `resourceUrl` report its reads' subresources. Read on every observation.
+   * Answers TestVerifier.checkAccess(): the first refusing outcome among the input IDs. Each is a
+   * JSON `[resourceUrl, subresource]` tuple for a local ID, or `[resourceUrl]` for the thing itself;
+   * JSON preserves both resource scope and arbitrary local IDs without delimiter collisions.
    */
-  enableSubresourceReporting(resourceUrl: string): void {
-    this.ctx.storage.kv.put(`report-subresources:${resourceUrl}`, true);
-  }
-
-  reportsSubresources(resourceUrl: string): boolean {
-    return this.ctx.storage.kv.get<boolean>(`report-subresources:${resourceUrl}`) ?? false;
-  }
-
-  recordObserverEvent(event: ObserverEvent): void {
-    const events = this.ctx.storage.kv.get<ObserverEvent[]>("observer-events") ?? [];
-    events.push(event);
-    this.ctx.storage.kv.put("observer-events", events);
-  }
-
-  /** Filtered here rather than in the test: tests run concurrently against one shared log. */
-  getObserverEvents(resourceUrl: string): ObserverEvent[] {
-    return (this.ctx.storage.kv.get<ObserverEvent[]>("observer-events") ?? [])
-        .filter(e => e.resourceUrl === resourceUrl);
+  checkAccess(label: string, subresources: string[]): VerifyOutcome {
+    for (const id of subresources) {
+      const [resourceUrl, subresource] = JSON.parse(id) as [string, string?];
+      const outcome = this.getVerifyOutcome(label, resourceUrl, subresource);
+      if (!outcome.allow) return outcome;
+    }
+    return { allow: true };
   }
 
   recordAmbientVerification(label: string): void {
@@ -290,10 +272,9 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Delivers `value` as an event about the binding at `resourceUrl`, as a provider's event names
-   * its resource: whether it reports `subresources` comes from that binding's current mode, never
-   * from the hook's registration. Without `resourceUrl`, the delivery is a legacy observation that
-   * depends on nothing.
+   * Delivers `value` as an event about the binding at `resourceUrl` whose data depended on its
+   * local `subresources`, as a provider's event names its resource. Without `resourceUrl`, the
+   * delivery depends on nothing.
    */
   async fireHook(key: string, value: number, resourceUrl?: string, subresources?: string[])
       : Promise<{ fired: true } | { error: string }> {
@@ -302,16 +283,13 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     try {
       const { callback, approvalQueue } = await initiator.startHook();
       try {
-        const description = {
+        await approvalQueue.authorizeObservation({
           title: `Hook ${key} requested ${value}`,
           description: "The integration test fired this hook.",
-        };
-        if (resourceUrl !== undefined && this.reportsSubresources(resourceUrl)) {
-          const qualified = (subresources ?? []).map(id => JSON.stringify([resourceUrl, id]));
-          await approvalQueue.authorizeObservation({ ...description, subresources: qualified });
-        } else {
-          await approvalQueue.authorizeObservation(description);
-        }
+          // Encoded as TestControl.checkAccess() parses them.
+          subresources: resourceUrl === undefined ? []
+            : (subresources ?? []).map(id => JSON.stringify([resourceUrl, id])),
+        });
         await callback.onValueRequested(value);
       } finally {
         callback[Symbol.dispose]();
@@ -562,7 +540,7 @@ export class TestAccount
     };
   }
 
-  /** The capability the overseer hands to addObserver() to say "this is the user asking". */
+  /** What the overseer hands to verifyObserverAccess() to say "this is the user asking". */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.TestVerifier({ props: this.ctx.props });
@@ -603,8 +581,8 @@ export class TestAccount
  */
 export interface TestVerifierApi extends GatekeeperUserVerifier {
   identify(): Promise<string>;
-  /** The given subresource IDs this account may not read. */
-  deniedSubresources(subresources: string[]): Promise<string[]>;
+  /** The outcome the test set for this account's access to the given subresource IDs. */
+  checkAccess(subresources: string[]): Promise<VerifyOutcome>;
 }
 
 @validateRpc()
@@ -615,11 +593,11 @@ export class TestVerifier
   }
 
   /**
-   * Each ID encodes its resource URL and local subresource: grant unless the test refused this
-   * account for that subresource, at that binding, or everywhere (`/control/verify-outcome`).
+   * Grant unless the test refused this account for one of the IDs' subresources, at its binding, or
+   * everywhere (`/control/verify-outcome`).
    */
-  async deniedSubresources(subresources: string[]): Promise<string[]> {
-    return control(this.ctx.exports).deniedSubresources(this.ctx.props.label, subresources);
+  async checkAccess(subresources: string[]): Promise<VerifyOutcome> {
+    return control(this.ctx.exports).checkAccess(this.ctx.props.label, subresources);
   }
 }
 
@@ -628,19 +606,19 @@ export class TestVerifier
 
 /**
  * A live session against a Test Thing, opened via `GatekeeperClient.openSession()`. `readValue()`
- * records an observation (optionally `containsRestrictedData`); `writeValue()` submits a
- * `set-value` action whose `autoApprovable` verdict and warnings the caller chooses.
+ * and `readThing()` record an observation (optionally `containsRestrictedData`); `writeValue()`
+ * submits a `set-value` action whose `autoApprovable` verdict and warnings the caller chooses.
  */
 export interface TestSession {
   /**
    * `restricted` marks the observation `containsRestrictedData`; `ownerInvitesOnly` marks it
-   * `ownerInvitesOnly`. `excludeObservers` lists observer ids (from `/control/observer-events`)
-   * that must not see it. `subresources` are local IDs the read depends on: a binding that reports
-   * subresources reports them on the observation, qualified with the resource URL (`[]` if
-   * omitted); a legacy binding ignores them.
+   * `ownerInvitesOnly`. `subresources` are the local IDs the read depends on, reported qualified
+   * with the resource URL (`[]` if omitted).
    */
-  readValue(restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[],
-            subresources?: string[]): Promise<number>;
+  readValue(restricted?: boolean, ownerInvitesOnly?: boolean, subresources?: string[])
+      : Promise<number>;
+  /** As readValue(), but the read depends on the thing itself: it reports the thing's own ID. */
+  readThing(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number>;
   /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
@@ -669,24 +647,25 @@ class TestSessionTarget extends RpcTarget implements TestSession {
   }
 
   async readValue(
-      restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[],
-      subresources?: string[]): Promise<number> {
-    const reporting = await this.state.reportsSubresources(this.resourceUrl);
-    const description = {
+      restricted?: boolean, ownerInvitesOnly?: boolean, subresources?: string[]): Promise<number> {
+    // Encoded as TestControl.checkAccess() parses them.
+    return this.#read(restricted, ownerInvitesOnly,
+        (subresources ?? []).map(id => JSON.stringify([this.resourceUrl, id])));
+  }
+
+  async readThing(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number> {
+    return this.#read(restricted, ownerInvitesOnly, [JSON.stringify([this.resourceUrl])]);
+  }
+
+  async #read(restricted: boolean | undefined, ownerInvitesOnly: boolean | undefined,
+              subresources: string[]): Promise<number> {
+    await this.approvalQueue.authorizeObservation({
       title: "Read the test value",
       description: "Read the deterministic value exposed by the integration-test gatekeeper.",
       ...(restricted ? { containsRestrictedData: true } : {}),
       ...(ownerInvitesOnly ? { ownerInvitesOnly: true } : {}),
-      ...(excludeObservers ? { excludeObservers } : {}),
-    };
-    if (reporting) {
-      // JSON tuples preserve both resource scope and arbitrary local IDs without delimiter
-      // collisions.
-      const qualified = (subresources ?? []).map(id => JSON.stringify([this.resourceUrl, id]));
-      await this.approvalQueue.authorizeObservation({ ...description, subresources: qualified });
-    } else {
-      await this.approvalQueue.authorizeObservation(description);
-    }
+      subresources,
+    });
     return 42;
   }
 
@@ -782,13 +761,28 @@ export class TestGatekeeper
     };
   }
 
-  /** Admits each observer whose verifier reports none of `subresources` denied. */
+  /**
+   * Admits each observer whose account the test did not refuse for `subresources`, and throws the
+   * reason of a failing outcome, which refuses every observer asked about. An ambient binding also
+   * counts each observer's account, for `/control/ambient-verification-count`.
+   */
   async verifyObserverAccess(
       observers: { id: string; verifier: Fetcher<TestVerifierApi> }[],
       subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
-    const denials = await Promise.all(
-        observers.map(({ verifier }) => verifier.deniedSubresources(subresources)));
-    return { allowedObserverIds: observers.filter((_, i) => denials[i].length === 0).map(o => o.id) };
+    const state = control(this.ctx.exports);
+    const outcomes = await Promise.all(observers.map(async ({ verifier }) => {
+      if (this.ctx.props.ambient) await state.recordAmbientVerification(await verifier.identify());
+      return verifier.checkAccess(subresources);
+    }));
+    for (const outcome of outcomes) {
+      if (!outcome.allow && outcome.reason !== undefined) throw new Error(outcome.reason);
+    }
+    return { allowedObserverIds: observers.filter((_, i) => outcomes[i].allow).map(o => o.id) };
+  }
+
+  /** Connections this kernel creates have no legacy observer history. */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return [];
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -811,32 +805,6 @@ export class TestGatekeeper
   /** The discovery index a test set for this account: none unless it set one. */
   async getAgentCatalog(): Promise<AgentCatalog | null> {
     return control(this.ctx.exports).getAgentCatalog(this.ctx.props.label);
-  }
-
-  /**
-   * Admit an observer, or refuse on the test's instruction.
-   *
-   * Asks the verifier who it speaks for, then consults the control state for that account. Throwing
-   * is how a gatekeeper reports "this user may not observe what the gadget has read", and it's the
-   * behaviour the overseer's failure handling is built around.
-   */
-  async addObserver(id: string, user: Fetcher<TestVerifierApi>): Promise<void> {
-    const label = await user.identify();
-    const { resourceUrl } = this.ctx.props;
-    if (this.ctx.props.ambient) {
-      await control(this.ctx.exports).recordAmbientVerification(label);
-    } else {
-      const outcome = await control(this.ctx.exports).getVerifyOutcome(label, resourceUrl);
-      if (!outcome.allow) throw new Error(outcome.reason);
-    }
-    this.ctx.storage.kv.put(`observer:${id}`, label);
-    await control(this.ctx.exports).recordObserverEvent({ resourceUrl, type: "add", id });
-  }
-
-  async removeObserver(id: string): Promise<void> {
-    this.ctx.storage.kv.delete(`observer:${id}`);
-    await control(this.ctx.exports).recordObserverEvent(
-        { resourceUrl: this.ctx.props.resourceUrl, type: "remove", id });
   }
 
   async applyAction(action: number): Promise<void> {
@@ -937,11 +905,12 @@ export default {
       }
     }
 
-    // Set what addObserver() should do for one account, either everywhere or (when `resourceUrl`
-    // is given) at one binding only. With `subresource` too, it sets whether the account may read
-    // that one subresource, as checked by verifyObserverAccess() where it was reported.
-    // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "...",
-    //        "subresource": "..."}
+    // Set what verifyObserverAccess() does for one account's reads: everywhere, (with
+    // `resourceUrl`) at one binding, or (with `subresource` too) for one local subresource there.
+    // The most specific outcome wins. `allow: false` denies; with a `reason`, the check throws it
+    // instead, as a failure to determine access.
+    // Body: {"label": "...", "allow": false, "reason"?: "...", "resourceUrl"?: "...",
+    //        "subresource"?: "..."}
     if (url.pathname === "/control/verify-outcome" && req.method === "POST") {
       const { label, allow, reason, resourceUrl, subresource } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
@@ -959,34 +928,9 @@ export default {
         return badRequest("`subresource` needs `resourceUrl`");
       }
 
-      const outcome: VerifyOutcome = allow
-        ? { allow: true }
-        : { allow: false, reason: reason ?? "The test gatekeeper refused this account." };
+      const outcome: VerifyOutcome = allow ? { allow: true } : { allow: false, reason };
       await control(ctx.exports).setVerifyOutcome(label, outcome, resourceUrl, subresource);
       return new Response(null, { status: 204 });
-    }
-
-    // Make the binding at `resourceUrl` report its reads' subresources. Set before connecting for
-    // a binding that reports them from creation.
-    // Body: {"resourceUrl": "..."}
-    if (url.pathname === "/control/report-subresources" && req.method === "POST") {
-      const { resourceUrl } = body as Record<string, unknown>;
-      if (!isNonEmptyString(resourceUrl)) {
-        return badRequest("`resourceUrl` must be a non-empty string");
-      }
-      await control(ctx.exports).enableSubresourceReporting(resourceUrl);
-      return new Response(null, { status: 204 });
-    }
-
-    // Read back the addObserver()/removeObserver() calls one binding's gatekeeper has seen, in
-    // order.
-    // Body: {"resourceUrl": "..."} -> {"events": [{"resourceUrl", "type", "id"}, ...]}
-    if (url.pathname === "/control/observer-events" && req.method === "POST") {
-      const { resourceUrl } = body as Record<string, unknown>;
-      if (!isNonEmptyString(resourceUrl)) {
-        return badRequest("`resourceUrl` must be a non-empty string");
-      }
-      return Response.json({ events: await control(ctx.exports).getObserverEvents(resourceUrl) });
     }
 
     if (url.pathname === "/control/ambient-verification-count" && req.method === "POST") {

@@ -110,8 +110,8 @@ sibling was about to be blamed for.
 
 Reconnection helpers must retain the reopened workspace and its child capabilities until the caller
 finishes using them. Return an owned `DisposableStack` with `stack.move()` rather than letting
-`using` dispose the workspace before returning a child read session; that workspace owns the native
-RPC session the child needs. See `observer-exclusion.test.ts`'s `reopenAfterRestart()`.
+`using` dispose the workspace before returning a child capability; that workspace owns the native
+RPC session the child needs. See `observer-scope-promotion.test.ts`'s `holdSession()`.
 
 ### A redeploy keeps storage, so an upgrade can be tested
 

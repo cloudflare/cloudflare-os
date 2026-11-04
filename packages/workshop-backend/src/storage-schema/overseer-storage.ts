@@ -63,6 +63,14 @@ export type GatekeeperRecord = {
   bindings?: Record<string, BindingRecord>;
 
   /**
+   * Set by the version 6 -> 7 migration on every vendor connection that existed before the
+   * Workshop tracked all observations itself, until the history its gatekeeper recorded under the
+   * legacy protocol is imported (see ObserverLedger.importHistory): admission waits for that
+   * import. Connections created since start with no legacy history, so never carry it.
+   */
+  observerHistoryPending?: true;
+
+  /**
    * OBSOLETE: Before we had support for multiple gadgets per workspace, the binding name and
    * blueprint annotation information lived on the GatekeeperRecord. These properties continue
    * to be declared only to support migrating them away. The version 0 -> 1 migration copies
@@ -471,14 +479,15 @@ export type ActionRecord = {
   type: "observation";
 
   /**
-   * `subresources` is kept only on an observation the Workshop verified them for: it writes the
-   * validated list, and strips the field from a pending creation's simulated read. Kept, it makes
-   * the record an observer requirement, attributed by `caller` (see observerContextOf and
-   * ObserverLedger.observerScope). Nothing else stores requirements, which is why the
-   * action log is append-only: deleting such a record would silently drop checks while its
-   * connection still exists.
+   * `subresources` is kept only on an observation the Workshop verified them for, or imported
+   * from a connection's legacy history: it writes the validated list, and strips the field from
+   * a pending creation's simulated read. Absent on built-in tool observations and on records
+   * written before observations reported it. Kept, it makes the record an observer requirement,
+   * attributed by `caller` (see observerContextOf and ObserverLedger.observerScope). Nothing else
+   * stores requirements, which is why the action log is append-only: deleting such a record would
+   * silently drop checks while its connection still exists.
    */
-  description: ObservationDescription;
+  description: Omit<ObservationDescription, "subresources"> & {subresources?: string[]};
 } | {
   type: "bindHook";
 
@@ -1121,10 +1130,11 @@ export type ObserverRecord = {
   profileId: string;
 
   /**
-   * Random, opaque, stable-for-this-record handle passed to gatekeepers as `addObserver`'s `id`.
-   * We deliberately do NOT use profileId here, to avoid tempting gatekeeper authors to parse
-   * identity out of it -- identity is conveyed only via the verifier. The id need not survive
-   * removal/re-add: a user who loses and regains access gets a fresh record and a fresh id.
+   * Random, opaque, stable-for-this-record handle passed to gatekeepers as the observer's `id` in
+   * `verifyObserverAccess()`. We deliberately do NOT use profileId here, to avoid tempting
+   * gatekeeper authors to parse identity out of it -- identity is conveyed only via the verifier.
+   * The id need not survive removal/re-add: a user who loses and regains access gets a fresh
+   * record and a fresh id.
    */
   observerId: string;
 
@@ -1301,6 +1311,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       an `upstream` once it is permanent.
       //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
       //       config no longer carries `env`.
+      //   7 = the Workshop tracks every observation itself: each vendor connection that existed
+      //       before carries `observerHistoryPending` until its legacy history is imported.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1653,15 +1665,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       // Non-owner collaborators who have configured their gatekeeper accounts and passed all
-      // `addObserver` checks. See `ObserverRecord`. The secondary index lets the forward-exclusion
-      // path (`authorizeObservation`) map an opaque observerId back to a profileId.
+      // observer checks. See `ObserverRecord`. (Storage written before version 7 may still hold
+      // the keys of a retired `byObserverId` index; don't reuse that index name.)
       observers: collection<ObserverRecord>()({
         primaryKey: "profileId",
-        uniqueIndexes: {
-          byObserverId(observer: ObserverRecord) {
-            return observer.observerId;
-          }
-        }
       }),
     }
   });

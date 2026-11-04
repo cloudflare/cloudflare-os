@@ -10,9 +10,9 @@
 // - Each decision is confirmed synchronously before its caller publishes it: an observation's
 //   audience before the audit record is written (authorizeObservation), and an admission's
 //   scope before the observer record is (OverseerImpl.ensureObserver, via observerScope()).
-// - These checks add to the legacy addObserver()/removeObserver()/excludeObservers protocol and
-//   never replace it: an observation omitting `subresources` is checked by nothing here, and
-//   admission runs every connection's addObserver() as well as the checks here.
+// - A connection that predates this ledger holds history its gatekeeper recorded under the
+//   legacy protocol until importHistory() commits it (observerHistoryPending); admission waits for
+//   that import rather than verify anyone against part of the history. Reads never wait for it.
 
 import type { WorkpieceId } from "@gadgets/workshop-shared/api";
 import type {
@@ -142,10 +142,21 @@ export async function requireVerifier(user: DurableObjectStub<UserDurableObject>
 }
 
 /**
+ * Throws unless `id` is a subresource ID (see ObservationDescription.subresources). Each must be
+ * well-formed Unicode: requirement keys hold them, and storage would replace a lone surrogate,
+ * merging distinct IDs and checking a different one at admission.
+ */
+function assertSubresourceId(id: unknown): asserts id is string {
+  if (typeof id !== "string" || id.length === 0 || id.length > MAX_SUBRESOURCE_LENGTH) {
+    throw new Error(
+        `Subresource IDs must be strings 1 to ${MAX_SUBRESOURCE_LENGTH} characters long.`);
+  }
+  if (!id.isWellFormed()) throw new Error("Subresource IDs must be well-formed Unicode.");
+}
+
+/**
  * Validates one observation's reported subresource IDs (the RPC layer has checked they form a
- * string array), and deduplicates them without interpreting them. Each must be well-formed
- * Unicode: requirement keys hold them, and storage would replace a lone surrogate, merging
- * distinct IDs and checking a different one at admission.
+ * string array), and deduplicates them without interpreting them.
  */
 export function normalizeSubresources(ids: string[]): string[] {
   if (ids.length > MAX_SUBRESOURCES) {
@@ -153,11 +164,7 @@ export function normalizeSubresources(ids: string[]): string[] {
   }
   let totalLength = 0;
   for (let id of ids) {
-    if (id.length === 0 || id.length > MAX_SUBRESOURCE_LENGTH) {
-      throw new Error(
-          `Subresource IDs must be strings 1 to ${MAX_SUBRESOURCE_LENGTH} characters long.`);
-    }
-    if (!id.isWellFormed()) throw new Error("Subresource IDs must be well-formed Unicode.");
+    assertSubresourceId(id);
     totalLength += id.length;
   }
   if (totalLength > MAX_SUBRESOURCES_TOTAL_LENGTH) {
@@ -169,23 +176,139 @@ export function normalizeSubresources(ids: string[]): string[] {
 }
 
 /**
+ * Splits valid subresource IDs into lists within one observation's limits, so that each record
+ * importing them is bounded like an observed one.
+ */
+function observationSizedChunks(ids: string[]): string[][] {
+  let chunks: string[][] = [];
+  let chunk: string[] = [];
+  let length = 0;
+  for (let id of ids) {
+    if (chunk.length === MAX_SUBRESOURCES || length + id.length > MAX_SUBRESOURCES_TOTAL_LENGTH) {
+      chunks.push(chunk);
+      chunk = [];
+      length = 0;
+    }
+    chunk.push(id);
+    length += id.length;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
+/**
  * The Overseer's observer requirements: the subresources observations reported, checked against
  * each read's audience before it commits and against each collaborator at admission.
  */
 export class ObserverLedger {
   constructor(private host: ObserverLedgerHost) {}
 
+  // In-flight legacy history imports, one per connection (see importHistory()).
+  #importing = new Map<WorkpieceId, Promise<void>>();
+
   get #storage() { return this.host.storage; }
+
+  // ---------------------------------------------------------------------------------------
+  // Legacy history
+
+  /**
+   * Starts importing the legacy history of every connection still holding it (see
+   * importHistory()), in the background, as the Overseer wakes. A pending creation is left until
+   * it is approved: there is no real resource to export from before then. A failure is logged and
+   * retried by the next admission that needs the history, or the next wake.
+   */
+  importPendingHistory(): void {
+    // Listed up front: each import reads storage, which would end this listing.
+    for (let record of Array.from(this.#storage.gatekeepers.list())) {
+      if (!record.observerHistoryPending || this.host.creationPending(record.id)) continue;
+      this.importHistory(record.id).catch(() => {});  // importHistory() logs the failure
+    }
+  }
+
+  /**
+   * Imports what a connection's gatekeeper recorded under the legacy observer protocol, before the
+   * Workshop tracked every observation itself: its getHistoricalSubresources() export, written to
+   * the action log as requirements on the workspace context, since the export can't say which
+   * chat or gadget read what. Single-flight per connection; resolves at once when nothing is
+   * pending. The records commit with the cleared `observerHistoryPending`, so a failure commits
+   * nothing and the next admission (or wake) exports again, and once committed the export is never
+   * asked for again. Observations through the connection carry on meanwhile, recording their own
+   * requirements, so the import only adds to them.
+   */
+  importHistory(gatekeeperId: WorkpieceId): Promise<void> {
+    if (!this.#storage.gatekeepers.get(gatekeeperId)?.observerHistoryPending) {
+      return Promise.resolve();
+    }
+    let pending = this.#importing.get(gatekeeperId);
+    if (pending === undefined) {
+      pending = this.#import(gatekeeperId).finally(() => this.#importing.delete(gatekeeperId));
+      this.#importing.set(gatekeeperId, pending);
+    }
+    return pending;
+  }
+
+  async #import(gatekeeperId: WorkpieceId): Promise<void> {
+    let subresources: string[];
+    try {
+      let facet = await this.host.getGatekeeperFacet(gatekeeperId);
+      // Unlike an observation, the export has no count cap, and nothing validated it.
+      let exported: unknown = await facet.getHistoricalSubresources();
+      if (!Array.isArray(exported)) throw new Error("This service returned an invalid history.");
+      // for...of visits a sparse array's holes as undefined, so they are invalid too.
+      for (let id of exported) assertSubresourceId(id);
+      subresources = [...new Set<string>(exported)];
+    } catch (error) {
+      this.host.logger.warn("failed to import a connection's legacy observer history", {
+        event: "observer.ledger.import.failed", gatekeeperId, error,
+      });
+      let title = this.#storage.gatekeepers.get(gatekeeperId)?.resourceTitle;
+      throw new Error(
+          `This workspace couldn't load what it read earlier through ${title ?? "a connection"}, ` +
+          "so it can't verify you yet. Please try again.", {cause: error});
+    }
+
+    // A connection removed meanwhile takes its requirements with it.
+    let record = this.#storage.gatekeepers.get(gatekeeperId);
+    if (!record?.observerHistoryPending) return;
+    let {observerHistoryPending: _, ...imported} = record;
+    this.#storage.transaction(() => {
+      for (let chunk of observationSizedChunks(subresources)) {
+        let id = this.#storage.nextActionId.get();
+        this.#storage.nextActionId.put(id + 1);
+        this.#storage.actions.put({
+          id,
+          gatekeeperId,
+          // A user outside any chat, so the workspace context, which every grant reaches.
+          caller: {from: "user"},
+          resourceTitle: record.resourceTitle,
+          resourceUrl: record.resourceUrl,
+          createdAt: new Date(),
+          state: "approved",
+          type: "observation",
+          description: {
+            title: "Imported earlier reads",
+            description: "What this connection read before the Workshop recorded its reads " +
+                "itself.",
+            subresources: chunk,
+          },
+        });
+      }
+      this.#storage.gatekeepers.put(imported);
+    });
+    this.host.logger.info("imported a connection's legacy observer history", {
+      event: "observer.ledger.import.completed", gatekeeperId, size: subresources.length,
+    });
+  }
 
   // ---------------------------------------------------------------------------------------
   // Observation
 
   /**
    * The ledger half of Overseer.authorizeObservation(). Every observation through a removed
-   * connection, or one held back pending a restart, is refused. One omitting `subresources`, or
-   * made while its resource's creation is pending (so simulated), is otherwise checked by nothing
-   * here: it commits with undefined, recording no requirement. Otherwise this attributes the read to
-   * its caller's context and checks the reported IDs for everyone that context reaches, then
+   * connection, or one held back pending a restart, is refused. One made while its resource's
+   * creation is pending (so simulated) is otherwise checked by nothing here: it commits with
+   * undefined, recording no requirement. Otherwise this attributes the read to its caller's
+   * context and checks the reported IDs for everyone that context reaches, then
    * recomputes that audience after the awaits and checks whoever it gained: sharing changes,
    * newly published observers, and changed account choices. Calls `commit` synchronously with the
    * validated IDs at the final decision, so no admission can publish between the audience check
@@ -197,9 +320,7 @@ export class ObserverLedger {
       caller: GatekeeperCaller, executionId: string | undefined,
       commit: (subresources: string[] | undefined) => undefined): Promise<void> {
     this.#assertUsable(gatekeeperId);
-    if (description.subresources === undefined || this.host.creationPending(gatekeeperId)) {
-      return commit(undefined);
-    }
+    if (this.host.creationPending(gatekeeperId)) return commit(undefined);
 
     // Attributed to the trusted binding authorizer's caller, not its holder or a gatekeeper-
     // supplied ID: passing that capability elsewhere does not change its context. A hook firing

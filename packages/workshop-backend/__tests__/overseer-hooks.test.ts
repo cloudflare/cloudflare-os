@@ -180,8 +180,8 @@ describe("OverseerDurableObject.startHook", () => {
 
     hook.enabled = false;
 
-    expect(() => approvalQueue.authorizeObservation({ title: "t", description: "d" }))
-        .toThrow(/deleted or disabled/);
+    expect(() => approvalQueue.authorizeObservation(
+        { title: "t", description: "d", subresources: [] })).toThrow(/deleted or disabled/);
   });
 
   it("re-checks the record after the admin-config read", async () => {

@@ -2243,10 +2243,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Mint a verifier from one of THIS user's connected accounts, identified by accountId. The
-   * overseer passes the returned verifier to a gatekeeper's `addObserver()` or
-   * `verifyObserverAccess()` so the gatekeeper can check whether this user is allowed to observe
-   * the data read through it, or to a gatekeeper's `applyCreation()` to create the resource in
-   * this account. Returns null if the account no longer exists (or never existed). Throws if the
+   * overseer passes the returned verifier to a gatekeeper's `verifyObserverAccess()` so the
+   * gatekeeper can check whether this user is allowed to observe the data read through it, or to
+   * a gatekeeper's `applyCreation()` to create the resource in this account. Returns null if the
+   * account no longer exists (or never existed). Throws if the
    * account belongs to a different vendor (not a legitimate UI state — only reachable by bypassing
    * client-side filtering).
    *

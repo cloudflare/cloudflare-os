@@ -2619,7 +2619,8 @@ export type ActionLogEntry = {
   creation?: true;
 } | {
   type: "observation";
-  description: ObservationDescription;
+  /** The observation as authorized, without its `subresources`, which are enforcement data. */
+  description: Omit<ObservationDescription, "subresources">;
 } | {
   type: "bindHook";
 

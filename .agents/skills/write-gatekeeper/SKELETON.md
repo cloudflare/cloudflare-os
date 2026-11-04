@@ -23,9 +23,16 @@ import {
   SupportedResource,
   ResourceConfiguratorFrame,
 } from '@gadgets/workshop-shared/gatekeeper';
+import { formatSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { MySession, MyHook as MyHookIface } from "./types";  // Remove MyHook if no hooks
 import TYPES_CODE from "./types.txt";
 import MY_CONFIGURATOR_HTML from "./generated/my-configurator-ui.txt";
+
+// The subresource ID of the bound resource (strategy B: every read that reveals its data reports
+// it). Keep the spelling stable across versions: recorded IDs are checked at every later open.
+function myResourceSubresourceId(resourceId: string): string {
+  return formatSubresourceId({ namespace: "my", fragments: [{ name: "resource", id: resourceId }] });
+}
 
 const NONCE_BYTES = 32;
 const NONCE_LIFETIME_MS = 10 * 60 * 1000;  // 10 minutes
@@ -279,7 +286,7 @@ export class MyUserImpl extends WorkerEntrypoint<Env, MyUserImplProps>
   }
 
   // Mint a verifier representing this account (see Observers in SKILL.md). The overseer only ever
-  // hands it back to a gatekeeper of THIS vendor, so MyGatekeeperImpl.addObserver may trust it.
+  // hands it back to a gatekeeper of THIS vendor, so verifyObserverAccess may trust it.
   // For a strategy-D (low-stakes) gatekeeper, MyVerifier has no methods and this still works.
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     let props: MyVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -297,7 +304,7 @@ type MyVerifierProps = {
 };
 
 // A vendor-specific interface adding non-standard methods to the opaque GatekeeperUserVerifier.
-// addObserver casts the Fetcher back to this; the overseer's same-vendor guarantee makes that safe.
+// verifyObserverAccess casts the Fetcher back to this; the same-vendor guarantee makes that safe.
 export interface MyVerifierApi extends GatekeeperUserVerifier {
   hasResourceAccess(resourceId: string): Promise<boolean>;
 }
@@ -404,27 +411,31 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
   }
 
   // Observers (see SKILL.md "Observer verification"). This skeleton shows strategy B — ACL check on
-  // a single atomic resource. The overseer calls addObserver on EVERY open by every observer, so it
-  // re-verifies live access; throw to deny.
-  //   - Strategy A (private-only): `async addObserver() { throw new Error("...not shareable..."); }`
-  //   - Strategy D (low-stakes):   make both methods no-ops.
-  //   - Strategy C (data-set tracking): record observed sets + store verifiers, and route every read
-  //     through an authorizeSetObservation helper that sets `excludeObservers` (see SKILL.md).
-  //   - Reporting subresources (per read path): pass `subresources` to authorizeObservation() on
-  //     each converted read and implement verifyObserverAccess(observers, ids), checking each
-  //     observer's verifier the same way. Keep addObserver enforcing binding-wide requirements,
-  //     pre-conversion history, and every path that does not report them yet.
-  async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    let verifier = user as unknown as Fetcher<MyVerifierApi>;
-    if (!(await verifier.hasResourceAccess(/* this.ctx.props.resourceId */ "TODO"))) {
-      throw new Error(
-        "This collaborator does not have access to the bound resource, so they cannot observe " +
-        "data the Gadget read from it.");
+  // a single atomic resource: every read reports the bound resource's ID as `subresources`, and the
+  // Workshop asks this method before authorizing a read (for everyone who can see it) and at every
+  // open (for the recorded IDs). Return the observers allowed; throw if access can't be determined.
+  //   - Strategy A (private-only): reads report the private resource's ID; admit no other user.
+  //   - Strategy C (data-set tracking): reads report each sub-resource they revealed; check each.
+  //   - Strategy D (low-stakes): every read reports `[]`, and this method may be omitted.
+  async verifyObserverAccess(
+      observers: { id: string, verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    let expected = myResourceSubresourceId(/* this.ctx.props.resourceId */ "TODO");
+    if (subresources.some(id => id !== expected)) {
+      throw new Error("This connection was asked about a resource it never reported.");
     }
+    let allowed = await Promise.all(observers.map(async ({ id, verifier }) => {
+      let api = verifier as unknown as Fetcher<MyVerifierApi>;
+      return (await api.hasResourceAccess(/* this.ctx.props.resourceId */ "TODO")) ? id : null;
+    }));
+    return { allowedObserverIds: allowed.filter(id => id !== null) };
   }
 
-  // Idempotent: ignore unknown ids. A no-op for strategy A/B (nothing is tracked).
-  async removeObserver(_id: string): Promise<void> {}
+  // Data subresource IDs observed under the legacy observer protocol and never reported (see
+  // SKILL.md "Legacy history"). A new gatekeeper has no such history.
+  async getHistoricalSubresources(): Promise<string[]> {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +488,8 @@ export class MyHookControllerImpl extends WorkerEntrypoint<Env, MyHookController
 //     await result.approvalQueue.authorizeObservation({
 //       title: "TODO: short event summary",
 //       description: "TODO: details about the event being delivered",
+//       // Required: what the delivered data depends on (strategy B: the bound resource).
+//       subresources: [myResourceSubresourceId(/* props.resourceId */ "TODO")],
 //     });
 //
 //     // Deliver the event to the Gadget's callback.
@@ -509,6 +522,8 @@ class MySessionImpl extends RpcTarget implements MySession {
     await this.#approvalQueue.authorizeObservation({
       title: "Read data",
       description: "Fetched data from the service.",
+      // Required on every observation: what the read depends on ([] when nothing restricts it).
+      subresources: [myResourceSubresourceId(/* this.#ctx.props.resourceId */ "TODO")],
     });
 
     return result;

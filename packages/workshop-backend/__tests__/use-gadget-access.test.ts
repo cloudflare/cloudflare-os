@@ -47,6 +47,8 @@ async function withImpl(fn: (impl: ObserverImpl) => Promise<void>): Promise<void
   });
 }
 
+// A connection with a requirement recorded through it on the workspace, so every admission
+// reaching it checks the viewer against it.
 function seedGatekeeper(impl: ObserverImpl, id: number): void {
   impl.storage.gatekeepers.put({
     id, resourceTitle: `Connection ${id}`, class: fakeGatekeeperClass,
@@ -54,6 +56,13 @@ function seedGatekeeper(impl: ObserverImpl, id: number): void {
       type: "gatekeeper", vendorId: "testvendor", resourceUrl: `https://example.com/${id}`,
       typeUrlPattern: "https://*",
     },
+  });
+  let actionId = impl.storage.nextActionId.get();
+  impl.storage.nextActionId.put(actionId + 1);
+  impl.storage.actions.put({
+    id: actionId, gatekeeperId: id, caller: { from: "user" }, createdAt: new Date(0),
+    state: "approved", type: "observation",
+    description: { title: "Read", description: "A read", subresources: [`doc-${id}`] },
   });
 }
 
@@ -75,24 +84,23 @@ function shareGadgets(impl: ObserverImpl, gadgetIds: number[]): void {
   impl.storage.collaborators.put({ profile: { id: VIEWER, name: "Viewer" }, addedBy });
 }
 
-// Legacy-protocol facets recording which connections the viewer was registered on, refusing
-// those in `refuse`.
-function legacyFacets(impl: ObserverImpl, refuse: ReadonlySet<number> = new Set()): number[] {
-  let adds: number[] = [];
+// Facets recording which connections checked the viewer, denying her on those in `refuse`.
+function checkingFacets(impl: ObserverImpl, refuse: ReadonlySet<number> = new Set()): number[] {
+  let checks: number[] = [];
   const getFacet = async (id: number) => ({
     describe: async () => ({
       url: `https://example.com/${id}`, title: `Connection ${id}`, snippet: "",
       suggestedBindingName: "C", tsType: "C",
     }),
-    addObserver: async () => {
-      if (refuse.has(id)) throw new Error("access revoked upstream");
-      adds.push(id);
+    verifyObserverAccess: async (observers: { id: string }[]) => {
+      checks.push(id);
+      return { allowedObserverIds: refuse.has(id) ? [] : observers.map(observer => observer.id) };
     },
-    removeObserver: async () => {},
   });
-  // These direct-DO tests exercise only the legacy observer methods, not the full RPC facet.
+  // These direct-DO tests exercise only the observer methods admission calls, not the full RPC
+  // facet.
   impl.getGatekeeperFacet = getFacet as unknown as ObserverImpl["getGatekeeperFacet"];
-  return adds;
+  return checks;
 }
 
 // The viewer's User DO: always has the account and always mints a verifier.
@@ -126,13 +134,13 @@ describe("UseOverseerInterface.getGadget", () => {
     seedGadget(impl, 100);
     seedGadget(impl, 101, { target: 1 });
     shareGadgets(impl, [100]);
-    let adds = legacyFacets(impl);
+    let checks = checkingFacets(impl);
     let client = await openViewer(impl, { role: "use", gadgetIds: [100] });
 
     // Exactly the error a missing gadget gets, and nobody is verified for it.
     await expect(client.getGadget(101)).rejects.toThrow("No such gadget: 101");
     await expect(client.getGadget(999)).rejects.toThrow("No such gadget: 999");
-    expect(adds).toEqual([]);
+    expect(checks).toEqual([]);
     expect(impl.storage.observers.get(VIEWER)).toBeUndefined();
     dispose(client);
   }));
@@ -141,7 +149,7 @@ describe("UseOverseerInterface.getGadget", () => {
       withImpl(async impl => {
     seedGadget(impl, 100, { pending: true });
     shareGadgets(impl, [100]);
-    legacyFacets(impl);
+    checkingFacets(impl);
     let client = await openViewer(impl, { role: "use", gadgetIds: "all" });
 
     await expect(client.getGadget(100)).rejects.toThrow("No such gadget: 100");
@@ -153,7 +161,7 @@ describe("UseOverseerInterface.getGadget", () => {
     seedGadget(impl, 100);
     seedGadget(impl, 101);
     shareGadgets(impl, [100]);
-    legacyFacets(impl);
+    checkingFacets(impl);
     // The shell's snapshot still lists 101, but the grant for it is gone.
     let client = await openViewer(impl, { role: "use", gadgetIds: [100, 101] });
 
@@ -170,12 +178,12 @@ describe("UseOverseerInterface.getGadget", () => {
     shareGadgets(impl, [100, 101]);
     impl.storage.observers.put(
         { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: 10, 2: 20 } });
-    let adds = legacyFacets(impl);
+    let checks = checkingFacets(impl);
     let client = await openViewer(impl, { role: "use", gadgetIds: [100, 101] });
 
     let gadget = await client.getGadget(100);
 
-    expect(adds).toEqual([1]);
+    expect(checks).toEqual([1]);
     dispose(gadget);
     dispose(client);
   }));
@@ -189,7 +197,7 @@ describe("UseOverseerInterface.getGadget", () => {
     shareGadgets(impl, [100, 101]);
     let record = { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: 10, 2: 20 } };
     impl.storage.observers.put(record);
-    let adds = legacyFacets(impl, new Set([2]));
+    let checks = checkingFacets(impl, new Set([2]));
     let restarts: string[] = [];
     impl.scheduleAccessRestart = async (reason: string) => { restarts.push(reason); };
     let client = await openViewer(impl, { role: "use", gadgetIds: [100, 101] });
@@ -202,7 +210,7 @@ describe("UseOverseerInterface.getGadget", () => {
     expect(impl.storage.observers.get(VIEWER)).toEqual(record);
     expect(restarts).toEqual([]);
     let again = await client.getGadget(100);
-    expect(adds).toEqual([1, 1]);
+    expect(checks).toEqual([1, 2, 1]);
     dispose(again);
     dispose(first);
     dispose(client);

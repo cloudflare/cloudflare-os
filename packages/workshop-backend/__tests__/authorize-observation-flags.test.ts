@@ -1,11 +1,8 @@
-// authorizeObservation sets `containsRestrictedData` (and `ownerInvitesOnly`) one-way, and only once
-// the observation is actually delivered. The exclusion gate is decided first, across an awaited
-// cross-worker fan-out, so an observation the exclusion blocks must leave no trace -- no flag, no
-// record -- and one it admits sets the flags and records in the same synchronous block after the
-// teardown completes.
+// authorizeObservation sets `containsRestrictedData` and `ownerInvitesOnly` one-way, and setting
+// ownerInvitesOnly revokes access for people the owner did not add directly. (That a refused read
+// latches neither flag is covered in observer-ledger.test.ts.)
 //
-// Runs against a real OverseerDurableObject (the TEST_OVERSEER binding); the gatekeeper facet is
-// the only fake.
+// Runs against a real OverseerDurableObject (the TEST_OVERSEER binding).
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -19,14 +16,6 @@ declare module "cloudflare:workers" {
 }
 
 const OWNER = "alice";
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  let promise = new Promise<void>(r => { resolve = r; });
-  return { promise, resolve };
-}
-
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 function getImpl(instance: OverseerDurableObject): any {
   let impl = (instance as unknown as { impl: any }).impl;
@@ -44,53 +33,7 @@ function seedGatekeeper(impl: any, id: number): void {
   });
 }
 
-const RESTRICTED_EXCLUDING_MALLORY = {
-  title: "Read a thing",
-  description: "The test read a thing.",
-  containsRestrictedData: true,
-  excludeObservers: ["obs-m"],
-};
-
 describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly flags", () => {
-  it("sets containsRestrictedData and records only after the exclusion teardown admits the observation", async () => {
-    let stub = env.TEST_OVERSEER.getByName("restricted-flag-teardown-window");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = getImpl(instance);
-      seedGatekeeper(impl, 1);
-      // Mallory holds an observer record but no reachable role: the named exclusion admits the
-      // observation and schedules her teardown.
-      impl.storage.observers.put(
-          { profileId: "mallory", observerId: "obs-m", accountChoices: { 1: 10 } });
-
-      // The cross-worker teardown parks, holding the observation mid-flight before any decision
-      // the delivery rests on has been made.
-      let held = deferred();
-      impl.getGatekeeperFacet = () => ({
-        removeObserver: async () => { await held.promise; },
-      });
-
-      let observation = impl.authorizeObservation(
-          1, RESTRICTED_EXCLUDING_MALLORY, { from: "user" });
-      await tick();
-
-      // Nothing is delivered while the teardown is in flight, so no flag is set: a teardown
-      // that ends in refusal must leave no trace.
-      expect(impl.storage.containsRestrictedData.get()).toBe(false);
-
-      held.resolve();
-      await expect(observation).resolves.toBeUndefined();
-
-      // Delivery: the flag and the record landed together.
-      expect(impl.storage.containsRestrictedData.get()).toBe(true);
-
-      // The teardown still ran (mallory is no longer set up to observe).
-      expect(impl.storage.observers.get("mallory")).toBeUndefined();
-      let records = [...impl.storage.actions.list()];
-      expect(records).toHaveLength(1);
-      expect(records[0].type).toBe("observation");
-    });
-  });
-
   it("sets ownerInvitesOnly only for observations that carry the flag", async () => {
     let stub = env.TEST_OVERSEER.getByName("owner-invites-only-flag");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
@@ -99,14 +42,14 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
 
       // containsRestrictedData alone restricts the workspace but leaves share links working.
       await impl.authorizeObservation(1, {
-        title: "Read a thing", description: "d", containsRestrictedData: true,
+        title: "Read a thing", description: "d", containsRestrictedData: true, subresources: [],
       }, { from: "user" });
       expect(impl.storage.containsRestrictedData.get()).toBe(true);
       expect(impl.storage.ownerInvitesOnly.get()).toBe(false);
 
       await impl.authorizeObservation(1, {
         title: "Read a thing", description: "d", containsRestrictedData: true,
-        ownerInvitesOnly: true,
+        ownerInvitesOnly: true, subresources: [],
       }, { from: "user" });
       expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
 
@@ -139,14 +82,13 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
           { profileId: "dave", observerId: "obs-d", accountChoices: { 1: 11 } });
 
       // Record the restart rather than aborting the DO under the test, and keep the best-effort
-      // cleanup off the network.
+      // listing cleanup off the network.
       let restarts: string[] = [];
       impl.scheduleAccessRestart = async (reason: string) => { restarts.push(reason); };
-      impl.getGatekeeperFacet = () => ({ removeObserver: async () => {} });
       impl.refreshAffectedCollaboratorListings = async () => {};
 
       await impl.authorizeObservation(1, {
-        title: "Read a thing", description: "d", ownerInvitesOnly: true,
+        title: "Read a thing", description: "d", ownerInvitesOnly: true, subresources: [],
       }, { from: "user" });
 
       // Dave joined through a link, so he loses access: the workspace restarts and his observer
@@ -160,7 +102,7 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
 
       // Setting the flag again changes nothing, so it restarts nothing.
       await impl.authorizeObservation(1, {
-        title: "Read a thing", description: "d", ownerInvitesOnly: true,
+        title: "Read a thing", description: "d", ownerInvitesOnly: true, subresources: [],
       }, { from: "user" });
       expect(restarts).toHaveLength(1);
     });
@@ -180,7 +122,7 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       impl.scheduleAccessRestart = async (reason: string) => { restarts.push(reason); };
 
       await impl.authorizeObservation(1, {
-        title: "Read a thing", description: "d", ownerInvitesOnly: true,
+        title: "Read a thing", description: "d", ownerInvitesOnly: true, subresources: [],
       }, { from: "user" });
 
       expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
