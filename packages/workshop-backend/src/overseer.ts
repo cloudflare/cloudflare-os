@@ -10185,6 +10185,13 @@ class OverseerImpl implements AgentHooks {
     const MAX_CONFIG_REPROMPTS = 1;
     // Passes re-run because the scope changed while one awaited (see step 6).
     let scopePasses = 0;
+    // Requirement IDs earlier passes of this call checked, by gatekeeper id, so a pass re-run after
+    // a scope change asks verifyObserverAccess() only about the rest. Registration is never
+    // skipped: addObserver() also enforces history the gatekeeper tracks itself, which can grow
+    // while this call awaits (until this observer is published, a read excluding them is admitted;
+    // see #enforceExcludeObservers). Cleared after a configuration prompt, so no check made before
+    // a wait on the user admits anyone.
+    let checked = new Map<number, Set<string>>();
 
     try {
       while (true) {
@@ -10233,6 +10240,8 @@ class OverseerImpl implements AgentHooks {
           }));
 
           let choices = await configureCb.configure(needs);
+          // The prompt may wait on the user indefinitely; check everything again after it.
+          checked.clear();
           let uncoveredIds = new Set(uncovered.map(gk => gk.id));
           for (let choice of choices) {
             // Validate the choice.
@@ -10256,8 +10265,9 @@ class OverseerImpl implements AgentHooks {
         // 5. Verify all in-scope bindings (covered + newly chosen) with the chosen accounts: hand
         //    each account's verifier to the connection's addObserver(), then, if its observations
         //    recorded requirements the grant reaches, ask it to check those with the same verifier.
-        //    Collect *every* failure rather than just the first, so a re-prompt can present them
-        //    all at once.
+        //    It is asked only about requirements no earlier pass checked (see `checked`). Collect
+        //    *every* failure rather than just the first, so a re-prompt can present them all at
+        //    once.
         let failures = new Map<number, ObserverBindingFailure>();
 
         await Promise.all(inScope.map(async gk => {
@@ -10277,9 +10287,12 @@ class OverseerImpl implements AgentHooks {
             // would delete it moments later); see #withObserverGatekeeperLock.
             await this.#withObserverGatekeeperLock(observerId, gk.id,
                 async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
-            let required = scope.requirements.get(gk.id);
-            if (required) {
-              await this.observerLedger.checkAccess(verifier, observerId, gk, required);
+            let done = checked.get(gk.id) ?? new Set<string>();
+            let unchecked = (scope.requirements.get(gk.id) ?? []).filter(id => !done.has(id));
+            if (unchecked.length > 0) {
+              await this.observerLedger.checkAccess(verifier, observerId, gk, unchecked);
+              for (let id of unchecked) done.add(id);
+              checked.set(gk.id, done);
             }
           } catch (err) {
             // Either a settled denial or an operational failure (expired credentials, upstream
