@@ -256,8 +256,8 @@ export class SharingManager {
    *
    * A key whose link is revoked behaves like an unknown key (it cannot be redeemed), as does one
    * whose link grants a gadget that can no longer be shared. A link granting every gadget, made
-   * before gadgets were shared individually, adds no edges either: the people who redeemed it
-   * keep the edge they hold, but no one else is given that access anymore.
+   * before gadgets were shared individually, still redeems to that legacy grant, though no new
+   * such link can be created.
    *
    * If the workspace has `ownerInvitesOnly` set, a valid key adds nothing: a collaborator the
    * owner added directly is left as they are (so reopening an old link doesn't fail), and anyone
@@ -294,7 +294,7 @@ export class SharingManager {
     }
 
     let ceiling = this.#liveCeiling(link);
-    if (!ceiling || (ceiling.role === "use" && ceiling.gadgetIds === "all")) return;
+    if (!ceiling) return;
 
     let edge: PermissionEdge = {
       type: "shareKey",
@@ -515,10 +515,6 @@ export class SharingManager {
       throw new Error("Share link not found.");
     }
     this.#requireLinkManager(opts.caller, link, "copy");
-    if (ceiling.role === "use" && ceiling.gadgetIds === "all") {
-      throw new Error("This link shares every gadget in the workspace, which links no longer " +
-          "do. Create a link to one gadget instead.");
-    }
 
     // The caller may have lost "build" since creating the link, which left it conferring nothing
     // (see computeEffectiveAccess): a fresh key must not hand it out.
