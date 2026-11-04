@@ -80,13 +80,14 @@ evicted only once a delivery to it fails, so without the cap a registration loop
 devices for one notification to reach.
 
 Unlike the service, the cap counts browsers and phones together, so it can drop a device that is
-still live: a phone behind 20 newer registrations gets no push until its app next registers. An
-honest user doesn't get there. A page load registers its browser's endpoint again, which refreshes
-that entry instead of adding one; the service keeps at most 10 live browsers; and each delivery
-drops the entries the service no longer holds. Dropping a live phone therefore takes 10 live
-browsers plus about 10 new endpoints between two deliveries, or a user with 10 phones and 10
-browsers adding another browser. If users do hit it, cap browsers and phones separately at 10
-each, as the service does.
+still live: a phone behind 20 newer registrations gets no push until its app next registers. That
+is unlikely but not impossible. Reloading a page refreshes its browser's entry instead of adding
+one, and the service keeps at most 10 live browsers and 10 phones, so it takes a user at both
+limits adding another device, or leftover entries for endpoints the service has evicted. Those go
+only when a push to them is answered `invalid_subscription` or `device_gone`: a notification an
+open tab acknowledges sends no push, and any other failure, such as a 429, keeps the entry, so
+leftovers can build up across notifications. If users do hit it, cap browsers and phones
+separately at 10 each, as the service does.
 
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting
