@@ -64,6 +64,36 @@ Data boundaries:
 - A browser's Web Push endpoint and keys pass through the User DO to the service with that DO's
   opaque subject; the installation stores only the subscription id the service returns for them.
 
+`authorizeNotificationDevice`, `registerNotificationDevice` and
+`registerAuthorizedNotificationDevice` share one limit per User DO, native and browser alike: 20
+calls per fixed minute-long window, which opens at the first call after the previous window ends.
+The count is kept in memory, so a restarted User DO opens a new window early. Calls past 20 are
+refused until the window ends, before anything is signed. Each admitted call sends a signed request
+that touches records at the central service the whole installation shares, so one user's loop
+could make them hot and use up the installation's request limit there, refusing every other user's
+pushes until it resets.
+
+The limit covers device calls only; deliveries aren't counted. A notification no open tab
+acknowledges is signed once for each device the User DO stores, and it stores only a user's 10
+most recently registered phones and, separately, their 10 most recently registered browsers, as
+the service keeps that many of each. The User DO drops a device the service evicted only once a
+push to it is answered `invalid_subscription` or `device_gone`, so without the cap a registration
+loop could pile up devices for one notification to reach. It registers one device at a time, so
+it stores them in the order the service received them.
+
+The cap mirrors the service instead of asking it, so it can still drop a live device, which then
+misses pushes until it next registers:
+
+- A phone's place at the service is set when the phone itself registers there, before the
+  installation exchanges that registration, so two phones registering at once can be ordered
+  differently in the two places.
+- A phone on the legacy path below counts toward its Cloudflare account's 10 at the service, so a
+  user with legacy phones from several accounts can have more than 10 live.
+- A device the service dropped for another reason, such as a revoked phone or a browser endpoint
+  another user of the installation took over, still counts here until a push finds it dead.
+
+Agreeing exactly would need the service to report a user's devices, which the protocol doesn't.
+
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting
 `window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a

@@ -5,6 +5,7 @@ import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisionin
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
+import type { Singleton } from "@gadgets/typed-storage";
 import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
@@ -34,6 +35,14 @@ const logger = createWorkshopLogger("workshop.user");
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
+
+// How many notification-service calls (device authorizations and registrations) one user may make
+// per minute; see #countNotificationServiceCall().
+const NOTIFICATION_SERVICE_CALLS_PER_MINUTE = 20;
+
+// A user's notifications go to at most this many of their phones and as many browsers, the most
+// recently registered of each kind, as the service keeps that many of each.
+const NOTIFICATION_DEVICES_PER_KIND = 10;
 
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
 export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
@@ -207,6 +216,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
+  // The current minute of notification-service calls: when it began, and the calls made in it.
+  #notificationCallWindowStart = -Infinity;
+  #notificationCallsInWindow = 0;
+  // The latest registration with the notification service; the next one waits for it to settle.
+  #notificationRegistration: Promise<unknown> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -475,6 +489,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Vouch for this authenticated user using the installation's registered signing identity. */
   async authorizeNotificationDevice(): Promise<string> {
+    this.#countNotificationServiceCall();
     return authorizeDevice(this.env, this.#notificationSubject);
   }
 
@@ -483,24 +498,58 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * for that device's push subscription.
    */
   async registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
-    this.#storeNotificationSubscription(
-        await registerDevice(this.env, registration, this.#notificationSubject));
+    this.#countNotificationServiceCall();
+    let store = typeof registration === "string"
+        ? this.storage.phoneNotificationSubscriptions
+        : this.storage.browserNotificationSubscriptions;
+    await this.#registerNotificationSubscription(
+        store, () => registerDevice(this.env, registration, this.#notificationSubject));
   }
 
   /** Exchange a CFOS-authorized native registration under this User DO's central subject. */
   async registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
-    this.#storeNotificationSubscription(await registerAuthorizedDevice(
-        this.env, deviceRegistrationId, this.#notificationSubject));
+    this.#countNotificationServiceCall();
+    await this.#registerNotificationSubscription(this.storage.phoneNotificationSubscriptions,
+        () => registerAuthorizedDevice(this.env, deviceRegistrationId, this.#notificationSubject));
+  }
+
+  // Counts one signed request to the notification service, throwing past
+  // NOTIFICATION_SERVICE_CALLS_PER_MINUTE in a minute-long window so the caller signs and sends
+  // nothing. Each request touches this installation's records at the central service, which all its
+  // users share, so one user's loop would make them hot for the whole installation. The check and
+  // the increment run before any await, so concurrent calls can't race past the limit. The count is
+  // kept in memory, so a reset forgets at most one window.
+  #countNotificationServiceCall(): void {
+    let now = Date.now();
+    if (now - this.#notificationCallWindowStart >= 60_000) {
+      this.#notificationCallWindowStart = now;
+      this.#notificationCallsInWindow = 0;
+    }
+    if (++this.#notificationCallsInWindow > NOTIFICATION_SERVICE_CALLS_PER_MINUTE) {
+      throw new Error("Too many notification requests. Try again in a minute.");
+    }
   }
 
   get #notificationSubject(): string {
     return this.ctx.id.toString();
   }
 
-  #storeNotificationSubscription(
-      { deviceKey, subscriptionId }: Awaited<ReturnType<typeof registerDevice>>): void {
-    this.storage.notificationSubscriptions.put(
-        { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
+  // Registers one device at a time, so `store` lists them in the order the service received them,
+  // and keeps the latest NOTIFICATION_DEVICES_PER_KIND. That bounds each notification's fan-out: a
+  // device the service evicted would otherwise stay until a push to it was refused as dead, so a
+  // registration loop could pile up devices to push to. It mirrors the service's caps but isn't
+  // authoritative, so a live device can still be dropped (see docs/notifications.md).
+  #registerNotificationSubscription(
+      store: Singleton<Record<string, string>>,
+      register: () => ReturnType<typeof registerDevice>): Promise<void> {
+    let registered = this.#notificationRegistration.then(async () => {
+      let { deviceKey, subscriptionId } = await register();
+      let others = Object.entries(store.get()).filter(([key]) => key !== deviceKey);
+      store.put(Object.fromEntries(
+          [...others, [deviceKey, subscriptionId]].slice(-NOTIFICATION_DEVICES_PER_KIND)));
+    });
+    this.#notificationRegistration = registered.catch(() => {});
+    return registered;
   }
 
   /** Subscribe a visible authenticated client to live user notifications. */
@@ -545,14 +594,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 3_000); }),
     ]).finally(() => clearTimeout(timeout));
     if (acknowledged) return;
-    let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
-    let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
-      if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification)) return;
-      // This subscription is dead; the device gets a new one when its app next opens. Keep one it
-      // registered while this delivery was in flight.
-      let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();
-      if (current === subscriptionId) this.storage.notificationSubscriptions.put(others);
-    }));
+    let subject = this.#notificationSubject;
+    let stores = [
+      this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions,
+    ];
+    let results = await Promise.allSettled(stores.flatMap(store =>
+      Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
+        if (await deliver(this.env, subject, subscriptionId, notification)) return;
+        // This subscription is dead; the device gets a new one when its app next opens. Keep one it
+        // registered while this delivery was in flight.
+        let { [deviceKey]: current, ...others } = store.get();
+        if (current === subscriptionId) store.put(others);
+      })));
     for (let result of results) {
       if (result.status === "rejected") throw result.reason;
     }
