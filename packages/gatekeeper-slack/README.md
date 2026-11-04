@@ -65,8 +65,21 @@ org-token visibility nor `context_team_id` is sufficient. Shared-channel mismatc
 unchanged. See the [users.conversations reference](https://docs.slack.dev/reference/methods/users.conversations/).
 
 Observer checks use each collaborator's own credentials and the selected workspace ID, never
-enterprise-ID equality. Workspace bindings additionally track the conversations actually read,
-excluding collaborators who cannot read newly observed private channels or DMs.
+enterprise-ID equality. Every read reports what it disclosed as observation subresources:
+
+| Subresource ID | Reported by |
+| --- | --- |
+| `workspace/<teamId>` | Workspace metadata, the member directory, and a listing or search page that names no conversation |
+| `workspace/<teamId>/conversation/<conversationId>` | Each conversation a listing or search page names, and every read through a conversation or thread: info, members, messages, search, threads, empty pages included |
+
+Threads report their conversation, since a thread's access control is its conversation's.
+`verifyObserverAccess()` allows a workspace only to an observer whose own account belongs to it,
+and a conversation only to one whose account also opens it there (`conversations.info` in that
+workspace); nothing relies on a binding-wide check. Each observer's `UserAccount` caches its
+answers across bindings and workspaces, an allowed one for 15 minutes and a denial for 15 seconds,
+partitioned by the credentials that learned them, so a reconnect starts afresh. Only Slack's
+answer that a workspace or conversation is out of reach is a denial; any other failure (an
+expired token, a missing scope, a rate limit) fails the check and is not cached.
 
 ### Upgrading existing connections
 
@@ -85,6 +98,13 @@ changing the selected workspace; concurrent checks using the same credential are
 If a legacy org binding has several eligible workspaces and no recoverable selection, it fails
 closed: add the resource again and choose its workspace. Old resource URLs containing an `E…` ID
 also need to be replaced with a selected `T…` workspace URL.
+
+Bindings created before reads reported subresources keep `addObserver()`'s checks while the
+Workshop calls it: a workspace binding requires workspace membership plus every conversation its
+reads recorded, pending or observed; a conversation or thread binding requires its conversation.
+`getHistoricalSubresources()` exports the same IDs, in the workspace reads pin, and throws when that
+workspace can't be recovered. Bindings created since carry `reportsSubresources` in their props and
+export nothing.
 
 Legacy conversation-only/thread-only grants may lack the metadata scopes listed below. Reconnect
 or grant the resource again to approve the additional scopes; the reconnect flow preserves those
@@ -135,7 +155,10 @@ pnpm --filter @gadgets/slack-gatekeeper test:run
 ```
 
 Node regression tests cover OAuth response shapes, workspace API parameters, shared-channel/DM
-boundaries, legacy recovery, reconnects, observer exclusion, and configurator field dependencies.
+boundaries, legacy recovery, reconnects, legacy observer admission, and configurator field
+dependencies. The workerd suite (`vitest.worker.config.ts`) drives the real binding facets,
+`SlackVerifier` and `UserAccount` against a faked Slack Web API: the subresources each read
+reports, `verifyObserverAccess()` answers, caching and reconnects, and legacy history.
 Enterprise DM regressions include nonmatching shared-team metadata, membership on a later listing
 page, nonempty search validation, and denial when the conversation is absent from that workspace.
 Validate the Worker RPC schema with `pnpm exec capnweb-validate build --out .wrangler/validate`

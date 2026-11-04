@@ -7,8 +7,11 @@ import {
   GatekeeperUserVerifier, ObservationDescription,
   stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
+import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import {
   SlackApi, SlackApiError, SlackAccessToken, SlackConversationTypeFilter, SlackOAuthGrant,
   exchangeAuthCode, refreshAccessToken, revokeToken, isWorkspaceId, type SlackInstallation,
@@ -325,11 +328,97 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 }
 
+// ── Observer subresources ───────────────────────────────────────────
+//
+// Every read reports what it disclosed as subresources (see slackSubresourceId), which the
+// Workshop checks collaborators against through verifyObserverAccess(). Slack's access control
+// stops at the conversation, so a thread, message, member or search match reports its
+// conversation. A conversation's check includes its workspace's, so no read relies on the
+// workspace check addObserver() keeps for reads made before they reported subresources.
+
+/** What a Slack read can depend on: a workspace, or with `conversationId`, a conversation in it. */
+type SlackSubresource = { teamId: string; conversationId?: string };
+
+/**
+ * The subresource ID a read reports: `workspace/<teamId>` for the workspace's metadata, its member
+ * directory, or a listing or search page naming no conversation, and
+ * `workspace/<teamId>/conversation/<conversationId>` for each conversation it listed, matched or
+ * read from. A conversation is named within the workspace it was read through, whose membership
+ * its check also requires.
+ */
+function slackSubresourceId({ teamId, conversationId }: SlackSubresource): string {
+  let fragments = [{ name: "workspace", id: teamId }];
+  if (conversationId !== undefined) fragments.push({ name: "conversation", id: conversationId });
+  return formatSubresourceId({ fragments });
+}
+
+/** What a slackSubresourceId() ID names; throws for any other ID. */
+function parseSlackSubresource(id: string): SlackSubresource {
+  let { namespace, fragments: [workspace, conversation, ...rest] } = parseSubresourceId(id);
+  if (namespace === undefined && rest.length === 0 && workspace.name === "workspace" &&
+      isWorkspaceId(workspace.id)) {
+    if (conversation === undefined) return { teamId: workspace.id };
+    if (conversation.name === "conversation") {
+      return { teamId: workspace.id, conversationId: conversation.id };
+    }
+  }
+  throw new Error("Not a Slack subresource ID.");
+}
+
+// How long an account reuses an answer about its access to a subresource, counted from when it
+// started asking Slack. Slack doesn't say when membership changes: a removal is noticed only once
+// the answer that allowed it expires, while a denial is kept briefly so that a new membership is
+// noticed soon.
+const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
+
+/** How long an access answer is reused, by whether it allowed (see the TTLs above). */
+function subresourceAccessTtl(allowed: boolean): number {
+  return allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
+}
+
+/**
+ * Whether `read` succeeds for an account: false when Slack answers that the account cannot see
+ * what it asked for (see SlackApiError.isDenial), and a throw for any other failure, which leaves
+ * the account's access undetermined.
+ */
+async function slackAccess(read: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await read();
+    return true;
+  } catch (error) {
+    if (error instanceof SlackApiError && error.isDenial) return false;
+    throw error;
+  }
+}
+
 // ── UserAccount DO: token storage + rotation ────────────────────────
 
 export class UserAccount extends DurableObject<Env> {
   // Serialize refresh, reconnect, and revoke because rotating refresh tokens are single-use.
   #credentialUpdate: Promise<void> = Promise.resolve();
+
+  // This account's answers about its own access to subresources, keyed by subresource and
+  // partitioned by the credentials that learned them (see #credentialsId), so an answer can't
+  // outlive a disconnect, nor survive a reconnect, which may sign in as another Slack user or
+  // workspace. Bypassed while the account holds no credentials.
+  #access = new KvTtlCache(this.ctx.storage.kv, () => this.#credentialsId(), { name: "access" });
+
+  // Names the credentials installed now, or undefined while there are none. Every install names
+  // its credentials afresh (see #writeGrant), and revoking deletes the name with everything else,
+  // so no load that started under earlier credentials can find the same name when it finishes. A
+  // token refresh renews the same grant, so it keeps the name. Credentials installed before names
+  // existed are named on first use.
+  #credentialsId(): string | undefined {
+    let kv = this.ctx.storage.kv;
+    if (!kv.get<SlackAccessToken>("accessToken")) return undefined;
+    let id = kv.get<string>("credentialsId");
+    if (id === undefined) {
+      id = crypto.randomUUID();
+      kv.put<string>("credentialsId", id);
+    }
+    return id;
+  }
 
   async #updateCredentials<T>(operation: () => Promise<T>): Promise<T> {
     let previous = this.#credentialUpdate;
@@ -476,6 +565,7 @@ export class UserAccount extends DurableObject<Env> {
 
   #writeGrant(grant: SlackOAuthGrant) {
     this.ctx.storage.kv.put<SlackAccessToken>("accessToken", grant.accessToken);
+    this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
     if (grant.refreshToken) this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
     this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
     this.ctx.storage.kv.put<string>("userId", grant.userId);
@@ -547,6 +637,43 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<string[]>("grantedScopes", result.grantedScopes);
     }
     return result.accessToken;
+  }
+
+  /**
+   * Whether this account can read each subresource (see slackSubresourceId), in order: a workspace
+   * when it is one of this account's workspaces, and a conversation when its workspace is and Slack
+   * opens the conversation for this account there. An allowed answer is reused for up to
+   * SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to SUBRESOURCE_ACCESS_DENIED_TTL_MS,
+   * until credentials are next installed. Throws for an ID it can't check, or when access can't be
+   * determined, which is never reused.
+   */
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    // Parsed before anything is asked, so an ID this account can't check is refused outright.
+    let parsed = new Map(subresources.map(id => [id, parseSlackSubresource(id)] as const));
+    let api = new SlackApi(async () => (await this.getAccessToken()).token,
+        { installation: () => this.getInstallation() });
+    // One client per workspace, whose membership proof (see SlackApi.workspaceTeamId) answers the
+    // workspace and is reused by its conversation lookups under the same token.
+    let workspaces = new Map<string, { api: SlackApi; allowed: boolean }>();
+    for (let { teamId } of parsed.values()) {
+      if (workspaces.has(teamId)) continue;
+      let teamApi = api.forWorkspace(teamId);
+      let allowed = await this.#access.cached(slackSubresourceId({ teamId }), subresourceAccessTtl,
+          () => slackAccess(() => teamApi.workspaceTeamId()));
+      workspaces.set(teamId, { api: teamApi, allowed });
+    }
+    // A conversation in a workspace the account is not in is denied without asking about it.
+    let conversations = [...parsed].filter(([, { teamId, conversationId }]) =>
+        conversationId !== undefined && workspaces.get(teamId)!.allowed);
+    let answers = await mapWithConcurrency(conversations, ([id, { teamId, conversationId }]) =>
+        this.#access.cached(id, subresourceAccessTtl, () =>
+            slackAccess(() => workspaces.get(teamId)!.api.getConversationInfo(conversationId!))));
+    let conversationAccess = new Map(conversations.map(([id], index) => [id, answers[index]]));
+    return subresources.map(id => {
+      let { teamId, conversationId } = parsed.get(id)!;
+      return workspaces.get(teamId)!.allowed &&
+          (conversationId === undefined || conversationAccess.get(id)!);
+    });
   }
 
   async alarm(): Promise<void> {
@@ -679,6 +806,7 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
         threadTs,
         permalink: url,
         teamId: await this.#api().workspaceIdForDomain(parsed.hostname.slice(0, -".slack.com".length)),
+        reportsSubresources: true,
       };
       return {
         class: this.ctx.exports.SlackThreadGatekeeperImpl({ props }),
@@ -696,13 +824,16 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
           userObjectId: this.ctx.props.userObjectId,
           conversationId: decodeURIComponent(conversationId),
           teamId,
+          reportsSubresources: true,
         };
         return {
           class: this.ctx.exports.SlackConversationGatekeeperImpl({ props }),
           resource: CONVERSATION_RESOURCE,
         };
       }
-      let props: SlackWorkspaceGatekeeperImplProps = { userObjectId: this.ctx.props.userObjectId, teamId };
+      let props: SlackWorkspaceGatekeeperImplProps = {
+        userObjectId: this.ctx.props.userObjectId, teamId, reportsSubresources: true,
+      };
       return {
         class: this.ctx.exports.SlackWorkspaceGatekeeperImpl({ props }),
         resource: WORKSPACE_RESOURCE,
@@ -763,10 +894,10 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
   }
 
   /**
-   * Mint a verifier representing this account, used by the Slack gatekeepers' addObserver to confirm
-   * a prospective observer may read a bound conversation (and, for workspace bindings, the workspace
-   * and each observed conversation). The verifier carries this user's own account id, so the access
-   * checks run against the observer's *own* Slack token.
+   * Mint a verifier representing this account, used by the Slack gatekeepers' verifyObserverAccess
+   * and addObserver to confirm a prospective observer may read a workspace or conversation. The
+   * verifier carries this user's own account id, so the access checks run against the observer's
+   * *own* Slack token.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -777,38 +908,48 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
 
 // ── Verifier ────────────────────────────────────────────────────────
 //
-// Slack uses the "ACL check (single unit)" observer strategy for conversation and thread bindings
-// (each is one conversation, and a thread inherits its conversation's ACL), and "data-set tracking
-// (by conversation)" for workspace bindings (see the gatekeeper impls' observer methods). Both
-// reduce to per-observer access questions answered against the observer's *own* token:
-//   - hasWorkspaceAccess(id): the app is deployed there and the observer belongs to that workspace.
-//   - hasConversationAccess(id): conversations.info succeeds for the observer. Public channels
-//     resolve for any workspace member; private channels, DMs, and group DMs resolve only for
-//     members/participants — honoring Slack's ACL. The selected workspace is checked independently
-//     because an org token may resolve conversations in several workspaces.
-// The overseer only ever hands this verifier back to a Slack gatekeeper, which may therefore trust
-// the boolean results.
+// Every read reports the workspace or conversations it disclosed (see slackSubresourceId), and
+// verifyObserverAccess() asks each observer's checkSubresourceAccess(), which their own
+// UserAccount answers with their own token, reusing recent answers:
+//   - a workspace: the app is deployed there and the observer belongs to that workspace.
+//   - a conversation: that, and conversations.info succeeds for the observer in that workspace.
+//     Public channels resolve for any workspace member; private channels, DMs, and group DMs
+//     resolve only for members/participants — honoring Slack's ACL. The selected workspace is
+//     checked independently because an org token may resolve conversations in several workspaces.
+// hasWorkspaceAccess and hasConversationAccess answer the same questions live for addObserver,
+// which keeps checking what reads recorded before they reported subresources (see the gatekeeper
+// impls). The overseer only ever hands this verifier back to a Slack gatekeeper, which may
+// therefore trust the results.
 
 type SlackVerifierProps = {
   userObjectId: string;
 };
 
 /**
- * The non-standard methods the Slack gatekeepers call on their own verifier (see addObserver). Not
- * part of the generic GatekeeperUserVerifier contract.
+ * The non-standard methods the Slack gatekeepers call on their own verifier (see
+ * verifyObserverAccess and addObserver). Not part of the generic GatekeeperUserVerifier contract.
  */
 export interface SlackVerifierApi extends GatekeeperUserVerifier {
   hasWorkspaceAccess(teamId: string): Promise<boolean>;
   hasConversationAccess(conversationId: string, teamId: string): Promise<boolean>;
+  /**
+   * Whether the observer's account can read each subresource, in order, reusing recent answers
+   * (see UserAccount.checkSubresourceAccess). Throws for an ID it can't check, or when access
+   * can't be determined (expired credentials, a missing scope, a rate limit).
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
 }
 
 @validateRpc()
 export class SlackVerifier extends WorkerEntrypoint<Env, SlackVerifierProps>
     implements SlackVerifierApi {
-  #api(): SlackApi {
-    let account = this.ctx.exports.UserAccount.get(
+  #account(): DurableObjectStub<UserAccount> {
+    return this.ctx.exports.UserAccount.get(
         this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
-    return accountApi(account);
+  }
+
+  #api(): SlackApi {
+    return accountApi(this.#account());
   }
 
   /**
@@ -833,6 +974,29 @@ export class SlackVerifier extends WorkerEntrypoint<Env, SlackVerifierProps>
       throw error;
     }
   }
+
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    return this.#account().checkSubresourceAccess(subresources);
+  }
+}
+
+// Admits an observer only if their own account can read every subresource, as its UserAccount
+// last learned (see UserAccount.checkSubresourceAccess).
+const checkSlackSubresourceAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<SlackVerifierApi>, subresources: readonly string[]) =>
+      verifier.checkSubresourceAccess([...subresources]),
+});
+
+/**
+ * Every Slack binding's verifyObserverAccess(): fails the whole call for an ID no Slack read
+ * reports (see slackSubresourceId), before asking any observer, then admits each observer whose
+ * own account can read every subresource.
+ */
+async function verifySlackObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+  for (let id of subresources) parseSlackSubresource(id);
+  return checkSlackSubresourceAccess(observers, subresources);
 }
 
 // Slack message permalinks encode ts as p<seconds><6-digit-microseconds>.
@@ -847,33 +1011,27 @@ function messageIdToTs(messageId: string): string {
 type SlackSessionContext = {
   api: SlackApi;
   approvalQueue: RpcStub<ApprovalQueue>;
-  // Set for workspace bindings only: routes conversation-scoped observations through the gatekeeper
-  // so it can record which conversations were revealed and exclude observers who cannot access them.
-  // Undefined for single-unit conversation/thread bindings, whose whole resource is verified up
-  // front. Held by in-process reference (the session runs in the gatekeeper's own isolate), so it is
-  // copied — not duped — across dupSessionContext.
-  tracker?: SlackWorkspaceGatekeeperImpl;
 };
 
 function dupSessionContext(ctx: SlackSessionContext): SlackSessionContext {
-  return { api: ctx.api, approvalQueue: ctx.approvalQueue.dup(), tracker: ctx.tracker };
+  return { api: ctx.api, approvalQueue: ctx.approvalQueue.dup() };
 }
 
-// Authorize a conversation-scoped observation. For workspace bindings this records the revealed
-// conversations as observed data sets and excludes observers lacking access to a newly-seen one; for
-// single-unit bindings it is a plain authorizeObservation. `conversationIds` may be empty for
-// workspace-level reads (workspace metadata, member directory) any member may see. Every read that
-// reveals conversation identity or content should go through this rather than calling
-// approvalQueue.authorizeObservation directly.
-async function authorizeConversationObservation(
-    ctx: SlackSessionContext, conversationIds: string[],
-    description: ObservationDescription): Promise<void> {
-  if (ctx.tracker) {
-    await ctx.tracker.authorizeConversationObservation(
-        ctx.approvalQueue, conversationIds, description);
-  } else {
-    await ctx.approvalQueue.authorizeObservation(description);
-  }
+/**
+ * Authorize a read, reporting what it disclosed as subresources (see slackSubresourceId): each
+ * conversation it listed, matched or read from, or with `"workspace"`, the workspace, for a read
+ * that disclosed nothing narrower (workspace metadata, the member directory, a listing or search
+ * page naming no conversation). Every read authorizes through here, which makes subresources
+ * required; an empty list would report the read as unrestricted, so it is refused.
+ */
+async function observe(
+    ctx: SlackSessionContext, disclosed: readonly string[] | "workspace",
+    description: Omit<ObservationDescription, "subresources">): Promise<void> {
+  let teamId = await ctx.api.workspaceTeamId();
+  let subresources = disclosed === "workspace" ? [slackSubresourceId({ teamId })]
+      : [...new Set(disclosed)].map(conversationId => slackSubresourceId({ teamId, conversationId }));
+  if (subresources.length === 0) throw new Error("A Slack read must report what it disclosed.");
+  await ctx.approvalQueue.authorizeObservation({ ...description, subresources });
 }
 
 function truncate(text: string, max = 200): string {
@@ -966,10 +1124,17 @@ function unreachableAction(): never {
 type SlackWorkspaceGatekeeperImplProps = {
   userObjectId: string;
   teamId?: string;
+  /**
+   * Set on bindings created since every read reported its subresources, which therefore have no
+   * legacy observer history (see getHistoricalSubresources). Absent on older bindings, whose props
+   * an earlier version minted.
+   */
+  reportsSubresources?: true;
 };
 
-// A tracked conversation is "pending" while an observation revealing it is in flight, and "observed"
-// once that observation has been authorized (see #prepareConversationObservation).
+// Recorded by reads made before they reported subresources: "pending" while an observation
+// revealing the conversation was in flight (or after it failed), "observed" once it was
+// authorized. Both are legacy history, which nothing writes or clears any longer.
 type TrackedConversationState = "pending" | "observed";
 
 @validateRpc()
@@ -1005,28 +1170,19 @@ export class SlackWorkspaceGatekeeperImpl extends DurableObject<Env, SlackWorksp
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<SlackWorkspaceSession> {
-    return new SlackWorkspaceSessionImpl(
-        { api: this.#api(), approvalQueue: approvalQueue.dup(), tracker: this });
+    return new SlackWorkspaceSessionImpl({ api: this.#api(), approvalQueue: approvalQueue.dup() });
   }
 
-  // ── Observer tracking (data-set tracking by conversation) ─────────
+  // ── Observers ─────────────────────────────────────────────────────
   //
-  // A workspace binding spans many conversations with distinct ACLs (public/private channels, DMs),
-  // so we track which conversations' data the Gadget has actually observed and verify each observer
-  // against them. addObserver requires workspace membership (so workspace metadata and the member
-  // directory are fine to show) plus access to every already-observed conversation; later, the first
-  // observation revealing a *new* conversation excludes any observer lacking access to it (see
-  // #prepareConversationObservation). Verified observers are remembered (their verifier stored) so the
-  // forward-exclusion check can run. The overseer re-runs addObserver on every open, catching loss
-  // of access promptly.
-
-  #observerKey(id: string): string { return `observer:${id}`; }
-  #trackedConversationKey(id: string): string { return `trackedConversation:${id}`; }
-
-  #isConversationObserved(conversationId: string): boolean {
-    return this.ctx.storage.kv.get<TrackedConversationState>(
-        this.#trackedConversationKey(conversationId)) === "observed";
-  }
+  // A workspace binding spans many conversations with distinct ACLs (public/private channels,
+  // DMs), so every read reports each conversation it disclosed, or the workspace when it disclosed
+  // none (see observe), and verifyObserverAccess() checks the observer's own access to each.
+  //
+  // Reads made before they reported subresources relied on addObserver() instead: it requires
+  // workspace membership (for workspace metadata and the member directory) plus access to every
+  // conversation those reads recorded, pending or observed. The overseer still runs it on every
+  // open, and getHistoricalSubresources() exports the same requirements.
 
   #listTrackedConversations(): string[] {
     let prefix = "trackedConversation:";
@@ -1034,59 +1190,7 @@ export class SlackWorkspaceGatekeeperImpl extends DurableObject<Env, SlackWorksp
         .map(([key]) => key.slice(prefix.length));
   }
 
-  *#listObservers(): IterableIterator<[string, Fetcher<SlackVerifierApi>]> {
-    let prefix = "observer:";
-    for (let [key, verifier] of this.ctx.storage.kv.list<Fetcher<SlackVerifierApi>>({ prefix })) {
-      yield [key.slice(prefix.length), verifier];
-    }
-  }
-
-  // Marks not-yet-observed conversations pending and returns the current observers who cannot access
-  // one of them, plus a commit() promoting them to observed. Conversations stay pending (and are
-  // rechecked on retry) until commit() runs, so an observation the overseer blocks is not recorded
-  // as revealed.
-  async #prepareConversationObservation(conversationIds: string[]):
-      Promise<{ excludeObservers?: string[]; commit(): void }> {
-    let pending = [...new Set(conversationIds)].filter(id => !this.#isConversationObserved(id));
-    if (pending.length === 0) return { commit() {} };
-    for (let id of pending) {
-      let key = this.#trackedConversationKey(id);
-      if (this.ctx.storage.kv.get<TrackedConversationState>(key) === undefined) {
-        this.ctx.storage.kv.put<TrackedConversationState>(key, "pending");
-      }
-    }
-    let excluded: string[] = [];
-    let teamId = await this.#api().workspaceTeamId();
-    for (let [id, verifier] of this.#listObservers()) {
-      let access = await mapWithConcurrency(pending, cid => verifier.hasConversationAccess(cid, teamId));
-      if (!access.every(hasAccess => hasAccess)) excluded.push(id);
-    }
-    return {
-      excludeObservers: excluded.length > 0 ? excluded : undefined,
-      commit: () => {
-        for (let id of pending) {
-          this.ctx.storage.kv.put<TrackedConversationState>(this.#trackedConversationKey(id), "observed");
-        }
-      },
-    };
-  }
-
-  /**
-   * Routes a conversation-scoped observation through data-set tracking (see the class comment).
-   * Called in-process by the workspace session and its child capabilities via
-   * authorizeConversationObservation.
-   */
-  async authorizeConversationObservation(
-      queue: RpcStub<ApprovalQueue>, conversationIds: string[],
-      description: ObservationDescription): Promise<void> {
-    let check = conversationIds.length > 0
-        ? await this.#prepareConversationObservation(conversationIds)
-        : { excludeObservers: undefined, commit() {} };
-    await queue.authorizeObservation({ ...description, excludeObservers: check.excludeObservers });
-    check.commit();
-  }
-
-  async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+  async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<SlackVerifierApi>;
     let boundTeamId = await this.#api().workspaceTeamId();
     if (!(await verifier.hasWorkspaceAccess(boundTeamId))) {
@@ -1094,27 +1198,41 @@ export class SlackWorkspaceGatekeeperImpl extends DurableObject<Env, SlackWorksp
           "This collaborator is not a member of the connected Slack workspace, so they cannot be " +
           "allowed to observe it.");
     }
-    // Loop until no new conversations appear mid-check (concurrent observations may add more).
-    let checked = new Set<string>();
-    while (true) {
-      let conversationIds = this.#listTrackedConversations().filter(cid => !checked.has(cid));
-      if (conversationIds.length === 0) {
-        this.ctx.storage.kv.put(this.#observerKey(id), verifier);
-        return;
-      }
-      let access = await mapWithConcurrency(
-          conversationIds, cid => verifier.hasConversationAccess(cid, boundTeamId));
-      if (access.some(hasAccess => !hasAccess)) {
-        throw new Error(
-            "This collaborator does not have access to a Slack conversation whose data this workspace " +
-            "has read, so they cannot be allowed to observe it.");
-      }
-      for (let cid of conversationIds) checked.add(cid);
+    let access = await mapWithConcurrency(
+        this.#listTrackedConversations(), cid => verifier.hasConversationAccess(cid, boundTeamId));
+    if (access.some(hasAccess => !hasAccess)) {
+      throw new Error(
+          "This collaborator does not have access to a Slack conversation whose data this workspace " +
+          "has read, so they cannot be allowed to observe it.");
     }
   }
 
+  /** Drops the verifier an earlier version stored for this observer; none is stored now. */
   async removeObserver(id: string): Promise<void> {
-    this.ctx.storage.kv.delete(this.#observerKey(id));
+    this.ctx.storage.kv.delete(`observer:${id}`);
+  }
+
+  async verifyObserverAccess(
+      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    return verifySlackObserverAccess(observers, subresources);
+  }
+
+  /**
+   * For a binding created before reads reported subresources, what addObserver() still requires:
+   * its workspace, and each conversation those reads recorded, pending or observed. The workspace
+   * is the one reads pin (see boundWorkspaceId); a binding whose workspace can't be recovered
+   * throws rather than exporting conversations nobody could check. A binding created since reports
+   * everything it reads, so it has no history.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    if (this.ctx.props.reportsSubresources) return [];
+    let teamId = await boundWorkspaceId(this.ctx, this.#account(), this.ctx.props.teamId);
+    return [
+      slackSubresourceId({ teamId }),
+      ...this.#listTrackedConversations().map(
+          conversationId => slackSubresourceId({ teamId, conversationId })),
+    ];
   }
 
   applyAction(): Promise<void> { return unreachableAction(); }
@@ -1126,6 +1244,8 @@ type SlackConversationGatekeeperImplProps = {
   userObjectId: string;
   conversationId: string;
   teamId?: string;
+  /** See SlackWorkspaceGatekeeperImplProps.reportsSubresources. */
+  reportsSubresources?: true;
 };
 
 @validateRpc()
@@ -1171,11 +1291,10 @@ export class SlackConversationGatekeeperImpl
   }
 
   /**
-   * Observer tracking: "ACL check (single unit)". The binding is one conversation, so we simply
-   * confirm the observer can read it with their own token (see SlackVerifier). Nothing read later
-   * could be outside that conversation, so no observers are tracked, no excludeObservers is set, and
-   * removeObserver is an idempotent no-op. The overseer re-runs addObserver on every open, catching
-   * loss of access promptly.
+   * Observer tracking: "ACL check (single unit)". The binding is one conversation, which every
+   * read reports (see verifyObserverAccess). Reads made before they did relied on this check
+   * instead, so it is kept for them: the observer can read the conversation with their own token
+   * (see SlackVerifier). Nothing is tracked and removeObserver is an idempotent no-op.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<SlackVerifierApi>;
@@ -1189,6 +1308,23 @@ export class SlackConversationGatekeeperImpl
 
   async removeObserver(_id: string): Promise<void> {}
 
+  async verifyObserverAccess(
+      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    return verifySlackObserverAccess(observers, subresources);
+  }
+
+  /**
+   * For a binding created before reads reported subresources, what addObserver() still requires:
+   * the bound conversation, in the workspace reads pin (see boundWorkspaceId). A binding created
+   * since reports everything it reads, so it has no history.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    if (this.ctx.props.reportsSubresources) return [];
+    let teamId = await boundWorkspaceId(this.ctx, this.#account(), this.ctx.props.teamId);
+    return [slackSubresourceId({ teamId, conversationId: this.ctx.props.conversationId })];
+  }
+
   applyAction(): Promise<void> { return unreachableAction(); }
   rejectAction(): Promise<void> { return unreachableAction(); }
   revertAction(): Promise<void> { return unreachableAction(); }
@@ -1200,6 +1336,8 @@ type SlackThreadGatekeeperImplProps = {
   threadTs: string;
   permalink: string;
   teamId?: string;
+  /** See SlackWorkspaceGatekeeperImplProps.reportsSubresources. */
+  reportsSubresources?: true;
 };
 
 @validateRpc()
@@ -1249,10 +1387,10 @@ export class SlackThreadGatekeeperImpl extends DurableObject<Env, SlackThreadGat
   }
 
   /**
-   * Observer tracking: "ACL check (single unit)". A thread inherits its conversation's ACL, so we
-   * confirm the observer can read that conversation with their own token (see SlackVerifier). Nothing
-   * read later could be outside it, so no observers are tracked and removeObserver is an idempotent
-   * no-op. The overseer re-runs addObserver on every open, catching loss of access promptly.
+   * Observer tracking: "ACL check (single unit)". A thread inherits its conversation's ACL, which
+   * every read reports (see verifyObserverAccess). Reads made before they did relied on this check
+   * instead, so it is kept for them: the observer can read that conversation with their own token
+   * (see SlackVerifier). Nothing is tracked and removeObserver is an idempotent no-op.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<SlackVerifierApi>;
@@ -1265,6 +1403,24 @@ export class SlackThreadGatekeeperImpl extends DurableObject<Env, SlackThreadGat
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  async verifyObserverAccess(
+      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    return verifySlackObserverAccess(observers, subresources);
+  }
+
+  /**
+   * For a binding created before reads reported subresources, what addObserver() still requires:
+   * the thread's conversation, in the workspace reads pin (see boundWorkspaceId). A binding created
+   * since reports everything it reads, so it has no history.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    if (this.ctx.props.reportsSubresources) return [];
+    let domain = new URL(this.ctx.props.permalink).hostname.slice(0, -".slack.com".length);
+    let teamId = await boundWorkspaceId(this.ctx, this.#account(), this.ctx.props.teamId, domain);
+    return [slackSubresourceId({ teamId, conversationId: this.ctx.props.conversationId })];
+  }
 
   applyAction(): Promise<void> { return unreachableAction(); }
   rejectAction(): Promise<void> { return unreachableAction(); }
@@ -1288,7 +1444,7 @@ class SlackWorkspaceSessionImpl extends RpcTarget implements SlackWorkspaceSessi
 
   async getInfo(): Promise<SlackWorkspaceInfo> {
     let info = await this.#ctx.api.getWorkspaceInfo();
-    await authorizeConversationObservation(this.#ctx, [], {
+    await observe(this.#ctx, "workspace", {
       title: "Read Slack workspace info",
       description: `Read metadata for the "${info.name}" workspace.`,
     });
@@ -1299,7 +1455,8 @@ class SlackWorkspaceSessionImpl extends RpcTarget implements SlackWorkspaceSessi
       types: SlackConversationTypeFilter[], title: string): Cursor<SlackConversationEntry> {
     return new SlackCursor<SlackConversationEntry>(this.#ctx, async (ctx, cursor) => {
       let page = await ctx.api.listUserConversations(types, cursor, CONVERSATION_PAGE_SIZE);
-      await authorizeConversationObservation(ctx, page.items.map(info => info.id), {
+      // A page naming no conversation still discloses something about the workspace.
+      await observe(ctx, page.items.length > 0 ? page.items.map(info => info.id) : "workspace", {
         title: `${title} (${page.items.length})`,
         description: page.items.length > 0
             ? `Listed conversations:\n${page.items.map(info =>
@@ -1322,7 +1479,7 @@ class SlackWorkspaceSessionImpl extends RpcTarget implements SlackWorkspaceSessi
   async listUsers(): Promise<Cursor<SlackUser>> {
     return new SlackCursor<SlackUser>(this.#ctx, async (ctx, cursor) => {
       let page = await ctx.api.listUsers(cursor, USER_PAGE_SIZE);
-      await authorizeConversationObservation(ctx, [], {
+      await observe(ctx, "workspace", {
         title: `List Slack members (${page.items.length})`,
         description: `Read a page of ${page.items.length} workspace members.`,
       });
@@ -1332,7 +1489,7 @@ class SlackWorkspaceSessionImpl extends RpcTarget implements SlackWorkspaceSessi
 
   async getUser(userId: string): Promise<SlackUser> {
     let user = await this.#ctx.api.getWorkspaceUser(userId);
-    await authorizeConversationObservation(this.#ctx, [], {
+    await observe(this.#ctx, "workspace", {
       title: `Read Slack user ${user.username}`,
       description: `Read profile for user ${user.username} (${user.id}).`,
     });
@@ -1341,7 +1498,7 @@ class SlackWorkspaceSessionImpl extends RpcTarget implements SlackWorkspaceSessi
 
   async getConversation(conversationId: string): Promise<SlackConversation> {
     let info = await this.#ctx.api.getConversationInfo(conversationId);
-    await authorizeConversationObservation(this.#ctx, [info.id], {
+    await observe(this.#ctx, [info.id], {
       title: `Open Slack conversation ${info.name ? "#" + info.name : info.id}`,
       description: `Open ${conversationLabel(info)} for reading.`,
     });
@@ -1352,8 +1509,8 @@ class SlackWorkspaceSessionImpl extends RpcTarget implements SlackWorkspaceSessi
     validateSearchQuery(query);
     return new SlackCursor<SlackMessageEntry>(this.#ctx, async (ctx, cursor) => {
       let page = await ctx.api.searchMessages(query, cursor, SEARCH_PAGE_SIZE);
-      let channelIds = [...new Set(page.items.map(match => match.channelId))];
-      await authorizeConversationObservation(ctx, channelIds, {
+      let channelIds = page.items.map(match => match.channelId);
+      await observe(ctx, channelIds.length > 0 ? channelIds : "workspace", {
         title: `Search Slack (${page.items.length} results)`,
         description:
             `Search the workspace for messages.\n\nQuery: ${truncate(query)}\n\n` +
@@ -1382,7 +1539,7 @@ class SlackConversationImpl extends RpcTarget implements SlackConversation {
 
   async getInfo(): Promise<SlackConversationInfo> {
     let info = await this.#ctx.api.getConversationInfo(this.#conversationId);
-    await authorizeConversationObservation(this.#ctx, [this.#conversationId], {
+    await observe(this.#ctx, [this.#conversationId], {
       title: `Read Slack conversation info ${info.name ? "#" + info.name : info.id}`,
       description: `Read metadata for ${conversationLabel(info)}.`,
     });
@@ -1394,7 +1551,7 @@ class SlackConversationImpl extends RpcTarget implements SlackConversation {
     return new SlackCursor<SlackUser>(this.#ctx, async (ctx, cursor) => {
       let page = await ctx.api.listConversationMembers(conversationId, cursor, MEMBER_PAGE_SIZE);
       let users = await mapWithConcurrency(page.items, id => ctx.api.getUser(id));
-      await authorizeConversationObservation(ctx, [conversationId], {
+      await observe(ctx, [conversationId], {
         title: `List Slack conversation members (${users.length})`,
         description: `Read ${users.length} members of conversation ${conversationId}.`,
       });
@@ -1406,7 +1563,7 @@ class SlackConversationImpl extends RpcTarget implements SlackConversation {
     let conversationId = this.#conversationId;
     return new SlackCursor<SlackMessageEntry>(this.#ctx, async (ctx, cursor) => {
       let page = await ctx.api.listHistory(conversationId, cursor, HISTORY_PAGE_SIZE);
-      await authorizeConversationObservation(ctx, [conversationId], {
+      await observe(ctx, [conversationId], {
         title: `Read Slack messages (${page.items.length})`,
         description:
             `Read a page of ${page.items.length} messages from conversation ${conversationId}.`,
@@ -1431,7 +1588,7 @@ class SlackConversationImpl extends RpcTarget implements SlackConversation {
       let effectiveQuery = info.name ? `in:#${info.name} ${query}` : query;
       let page = await ctx.api.searchMessages(
           effectiveQuery, cursor, SEARCH_PAGE_SIZE, conversationId);
-      await authorizeConversationObservation(ctx, [conversationId], {
+      await observe(ctx, [conversationId], {
         title: `Search Slack conversation (${page.items.length} results)`,
         description:
             `Search within ${conversationLabel(info)}.\n\nQuery: ${truncate(query)}\n\n` +
@@ -1479,7 +1636,7 @@ class SlackThreadImpl extends RpcTarget implements SlackThread {
   async getRoot(): Promise<SlackMessage> {
     let { root } = await this.#resolveRoot();
     if (!root) throw new Error(`Thread ${this.#threadTs} not found.`);
-    await authorizeConversationObservation(this.#ctx, [this.#conversationId], {
+    await observe(this.#ctx, [this.#conversationId], {
       title: "Read Slack thread root",
       description: `Read the root message of a thread in conversation ${this.#conversationId}.`,
     });
@@ -1497,7 +1654,7 @@ class SlackThreadImpl extends RpcTarget implements SlackThread {
       cursor = result.nextCursor;
       if (!cursor || messages.length >= MAX_THREAD_REPLIES) break;
     }
-    await authorizeConversationObservation(this.#ctx, [this.#conversationId], {
+    await observe(this.#ctx, [this.#conversationId], {
       title: `Read Slack thread (${messages.length} messages)`,
       description:
           `Read a thread of ${messages.length} messages in conversation ${this.#conversationId}.`,
