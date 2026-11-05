@@ -1635,7 +1635,8 @@ export const ADMIN_SETTING_METHODS = [
   "removeGatewayModel", "setUserModelsEnabled", "setModelsDevSuggestions",
   "setGatewayModelSettings", "setDefaultReasoning", "setGatewayProviderEnabled",
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
-  "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setAdminAuditRetentionDays",
+  "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
+  "setAdminAuditRetentionDays",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
