@@ -907,7 +907,9 @@ export async function revokeToken(
 
 /**
  * GitLab's REST API as one account. With `project`, a request beneath its path is sent by its id
- * (see PinnedProject); redirects are never followed (see `redirectMessage`).
+ * (see PinnedProject). Only a GET of a project's root by path may follow one redirect to a
+ * project root by id, re-issued to the configured API origin (see `redirectTarget`). All other
+ * redirects are refused (see `redirectMessage`).
  */
 export class GitLabApi {
   #instance: GitLabInstance;
