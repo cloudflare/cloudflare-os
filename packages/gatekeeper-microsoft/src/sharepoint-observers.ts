@@ -169,10 +169,10 @@ export class AccessProbeError extends Error {
  * denied, as is one Graph says is missing or forbidden. Anything else (throttling that outlasted
  * the batch's own retries, an outage) throws: the check could not be made.
  */
-export async function probeUnits(api: GraphApi, unitsasked: readonly (AccessUnit | null)[]): Promise<boolean[]> {
-  const verdicts = Array.from({ length: unitsasked.length }, () => false);
+export async function probeUnits(api: GraphApi, asked: readonly (AccessUnit | null)[]): Promise<boolean[]> {
+  const verdicts = Array.from({ length: asked.length }, () => false);
   const requests: { index: number; unit: AccessUnit; request: BatchRequest }[] = [];
-  unitsasked.forEach((unit, index) => {
+  asked.forEach((unit, index) => {
     if (unit !== null) requests.push({ index, unit, request: { id: String(index), method: "GET", url: probePath(unit) } });
   });
   for (let start = 0; start < requests.length; start += MAX_BATCH_REQUESTS) {

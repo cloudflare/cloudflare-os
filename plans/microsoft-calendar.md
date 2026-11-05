@@ -135,15 +135,19 @@ one. Provisional `~N` IDs of events not yet created resolve first. Listings use 
 
 ## Observers: sharing a gadget
 
-Every read names what it revealed as **units** (`calendar-observers.ts`):
+Every read reports what it revealed as subresource IDs (`calendar-observers.ts`, `subresources.ts`),
+which the Workshop checks through `verifyObserverAccess()` (`observer-access.ts`):
 
-- `calendar:<ownerId>:<calendarId>:<level>`: events of a calendar at `freeBusy`, `limited`,
-  `full`, or `private` (a private event shown in detail).
-- `calendars:<ownerId>`: anything an all-calendars binding revealed.
-- `availability:<address>`: a person's free/busy.
+- `calendar/user/<ownerId>/<projection>/<calendarId>`: events of a calendar at `freeBusy`,
+  `limitedCalendar`, `calendar` (full), or `privateCalendar` (a private event shown in detail).
+- `calendar/user/<ownerId>`: anything an all-calendars binding revealed.
+- `calendar/availability/<address>`: a person's free/busy.
 
-An observer must first have a working connection in the binding owner's tenant, and is then
-admitted only if they could see every unit in Outlook themselves:
+Reads made before reads reported subresources recorded the same units as `calendar:`, `calendars:`
+and `availability:` in the binding's legacy tracker, which admission still checks.
+
+An observer must be in the binding owner's tenant, with a working connection, and is then admitted
+only if they could see every subresource in Outlook themselves:
 
 - **A calendar the connected user owns**: decided from the owner's side, from Exchange's own ACL
   (`calendarPermissions`, `calendar-acl.ts`), so the observer needs no new permissions. The
@@ -156,7 +160,7 @@ admitted only if they could see every unit in Outlook themselves:
   Outlook stops counting within that long.
 - **A calendar someone else owns** (shared with the user): Exchange won't show its ACL to a sharee,
   so only that calendar's owner can observe it.
-- **`calendars:`**: only that user passes, which is right for a chat binding.
+- **An all-calendars binding's reads**: only that user passes, which is right for a chat binding.
 - **Availability**: probed as the observer, with their own `getSchedule`: it must answer for that
   person with something other than "no information" (an all-`4` `availabilityView`, which
   `parseSchedule` turns into an error, so a read treats such a person the same way: not free, but

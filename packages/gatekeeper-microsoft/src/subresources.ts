@@ -179,10 +179,8 @@ function calendarUnit(shape: string, ids: string[]): CalendarUnit | null {
   }
   if (!isObjectId(first) || first !== first.toLowerCase()) return null;
   if (shape === "user") return { kind: "calendars", ownerId: first };
-  const [user, projection] = shape.split("/");
-  const level = (Object.keys(PROJECTIONS) as RevealLevel[]).find(candidate => PROJECTIONS[candidate] === projection);
-  return user === "user" && level !== undefined && isMailId(calendarId)
-    ? { kind: "calendar", ownerId: first, calendarId, level } : null;
+  const level = (Object.keys(PROJECTIONS) as RevealLevel[]).find(candidate => shape === `user/${PROJECTIONS[candidate]}`);
+  return level !== undefined && isMailId(calendarId) ? { kind: "calendar", ownerId: first, calendarId, level } : null;
 }
 
 /**

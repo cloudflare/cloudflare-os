@@ -82,6 +82,7 @@ describe("subresource IDs", () => {
       `outlook/user/${USER.toUpperCase()}`,
       `outlook/user/${USER}/message/${encodeURIComponent("has spaces")}`,
       `calendar/user/${USER}/everything/AAMkCal%3D`,
+      `calendar/user/${USER}/calendar/AAMkCal%3D/item/x`,
       "calendar/availability/no-at-sign",
       "calendar/availability/Sarah%40contoso.com",
       `tenant/${TENANT.toUpperCase()}`,
