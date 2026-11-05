@@ -9,7 +9,8 @@
  * - an item that is gone -- deleted by someone else since the client saw it -- is rejected as
  *   `missing`, and the client may re-create it from its draft (a writer's text wins over a
  *   deleter's absence) by sending it again with `baseVersion` 0;
- * - an accepted item takes the next version after the one it replaced (1 for a new one);
+ * - an accepted item takes the next version after the one it replaced (`createdVersion`, 1 by
+ *   default, for a new one);
  * - an item identical to what is stored is neither a change nor a conflict;
  * - a deletion is version-checked the same way, so a delete never destroys what it has not seen,
  *   and deleting what is already gone is nothing at all.
@@ -53,6 +54,13 @@ export interface VersionedOptions<Item extends Versioned> {
    * which is exact for flat items; an item holding nested objects supplies its own.
    */
   isUnchanged?(current: Item, incoming: Omit<Item, "version">): boolean;
+  /**
+   * The version a created item takes; 1 by default. Where a deleted id can come back (an undone
+   * deletion), pass one above every version the id has had -- the revision the batch makes, say --
+   * so that an id and a version still name one content: a client holding the old item then sees
+   * the new one as newer, and an edit based on the old one is `stale`, not applied over it.
+   */
+  createdVersion?: number;
 }
 
 /** What a batch did. */
@@ -125,7 +133,7 @@ export function applyVersioned<Item extends Versioned>(
       conflicts.push({ id: incoming.id, reason: "missing" });
       continue;
     }
-    const next = { ...content, version: (existing?.version ?? 0) + 1 } as unknown as Item;
+    const next = { ...content, version: existing ? existing.version + 1 : options.createdVersion ?? 1 } as unknown as Item;
     items.set(next.id, next);
     accepted.push(next);
   }

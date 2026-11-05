@@ -44,6 +44,13 @@ describe("applyVersioned", () => {
     expect(outcome.status).toBe("conflict");
   });
 
+  it("creates a new item at the createdVersion it is given, leaving existing ones to count on", () => {
+    const outcome = applyVersioned(blocks(["a", "<p>a</p>", 3]), {
+      upserts: [{ id: "a", html: "<p>a!</p>", baseVersion: 3 }, { id: "n", html: "<p>back</p>", baseVersion: 0 }],
+    }, { createdVersion: 7 });
+    expect(outcome.accepted).toEqual([{ id: "a", html: "<p>a!</p>", version: 4 }, { id: "n", html: "<p>back</p>", version: 7 }]);
+  });
+
   it("treats identical content as no change, and lets the gadget judge nested content", () => {
     const same = applyVersioned(blocks(["a", "<p>a</p>", 2]), { upserts: [{ id: "a", html: "<p>a</p>", baseVersion: 2 }] });
     expect(same).toMatchObject({ accepted: [], conflicts: [], changed: false, status: "unchanged" });
