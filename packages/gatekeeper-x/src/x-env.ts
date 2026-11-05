@@ -74,6 +74,8 @@ export type ResourceKind = "account" | "post" | "list" | "profile";
 export type XGatekeeperImplProps = {
   /** The `UserAccount` Durable Object holding the connection. */
   userObjectId: string;
+  /** Immutable proof this binding never submitted unredacted provider-private action previews. */
+  redactsActionPreviews?: true;
 } & (
   | { resourceKind: "account" }
   | { resourceKind: "post"; postId: string }

@@ -84,19 +84,38 @@ X's developer agreement puts these on the app's owner, not on Gadgets:
 
 ## Sharing a workspace
 
-Anyone a workspace is shared with can observe what it reads from X that is public: public posts,
-profiles, public Lists, and an unprotected account's followers and following. They need no X
-connection of their own for that, and a Post or List binding doesn't check that their account can
-see the bound post or List. What the account reads that is private to it -- bookmarks, likes, mutes,
-private Lists, a protected account's follow graph and home timeline, and posts by protected accounts
--- is reported to the Workshop as `user/<id>`, the numeric ID of the X user the connection is pinned
-to, and is shown only to collaborators whose own connection is pinned to that same X user. Checking
-that makes no request to X, so it costs no reads. See `docs/observers.md`.
+Public reads -- public posts, profiles, public Lists, and an unprotected account's followers and
+following -- report `[]`, so the X gatekeeper adds no provider-access restriction to them. The
+Workshop still requires collaborators to choose an X account/verifier for an in-scope binding;
+this does **not** enable account-free workspace admission. New bindings make no extra credential
+or bound-post/List visibility probe in `addObserver()`.
+
+What the account reads that is private to it -- bookmarks, likes, mutes, private Lists, a protected
+account's follow graph and home timeline, and any page containing a protected author's post **or
+a post whose author's privacy X did not report** -- reports `user/<id>`, the numeric ID of the X user
+the connection is pinned to. Only collaborators connected as that same X user can observe it. The
+identity comparison makes no billed resource read; refreshing expired credentials may contact X.
+See `docs/observers.md`.
 
 Post and List connection cards show only the resource's ID and link, never post text, List names or
 member counts. These descriptions can be seen without read authorization, so private details are
 returned only by session reads subject to the checks above. Old cached Post/List descriptions are
 discarded when described; describing these bindings makes no billed request to X.
+
+Action previews are visible outside read authorization too. Provider-private or unknown-author
+post text and author metadata are redacted, including reply targets and posts quoting or reposting
+protected authors; private List names are replaced by IDs. Caller-supplied drafts and changes stay
+visible for approval. Definitely public provider context can still be shown.
+
+**Existing writable bindings stay same-X-account-only**, including public-only bindings: historical
+action previews can contain private data without any recorded observation. Newly minted bindings
+carry immutable `redactsActionPreviews: true` props and do not need that legacy fence. A legacy
+binding without a stored pinned identity fails closed. This does not add billed visibility probes.
+The history exporter preserves every legacy `observed:owner` requirement. Without one, an existing
+writable binding whose persistent journal counter shows any action was allocated cannot reconstruct
+its old preview requirements and throws, even if action rows were pruned; an absent counter proves
+no action history. Removing that fence requires historical-log remediation, not merely reconnecting
+or redacting future previews. Do not drop the old binding's protection just by creating a new one.
 
 ## Troubleshooting
 

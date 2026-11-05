@@ -571,7 +571,8 @@ export class XPostImpl extends RpcTarget implements XPost {
 
   async reply(draft: XPostDraft): Promise<XPost> {
     const { host } = this.#ctx;
-    const parent = await this.#info();
+    const target = await this.#target();
+    const parent = target.info;
     const me = await host.me();
     validateReplyParent(parent, me);
     validateDraft(draft, me, pendingTexts(host.pending()));
@@ -580,7 +581,7 @@ export class XPostImpl extends RpcTarget implements XPost {
     await host.submit(this.#ctx.queue, "reply", {
       ref,
       draft: stored,
-      parent: { id: host.resolve(this.#id), info: parent },
+      parent: target,
       conversationId: parent.conversationId,
       submittedAt: Date.now(),
     });
@@ -631,9 +632,8 @@ export class XPostImpl extends RpcTarget implements XPost {
   }
 
   /**
-   * The post an action targets, read to describe it to the approver: not an observation. The
-   * action keeps it, and a read simulating the action can show it (a pending repost among the
-   * account's posts), so authors whose privacy X didn't report are kept as protected.
+   * The post an action targets: not an observation. Unknown author privacy stays protected in the
+   * payload, both for simulation and for redacting provider text from unguarded action previews.
    */
   async #target(): Promise<{ id: string; info: XPostInfo }> {
     const { info, unverified } = await this.#read();
@@ -907,13 +907,13 @@ export class XListImpl extends RpcTarget implements XList {
     await this.#ctx.host.submit(this.#ctx.queue, "listMember", { list, user: toUserInfo(user, false), add });
   }
 
-  /** The List an action targets, which the connected account must own: not an observation. */
+  /** The owned List an action targets; keep provider privacy despite pending privacy changes. */
   async #owned(): Promise<{ id: string; info: XListInfo }> {
-    const { info } = await readList(this.#ctx, this.#id);
+    const { info, restricted } = await readList(this.#ctx, this.#id);
     if (info.owner.id !== (await this.#ctx.host.me()).id) {
       throw new Error("Only Lists the connected account owns can be changed.");
     }
-    return { id: this.#ctx.host.resolve(this.#id), info };
+    return { id: this.#ctx.host.resolve(this.#id), info: restricted && !info.private ? { ...info, private: true } : info };
   }
 }
 

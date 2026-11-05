@@ -118,6 +118,16 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
   readonly #observers = trackedCollectionObservers<XVerifierApi>({
     kv: this.ctx.storage.kv,
     collectionPrefix: OBSERVED_PREFIX,
+    verifyBaseline: async verifier => {
+      // Old action-only logs can contain private provider data without an observed:owner marker.
+      // Their descriptions live in the kernel, beyond this facet's ability to redact or enumerate.
+      // Only immutable new-binding props prove none were submitted; a missing old pin must throw.
+      if (this.ctx.props.redactsActionPreviews !== true && this.ctx.props.resourceKind !== "profile"
+          && !await this.#isPinnedUser(verifier)) {
+        throw new Error("This X binding may have private historical action previews. Only a " +
+          "collaborator connected as the same X account can observe it.");
+      }
+    },
     hasCollectionAccess: async (verifier, ids) => {
       const same = await this.#isPinnedUser(verifier);
       return ids.map(id => id === OWNER_COLLECTION && same);
@@ -279,9 +289,9 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
   }
 
   /**
-   * Admits any observer, unless reads private to the account were recorded before they reported
-   * subresources: then only one connected as the same X user. Every read since reports what
-   * restricts it, which the Workshop checks through `verifyObserverAccess()`.
+   * Preserves same-user admission for legacy writable bindings, whose action logs may contain
+   * private provider data. New bindings need no baseline credential check here; the Workshop still
+   * requires an account/verifier choice. Recorded legacy owner reads remain checked in either case.
    */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user);
@@ -310,14 +320,21 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
   }
 
   /**
-   * Exports what reads recorded before they reported subresources: the `owner` collection, observed
-   * or still pending (its read may have been recorded), as the pinned X user's `user/<id>`. Public
-   * reads recorded nothing, and a Post or List binding's check that an observer could see the bound
-   * post or List guarded admission, not data a read recorded, so nothing else is exported.
+   * Exports recorded legacy owner reads as the pinned X user's `user/<id>`. An old writable binding's
+   * persistent action counter outlives its journal rows, so its absence proves no action was staged.
+   * With a counter but no recorded owner requirement, private previews cannot be reconstructed from
+   * this facet: fail rather than invent history or return an incomplete empty export.
    */
   async getHistoricalSubresources(): Promise<string[]> {
-    if (this.ctx.storage.kv.get(`${OBSERVED_PREFIX}${OWNER_COLLECTION}`) === undefined) return [];
-    return [xUserSubresourceId(this.#pinnedUserId())];
+    if (this.ctx.storage.kv.get(`${OBSERVED_PREFIX}${OWNER_COLLECTION}`) !== undefined) {
+      return [xUserSubresourceId(this.#pinnedUserId())];
+    }
+    if (this.ctx.props.redactsActionPreviews !== true && this.ctx.props.resourceKind !== "profile"
+        && this.ctx.storage.kv.get("x:nextActionId") !== undefined) {
+      throw new Error("This X binding has historical action previews whose private requirements " +
+        "cannot be reconstructed. Same-account observer admission must remain in place.");
+    }
+    return [];
   }
 
   // -- the connection ----------------------------------------------------------------------

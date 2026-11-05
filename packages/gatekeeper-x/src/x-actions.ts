@@ -29,11 +29,12 @@ import {
 } from "./x-api";
 import type { StoredIdentity } from "./x-credentials";
 import { VENDOR_ID } from "./x-env";
-import { sentContent, type SentContent, type WireList, type WirePost, type WireUser } from "./x-normalize";
+import { mentionsProtectedAuthor, sentContent, type SentContent, type WireList, type WirePost, type WireUser } from "./x-normalize";
 import {
   TEXT_LIMIT, TEXT_LIMIT_PREMIUM, comparableText, comparableUrl, duplicateKey, extractCashtags, extractMentions, extractUrls,
   weightedLength, withoutLeadingMentions,
 } from "./x-text";
+import { postUrl } from "./x-urls";
 
 /** Most posts one thread may hold. */
 export const MAX_THREAD_POSTS = 25;
@@ -335,12 +336,20 @@ function linkNote(drafts: readonly StoredDraft[]): string {
 }
 
 function targetFields(builder: ActionDescriptionBuilder, post: PostTarget): ActionDescriptionBuilder {
-  builder.inline("Post", post.info.url ?? `your pending post ${post.id}`);
-  if (post.info.text) builder.verbatim("Post text", post.info.text);
+  builder.inline("Post", mentionsProtectedAuthor([post.info]) ? postUrl(post.id)
+    : post.info.url ?? `your pending post ${post.id}`);
+  // Action descriptions are visible through the action log without observation authorization.
+  if (!mentionsProtectedAuthor([post.info]) && post.info.text) builder.verbatim("Post text", post.info.text);
   return builder;
 }
 
-const post = (target: PostTarget) => handle(target.info.author.username);
+const post = (target: PostTarget) => mentionsProtectedAuthor([target.info])
+  ? "a protected or unverified X account" : handle(target.info.author.username);
+
+/** Private List names, unlike their numeric IDs, cannot appear in unguarded action logs. */
+function listLabel(target: ListTarget): string {
+  return target.info.private ? `X List ${target.id}` : `X List "${target.info.name}"`;
+}
 
 // ---------------------------------------------------------------------------
 // Apply.
@@ -717,11 +726,14 @@ export const actions = defineActions<XActionHost, XActions>({
       const me = await host.me();
       const builder = buildDescription(`Reply on X as ${handle(me.username)} to a post by ` +
         `${post(payload.parent)}.${linkNote([payload.draft])}`);
-      builder.inline("Replying to", payload.parent.info.url ?? `your pending post ${payload.parent.id}`);
-      if (payload.parent.info.text) builder.verbatim("Their post", payload.parent.info.text);
+      builder.inline("Replying to", mentionsProtectedAuthor([payload.parent.info]) ? postUrl(payload.parent.id)
+        : payload.parent.info.url ?? `your pending post ${payload.parent.id}`);
+      if (!mentionsProtectedAuthor([payload.parent.info]) && payload.parent.info.text) {
+        builder.verbatim("Their post", payload.parent.info.text);
+      }
       addDraftFields(builder, payload.draft, "Reply");
       return {
-        title: sanitizeTitle(`Reply on X to @${payload.parent.info.author.username} as @${me.username}`),
+        title: sanitizeTitle(`Reply on X to ${post(payload.parent)} as @${me.username}`),
         ...builder.finish(),
         implementsRevert: true,
       };
@@ -769,8 +781,8 @@ export const actions = defineActions<XActionHost, XActions>({
       const me = await host.me();
       return {
         title: sanitizeTitle(payload.on
-          ? `Like a post by @${payload.post.info.author.username} on X`
-          : `Remove a like from a post by @${payload.post.info.author.username}`),
+          ? `Like a post by ${post(payload.post)} on X`
+          : `Remove a like from a post by ${post(payload.post)}`),
         ...targetFields(buildDescription(payload.on
           ? `Like this post by ${post(payload.post)} as ${handle(me.username)}.`
           : `Remove ${handle(me.username)}'s like from this post by ${post(payload.post)}.`), payload.post).finish(),
@@ -796,8 +808,8 @@ export const actions = defineActions<XActionHost, XActions>({
       const me = await host.me();
       return {
         title: sanitizeTitle(payload.on
-          ? `Repost a post by @${payload.post.info.author.username} on X`
-          : `Undo a repost of a post by @${payload.post.info.author.username}`),
+          ? `Repost a post by ${post(payload.post)} on X`
+          : `Undo a repost of a post by ${post(payload.post)}`),
         ...targetFields(buildDescription(payload.on
           ? `Repost this post by ${post(payload.post)} to ${handle(me.username)}'s followers.`
           : `Undo ${handle(me.username)}'s repost of this post by ${post(payload.post)}.`), payload.post).finish(),
@@ -823,8 +835,8 @@ export const actions = defineActions<XActionHost, XActions>({
       const me = await host.me();
       return {
         title: sanitizeTitle(payload.on
-          ? `Bookmark a post by @${payload.post.info.author.username} on X`
-          : `Remove a bookmark of a post by @${payload.post.info.author.username}`),
+          ? `Bookmark a post by ${post(payload.post)} on X`
+          : `Remove a bookmark of a post by ${post(payload.post)}`),
         ...targetFields(buildDescription(payload.on
           ? `Bookmark this post by ${post(payload.post)} in ${handle(me.username)}'s private bookmarks.`
           : `Remove this post by ${post(payload.post)} from ${handle(me.username)}'s bookmarks.`), payload.post).finish(),
@@ -848,8 +860,8 @@ export const actions = defineActions<XActionHost, XActions>({
     delivery: "continue-with-simulation",
     describe: async payload => ({
       title: sanitizeTitle(payload.hidden
-        ? `Hide a reply by @${payload.post.info.author.username} on X`
-        : `Unhide a reply by @${payload.post.info.author.username} on X`),
+        ? `Hide a reply by ${post(payload.post)} on X`
+        : `Unhide a reply by ${post(payload.post)} on X`),
       ...targetFields(buildDescription(payload.hidden
         ? `Hide this reply by ${post(payload.post)} from the conversation. It stays reachable behind X's "hidden replies" link.`
         : `Show this reply by ${post(payload.post)} in the conversation again.`), payload.post).finish(),
@@ -989,7 +1001,7 @@ export const actions = defineActions<XActionHost, XActions>({
       if (payload.changes.name !== undefined) builder.inline("New name", payload.changes.name);
       if (payload.changes.description !== undefined) builder.verbatim("New description", payload.changes.description);
       if (payload.changes.private !== undefined) builder.inline("Private", payload.changes.private ? "yes" : "no");
-      return { title: sanitizeTitle(`Change the X List "${payload.list.info.name}"`), ...builder.finish(), implementsRevert: true };
+      return { title: sanitizeTitle(`Change the ${listLabel(payload.list)}`), ...builder.finish(), implementsRevert: true };
     },
     dependsOn: payload => isProvisional(payload.list.id) ? [payload.list.id] : [],
     apply: async (payload, host, ctx) => {
@@ -1021,7 +1033,7 @@ export const actions = defineActions<XActionHost, XActions>({
     autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => ({
-      title: sanitizeTitle(`Delete the X List "${payload.list.info.name}"`),
+      title: sanitizeTitle(`Delete the ${listLabel(payload.list)}`),
       ...buildDescription("Permanently delete this List. A deleted List can't be restored.")
         .inline("List", payload.list.info.url ?? `your pending List ${payload.list.id}`).finish(),
       implementsRevert: false,
@@ -1052,8 +1064,8 @@ export const actions = defineActions<XActionHost, XActions>({
       builder.inline("Account", payload.user.url);
       return {
         title: sanitizeTitle(payload.add
-          ? `Add @${payload.user.username} to the X List "${payload.list.info.name}"`
-          : `Remove @${payload.user.username} from the X List "${payload.list.info.name}"`),
+          ? `Add @${payload.user.username} to the ${listLabel(payload.list)}`
+          : `Remove @${payload.user.username} from the ${listLabel(payload.list)}`),
         ...builder.finish(),
         implementsRevert: false,
       };

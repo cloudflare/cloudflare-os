@@ -780,16 +780,29 @@ never moves. It answers null for a grant X refused for good or a disconnect, whi
 `verifyObserverAccess()` turns into a failed check, not a denial; any other failure fails the check
 too. Nothing is cached, since the comparison costs nothing.
 
-Two admission requirements were dropped deliberately when reads began reporting subresources.
-Admission had required a working X connection of the observer's own, even for a workspace that read
-only public data, and for a Post or List binding that the observer's account could see the bound
-post or List (`canViewPost` / `canViewList`, a read billed to the observer, a pass trusted for an
-hour). Public data needs no X account to be seen, and a bound post or List restricts nothing a read
-doesn't already report: a protected author's post or a private List reports `user/<id>` like any
-owner-private read. Before then, owner-private reads authorized against one synthetic tracked
-collection, `owner`. The kit's `trackedCollectionObservers` keeps those records: while one exists,
-pending or observed, `addObserver()` admits only the same X user, and `getHistoricalSubresources()`
-exports it as `user/<id>`.
+New bindings remove the gatekeeper's working-credential baseline and billed bound-Post/List
+visibility probes (`canViewPost` / `canViewList`). `[]` adds no provider-access requirement, but
+the Workshop still requires an X account/verifier choice for each in-scope vendor binding: this
+is not account-free admission. Owner-private reads still report `user/<id>`; private reads made
+before conversion retain the tracked `owner` collection, pending or observed, which admission
+checks as the same X user and `getHistoricalSubresources()` exports unchanged as `user/<id>`.
+
+Action descriptions cross a different, unguarded boundary: the kernel's action log. Future
+previews redact provider-private or unknown-author post text and author metadata/URLs, including
+reply targets and protected quoted/reposted authors, and private List names. Caller-supplied
+drafts/changes remain visible, while definitely public provider context may be displayed. A
+pending privacy change does not declassify provider-private List names.
+
+Newly minted bindings carry immutable `redactsActionPreviews: true` props. Existing writable
+bindings do not, so `addObserver()` conservatively requires their stored pinned X user, even for
+public-only bindings. A missing pin throws; no billed visibility probe is restored. Historical
+action-only previews might contain private data with no recorded observation, and neither
+redacting future descriptions nor reconnecting fixes the kernel's old log. The journal's
+`x:nextActionId` allocation counter survives pruning and restarts. An absent counter proves no
+action history; a present one without a recorded `owner` requirement leaves the legacy exporter
+unable to reconstruct complete historical requirements, so it throws rather than guessing `[]`
+or inventing a binding requirement. Existing `owner` records still export the pinned user's ID.
+Keep the admission fence until historical logs are remediated and a complete import is committed.
 
 Why not D, as Spotify is: X's likes have been private since 2024, bookmarks always were, and a
 protected account's posts exist to be seen only by approved followers — a shared gadget

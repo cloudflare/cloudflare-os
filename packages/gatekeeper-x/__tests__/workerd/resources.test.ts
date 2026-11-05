@@ -71,8 +71,8 @@ describe("describe", () => {
     x.lists.set("5", { id: "5", name: "Secret List", private: true, owner_id: ALICE.id, member_count: 1 });
     const name = crypto.randomUUID();
     const props: GatekeeperProps = resourceKind === "post"
-      ? { userObjectId, resourceKind, postId: post.id }
-      : { userObjectId, resourceKind, listId: "5" };
+      ? { userObjectId, resourceKind, postId: post.id, redactsActionPreviews: true }
+      : { userObjectId, resourceKind, listId: "5", redactsActionPreviews: true };
     const expected = resourceKind === "post" ? {
       url: `https://x.com/i/web/status/${post.id}`, title: `X post ${post.id}`,
       suggestedBindingName: "X_POST", tsType: "XPost", snippet: "",

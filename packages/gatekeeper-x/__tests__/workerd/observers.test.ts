@@ -21,7 +21,7 @@ const ALICE_USER = `user/${ALICE.id}`;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 async function accountBinding(x: FakeX) {
-  const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "account" };
+  const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "account", redactsActionPreviews: true };
   return { props, name: crypto.randomUUID() };
 }
 
@@ -155,7 +155,9 @@ describe("a Post or List binding", () => {
     const publicPost = x.post(BOB, "public");
     const bob = await seedAccount(x, BOB);
     for (const [post, expected] of [[protectedPost, [ALICE_USER]], [publicPost, []]] as const) {
-      const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "post", postId: post.id };
+      const props: GatekeeperProps = {
+        userObjectId: await seedAccount(x), resourceKind: "post", postId: post.id, redactsActionPreviews: true,
+      };
       const name = crypto.randomUUID();
       unwrap(await hooks().run(name, props, [["getInfo"]]));
       expect(await subresources(name)).toEqual([expected]);
@@ -170,7 +172,9 @@ describe("a Post or List binding", () => {
   it("reports a private List as the account's, and admits observers without asking X about it", async () => {
     const x = new FakeX().install();
     x.lists.set("5", { id: "5", name: "Mine", private: true, owner_id: ALICE.id, member_count: 0 });
-    const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "list", listId: "5" };
+    const props: GatekeeperProps = {
+      userObjectId: await seedAccount(x), resourceKind: "list", listId: "5", redactsActionPreviews: true,
+    };
     const name = crypto.randomUUID();
     unwrap(await hooks().run(name, props, [["getInfo"]]));
     expect(await subresources(name)).toEqual([[ALICE_USER]]);
@@ -184,7 +188,7 @@ describe("a Post or List binding", () => {
 });
 
 describe("addObserver", () => {
-  it("admits anyone, working X connection or not, when no read recorded private data before", async () => {
+  it("does no credential check itself on a new binding without legacy private reads", async () => {
     const x = new FakeX().install();
     const { props, name } = await accountBinding(x);
     x.bookmarks.add(`${ALICE.id}:${x.post(BOB, "saved").id}`);
@@ -198,6 +202,82 @@ describe("addObserver", () => {
     }
     expect(x.requests).toHaveLength(before);
     expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
+  });
+
+  it.each(["account", "post", "list"] as const)("keeps legacy %s action-only logs same-account-only", async resourceKind => {
+    const x = new FakeX().install();
+    const userObjectId = await seedAccount(x);
+    const props: GatekeeperProps = resourceKind === "post" ? { userObjectId, resourceKind, postId: "5" }
+      : resourceKind === "list" ? { userObjectId, resourceKind, listId: "5" } : { userObjectId, resourceKind };
+    const name = crypto.randomUUID();
+    await hooks().putStorage(name, props, "pinnedUserId", ALICE.id);
+    // The action rows may have been pruned; the persistent allocation counter never is.
+    await hooks().putStorage(name, props, "x:nextActionId", 2);
+    const bob = await seedAccount(x, BOB);
+    const owner = await seedAccount(x, ALICE);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(failure(await hooks().addObserver(name, props, "bob", bob))).toMatch(/historical action previews/);
+      unwrap(await hooks().addObserver(name, props, "owner", owner));
+      expect(failure(await hooks().historicalSubresources(name, props))).toMatch(/cannot be reconstructed/);
+      await hooks().restart(name);
+    }
+    expect(x.requests).toHaveLength(0);
+    await hooks().putStorage(name, props, "observed:owner", "pending");
+    expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([ALICE_USER]);
+  });
+
+  it("fails closed for a legacy writable binding with no stored identity", async () => {
+    const x = new FakeX().install();
+    const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "post", postId: "5" };
+    expect(failure(await hooks().addObserver(crypto.randomUUID(), props, "owner", await seedAccount(x, ALICE))))
+      .toMatch(/has not read anything as its X account/);
+    expect(x.requests).toHaveLength(0);
+  });
+
+  it.each(["protected", "unknown", "public"] as const)("redacts only private provider data in %s action previews", async privacy => {
+    const x = new FakeX().install();
+    const author = privacy === "protected" ? CAROL : BOB;
+    x.following.add(`${ALICE.id}:${CAROL.id}`);
+    const post = x.post(author, "Provider source text");
+    if (privacy === "unknown") x.on("GET", /^\/2\/tweets\//, () => json({
+      data: post, includes: { users: [{ id: author.id, username: author.username, name: author.name }] },
+    }));
+    const props: GatekeeperProps = {
+      userObjectId: await seedAccount(x), resourceKind: "post", postId: post.id, redactsActionPreviews: true,
+    };
+    const name = crypto.randomUUID();
+    const bob = await seedAccount(x, BOB);
+    unwrap(await hooks().addObserver(name, props, "bob", bob));
+    unwrap(await hooks().run(name, props, [["bookmark"]]));
+    const log = await hooks().queueLog(name);
+    expect(log.observations).toEqual([]);
+    const preview = JSON.stringify(log.submitted[0].description);
+    if (privacy === "public") expect(preview).toContain("Provider source text");
+    else {
+      expect(preview).not.toContain("Provider source text");
+      expect(preview).not.toContain(`@${author.username}`);
+      expect(preview).not.toContain(`x.com/${author.username}`);
+    }
+    expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
+    expect(x.requests).toHaveLength(1);
+  });
+
+  it("keeps provider-private List names redacted while a public change is pending", async () => {
+    const x = new FakeX().install();
+    x.lists.set("5", { id: "5", name: "Private List title", private: true, owner_id: ALICE.id });
+    const props: GatekeeperProps = {
+      userObjectId: await seedAccount(x), resourceKind: "list", listId: "5", redactsActionPreviews: true,
+    };
+    const name = crypto.randomUUID();
+    unwrap(await hooks().run(name, props, [["update", { private: false }]]));
+    unwrap(await hooks().run(name, props, [["addMember", "bob"]]));
+    unwrap(await hooks().run(name, props, [["delete"]]));
+    const log = await hooks().queueLog(name);
+    expect(log.observations).toEqual([]);
+    expect(JSON.stringify(log.submitted)).not.toContain("Private List title");
+    expect(log.submitted.map(({ description }) => description.title)).toEqual([
+      "Change the X List 5", "Add @bob to the X List 5", "Delete the X List 5",
+    ]);
   });
 
   it.each([["observed", "observed"], ["pending", "pending"], ["legacy true", true]] as const)(

@@ -640,7 +640,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       throw new Error("Not an X link this gatekeeper can bind: expected a post, List, or profile link, " +
         `or ${RESOURCES.account.title} (https://x.com/settings/account).`);
     }
-    const base = { userObjectId: this.ctx.props.userObjectId };
+    const base = { userObjectId: this.ctx.props.userObjectId, redactsActionPreviews: true as const };
     const props: XGatekeeperImplProps =
       parsed.kind === "account" ? { ...base, resourceKind: "account" }
       : parsed.kind === "post" ? { ...base, resourceKind: "post", postId: parsed.postId }

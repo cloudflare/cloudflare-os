@@ -115,6 +115,44 @@ describe("descriptions", () => {
     expect(follow.autoApprovable).toBe(false);
   });
 
+  it.each(["author", "quote", "repost"] as const)("redacts a protected %s from every post-action preview", async source => {
+    const restricted: XPostInfo = {
+      ...theirPost, text: "private source text", author: { ...theirPost.author, username: "private_writer", protected: true },
+    };
+    const info: XPostInfo = source === "author" ? restricted : {
+      ...theirPost, text: "private source text", [source === "quote" ? "quoteOf" : "repostOf"]: restricted,
+    };
+    const post = { id: "50", info };
+    const previews = await Promise.all([
+      describeAction("deletePost", { post }),
+      describeAction("like", { post, on: true }),
+      describeAction("repost", { post, on: false }),
+      describeAction("bookmark", { post, on: true }),
+      describeAction("hide", { post, hidden: false }),
+      describeAction("reply", { ref: "~1", draft: draft("My reply"), parent: post, conversationId: "50", submittedAt: 0 }),
+    ]);
+    for (const preview of previews) {
+      expect(JSON.stringify(preview)).not.toMatch(/private source text|private_writer|@bob|x\.com\/bob/);
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "https://x.com/i/web/status/50" }));
+    }
+    expect(field(previews.at(-1)!, "Reply")).toMatchObject({ value: "My reply" });
+  });
+
+  it("redacts private List names from all provider-derived action titles", async () => {
+    const list = { id: "70", info: {
+      id: "70", url: "https://x.com/i/lists/70", name: "Private List title", description: "Private description",
+      private: true, owner: theirPost.author, memberCount: 0, followerCount: 0,
+    } };
+    for (const preview of await Promise.all([
+      describeAction("updateList", { list, changes: { private: false } }),
+      describeAction("deleteList", { list }),
+      describeAction("listMember", { list, user: bob, add: true }),
+    ])) {
+      expect(JSON.stringify(preview)).not.toMatch(/Private List title|Private description/);
+      expect(preview.title).toContain("X List 70");
+    }
+  });
+
   it("offers only private, reversible actions for auto-approval", async () => {
     expect((await describeAction("bookmark", { post: { id: "50", info: theirPost }, on: true })).autoApprovable).toBe(true);
     expect((await describeAction("mute", { user: bob, on: true })).autoApprovable).toBe(true);

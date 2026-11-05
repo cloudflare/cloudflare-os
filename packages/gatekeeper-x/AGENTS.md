@@ -15,14 +15,22 @@ by accident:
 - A connection is pinned to the X user it was made as (a reconnect as anyone else is refused and its
   new grant revoked), and actions are fenced on that X user's ID rather than the connection
   generation, so a same-user reconnect to widen scopes does not strand pending actions.
-- Observer checks never read X. Every read reports `[]` or, when private to the account,
-  `user/<pinned X user ID>`, and `verifyObserverAccess()` compares that ID with the one the
-  observer's own account stores. Do not add a probe of the bound post, List or author: each is a
-  billed read on the observer's connection, and the bound resource restricts nothing a read doesn't
-  already report.
+- Observer checks make no billed X resource reads. Every read reports `[]` or, when private to the
+  account or holding a post whose author's privacy X omitted, `user/<pinned X user ID>`.
+  `verifyObserverAccess()` compares that ID with the observer account's stored pin; token refresh
+  may still contact X. Public `[]` does not remove the Workshop's account/verifier-choice requirement.
+  Do not add a billed probe of the bound post, List or author.
 - Post/List `describe()` is visible without observation authorization. Return only the bound ID and
   canonical link, discard legacy cached descriptions, and never fetch snippets or List metadata
   there; private data belongs behind session read authorization.
+- Action descriptions are also unguarded disclosures: redact private/unknown-author post text,
+  author metadata and author-bearing URLs, including quoted/reposted posts and reply targets;
+  redact private List names even while a pending change would make the List public. New bindings
+  carry immutable `redactsActionPreviews: true`. Older writable bindings remain same-pinned-user-only
+  (missing pins throw), since historical action-only logs may have no `observed:owner` record.
+  Preserve/export that record when present; without it, a legacy journal allocation counter means
+  history is ambiguous even after pruning, so the read-only exporter must throw rather than return
+  `[]`. Only an absent counter proves no historical action. Never infer history from current data.
 - Publishing is `claimBeforeApply`, and a send whose outcome X never reported is reconciled inline on
   the next apply (an attempt marker, then a look at the account's posts from around the attempt,
   binding only a unique match on text, links, media and reply parent), because the kit's
