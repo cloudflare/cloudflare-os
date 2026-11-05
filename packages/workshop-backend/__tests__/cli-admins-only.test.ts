@@ -1,12 +1,13 @@
 // `cf-os api` on a deployment: a session whose upgrade names the CLI in its User-Agent may act only
 // as a deployment admin, unless the instance is a local one (WORKSHOP_ENVIRONMENT "development" or
-// "test").
+// "test"). On any instance, that User-Agent labels the session's admin changes "cli".
 
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import type { PublicApi } from "@gadgets/workshop-shared/api";
 import { describe, expect, it, vi } from "vitest";
+import type { AdminSettingActor } from "../src/admin-access.js";
 import type { UserDurableObject } from "../src/user.js";
 import server from "../src/server.js";
 
@@ -30,6 +31,9 @@ const ORIGIN = "https://workshop.example";
 // No admin config is stored: every read of it gets the defaults (signups open).
 const BLUEPRINTS = { get: async () => null } as unknown as KVNamespace;
 
+// Every admin config change a session makes, as received by the AdminSettings `connect` fakes.
+const configChanges: { patch: object; actor: AdminSettingActor }[] = [];
+
 function unique(prefix: string): string {
   return prefix + crypto.randomUUID().replaceAll("-", "");
 }
@@ -52,9 +56,15 @@ async function connect(deploymentEnv: Cloudflare.Env, userAgent: string | undefi
   if (userAgent !== undefined) headers["User-Agent"] = userAgent;
   if (as !== undefined) headers["cf-access-jwt-assertion"] = as;
   // The first /api request installs the bundled blueprints, which needs storage these tests lack.
+  // Admin config changes land in `configChanges`.
   const ctx = createExecutionContext();
   Object.defineProperty(ctx, "exports", { value: Object.create(ctx.exports, {
-    AdminSettings: { value: { getByName: () => ({ ensureBundledBlueprintsInstalled: async () => true }) } },
+    AdminSettings: { value: { getByName: () => ({
+      ensureBundledBlueprintsInstalled: async () => true,
+      updateAdminConfig: async (patch: object, actor: AdminSettingActor) => {
+        configChanges.push({ patch, actor });
+      },
+    }) } },
   }) });
   const response = await server.fetch(new Request(`${ORIGIN}/api`, { headers }), deploymentEnv, ctx);
   expect(response.status).toBe(101);
@@ -156,6 +166,29 @@ describe("other clients, and the CLI on a local instance", () => {
       if (token === null) throw new Error(`${username} was taken.`);
       using session = api.authenticate(token);
       expect(await session.amIAdmin()).toBe(false);
+    });
+  }
+});
+
+describe("the label on an admin's changes", () => {
+  for (const [what, userAgent, options, via] of [
+    ["cf-os api on a deployment", CLI, {}, "cli"],
+    ["cf-os api under pnpm dev-server", CLI, { environment: "development" }, "cli"],
+    ["a browser", BROWSER, {}, "api"],
+    ["a client sending no User-Agent", undefined, {}, "api"],
+  ] as const) {
+    it(`is "${via}" for ${what}`, async () => {
+      const admin = unique("admin");
+      const token = await account(admin);
+      using api = await connect(deployment([admin], options), userAgent);
+      using session = api.authenticate(token);
+      using adminApi = await session.getAdminApi();
+      if (adminApi === null) throw new Error("The admin was refused the admin API.");
+      await adminApi.setSiteName("Acme");
+      expect(configChanges.filter(change => change.actor.admin === admin)).toStrictEqual([{
+        patch: { siteName: "Acme" },
+        actor: { admin, sessionId: expect.any(String), via, method: "setSiteName" },
+      }]);
     });
   }
 });

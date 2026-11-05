@@ -1228,8 +1228,9 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Returns a capability for managing deployment-wide admin settings, or null when the caller is not
    * an admin. The access check happens once here, so the returned stub's methods need no per-call
-   * checks. (Authentication config — sign-in providers, password login — is intentionally not
-   * managed here; it stays env-var driven.)
+   * checks. Every audit record the capability makes is labelled with an AdminVia derived from the
+   * client's User-Agent. (Authentication config — sign-in providers, password login — is
+   * intentionally not managed here; it stays env-var driven.)
    *
    * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
@@ -1423,6 +1424,20 @@ export type AdminSettingsView = {
   signupsEnabled: boolean;
   /** Whether users may search the user directory to find collaborators. */
   userSearchEnabled: boolean;
+  /**
+   * How many days the admin audit log keeps a record (see AdminApi.setAdminAuditRetentionDays):
+   * `effective`.
+   */
+  adminAuditRetentionDays: {
+    /** The retention enforced: the higher of `chosen` and `min`. */
+    effective: number;
+    /** The retention an admin set, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS until one does. */
+    chosen: number;
+    /** The fewest days the deployment allows, which its ADMIN_AUDIT_RETENTION_MIN_DAYS environment
+     * variable sets: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS while that is unset, blank or not a
+     * positive whole number. */
+    min: number;
+  };
   /** Site name shown next to the top-bar logo ("" falls back to DEFAULT_SITE_NAME). */
   siteName: string;
   /** Custom deployment logo, or undefined to use the default Cloudflare OS mark. */
@@ -1578,12 +1593,195 @@ export type DeploymentUpdateStatus = {
 };
 
 /**
+ * How an admin's calls reach the deployment, as their audit records say: "cli" when the session's
+ * User-Agent is the cf-os CLI's, "api" for any other client of the API (the Workshop's admin panel
+ * among them). The User-Agent is the client's own claim, so this is an unverified label that
+ * grants nothing.
+ */
+export type AdminVia = "api" | "cli";
+
+/** How many records one page of AdminApi.listAdminAudit() holds when the caller gives no
+ * `limit`. */
+export const ADMIN_LIST_DEFAULT_LIMIT = 50;
+
+/** The most records one page of AdminApi.listAdminAudit() may hold. */
+export const ADMIN_LIST_MAX_LIMIT = 200;
+
+/**
+ * How many days the admin audit log keeps a record until an admin sets otherwise, and the fewest
+ * an admin may set unless the deployment's ADMIN_AUDIT_RETENTION_MIN_DAYS says otherwise.
+ */
+export const DEFAULT_ADMIN_AUDIT_RETENTION_DAYS = 90;
+
+/** The longest retention an admin may set, in days: ten years. */
+export const MAX_ADMIN_AUDIT_RETENTION_DAYS = 3650;
+
+/**
+ * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
+ * before its change takes effect. The rest change no setting and are not recorded: the reads
+ * (getSettings, isBlueprintFeatured, getUpdateStatus, listAdminAudit, getAdminAuditStats), the
+ * gateway tests, and checkForUpdates.
+ */
+export const ADMIN_SETTING_METHODS = [
+  "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
+  "setInstanceInstructions", "setResourceEnabled", "setGatekeeperMode", "setAnnouncement",
+  "setBanner", "setAccentColor", "setBlueprintFeatured", "promoteFormat", "removeFormat",
+  "updateFormat", "setFormatOrder", "setGatewayModelMode", "addGatewayModel",
+  "removeGatewayModel", "setUserModelsEnabled", "setModelsDevSuggestions",
+  "setGatewayModelSettings", "setDefaultReasoning", "setGatewayProviderEnabled",
+  "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
+  "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setAdminAuditRetentionDays",
+] as const satisfies readonly (keyof AdminApi)[];
+
+/** One of ADMIN_SETTING_METHODS. */
+export type AdminSettingMethod = typeof ADMIN_SETTING_METHODS[number];
+
+/** The longest setting entry's key an audit record keeps, in characters: a longer one is cut to
+ * this, its last character replaced with "…". */
+export const MAX_ADMIN_AUDIT_ARG_LENGTH = 256;
+
+/** The longest value an AdminSettingChange keeps whole, in characters: more than any bounded
+ * setting holds (the longest, the agent instructions, are at most
+ * MAX_INSTANCE_INSTRUCTIONS_LENGTH characters, recorded as themselves). A longer value is kept as
+ * an excerpt (see AdminSettingChange.excerpt). */
+export const MAX_ADMIN_AUDIT_VALUE_LENGTH = 10_000;
+
+/**
+ * One setting an AdminSettingRecord changed, with its value before and after. `setting` names a
+ * field of the deployment's stored settings ("siteName", "modelModes", ...) or one of the two kept
+ * apart from them, "siteLogo" and "featured". The names are those the settings are stored under: a
+ * diagnostic vocabulary, not a schema clients may depend on.
+ *
+ * A setting holding a map (an object keyed by id or name, such as "modelModes" or "banner") or a
+ * list of entries with ids ("formats", by blueprint id; "addedModels", by model id) is recorded
+ * one entry at a time: `key` names the entry, and the values are that entry's alone. A change to
+ * the order of such a list is one more change, without `key`, whose values are the lists of every
+ * entry's id, in order.
+ *
+ * A string is recorded as itself, any other value as JSON with object keys sorted. A value is kept
+ * whole up to MAX_ADMIN_AUDIT_VALUE_LENGTH characters, more than any bounded setting holds; past
+ * that both values are excerpts (see `excerpt`). A key is cut to MAX_ADMIN_AUDIT_ARG_LENGTH. No
+ * credential is a setting (provider keys and tokens live in the environment), but a free-text
+ * setting such as the agent instructions is recorded as an admin entered it. A logo is recorded
+ * as its size and SHA-256, never its bytes.
+ */
+export type AdminSettingChange = {
+  /** The setting. */
+  setting: string;
+  /** The entry of a map or list setting: a model id, a vendor id, a blueprint id, a field name;
+   * cut past MAX_ADMIN_AUDIT_ARG_LENGTH characters, a length no real entry's id reaches. */
+  key?: string;
+  /** The value before; absent when there was none. */
+  before?: string;
+  /** The value after; absent when the change removed it. */
+  after?: string;
+  /**
+   * Present when a value was longer than MAX_ADMIN_AUDIT_VALUE_LENGTH. `before` and `after` are
+   * then excerpts: each starts at character `offset` of its value, a little before the first
+   * character at which the two differ, and holds at most MAX_ADMIN_AUDIT_VALUE_LENGTH characters.
+   */
+  excerpt?: {
+    /** Where both excerpts start, in characters (UTF-16 code units) into their values. */
+    offset: number;
+    /** The whole `before` value's length, when there was one. */
+    beforeLength?: number;
+    /** The whole `after` value's length, when there is one. */
+    afterLength?: number;
+  };
+};
+
+/**
+ * One change an admin made to the deployment's settings through an AdminApi method (see
+ * ADMIN_SETTING_METHODS), recorded in the deployment-wide audit log before the change takes
+ * effect, so that a change whose record cannot be written is refused. A call that changes nothing
+ * records nothing. A record is kept if its change then fails to take effect (the setter throws):
+ * it records the attempt.
+ */
+export type AdminSettingRecord = {
+  /** The kind of audit record (see AdminAuditKind). */
+  kind: "setting";
+  /** When the change was made. */
+  at: Date;
+  /** The admin who made it, by canonical user id. */
+  admin: string;
+  /** Opaque. Shared by every record made through one AuthenticatedApi.getAdminApi() capability,
+   * so one admin session's records can be read together. */
+  sessionId: string;
+  /** How the admin's calls reached the deployment (see AdminVia). */
+  via: AdminVia;
+  /** The AdminApi method called. */
+  method: AdminSettingMethod;
+  /** What it changed; never empty. */
+  changes: AdminSettingChange[];
+};
+
+/** One record of the deployment-wide admin audit log, kept for the deployment's retention
+ * (AdminSettingsView.adminAuditRetentionDays). */
+export type AdminAuditRecord = AdminSettingRecord;
+
+/** The kinds of AdminAuditRecord: "setting" for a change to the deployment's settings. */
+export type AdminAuditKind = AdminAuditRecord["kind"];
+
+/** Options for AdminApi.listAdminAudit(). The filters combine. */
+export type AdminAuditQuery = {
+  /** Only records of this kind. */
+  kind?: AdminAuditKind;
+  /** Only this admin's records, by canonical user id. At most 1000 characters. */
+  admin?: string;
+  /** Only records made at or after this time. */
+  since?: Date;
+  /** The previous page's `nextCursor`; absent for the first page. */
+  cursor?: string;
+  /** The page size: a whole number from 1 to ADMIN_LIST_MAX_LIMIT, ADMIN_LIST_DEFAULT_LIMIT when
+   * absent. */
+  limit?: number;
+};
+
+/** One page of AdminApi.listAdminAudit(). */
+export type AdminAuditPage = {
+  /** The page's records, newest first. */
+  records: AdminAuditRecord[];
+  /** Pass as `cursor` for the next page; absent once there is none. */
+  nextCursor?: string;
+};
+
+/** The longest window AdminApi.getAdminAuditStats() reports on, in days. */
+export const MAX_ADMIN_AUDIT_STATS_DAYS = 366;
+
+/** Options for AdminApi.getAdminAuditStats(). */
+export type AdminAuditStatsQuery = {
+  /** The window: the last `days` UTC days, today included. A whole number from 1 to
+   * MAX_ADMIN_AUDIT_STATS_DAYS, 7 when absent. */
+  days?: number;
+  /** Only records of this kind; every kind when absent. */
+  kind?: AdminAuditKind;
+};
+
+/**
+ * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
+ * covers the records of the queried kind (every kind when none is given). A record older than the
+ * retention is gone, so a window reaching past it counts nothing there.
+ */
+export type AdminAuditStats = {
+  /** The window's length in UTC days, today included. */
+  days: number;
+  /** The records in the window. */
+  totalEvents: number;
+  /** One entry per UTC day of the window, oldest first, days with no records included. `day` is
+   * the date as YYYY-MM-DD. */
+  byDay: { day: string; count: number }[];
+  /** The admins with the most records in the window, most first (ties by id), at most 10. */
+  topAdmins: { admin: string; count: number }[];
+};
+
+/**
  * Capability for managing deployment-wide admin settings, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
  * capability is minted, so these methods don't re-check. Covers branding, agent instructions,
  * which gatekeeper connectors/resources are offered, and the models an AI Gateway deployment
  * provides — NOT authentication config (that's env-var driven). Each setter throws on invalid
- * input.
+ * input, and records the change it makes in the deployment's audit log before making it (see
+ * AdminSettingRecord).
  */
 export interface AdminApi {
   /** Read all admin-managed settings for the admin UI in one call. */
@@ -1877,6 +2075,29 @@ export interface AdminApi {
    * visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
    */
   setUpdateNoticeSnoozeHours(hours: number): Promise<void>;
+
+  // --- The audit log ---
+
+  /**
+   * One page of the deployment-wide admin audit log, newest first, filtered as `options` says.
+   * Rejects a `limit` that is not a whole number
+   * from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a malformed `cursor`.
+   */
+  listAdminAudit(options?: AdminAuditQuery): Promise<AdminAuditPage>;
+
+  /** Counts from the admin audit log over the last `days` UTC days, today included (7 by
+   * default). Throws unless `days` is a whole number from 1 to MAX_ADMIN_AUDIT_STATS_DAYS. */
+  getAdminAuditStats(options?: AdminAuditStatsQuery): Promise<AdminAuditStats>;
+
+  /**
+   * Set how many days the admin audit log keeps a record, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS by
+   * default. A record older than that is no longer listed or counted, and is deleted as the log is
+   * next used. Throws
+   * unless `days` is a whole number from the deployment's minimum
+   * (AdminSettingsView.adminAuditRetentionDays.min, set by its ADMIN_AUDIT_RETENTION_MIN_DAYS
+   * environment variable) to MAX_ADMIN_AUDIT_RETENTION_DAYS.
+   */
+  setAdminAuditRetentionDays(days: number): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */

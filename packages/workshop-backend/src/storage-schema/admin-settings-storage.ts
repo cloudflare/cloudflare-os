@@ -9,7 +9,8 @@
 
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
-  DEFAULT_BANNER_COLOR, DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
+  DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_BANNER_COLOR,
+  DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
   type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
   type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
@@ -127,6 +128,9 @@ export type AdminConfig = {
   updateMinimumAgeHours: number;
   /** How many hours a dismissed update notice stays hidden in the browser that dismissed it. */
   updateNoticeSnoozeHours: number;
+  /** How many days admins chose to keep admin audit records. Held at or above
+   * ADMIN_AUDIT_RETENTION_MIN_DAYS wherever it is enforced. */
+  adminAuditRetentionDays: number;
 };
 
 /**
@@ -178,6 +182,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   updateCheckIntervalMinutes: DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
   updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
+  adminAuditRetentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
 };
 
 /**
