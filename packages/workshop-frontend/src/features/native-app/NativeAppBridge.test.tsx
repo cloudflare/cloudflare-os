@@ -2,6 +2,7 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from 'react'
+import { Toasty } from '@cloudflare/kumo'
 import { createRoot } from 'react-dom/client'
 import type { RpcStub } from 'capnweb'
 import type { AiChatAuthorInfo, AuthenticatedApi, UnreadStateSubscriber, UserUnreadState } from '@gadgets/workshop-shared/api'
@@ -195,7 +196,7 @@ describe('native app bridge', () => {
     const root = createRoot(document.createElement('div'))
     await act(async () => root.render(
       <AuthProvider authenticatedApi={api} onLogout={() => {}}>
-        <UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
+        <Toasty><UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge></Toasty>
       </AuthProvider>
     ))
     const state: UserUnreadState = {workspaces: [], unreadMessageCount: 8, unreadChatCount: 1, chats: []}
@@ -226,7 +227,7 @@ describe('native app bridge', () => {
     try {
       await act(async () => root.render(
         <AuthProvider authenticatedApi={api} onLogout={() => {}}>
-          <UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
+          <Toasty><UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge></Toasty>
         </AuthProvider>
       ))
       expect(subscribeToUnreadState).toHaveBeenCalledOnce()
