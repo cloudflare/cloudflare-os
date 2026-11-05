@@ -985,8 +985,10 @@ export function formatMissingBlueprintBindings(
             ? `an AI decision model binding` : `an AI model binding`;
         break;
       case "agentSpawner": {
-        let env = Object.entries(binding.env).map(([envName, target]) =>
-            `${envName} = ${target.type === "gadget" ? gadget : `binding ${target.name}`}`);
+        let env = Object.entries(binding.env).map(([envName, target]) => `${envName} = ${
+            target.type === "gadget" ? gadget
+            : target.type === "ambient" ? `the always-available ${target.vendorId} resource`
+            : `binding ${target.name}`}`);
         details = `an agent-spawner binding whose agents get ${env.join(", ") || "no bindings"}`;
         break;
       }

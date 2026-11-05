@@ -5987,8 +5987,9 @@ export type GatekeeperCreationSpec = {
 } | {
   /**
    * A singleton gatekeeper account (e.g. the Context Library) auto-provided to every gadget as an
-   * unnamed capsule so the agent can read/search it in code. Not user-configured, so excluded from
-   * blueprints; re-added automatically if missing.
+   * unnamed capsule so the agent can read/search it in code. Not user-configured, so never a
+   * blueprint binding (a spawner's env carries one by vendor; see SpawnerEnvTarget); re-added
+   * automatically if missing.
    */
   type: "ambient";
   vendorId: string;        // the singleton gatekeeper's id (GATEKEEPER_<ID> suffix, lowercased)
@@ -6014,10 +6015,10 @@ export type BlueprintBindingAnnotation = {
 /**
  * Symbolic target of one agent-spawner env entry in a blueprint. Workpiece IDs are
  * workspace-local, so a spawner's `env` (see AgentSpawnerConfig.env) can't transfer into a
- * blueprint as-is; instead each entry references either one of the blueprint's own bindings by
- * name -- the user fills it at instantiation time like any other binding, and the spawner env
- * entry resolves to the gatekeeper created for it -- or the blueprint's gadget itself, resolving
- * to the newly instantiated gadget.
+ * blueprint as-is; instead each entry references one of the blueprint's own bindings by name (the
+ * user fills it at instantiation time like any other binding, and the entry resolves to the
+ * gatekeeper created for it), the blueprint's gadget itself (resolving to the newly instantiated
+ * gadget), or an always-available resource by vendor.
  */
 export type SpawnerEnvTarget = {
   type: "binding";
@@ -6033,6 +6034,13 @@ export type SpawnerEnvTarget = {
    * blueprint).
    */
   type: "gadget";
+} | {
+  /**
+   * The always-available (ambient) resource of a singleton vendor, e.g. the Context Library.
+   * Resolves to the instantiating user's own; instantiation fails if they have none.
+   */
+  type: "ambient";
+  vendorId: string;  // as in the ambient GatekeeperCreationSpec, e.g. "context"
 };
 
 /**

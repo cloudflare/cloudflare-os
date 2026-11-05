@@ -1063,6 +1063,46 @@ it.concurrent("a gadget's LLM binding runs on its bound model, and an install us
   await source.deleteSelf();
 });
 
+// An agent can give a spawner's agents an ambient resource with setGadgetBinding. A blueprint
+// carries it by vendor: installing gives the copy's spawner the installer's own, and refuses an
+// installer who has none rather than leave it out.
+it.concurrent("an install gives a spawner the installer's own ambient resource, or refuses",
+    async () => {
+  const [publisher, installer, lacking] =
+      nextUsernames("ambientpublisher", "ambientinstaller", "ambientlacking");
+  if (!publisher || !installer || !lacking) throw new Error("Failed to allocate test usernames");
+
+  using publisherPublic = connect(requireHarness().url);
+  using publisherApi = await signUp(publisherPublic, publisher);
+  await publisherApi.provisionAmbientAccount(TEST_VENDOR_ID);
+  using source = await publisherApi.newWorkspace();
+  using app = await source.getGadget(await createApp(source, { "app.txt": "v1\n" }));
+  const ambientId = (await source.listObserverRequirements("workspace"))
+      .find(need => need.vendorId === TEST_VENDOR_ID)!.gatekeeperId;
+  using spawner = await source.newAgentSpawnerGatekeeper(
+      { displayName: "Agents", modelId: null, env: { NOTES: ambientId } });
+  await app.bind("AGENTS", await spawner.getId());
+  const blueprint = await app.createBlueprint("Notes", "Spawns agents that read notes");
+  const assignments = { AGENTS: { type: "agentSpawner" as const, modelId: null } };
+
+  using installerPublic = connect(requireHarness().url);
+  using installerApi = await signUp(installerPublic, installer);
+  await installerApi.provisionAmbientAccount(TEST_VENDOR_ID);
+  using installed = await installerApi.newWorkspaceFromBlueprint(blueprint.id, assignments);
+  // The copy reaches the installer's ambient gatekeeper, its only one of the vendor, only through
+  // its spawner's env.
+  expect(await installed.listObserverRequirements({ gadgetId: await defaultGadget(installed) }))
+      .toContainEqual(expect.objectContaining({ vendorId: TEST_VENDOR_ID }));
+
+  using lackingPublic = connect(requireHarness().url);
+  using lackingApi = await signUp(lackingPublic, lacking);
+  await expect(lackingApi.newWorkspaceFromBlueprint(blueprint.id, assignments))
+      .rejects.toThrow("which isn't available to you");
+
+  await installed.deleteSelf();
+  await source.deleteSelf();
+});
+
 it.concurrent("a gadget's decision model binding answers its questions", async () => {
   using publicApi = connect(requireHarness().url);
   using api = await signUp(publicApi, username("decision"));
