@@ -18,6 +18,7 @@ const API_WORKER = `${ACCOUNT}/worker/${API_ID}`;
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 function harness() {
@@ -213,5 +214,41 @@ describe("Worker identity", () => {
     expect(await hooks.openSessionError("binding")).toMatch(/predates Worker IDs/);
     expect(backend.requests).toEqual([]);
     expect((await hooks.describeResource("binding")).title).toBe("api observability");
+  });
+});
+
+describe("Worker resolution", () => {
+  it("reuses a resolved Worker for a minute, and a failed lookup not at all", async () => {
+    const { backend, bind, session: open, lastScope } = harness();
+    await bind(workerObservabilityUrl(ACCOUNT_ID, "api"));
+    const { session } = await open();
+    const walks = () => backend.requests.filter(request => request.call.endsWith("/versions")).length;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = Date.now();
+
+    // Concurrent reads share one lookup.
+    await Promise.all([session.listEvents(), session.listEvents()]);
+    expect(walks()).toBe(1);
+
+    // A version deployed within the minute is not yet seen...
+    backend.workers[0].versions.push("api-v3");
+    vi.setSystemTime(start + 59_999);
+    await session.listEvents();
+    expect(walks()).toBe(1);
+    expect(lastScope()[1]).toEqual(["$workers.scriptVersion.id", "api-v1,api-v2"]);
+
+    // ...and is once the minute is up.
+    vi.setSystemTime(start + 60_000);
+    await session.listEvents();
+    expect(walks()).toBe(2);
+    expect(lastScope()[1]).toEqual(["$workers.scriptVersion.id", "api-v1,api-v2,api-v3"]);
+
+    // A lookup that failed is asked again by the next read, not replayed for the minute.
+    vi.setSystemTime(start + 120_000);
+    backend.sees.owner = () => false;
+    await expect(session.listEvents()).rejects.toThrow("no longer exists");
+    delete backend.sees.owner;
+    await session.listEvents();
+    expect(walks()).toBe(4);
   });
 });
