@@ -837,9 +837,12 @@ describe("gateway model reasoning levels", () => {
   const GPT_6_SOL: GatewayConfig = { provider: "openai", model: "gpt-6-sol" };
   const GLM: GatewayConfig = { provider: "cloudflare", model: "@cf/zai-org/glm-5.2" };
   const GLM_FLASH: GatewayConfig = { provider: "cloudflare", model: "@cf/zai-org/glm-5.3-flash" };
+  const GLM_5_3: GatewayConfig = { provider: "cloudflare", model: "@cf/zai-org/glm-5.3" };
   const KIMI: GatewayConfig = { provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code" };
   const DEEPSEEK: GatewayConfig =
       { provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4-pro-0813" };
+  const DEEPSEEK_FLASH: GatewayConfig =
+      { provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017" };
   // pi marks this one as a model that does no reasoning.
   const LLAMA: GatewayConfig = { provider: "cloudflare", model: WORKERS_AI_CONFIG.model };
 
@@ -893,6 +896,8 @@ describe("gateway model reasoning levels", () => {
     ["GLM 5.2", GLM, completionsBody(GLM)],
     // pi's DeepSeek format turns thinking off whenever it is given no effort.
     ["DeepSeek V4 Pro", DEEPSEEK, completionsBody(DEEPSEEK, { thinking: { type: "disabled" } })],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH,
+      completionsBody(DEEPSEEK_FLASH, { thinking: { type: "disabled" } })],
   ])("sends %s its built-in request while no level is set", async (_, config, body) => {
     expect(await requestBody(config)).toBe(JSON.stringify(body));
   });
@@ -965,6 +970,9 @@ describe("gateway model reasoning levels", () => {
     ["GLM 5.3 Flash", GLM_FLASH, "off", { reasoning_effort: "low" }],
     ["GLM 5.3 Flash", GLM_FLASH, "medium", { reasoning_effort: "high" }],
     ["GLM 5.3 Flash", GLM_FLASH, "max", { reasoning_effort: "max" }],
+    ["GLM 5.3", GLM_5_3, "off", { reasoning_effort: "low" }],
+    ["GLM 5.3", GLM_5_3, "medium", { reasoning_effort: "high" }],
+    ["GLM 5.3", GLM_5_3, "max", { reasoning_effort: "max" }],
     // Its "off" is to send no effort.
     ["Kimi K2.7", KIMI, "off", {}],
     ["Kimi K2.7", KIMI, "minimal", { reasoning_effort: "minimal" }],
@@ -973,6 +981,11 @@ describe("gateway model reasoning levels", () => {
     ["DeepSeek V4 Pro", DEEPSEEK, "low",
       { thinking: { type: "enabled" }, reasoning_effort: "high" }],
     ["DeepSeek V4 Pro", DEEPSEEK, "max",
+      { thinking: { type: "enabled" }, reasoning_effort: "max" }],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH, "off", { thinking: { type: "disabled" } }],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH, "low",
+      { thinking: { type: "enabled" }, reasoning_effort: "high" }],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH, "max",
       { thinking: { type: "enabled" }, reasoning_effort: "max" }],
     ["a model that does no reasoning", LLAMA, "high", {}],
   ] as const)("sends $0 level $2", async (_, config, level, extra) => {
@@ -1048,6 +1061,7 @@ describe("gateway model reasoning levels", () => {
     ["an adaptive Claude", OPUS], ["an adaptive Claude that can stop thinking", SONNET_5],
     ["Haiku", HAIKU], ["an OpenAI model", GPT], ["an OpenAI model that can stop", GPT_6_SOL],
     ["GLM 5.3 Flash", GLM_FLASH], ["Kimi K2.7", KIMI], ["DeepSeek V4 Pro", DEEPSEEK],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH],
   ])("sends %s the same quick request whatever level is set", async (_, config) => {
     const quick = await requestBody(config, { thinking: false });
     for (const level of ["off", "high", "max"] as const) {
@@ -1093,6 +1107,8 @@ describe("gateway model reasoning levels", () => {
     ["cloudflare", "@cf/zai-org/glm-5.2", ["off", "high", "max"]],
     ["cloudflare", "@cf/zai-org/glm-5.3-flash", ["low", "high", "max"]],
     ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", ["off", "high", "max"]],
+    ["cloudflare", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", ["off", "high", "max"]],
+    ["cloudflare", "@cf/zai-org/glm-5.3", ["low", "high", "max"]],
     // Models pi does not know: one that is assumed to reason takes the levels every such model
     // has, and a Workers AI one is assumed not to.
     ["anthropic", "claude-next", OFF_TO_HIGH],
@@ -1126,6 +1142,8 @@ describe("gateway model reasoning levels", () => {
     ["cloudflare", "@cf/zai-org/glm-5.2", null],
     ["cloudflare", "@cf/zai-org/glm-5.3-flash", null],
     ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", null],
+    ["cloudflare", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", null],
+    ["cloudflare", "@cf/zai-org/glm-5.3", null],
     ["cloudflare", "@cf/cloudflare/clef", null],
     ["cloudflare", "@cf/cloudflare/clef-flash", null],
     ["cloudflare-auto-router", "cloudflare/auto", null],
@@ -1184,8 +1202,8 @@ describe("gateway model reasoning levels", () => {
       { userGateway: { accountId: "user-account-id", apiKey: "user-token" } }],
   ] as const;
 
-  // DeepSeek V4 Pro is left out: it is asked for nothing, and pi's format for it then turns
-  // thinking off (see its built-in request above).
+  // The DeepSeek models are left out: they are asked for nothing, and pi's format for them then
+  // turns thinking off (see their built-in requests above).
   it.each<[string, GatewayConfig, BuiltInReasoning]>([
     ["a Claude whose effort pi manages", OPUS, "adaptive"],
     ["an adaptive Claude", SONNET_5, "adaptive"],

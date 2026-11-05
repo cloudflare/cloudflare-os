@@ -2675,20 +2675,28 @@ const SUGGESTED_MODEL_CATALOG = {
     },
   },
   "cloudflare": {
+    // First, so that it is the Workers AI model a deployment defaults to.
+    "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
+      name: "DeepSeek V4.1 Flash (Workers AI)", contextWindow: 1048576,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/zai-org/glm-5.3": {
+      name: "GLM 5.3 (Workers AI)", contextWindow: 1048576, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/zai-org/glm-5.2": {
       name: "GLM 5.2 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/zai-org/glm-5.3-flash": {
       name: "GLM 5.3 Flash (Workers AI)", contextWindow: 1048576,
-      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT, hidden: true,
     },
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
       name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
-      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT, hidden: true,
     },
     "@cf/cloudflare/clef": {name: "Clef (Workers AI)", contextWindow: 65536, kind: "decision"},
     "@cf/cloudflare/clef-flash": {
