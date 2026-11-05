@@ -30,8 +30,10 @@ seeding credentials and counters. Advancing from the wall clock can cross midnig
 reset the budget; test that rollover separately from cache expiry or limit enforcement.
 
 Workshop's browser tests need Chromium installed once with
-`pnpm --filter @gadgets/workshop-frontend exec playwright install chromium`.
-Run them separately with `pnpm --filter @gadgets/workshop-frontend test:run:browser`.
+`pnpm --filter @gadgets/workshop-frontend exec playwright install chromium` (CI adds
+`--with-deps` for the system libraries). Run them separately with
+`pnpm --filter @gadgets/workshop-frontend test:run:browser`. The `workshop-evals` unit tests run
+views in that Chromium too, through Playwright, so they need the same install.
 
 ## Watchdog policy
 
