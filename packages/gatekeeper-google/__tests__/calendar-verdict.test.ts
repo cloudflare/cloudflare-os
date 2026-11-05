@@ -23,7 +23,8 @@ const personal: LiveCalendarEvent = {
 
 const ownEvent = { actionKind: CALENDAR_EVENTS_ACTION, autoApprovable: true };
 const heldOwnEvent = { actionKind: CALENDAR_EVENTS_ACTION, autoApprovable: false };
-const invitation = { actionKind: CALENDAR_INVITATIONS_ACTION, autoApprovable: false };
+const invitation = { actionKind: CALENDAR_INVITATIONS_ACTION, autoApprovable: true };
+const heldInvitation = { actionKind: CALENDAR_INVITATIONS_ACTION, autoApprovable: false };
 
 describe("Calendar action kinds", () => {
   it("are distinct tags with their own labels", () => {
@@ -46,9 +47,11 @@ describe("createEventVerdict", () => {
     expect(createEventVerdict({ ...draft, visibility: "public" })).toEqual(heldOwnEvent);
   });
 
-  it("makes an event with attendees an invitation", () => {
+  it("makes an event with attendees an invitation, held only if public", () => {
     expect(createEventVerdict({ ...draft, attendees: [{ email: "guest@example.com" }] }))
       .toEqual(invitation);
+    expect(createEventVerdict({ ...draft, attendees: [{ email: "guest@example.com" }], visibility: "public" }))
+      .toEqual(heldInvitation);
   });
 
   // The session does not validate agent input at runtime, so these reach the predicate as sent.
@@ -165,6 +168,9 @@ describe("updateEventVerdict", () => {
     expect(updateEventVerdict(personal, { visibility: "public" })).toEqual(heldOwnEvent);
     expect(updateEventVerdict({ ...personal, visibility: "private" }, { visibility: "default" }))
       .toEqual(heldOwnEvent);
+    expect(updateEventVerdict(
+      { ...personal, attendees: [{ email: "guest@example.com" }] }, { visibility: "public" },
+    )).toEqual(heldInvitation);
   });
 
   it("holds a change whose visibility it does not recognise", () => {
@@ -186,5 +192,9 @@ describe("updateEventVerdict", () => {
       .toEqual(heldOwnEvent);
     expect(updateEventVerdict({ ...personal, eventType: "focusTime" }, { title: "Focus" }))
       .toEqual(heldOwnEvent);
+    expect(updateEventVerdict(
+      { ...personal, eventType: "outOfOffice", attendees: [{ email: "guest@example.com" }] },
+      { end: draft.end },
+    )).toEqual(heldInvitation);
   });
 });

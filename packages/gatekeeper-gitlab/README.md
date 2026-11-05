@@ -32,14 +32,14 @@ self-hosted instances.
 
 As in the GitHub gatekeeper, every queued action carries a stable kind (`gitlab.<action>`), and
 most may be auto-approved once the user opts in to their kind, including closing and reopening,
-resolving and reopening diff threads, `requestChanges` reviews and pushes to other branches. These
-always wait for a person, because they pass a gate or drop commits:
+resolving and reopening diff threads, `requestChanges` reviews, and pushes and force pushes to
+other branches. A force push has its own kind (`gitlab.forcePush`), so enabling ordinary pushes
+does not let history be rewritten. These always wait for a person, because they pass a gate:
 
 - **merging a merge request**;
 - **an approving review**, which shares the `gitlab.postReview` kind with the other reviews;
-- **a force push** (`gitlab.forcePush`);
-- **a push to the default or a protected branch**, which shares the `gitlab.push` kind with other
-  pushes. For a branch the push creates, the gatekeeper reads the project's protected-branch rules,
+- **a push or force push to the default or a protected branch**, which shares the `gitlab.push` or
+  `gitlab.forcePush` kind with pushes to other branches. For a branch the push creates, the gatekeeper reads the project's protected-branch rules,
   wildcards included. A push into an empty repository creates its default branch, so it waits too,
   and so does any push whose protection could not be read, except that if GitLab denies the account
   access to the rules (listing them takes Maintainer), no rule counts as covering the branch. An
@@ -51,7 +51,7 @@ under the same `gitlab.createIssue` or `gitlab.createMergeRequest` kind as other
 the assignment can start an agent run (a GitLab Duo flow) that spends the namespace's credits.
 
 Each binding advertises through `getAutoApprovableActions()` only the kinds its session can submit
-that may be auto-approved, so `gitlab.mergeMergeRequest` and `gitlab.forcePush` never appear.
+that may be auto-approved, so `gitlab.mergeMergeRequest` never appears.
 
 ## CI status
 

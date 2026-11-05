@@ -3,8 +3,10 @@ import type { LiveCalendarEvent } from "./calendar-api";
 import type { CalendarEventDraft, CalendarEventPatch } from "./calendar-types";
 
 // Which Google Calendar changes a user may auto-approve. Adding or changing an event that only the
-// bound calendar holds may be; anything Google would send to other people (invitations, updates,
-// cancellations) or that widens who can see an event always waits for a person.
+// bound calendar holds may be, and so may anything Google would send to other people (invitations,
+// updates, cancellations), under a kind of its own: like a Chat message, it is something the user
+// opts into trusting the agent with. A change that widens who can see an event, or that touches an
+// out-of-office or focus-time event, always waits for a person.
 
 /** Adding or changing an event nobody but the bound calendar is on. */
 export const CALENDAR_EVENTS_ACTION: ActionKind = {
@@ -12,7 +14,10 @@ export const CALENDAR_EVENTS_ACTION: ActionKind = {
   label: "Add and change calendar events",
 };
 
-/** Creating or changing a meeting, which Google tells its attendees about. Never auto-approved. */
+/**
+ * Creating or changing a meeting, which Google tells its attendees about. Its own kind, so enabling
+ * changes to the user's own events does not let the agent write to other people.
+ */
 export const CALENDAR_INVITATIONS_ACTION: ActionKind = {
   tag: "calendar-invitations",
   label: "Send event invitations and updates",
@@ -20,8 +25,6 @@ export const CALENDAR_INVITATIONS_ACTION: ActionKind = {
 
 /** The kind and auto-approval verdict of one Calendar action. */
 export type CalendarVerdict = { actionKind: ActionKind; autoApprovable: boolean };
-
-const INVITATION: CalendarVerdict = { actionKind: CALENDAR_INVITATIONS_ACTION, autoApprovable: false };
 
 type Visibility = NonNullable<CalendarEventPatch["visibility"]>;
 
@@ -80,28 +83,28 @@ export function widensVisibility(event: LiveCalendarEvent, patch: CalendarEventP
 }
 
 /**
- * A new event with attendees is an invitation. One without may be auto-approved unless it is
- * public; a `default` event follows the calendar's sharing, which the user chose.
+ * A new event with attendees is an invitation. Either may be auto-approved unless it is public; a
+ * `default` event follows the calendar's sharing, which the user chose.
  */
 export function createEventVerdict(event: CalendarEventDraft): CalendarVerdict {
-  if (namesAnyAttendee(event.attendees)) return INVITATION;
   return {
-    actionKind: CALENDAR_EVENTS_ACTION,
+    actionKind: namesAnyAttendee(event.attendees) ? CALENDAR_INVITATIONS_ACTION : CALENDAR_EVENTS_ACTION,
     autoApprovable: visibilityReach(event.visibility ?? "default") < VISIBILITY_REACH.public,
   };
 }
 
 /**
- * A change to an event other people are on, or that adds some, reaches them. Otherwise it may be
- * auto-approved unless it widens the event's visibility or the event is not a plain one: an
- * out-of-office or focus-time event can decline other people's invitations as the user.
- * `event` is the event as Google holds it with this binding's pending changes laid over it.
+ * A change to an event other people are on, or that adds some, reaches them, so it is an
+ * invitation. Either may be auto-approved unless it widens the event's visibility or the event is
+ * not a plain one: an out-of-office or focus-time event can decline other people's invitations as
+ * the user. `event` is the event as Google holds it with this binding's pending changes laid over
+ * it.
  */
 export function updateEventVerdict(event: LiveCalendarEvent, patch: CalendarEventPatch): CalendarVerdict {
-  if (involvesOtherPeople(event) || namesAnyAttendee(patch.attendees)) return INVITATION;
+  let reachesOthers = involvesOtherPeople(event) || namesAnyAttendee(patch.attendees);
   let plain = event.eventType === undefined || event.eventType === "default";
   return {
-    actionKind: CALENDAR_EVENTS_ACTION,
+    actionKind: reachesOthers ? CALENDAR_INVITATIONS_ACTION : CALENDAR_EVENTS_ACTION,
     autoApprovable: plain && !widensVisibility(event, patch),
   };
 }

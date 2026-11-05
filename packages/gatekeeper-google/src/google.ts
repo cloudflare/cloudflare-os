@@ -72,7 +72,7 @@ import {
   type LiveCalendarEvent,
 } from "./calendar-api";
 import {
-  CALENDAR_EVENTS_ACTION, createEventVerdict, updateEventVerdict,
+  CALENDAR_EVENTS_ACTION, CALENDAR_INVITATIONS_ACTION, createEventVerdict, updateEventVerdict,
 } from "./calendar-verdict";
 import type {
   CalendarAvailabilityMode, CalendarEvent, CalendarEventDraft, CalendarEventPatch,
@@ -2732,6 +2732,13 @@ type GoogleCalendarUpdateAction = GoogleCalendarActionBase & {
    * actions stored before verdicts were recorded, which were never auto-approvable.
    */
   autoApprovable?: boolean;
+  /**
+   * Whether it was submitted as an invitation (`calendar-invitations`) rather than a change to an
+   * event nobody else is on. One judged auto-approvable must keep its kind when judged again, since
+   * the user may trust one kind and not the other. Absent on actions stored before invitations
+   * could be auto-approved, which were never invitations when auto-approvable.
+   */
+  invitation?: boolean;
 }
 
 type GoogleCalendarAction = GoogleCalendarCreateAction | GoogleCalendarUpdateAction;
@@ -2958,7 +2965,7 @@ export class GoogleCalendarGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [CALENDAR_EVENTS_ACTION];
+    return [CALENDAR_EVENTS_ACTION, CALENDAR_INVITATIONS_ACTION];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
@@ -3000,11 +3007,12 @@ export class GoogleCalendarGatekeeperImpl
       }
       case "updateEvent": {
         let oldEvent = await api.getEvent(action.calendarId, action.eventId);
-        // Whoever approved it, it was approved as reaching nobody; with guests added or its
-        // visibility narrowed in Google since, applying it would now email them or expose it.
+        // Whoever approved it, it was approved as reaching nobody, or as an invitation; with guests
+        // added or removed or its visibility narrowed in Google since, applying it would now email
+        // people under a kind the user may not trust, or expose the event.
         let changedError = new Error(
-          "The event has changed in Google Calendar since this was proposed: it now has other " +
-          "people on it, or this change would widen who can see it. This attempt changed nothing. " +
+          "The event has changed in Google Calendar since this was proposed: who is on it has " +
+          "changed, or this change would widen who can see it. This attempt changed nothing. " +
           "Reject this and ask the agent to read the event again.");
         // The write below is conditional on the etag, so an event Google sent without one cannot
         // be updated without a person.
@@ -3014,8 +3022,10 @@ export class GoogleCalendarGatekeeperImpl
             "only to the event as it was checked. This attempt changed nothing. Reject this and " +
             "ask the agent to make the change again.");
         }
-        if (action.autoApprovable && !updateEventVerdict(oldEvent, action.patch).autoApprovable) {
-          throw changedError;
+        if (action.autoApprovable) {
+          let verdict = updateEventVerdict(oldEvent, action.patch);
+          let submittedKind = action.invitation ? CALENDAR_INVITATIONS_ACTION : CALENDAR_EVENTS_ACTION;
+          if (!verdict.autoApprovable || verdict.actionKind !== submittedKind) throw changedError;
         }
         let previous = priorCalendarPatch(oldEvent, action.patch);
         try {
@@ -3301,6 +3311,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       eventId,
       patch,
       autoApprovable: verdict.autoApprovable,
+      invitation: verdict.actionKind === CALENDAR_INVITATIONS_ACTION,
     };
     let actionId = this.#pendingActions.submit(action);
 

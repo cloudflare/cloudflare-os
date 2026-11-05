@@ -92,9 +92,9 @@ describe("auto-approval", () => {
     expect(autoApprovalOf(mergeRequest(true))).toEqual({ actionKind: mergeRequestKind, autoApprovable: false });
   });
 
-  it("never auto-approves a force push, whatever its branch", () => {
+  it("auto-approves a force push only to a branch that is not the default or protected", () => {
     const kind = { tag: "gitlab.forcePush", label: "Force-push commits" };
-    expect(autoApprovalOf(push(true, false))).toEqual({ actionKind: kind, autoApprovable: false });
+    expect(autoApprovalOf(push(true, false))).toEqual({ actionKind: kind, autoApprovable: true });
     expect(autoApprovalOf(push(true, true))).toEqual({ actionKind: kind, autoApprovable: false });
   });
 
@@ -110,14 +110,14 @@ describe("auto-approval", () => {
     expect(autoApprovalOf(push(true)).actionKind?.tag).toBe("gitlab.forcePush");
   });
 
-  it("advertises, per binding, exactly the eligible kinds its actions can carry, never a merge or a force push", () => {
+  it("advertises, per binding, exactly the eligible kinds its actions can carry, never a merge", () => {
     const issue = ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"]
       .map(type => `gitlab.${type}`);
     const mergeRequest = [...issue, "gitlab.postReview", "gitlab.replyToDiffComment", "gitlab.resolveDiffThread"];
     expect(tags("issue")).toEqual(issue);
     expect(tags("mergeRequest")).toEqual(mergeRequest);
     expect(tags("project")).toEqual(
-      ["gitlab.createIssue", "gitlab.createMergeRequest", ...mergeRequest, "gitlab.push"]);
+      ["gitlab.createIssue", "gitlab.createMergeRequest", ...mergeRequest, "gitlab.push", "gitlab.forcePush"]);
   });
 });
 
