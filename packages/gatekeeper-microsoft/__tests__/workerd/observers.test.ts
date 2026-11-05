@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SHAREPOINT_RESOURCE, scopesFor, type Env } from "../../src/microsoft-env";
 import { calendarSubresourceId, qualifiedSubresourceId, sharePointSubresourceId, tenantSubresourceId } from "../../src/subresources";
 import {
-  BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, MALLORY, OTHER_TENANT, PHILLIP, SARAH, SPECS, TENANT,
+  BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, MALLORY, NOTES, OTHER_TENANT, PHILLIP, SARAH, SPECS, TENANT,
   facet, failure, folderProps, hooks, json, props, reconnectAs, ref, seedAccount, unwrap,
 } from "./fake-graph";
 
@@ -57,6 +57,17 @@ describe("what reads report", () => {
     const name = facet("report-empty");
     expect(unwrap(await hooks().run(name, folderProps(id), [["list", { folderId: ref(EMPTY) }]], { pages: 10 }))).toEqual([]);
     expect(await lastReported(name)).toEqual([item(EMPTY)]);
+  });
+
+  it("name a file whose replacement awaits approval when its new content is read, since its details are SharePoint's", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const name = facet("report-staged");
+    unwrap(await hooks().run(name, folderProps(id), [["replaceFile", ref(NOTES), "new text\n"]]));
+    const before = (await hooks().queueLog(name)).observations.length;
+    expect(unwrap(await hooks().run(name, folderProps(id), [["readFile", ref(NOTES)]]))).toMatchObject({ content: "new text\n" });
+    expect((await hooks().queueLog(name)).observations).toHaveLength(before + 1);
+    expect(await lastReported(name)).toEqual([item(NOTES)]);
   });
 
   it("name the owner's organization for a read that reveals nothing narrower, which only its members pass", async () => {

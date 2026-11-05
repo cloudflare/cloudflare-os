@@ -751,6 +751,11 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     const staged = await this.#stagedContent(id, overlay);
     if (staged !== undefined) {
       const converted = await convertStaged(staged.bytes, staged.name, staged.mimeType, maxChars);
+      // The content is this binding's own, but a file being replaced is described as SharePoint holds it.
+      if (staged.replaced !== undefined) {
+        await this.ctx.observe("Read SharePoint file details",
+          `Read the details of ${md(staged.entry.path || staged.entry.name)}, whose new content awaits approval.`, [units.item(staged.replaced)]);
+      }
       return { entry: staged.entry, ...converted };
     }
     const item = await this.item(id);
@@ -789,16 +794,23 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     return source !== undefined && entry !== undefined ? { source: encodeItemRef(source), entry } : undefined;
   }
 
-  /** The bytes a pending upload or replace will write, when `id` has one, for reading before approval. */
-  async #stagedContent(id: string, overlay: Overlay): Promise<{ bytes: Uint8Array; name: string; mimeType: string; entry: DriveEntry } | undefined> {
+  /**
+   * The bytes a pending upload or replace will write, when `id` has one, for reading before approval,
+   * and for a replace, the file it replaces.
+   */
+  async #stagedContent(id: string, overlay: Overlay): Promise<{ bytes: Uint8Array; name: string; mimeType: string; entry: DriveEntry; replaced?: ItemRef } | undefined> {
     const pending = provisional(id);
     if (pending === undefined && overlay.pendingContent(id) === undefined) return undefined;
     const key = pending ?? id;
     const content = overlay.pendingContent(key);
     if (content === undefined) throw new OutsideScopeError();
-    const entry = pending !== undefined ? overlay.created(pending) : await this.entry(await this.item(id), overlay);
+    const item = pending === undefined ? await this.item(id) : undefined;
+    const entry = item !== undefined ? await this.entry(item, overlay) : overlay.created(key);
     if (entry === undefined) throw new OutsideScopeError();
-    return { bytes: await this.ctx.host.readCaptured(content.file), name: content.name, mimeType: content.mimeType, entry };
+    return {
+      bytes: await this.ctx.host.readCaptured(content.file), name: content.name, mimeType: content.mimeType, entry,
+      ...(item !== undefined ? { replaced: { driveId: item.driveId, itemId: item.id } } : {}),
+    };
   }
 
   async readBytes(id: string): Promise<Uint8Array> {
