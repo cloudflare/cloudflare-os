@@ -451,8 +451,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
   async #mutateAdminConfig(mutate: (config: AdminConfig) => AdminConfig): Promise<void> {
     let previousMutation = this.adminConfigMutationTail;
-    let release!: () => void;
-    this.adminConfigMutationTail = new Promise<void>(resolve => { release = resolve; });
+    let { promise, resolve: release } = Promise.withResolvers<void>();
+    this.adminConfigMutationTail = promise;
     await previousMutation;
     try {
       let current = this.#config();
@@ -962,8 +962,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
   async setSiteLogo(data: Uint8Array | null): Promise<boolean> {
     let previous = this.siteLogoMutationTail;
-    let release!: () => void;
-    this.siteLogoMutationTail = new Promise<void>(resolve => { release = resolve; });
+    let { promise, resolve: release } = Promise.withResolvers<void>();
+    this.siteLogoMutationTail = promise;
     await previous;
     try {
       let current = this.#config();
