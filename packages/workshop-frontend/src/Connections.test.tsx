@@ -3,9 +3,11 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { BoundHookInfo } from '@gadgets/workshop-shared/api'
+import type { BoundHookInfo, GadgetClient } from '@gadgets/workshop-shared/api'
+import type { GatekeeperModalProps } from './GatekeeperModal'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
+const modal = vi.hoisted(() => ({ props: undefined as GatekeeperModalProps | undefined }))
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
@@ -17,6 +19,13 @@ vi.mock('./AuthContext', () => {
   const context = { authenticatedApi: { listGatekeeperVendors: async () => [] }, currentUser: null }
   return { useAuthenticatedApi: () => context, useOptionalAuthenticatedApi: () => context }
 })
+
+vi.mock('./GatekeeperModal', () => ({
+  default: (props: GatekeeperModalProps) => {
+    modal.props = props
+    return null
+  },
+}))
 
 import { clickHookSwitch, deferred, hookSwitch, makeTestRoot } from './action-test-harness'
 import Connections from './Connections'
@@ -127,4 +136,38 @@ it('shows a change at once, holds the switch busy while it is in flight, and let
   await clickHookSwitch(TITLE)
   expect(overseer.enableHook).toHaveBeenCalledTimes(2)
   expect(isOn()).toBe(true)
+})
+
+/** A gadget stub whose binds go through `bind`. */
+const gadgetStub = (bind: GadgetClient['bindWithSuggestedName']) => ({
+  getId: async () => 3,
+  getTitle: async () => 'Triage',
+  listBindings: async () => [],
+  bindWithSuggestedName: vi.fn<GadgetClient['bindWithSuggestedName']>(bind),
+})
+
+it('binds a connection whose creation restarted the workspace once the session is replaced, without creating another', async () => {
+  const dying = gadgetStub(async () => {
+    throw new Error('The workspace is restarting to apply a connection change. Please retry.')
+  })
+  const reconnected = gadgetStub(async () => 'KIBANA')
+  const onConnectionsChange = vi.fn<() => void>()
+  const render = (stub: typeof dying, chatId: number) => view.render(
+    <Connections overseer={workspace().overseer as never} gadget={stub as never} chatId={chatId}
+      authenticatedApi={{ listGatekeeperVendors: async () => [] } as never}
+      onConnectionsChange={onConnectionsChange} />,
+  )
+
+  await render(dying, 1)
+  // Resolving is what closes the modal rather than leaving it to create a second connection.
+  await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).resolves.toBeUndefined())
+
+  // A chat switch while the old session goes down must not spend the retry on it.
+  await render(dying, 2)
+  expect(dying.bindWithSuggestedName).toHaveBeenCalledOnce()
+
+  await render(reconnected, 2)
+  await act(async () => {})
+  expect(reconnected.bindWithSuggestedName).toHaveBeenCalledWith(9, 1)
+  expect(onConnectionsChange).toHaveBeenCalledOnce()
 })
