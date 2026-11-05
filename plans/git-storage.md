@@ -2,9 +2,9 @@
 
 This records the original storage migration, including its historical Yjs and size-limit
 decisions. The current [scratch worktree design](../docs/chat-scratch-worktree.md) uses the
-same workspace `gitObjects` collection for uploads, remote Git objects, and authored files:
-one zlib-compressed loose object per OID, with no attachment-specific chunk store or grants.
-A blob over 1 MiB is stored as an index of content-defined chunks, each itself an ordinary
+same workspace `gitObjects` collection for uploads, remote Git objects, and authored files,
+keyed by OID, with no attachment-specific store or grants. An object is one zlib-compressed
+loose object, except that a blob over 1 MiB is stored as an index of content-defined chunks, each itself an ordinary
 loose blob (see [chunked git storage](chunked-git.md)), so no blob size is bounded, and the
 paths that move large blobs (pulls, pushes, uploads, worktree byte I/O) stream them. The
 store still has no GC: discarded uploads can
