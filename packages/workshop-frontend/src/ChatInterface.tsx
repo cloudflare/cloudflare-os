@@ -2904,6 +2904,7 @@ function ChatInterface({
     vendorId: string;
     resourceUrl?: string;
     resourceUrlPattern?: string;
+    resourceTypeId?: string;
   } | null>(null);
   // Read via this ref inside handleConnectionCreated to avoid a stale closure: that callback is
   // passed as the `onCreated` prop to GatekeeperModal, so it would otherwise capture an outdated
@@ -4691,6 +4692,7 @@ function ChatInterface({
       vendorId: msg.vendorId,
       resourceUrl: msg.resourceUrl,
       resourceUrlPattern: msg.resourceUrlPattern,
+      resourceTypeId: msg.resourceTypeId,
     });
   };
 
@@ -6976,6 +6978,7 @@ function ChatInterface({
         onCreated={handleConnectionCreated}
         initialVendorId={connectionAccept?.vendorId}
         initialResourceUrl={connectionAccept?.resourceUrl}
+        initialResourceTypeId={connectionAccept?.resourceTypeId}
         initialResourceUrlPattern={connectionAccept?.resourceUrlPattern}
       />
       <OutOfCreditsModal

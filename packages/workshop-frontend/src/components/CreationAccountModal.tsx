@@ -1,3 +1,4 @@
+import { findResourceType, getResourceTypeId, getGrantedResourceTypeIds } from "@gadgets/workshop-shared/gatekeeper";
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dialog, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
@@ -15,7 +16,7 @@ import ResourceConfiguratorHost from '../ResourceConfiguratorHost'
 import { disposeConfiguratorFrame } from '../disposeConfiguratorFrame'
 import { WorkshopButton } from './WorkshopControls'
 
-type CreationTarget = { vendor: GatekeeperVendorInfo; typeUrlPattern: string }
+type CreationTarget = { vendor: GatekeeperVendorInfo; typeUrlPattern: string; resourceTypeId?: string }
 
 // The popup flow whose start request is in flight.
 type StartingFlow = { kind: 'connect' } | { kind: 'reconnect' | 'grant'; accountId: number }
@@ -60,7 +61,10 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
           [gatekeeper.getCreationSpec(), authenticatedApi.listGatekeeperVendors()])
         const vendor = spec.type === 'gatekeeper' && vendors.find(v => v.id === spec.vendorId)
         if (!vendor || spec.type !== 'gatekeeper') throw new Error('This service is unavailable.')
-        if (!cancelled) setTarget({ vendor, typeUrlPattern: spec.typeUrlPattern })
+        if (!findResourceType(vendor.supportedResources, spec.resourceTypeId, spec.typeUrlPattern)?.creatable) {
+          throw new Error('This resource type is no longer available for creation.')
+        }
+        if (!cancelled) setTarget({ vendor, typeUrlPattern: spec.typeUrlPattern, resourceTypeId: spec.resourceTypeId })
       } finally {
         gatekeeper[Symbol.dispose]()
       }
@@ -120,14 +124,15 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
   }
 
   const matching = target ? accounts.filter(a => a.vendorId === target.vendor.id) : []
-  const resource = target?.vendor.supportedResources
-    .find(r => r.urlPattern === target.typeUrlPattern)
+  const resource = target
+    ? findResourceType(target.vendor.supportedResources, target.resourceTypeId, target.typeUrlPattern)
+    : undefined
   // A separately grantable type needs its grant on the account the resource is created in.
-  const required = resource?.grantable ? [resource.urlPattern] : []
+  const required = resource?.grantable ? [getResourceTypeId(resource)] : []
   const usable = (account: AccountEvent) => account.credentialsValid &&
-    required.every(p => account.description.grantedResourceUrlPatterns?.includes(p) ?? true)
+    required.every(p => getGrantedResourceTypeIds(account.description, account.supportedResources)?.includes(p) ?? true)
   const selected = matching.find(a => a.id === chosen) ?? matching.find(usable)
-  const configuratorPattern = resource?.creationConfigurator ? resource.urlPattern : null
+  const configuratorPattern = resource?.creationConfigurator ? getResourceTypeId(resource) : null
   const configuratorAccountId =
     configuratorPattern !== null && selected && usable(selected) ? selected.id : null
 
@@ -228,7 +233,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
                     ? patterns => requestAccountResources(
                       authenticatedApi, toasts, configuratorAccountId, patterns)
                     : undefined}
-                  acceptedResourceUrlPatterns={[target.typeUrlPattern]}
+                  acceptedResourceUrlPatterns={resource ? [resource.urlPattern] : []}
                 />
               )}
             </div>
