@@ -53,6 +53,7 @@ function recordingQueue() {
   const queue = {
     dup: () => queue,
     authorizeObservation: async (observation: Record<string, unknown>) => void observations.push(observation),
+    submitAction: async () => {},
   };
   return { queue: queue as never, observations };
 }
@@ -129,6 +130,20 @@ describe("subresources reported by reads", () => {
     await session.getDetails();
     expect(await (await session.readComments()).next()).toEqual([]);
     expect(observations.map(o => o.subresources)).toEqual([["workspace/acme/issue/ENG-1"], ["workspace/acme/issue/ENG-1"]]);
+  });
+
+  it("reports a pending parent's team wherever the issue is read, not just where it was queued", async () => {
+    const plan = { ...issue, id: "44444444-4444-4444-8444-444444444444", identifier: "OPS-1", title: "Private plan", team: OPS };
+    linearApi((_query, variables) => ({ issue: variables.id === "OPS-1" ? plan : issue }));
+    const { gk } = gatekeeper({ resourceKind: "workspace" });
+    const chat = recordingQueue();
+    await (await (await gk.startSession(chat.queue) as LinearWorkspace).getIssue("ENG-1")).setParent("OPS-1");
+
+    const gadget = recordingQueue();
+    const details = await (await (await gk.startSession(gadget.queue) as LinearWorkspace).getIssue("ENG-1")).getDetails();
+    expect(details.parent?.title).toBe("Private plan");
+    expect(gadget.observations.map(o => o.subresources))
+      .toEqual([["workspace/acme", `workspace/acme/team/${ENG.id}`, `workspace/acme/team/${OPS.id}`]]);
   });
 });
 
@@ -225,7 +240,7 @@ describe("UserAccount.checkSubresourceAccess", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("asks for the workspace again when a reconnect lands during a check", async () => {
+  it("fails a check a reconnect lands in, keeping no answer the replaced grant decided", async () => {
     // token-1 belongs to workspace `other`; the reconnect installs token-2, which belongs to `acme`.
     const started = Promise.withResolvers<void>();
     const replacedOrganization = Promise.withResolvers<Response>();
@@ -244,8 +259,8 @@ describe("UserAccount.checkSubresourceAccess", () => {
     await acct.commitReconnect(stageCredentials(kv as never, grant("token-2"), Date.now()));
     replacedOrganization.resolve(Response.json({ data: { organization: { id: "org-2", name: "Other", urlKey: "other" } } }));
 
-    // The replaced grant decides only the answer it was asked for; the new grant answers the team.
-    await expect(checking).resolves.toEqual([false, true]);
+    // Nothing mixes the two grants' answers, and the team's answer was the new grant's own.
+    await expect(checking).rejects.toThrow(/changed while their access was being checked/);
     await expect(acct.checkSubresourceAccess(["workspace/acme/team/ENG"])).resolves.toEqual([true]);
   });
 

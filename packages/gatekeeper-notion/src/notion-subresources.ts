@@ -176,24 +176,20 @@ export class NotionObservationScope {
 }
 
 /**
- * Checks that every one of `subresources` is one this binding's reads report (see
- * NotionObservationScope), for verifyObserverAccess, which must refuse any other.
+ * Checks that every one of `subresources` is a kind this binding's reads report (see
+ * NotionObservationScope), for verifyObserverAccess, which must refuse any other. The workspace an
+ * ID names is not compared with the owner's: it is the one the owner's connection belonged to when
+ * the read was recorded, which a reconnect into another workspace doesn't change, and every check
+ * of it runs against the observer's own connection.
  * @param binding The binding asked about.
- * @param ownerWorkspaceId The binding owner's stored workspace id.
  * @param subresources IDs the Workshop asks about.
- * @throws Error when the owner's workspace id is unknown, or an ID is not a Notion subresource,
- * names another workspace, or (for an item binding) names anything but the bound item.
+ * @throws Error when an ID is not a Notion subresource, or (for an item binding) names anything
+ * but the bound item.
  */
-export function assertBindingSubresources(
-  binding: NotionBinding, ownerWorkspaceId: string | undefined, subresources: readonly string[],
-): void {
-  if (!ownerWorkspaceId) throw new Error(MISSING_WORKSPACE_ID_MESSAGE);
+export function assertBindingSubresources(binding: NotionBinding, subresources: readonly string[]): void {
   const boundItemId = binding.kind === "item" ? normalizeId(binding.itemId) : undefined;
   for (const subresource of subresources) {
     const resource = parseNotionSubresource(subresource);
-    if (resource.workspaceId !== ownerWorkspaceId) {
-      throw new Error("A subresource names a Notion workspace other than this binding's.");
-    }
     if (boundItemId !== undefined && (resource.kind !== "item" || resource.itemId !== boundItemId)) {
       throw new Error("A subresource names something other than this binding's page or database.");
     }

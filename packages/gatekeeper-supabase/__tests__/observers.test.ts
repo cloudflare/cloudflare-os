@@ -306,6 +306,34 @@ describe("UserAccount.checkSubresourceAccess", () => {
     expect(requests.map(({ token }) => token)).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
 
+  it("fails a check a reconnect lands in rather than combining two accounts' answers", async () => {
+    let reachable = [project(REF, "acme")];
+    const started = Promise.withResolvers<void>();
+    const refreshed = Promise.withResolvers<Response>();
+    serve({
+      "/v1/projects": () => json(reachable),
+      "/v1/oauth/token": () => {
+        started.resolve();
+        return refreshed.promise;
+      },
+    });
+    const { account, kv } = connectedAccount();
+    const otherId = `organization/acme/project/${OTHER_REF}`;
+    await expect(account.checkSubresourceAccess([PROJECT_ID])).resolves.toEqual([true]);
+
+    // The first account's token expires, and the reconnect installs one that reaches only the other project.
+    kv.put("accessTokenExpiresAt", Date.now());
+    const checking = account.checkSubresourceAccess([PROJECT_ID, otherId]);
+    await started.promise;
+    reachable = [project(OTHER_REF, "acme")];
+    await account.commitReconnect(stageCredentials(kv, {
+      accessToken: "token-2", refreshToken: "refresh-2", accessTokenExpiresAt: Date.now() + 3_600_000,
+    }, Date.now()));
+    refreshed.resolve(json({ access_token: "token-1b", refresh_token: "refresh-1b", expires_in: 3600 }));
+
+    await expect(checking).rejects.toThrow(/changed while their access was being checked/);
+  });
+
   it("keeps a reconnected grant when a refresh of the replaced one finishes after it", async () => {
     const started = Promise.withResolvers<void>();
     const refreshed = Promise.withResolvers<Response>();

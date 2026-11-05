@@ -505,17 +505,24 @@ export class UserAccount extends DurableObject<Env> {
   /**
    * Whether this account can read each Confluence subresource, in order (see
    * checkConfluenceSubresourceAccess). An allowed answer is reused for up to 15 minutes and a
-   * denial for up to 15 seconds, until credentials are next installed. Throws for an ID it can't
+   * denial for up to 15 seconds, until credentials are next installed. Every answer comes from the
+   * credentials installed when the check began: a reconnect partway through could otherwise combine
+   * one Atlassian account's answers with another's, so it fails the check. Throws for an ID it can't
    * check, or when access can't be determined, which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
-    return await checkConfluenceSubresourceAccess(this.#access, {
+    const installed = this.#credentialsId();
+    const answers = await checkConfluenceSubresourceAccess(this.#access, {
       getToken: () => this.getAccessToken(),
       refresh: () => this.refreshCredentials(),
       api: (cloudId, token) => new ConfluenceApi({
         cloudId, webBase: "", getToken: async () => token, refresh: () => this.refreshCredentials(),
       }),
     }, subresources);
+    if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
+      throw new Error("This collaborator's Confluence connection changed while their access was being checked.");
+    }
+    return answers;
   }
 
   async alarm() {
