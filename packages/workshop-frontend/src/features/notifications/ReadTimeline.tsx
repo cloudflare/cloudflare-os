@@ -52,7 +52,6 @@ export const ReadTimeline = ({
   const pending = useRef(-1);
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
-  const pendingUnread = useRef(0);
   const receivedChat = useRef<ChatReadState | undefined>(undefined);
   const latestAction = useRef<symbol | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
@@ -82,6 +81,7 @@ export const ReadTimeline = ({
     const previous = receivedChat.current;
     if (previous === chat) return;
     receivedChat.current = chat;
+    // Server transitions supersede local optimism, even before the command ACK arrives.
     if (!visit) {
       const divider = chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;
       setVisit({divider, paused: false});
@@ -91,13 +91,13 @@ export const ReadTimeline = ({
         onUnreadNavigation(true);
         setJump(request => request + 1);
       }
-    } else if (!pendingUnread.current && previous &&
+    } else if (previous &&
         chat.readThroughSequence < previous.readThroughSequence) {
       latestAction.current = undefined;
       setVisit({divider: chat.readThroughSequence + 1, paused: true});
       pending.current = -1;
       // Live changes, including remote rewinds, never take over the viewport.
-    } else if (visit.paused && !pendingUnread.current && chat.unreadMessageCount === 0) {
+    } else if (visit.paused && chat.unreadMessageCount === 0) {
       latestAction.current = undefined;
       setVisit({...visit, paused: false});
     } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {
@@ -261,9 +261,7 @@ export const ReadTimeline = ({
           const action = Symbol();
           latestAction.current = action;
           const previous = {visit: latest.current.visit, jump,
-            target: jumpSequence.current, page: requestedPage.current,
-            horizon: latest.current.chat?.readThroughSequence ?? -1};
-          pendingUnread.current++;
+            target: jumpSequence.current, page: requestedPage.current};
           jumpSequence.current = undefined;
           requestedPage.current = undefined;
           if (jump) onUnreadNavigation(false);
@@ -276,14 +274,6 @@ export const ReadTimeline = ({
             requestedPage.current = previous.page;
             onUnreadNavigation(!!previous.jump);
             setJump(previous.jump);
-          }).finally(() => {
-            const current = latest.current.chat;
-            if (--pendingUnread.current === 0 && current?.unreadMessageCount === 0 &&
-                current.readThroughSequence > previous.horizon) {
-              // A newer all-read update could not resume us while the command was pending.
-              // The unchanged pre-command row cannot clear the optimistic unread pause.
-              setVisit(visit => visit && {...visit, paused: false});
-            }
           });
         },
       }}

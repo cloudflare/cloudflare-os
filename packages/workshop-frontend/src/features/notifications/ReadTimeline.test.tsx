@@ -324,22 +324,39 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
-  it.each([false, true])("resumes after a remote read clears a no-op unread selection (ACK first: %s)", async ackFirst => {
+  it.each(["before read", "before arrival", "after arrival"])("resumes after a remote read clears a no-op unread selection (ACK: %s)", async ackAt => {
     await render(); await update(snapshot(1, 0)); await settle();
     const ack = Promise.withResolvers<boolean>();
     markChatUnread.mockReturnValueOnce(ack.promise);
     await markUnreadFrom(1); // The source horizon is already zero; there will be no local echo.
-    if (ackFirst) await act(async () => ack.resolve(false));
+    if (ackAt === "before read") await act(async () => ack.resolve(false));
     await updateChat(snapshot(2, 2));
-    if (!ackFirst) await act(async () => ack.resolve(false));
+    if (ackAt === "before arrival") await act(async () => ack.resolve(false));
     visibleBottom = 450;
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
     const arrival = snapshot(3, 2);
     await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
+    if (ackAt === "after arrival") await act(async () => ack.resolve(false));
     await settle();
     expect(container.textContent).not.toContain("automatic reading paused");
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
+  });
+
+  it("respects a remote rewind after an all-read update while a local command is pending", async () => {
+    await render(); await update(snapshot(1, 0)); await settle();
+    const ack = Promise.withResolvers<boolean>();
+    markChatUnread.mockReturnValueOnce(ack.promise);
+    await markUnreadFrom(1);
+    await updateChat(snapshot(2, 2));
+    await updateChat(snapshot(3, 1));
+    await act(async () => ack.resolve(false));
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("2");
+    expect(markChatRead).not.toHaveBeenCalled();
   });
 
   it("keeps a newer manual unread paused when an earlier mark-read ACK arrives", async () => {

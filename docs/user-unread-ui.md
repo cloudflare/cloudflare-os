@@ -35,8 +35,10 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   pauses automatic reads in already-open views until leaving/re-entering the thread or explicitly
   marking it read. This prevents immediate accidental acknowledgement, but does not cancel
   already-dispatched reads; a later-processed read can clear the manual unread.
-  A local unread command pauses the visit immediately. Only the latest local action can restore
-  its previous UI after failure; overlapping failures do not reconstruct an action history.
+  A local unread command pauses the visit immediately. Server read/rewind transitions apply as
+  received, even before the command responds. Only the latest local action can restore its previous
+  UI after failure, and cannot undo a subsequent server transition. Overlapping failures do not
+  reconstruct an action history.
 - Failed read commands display an error without pretending the state advanced. An inbox query
   failure retains its previous rows and offers retry; it does not present an empty inbox as caught up.
 
