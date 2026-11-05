@@ -361,24 +361,25 @@ describe("Drive native sessions", () => {
   });
 
   // Excluding today's observers is not enough: nothing durable would stop a collaborator admitted
-  // afterwards from inheriting the history, so the probed id is reported like any other read.
-  it.each([403, 404])(
-    "reports an account-scope %s probe so later observers are checked against it",
-    async status => {
-      let { session, authorizations, events } = core({
-        getFile: async () => { throw new DriveApiRequestError(status); },
-      });
+  // afterwards from inheriting the history. A 404 is the same for a missing file and an unshared
+  // one, so it reports nothing; a per-file 403 can show the file exists, so it reports the file.
+  it.each([
+    [403, ["drive/file/file-1"]],
+    [404, []],
+  ])("reports an account-scope %s probe as %j", async (status, subresources) => {
+    let { session, authorizations, events } = core({
+      getFile: async () => { throw new DriveApiRequestError(status); },
+    });
 
-      await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
-        .rejects.toBeInstanceOf(DriveApiRequestError);
-      expect(events).toEqual(["authorize"]);
-      expect(authorizations).toEqual([{
-        title: "Check Google Drive file access",
-        description: "Check whether the connected account can access Drive file file-1.",
-        subresources: ["drive/file/file-1"],
-      }]);
-    },
-  );
+    await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
+      .rejects.toBeInstanceOf(DriveApiRequestError);
+    expect(events).toEqual(["authorize"]);
+    expect(authorizations).toEqual([{
+      title: "Check Google Drive file access",
+      description: "Check whether the connected account can access Drive file file-1.",
+      subresources,
+    }]);
+  });
 
   it("rejects another exact-file ID before calling Google", async () => {
     let { session, getFile } = core({ scope: { kind: "file", fileId: "file-1" } });

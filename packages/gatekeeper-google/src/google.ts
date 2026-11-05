@@ -3417,11 +3417,11 @@ export class GoogleDriveGatekeeperImpl
   // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
   // whose metadata it returned, each folder it listed, and each native file whose content it read,
   // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
-  // empty search or a folder it cannot list) reports `[]`. An invisible-file check reports `[]`
-  // on a folder binding, but `drive/file/<fileId>` on an account binding before propagating the
-  // error. The tracker no longer records what reads reveal. It keeps what addObserver() still
-  // enforces: a Drive grant, the bound folder or file (seeded below), and the units reads recorded
-  // before they reported subresources.
+  // empty search, a folder it cannot list, or a file it cannot see) reports `[]`, except that an
+  // account binding reports `drive/file/<fileId>` for a per-file 403 before propagating it, since
+  // Google's reason can show that the file exists. The tracker no longer records what reads
+  // reveal. It keeps what addObserver() still enforces: a Drive grant, the bound folder or file
+  // (seeded below), and the units reads recorded before they reported subresources.
 
   #observerTracker(): ObserverTracker<DriveObservation, Fetcher<GoogleVerifierApi>> {
     return driveObserverTracker<Fetcher<GoogleVerifierApi>>(
