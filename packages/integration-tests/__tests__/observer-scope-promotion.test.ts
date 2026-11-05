@@ -7,7 +7,8 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import {
-  GATEKEEPER_ERROR_CODES, type AiChatMessage, type AuthenticatedApi, type Overseer, type WorkpieceId,
+  GATEKEEPER_ERROR_CODES, getGatekeeperErrorCode,
+  type AiChatMessage, type AuthenticatedApi, type Overseer, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { openAgentSession } from "../src/agent-session.js";
 import {
@@ -116,6 +117,15 @@ const reopenVerified = (workspaceId: string, viewer: Viewer) =>
     }
   });
 
+// A broken stub reports the same failure on all calls; an unrelated method rejection does not.
+function restartRefusal(ws: RpcStub<Overseer>) {
+  let brokenReason: unknown;
+  ws.onRpcBroken(reason => { brokenReason = reason; });
+  return (error: unknown) =>
+    getGatekeeperErrorCode(error) === GATEKEEPER_ERROR_CODES.pendingRestart ||
+    (brokenReason !== undefined && error === brokenReason);
+}
+
 it("merging an agent-proposed binding re-verifies a live gadget viewer against it", async () => {
   const SOURCE_URL = "https://gadgets-test.example/things/promotion-source";
   // The workspace isn't listed until its first chat, and a chat's seed env is frozen at its first
@@ -183,9 +193,10 @@ it("merging an agent-proposed binding re-verifies a live gadget viewer against i
     await settleRestart();
     await expect(held.overseer.getMetadata()).resolves.toMatchObject({ id: workspaceId });
     await expect(held.gadget.getTitle()).resolves.toBe("App");
+    const isRestartRefusal = restartRefusal(ws);
     expect(await ws.mergeChanges(card.chatId)).toEqual({ outcome: "merged" });
-    await expect(ws.getGatekeeperById(sourceId))
-        .rejects.toMatchObject({ code: GATEKEEPER_ERROR_CODES.pendingRestart });
+    // The restart can land before this RPC; either way the old session must return no connection.
+    await expect(ws.getGatekeeperById(sourceId)).rejects.toSatisfy(isRestartRefusal);
   });
 
   await waitFor("the viewer's session to be severed", () =>
@@ -392,9 +403,9 @@ it("a mainline bind re-verifies a held gadget viewer against the bound connectio
   // Unbound, the connection is outside the gadget's scope, so getting it needs no verification.
   using held = await holdSession(workspaceId, viewer.name, viewer.gadgetId);
 
+  const isRestartRefusal = restartRefusal(ws);
   await app.bind("DATA", sourceId);
-  await expect(ws.getGatekeeperById(sourceId))
-      .rejects.toMatchObject({ code: GATEKEEPER_ERROR_CODES.pendingRestart });
+  await expect(ws.getGatekeeperById(sourceId)).rejects.toSatisfy(isRestartRefusal);
 
   await waitFor("the viewer's session to be severed", () =>
     held.overseer.getMetadata().then(() => null, () => true));
