@@ -105,7 +105,7 @@ describe("Git pull consumption through the Overseer delegate", () => {
 
   it("pulls a blob over the old 8 MB limit, unfiltered, and stores it chunked", async () => {
     const payload = new Uint8Array(9_000_000).fill(0x5a);
-    const oid = await gitObjectOid("blob", payload);
+    const oid = gitObjectOid("blob", payload);
     const pack = byteStream(concatBytes(await buildPackBytes([{type: "blob", payload}])), 65536);
     const transfer = fakeTransfer(pack, {state: "complete"});
     await inOverseer("large-blob", transfer, async (cache, pull) => {

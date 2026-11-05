@@ -4431,7 +4431,7 @@ class OverseerImpl implements AgentHooks {
           if (flattened !== this.gitCache.commitTree(record.pinBase)) {
             newPinBase = flattened === this.gitCache.commitTree(record.headCommit)
                 ? record.headCommit
-                : await this.gitCache.writeCommitForTree(flattened, {
+                : this.gitCache.writeCommitForTree(flattened, {
                     parents: [record.pinBase],
                     author: identity,
                     message: `Auto-commit at accept from chat: ${meta.title}`,
@@ -5930,7 +5930,7 @@ class OverseerImpl implements AgentHooks {
       const value: FileContent = text !== undefined && (worktree === undefined ||
           codeChangeSerializedSize({[worktree.id]: [[path, {set: text}]]}) <= MAX_CODE_CHANGE_SIZE) ? text
           : attachment.oid !== undefined ? {oid: attachment.oid, byteLength: data.byteLength}
-          : await this.gitCache.writeBlob(data);
+          : this.gitCache.writeBlob(data);
       attachment.workspacePath = path;
       files.set(path, value);
     }
@@ -5976,7 +5976,7 @@ class OverseerImpl implements AgentHooks {
     if (source?.state.type !== "committed" || source.state.chatId !== chatId) return;
     if (source.state.oid !== undefined && attachment.workspacePath !== undefined) return;
     const oid = source.state.oid ??
-      (await this.gitCache.writeBlob(await this.getChatAttachmentData(chatId, id))).oid;
+      this.gitCache.writeBlob(await this.getChatAttachmentData(chatId, id)).oid;
     const projected = {...attachment, oid};
     const files = attachment.workspacePath === undefined
       ? await this.#prepareWorkspaceAttachmentFiles(chatId, [projected]) : new Map<string, FileContent>();
@@ -9011,9 +9011,9 @@ class OverseerImpl implements AgentHooks {
     let previous = record.releases?.at(-1)?.releaseCommit;
     let unchanged = previous !== undefined && this.gitCache.commitTree(previous) === tree;
     if (previous === undefined && record.commitId !== undefined) {
-      let snapshot = await buildSnapshotRelease(
+      let snapshot = buildSnapshotRelease(
           this.gitCache.readCommitFiles(record.commitId));
-      await this.gitCache.importObjects(snapshot.objects.values());
+      this.gitCache.importObjects(snapshot.objects.values());
       previous = snapshot.commitId;
     }
     let merged = await this.releasesMergedSince(sourceCommit, record.commitId, previous);
@@ -9024,18 +9024,18 @@ class OverseerImpl implements AgentHooks {
       title: record.metadata.title,
       timestamp: new Date(),
     };
-    let mint = async (release: Pick<Release, "tree" | "parents" | "version">) => {
+    let mint = (release: Pick<Release, "tree" | "parents" | "version">) => {
       let payload = encodeReleaseCommit({ ...release, ...publication });
-      await this.gitCache.importObjects([{ type: "commit", payload }]);
-      return await gitObjectOid("commit", payload);
+      this.gitCache.importObjects([{ type: "commit", payload }]);
+      return gitObjectOid("commit", payload);
     };
 
     if (previous === undefined && merged.length > 0) {
-      previous = await mint({ tree: EMPTY_TREE_OID, parents: [], version: 0 });
+      previous = mint({ tree: EMPTY_TREE_OID, parents: [], version: 0 });
     }
     let version = record.metadata.version + 1;
     let parents = previous === undefined ? [] : [previous, ...merged];
-    let releaseCommit = await mint({ tree, parents, version });
+    let releaseCommit = mint({ tree, parents, version });
 
     record.releases = [...record.releases ?? [], { version, releaseCommit, sourceCommit }];
     record.commitId = sourceCommit;
@@ -9114,7 +9114,7 @@ class OverseerImpl implements AgentHooks {
   // readBlueprintRelease() admits is all that one can add to the store.
   async loadBlueprint(blueprintId: string, metadata: BlueprintMetadata): Promise<string> {
     let release = await readBlueprintRelease(this.env, blueprintId, metadata);
-    await this.gitCache.importObjects(release.objects.values());
+    this.gitCache.importObjects(release.objects.values());
     return release.commitId;
   }
 
@@ -11352,7 +11352,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       parents: [],
       message: `Create gadget: ${title}`,
     });
-    let commitId = await this.impl.gitCache.writeCommitForTree(
+    let commitId = this.impl.gitCache.writeCommitForTree(
         this.impl.gitCache.commitTree(release), {
       ...authorship,
       parents: [root, release],
@@ -12686,7 +12686,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async uploadBlob(content: Uint8Array | {stream: ReadableStream<Uint8Array>, byteLength: number})
       : Promise<string> {
     const {oid} = content instanceof Uint8Array
-      ? await this.impl.gitCache.writeBlob(content)
+      ? this.impl.gitCache.writeBlob(content)
       : await this.impl.gitCache.writeBlobStream(content.stream, content.byteLength);
     await this.impl.ctx.storage.sync();
     return oid;

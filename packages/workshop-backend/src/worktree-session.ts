@@ -200,7 +200,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       throw err;
     }
     // A stream's length isn't known up front, so its blob is hashed in a second pass.
-    const value: BytesRef = content instanceof Uint8Array ? await this.host.gitCache.writeBlob(content)
+    const value: BytesRef = content instanceof Uint8Array ? this.host.gitCache.writeBlob(content)
         : await this.host.gitCache.writeBlobStream(content);
     const change = {setBytes: value};
     validateCodeChangeSchema({[this.worktreeId]: [[path, change]]});

@@ -372,8 +372,8 @@ export class WorkspaceGitCache {
 
   // Stores an object authored here -- a file's blob, a tree, a commit -- unless it is already
   // held, and returns its oid.
-  async #storeLocalObject(type: GitObjectType, payload: Uint8Array): Promise<GitOid> {
-    let oid = await gitObjectOid(type, payload);
+  #storeLocalObject(type: GitObjectType, payload: Uint8Array): GitOid {
+    let oid = gitObjectOid(type, payload);
     if (!this.hasLocalObject(oid)) {
       this.storage.transaction(() => this.#putObject(oid, { type, payload }));
     }
@@ -394,8 +394,8 @@ export class WorkspaceGitCache {
    * Store a raw payload, of any size, as an ordinary Git blob, returning its immutable
    * reference.
    */
-  async writeBlob(content: Uint8Array): Promise<BytesRef> {
-    return { oid: await this.#storeLocalObject("blob", content), byteLength: content.byteLength };
+  writeBlob(content: Uint8Array): BytesRef {
+    return { oid: this.#storeLocalObject("blob", content), byteLength: content.byteLength };
   }
 
   /**
@@ -455,7 +455,7 @@ export class WorkspaceGitCache {
   async writeFilesAsCommit(
       files: ReadonlyMap<string, FileContent>, options: WriteCommitOptions): Promise<string> {
     let tree = await this.#rebuildTree(undefined, buildChangeNode(files), "") ?? EMPTY_TREE_OID;
-    return await this.writeCommitForTree(tree, options);
+    return this.writeCommitForTree(tree, options);
   }
 
   /**
@@ -477,7 +477,7 @@ export class WorkspaceGitCache {
   async writeChangedFilesAsCommit(
       changes: ReadonlyMap<string, FileContent | null>,
       options: WriteCommitOptions & { treeBase: string }): Promise<string> {
-    return await this.writeCommitForTree(
+    return this.writeCommitForTree(
         await this.writeChangedTree(options.treeBase, changes), options);
   }
 
@@ -505,10 +505,10 @@ export class WorkspaceGitCache {
    * blueprint-release.ts, which throws on a name or email that a signature cannot hold rather
    * than let it add header lines.
    */
-  async writeCommitForTree(tree: string, options: WriteCommitOptions): Promise<string> {
+  writeCommitForTree(tree: string, options: WriteCommitOptions): string {
     let signature = ({ name, email }: CommitIdentity) =>
         ({ name, email, timestamp: options.timestamp, utcOffsetMinutes: 0 });
-    return await this.#storeLocalObject("commit", encodeGitCommit({
+    return this.#storeLocalObject("commit", encodeGitCommit({
       tree,
       parents: options.parents,
       author: signature(options.author),
@@ -553,22 +553,22 @@ export class WorkspaceGitCache {
         if (existing !== undefined && existing.mode !== "100644" && existing.mode !== "100755") {
           throw new Error(`cannot write ${path}: not a regular file`);
         }
-        let oid = await this.#writeFileBlob(child);
+        let oid = this.#writeFileBlob(child);
         // A changed file keeps its base entry's mode; only new files default to 100644.
         entries.set(name, { mode: existing?.mode ?? "100644", name, oid });
       }
     }
     if (entries.size === 0) return undefined;
-    return await this.#storeLocalObject("tree", encodeGitTree([...entries.values()]));
+    return this.#storeLocalObject("tree", encodeGitTree([...entries.values()]));
   }
 
   // Writes a file's text as a blob, or checks that a byte reference names a held blob.
-  async #writeFileBlob(content: FileContent): Promise<GitOid> {
+  #writeFileBlob(content: FileContent): GitOid {
     if (typeof content !== "string") {
       this.assertBlob(content.oid, content.byteLength);
       return content.oid;
     }
-    return await this.#storeLocalObject("blob", new TextEncoder().encode(content));
+    return this.#storeLocalObject("blob", new TextEncoder().encode(content));
   }
 
   /**
@@ -706,9 +706,9 @@ export class WorkspaceGitCache {
    *
    * There is no size cap; the caller bounds what it imports.
    */
-  async importObjects(objects: Iterable<PackableObject>): Promise<void> {
-    let entries = await Promise.all(Array.from(objects, async object =>
-        ({ ...object, oid: await gitObjectOid(object.type, object.payload) })));
+  importObjects(objects: Iterable<PackableObject>): void {
+    let entries = Array.from(objects, object =>
+        ({ ...object, oid: gitObjectOid(object.type, object.payload) }));
     this.storage.transaction(() => {
       for (let { oid, type, payload } of entries) {
         if (!this.hasLocalObject(oid)) this.#putObject(oid, { type, payload });
@@ -726,10 +726,9 @@ export class WorkspaceGitCache {
    * referents. The payload arrives whole, and a large blob is chunked within one transaction,
    * which the RPC message carrying it bounds.
    */
-  async putFromGatekeeper(gatekeeperId: WorkpieceId, type: GitObjectType, payload: Uint8Array)
-      : Promise<GitOid> {
+  putFromGatekeeper(gatekeeperId: WorkpieceId, type: GitObjectType, payload: Uint8Array): GitOid {
     validateGitObjectType(type);
-    let oid = await gitObjectOid(type, payload);
+    let oid = gitObjectOid(type, payload);
     this.storage.transaction(
         () => this.#storeVerifiedObject(gatekeeperId, oid, { type, payload }));
     return oid;

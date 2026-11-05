@@ -87,7 +87,7 @@ export function gitObjectHasher(type: GitObjectType, size: number): Hash {
 }
 
 /** Computes the oid of an object from its type and headerless payload. */
-export async function gitObjectOid(type: GitObjectType, payload: Uint8Array): Promise<GitOid> {
+export function gitObjectOid(type: GitObjectType, payload: Uint8Array): GitOid {
   return gitObjectHasher(type, payload.byteLength).update(payload).digest("hex");
 }
 
@@ -97,8 +97,8 @@ export async function gitObjectOid(type: GitObjectType, payload: Uint8Array): Pr
  * agent knows from a chat's session is compared against a committed file without reading the
  * committed blob (see the agent's read-before-edit stamps).
  */
-export async function blobOid(text: string): Promise<GitOid> {
-  return await gitObjectOid("blob", ENCODER.encode(text));
+export function blobOid(text: string): GitOid {
+  return gitObjectOid("blob", ENCODER.encode(text));
 }
 
 /**
@@ -819,7 +819,7 @@ export async function* decodePackStream(
         entry = { oid: sink.finish(), type: "blob", size, stored: true };
       } else {
         let payload = await reader.inflate(size);
-        entry = { oid: await gitObjectOid(type, payload), type, payload };
+        entry = { oid: gitObjectOid(type, payload), type, payload };
       }
     } else {
       let held = options.resolveBase(baseOid);
@@ -843,7 +843,7 @@ export async function* decodePackStream(
       applier.finish();
       entry = target.sink !== undefined
           ? { oid: target.sink.finish(), type: "blob", size: applier.targetSize!, stored: true }
-          : { oid: await gitObjectOid(type, target.payload!), type, payload: target.payload! };
+          : { oid: gitObjectOid(type, target.payload!), type, payload: target.payload! };
     }
     oidAt.set(entryStart, entry.oid);
     yield entry;

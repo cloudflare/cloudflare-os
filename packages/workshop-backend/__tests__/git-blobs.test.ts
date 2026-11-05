@@ -77,7 +77,7 @@ it("reports a storage failure without publishing a reference, and a retry has th
   const put = vi.spyOn(storage.gitObjects, "put").mockImplementation(() => {
     throw new Error("storage failed");
   });
-  await expect(git.writeBlob(Uint8Array.of(17))).rejects.toThrow("storage failed");
+  expect(() => git.writeBlob(Uint8Array.of(17))).toThrow("storage failed");
   expect([...storage.gitObjects.list()]).toEqual([]);
   put.mockRestore();
   const ref = await git.writeBlob(Uint8Array.of(17));

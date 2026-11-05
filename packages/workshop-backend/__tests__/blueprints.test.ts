@@ -458,7 +458,7 @@ describe("publishing a blueprint", () => {
     expect(published.version).toBe(4);
 
     // Its parent is the release that everyone who read the snapshot derived from it.
-    let snapshot = await buildSnapshotRelease(new Map(Object.entries(V1)));
+    let snapshot = buildSnapshotRelease(new Map(Object.entries(V1)));
     expect(impl.gitCache.readCommitLog(release, { depth: 1 })[0]).toMatchObject({
       parents: [snapshot.commitId],
       message: "Release 4: Older\n",
@@ -669,7 +669,7 @@ describe("instantiating a blueprint", () => {
 
       // Every workspace reads the snapshot as the same release, so that is what each gadget
       // made from it has in its history, and in common with the others.
-      let snapshot = await buildSnapshotRelease(new Map(Object.entries(V1)));
+      let snapshot = buildSnapshotRelease(new Map(Object.entries(V1)));
       expect(await instantiated(impl)).toEqual({ files: V1, release: snapshot.commitId });
       expect([...impl.storage.gadgets.list()][0].upstream)
           .toEqual({ blueprintId: "older-content", commitId: snapshot.commitId });
@@ -702,7 +702,7 @@ describe("instantiating a blueprint", () => {
     expect(uploaded.commitId).toBe(release.commitId);
     expect(await storedKeys("uploaded-v2")).toEqual([`uploaded-v2/${release.commitId}`]);
 
-    let v1 = await buildSnapshotRelease(new Map(Object.entries(V1)));
+    let v1 = buildSnapshotRelease(new Map(Object.entries(V1)));
     for (let [blueprintId, files, commitId] of [
       ["uploaded-v1", V1, v1.commitId], ["uploaded-v2", V2, release.commitId],
     ] as const) {
@@ -739,16 +739,16 @@ describe("instantiating a blueprint", () => {
     // executable. It is stored as an upload would store it, unexamined.
     let blob = { type: "blob" as const, payload: new TextEncoder().encode("#!/bin/sh\n") };
     let tree = { type: "tree" as const, payload: encodeGitTree([
-      { mode: "100755", name: "run.sh", oid: await gitObjectOid("blob", blob.payload) },
+      { mode: "100755", name: "run.sh", oid: gitObjectOid("blob", blob.payload) },
     ]) };
     let signature = {
       name: "Mallory", email: "mallory@example.com", timestamp: new Date(0), utcOffsetMinutes: 0,
     };
     let commit = { type: "commit" as const, payload: encodeGitCommit({
-      tree: await gitObjectOid("tree", tree.payload), parents: [], author: signature,
+      tree: gitObjectOid("tree", tree.payload), parents: [], author: signature,
       committer: signature, message: "Release 1: Trap",
     }) };
-    let commitId = await gitObjectOid("commit", commit.payload);
+    let commitId = gitObjectOid("commit", commit.payload);
     let pack = concatBytes(await buildPackBytes([commit, tree, blob]));
     await storeBlueprint("invalid-pack", metadataFor("Trap", { commitId }), pack);
 
@@ -1146,7 +1146,7 @@ async function publishUnchained(
     : Promise<string> {
   await storeBlueprint("unchained", metadataFor("Unchained", { version, ...extra }),
       await snapshotContent(files));
-  return (await buildSnapshotRelease(new Map(Object.entries(files)))).commitId;
+  return (buildSnapshotRelease(new Map(Object.entries(files)))).commitId;
 }
 
 /** A binding as a blueprint declares it. */
@@ -1408,7 +1408,7 @@ describe("applying a blueprint to a gadget", () => {
     // Releases made by hand, to say when each was published: `seconds` after the epoch.
     let objects: GitObjectMap = new Map();
     let release = async (files: Record<string, string>, parents: string[], seconds: number) => {
-      let snapshot = await buildSnapshotRelease(new Map(Object.entries(files)));
+      let snapshot = buildSnapshotRelease(new Map(Object.entries(files)));
       let { tree } = parseGitCommitRefs(snapshot.objects.get(snapshot.commitId)!.payload);
       snapshot.objects.delete(snapshot.commitId);
       for (let [oid, object] of snapshot.objects) objects.set(oid, object);
@@ -1416,7 +1416,7 @@ describe("applying a blueprint to a gadget", () => {
         tree, parents, author: { name: "Olive", email: "olive@example.com" }, title: "By hand",
         version: 1, timestamp: new Date(seconds * 1000),
       });
-      let commitId = await gitObjectOid("commit", payload);
+      let commitId = gitObjectOid("commit", payload);
       objects.set(commitId, { type: "commit", payload });
       return commitId;
     };
@@ -1560,7 +1560,7 @@ describe("applying a blueprint to a gadget", () => {
       FEEDS_SPAWNER: { ...declaredBinding("Feeds a spawner"), spawnerOnly: true as const },
       SPAWN: spawner,
     };
-    let pack = await buildSnapshotRelease(new Map(Object.entries(V1)));
+    let pack = buildSnapshotRelease(new Map(Object.entries(V1)));
     await storeBlueprint("bound", metadataFor("Bound", { commitId: pack.commitId, bindings }),
         concatBytes(await buildPackBytes([...pack.objects.values()])));
 
@@ -1694,7 +1694,7 @@ describe("applying a blueprint to a gadget", () => {
       return { id, files: new Map(entry.files) };
     });
     for (let { id, files } of [from, to]) {
-      let { commitId, objects } = await buildSnapshotRelease(files);
+      let { commitId, objects } = buildSnapshotRelease(files);
       await storeBlueprint(id, metadataFor(id, { commitId }),
           concatBytes(await buildPackBytes([...objects.values()])));
     }

@@ -147,11 +147,11 @@ const SNAPSHOT_MESSAGE = "Blueprint snapshot";
  * Returns the commit along with the trees and blobs beneath it. Throws on a path git cannot
  * represent; the result is otherwise unchecked (see `validateReleaseObjects()`).
  */
-export async function buildSnapshotRelease(files: ReadonlyMap<string, string>):
-    Promise<{ commitId: GitOid, objects: GitObjectMap }> {
+export function buildSnapshotRelease(files: ReadonlyMap<string, string>):
+    { commitId: GitOid, objects: GitObjectMap } {
   let objects: GitObjectMap = new Map();
-  let commitId = await addObject(objects, "commit", encodeGitCommit({
-    tree: await addFileTree(objects, files),
+  let commitId = addObject(objects, "commit", encodeGitCommit({
+    tree: addFileTree(objects, files),
     parents: [],
     author: SNAPSHOT_SIGNATURE,
     committer: SNAPSHOT_SIGNATURE,
@@ -160,23 +160,21 @@ export async function buildSnapshotRelease(files: ReadonlyMap<string, string>):
   return { commitId, objects };
 }
 
-async function addObject(objects: GitObjectMap, type: GitObjectType, payload: Uint8Array):
-    Promise<GitOid> {
-  let oid = await gitObjectOid(type, payload);
+function addObject(objects: GitObjectMap, type: GitObjectType, payload: Uint8Array): GitOid {
+  let oid = gitObjectOid(type, payload);
   objects.set(oid, { type, payload });
   return oid;
 }
 
 // Adds the tree for a `path -> text` map, and everything beneath it, returning the tree's oid:
 // the same tree WorkspaceGitCache.writeFilesAsCommit() writes for those files.
-async function addFileTree(objects: GitObjectMap, files: ReadonlyMap<string, string>):
-    Promise<GitOid> {
+function addFileTree(objects: GitObjectMap, files: ReadonlyMap<string, string>): GitOid {
   let entries: GitTreeEntry[] = [];
   let directories = new Map<string, Map<string, string>>();
   for (let [path, text] of files) {
     let slash = path.indexOf("/");
     if (slash < 0) {
-      let oid = await addObject(objects, "blob", ENCODER.encode(text));
+      let oid = addObject(objects, "blob", ENCODER.encode(text));
       entries.push({ mode: "100644", name: path, oid });
     } else {
       let name = path.slice(0, slash);
@@ -185,11 +183,11 @@ async function addFileTree(objects: GitObjectMap, files: ReadonlyMap<string, str
     }
   }
   for (let [name, directory] of directories) {
-    entries.push({ mode: "40000", name, oid: await addFileTree(objects, directory) });
+    entries.push({ mode: "40000", name, oid: addFileTree(objects, directory) });
   }
   // encodeGitTree() is what refuses an empty or dot segment, and a path that is both a file and
   // a directory.
-  return await addObject(objects, "tree", encodeGitTree(entries));
+  return addObject(objects, "tree", encodeGitTree(entries));
 }
 
 // =======================================================================================

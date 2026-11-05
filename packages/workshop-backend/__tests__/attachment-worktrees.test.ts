@@ -180,7 +180,9 @@ describe("scratch worktree attachment ingress", () => {
     impl.storage.chatContext.put(context);
     const sync = impl.ctx.storage.sync.bind(impl.ctx.storage);
     const fault = boundary === "before publication"
-      ? vi.spyOn(impl.gitCache, "writeBlob").mockRejectedValueOnce(new Error("transient failure"))
+      ? vi.spyOn(impl.gitCache, "writeBlob").mockImplementationOnce(() => {
+        throw new Error("transient failure");
+      })
       : vi.spyOn(impl.ctx.storage, "sync").mockImplementationOnce(async () => {
         await sync();
         throw new Error("migration acknowledgement lost");

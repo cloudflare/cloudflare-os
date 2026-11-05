@@ -264,7 +264,7 @@ describe("streamed bytes", () => {
     const commit = await session.commit("streamed");
     await turn.barrier();
     const ref = await impl.gitCache.fileBytesAtCommit(commit, "stream.bin");
-    expect(ref).toEqual({oid: await gitObjectOid("blob", data), byteLength: data.length});
+    expect(ref).toEqual({oid: gitObjectOid("blob", data), byteLength: data.length});
     expect(same(impl.gitCache.readBlob(ref.oid, ref.byteLength), data)).toBe(true);
   }), 60_000);
 });

@@ -206,7 +206,7 @@ describe("BlobWriter", () => {
   for (let size of [0, 1, CHUNK_MAX_SIZE, CHUNK_MAX_SIZE + 1, 3.5 * MiB, 20 * MiB]) {
     it(`names a ${size}-byte blob by its whole-blob oid`, async () => {
       let data = randomBytes(size, size + 1);
-      let expected = await gitObjectOid("blob", data);
+      let expected = gitObjectOid("blob", data);
       for (let declare of [true, false]) {
         let s = new MapStore();
         let writer = new BlobWriter(s, declare ? size : undefined);
@@ -253,7 +253,7 @@ describe("BlobWriter", () => {
       scratch.fill(0xee);
     }
     let blob = writer.finish();
-    expect(blob.oid).toBe(await gitObjectOid("blob", data));
+    expect(blob.oid).toBe(gitObjectOid("blob", data));
     s.put(blob.record!);
     let reader = BlobReader.open(s, blob.record!);
     expect(sameBytes(reader.read(0, reader.size), data)).toBe(true);

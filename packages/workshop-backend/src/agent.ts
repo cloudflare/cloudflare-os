@@ -1950,14 +1950,14 @@ async function runAgentPass(
   // accept commits that edited content, so the entry is restamped from it like a
   // session-tracking one -- else the next epoch's gate would refuse the edit as stale content
   // the model in fact saw. A stamped path the session removed is dropped the same way.
-  let resetSessionEpoch = async () => {
+  let resetSessionEpoch = () => {
     for (let [workpieceId, files] of filesRead) {
       let content = sessionContent.get(workpieceId);
       let removed = worktreeRemovedPaths.get(workpieceId);
       for (let [filename, stamp] of files) {
         let text = content?.get(filename);
         if (typeof text === "string") {
-          files.set(filename, await blobOid(text));
+          files.set(filename, blobOid(text));
         } else if (stamp === undefined || removed?.has(filename)) {
           files.delete(filename);
         }
@@ -2623,7 +2623,7 @@ async function runAgentPass(
         // or pins, so the rest of the reset is a no-op either way (pre-conversion writes marked
         // files read, but with no session content to stamp them from they drop, as they must:
         // the converted content is not what those writes produced).
-        if (msg.conversionBoundary) await resetSessionEpoch();
+        if (msg.conversionBoundary) resetSessionEpoch();
 
         // A blueprint that the user applied is described to the model (see
         // formatBlueprintProposal). Its message has no change, only the pin at the merge
@@ -2721,7 +2721,7 @@ async function runAgentPass(
         // content restarts empty, later pins re-seed lazily, and the model's file knowledge
         // becomes knowledge of committed code (see resetSessionEpoch).
         if (msg.epochBoundary) {
-          await resetSessionEpoch();
+          resetSessionEpoch();
           // Merges from before worktrees pinned on modification re-pinned every worktree at
           // the boundary and recorded it here (see AiChatMessageBody.worktreePins); those
           // pins re-establish immediately so the epochs they root fold as written.

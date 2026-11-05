@@ -92,7 +92,7 @@ async function fileTreeOid(files: ReadonlyMap<string, string>): Promise<string> 
   for (let [path, text] of files) {
     let slash = path.indexOf("/");
     if (slash < 0) {
-      let oid = await gitObjectOid("blob", new TextEncoder().encode(text));
+      let oid = gitObjectOid("blob", new TextEncoder().encode(text));
       entries.push({ mode: "100644", name: path, oid });
     } else {
       let name = path.slice(0, slash);
@@ -103,7 +103,7 @@ async function fileTreeOid(files: ReadonlyMap<string, string>): Promise<string> 
   for (let [name, directory] of directories) {
     entries.push({ mode: "40000", name, oid: await fileTreeOid(directory) });
   }
-  return await gitObjectOid("tree", encodeGitTree(entries));
+  return gitObjectOid("tree", encodeGitTree(entries));
 }
 
 /** `size` pseudo-random (so incompressible) bytes, the same for the same seed. */
@@ -177,13 +177,13 @@ const SYNC_INFLATE_LIMIT = 1 << 20;
 describe("loose object codec", () => {
   it("computes the same oids as real git for every fixture object", async () => {
     for (let object of FIXTURE_OBJECTS) {
-      expect(await gitObjectOid(object.type, b64Bytes(object.payload))).toBe(object.oid);
+      expect(gitObjectOid(object.type, b64Bytes(object.payload))).toBe(object.oid);
     }
   });
 
   it("computes the well-known oid of a canonical blob", async () => {
     // `echo 'hello world' | git hash-object --stdin`
-    expect(await gitObjectOid("blob", new TextEncoder().encode("hello world\n")))
+    expect(gitObjectOid("blob", new TextEncoder().encode("hello world\n")))
         .toBe("3b18e512dba79e4c8300dd08aeb37f8e728b8dad");
   });
 
@@ -262,13 +262,13 @@ describe("tree encoder", () => {
   });
 
   it("encodes no entries as git's empty tree", async () => {
-    expect(await gitObjectOid("tree", encodeGitTree([]))).toBe(EMPTY_TREE);
+    expect(gitObjectOid("tree", encodeGitTree([]))).toBe(EMPTY_TREE);
   });
 
   it("sorts a directory as if its name ended in a slash", async () => {
     // As plain names these sort foo, foo-bar, foo.txt, foo0. Oids from real `git mktree`.
     let inner = encodeGitTree([{ mode: "100644", name: "inner.js", oid: X_BLOB }]);
-    expect(await gitObjectOid("tree", inner)).toBe("64be24e236917bb0d154adf86bd899d5d182716c");
+    expect(gitObjectOid("tree", inner)).toBe("64be24e236917bb0d154adf86bd899d5d182716c");
     let payload = encodeGitTree([
       { mode: "40000", name: "foo", oid: "64be24e236917bb0d154adf86bd899d5d182716c" },
       { mode: "100644", name: "foo-bar", oid: X_BLOB },
@@ -277,7 +277,7 @@ describe("tree encoder", () => {
     ]);
     expect(parseGitTree(payload).map(e => e.name))
         .toStrictEqual(["foo-bar", "foo.txt", "foo", "foo0"]);
-    expect(await gitObjectOid("tree", payload)).toBe("6174f963cab6a6776c96ce52ec8faca7462a54f1");
+    expect(gitObjectOid("tree", payload)).toBe("6174f963cab6a6776c96ce52ec8faca7462a54f1");
   });
 
   it("sorts names by their UTF-8 bytes, not their UTF-16 code units", async () => {
@@ -289,7 +289,7 @@ describe("tree encoder", () => {
       { mode: "100644", name: "\uFF5E", oid: X_BLOB },
     ]);
     expect(parseGitTree(payload).map(e => e.name)).toStrictEqual(["\uFF5E", "\u{1F600}"]);
-    expect(await gitObjectOid("tree", payload)).toBe("bb40f9cf9c37cab4cee8cbe15ff5dd0df3ddbb9e");
+    expect(gitObjectOid("tree", payload)).toBe("bb40f9cf9c37cab4cee8cbe15ff5dd0df3ddbb9e");
   });
 
   it("writes the same tree ids as the git store", async () => {
@@ -443,13 +443,13 @@ describe("commit encoder", () => {
       message: "Merge things\n\nBody line.\n",
     };
     let payload = encodeGitCommit(commit);
-    expect(await gitObjectOid("commit", payload)).toBe("e5173d47b86cd826a08d49f1c8b6795726ad1967");
+    expect(gitObjectOid("commit", payload)).toBe("e5173d47b86cd826a08d49f1c8b6795726ad1967");
     expect(parseGitCommitRefs(payload))
         .toStrictEqual({ tree: commit.tree, parents: commit.parents });
 
     // Parent order is part of the commit's identity.
     let swapped = encodeGitCommit({ ...commit, parents: commit.parents.toReversed() });
-    expect(await gitObjectOid("commit", swapped)).not.toBe(await gitObjectOid("commit", payload));
+    expect(gitObjectOid("commit", swapped)).not.toBe(gitObjectOid("commit", payload));
   });
 
   it("writes the same commit ids as isomorphic-git", async () => {
@@ -489,7 +489,7 @@ describe("commit encoder", () => {
         committer: { ...(committer ?? ALICE), timestamp, utcOffsetMinutes: 0 },
         message,
       });
-      expect(await gitObjectOid("commit", payload), JSON.stringify(message)).toBe(oid);
+      expect(gitObjectOid("commit", payload), JSON.stringify(message)).toBe(oid);
     }
   });
 
@@ -513,7 +513,7 @@ describe("commit encoder", () => {
         "author Alice Example <alice@example.com> 1700000000 +0000\n" +
         "committer Alice Example <alice@example.com> 1700000000 +0000\n" +
         `blueprint-release ${release}\n\nMerge blueprint: Notes v1\n`);
-    expect(await gitObjectOid("commit", payload)).toBe("eadc807f8f8b0675263e44f01bd234ebb49e9ae6");
+    expect(gitObjectOid("commit", payload)).toBe("eadc807f8f8b0675263e44f01bd234ebb49e9ae6");
 
     // It round-trips: the commit's own fields are as they were, and the header reads back.
     expect(parseGitCommitRefs(payload))
@@ -683,7 +683,7 @@ describe("pack decoding", () => {
   it("fails a ref-delta whose base is nowhere, and resolves it via resolveBase", async () => {
     // Hand-build a one-entry thin pack: a ref-delta against an external base.
     let base = new TextEncoder().encode("hello base content");
-    let baseOid = await gitObjectOid("blob", base);
+    let baseOid = gitObjectOid("blob", base);
     // Delta: baseSize, targetSize, then one copy op (offset byte + size byte) over the base.
     let delta = new Uint8Array([base.length, base.length, 0x91, 0, base.length]);
     let entryHeader = new Uint8Array([(7 << 4) | (delta.length & 0x0f)]);
@@ -812,7 +812,7 @@ describe("pack entry inflation", () => {
     expect(objects.length).toBe(payloads.length);
     for (let [i, object] of objects.entries()) {
       expect(object.type).toBe("blob");
-      expect(object.oid).toBe(await gitObjectOid("blob", payloads[i]));
+      expect(object.oid).toBe(gitObjectOid("blob", payloads[i]));
       // Not toStrictEqual: a megabyte-long diff of a mismatch is no help.
       expect(object.payload.byteLength).toBe(payloads[i].byteLength);
       expect(compareBytesEqual(object.payload, payloads[i])).toBe(true);
@@ -929,7 +929,7 @@ describe("pack entry inflation", () => {
     for (let i = 0; i < 3000; i++) {
       let payload = encoder.encode(`file ${i}\n`.repeat(i % 40));
       objects.push({ type: "blob", payload });
-      entries.push({ mode: "100644", name: `f${i}`, oid: await gitObjectOid("blob", payload) });
+      entries.push({ mode: "100644", name: `f${i}`, oid: gitObjectOid("blob", payload) });
     }
     objects.push({ type: "tree", payload: encodeGitTree(entries) });
     let expected = await Promise.all(objects.map(o => gitObjectOid(o.type, o.payload)));
@@ -1284,16 +1284,16 @@ describe("pack decoding, streaming large blobs", () => {
   it("streams a 20 MiB blob into chunks, verifying its oid", async () => {
     let big = randomBytes(20 * MiB, 6);
     let small = new TextEncoder().encode("small\n");
-    let tree = encodeGitTree([{ mode: "100644", name: "small", oid: await gitObjectOid("blob", small) }]);
+    let tree = encodeGitTree([{ mode: "100644", name: "small", oid: gitObjectOid("blob", small) }]);
     let pack = await buildPack([{ payload: big }, { payload: small }, { payload: tree, type: "tree" }]);
     let { out, store } = await decodeStreaming(pack);
-    let bigOid = await gitObjectOid("blob", big);
+    let bigOid = gitObjectOid("blob", big);
     expect(out[0]).toStrictEqual({ oid: bigOid, type: "blob", size: big.length, stored: true });
     expect(isChunkedBlobRecord(store.rows.get(bigOid)!)).toBe(true);
     expect(sameBytes(readStored(store, bigOid), big)).toBe(true);
     // Small blobs and trees come back whole, as without a sink.
-    expect(out[1]).toStrictEqual({ oid: await gitObjectOid("blob", small), type: "blob", payload: small });
-    expect(out[2]).toStrictEqual({ oid: await gitObjectOid("tree", tree), type: "tree", payload: tree });
+    expect(out[1]).toStrictEqual({ oid: gitObjectOid("blob", small), type: "blob", payload: small });
+    expect(out[2]).toStrictEqual({ oid: gitObjectOid("tree", tree), type: "tree", payload: tree });
   });
 
   it("applies ofs- and ref-deltas, and a chain of them, against large blobs", async () => {
@@ -1317,7 +1317,7 @@ describe("pack decoding, streaming large blobs", () => {
 
   it("applies a delta against a large blob already in storage", async () => {
     let base = randomBytes(3 * MiB, 11);
-    let baseOid = await gitObjectOid("blob", base);
+    let baseOid = gitObjectOid("blob", base);
     let { store } = await decodeStreaming(await buildPack([{ payload: base }]));
     let large = spliceDelta(base, 12345, randomBytes(10, 12));
     // A small target from the large base is buffered.
@@ -1325,10 +1325,10 @@ describe("pack decoding, streaming large blobs", () => {
     let pack = await buildPack([{ delta: large.delta, ref: baseOid }, { delta: small, ref: baseOid }]);
     let { out } = await decodeStreaming(pack, store);
     expect(out[0]).toStrictEqual(
-        { oid: await gitObjectOid("blob", large.target), type: "blob", size: large.target.length,
+        { oid: gitObjectOid("blob", large.target), type: "blob", size: large.target.length,
           stored: true });
     let target = base.subarray(MiB, MiB + 16);
-    expect(out[1]).toStrictEqual({ oid: await gitObjectOid("blob", target), type: "blob", payload: target });
+    expect(out[1]).toStrictEqual({ oid: gitObjectOid("blob", target), type: "blob", payload: target });
   });
 
   it("still fails a trailer mismatch", async () => {

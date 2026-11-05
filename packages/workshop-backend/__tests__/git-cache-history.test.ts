@@ -110,14 +110,14 @@ describe("local history", () => {
     await writeFixtureHistory(store);
     let count = [...objects.list()].length;
 
-    let oid = await blobOid('console.log("hello");\n');
+    let oid = blobOid('console.log("hello");\n');
     expect([...objects.list()].length).toBe(count);  // nothing written
     let tree = parseGitCommitRefs(decodeLooseObject(objects.get(INITIAL_COMMIT_OID)!.data).payload)
         .tree;
     let root = parseGitTree(decodeLooseObject(objects.get(tree)!.data).payload);
     expect(root.find(e => e.name === "client.js")!.oid).toBe(oid);
     // Distinct content, distinct oid (a trailing newline is content).
-    expect(await blobOid('console.log("hello");')).not.toBe(oid);
+    expect(blobOid('console.log("hello");')).not.toBe(oid);
   });
 
   it("walks commit ancestry with readCommitLog", async () => {
@@ -257,7 +257,7 @@ describe("local history", () => {
     let options = { parents: [], author: ALICE, message: "m", timestamp: new Date(0) };
     let commit = await store.writeFilesAsCommit(new Map([["lib/big.js", random]]), options);
     expect(store.readCommitFiles(commit)).toEqual(new Map([["lib/big.js", random]]));
-    let blob = await blobOid(random);
+    let blob = blobOid(random);
     expect(objects.get(blob)).toHaveProperty("chunks");
   });
 
@@ -494,7 +494,7 @@ describe("writeChangedFilesAsCommit", () => {
     let blob = await store.writeBlob(new TextEncoder().encode("x\n"));
     let tree = encodeGitTree([{ mode: "100644", name: "a\\b.txt", oid: blob.oid }]);
     await store.importObjects([{ type: "tree", payload: tree }]);
-    let base = await store.writeCommitForTree(await gitObjectOid("tree", tree), OPTIONS);
+    let base = await store.writeCommitForTree(gitObjectOid("tree", tree), OPTIONS);
     let rebuilt = await store.writeChangedFilesAsCommit(
         new Map([["a\\b.txt", "edited\n"], ["b.txt", "b\n"]]), { ...OPTIONS, treeBase: base });
     expect(store.readCommitFiles(rebuilt))
