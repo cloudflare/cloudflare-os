@@ -4,8 +4,9 @@ import {
   SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig, type BuiltInReasoning,
 } from "@gadgets/workshop-shared/api";
 import {
-  Type, type AssistantMessage, type ClassifierContext, type ToolResultMessage,
+  type AssistantMessage, type ClassifierContext, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
@@ -856,7 +857,7 @@ describe("gateway model reasoning levels", () => {
       type: "adaptive", display: "summarized",
       block_binding: { prefix_mismatch_behavior: "drop_block" },
     },
-    output_config: { effort: "high" },
+    output_config: { effort: "low" },
   });
   const claudeBody = (config: GatewayConfig, max_tokens: number, extra: object = {}) =>
       ({ model: config.model, messages: [CLAUDE_HELLO], max_tokens, stream: true, ...extra });
@@ -869,6 +870,15 @@ describe("gateway model reasoning levels", () => {
   const gptEffortBody = (config: GatewayConfig, effort: string) => gptBody(config, {
     reasoning: { effort, summary: "auto" }, include: ["reasoning.encrypted_content"],
   });
+  // pi sends an OpenAI model that takes a mid-conversation effort that effort in a
+  // configuration_update item; the top-level one is fixed.
+  const gptUpdateBody = (config: GatewayConfig, effort: string) => ({
+    ...gptEffortBody(config, "medium"),
+    input: [
+      { role: "user", content: [{ type: "input_text", text: "hello" }] },
+      { type: "configuration_update", reasoning: { effort } },
+    ],
+  });
   const completionsBody = (config: GatewayConfig, extra: object = {}) => ({
     model: config.model, messages: [{ role: "user", content: "hello" }], stream: true,
     stream_options: { include_usage: true }, ...extra,
@@ -879,7 +889,7 @@ describe("gateway model reasoning levels", () => {
   it.each([
     ["an adaptive Claude", OPUS, opusBody("high")],
     ["Haiku", HAIKU, claudeBody(HAIKU, 64000)],
-    ["an OpenAI model", GPT, gptEffortBody(GPT, "medium")],
+    ["an OpenAI model", GPT, gptUpdateBody(GPT, "medium")],
     ["GLM 5.2", GLM, completionsBody(GLM)],
     // pi's DeepSeek format turns thinking off whenever it is given no effort.
     ["DeepSeek V4 Pro", DEEPSEEK, completionsBody(DEEPSEEK, { thinking: { type: "disabled" } })],
@@ -935,7 +945,7 @@ describe("gateway model reasoning levels", () => {
     ["off", "low"], ["minimal", "low"], ["low", "low"], ["medium", "medium"], ["high", "high"],
     ["xhigh", "xhigh"], ["max", "max"],
   ] as const)("asks an OpenAI model for level %s as effort %s", async (level, effort) => {
-    expect(await parsed({ ...GPT, reasoning: level })).toEqual(gptEffortBody(GPT, effort));
+    expect(await parsed({ ...GPT, reasoning: level })).toEqual(gptUpdateBody(GPT, effort));
   });
 
   it("turns reasoning off on an OpenAI model that can stop reasoning", async () => {
@@ -1066,9 +1076,9 @@ describe("gateway model reasoning levels", () => {
   it.each([
     ["anthropic", "claude-opus-5-5", LOW_TO_MAX],
     ["anthropic", "claude-sonnet-5-5", LOW_TO_MAX],
-    ["anthropic", "claude-haiku-5-5", LOW_TO_MAX],
+    ["anthropic", "claude-haiku-5-5", ["off", ...LOW_TO_MAX]],
     ["anthropic", "claude-fable-5-1", ["minimal", ...LOW_TO_MAX]],
-    ["anthropic", "claude-opus-5", ["minimal", ...LOW_TO_MAX]],
+    ["anthropic", "claude-opus-5", ["off", "minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-sonnet-5", ["off", "minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-haiku-4-5", OFF_TO_HIGH],
     ["openai", "gpt-6.1-sol", LOW_TO_MAX],
@@ -1878,9 +1888,17 @@ describe("System prompt cache blocks", () => {
     return handle;
   }
 
+  // A request's instructions: pi declares a model's tools ahead of them in an additional_tools
+  // item, where the model takes one.
+  const instructions = (body: string) => (JSON.parse(body).input as { type?: string }[])
+      .find(item => item.type !== "additional_tools");
+
   it("puts an OpenAI GPT-5.6+ breakpoint after the static text", async () => {
     const handle = openAiHandle("gpt-6-luna");
-    expect(JSON.parse(await captureBody(handle, true)).input[0]).toEqual({
+    const split = await captureBody(handle, true);
+    // The breakpoint caches the tools ahead of the instructions too.
+    expect(JSON.parse(split).input[0]).toMatchObject({ type: "additional_tools" });
+    expect(instructions(split)).toEqual({
       role: "developer",
       content: [
         { type: "input_text", text: STATIC_TEXT, prompt_cache_breakpoint: { mode: "explicit" } },
@@ -1895,7 +1913,7 @@ describe("System prompt cache blocks", () => {
   ] as const)("leaves the OpenAI prompt whole for $name", async ({ model, options }) => {
     const handle = openAiHandle(model);
     const split = await captureBody(handle, true, options);
-    expect(JSON.parse(split).input[0]).toMatchObject({ content: RENDERED_TEXT });
+    expect(instructions(split)).toMatchObject({ content: RENDERED_TEXT });
     expect(split).toBe(await captureBody(handle, false, options));
   }, 15000);
 

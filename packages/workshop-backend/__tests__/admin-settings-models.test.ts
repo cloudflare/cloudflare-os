@@ -1327,16 +1327,19 @@ describe("AdminSettings.testGatewayProvider", () => {
 });
 
 // What a request asks its model for, in each API's own terms: the reasoning and the response
-// cap. pi gives a Claude whose effort it manages that effort in a closing system message.
+// cap. pi gives a Claude whose effort it manages that effort in a closing system message, and an
+// OpenAI model that takes a mid-conversation effort that effort in a configuration_update item.
 const asked = ({ body }: { body: Record<string, unknown> }) => {
-  const { messages, thinking, output_config, reasoning } = body as {
+  const { messages, input, thinking, output_config, reasoning } = body as {
     messages?: { output_config?: { effort: string } }[],
+    input?: { type?: string, reasoning?: { effort: string } }[],
     thinking?: { type: string, budget_tokens?: number },
     output_config?: { effort: string }, reasoning?: { effort: string },
   };
   return {
     thinking: thinking?.type, budget: thinking?.budget_tokens,
     effort: messages?.at(-1)?.output_config?.effort ?? output_config?.effort ??
+        input?.findLast(item => item.type === "configuration_update")?.reasoning?.effort ??
         reasoning?.effort ?? body.reasoning_effort,
     cap: body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens,
   };

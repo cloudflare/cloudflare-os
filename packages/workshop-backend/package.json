@@ -15,8 +15,8 @@
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.4.0",
-    "@earendil-works/pi-agent-core": "1.1.0",
-    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-agent-core": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/observability": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
@@ -26,6 +26,7 @@
     "diff": "catalog:",
     "diff3": "0.0.3",
     "jose": "^6.2.13",
+    "typebox": "1.3.27",
     "yjs": "^13.6.33",
     "zod": "catalog:"
   },
