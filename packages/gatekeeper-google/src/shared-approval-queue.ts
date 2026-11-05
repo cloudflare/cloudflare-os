@@ -21,9 +21,9 @@ export class SharedApprovalQueue {
   #references = 0;
 
   /**
-   * `subresources`, when given, are reported by every observation through this queue, in addition
-   * to any it reports itself: what every read through the binding depends on, such as a Gmail
-   * mailbox's owner. Without them, an observation reports only its own.
+   * `subresources`, when given, replace each observation's own dependencies: the binding is
+   * private to the connected account, so checking individual resources adds no sharing authority.
+   * Without them, an observation reports only its own.
    */
   constructor(stub: RpcStub<ApprovalQueue>, subresources?: readonly string[]) {
     this.#stub = stub;
@@ -44,7 +44,7 @@ export class SharedApprovalQueue {
     if (this.#subresources === undefined) return this.#stub.authorizeObservation(description);
     return this.#stub.authorizeObservation({
       ...description,
-      subresources: [...(description.subresources ?? []), ...this.#subresources],
+      subresources: [...this.#subresources],
     });
   }
 

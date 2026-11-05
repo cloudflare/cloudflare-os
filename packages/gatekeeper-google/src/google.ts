@@ -53,7 +53,7 @@ import type {
   DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
-import { ChatApi, isChatNoAccessError } from "./chat-api";
+import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
@@ -115,7 +115,7 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "./oauth-flow";
 import {
-  type ObserverBatchResult, type ObserverCheck, ObserverTracker,
+  DEFAULT_CONCURRENCY, mapWithConcurrency, type ObserverBatchResult, type ObserverCheck, ObserverTracker,
 } from "./observers";
 import type {Pager} from "./cursor";
 import {
@@ -154,7 +154,9 @@ function getGoogleDriveTypesCode(): string {
 import {
   GMAIL_SUBRESOURCE_NAMESPACE, parseGmailUserSubresource, type GmailGatekeeperImplProps,
 } from "./gmail";
-import type {GoogleChatGatekeeperImplProps} from "./chat";
+import {
+  CHAT_SUBRESOURCE_NAMESPACE, parseChatSubresource, type ChatSubresource, type GoogleChatGatekeeperImplProps,
+} from "./chat";
 
 export { GmailGatekeeperImpl } from "./gmail";
 export { GoogleChatGatekeeperImpl } from "./chat";
@@ -464,12 +466,13 @@ const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
 type AccountSubresource =
   | { kind: "calendar" | "freeBusy"; calendarId: string }
   | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef }
-  | { kind: "gmailUser"; subject: string };
+  | { kind: "gmailUser"; subject: string }
+  | ChatSubresource;
 
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
- * (see parseCalendarSubresource), a BigQuery dataset, or a Gmail mailbox's owner. Throws for any
- * other ID.
+ * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, or a Google Chat
+ * conversation, its member list or account (see parseChatSubresource). Throws for any other ID.
  */
 function parseAccountSubresource(subresource: string): AccountSubresource {
   switch (parseSubresourceId(subresource).namespace) {
@@ -479,6 +482,8 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
       return { kind: "bigQueryDataset", dataset: parseBigQueryDatasetSubresource(subresource) };
     case GMAIL_SUBRESOURCE_NAMESPACE:
       return { kind: "gmailUser", subject: parseGmailUserSubresource(subresource) };
+    case CHAT_SUBRESOURCE_NAMESPACE:
+      return parseChatSubresource(subresource);
     default:
       throw new Error("Not a Google subresource.");
   }
@@ -679,11 +684,16 @@ export class UserAccount extends DurableObject<Env> {
     let freeBusy = new Map<string, string>();
     let calendars = new Map<string, string>();
     let datasets = new Map<string, BigQueryDatasetRef>();
-    let mailboxes = new Map<string, string>();
+    let owners = new Map<string, string>();
+    let conversations = new Map<string, { spaceName: string; members: boolean }>();
     for (let [subresource, resource] of parsed) {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
-      else if (resource.kind === "gmailUser") mailboxes.set(subresource, resource.subject);
-      else (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
+      else if (resource.kind === "gmailUser" || resource.kind === "chatUser") {
+        owners.set(subresource, resource.subject);
+      } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
+        conversations.set(subresource,
+          { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
+      } else (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
     }
     let api = new GoogleCalendarApi(getToken);
     let ttl = (allowed: boolean) =>
@@ -710,14 +720,24 @@ export class UserAccount extends DurableObject<Env> {
             () => hasBigQueryDatasetAccess(bigQuery, dataset)));
       }
     }
-    if (mailboxes.size > 0) {
-      // A mailbox is private to its owner, so only that same Google account can read it.
-      let mailboxIds = [...mailboxes.keys()];
-      let answers = await this.#access.cachedMany(mailboxIds, ttl, async missing => {
+    if (conversations.size > 0) {
+      let chat = new ChatApi(getToken);
+      // Chat answers for one space per request, so a few run at a time.
+      let entries = [...conversations];
+      let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY,
+        ([subresource, { spaceName, members }]) =>
+          this.#access.cached(subresource, ttl, () => hasChatAccess(chat, spaceName, members)));
+      entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+    }
+    if (owners.size > 0) {
+      // A mailbox or a Chat account is private to its owner, so only that same Google account can
+      // read it.
+      let ownerIds = [...owners.keys()];
+      let answers = await this.#access.cachedMany(ownerIds, ttl, async missing => {
         let { sub } = await getGoogleAccountProfile(getToken);
-        return missing.map(subresource => mailboxes.get(subresource) === sub);
+        return missing.map(subresource => owners.get(subresource) === sub);
       });
-      mailboxIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+      ownerIds.forEach((subresource, index) => access.set(subresource, answers[index]));
     }
     return subresources.map(subresource => access.get(subresource)!);
   }
@@ -1145,8 +1165,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     checkSubresourceAccess like Calendar's. hasDatasetAccess answers, without reusing answers,
 //     whether the observer's own token has IAM access to a dataset (see hasBigQueryDatasetAccess),
 //     for the datasets addObserver still guards from before reads reported them.
-//   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
-//     binding checks that the observer can open its conversation.
+//   - Google Chat — strategies A/B, kernel-checked: reads report each conversation they read as a
+//     `chat/space/<spaceId>` subresource, its member list as `chat/spaceMembers/<spaceId>`, and on
+//     an account binding the account as `chat/user/<sub>`, which checkSubresourceAccess checks as
+//     hasChatSpaceAccess does, or grants only to that same Google account. addObserver still
+//     refuses an account binding and checks a conversation or thread binding's conversation through
+//     hasChatSpaceAccess, for reads made before they reported subresources.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
 // the boolean results. Creation uses it too: getUserObjectId names the account a user approved a
 // pending creation into, and applyCreation() creates the file through that account.
@@ -1196,6 +1220,27 @@ async function hasBigQueryDatasetAccess(
   } catch (error) {
     if (error instanceof BigQueryApiError &&
         (error.status === 404 || (error.status === 403 && error.reason === "accessDenied"))) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether `api`'s account can open a Google Chat space, or with `members`, list its members, which
+ * a space can restrict to its managers: false when Chat refuses it without giving a reason (403)
+ * or doesn't hold it for the account (404), and a throw for any other failure. Chat gives a reason
+ * for the refusals that say nothing about the account's access, such as a missing scope or a
+ * disabled API.
+ */
+async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean): Promise<boolean> {
+  try {
+    if (members) await api.listMembers(spaceName, { pageSize: 1 });
+    else await api.getSpace(spaceName);
+    return true;
+  } catch (error) {
+    if (error instanceof ChatApiError &&
+        (error.status === 404 || (error.status === 403 && error.reasons.length === 0))) {
       return false;
     }
     throw error;
@@ -1279,16 +1324,8 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
 
   async hasChatSpaceAccess(spaceName: string, options: { members?: boolean } = {}): Promise<boolean> {
     let api = new ChatApi(opts => this.#getToken(opts));
-    try {
-      await api.getSpace(spaceName);
-      if (options.members) await api.listMembers(spaceName, { pageSize: 1 });
-      return true;
-    } catch (error) {
-      // Chat answers a space the observer is not a member of with 403 or 404, which
-      // isChatNoAccessError recognizes; anything else is transient and must fail the open loudly.
-      if (isChatNoAccessError(error)) return false;
-      throw error;
-    }
+    return await hasChatAccess(api, spaceName, false) &&
+      (!options.members || await hasChatAccess(api, spaceName, true));
   }
 
   async verifyDriveObservations(

@@ -584,6 +584,18 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     this.#queues.get(queueId)!.addObserver(observerId);
   }
 
+  /** The facet's verifyObserverAccess(), with each observer's verifier minted for its account. */
+  async chatVerifyObserverAccess(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
+      observers: Array<{id: string; userObjectId: string}>, subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}> {
+    return this.#chat(facetName, id, props).verifyObserverAccess(
+      observers.map(({id: observerId, userObjectId}) => ({
+        id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }),
+      })),
+      subresources);
+  }
+
   async chatRejectAction(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, actionId: number,
   ): ReturnType<GoogleChatGatekeeperImpl["rejectAction"]> {
@@ -818,9 +830,16 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     Object.assign(this.#hook, behavior);
   }
 
-  /** What the hook received, how many of its failures remain, and what it queued. */
-  readHook(): { received: ChatMessageInfo[]; failures: number; submissions: Array<{ actionId: number }> } {
-    return { received: this.#hook.received, failures: this.#hook.failures, ...this.#hookQueue.read() };
+  /** What the hook received, how many of its failures remain, and what it queued and observed. */
+  readHook(): {
+    received: ChatMessageInfo[]; failures: number; submissions: Array<{ actionId: number }>;
+    observations: Array<{ title: string; subresources?: string[] }>;
+  } {
+    const { submissions, observations } = this.#hookQueue.read();
+    return {
+      received: this.#hook.received, failures: this.#hook.failures, submissions,
+      observations: observations as Array<{ title: string; subresources?: string[] }>,
+    };
   }
 
   setGmailHookBehavior(behavior: Partial<Omit<GmailHookState, "received">>): void {

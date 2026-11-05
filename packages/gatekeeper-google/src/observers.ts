@@ -100,10 +100,10 @@ export type ObserverTrackerOptions<T, V> = {
 
 const DEFAULT_MAX_TRACKED_SETS = 1000;
 /** Verifier round trips kept in flight by default, bounded to stay inside the Workers limits. */
-const DEFAULT_CONCURRENCY = 6;
+export const DEFAULT_CONCURRENCY = 6;
 
 /** Runs `fn` over `items` with at most `limit` in flight, preserving input order in the result. */
-async function mapWithConcurrency<In, Out>(
+export async function mapWithConcurrency<In, Out>(
   items: readonly In[],
   limit: number,
   fn: (item: In) => Promise<Out>,
