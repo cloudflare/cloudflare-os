@@ -5,6 +5,7 @@ import {
   AccountDescription,
   SupportedResource,
   VendorDescription,
+  getResourceTypeId, getGrantedResourceTypeIds,
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton, WorkshopIconButton } from './WorkshopControls'
 
@@ -29,6 +30,7 @@ interface ConnectConnectorModalProps {
   credentialsValid?: boolean
   disconnecting?: boolean
   onDisconnect?: () => void
+  grantedResourceTypeIds?: string[]
   grantedResourceUrlPatterns?: string[]
   // Manage mode: invoked to expand the grant to include the given resource `urlPattern`s.
   onEnsureResources?: (resourceUrlPatterns: string[]) => void
@@ -52,10 +54,13 @@ export default function ConnectConnectorModal({
   credentialsValid = true,
   disconnecting = false,
   onDisconnect,
+  grantedResourceTypeIds,
   grantedResourceUrlPatterns,
   onEnsureResources,
   ensuringResourceUrlPatterns = [],
 }: ConnectConnectorModalProps) {
+  const granted = getGrantedResourceTypeIds(
+    { grantedResourceTypeIds, grantedResourceUrlPatterns }, supportedResources)
   const isManage = mode === 'manage'
 
   // Resource types the user can individually enable/disable at connect time. Resources without
@@ -66,11 +71,11 @@ export default function ConnectConnectorModal({
     [supportedResources],
   )
   const granular = grantableResources.length > 0
-  const grantableKey = grantableResources.map((r) => r.urlPattern).join(',')
+  const grantableKey = grantableResources.map(getResourceTypeId).join(',')
 
   const isGranted = (urlPattern: string) =>
-    grantedResourceUrlPatterns === undefined ||
-    grantedResourceUrlPatterns.includes(urlPattern)
+    granted === undefined ||
+    granted.includes(urlPattern)
 
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -80,19 +85,19 @@ export default function ConnectConnectorModal({
     setConfirmingDisconnect(false)
   }, [open])
 
-  const grantedKey = (grantedResourceUrlPatterns ?? []).join(',')
+  const grantedKey = (granted ?? []).join(',')
   useEffect(() => {
     if (!open) return
     if (isManage) {
       setSelected(
         new Set(
           grantableResources
-            .map((r) => r.urlPattern)
+            .map(getResourceTypeId)
             .filter((p) => isGranted(p)),
         ),
       )
     } else {
-      setSelected(new Set(grantableResources.map((r) => r.urlPattern)))
+      setSelected(new Set(grantableResources.map(getResourceTypeId)))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isManage, grantableKey, grantedKey])
@@ -120,7 +125,7 @@ export default function ConnectConnectorModal({
   function discardPending() {
     setSelected(
       new Set(
-        grantableResources.map((r) => r.urlPattern).filter((p) => isGranted(p)),
+        grantableResources.map(getResourceTypeId).filter((p) => isGranted(p)),
       ),
     )
   }
@@ -258,17 +263,17 @@ export default function ConnectConnectorModal({
               <ul className="space-y-2">
                 {supportedResources.map((resource) => {
                   const grantable = Boolean(resource.grantable)
-                  const granted = isManage && grantable && isGranted(resource.urlPattern)
+                  const granted = isManage && grantable && isGranted(getResourceTypeId(resource))
                   const ensuring = ensuringResourceUrlPatterns.includes(
-                    resource.urlPattern,
+                    getResourceTypeId(resource),
                   )
                   const checked =
                     grantable &&
-                    (selected.has(resource.urlPattern) || ensuring)
+                    (selected.has(getResourceTypeId(resource)) || ensuring)
                   const disabled = isManage && (granted || ensuring)
                   return (
                     <li
-                      key={resource.urlPattern}
+                      key={getResourceTypeId(resource)}
                       className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5"
                     >
                       {resourceIcon(resource)}
@@ -292,7 +297,7 @@ export default function ConnectConnectorModal({
                           checked={checked}
                           disabled={disabled}
                           onCheckedChange={(next) =>
-                            toggleResource(resource.urlPattern, next)
+                            toggleResource(getResourceTypeId(resource), next)
                           }
                         />
                       )}

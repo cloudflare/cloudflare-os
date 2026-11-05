@@ -144,7 +144,7 @@ afterEach(() => {
 })
 
 async function renderModal(configuration?: string, {
-  autoProvisionsAccount = false, forcedAccount = false,
+  autoProvisionsAccount = false, forcedAccount = false, resourceTypeId = undefined as string | undefined,
 } = {}) {
   testState.collect = readFrame
   const startCreationConfigurator = vi.fn<(accountId: number) => Promise<object>>(accountId => {
@@ -156,7 +156,7 @@ async function renderModal(configuration?: string, {
     listGatekeeperVendors: async () => [{
       id: 'google',
       description: { displayName: 'Google', autoProvisionsAccount },
-      supportedResources: [{ urlPattern: PATTERN, connectable: false, creatable: true,
+      supportedResources: [{ id: 'document', urlPattern: PATTERN, connectable: false, creatable: true,
         creationConfigurator: !autoProvisionsAccount }],
     }],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber, filter?: ConnectedAccountsFilter) => {
@@ -178,7 +178,7 @@ async function renderModal(configuration?: string, {
   const overseer = {
     getGatekeeperById: async () => ({
       getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', typeUrlPattern: PATTERN,
-        configuration }),
+        configuration, resourceTypeId }),
       [Symbol.dispose]: () => {},
     }),
   } as unknown as RpcStub<Overseer>
@@ -277,11 +277,18 @@ describe('CreationAccountModal', () => {
     expect(openConnectWindow).not.toHaveBeenCalled()
   })
 
+  it('does not approve an unknown saved type even when its old pattern still matches', async () => {
+    const { startCreationConfigurator, onChoose, onCancel } = await renderModal(undefined, { resourceTypeId: 'retired' })
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(onChoose).not.toHaveBeenCalled()
+    expect(startCreationConfigurator).not.toHaveBeenCalled()
+  })
+
   it('approves with the configuration from the selected account\'s configurator', async () => {
     const { startCreationConfigurator, onChoose } = await renderModal()
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, 'document')
     await act(async () => accountButton('home').click())
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document')
     await resolveStart(0)
     await resolveStart(1)
     reportReady()
@@ -432,7 +439,7 @@ describe('CreationAccountModal configurator access requests', () => {
     await resolveStart(0)
     await resolveStart(1)
 
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document')
     await testState.ensureResources!([IMPORT_GRANT])
     expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(6, [IMPORT_GRANT])
   })
@@ -446,7 +453,7 @@ describe('CreationAccountModal configurator access requests', () => {
       { uniqueName: 'work', grantedResourceUrlPatterns: [IMPORT_GRANT] } as AccountDescription,
       {} as VendorDescription, [], true, 'google'))
 
-    expect(startCreationConfigurator).toHaveBeenCalledExactlyOnceWith(5, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenCalledExactlyOnceWith(5, 'document')
     expect(starts[0].disposed).toBe(0)
     expect(testState.mounts).toBe(1)
     reportReady()
