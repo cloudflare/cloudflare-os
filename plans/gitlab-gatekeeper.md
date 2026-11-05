@@ -1021,6 +1021,17 @@ reported id is only true if the read came from it, so REST is addressed by id (Â
 by the path the id has now, and caches filled while reads followed the path are discarded once on
 upgrade.
 
+New bindings carry `reportsSubresources: true` in their immutable props. Their read-only
+`getHistoricalSubresources()` returns `[]`, since no read predates reporting. Legacy bindings
+instead throw: no stored state identifies every project previously read by path, and a later
+`projectId` pin cannot prove those earlier identities. The CI markers retain only role tiers.
+The exporter neither probes the current path nor modifies history; retained admission checks
+continue to enforce it until a complete history can be imported by the kernel. In particular,
+legacy admission still refuses a freed path's redirect after any rename or transfer, including
+bindings pinned under this release. Waiving that path check would silently drop unproven history.
+Returned issue and merge request references follow GitLab's current `web_url`, not the old path
+used as the REST ID-rewrite key; same-project simulation compares their current source and target.
+
 ### 9. Tests
 
 Same two-project layout as GitHub (`vitest.config.ts` node, `vitest.worker.config.ts` workerd

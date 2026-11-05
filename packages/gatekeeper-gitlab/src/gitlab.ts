@@ -646,6 +646,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       userObjectId: this.ctx.props.userObjectId,
       projectPath: parsed.projectPath,
       resourceKind: parsed.kind,
+      reportsSubresources: true,
       ...(parsed.kind === "project" ? {} : { iid: parsed.iid }),
     };
     return {

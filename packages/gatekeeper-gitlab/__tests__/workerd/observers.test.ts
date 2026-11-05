@@ -130,8 +130,20 @@ class ObserverGitLab extends FakeGitLab {
         const open = request.url.searchParams.get("state") !== "closed";
         return json(firstPage && open ? this.issues.map(iid => ({
           ...fx.issueResponse.data, iid, id: 1000 + iid, project_id: PROJECT_ID, title: `Issue ${iid}`,
+          web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/issues/${iid}`,
         })) : []);
       }
+      case "/issues/1":
+        return json({ ...fx.issueResponse.data, iid: 1, project_id: PROJECT_ID,
+          web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/issues/1` });
+      case "/merge_requests":
+        return json(firstPage ? [{ ...fx.mergeRequestResponse.data, iid: 1,
+          project_id: PROJECT_ID, source_project_id: PROJECT_ID, target_project_id: PROJECT_ID,
+          web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/merge_requests/1` }] : []);
+      case "/merge_requests/1":
+        return json({ ...fx.mergeRequestResponse.data, iid: 1,
+          project_id: PROJECT_ID, source_project_id: PROJECT_ID, target_project_id: PROJECT_ID,
+          web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/merge_requests/1` });
       case "/pipelines/6":
         return json({ ...fx.pipelineResponse.data, id: 6, project_id: PROJECT_ID, sha: HEAD });
       case "/pipelines/6/test_report_summary":
@@ -186,9 +198,12 @@ let scenarios = 0;
  * A binding of `group/sub/project` by the owner's account; with `pinned`, as an earlier read left
  * it, its project's id already stored.
  */
-async function binding(options: { pinned?: boolean } = {}) {
+async function binding(options: { pinned?: boolean; reportsSubresources?: true } = {}) {
   const name = `observers-${++scenarios}`;
-  const props: GatekeeperProps = projectProps(await account(OWNER_TOKEN), PATH);
+  const props: GatekeeperProps = {
+    ...projectProps(await account(OWNER_TOKEN), PATH),
+    ...(options.reportsSubresources ? { reportsSubresources: true } : {}),
+  };
   if (options.pinned) await hooks().startOnEarlierStorage(name, props, { projectId: PROJECT_ID });
   return {
     /** The binding owner's account. */
@@ -219,6 +234,7 @@ async function binding(options: { pinned?: boolean } = {}) {
     verify: (observers: Record<string, string>, subresources = [PROJECT]) => hooks().verifyObservers(
       name, props, Object.entries(observers).map(([id, userObjectId]) => ({ id, userObjectId })), subresources),
     admit: (userObjectId: string) => hooks().addObserver(name, props, userObjectId),
+    history: () => hooks().historicalSubresources(name, props),
   };
 }
 
@@ -321,6 +337,29 @@ describe("reads", () => {
     expect(gitlab.requestsWith(OWNER_TOKEN).filter(path => !path.startsWith(`/api/v4/projects/${PROJECT_ID}`)))
       .toEqual([]);
     expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[PROJECT], [PROJECT]]);
+  });
+
+  it("returns current issue and merge request references when the original path is reused", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.issues = [1];
+    gitlab.install();
+    const gk = await binding({ pinned: true });
+    const moved = "acme/renamed";
+    gitlab.projects.set(PROJECT_ID, moved);
+    gitlab.projects.set(OTHER_ID, PATH);
+    const project = { path: moved, namespace: "acme", url: `${WEB}/${moved}` };
+
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "getDetails" }]))
+      .toMatchObject({ ok: { project, url: `${WEB}/${moved}/-/issues/1` } });
+    expect(await gk.read([{ method: "listIssues", drain: true }]))
+      .toMatchObject({ ok: [{ project, url: `${WEB}/${moved}/-/issues/1` }] });
+    const mr = { project, source: { project }, target: { project }, url: `${WEB}/${moved}/-/merge_requests/1` };
+    expect(await gk.read([{ method: "getMergeRequest", args: ["1"] }, { method: "getDetails" }]))
+      .toMatchObject({ ok: mr });
+    expect(await gk.read([{ method: "listMergeRequests", drain: true }])).toMatchObject({ ok: [mr] });
+    expect(gitlab.requestsWith(OWNER_TOKEN).filter(path => !path.startsWith(`/api/v4/projects/${PROJECT_ID}`)))
+      .toEqual([]);
+    expect((await gk.observations()).every(observation => observation.subresources?.[0] === PROJECT)).toBe(true);
   });
 
   it("disclose nothing once the project is deleted and another takes its path", async () => {
@@ -557,6 +596,21 @@ describe("addObserver", () => {
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
   });
 
+  it("keeps legacy admission closed on a freed path's redirect after a plain rename", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const alice = await account("alice");
+    gitlab.member("alice", { [PROJECT_ID]: MAINTAINER_LEVEL });
+    const gk = await binding({ pinned: true });
+    gitlab.projects.set(PROJECT_ID, "acme/renamed");
+    gitlab.formerPaths.set(PATH, PROJECT_ID);
+
+    // Modern reads and verification still follow the pinned id. Earlier path-addressed history
+    // cannot prove that it never read a replacement that also subsequently moved away.
+    expect(await gk.verify({ alice })).toEqual({ ok: ["alice"] });
+    expect(await gk.admit(alice)).toEqual({ error: expect.stringMatching(/renamed or transferred/) });
+  });
+
   it("admits an observer on their own membership by path while no id is stored, never asking the owner", async () => {
     // A binding not read since ids were pinned has read nothing by id, and its owner's grant may
     // have lapsed since; that must not keep out collaborators who can see the project themselves.
@@ -574,5 +628,32 @@ describe("addObserver", () => {
     expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")))
       .toEqual(["/api/v4/projects/group%2Fsub%2Fproject/members/all"]);
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
+  });
+});
+
+describe("getHistoricalSubresources", () => {
+  it("returns no legacy requirements for a new binding, before and after reported reads", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const gk = await binding({ reportsSubresources: true });
+    expect(await gk.history()).toEqual({ ok: [] });
+    expect(gitlab.requests).toEqual([]);
+    expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: {} });
+    expect(await gk.history()).toEqual({ ok: [] });
+  });
+
+  it("refuses incomplete legacy identities repeatedly without probing or altering admission", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const alice = await account("alice");
+    gitlab.member("alice", { [PROJECT_ID]: REPORTER });
+    const gk = await binding({ pinned: true });
+    await gk.upgradeFrom({ "observedSet:ci-test-reports": "observed" });
+    expect(await gk.history()).toEqual({ error: expect.stringContaining("cannot export complete historical project identities") });
+    expect(await gk.history()).toEqual({ error: expect.stringContaining("cannot export complete historical project identities") });
+    expect(gitlab.requests).toEqual([]);
+    expect(await gk.admit(alice)).toEqual({ error: expect.stringContaining("Maintainer") });
+    gitlab.member("alice", { [PROJECT_ID]: MAINTAINER_LEVEL });
+    expect(await gk.admit(alice)).toEqual({ ok: undefined });
   });
 });

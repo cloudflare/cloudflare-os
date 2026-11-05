@@ -126,6 +126,9 @@ can still hold confidential issues and internal notes; job logs and test reports
   and the path's reuse both landing between the lookup and the push could deliver it elsewhere.
   A binding that read before ids were pinned is pinned to the project its path names at its first
   read since, which may not be the one it read then.
+  Returned issue and merge request references use the current project path from GitLab's web URL,
+  including same-project source and target branches; the original binding path remains only the
+  REST rewrite key and the legacy admission requirement.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
   subresource, so the Workshop checks everyone who can see it before it is returned (see
@@ -149,6 +152,13 @@ can still hold confidential issues and internal notes; job logs and test reports
   took the path. A binding with no id yet has read nothing by id, so the path is all it is checked
   by. Job logs and test reports those releases read still need their role the same way. Caches
   those releases filled are discarded on upgrade.
+- **Historical export.** Newly created bindings are marked `reportsSubresources: true` in their
+  immutable props and return `[]` from the read-only `getHistoricalSubresources()`: all their reads
+  already reported their requirements. Older bindings fail the export rather than inventing an
+  identity: their CI markers record roles, not the projects previously read by path, and even a
+  stored id was pinned only later. Neither today's path nor the owner's credentials can recover
+  that history. The kernel importer is not shipped; existing admission and CI-role checks remain
+  necessary and must not be removed on the strength of this exporter.
 
 ## Setting up GitLab OAuth credentials
 
@@ -275,11 +285,14 @@ receives them.
 
 ### "The GitLab project has been renamed or transferred"
 
-The project a connection was bound to moved before the connection pinned its id (see
-[Sharing with collaborators](#sharing-with-collaborators)), or, when a collaborator opens the
-workspace, since a release that read the project by path last did. GitLab answers the old path
-with a redirect that the gatekeeper deliberately does not follow (following it would turn writes
-into reads). Re-bind the connection to the project's new path.
+An owner sees this if the project moved before the connection pinned its id (see
+[Sharing with collaborators](#sharing-with-collaborators)). Collaborator admission can fail after
+**any** rename or transfer, even when the id was already pinned and the owner's reads still work:
+the retained legacy check always asks for access by the original path as well as the stored id.
+GitLab redirects a freed path, and the gatekeeper deliberately refuses that redirect. Legacy
+history cannot prove which project earlier path-addressed reads disclosed, so a redirect cannot
+safely waive that check. Re-bind the connection at the new path for future use; the old binding's
+legacy requirements remain enforced until the kernel can import complete historical requirements.
 
 ### "GitLab credentials have expired or been revoked"
 

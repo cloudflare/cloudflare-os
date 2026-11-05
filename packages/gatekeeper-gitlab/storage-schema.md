@@ -25,6 +25,12 @@ KV only. Three families: a TTL cache that any queued/applied/rejected action inv
 and size budget, outside the generation: no action changes a finished log), and durable state
 that survives cache clears.
 
+Newly minted binding props include `reportsSubresources: true`, proving that all reads were
+reported to the kernel. This is immutable binding metadata, not a KV marker. Only those bindings
+export `[]` from `getHistoricalSubresources()`. An older binding's export throws: no KV record
+proves the identity behind every legacy path-addressed disclosure, including when `projectId`
+was pinned later. Export is read-only and leaves every legacy admission/CI-role check intact.
+
 | Key | Value | Notes |
 |---|---|---|
 | `projectId` | `number` | The bound project's GitLab id, read once from `/projects/<encoded path>` (whose redirect, for a moved project, is never followed). Every REST request beneath the project is then sent beneath `/projects/<projectId>`, git fetches and pushes go to the path that id has now (read by id before each, and after a fetch), and every read reports `project/<projectId>` as its subresource, or that with the role CI data needs. Absent until first use, and nothing is read or written until it is stored. `addObserver` reads it as stored and never stores it: without it, the binding has read nothing by id, and admission checks the path alone. A binding that read before ids were pinned was pinned to whichever project its path named at its first read since. |

@@ -273,4 +273,6 @@ export type GitLabGatekeeperImplProps = {
   projectPath: string;
   /** The issue or merge request number, for those resource kinds. */
   iid?: number;
+  /** Present only on bindings whose every read reports subresources; older history is unprovable. */
+  reportsSubresources?: true;
 };

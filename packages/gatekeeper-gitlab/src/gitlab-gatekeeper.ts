@@ -830,7 +830,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async #overlaySimulatedSourceHead(
     details: GitLabMergeRequestDetails, gitCache?: RpcStub<GitCache>,
   ): Promise<GitLabMergeRequestDetails> {
-    if (details.source.project.path !== this.#projectPath()) return details;
+    if (details.source.project.path !== details.target.project.path) return details;
     if (this.#pendingPushActions(details.source.branch).length === 0) return details;
     if (gitCache === undefined) return this.#overlayMergeRequestSummaryHead(details);
     const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, details.target.branch, details.source.branch);
@@ -851,7 +851,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * session advertising.
    */
   #overlayMergeRequestSummaryHead<T extends GitLabMergeRequestSummary>(item: T): T {
-    if (item.source.project.path !== this.#projectPath()) return item;
+    if (item.source.project.path !== item.target.project.path) return item;
     if (this.#pendingPushActions(item.source.branch).length === 0) return item;
     const simulated = this.#simulateBranchHead(item.source.branch, item.source.sha);
     if (simulated === null || simulated === item.source.sha) return item;
@@ -1564,7 +1564,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     if (mr === undefined) return queuedCommitCi(headSha);
     // GitLab leaves the key out for an account that may not read the project's pipelines.
     if (!("head_pipeline" in mr)) return undefined;
-    if (details.source.project.path === this.#projectPath() &&
+    if (details.source.project.path === details.target.project.path &&
         this.#pendingPushActions(details.source.branch).some(action => action.newSha === headSha)) {
       return queuedCommitCi(headSha);
     }
@@ -2034,6 +2034,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   async removeObserver(id: string): Promise<void> {
     await this.#observers().removeObserver(id);
+  }
+
+  /**
+   * New bindings have no legacy disclosures. Older bindings recorded CI roles, but not the
+   * identity behind each path-addressed read: even a stored projectId was pinned only later and
+   * cannot prove that earlier reads came from that project. Refuse an incomplete export, without
+   * probing today's path or changing the legacy records and admission checks that still guard it.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    if (this.#props().reportsSubresources === true) return [];
+    throw new Error("This GitLab connection cannot export complete historical project identities; legacy observer checks must remain enabled.");
   }
 
   /**
@@ -2804,7 +2815,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         "determined, so the merge cannot be bound to a reviewed state. Re-read the merge request and try again, " +
         "or pass expectedHeadSha.");
     }
-    const sourceBranch = details.source.project.path === this.#projectPath() ? details.source.branch : null;
+    const sourceBranch = details.source.project.path === details.target.project.path ? details.source.branch : null;
     return { type: "mergeMergeRequest", ...this.#base(), mergeRequestId, options, expectedHeadSha, sourceBranch };
   }
 

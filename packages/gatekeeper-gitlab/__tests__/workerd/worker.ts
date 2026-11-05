@@ -117,6 +117,7 @@ type GatekeeperFacet = Pick<GitLabGatekeeperImpl, "gitPull"> & {
   addObserver(id: string, verifier: unknown): Promise<void>;
   verifyObserverAccess(observers: Array<{ id: string; verifier: unknown }>, subresources: string[]):
     Promise<{ allowedObserverIds: string[] }>;
+  getHistoricalSubresources(): Promise<string[]>;
   // write side
   prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<GitLabAction>;
   prepareCreateMergeRequest(options: GitLabCreateMergeRequestOptions): Promise<GitLabAction>;
@@ -423,6 +424,10 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async addObserver(facetName: string, props: GatekeeperProps, observerUserObjectId: string, observerId = "observer"): Promise<Outcome<void>> {
     const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId: observerUserObjectId } });
     return await outcome(() => this.#gatekeeper(facetName, props).addObserver(observerId, verifier));
+  }
+
+  async historicalSubresources(facetName: string, props: GatekeeperProps): Promise<Outcome<string[]>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).getHistoricalSubresources());
   }
 
   /** `verifyObserverAccess` for observers named by id, each with a verifier minted for its account. */
