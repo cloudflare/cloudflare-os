@@ -66,6 +66,14 @@ type FolderPageScope = {driveId: string | undefined; parents: DriveScopeNode[]};
 export type NativeObservation = Omit<ObservationDescription, "excludeObservers" | "subresources">;
 
 /**
+ * Authorizes one disclosure. `subresources` is required because nothing else records what a Drive,
+ * Docs, Sheets or Slides read depends on: an observation without it would leave later observers
+ * unchecked against what it read.
+ */
+export type SubresourceAuthorizer =
+  (description: ObservationDescription & {subresources: string[]}) => Promise<void>;
+
+/**
  * Performs one Docs, Sheets, Slides or PDF read and authorizes it before the value is disclosed,
  * reporting the file it read (see file-subresources.ts) and whatever its scope check proved.
  *
@@ -82,7 +90,7 @@ export type NativeRead = <T>(
  * reports `subresources`: the file it reads, or none for one not created yet.
  */
 export function unguardedNativeRead(
-  authorize: (description: ObservationDescription) => Promise<void>,
+  authorize: SubresourceAuthorizer,
   subresources: readonly FileSubresource[],
 ): NativeRead {
   let ids = fileSubresourceIds(subresources);
@@ -116,7 +124,7 @@ function nativeSubresource(fileId: string, mimeType: string): FileSubresource {
 export type DriveSessionCoreOptions = {
   api: DriveSessionApi;
   scope: DriveSessionScope;
-  authorize(description: ObservationDescription): Promise<void>;
+  authorize: SubresourceAuthorizer;
 };
 
 /** Construction contract for one positioned folder capability core. */
@@ -329,7 +337,7 @@ function listingDescription(
  */
 abstract class DriveCoreBase {
   protected readonly api: DriveSessionApi;
-  protected readonly authorize: (description: ObservationDescription) => Promise<void>;
+  protected readonly authorize: SubresourceAuthorizer;
 
   constructor(options: Omit<DriveSessionCoreOptions, "scope">) {
     this.api = options.api;
