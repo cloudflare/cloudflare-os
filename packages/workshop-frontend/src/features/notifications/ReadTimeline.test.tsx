@@ -264,11 +264,13 @@ describe("timeline read/unread experience", () => {
   });
 
   it.each([
-    {ackFirst: false, metadataDelta: false},
-    {ackFirst: true, metadataDelta: false},
-    {ackFirst: false, metadataDelta: true},
-    {ackFirst: true, metadataDelta: true},
-  ])("preserves local unread navigation across an intervening arrival (ACK first: $ackFirst, metadata delta: $metadataDelta)", async ({ackFirst, metadataDelta}) => {
+    {ackFirst: false, interveningUpdate: "none"},
+    {ackFirst: true, interveningUpdate: "none"},
+    {ackFirst: false, interveningUpdate: "metadata"},
+    {ackFirst: true, interveningUpdate: "metadata"},
+    {ackFirst: false, interveningUpdate: "bulk"},
+    {ackFirst: true, interveningUpdate: "bulk"},
+  ])("preserves local unread navigation across an intervening arrival (ACK first: $ackFirst, update: $interveningUpdate)", async ({ackFirst, interveningUpdate}) => {
     visibleBottom = 450;
     await render();
     await update(snapshot(1, 2));
@@ -280,8 +282,9 @@ describe("timeline read/unread experience", () => {
     markChatUnread.mockReturnValueOnce(ack.promise);
     await markUnreadFrom(1);
     if (ackFirst) await act(async () => ack.resolve(true));
-    // Renaming publishes a new row without changing its read horizon or count.
-    if (metadataDelta) await updateChat(snapshot(1, 2));
+    // A rename or bulk read elsewhere can publish this thread's unchanged horizon/count.
+    if (interveningUpdate === "metadata") await updateChat(snapshot(1, 2));
+    if (interveningUpdate === "bulk") await update(snapshot(1, 2));
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
     const arrival = snapshot(2, 2);
     await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,

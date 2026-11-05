@@ -68,7 +68,7 @@ export const ReadTimeline = ({
   // A departed visit must not restore navigation through the parent's shared callback.
   useLayoutEffect(() => () => { latestAction.current = undefined; }, []);
 
-  const reconcileChat = useCallback((chat: ChatReadState | undefined, available = true, replacement = false) => {
+  const reconcileChat = useCallback((chat: ChatReadState | undefined, available = true, initialSnapshot = false) => {
     const visit = latest.current.visit;
     latest.current.chat = chat;
     if (!chat) {
@@ -98,7 +98,7 @@ export const ReadTimeline = ({
       pending.current = -1;
       // Live changes, including remote rewinds, never take over the viewport.
     } else if (visit.paused && chat.unreadMessageCount === 0 &&
-        (replacement || (previous && chat.readThroughSequence > previous.readThroughSequence))) {
+        (initialSnapshot || (previous && chat.readThroughSequence > previous.readThroughSequence))) {
       latestAction.current = undefined;
       setVisit({...visit, paused: false});
     } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {
@@ -112,8 +112,8 @@ export const ReadTimeline = ({
     }
   }, [oldestSequence, onUnreadNavigation, setVisit, container, workspaceId, chatId]);
 
-  useLayoutEffect(() => unread?.subscribeToUpdates((state, replacement) => {
-    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId), true, replacement);
+  useLayoutEffect(() => unread?.subscribeToUpdates((state, initialSnapshot) => {
+    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId), true, initialSnapshot);
   }), [unread?.subscribeToUpdates, workspaceId, chatId, reconcileChat]);
 
   useLayoutEffect(() => {
