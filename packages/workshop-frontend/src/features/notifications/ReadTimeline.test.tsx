@@ -192,6 +192,26 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
+  it("keeps a New divider for messages received while the tab was hidden", async () => {
+    visibleBottom = 450;
+    await render(); await update(snapshot(1, 2)); await settle();
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", {configurable: true, value: "hidden"});
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", {configurable: true, value: "visible"});
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const arrival = snapshot(2, 2);
+    await update({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("3");
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
+  });
+
   it("can mark an untouched legacy thread unread without initializing it on open", async () => {
     await render();
     await update({chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
@@ -559,6 +579,17 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("waits to acknowledge a mounted pane until the editor reports it visible", async () => {
+    withdraw();
+    await render(); await update(snapshot()); await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    await act(async () => {
+      withdraw = reportVisibleChat(() => ({workspaceId: "workspace", chatId: 1}));
+    });
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0);
   });
 
   it("does not resend an unchanged viewport boundary when snapshots refresh", async () => {

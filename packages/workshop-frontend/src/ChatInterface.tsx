@@ -5410,6 +5410,8 @@ function ChatInterface({
               <div key={chat.id} className="relative">
                 {(() => {
                   const isRenaming = renamingChatId === chat.id;
+                  const unreadMessageCount = unread?.chats?.find(item =>
+                    item.workspaceId === workspaceId && item.chatId === chat.id)?.unreadMessageCount ?? 0;
                   return (
                   <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
@@ -5496,8 +5498,7 @@ function ChatInterface({
                       </div>
                     </div>
                     {!isRenaming && (
-                      <UnreadBadge count={unread?.state?.chats.find(item =>
-                        item.workspaceId === workspaceId && item.chatId === chat.id)?.unreadMessageCount ?? 0} />
+                      <UnreadBadge count={unreadMessageCount} />
                     )}
                     {!isRenaming && (
                       <DropdownMenu>
@@ -5516,10 +5517,10 @@ function ChatInterface({
                           onClick={(event) => event.stopPropagation()}
                           className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
                         >
-                          <DropdownMenu.Item onClick={() => {
+                          <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount === 0} onClick={() => {
                             void unread?.markRead(overseer, chat.id).catch(() => {});
                           }}>Mark thread read</DropdownMenu.Item>
-                          <DropdownMenu.Item onClick={() => {
+                          <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount > 0} onClick={() => {
                             void unread?.markUnread(overseer, chat.id).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
                           <DropdownMenu.Item

@@ -38,7 +38,10 @@ class UnreadSubscriber extends RpcTarget implements UnreadStateSubscriber {
 type UnreadUpdateListener = (state: UserUnreadState, initialSnapshot: boolean) => void;
 
 type UnreadContextValue = {
+  /** Last snapshot for this API. Rollups survive resubscription; use chats for fresh cursors. */
   state?: UserUnreadState;
+  /** Fresh cursors for the current scope; cached totals alone cannot authorize receipts. */
+  chats?: UserUnreadState["chats"];
   /** Process server transitions before React can batch consecutive state updates. */
   subscribeToUpdates: (listener: UnreadUpdateListener) => () => void;
   markRead: (overseer: Pick<Overseer, "markChatRead">, chatId: number, throughSequence?: number) => Promise<void>;
@@ -69,7 +72,7 @@ export const UnreadStateBridge = ({
 }) => {
   const [snapshot, setSnapshot] = useState<{
     api: RpcStub<AuthenticatedApi>;
-    scopeKey: string;
+    scopeKey?: string;
     state: UserUnreadState;
   }>();
   const toasts = useKumoToastManager();
@@ -85,7 +88,8 @@ export const UnreadStateBridge = ({
   }, []);
   // Don't display another authenticated session's state while its replacement is connecting.
   const scopeKey = typeof scope === "string" ? scope : `workspace:${scope.workspaceId}`;
-  const state = snapshot?.api === authenticatedApi && snapshot.scopeKey === scopeKey ? snapshot.state : undefined;
+  const state = snapshot?.api === authenticatedApi ? snapshot.state : undefined;
+  const scopedChats = snapshot?.api === authenticatedApi && snapshot.scopeKey === scopeKey ? snapshot.state.chats : undefined;
 
   useEffect(() => {
     let subscription: RpcStub<{}> | undefined;
@@ -106,7 +110,7 @@ export const UnreadStateBridge = ({
       const currentGeneration = ++generation;
       latest = undefined;
       // Cached horizons cannot authorize receipts while the replacement snapshot is pending.
-      setSnapshot(undefined);
+      setSnapshot(previous => previous && {...previous, scopeKey: undefined});
       const previous = subscription;
       subscription = undefined;
       previous?.[Symbol.dispose]();
@@ -165,7 +169,7 @@ export const UnreadStateBridge = ({
     const visibilityChanged = () => {
       if (document.visibilityState !== "hidden") { subscribe(); return; }
       ++generation;
-      setSnapshot(undefined);
+      setSnapshot(previous => previous && {...previous, scopeKey: undefined});
       clearTimeout(retryTimer);
       const previous = subscription;
       subscription = undefined;
@@ -187,10 +191,9 @@ export const UnreadStateBridge = ({
     try {
       return await operation;
     } catch (cause) {
-      if (currentApi.current === authenticatedApi) {
+      if (!logRpcFailure("Failed to update read state:", cause) && currentApi.current === authenticatedApi) {
         toasts.add({ id: "unread-update-failed", title: "Couldn’t update read state", variant: "error" });
       }
-      logRpcFailure("Failed to update read state:", cause);
       throw cause;
     }
   };
@@ -199,6 +202,7 @@ export const UnreadStateBridge = ({
     <UnreadContext.Provider
       value={{
         state,
+        chats: scopedChats,
         subscribeToUpdates,
         markRead: (overseer, chatId, through) => perform(overseer.markChatRead(chatId, through)),
         markAllRead: () => perform(authenticatedApi.markAllRead()),

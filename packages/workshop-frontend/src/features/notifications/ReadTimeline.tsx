@@ -41,7 +41,7 @@ export const ReadTimeline = ({
   children: ReactNode;
 }) => {
   const unread = useUnreadState();
-  const chat = unread?.state?.chats.find(
+  const chat = unread?.chats?.find(
     (item) => item.workspaceId === workspaceId && item.chatId === chatId,
   );
   const [visit, renderVisit] = useState<{ divider?: number; paused: boolean }>();
@@ -108,7 +108,7 @@ export const ReadTimeline = ({
         document.visibilityState === "visible" && document.hasFocus() &&
         !!workspaceId && isChatVisible(workspaceId, chatId) &&
         viewport.scrollHeight - viewport.scrollTop <= viewport.clientHeight + 1;
-      if (!readingTail) setVisit({...visit, divider: chat.readThroughSequence + 1});
+      if (!readingTail || initialSnapshot) setVisit({...visit, divider: chat.readThroughSequence + 1});
     }
   }, [oldestSequence, onUnreadNavigation, setVisit, container, workspaceId, chatId]);
 
@@ -118,8 +118,8 @@ export const ReadTimeline = ({
 
   useLayoutEffect(() => {
     // Also reconcile the initial snapshot when entering an already-subscribed workspace.
-    reconcileChat(chat, !!unread?.state);
-  }, [chat, unread?.state, reconcileChat]);
+    reconcileChat(chat, !!unread?.chats);
+  }, [chat, unread?.chats, reconcileChat]);
 
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.
@@ -258,7 +258,7 @@ export const ReadTimeline = ({
         divider: visit?.divider,
         latestSequence,
         markUnread: (sequence) => {
-          if (!workspaceId || !unread?.state) return;
+          if (!workspaceId || !unread?.chats) return;
           const action = Symbol();
           latestAction.current = action;
           const previous = {visit: latest.current.visit, jump,

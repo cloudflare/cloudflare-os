@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -13,6 +13,7 @@ import type {
 import { UnreadStateBridge, useUnreadState } from "./UnreadStateBridge";
 
 const addToast = vi.fn<(toast: object) => void>();
+const summaryChanged = vi.fn<(state: unknown) => void>();
 vi.mock("@cloudflare/kumo", () => ({ useKumoToastManager: () => ({ add: addToast }) }));
 
 const snapshot = (sequence: number): UserUnreadState => ({
@@ -46,10 +47,11 @@ const deferred = () => {
 
 const Commands = ({overseer}: {overseer: Pick<Overseer, "markChatRead" | "markChatUnread">}) => {
   const unread = useUnreadState();
-  const chat = unread?.state?.chats[0];
+  const chat = unread?.chats?.[0];
+  useEffect(() => { summaryChanged(unread?.state); }, [unread?.state]);
   return (
     <>
-      <output>{JSON.stringify(unread?.state ?? null)}</output>
+      <output>{JSON.stringify(unread?.state ? {...unread.state, chats: unread.chats} : null)}</output>
       {chat && unread && <>
       <button onClick={() => void unread.markRead(overseer, chat.chatId).catch(() => {})}>read</button>
       <button onClick={() => void unread.markUnread(overseer, chat.chatId)}>unread</button>
@@ -109,10 +111,15 @@ describe("UnreadStateBridge", () => {
     await render();
     await update(snapshot(1));
     expect(currentState()).toEqual(snapshot(1));
+    const summaries = summaryChanged.mock.calls.length;
     await act(async () => visibility("hidden"));
     expect(dispose).toHaveBeenCalledOnce();
+    expect(currentState()).toEqual({...snapshot(1), chats: undefined});
+    expect(summaryChanged).toHaveBeenCalledTimes(summaries);
     await act(async () => visibility("visible"));
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
+    expect(currentState()).toEqual({...snapshot(1), chats: undefined});
+    expect(summaryChanged).toHaveBeenCalledTimes(summaries);
   });
 
   it("exposes explicit read/unread and bulk commands using only the requested boundaries", async () => {
@@ -145,11 +152,13 @@ describe("UnreadStateBridge", () => {
     await render();
     await update(snapshot(1));
     expect(subscribeToUnreadState.mock.calls[0][0]).toEqual({workspaceId: "workspace-1"});
+    const summaries = summaryChanged.mock.calls.length;
     await render(api, "summary");
     expect(dispose).toHaveBeenCalledOnce();
-    expect(currentState()).toBeNull();
+    expect(currentState()).toEqual({...snapshot(1), chats: undefined});
+    expect(summaryChanged).toHaveBeenCalledTimes(summaries);
     await update(snapshot(1), 0);
-    expect(currentState()).toBeNull();
+    expect(currentState()).toEqual({...snapshot(1), chats: undefined});
     await update({unreadChatCount: 0, unreadMessageCount: 0, workspaces: [], chats: []});
     const workspaces = [{workspaceId: "workspace-2", unreadChatCount: 1, unreadMessageCount: 3}];
     await act(() => subscribers.at(-1)!.summaryUpdated({workspace: workspaces[0], unreadChatCount: 1, unreadMessageCount: 3}));
@@ -189,6 +198,7 @@ describe("UnreadStateBridge", () => {
     await update(snapshot(9));
     await act(async () => subscribers[0][Symbol.dispose]());
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
+    expect(currentState()).toEqual({...snapshot(9), chats: undefined});
     await update(snapshot(2));
     expect(currentState()).toEqual(snapshot(2));
     await act(async () => root.unmount());
@@ -246,6 +256,20 @@ describe("UnreadStateBridge", () => {
     expect(addToast).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    new Error("Peer closed WebSocket: 1006"),
+    Object.assign(new Error("Object restarted"), {durableObjectReset: true}),
+  ])("quietly recovers from a transient read failure: %s", async cause => {
+    using _ = vi.spyOn(console, "debug").mockImplementation(() => {});
+    markChatRead.mockRejectedValueOnce(cause);
+    await render(); await update(snapshot(1));
+    await act(async () => container.querySelector("button")!.click());
+    expect(addToast).not.toHaveBeenCalled();
+    await act(async () => container.querySelector("button")!.click());
+    expect(markChatRead).toHaveBeenCalledTimes(2);
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
   it("ignores late command failures after switching accounts", async () => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     const failed = deferred();
@@ -253,6 +277,7 @@ describe("UnreadStateBridge", () => {
     await render(); await update(snapshot(1));
     await act(async () => container.querySelector("button")!.click());
     await render({ ...api });
+    expect(currentState()).toBeNull();
     await act(async () => failed.reject(new Error("read failed")));
     expect(addToast).not.toHaveBeenCalled();
   });

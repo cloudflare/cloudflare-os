@@ -38,10 +38,11 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.clearAllMocks();
   getUnreadThreads.mockReset().mockImplementation(async () =>
-    (mock.unread?.state?.chats ?? []).filter(chat => chat.unreadMessageCount > 0)
+    (mock.unread?.chats ?? []).filter(chat => chat.unreadMessageCount > 0)
       .map(chat => ({...chats.find(item => item.workspaceId === chat.workspaceId && item.chatId === chat.chatId)!, ...chat})));
   vi.stubGlobal("scrollTo", vi.fn<() => void>());
-  mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markAllRead,
+  mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: [] },
+    chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})), markAllRead,
     subscribeToUpdates: () => () => {},
     markWorkspaceRead: vi.fn<Unread["markWorkspaceRead"]>().mockResolvedValue(undefined),
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
@@ -70,9 +71,9 @@ it("uses a standard navigation link with a trailing unread count", async () => {
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 it("shows message counts in the summary and each thread, not just unread-thread counts", async () => {
-  mock.unread = { ...mock.unread!, state: { workspaces: [], unreadChatCount: 2, unreadMessageCount: 7,
+  mock.unread = { ...mock.unread!, state: { workspaces: [], unreadChatCount: 2, unreadMessageCount: 7, chats: [] },
     chats: [{ ...chats[0], unreadMessageCount: 4 },
-      { ...chats[0], chatId: 9, unreadMessageCount: 3 }] } };
+      { ...chats[0], chatId: 9, unreadMessageCount: 3 }] };
   await render();
   expect(container.querySelector('a[href="/unread"]')?.textContent).toBe("Unread threads7");
   expect(container.querySelector('ul [aria-label="4 unread messages"]')).not.toBeNull();
@@ -95,7 +96,7 @@ it("uses the User DO inbox order and refreshes when read state changes", async (
   getUnreadThreads.mockResolvedValueOnce([{...chats[0], chatId: 9, chatTitle: "Newest"}, chats[0]]);
   await render();
   expect([...container.querySelectorAll("ul h2")].map(item => item.textContent)).toEqual(["Newest", "Unread elsewhere"]);
-  mock.unread = { ...mock.unread!, state: { workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: [] } };
+  mock.unread = { ...mock.unread!, state: { workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: [] }, chats: [] };
   await act(async () => mock.listeners.forEach(listener => listener()));
   expect(container.textContent).toContain("You’re all caught up");
 });
@@ -135,9 +136,22 @@ it("ignores an older inbox response when a newer unread update has arrived", asy
   const pending = Promise.withResolvers<Awaited<ReturnType<AuthenticatedApi["getUnreadThreads"]>>>();
   getUnreadThreads.mockReturnValueOnce(pending.promise);
   await render();
-  mock.unread = {...mock.unread!, state: {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: []}};
+  mock.unread = {...mock.unread!, state: {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: []}, chats: []};
   await act(async () => mock.listeners.forEach(listener => listener()));
   await act(async () => pending.resolve([chats[0]]));
   expect(container.textContent).toContain("You’re all caught up");
   expect(container.textContent).not.toContain("Unread elsewhere");
+});
+
+it("does not query the inbox again when only scoped cursor freshness changes", async () => {
+  await render();
+  const cursors = mock.unread!.chats;
+  const queries = getUnreadThreads.mock.calls.length;
+  mock.unread = {...mock.unread!, chats: undefined};
+  await act(async () => mock.listeners.forEach(listener => listener()));
+  expect(container.querySelector('a[href="/unread"]')?.textContent).toBe("Unread threads1");
+  expect(getUnreadThreads).toHaveBeenCalledTimes(queries);
+  mock.unread = {...mock.unread!, chats: cursors};
+  await act(async () => mock.listeners.forEach(listener => listener()));
+  expect(getUnreadThreads).toHaveBeenCalledTimes(queries);
 });
