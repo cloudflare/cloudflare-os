@@ -439,8 +439,8 @@ export class UserAccount extends DurableObject<Env> {
       ensureConfigured(this.env);
       let refreshed;
       try {
-        refreshed = await refreshAccessToken(grant.refreshToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET,
-          resolveOAuthConfig(this.env).tokenUrl);
+        refreshed = await refreshAccessToken(grant.refreshToken, grant.scopes, this.env.CLIENT_ID,
+          this.env.CLIENT_SECRET, resolveOAuthConfig(this.env).tokenUrl);
       } catch (err) {
         // Only ZoomInfo refusing the refresh token itself proves the grant dead. A client or
         // configuration error, a rate limit or an outage throws as itself, and the next read

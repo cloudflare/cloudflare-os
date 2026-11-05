@@ -134,6 +134,16 @@ ZoomInfo refused the deployment's client credentials while refreshing an access 
 `CLIENT_ID` / `CLIENT_SECRET`; the next read retries the refresh, and no account needs to reconnect.
 Only ZoomInfo refusing the refresh token itself (`invalid_grant`) asks the user to reconnect.
 
+### Reads fail with `access_denied` about refresh scopes
+
+Refresh requests explicitly use the granted scopes recorded from ZoomInfo's token response, not the
+current connect-time scope list or all scopes enabled on the OAuth app. A refresh that returns no
+scope list keeps the previously recorded list for subsequent refreshes.
+
+If an older grant has no recorded scopes, refresh still omits `scope` rather than guessing. Reconnect
+and confirm ZoomInfo returns a granted scope list. If the error persists, check the OAuth app's scope
+configuration with ZoomInfo; reconnecting alone does not fix provider-side scope defaults.
+
 ### "ZoomInfo did not return a refresh token"
 
 The OAuth app isn't issuing refresh tokens. Enable the refresh-token grant for the app in the

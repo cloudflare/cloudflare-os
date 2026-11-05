@@ -188,18 +188,22 @@ export async function exchangeAuthCode(
   );
 }
 
-/** Exchange a refresh token for a fresh access token (and a rotated refresh token). */
+/** Exchange a refresh token, requesting only its recorded granted scopes when known. */
 export async function refreshAccessToken(
   refreshToken: string,
+  scopes: readonly string[],
   clientId: string,
   clientSecret: string,
   tokenUrl: string,
 ): Promise<ZoomInfoTokenGrant> {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+  });
+  // An unknown scope list stays omitted; connect-time defaults could exceed an older grant.
+  if (scopes.length > 0) body.set("scope", scopes.join(" "));
   return await tokenRequest(
-    new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-    }),
+    body,
     tokenUrl,
     clientId,
     clientSecret,
