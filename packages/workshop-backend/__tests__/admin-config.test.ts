@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel } from "@gadgets/workshop-shared/api";
-import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
-import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
+import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS } from "@gadgets/workshop-shared/api";
+import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, diffAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
   it("backfills fields missing from a config persisted before they existed", () => {
@@ -576,5 +576,165 @@ describe("ADMIN_CONFIG_SEED", () => {
         .toEqual(SEED.modelSettings);
     let saved = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, modelsSaved: true });
     expect((await readAdminConfig(withMirror(saved))).modelSettings).toEqual({});
+  });
+});
+
+describe("admin config audit retention", () => {
+  it("defaults the audit retention", () => {
+    let config = parseAdminConfig(null);
+    expect(config.adminAuditRetentionDays).toBe(DEFAULT_ADMIN_AUDIT_RETENTION_DAYS);
+    expect(DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays).toBe(90);
+  });
+
+  // The environment's bound is applied where the choice is enforced, never here, so a stored
+  // choice outside today's bound is kept for when it changes.
+  it("keeps a stored choice whatever the environment's bound", () => {
+    for (let days of [1, 7, 365, MAX_ADMIN_AUDIT_RETENTION_DAYS]) {
+      expect(normalizeAdminConfig({ adminAuditRetentionDays: days }).adminAuditRetentionDays)
+          .toBe(days);
+    }
+  });
+
+  it("reads a malformed stored choice as the default", () => {
+    for (let stored of [0, -1, 1.5, MAX_ADMIN_AUDIT_RETENTION_DAYS + 1, NaN, "30", null]) {
+      expect(normalizeAdminConfig({ adminAuditRetentionDays: stored as number })
+          .adminAuditRetentionDays, String(stored)).toBe(90);
+    }
+  });
+});
+
+function configWith(patch: Partial<AdminConfig> = {}): AdminConfig {
+  return { ...structuredClone(DEFAULT_ADMIN_CONFIG), ...patch };
+}
+
+function formats(count: number): FormatCuration[] {
+  return Array.from({ length: count }, (_, i) => ({ blueprintId: `bp-${i}`, enabled: true }));
+}
+
+function addedModel(id: string): GatewayModel {
+  return { provider: "anthropic", id, name: id, contextWindow: 1000 };
+}
+
+describe("diffAdminConfig", () => {
+  it("is empty when nothing differs", () => {
+    expect(diffAdminConfig(configWith(), configWith())).toEqual([]);
+  });
+
+  it("records scalars, strings as themselves and the rest as JSON", () => {
+    expect(diffAdminConfig(configWith(), configWith({ siteName: "Acme \"OS\"" })))
+        .toEqual([{ setting: "siteName", before: "", after: "Acme \"OS\"" }]);
+    expect(diffAdminConfig(configWith(), configWith({ signupsEnabled: false, adminAuditRetentionDays: 120 })))
+        .toEqual([
+          { setting: "signupsEnabled", before: "true", after: "false" },
+          { setting: "adminAuditRetentionDays", before: "90", after: "120" },
+        ]);
+    expect(diffAdminConfig(configWith(), configWith({ defaultReasoning: "high" })))
+        .toEqual([{ setting: "defaultReasoning", before: "null", after: "high" }]);
+  });
+
+  it("records long instructions edited at the end whole", () => {
+    let before = "i".repeat(8_000);
+    let after = `${"i".repeat(7_990)}0123456789`;
+    expect(diffAdminConfig(configWith({ instanceInstructions: before }),
+        configWith({ instanceInstructions: after })))
+        .toEqual([{ setting: "instanceInstructions", before, after }]);
+  });
+
+  it("records a map one key at a time", () => {
+    expect(diffAdminConfig(configWith(), configWith({ banner: { text: "Hi", color: "warning" } })))
+        .toEqual([
+          { setting: "banner", key: "color", before: "info", after: "warning" },
+          { setting: "banner", key: "text", before: "", after: "Hi" },
+        ]);
+    expect(diffAdminConfig(configWith(), configWith({ banner: { text: "Hi", color: "info" } })))
+        .toEqual([{ setting: "banner", key: "text", before: "", after: "Hi" }]);
+  });
+
+  it("records model modes per key, own keys only", () => {
+    let before = configWith({ modelModes: { a: "disabled", c: "hidden" } });
+    let modes = JSON.parse('{"b": "disabled", "c": "hidden", "__proto__": "hidden", ' +
+        '"constructor": "disabled"}');
+    let changes = diffAdminConfig(before, configWith({ modelModes: modes }));
+    expect(changes).toEqual([
+      { setting: "modelModes", key: "__proto__", after: "hidden" },
+      { setting: "modelModes", key: "a", before: "disabled" },
+      { setting: "modelModes", key: "b", after: "disabled" },
+      { setting: "modelModes", key: "constructor", after: "disabled" },
+    ]);
+  });
+
+  it("records model settings and disabled resources per key, as JSON", () => {
+    expect(diffAdminConfig(configWith({ modelSettings: { m: { reasoning: "low" } } }),
+        configWith({ modelSettings: { m: { reasoning: "high", compactionInputBudget: 5000 } } })))
+        .toEqual([{
+          setting: "modelSettings", key: "m", before: '{"reasoning":"low"}',
+          after: '{"compactionInputBudget":5000,"reasoning":"high"}',
+        }]);
+    expect(diffAdminConfig(configWith({ disabledResources: { github: ["repo"] } }),
+        configWith({ disabledResources: { github: ["repo", "issue"], gitlab: ["project"] } })))
+        .toEqual([
+          { setting: "disabledResources", key: "github", before: '["repo"]', after: '["repo","issue"]' },
+          { setting: "disabledResources", key: "gitlab", after: '["project"]' },
+        ]);
+  });
+
+  it("records one format entry, not the whole list", () => {
+    let before = formats(30);
+    let after = structuredClone(before);
+    after[29].agentHint = "prefer for memos";
+    expect(diffAdminConfig(configWith({ formats: before }), configWith({ formats: after }))).toEqual([{
+      setting: "formats", key: "bp-29", before: '{"blueprintId":"bp-29","enabled":true}',
+      after: '{"agentHint":"prefer for memos","blueprintId":"bp-29","enabled":true}',
+    }]);
+  });
+
+  it("records an added or removed format alone, and a reorder as the id lists", () => {
+    let three = formats(3);
+    expect(diffAdminConfig(configWith({ formats: three }), configWith({ formats: three.slice(0, 2) })))
+        .toEqual([{ setting: "formats", key: "bp-2", before: '{"blueprintId":"bp-2","enabled":true}' }]);
+    expect(diffAdminConfig(configWith({ formats: three }), configWith({ formats: formats(4) })))
+        .toEqual([{ setting: "formats", key: "bp-3", after: '{"blueprintId":"bp-3","enabled":true}' }]);
+    expect(diffAdminConfig(configWith({ formats: three }),
+        configWith({ formats: [three[2], three[0], three[1]] })))
+        .toEqual([{
+          setting: "formats", before: '["bp-0","bp-1","bp-2"]', after: '["bp-2","bp-0","bp-1"]',
+        }]);
+  });
+
+  it("records one added model entry at a time", () => {
+    let sixty = Array.from({ length: 60 }, (_, i) => addedModel(`m-${i}`));
+    let appended = diffAdminConfig(configWith({ addedModels: sixty }),
+        configWith({ addedModels: [...sixty, addedModel("new")] }));
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({ setting: "addedModels", key: "new" });
+    expect(appended[0]).not.toHaveProperty("before");
+    let removed = diffAdminConfig(configWith({ addedModels: sixty }),
+        configWith({ addedModels: sixty.filter(m => m.id !== "m-7") }));
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toMatchObject({ setting: "addedModels", key: "m-7" });
+    expect(removed[0]).not.toHaveProperty("after");
+  });
+
+  it("records a list without ids whole", () => {
+    expect(diffAdminConfig(configWith(), configWith({ disabledGatekeepers: ["x", "y"] })))
+        .toEqual([{ setting: "disabledGatekeepers", before: "[]", after: '["x","y"]' }]);
+  });
+
+  it("ignores the order objects were built in", () => {
+    expect(diffAdminConfig(
+        configWith({ modelSettings: { m: { reasoning: "low", compactionInputBudget: 5 } } }),
+        configWith({ modelSettings: { m: { compactionInputBudget: 5, reasoning: "low" } } })))
+        .toEqual([]);
+  });
+
+  it("excerpts an entry past the value cap, and cuts an over-long key", () => {
+    let pattern = "p".repeat(12_000);
+    let [change] = diffAdminConfig(configWith(), configWith({ disabledResources: { v: [pattern] } }));
+    expect(change.excerpt).toEqual({ offset: 0, afterLength: pattern.length + 4 });
+
+    let [cut] = diffAdminConfig(configWith(),
+        configWith({ disabledResources: { ["k".repeat(300)]: ["x"] } }));
+    expect(cut.key).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(cut.key!.endsWith("…")).toBe(true);
   });
 });

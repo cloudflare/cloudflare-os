@@ -37,7 +37,13 @@ through logs and errors, then everything else.
   deliberately env-var driven in `auth/config.ts` and must **not** move into `AdminConfig`, so a
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
-  `readAdminConfig(env)`. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+  `readAdminConfig(env)`, except `AdminApiImpl`, which deliberately reads the authoritative config
+  for the audit log's retention in `listAdminAudit()` and `getAdminAuditStats()`. The
+  admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+- `ADMIN_AUDIT_RETENTION_MIN_DAYS` is env-driven, like auth config. Flag code that enforces or
+  prunes with `adminAuditRetentionDays` without `adminAccessPolicy()`.
+- A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
+  `#mutateAdminConfig()`, or records explicitly before any other write.
 - `cf-os api` sends `User-Agent: cf-os-api/<version>`, and except on a local instance
   (`WORKSHOP_ENVIRONMENT` `development` or `test`, set only by `pnpm dev-server` and the integration
   harness) the Workshop lets such a session act only as a deployment admin. That is a speed bump

@@ -11,7 +11,7 @@ import {
   isAllowedModelName,
   type AllowedModelSuggestion,
 } from './modelForm'
-import { useFieldErrorAlert } from './useFieldErrorAlert'
+import { useFieldErrorAlert } from '../../hooks/useFieldErrorAlert'
 
 const POOL_DOCS = 'https://developers.cloudflare.com/ai-gateway/features/auto-router/#models'
 
