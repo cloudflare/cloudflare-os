@@ -152,9 +152,13 @@ const renderWithGadget = (stub: object, chatId: number, onConnectionsChange?: ()
     onConnectionsChange={onConnectionsChange} />,
 )
 
-it('binds a connection whose creation restarted the workspace once the session is replaced, without creating another', async () => {
+it.each([
+  ['the restart refusal', createGatekeeperError(GATEKEEPER_ERROR_CODES.pendingRestart)],
+  // A distant client's bind arrives after the restart closed its session.
+  ['a dropped session', new Error('Peer closed WebSocket')],
+])('binds a connection whose creation restarted the workspace once the session is replaced, after %s, without creating another', async (_, failure) => {
   const dying = gadgetStub(async () => {
-    throw createGatekeeperError(GATEKEEPER_ERROR_CODES.pendingRestart)
+    throw failure
   })
   const reconnected = gadgetStub(async () => 'KIBANA')
   const onConnectionsChange = vi.fn<() => void>()
@@ -173,15 +177,19 @@ it('binds a connection whose creation restarted the workspace once the session i
   expect(onConnectionsChange).toHaveBeenCalledOnce()
 })
 
-it('leaves a bind failure a new session cannot cure with the modal instead of retrying it', async () => {
+it.each([
+  ['a missing chat', new Error('No such chat: 1')],
+  // Reset downstream of a healthy session (the vendor's describe()): no reconnect follows.
+  ['a flagged downstream reset', Object.assign(new Error('Durable Object reset because its code was updated'), { durableObjectReset: true })],
+])('leaves %s with the modal instead of retrying the bind', async (_, failure) => {
   const failing = gadgetStub(async () => {
-    throw new Error('No such chat: 1')
+    throw failure
   })
   const reconnected = gadgetStub(async () => 'KIBANA')
 
   await renderWithGadget(failing, 1)
   // Rejecting keeps the modal open with the error.
-  await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).rejects.toThrow('No such chat: 1'))
+  await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).rejects.toBe(failure))
 
   await renderWithGadget(reconnected, 1)
   await act(async () => {})

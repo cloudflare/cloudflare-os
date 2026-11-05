@@ -21,7 +21,7 @@ import {
   loadBindingCardData,
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
-import { isTransientRpcError, rpcFailureDescription } from './rpcErrors'
+import { classifyRpcError, rpcFailureDescription } from './rpcErrors'
 import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
@@ -493,10 +493,11 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
           try {
             await bindConnection(gatekeeperId, chatId)
           } catch (err) {
-            // The refusal and the restart's own disconnect are cured by the replacement session;
-            // any other failure stays with the modal.
+            // Only the refusal and the browser losing its session are cured by the replacement
+            // session. A flagged reset can come from downstream (the vendor's describe()) over a
+            // healthy session that nothing replaces, so it stays with the modal like any other.
             const pendingRestart = getGatekeeperErrorCode(err) === GATEKEEPER_ERROR_CODES.pendingRestart
-            if (!pendingRestart && !isTransientRpcError(err)) throw err
+            if (!pendingRestart && classifyRpcError(err) !== 'connection') throw err
             console.debug('Binding the new connection once the session is replaced:', err)
             pendingBind.current = { gatekeeperId, chatId }
           }
