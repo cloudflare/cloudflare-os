@@ -309,14 +309,33 @@ async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
 
 #### Choosing a strategy (per resource type / binding)
 
-Choose what each read **reports** and what `verifyObserverAccess()` **checks**, per binding rather than per package. These are access models, not observer-admission strategies:
+Choose a **reporting and verification strategy**, not a legacy observer-admission implementation.
+Start per resource type / binding, then refine **per disclosure**: a single session can combine
+private account discovery, shareable item reads, and unrestricted local results. All strategies
+use the same explicit-`subresources` protocol:
 
-- **A — Private-only.** Report the private resource's real ID (for example, `gmail/user/<sub>`), never a synthetic "private" marker. The verifier denies collaborators or permits only the same provider identity, according to the intended policy. For sensitive data also set `containsRestrictedData: true`; it restricts actions and web fetches, but does not replace reporting or verification.
-- **B — One ACL.** Report the bound resource's ID on every read that reveals its data, including an empty listing. The verifier checks that resource's ACL. A repo/document/page binding must not report `[]` because its old implementation checked access at admission.
-- **C — Distinct ACLs.** Report every access-controlled resource the disclosure depends on, plus any containing workspace or tenant whose membership is independently required. The verifier checks all of them. The Workshop, not the gatekeeper, records what was observed; do not create a data-set log or store observer verifiers.
-- **D — Unrestricted audience.** Report `[]` only when any collaborator may see the disclosure without a provider-side access check. "Low-stakes" by itself does not remove an access requirement. A trivial verifier still needs a public method (e.g. `verify(): void {}`), since an empty `WorkerEntrypoint` is not registered in `ctx.exports`.
+- **A — Private-only / account identity.** Report the private resource's real ID (for example, `gmail/user/<sub>`), never a synthetic "private" marker. The verifier denies collaborators or permits only the same provider identity, according to the intended policy. Labels, searches, and other capability filters do not create separate sharing ACLs. For sensitive data also set `containsRestrictedData: true`; it restricts actions and web fetches, but does not replace reporting or verification.
+- **B — One access-controlled unit.** Report the resource on each read of its data, including an empty listing. Its verifier must cover the actual disclosure: access to public metadata, ordinary event details, private details, and free/busy can differ even for one provider object. Use distinct resource kinds when those information classes need different checks. A repo/document/page binding must not report `[]` because its old implementation checked access at admission.
+- **C — Multiple access-controlled units.** Report the union of the disclosure's requirements, including independently required container/tenant membership. Variants include a list spanning ACLs, a query derived from several data sets, and a hierarchical read requiring both a folder and independently protected children. Report every source even when the derived answer has no rows. The Workshop, not the gatekeeper, records what was observed; do not create a data-set log or store observer verifiers.
+- **D — Unrestricted disclosure.** Report `[]` only when no provider-side access requirement restricts the answer. This can be a public read, a local echo of supplied configuration, or a source-free computation inside an otherwise restricted binding. "Low-stakes", "no results", and "no newly observed resources" do not establish D. A trivial verifier still needs a public method (e.g. `verify(): void {}`), since an empty `WorkerEntrypoint` is not registered in `ctx.exports`.
 
-If there is no reliable per-observer access oracle for restricted data, choose a private-only policy, not unrestricted sharing. An ACL for a containing resource may cover its children only if the provider actually guarantees that inheritance.
+Keep three decisions separate: **what the binding grants**, **what this answer discloses**, and
+**what the observer oracle proves**. A table grant may report its dataset; a label-scoped mailbox
+can remain private to the account; a folder grant need not make its descendants one ACL. Account-wide
+discovery may reveal private membership or metadata beyond the individually shareable items it lists.
+Mix A with B/C where necessary rather than declaring the whole package private or unrestricted.
+
+Choose IDs and checks together. Resolve account-relative aliases (`me`, `primary`, a personal `root`)
+to stable provider identities before recording them, or refuse them. Use `formatSubresourceId()`;
+encoding alone does not make an alias stable. The same recorded ID must name the same resource when
+checked with another account or after a reconnect.
+
+If there is no reliable oracle for the **disclosed information**, choose private-only, not
+unrestricted sharing. A successful metadata probe is not proof of content, table-row, or private-field
+access; conversely, do not require mutation rights unless they are needed to see everything disclosed.
+A parent ACL may stand in for children only when the provider guarantees equivalent access.
+See the kit's [strategy guide and worked Google patterns](../../../packages/gatekeeper-kit/USAGE.md#choosing-reporting-and-verification-strategies)
+for scope-specific examples and implementation caveats.
 
 #### Reporting subresources
 
@@ -335,7 +354,7 @@ The Workshop attributes requirements to the trusted authorizer's original chat/g
 
 This section is **only for existing gatekeepers**, not an alternative new-authoring recipe. Legacy reads and history may still rely on `addObserver()`, `removeObserver()`, observed-set logs, stored verifiers, and `excludeObservers`. Preserve their enforcement while converting every session/cursor/hook path to complete subresource reporting. Do not neutralize old checks merely because new reads now report IDs.
 
-Implement a complete, deduplicated `getHistoricalSubresources()` export of resources actually observed under legacy tracking and not already reported. `verifyObserverAccess()` must accept and enforce every exported resource kind. Do not export a binding requirement merely because a connection exists; export the bound resource only if its data was observed. Keep the legacy records the export reads, make the export read-only and repeatable, and return a complete list or throw—never truncate or discard history. Connections with no legacy observations return `[]`.
+Implement a complete, deduplicated `getHistoricalSubresources()` export of resources actually observed under legacy tracking. Do not omit a legacy requirement merely because a later observation reported the same resource ID: reports are context-specific, so a read in one chat or gadget does not cover historical disclosures in another. `verifyObserverAccess()` must accept and enforce every exported resource kind. Do not export a binding requirement merely because a connection exists; export the bound resource only if its data was observed. Keep the legacy records the export reads, make the export read-only and repeatable, and return a complete list or throw—never truncate or discard history. Connections with no legacy observations return `[]`.
 
 The current kernel does not call this export; its importer is still deferred in
 [`plans/kernel-observer-tracking.md`](../../../plans/kernel-observer-tracking.md#deferred). Retain
@@ -384,12 +403,13 @@ Reviews tend to stop at general correctness. The most important review is of the
   - Each binding's types expose only what that binding can do and stay small, and its reported resources and verifier checks fit that partition (see [Choosing a strategy](#choosing-a-strategy-per-resource-type--binding)).
 
 - **Observer protocol.** For new gatekeepers, reject any of the following omissions even if the code type-checks:
-  - Every observation explicitly reports all correct dependencies, including the bound resource's ACL and workspace/tenant membership where required. `[]` must mean unrestricted, not "checked at admission."
+  - Every observation explicitly reports all correct dependencies, including any applicable bound-resource ACL, parent enumeration, and workspace/tenant membership. `[]` must mean unrestricted, not "checked at admission."
   - No access requirement exists only in `addObserver()`; `verifyObserverAccess()` handles every reported kind, checks all IDs per observer, denies unauthorized accounts, and propagates indeterminate failures.
+  - Grant scope, disclosure dependencies, and oracle strength are reviewed separately. Account discovery, item/member reads, derived results, and descendant capabilities may need different strategies within one binding; metadata visibility must not stand in for content access.
   - `getHistoricalSubresources()` exists and returns `[]` without reading or keeping any observer state; `addObserver(id, verifier)` and `removeObserver(id)` are no-ops.
   - No new observer rosters, stored verifier tracking, observed-set logs, `excludeObservers`, or legacy trackers.
   - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
-  - Runtime coverage exercises denied observers, empty and cached/buffered pages, and hooks where applicable; a successful build alone is not evidence of this contract.
+  - Runtime coverage exercises denied observers, distinct permission classes, derived/empty results, cached/buffered pages, account-relative aliases and reconnect identity, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
 - **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 
@@ -410,11 +430,7 @@ Reviews tend to stop at general correctness. The most important review is of the
 
 Start with [SKELETON.md](SKELETON.md) and the [new-gatekeeper observer contract](#new-gatekeeper-observer-contract), including the empty `getHistoricalSubresources()` and no-op `addObserver` / `removeObserver`. Existing implementations can illustrate reporting and access oracles, but their legacy admission checks are **not** a new-authoring pattern:
 
-- `packages/gatekeeper-google/` Calendar — typed read helper requiring `subresources`; calendar and free/busy IDs checked through `observerAccessVerifier` and the observer's account. Copy the reporting/helper pattern, not the retained writer-admission check or legacy tracker.
-- `packages/gatekeeper-google/` BigQuery — per-dataset reporting and account-side access checks without `ObservationGate`. Its oracle establishes metadata access, not table-data permission; verify the rights your own reads require. Its tracker is legacy history, not a template for new bookkeeping.
-- `packages/gatekeeper-google/` Gmail — private mailbox IDs on reads and hooks, checked against the observer's provider identity. Its throwing `addObserver()` protects legacy reads; new private-only gatekeepers deny through `verifyObserverAccess()` instead.
-- `packages/gatekeeper-google/` Chat — conversation bindings report each conversation and member list they read; account bindings report only the owner's Google account, including nested capabilities and hooks. The observer's account checks these through `spaces.get`, `members.list`, or an owner-identity comparison. Its retained `addObserver()` checks protect legacy reads, not new-authoring patterns.
-- `packages/gatekeeper-google/` Drive, Docs, Sheets and Slides — IDs from `src/file-subresources.ts`: a Drive read reports each file whose metadata or PDF text it returned and each folder it listed, and a native read reports its one file as its API names it, bound directly or opened through Drive. Reads of files whose creation is still pending report `[]` instead. The observer's account checks Drive units through batched `files.get`, holding a Drive grant and, for a folder, listing it, and native files through their own API. Their retained `addObserver()` checks and Drive tracker protect legacy reads, not new-authoring patterns.
+- `packages/gatekeeper-google/` — the kit's [worked Google migration patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations) cover Calendar's event/free-busy permission split, BigQuery source-dataset reporting, Gmail's mailbox identity across filters, Chat's account/conversation split, and Drive/Docs/Sheets/Slides file and folder reporting. These combine A–D per disclosure; the guide notes incomplete oracles and missing history exports. Copy the reporting/helper patterns, not retained legacy admission or tracking.
 - `packages/gatekeeper-github/` — every read, each page of a listing and each hook delivery included, authorizes through `GitHubGatekeeperImpl.authorizeRead`, which reports the bound repository as `repo/<repoId>`, GitHub's numeric id, pinned on first use (nothing is read before it is, and REST reads are addressed by it, so a name a deleted or renamed repository freed can't retarget them). `verifyObserverAccess()` refuses any other ID, then asks `observerAccessVerifier` over `GitHubVerifier.checkSubresourceAccess`, which the observer's `UserAccount` answers from a `KvTtlCache` partitioned by its connection; `addObserver()` asks, live and with the observer's token alone, for reads made before conversion, `hasRepoNameAccess` of the binding's name, which is what those reads followed, and `GitHubVerifier.hasRepoAccess` of the stored id once there is one, never pinning it, so a lapsed owner grant can't lock collaborators out; caches filled before conversion are discarded on upgrade. Its admission checks are legacy migration protection, not a new-authoring pattern.
 - `packages/gatekeeper-context/` — kit `subresources` scopes and `observerAccessVerifier`; its tracker and admission baseline serve existing-code migration only. New code must report membership requirements explicitly too.
 - `packages/integration-tests/fixtures/gatekeeper-test/` — subresource-reporting mode covers reads and hooks and asks the same-vendor verifier. Its unchanged binding-wide admission method is legacy-only.

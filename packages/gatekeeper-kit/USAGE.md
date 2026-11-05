@@ -740,6 +740,116 @@ An existing `ObservationGate` converts a read with
 it prepares no legacy state, exclusions, or fences. New code needs no gate: its constructor demands
 one of the legacy strategies below, and the typed helper above does the same job.
 
+### Choosing reporting and verification strategies
+
+There is one new-authoring protocol, but several **strategies for choosing requirements and checks**.
+Keep the [`write-gatekeeper` skill's](../../.agents/skills/write-gatekeeper/SKILL.md#choosing-a-strategy-per-resource-type--binding)
+A–D framing; choose per disclosure, not once for an entire provider or even a session. These letters
+are not the legacy admission strategies of the same letters in
+[`docs/observers.md` §9.1](../../docs/observers.md#91-strategies) (where C is data-set tracking and D
+is a no-op), which existing code comments may still cite.
+
+| Strategy | Report | Verify |
+| --- | --- | --- |
+| **A — Private-only / account identity** | The actual mailbox/account or other private resource. | Deny collaborators, or require the same provider identity if that is the intended policy. |
+| **B — One access-controlled unit** | The resource whose information is disclosed, including an empty answer about it. | Access sufficient for all disclosed fields, not merely existence or public metadata. |
+| **C — Multiple access-controlled units** | Every independently required resource: returned items, query sources, and required containers or memberships. | All requirements, not any one of them; a parent ID does not imply child access. |
+| **D — Unrestricted disclosure** | `[]`. | No provider-side access requirement applies to this answer. |
+
+Keep **grant scope**, **disclosure dependencies**, and **oracle strength** separate. Labels, search
+filters, and table/folder bindings limit what a caller may request; they do not necessarily define
+sharing ACLs. A narrow binding can report a coarser resource when its oracle genuinely covers the
+disclosure. A broad binding can mix private discovery (A), shareable resource reads (B/C), and local
+configuration echoes or source-free computations (D). Observer verification does not replace the
+session's own scope enforcement.
+
+Design these variants explicitly:
+
+- **Different information classes on one object.** Metadata, content, private fields, and availability
+  can have different audiences. Use real resource kinds with distinct verifier semantics where
+  necessary, rather than collapsing everything to "can open object" or adding synthetic policy IDs.
+- **Account-wide discovery versus item access.** Knowing each returned item is readable need not
+  authorize the owner's personal list, membership, or caller-specific metadata. Report an account
+  requirement too when those are private. Distinguish the operator's configurator API from data
+  returned to a Gadget session; a picker method is not automatically a session observation pattern.
+- **Derived results.** Report the source footprint, not just objects present in output rows. Obtain
+  dependencies from trustworthy provider analysis where available; request text alone may not reveal
+  everything a query reads. Deduplicate, but retain dependencies for zero-row and cached answers.
+  A source-free result is D only if it has no other restricted input or context.
+- **Hierarchy and compound requirements.** A folder/list may control enumeration while individual
+  children have independent ACLs. Report both where needed, including the container for an empty
+  listing. Coarsen to one parent only with a provider guarantee that the observer can see everything
+  disclosed; neither URL nesting nor common ownership proves that.
+- **Empty and failed results.** "No rows" is not "no dependencies": absence, filtered membership,
+  counts, and aggregates can be restricted. Conversely, a failed item lookup that discloses no
+  protected information need not report that item. Decide from the complete returned answer,
+  including errors and auxiliary metadata; do not mechanically add or remove a parent ID.
+- **Stable identity.** Resolve or reject `me`, `primary`, personal `root`, mutable names, and similar
+  account-relative selectors before reporting them. Canonical escaping is not identity resolution.
+  Re-check the same real resource with the observer's account; never resolve an owner's alias to
+  the observer's unrelated resource.
+
+Choose the access oracle to match the information class. Metadata access does not establish content,
+table-row, or private-field visibility, and a mutation role is not inherently the right read check.
+An account-identity comparison can implement a private policy; it is not a delegated-resource ACL
+probe. If no adequate oracle exists, choose A, not D. See the worked patterns below for real examples
+and limits of the existing implementations.
+
+### Worked patterns from the Google migrations
+
+These examples were audited against the merged migration PRs, including their implementations and
+review discussions. They highlight design lessons; the per-binding decision table in
+[`docs/observers.md` §9.2](../../docs/observers.md#92-decision-table) is authoritative for each
+binding's current IDs and checks. IDs below are schematic: use `formatSubresourceId()` to escape
+provider IDs, not string interpolation.
+
+| Resource / disclosure | Strategy and requirements | Observer oracle / important boundary |
+| --- | --- | --- |
+| **Calendar metadata and events** ([#980](https://github.com/cloudflare/cloudflare-os/pull/980), `GoogleCalendarSessionImpl`) | B: `calendar/calendar/<calendarId>`, including empty event windows. Event IDs are unnecessary because the calendar determines visibility. | The observer's calendar-list role must include private-detail visibility (`owner` or `writer`); `writerWithoutPrivateAccess` or `reader` is not equivalent to the owner's full disclosure. |
+| **Calendar availability** (same PR) | A separate information class: `calendar/freeBusy/<calendarId>` for each successful result, even one with no busy blocks. `allVisible` can span foreign calendars (C) without granting their event details. | Query free/busy with the observer's credentials, not the event-detail role. Failed per-calendar lookups contribute no successful availability requirement; assess their error information separately. Account-relative `primary` is refused. |
+| **BigQuery project/dataset/table grants** ([#983](https://github.com/cloudflare/cloudflare-os/pull/983), `BigQuerySessionImpl`) | C: `bigquery/project/<projectId>/dataset/<datasetId>` for every dataset in provider dry-run `referencedTables`, deduplicated across joins. The same dataset unit is used under narrower table grants; table listings keep it even when empty. | Scope validation and read-only SQL checks are separate from observer access. **Existing limitation:** `datasets.get` proves metadata access, not table-row or row/column-policy equivalence. Copy dependency derivation, not this probe as proof of query-result access. |
+| **Gmail mailbox, label, or search grants** ([#984](https://github.com/cloudflare/cloudflare-os/pull/984), `gmail.ts`) | A: every read, cursor page, nested message/attachment capability, and hook reports `gmail/user/<Google-sub>`. A label or search narrows authority, not the mailbox's sharing ACL. | Compare the observer's stable provider subject to the mailbox owner. This is a private-identity policy, not delegated-mailbox ACL verification or a probe of current Gmail content scopes. |
+| **Chat account versus conversation/thread** ([#985](https://github.com/cloudflare/cloudflare-os/pull/985), `chat.ts`) | Account binding: A, `chat/user/<Google-sub>` on **all** reads, including discovery, nested capabilities, and hooks. Conversation/thread content: B, `chat/space/<spaceId>`, including empty pages. Member reads instead use `chat/spaceMembers/<spaceId>`. | Identity for account reads; `getSpace` for space visibility; `listMembers` for the independently protected member list. Space-level reporting relies on filtering out app-private messages with narrower audiences. |
+| **Direct Docs / Sheets / Slides** ([#986](https://github.com/cloudflare/cloudflare-os/pull/986), `google.ts`, `sheets.ts`, `slides.ts`; IDs from `file-subresources.ts`) | B: `docs/document/<id>`, `sheets/spreadsheet/<id>`, or `slides/presentation/<id>`. Tabs, ranges, slides, notes, thumbnails, and cached/simulated reads retain the whole-file requirement. | Open the corresponding native file with the observer's credentials. Read visibility, not edit permission, is the intended check. Do not invent range/tab ACLs when the provider shares the whole file. |
+| **Drive account discovery and exact file** (same PR, `drive-session.ts`) | Account list/search: C, `drive/file/<id>` per returned metadata row, including folder rows. Exact-file reads/listings: B, the bound file ID even if a trashed item is omitted. | File visibility uses the observer's Drive grant and a batched `files.get` metadata lookup. This implementation deliberately treats an empty account-wide list/search as `[]`; that is a disclosure policy, not a general rule for absence. |
+| **Drive positioned folder / descendant native reads** (same PR) | C: current `drive/folder/<id>` plus each returned child `drive/file/<id>`; opening a child folder reports both folder IDs. Searching selected child folders retains all searched folder IDs even with no hits. Folder-derived native reads carry folder + file + native-product requirements on every read. | Folder enumeration requires a live Drive folder with `capabilities.canListChildren`, not merely metadata visibility. The caller's live ancestry checks separately prevent moves, shortcuts, or foreign IDs from escaping the grant. A selected shared-drive root is a concrete folder, not a new shared-drive observer kind. |
+
+Several details prevent overly broad recipes:
+
+- **The origin binding matters.** Whole-account Chat replaces child-space requirements with the
+  owner requirement, so opening a child capability does not turn a private account binding into a
+  shareable conversation grant. Drive account/file native reads first authorize Drive metadata, then
+  report the native file on content reads; folder-derived reads retain the additional folder/file
+  guard requirements. Preserve the originating authorizer and scope in child capabilities.
+- **Derived versus source-free answers.** BigQuery queries keep all referenced datasets for zero-row
+  or cached results. A project-ID echo and an accepted tableless query report `[]`; a narrow
+  dataset/table binding rejects tableless SQL when it cannot prove scope. Empty project-level dataset
+  discovery also currently reports `[]`, unlike an empty table list within a dataset. Explain the
+  policy before copying any of those empty cases.
+  Uncreated caller-authored Docs/Sheets/Slides resources can also report `[]` when no provider data
+  or other account/container requirement is involved. This exception does not apply to simulation
+  over an existing resource, which retains that resource's requirements.
+- **Private versus shareable discovery.** Chat account discovery is private even when its returned
+  spaces have individual ACLs; Drive discovery reports each returned file instead.
+  Inspect the entire response, including personal read state and membership, rather than deciding
+  that every list is private or that every list is covered by returned-item IDs.
+- **Permission strength still needs review.** Drive PDF reads use `drive/file/<id>`, whose
+  oracle establishes metadata visibility, not download permission. That does not prove equivalent
+  PDF-content access. BigQuery's metadata-only probe has the analogous table-data limitation
+  ([review discussion](https://github.com/cloudflare/cloudflare-os/pull/983#issuecomment-6619477652)).
+  Do not treat either implementation as a permission-complete content-access template.
+- **Authorization machinery is reusable; migration quirks are not.** Calendar uses a typed read
+  helper, Gmail decorates a shared queue with its mailbox requirement, and the Chat account queue
+  enforces its account policy across child reads and hooks. Reuse those ways to avoid omissions.
+  Do not copy Drive's one-time `directParentId` parent check when a cursor is created (`#assertParent`)
+  as a substitute for complete dependencies on each page, or eagerly seed requirements merely because
+  a binding exists.
+
+The Google migrations retain legacy admission/history checks but do **not** implement the
+required `getHistoricalSubresources()` export. They illustrate reporting and oracle design, not a
+complete history migration or permission to use empty history in an existing gatekeeper. Follow the
+new-authoring contract or the existing-code migration rules below, as appropriate.
+
 ### Existing-code migration only: preserve historical enforcement
 
 Do not apply the new-gatekeeper empty-history/no-op admission recipe to an existing binding.

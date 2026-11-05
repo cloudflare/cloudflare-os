@@ -54,10 +54,13 @@ do not call around a stateful module while relying on its journal, fence, or lif
 - For provider writes, use [`./actions`](#module-inventory) and read
   [Actions and files](USAGE.md#actions-and-files).
 - For every new gatekeeper, start with [Observations](USAGE.md#observations): require explicit
-  `subresources` on every read and implement `verifyObserverAccess()` with `observerAccessVerifier`.
+  `subresources` on every read and implement `verifyObserverAccess()` with `observerAccessVerifier`,
+  or by hand with the same obligations (parse and reject unknown IDs, check every ID per observer,
+  throw when access cannot be determined). Choose the [reporting and verification strategies](USAGE.md#choosing-reporting-and-verification-strategies)
+  per disclosure, including account-private discovery, individual ACLs, and derived or hierarchical reads.
   Follow the [new-gatekeeper observer contract](USAGE.md#new-gatekeeper-observer-contract),
   including the required empty `getHistoricalSubresources()` export and no-op add/remove methods.
-  Legacy strategies are for existing-code migration only, not alternate new-authoring choices.
+  Legacy admission/tracking strategies are for existing-code migration only.
 - For details attached to one class, function, option, or error, read that export's JSDoc.
 
 Import from the narrow subpath:
