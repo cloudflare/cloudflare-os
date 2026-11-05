@@ -1281,7 +1281,8 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   }
 
   async setRestrictedWebFetchApprovals(enabled: boolean): Promise<void> {
-    await this.admin.updateAdminConfig({ restrictedWebFetchApprovals: enabled });
+    await this.admin.updateAdminConfig(
+        { restrictedWebFetchApprovals: enabled }, this.#actor("setRestrictedWebFetchApprovals"));
   }
 
   setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void> {
