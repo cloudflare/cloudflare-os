@@ -136,6 +136,8 @@ class GitFake extends FakeGitLab {
   /** The project's protected-branch rules, names or wildcards, as `/protected_branches` lists them. */
   protectedRules: string[] = [];
   readonly commits = new Set<string>();
+  /** The path GitLab reports for the project, which a rename or transfer changes. */
+  projectPath = PROJECT;
   readonly receivePackBodies: Uint8Array[] = [];
   readonly receivePackResponses: Uint8Array[] = [];
   readonly uploadPackBodies: Uint8Array[] = [];
@@ -143,8 +145,8 @@ class GitFake extends FakeGitLab {
   constructor() {
     super();
     this.on("GET", new RegExp(`^/api/v4/projects/(?:${PATH}|${P})$`), () => json({
-      ...fx.projectResponse.data, path_with_namespace: PROJECT, default_branch: "main",
-      web_url: `https://gitlab.example.com/${PROJECT}`, namespace: { ...fx.projectResponse.data.namespace, full_path: "group/sub" },
+      ...fx.projectResponse.data, path_with_namespace: this.projectPath, default_branch: "main",
+      web_url: `https://gitlab.example.com/${this.projectPath}`, namespace: { ...fx.projectResponse.data.namespace, full_path: "group/sub" },
     }));
     this.on("GET", /^\/api\/v4\/user$/, () => json(fx.currentUserResponse.data));
     this.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/branches/`), request => {
@@ -468,6 +470,18 @@ describe("simulated reads over queued pushes", () => {
     await queuePush(name, props, "main", HEAD2, false, cache);
     const commits = await unwrap(await hooks().listCommitsAll(name, props, 20, stubOf(cache)));
     expect(commits.map(c => c.id)).toEqual([HEAD2, HEAD1, BASE]);
+  });
+
+  it("links queued commits under the path the project has now", async () => {
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain();
+    await queuePush(name, props, "main", HEAD2, false, cache);
+    gitlab.projectPath = "acme/renamed";
+    const link = (id: string) => `https://gitlab.example.com/acme/renamed/-/commit/${id}`;
+    const head = await unwrap(await hooks().getCommit(name, props, "main", stubOf(cache)));
+    expect(head).toMatchObject({ fromCache: true, details: { id: HEAD2, url: link(HEAD2) } });
+    const commits = await unwrap(await hooks().listCommitsAll(name, props, 20, stubOf(cache)));
+    expect(commits.slice(0, 2).map(c => c.url)).toEqual([link(HEAD2), link(HEAD1)]);
   });
 
   it("filters the pending chain by author as GitLab does: any part of `Name <email>`, case and all", async () => {

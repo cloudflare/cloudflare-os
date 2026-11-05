@@ -486,12 +486,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * Sends a git smart-HTTP request to the bound project. GitLab addresses git only by path, so
    * `send` is given the path the project has now, read by its id (see #currentProjectPath). With
-   * `confirm`, as for a fetch, the response is refused if that path changed before GitLab answered:
-   * the path it left may already name another project, which would then have served the request
-   * instead. GitLab has routed the request once its response arrives, so a pack still streaming
-   * after this check comes from the project checked. A push is sent unconfirmed: GitLab has applied
-   * it by the time it answers, so a check then could only report, not prevent, its delivery to a
-   * project that took the path between the lookup and the push.
+   * `confirm`, as for a fetch, the response is refused if the path read again after GitLab answered
+   * differs from the one it was sent to: the path it left may already name another project, which
+   * would then have served the request instead. Only those two reads are compared, so a move and a
+   * move back between them goes unseen. A push is sent unconfirmed: GitLab has applied it by the
+   * time it answers, so a check then could only report, not prevent, its delivery to a project
+   * that took the path between the lookup and the push.
    */
   async #gitRequest(send: (projectPath: string) => Promise<Response>, options: { confirm: boolean }): Promise<Response> {
     const current = await this.#currentProjectPath();
@@ -1433,9 +1433,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async #tryReadCachedCommitDetails(gitCache: RpcStub<GitCache>, oid: GitOid): Promise<GitLabCommitDetails | null> {
     const payload = await gitObjectBytes(await gitCache.get(oid), "commit");
     if (payload === null) return null;
-    const instanceUrl = this.#instanceUrl();
-    const projectPath = this.#projectPath();
-    return commitDetailsFromGitObject(oid, payload, id => `${instanceUrl}/${projectPath}/-/commit/${id}`);
+    const { url } = await this.#currentProjectRef();
+    return commitDetailsFromGitObject(oid, payload, id => `${url}/-/commit/${id}`);
   }
 
   // -- CI ---------------------------------------------------------------------------------
@@ -3659,6 +3658,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const commits: { summary: GitLabCommitSummary; tree: GitOid }[] = [];
     const sideParents: GitOid[] = [];
     let current = head;
+    let projectUrl: string | undefined;
     while (commits.length <= MAX_PENDING_CHAIN_COMMITS) {
       if (await onGitLab(current)) {
         const chainIds = commits.map(commit => commit.summary.id);
@@ -3671,10 +3671,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       const parsed = parseGitCommitPayload(payload, current);
       this.#servedSimulatedCommitIds.add(current);
-      const instanceUrl = this.#instanceUrl();
-      const projectPath = this.#projectPath();
+      projectUrl ??= (await this.#currentProjectRef()).url;
+      const commitBase = projectUrl;
       commits.push({
-        summary: commitDetailsFromGitObject(current, payload, id => `${instanceUrl}/${projectPath}/-/commit/${id}`),
+        summary: commitDetailsFromGitObject(current, payload, id => `${commitBase}/-/commit/${id}`),
         tree: parsed.tree,
       });
       if (parsed.parents.length === 0) {

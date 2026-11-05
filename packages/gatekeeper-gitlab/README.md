@@ -119,16 +119,17 @@ can still hold confidential issues and internal notes; job logs and test reports
   path; GitLab answers a moved project's old path with a redirect, which is not followed, so that
   read fails) and reads nothing until it has. From then on every REST request beneath the project
   goes to `/projects/<id>/...`. Git fetches and pushes, which GitLab addresses only by path, are
-  sent to the path that id has now, and a fetch fails if that path changed before GitLab answered.
-  So a rename or transfer keeps the binding on its project and a project later created at an old
-  path is never read in its place: the binding's requests fail instead. A push is not checked
+  sent to the path that id has now, and a fetch fails if the path read again once GitLab has
+  answered differs from the one it was sent to. So a rename or transfer keeps the binding on its
+  project, and a project later created at an old path is not read in its place unless the path
+  moves away and back between those two reads. A push is not checked
   again once GitLab has answered, since what GitLab accepted can't be called back: only a move
   and the path's reuse both landing between the lookup and the push could deliver it elsewhere.
   A binding that read before ids were pinned is pinned to the project its path names at its first
   read since, which may not be the one it read then.
   Returned issue and merge request references use the current project path from GitLab's web URL,
-  including same-project source and target branches, and comment, diff-thread and queued-item
-  links use the path the pinned project has now; the original binding path remains only the REST
+  including same-project source and target branches, and comment, diff-thread, queued-item and
+  queued-commit links use the path the pinned project has now; the original binding path remains only the REST
   rewrite key and the legacy admission requirement.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
