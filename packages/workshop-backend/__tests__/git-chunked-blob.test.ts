@@ -375,9 +375,11 @@ describe("blobByteStream", () => {
     let oids = chunkedRecord(blob).chunks.map(chunk => chunk.oid);
     expect(new Set(oids).size).toBeLessThan(oids.length);  // some chunk repeats
 
+    // Cache the last chunk, which the stream then reads from the cache.
+    expect(sameBytes(reader.read(data.length - 100, 100), data.subarray(data.length - 100)))
+        .toBe(true);
     expect(sameBytes(await drain(blobByteStream(reader)), data)).toBe(true);
-    // The pieces handed out were copies: the cached chunks behind them (the last few, so read
-    // the end first) are intact.
+    // The pieces handed out were copies: the cached chunk behind them is intact.
     expect(sameBytes(reader.read(data.length - 100, 100), data.subarray(data.length - 100)))
         .toBe(true);
     expect(sameBytes(concat([...reader.pieces()]), data)).toBe(true);
@@ -387,6 +389,22 @@ describe("blobByteStream", () => {
                      data.subarray(range.offset, range.offset + range.length))).toBe(true);
     expect(sameBytes(reader.read(range.offset, range.length),
                      data.subarray(range.offset, range.offset + range.length))).toBe(true);
+  });
+
+  it("keeps none of the chunks it streams in the reader's cache", async () => {
+    let data = randomBytes(6 * MiB, 19);
+    let { store: rows, reader } = store(data);
+    let reads = 0;
+    let get = rows.get.bind(rows);
+    rows.get = (oid: string) => { reads++; return get(oid); };
+    let stream = blobByteStream(reader).getReader();
+    let first = await stream.read();
+    await stream.cancel();
+    // Streaming read the first chunk once; reading it again inflates it again.
+    expect(reads).toBe(1);
+    expect(sameBytes(reader.read(0, 100), data.subarray(0, 100))).toBe(true);
+    expect(first.value!.length).toBeGreaterThan(100);
+    expect(reads).toBe(2);
   });
 
   it("streams an inline blob without disturbing its reader", async () => {

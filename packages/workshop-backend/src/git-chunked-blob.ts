@@ -388,12 +388,13 @@ export class BlobReader {
 
   /**
    * The payload, or the byte range given, in order, in non-empty pieces of at most one chunk
-   * each (borrowed; see the class doc). Throws at once if the range is out of bounds.
+   * each (borrowed; see the class doc). Throws at once if the range is out of bounds. The chunks
+   * read are not kept in the reader's cache, so an open iteration holds at most one.
    */
   pieces(range?: { offset: number, length: number }): Iterable<Uint8Array> {
     let { offset, length } = range ?? { offset: 0, length: this.size };
     this.#checkRange(offset, length);
-    return this.#pieces(offset, offset + length);
+    return this.#pieces(offset, offset + length, false);
   }
 
   /**
@@ -425,11 +426,14 @@ export class BlobReader {
     return this.#chunks[lo].offset + pos + 1;
   }
 
-  *#pieces(start: number, end: number): Generator<Uint8Array> {
+  // `keep` as for #chunk: a caller iterating in order passes false, since it never returns to a
+  // chunk, and caching what it passes would hold up to CHUNK_CACHE_SIZE chunks for as long as
+  // the iteration (a byte stream, say) stays open.
+  *#pieces(start: number, end: number, keep = true): Generator<Uint8Array> {
     if (start === end) return;
     for (let index = this.#chunkAt(start), pos = start; pos < end; index++) {
       let chunkOffset = this.#chunks[index].offset;
-      let chunk = this.#chunk(index);
+      let chunk = this.#chunk(index, keep);
       let piece = chunk.subarray(pos - chunkOffset, Math.min(chunk.length, end - chunkOffset));
       pos += piece.length;
       yield piece;
@@ -461,9 +465,10 @@ export class BlobReader {
     return (next?.offset ?? this.size) - this.#chunks[index].offset;
   }
 
-  // A chunk's inflated payload, through the LRU cache. A chunk must be an inline blob of exactly
-  // the size the index implies; anything else is storage corruption.
-  #chunk(index: number): Uint8Array {
+  // A chunk's inflated payload, through the LRU cache, which it joins unless `keep` is false. A
+  // chunk must be an inline blob of exactly the size the index implies; anything else is
+  // storage corruption.
+  #chunk(index: number, keep = true): Uint8Array {
     let cached = this.#cache.get(index);
     if (cached !== undefined) {
       // A detached buffer reads as empty; fail loudly rather than return wrong bytes.
@@ -480,6 +485,7 @@ export class BlobReader {
     if (object.type !== "blob" || object.payload.length !== this.#chunkSize(index)) {
       throw this.#corrupt();
     }
+    if (!keep) return object.payload;
     this.#cache.set(index, object.payload);
     if (this.#cache.size > CHUNK_CACHE_SIZE) {
       this.#cache.delete(this.#cache.keys().next().value!);
