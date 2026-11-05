@@ -2825,7 +2825,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           this.#appliedPushes.record(action.newSha);
           break;
         }
-        if (!action.force && action.targetProtected === false) {
+        if (action.targetProtected === false) {
           const gated = await this.#isProtectedTarget(action.branch, remote);
           if (gated === undefined) {
             throw new Error(

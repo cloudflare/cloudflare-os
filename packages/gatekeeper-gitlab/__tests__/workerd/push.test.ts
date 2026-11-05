@@ -311,11 +311,16 @@ describe("auto-approval of a push", () => {
     expect(gitlab.count("GET", /\/protected_branches/)).toBe(0);
   });
 
-  it("never auto-approves a force push, even to an unprotected branch", async () => {
+  it("lets a force push to an unprotected branch apply, never one to the default or a protected branch", async () => {
     const { gitlab, props, name } = await setup();
-    gitlab.branches.set("feature", BASE);
-    expect(await queuePush(name, props, "feature", OTHER, true, root())).toMatchObject({ force: true, targetProtected: false });
-    expect(await verdicts(name)).toEqual([["gitlab.forcePush", false]]);
+    gitlab.branches.set("feature", BASE).set("stable", BASE);
+    gitlab.protectedBranches.add("stable");
+    const cache = root();
+    expect(await queuePush(name, props, "feature", OTHER, true, cache)).toMatchObject({ force: true, targetProtected: false });
+    expect(await queuePush(name, props, "main", OTHER, true, cache)).toMatchObject({ force: true, targetProtected: true });
+    expect(await queuePush(name, props, "stable", OTHER, true, cache)).toMatchObject({ force: true, targetProtected: true });
+    expect(await verdicts(name)).toEqual(
+      [["gitlab.forcePush", true], ["gitlab.forcePush", false], ["gitlab.forcePush", false]]);
   });
 
   it("lets a push that creates a branch no rule covers apply", async () => {
@@ -664,6 +669,19 @@ describe("applying a push", () => {
     const cache = cacheWithChain();
     const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
     expect(action).toMatchObject({ targetProtected: false });
+    gitlab.protectedBranches.add("feature");
+    gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
+      .rejects.toThrow(/has become the default or a protected branch/);
+    expect(gitlab.receivePackBodies).toHaveLength(0);
+  });
+
+  it("refuses an auto-approvable force push whose branch became protected while it waited", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    const cache = root();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", OTHER, true, stubOf(cache)], DESC));
+    expect(action).toMatchObject({ force: true, targetProtected: false });
     gitlab.protectedBranches.add("feature");
     gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
     await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
