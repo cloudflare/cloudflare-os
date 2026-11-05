@@ -193,6 +193,16 @@ const TOKEN_REVOKE_TIMEOUT_MS = 10 * 1000;
 // scope restriction leaves nothing for us to observe, so we have to re-ask Google eventually.
 const MINT_FAILURE_COOLDOWN_MS = 60 * 1000;
 
+// What a token request fails with once an account has no refresh token. Of the accounts a binding
+// can name, only one the Workshop disconnected loses it: revoke() deletes all of its storage. The
+// connect callback goes with the rest and the Workshop deletes its record, so there is nothing to
+// mark expired or reconnect, and connecting Google again creates a new account while the binding's
+// props still name this one. Replacing the binding is the only remedy.
+const DISCONNECTED_ACCOUNT_MESSAGE =
+    "The Google account this connection was made with has been disconnected, so the connection " +
+    "no longer works. Connecting Google again does not restore it: remove this connection and " +
+    "connect the resource again under the same name.";
+
 function hexEncode(bytes: Uint8Array): string {
   return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
 }
@@ -808,8 +818,9 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("The Google Gatekeeper is not configured.");
     }
 
+    // Checked before the cached access token, so a disconnected account serves nothing.
     if (!this.ctx.storage.kv.get<string>("refreshToken")) {
-      throw new Error("no refresh token set");
+      throw new Error(DISCONNECTED_ACCOUNT_MESSAGE);
     }
 
     // Fast path, deliberately outside the lock: the overwhelmingly common case is a valid cached
@@ -837,7 +848,7 @@ export class UserAccount extends DurableObject<Env> {
       // while this call waited for the lock.
       let refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
       if (!refreshToken) {
-        throw new Error("no refresh token set");
+        throw new Error(DISCONNECTED_ACCOUNT_MESSAGE);
       }
 
       // Logged before the exchange so a mint that fails or hangs still leaves a trace. The events
